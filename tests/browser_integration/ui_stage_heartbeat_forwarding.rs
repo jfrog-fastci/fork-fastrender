@@ -24,6 +24,7 @@ fn assert_stage_order(stages: &[StageHeartbeat], expected: &[StageHeartbeat]) {
 
 #[test]
 fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   std::fs::write(
     dir.path().join("style.css"),

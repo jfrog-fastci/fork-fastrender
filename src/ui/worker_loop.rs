@@ -3,6 +3,7 @@ use crate::geometry::Point;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
+use crate::ui::about_pages;
 use crate::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -73,22 +74,59 @@ fn navigate_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>, u
     .with_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y)
     .with_element_scroll_offsets(tab.scroll.elements.clone());
 
-  let report = match tab.renderer.prepare_url(&url, options) {
-    Ok(report) => report,
-    Err(err) => {
-      let _ = ui_tx.send(WorkerToUi::NavigationFailed {
-        tab_id,
-        url,
-        error: err.to_string(),
-      });
-      return;
+  let report = if about_pages::is_about_url(&url) {
+    let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
+      about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+    });
+    tab.renderer.set_base_url(about_pages::ABOUT_BASE_URL);
+    let dom = match tab.renderer.parse_html(&html) {
+      Ok(dom) => dom,
+      Err(err) => {
+        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+    };
+    match tab.renderer.prepare_dom_with_options(dom, Some(&url), options) {
+      Ok(report) => report,
+      Err(err) => {
+        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
+    }
+  } else {
+    match tab.renderer.prepare_url(&url, options) {
+      Ok(report) => report,
+      Err(err) => {
+        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url,
+          error: err.to_string(),
+        });
+        return;
+      }
     }
   };
 
+  let committed_url = report.final_url.clone().unwrap_or_else(|| url.clone());
   let doc = report.document;
   let scroll = paint_document(tab_id, tab, &doc, ui_tx, tab.scroll.clone());
   if let Some(scroll) = scroll {
     tab.scroll = scroll;
+    let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: committed_url,
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
   }
   tab.document = Some(doc);
 }
@@ -261,3 +299,4 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
     }
   }
 }
+
