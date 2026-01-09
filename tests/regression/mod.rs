@@ -20,5 +20,6 @@ mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
 mod inline_abspos_padding_edge;
 mod pages;
+mod js_url_bindings;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;
