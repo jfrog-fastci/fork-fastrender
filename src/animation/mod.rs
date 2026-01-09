@@ -147,6 +147,37 @@ fn default_parent_style() -> &'static ComputedStyle {
   DEFAULT_PARENT_STYLE.get_or_init(ComputedStyle::default)
 }
 
+fn recompute_var_dependent_properties_preserving_animated_color(
+  style: &mut ComputedStyle,
+  parent_styles: &ComputedStyle,
+  viewport: Size,
+  color_is_animated: bool,
+) {
+  // `recompute_var_dependent_properties` reapplies all cached var/currentColor-dependent declarations,
+  // including potentially the element's own `color` declaration when it contained `var()`.
+  //
+  // When `color` is being animated by transitions/animations, we must not override the animated
+  // `style.color` while recomputing other currentColor-dependent properties (e.g.
+  // `border-top-color: currentColor`). Temporarily filter `color` out of the var-dependent
+  // declaration set so recomputation uses the animated `style.color`.
+  if !color_is_animated {
+    style.recompute_var_dependent_properties(parent_styles, viewport);
+    return;
+  }
+
+  let original = Arc::clone(&style.var_dependent_declarations);
+  if !original.contains_key("color") {
+    style.recompute_var_dependent_properties(parent_styles, viewport);
+    return;
+  }
+
+  let mut filtered = (*original).clone();
+  filtered.remove("color");
+  style.var_dependent_declarations = Arc::new(filtered);
+  style.recompute_var_dependent_properties(parent_styles, viewport);
+  style.var_dependent_declarations = original;
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
@@ -8428,7 +8459,12 @@ fn apply_transitions_to_fragment(
         // re-resolved so `currentColor` tracks the animated value.
         if custom_properties_changed || color_changed {
           let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
-          updated_style.recompute_var_dependent_properties(parent_styles, viewport);
+          recompute_var_dependent_properties_preserving_animated_color(
+            &mut updated_style,
+            parent_styles,
+            viewport,
+            color_changed,
+          );
           apply_animated_properties_ordered(&mut updated_style, &updates);
         }
 
@@ -8640,7 +8676,12 @@ fn apply_transition_state_to_fragment(
           // re-resolved when `color` animates via the persistent TransitionState engine.
           if custom_properties_changed || color_changed {
             let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
-            updated_style.recompute_var_dependent_properties(parent_styles, viewport);
+            recompute_var_dependent_properties_preserving_animated_color(
+              &mut updated_style,
+              parent_styles,
+              viewport,
+              color_changed,
+            );
             apply_animated_properties_ordered(&mut updated_style, &updates);
           }
           fragment.style = Some(Arc::new(updated_style));

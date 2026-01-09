@@ -978,3 +978,54 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box {
+        width: 20px;
+        height: 20px;
+        color: var(--c);
+        border-top-style: solid;
+        border-top-width: 1px;
+        border-top-color: currentColor;
+        transition: color 1000ms linear;
+      }
+      #box.a { --c: rgb(0, 0, 0); }
+      #box.b { --c: rgb(255, 255, 255); }
+    </style>
+    <div id="box" class="a"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 50)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let expected = Rgba::new(128, 128, 128, 1.0);
+  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_border_top_color(&sampled, box_id),
+    expected,
+    "border-top-color: currentColor should track animated color (even when color comes from var())"
+  );
+
+  Ok(())
+}
