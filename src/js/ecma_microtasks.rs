@@ -320,6 +320,64 @@ mod tests {
   }
 
   #[test]
+  fn vm_js_promise_jobs_enqueued_by_jobs_run_in_the_same_microtask_checkpoint() -> crate::Result<()> {
+    struct Host {
+      log: Arc<Mutex<Vec<&'static str>>>,
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      log: log.clone(),
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let mut hooks = VmJsHostHooks::new(&mut event_loop);
+    let log_for_job1 = Arc::clone(&log);
+    hooks.host_enqueue_promise_job(
+      vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, hooks| {
+        log_for_job1.lock().unwrap().push("job1");
+
+        // Enqueue a follow-up Promise job while a job is running: this should still be drained by
+        // the *same* microtask checkpoint (HTML semantics).
+        let log_for_job2 = Arc::clone(&log_for_job1);
+        hooks.host_enqueue_promise_job(
+          vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+            log_for_job2.lock().unwrap().push("job2");
+            Ok(())
+          }),
+          None,
+        );
+        Ok(())
+      }),
+      None,
+    );
+    assert!(hooks.finish(&mut host).is_none());
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(&*log.lock().unwrap(), &["job1", "job2"]);
+    Ok(())
+  }
+
+  #[test]
   fn vm_js_promise_jobs_discard_persistent_roots_when_enqueue_fails() -> crate::Result<()> {
     let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
 

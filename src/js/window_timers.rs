@@ -1121,6 +1121,47 @@ mod tests {
   }
 
   #[test]
+  fn queue_microtask_rejects_string_callback() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    let err = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(&mut event_loop, || {
+        let mut scope = heap.scope();
+        let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
+        let handler_s = scope.alloc_string("alert(1)").unwrap();
+        scope
+          .push_root(Value::String(handler_s))
+          .expect("push root handler string");
+        vm.call(
+          &mut scope,
+          queue_microtask,
+          Value::Object(global),
+          &[Value::String(handler_s)],
+        )
+      })
+      .expect_err("string callbacks should be rejected")
+    };
+
+    match err {
+      VmError::TypeError(msg) => {
+        assert!(msg.contains("string callbacks"), "msg={msg}");
+      }
+      other => panic!("expected TypeError, got {other:?}"),
+    }
+
+    Ok(())
+  }
+
+  #[test]
   fn queue_microtask_invokes_callback_with_undefined_this() -> crate::error::Result<()> {
     fn cb_record_this_is_undefined(
       _vm: &mut Vm,
