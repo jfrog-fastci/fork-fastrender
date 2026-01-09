@@ -668,7 +668,12 @@ fn inline_svg_use_references<'a>(
 
     let mut href = None;
     for attr in node.attributes() {
-      if attr.name() == "href" {
+      let name = attr.name();
+      if name.eq_ignore_ascii_case("href")
+        || name
+          .rsplit_once(':')
+          .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+      {
         href = Some(attr.value());
         break;
       }
@@ -9422,7 +9427,7 @@ mod tests {
     let main_url = "https://example.test/main.svg";
 
     let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
-    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1" height="1"><use xlink:href="/sprite.svg#icon"/></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use xlink:href="/sprite.svg#icon" xmlns:xlink="http://www.w3.org/1999/xlink"/></svg>"#;
 
     let mut main_res = FetchedResource::new(
       main_svg.as_bytes().to_vec(),
@@ -9599,7 +9604,7 @@ mod tests {
       "blocked image should not be fetched"
     );
   }
- 
+
   #[test]
   fn non_ascii_whitespace_inline_svg_use_references_does_not_trim_nbsp_in_sprite_id() {
     let nbsp = "\u{00A0}";
