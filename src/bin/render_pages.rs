@@ -735,7 +735,11 @@ impl NoNetworkFetcher {
   }
 
   fn url_is_http_like(url: &str) -> bool {
-    let trimmed = url.trim_start();
+    // Only strip HTML/CSS ASCII whitespace (TAB/LF/FF/CR/SPACE) when classifying URLs so non-ASCII
+    // whitespace like NBSP (U+00A0) remains significant.
+    let trimmed = url.trim_start_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    });
     trimmed
       .get(..8)
       .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
@@ -2159,6 +2163,17 @@ mod tests {
       pageset_stem(" https://Example.com./path/ ").as_deref(),
       Some("example.com_path")
     );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_render_pages_url_is_http_like_does_not_ignore_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(!super::NoNetworkFetcher::url_is_http_like(&format!(
+      "{nbsp}https://example.com/"
+    )));
+    assert!(super::NoNetworkFetcher::url_is_http_like(
+      " https://example.com/"
+    ));
   }
 
   #[test]

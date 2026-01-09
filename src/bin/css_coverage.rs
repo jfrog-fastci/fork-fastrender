@@ -24,6 +24,18 @@ const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 // values that are small enough to be readable/actionable.
 const SAMPLE_VALUE_MAX_LEN: usize = 256;
 
+fn is_ascii_whitespace_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace_css(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_css)
+}
+
+fn trim_ascii_whitespace_css_end(value: &str) -> &str {
+  value.trim_end_matches(is_ascii_whitespace_css)
+}
+
 #[derive(Parser, Debug)]
 #[command(
   name = "css_coverage",
@@ -88,7 +100,7 @@ impl CoverageCollector {
       return;
     }
 
-    let trimmed = value.trim();
+    let trimmed = trim_ascii_whitespace_css(value);
     if trimmed.is_empty() || trimmed.len() > SAMPLE_VALUE_MAX_LEN {
       return;
     }
@@ -397,7 +409,8 @@ fn parse_declaration_in_style_block<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = value.trim_end_matches(';').trim_end();
+  let value = value.trim_end_matches(';');
+  let value = trim_ascii_whitespace_css_end(value);
 
   if value.is_empty() && !is_custom_property {
     return Ok(None);
@@ -476,7 +489,8 @@ fn parse_declaration_in_inline_style<'i, 't>(
   } else {
     full_slice_raw
   };
-  let value = value.trim_end_matches(';').trim_end();
+  let value = value.trim_end_matches(';');
+  let value = trim_ascii_whitespace_css_end(value);
 
   if value.is_empty() && !property.starts_with("--") {
     return None;
@@ -497,7 +511,8 @@ fn scan_html_document(contents: &str, collector: &mut CoverageCollector) {
         continue;
       }
       if let Some(ty) = style.type_attr.as_deref() {
-        if !ty.trim().is_empty() && !ty.trim().eq_ignore_ascii_case("text/css") {
+        let trimmed = trim_ascii_whitespace_css(ty);
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("text/css") {
           continue;
         }
       }
@@ -750,4 +765,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn non_ascii_whitespace_css_coverage_does_not_trim_nbsp_in_sample_values() {
+    let nbsp = "\u{00A0}";
+    let mut collector = CoverageCollector::new(1);
+    collector.record_declaration("color".to_string(), &format!("{nbsp}red{nbsp}"));
+
+    let counts = collector.properties.get("color").expect("color entry");
+    assert_eq!(counts.sample_values, vec![format!("{nbsp}red{nbsp}")]);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_css_coverage_does_not_trim_nbsp_in_declaration_values() {
+    let nbsp = "\u{00A0}";
+    let css = format!("a{{color:red{nbsp};}}");
+    let mut collector = CoverageCollector::new(1);
+    scan_stylesheet(&css, &mut collector);
+
+    let counts = collector.properties.get("color").expect("color entry");
+    assert_eq!(counts.sample_values, vec![format!("red{nbsp}")]);
+  }
+
+  #[test]
+  fn non_ascii_whitespace_css_coverage_does_not_treat_nbsp_as_type_whitespace() {
+    let nbsp = "\u{00A0}";
+    let html = format!(
+      "<!doctype html><html><head><style type=\"{nbsp}text/css{nbsp}\">body{{color:red;}}</style></head></html>"
+    );
+    let mut collector = CoverageCollector::new(1);
+    scan_html_document(&html, &mut collector);
+    assert!(
+      collector.properties.is_empty(),
+      "style tags with NBSP-wrapped type should be ignored"
+    );
+
+    let html_ascii = "<!doctype html><html><head><style type=\" text/css \">body{color:red;}</style></head></html>";
+    let mut collector = CoverageCollector::new(1);
+    scan_html_document(html_ascii, &mut collector);
+    assert!(
+      collector.properties.contains_key("color"),
+      "ASCII whitespace should be stripped when validating style[type]"
+    );
+  }
 }

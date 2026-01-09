@@ -47,17 +47,27 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashSet, collections::VecDeque};
 
+fn is_ascii_whitespace_html_css(c: char) -> bool {
+  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+fn trim_ascii_whitespace_start(value: &str) -> &str {
+  value.trim_start_matches(is_ascii_whitespace_html_css)
+}
+
 fn is_data_url(url: &str) -> bool {
-  url
-    .trim_start()
+  trim_ascii_whitespace_start(url)
     .get(..5)
     .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
     .unwrap_or(false)
 }
 
 fn is_about_url(url: &str) -> bool {
-  url
-    .trim_start()
+  trim_ascii_whitespace_start(url)
     .get(..6)
     .map(|prefix| prefix.eq_ignore_ascii_case("about:"))
     .unwrap_or(false)
@@ -105,17 +115,17 @@ fn compute_vary_key_for_recording(
   req: FetchRequest<'_>,
   vary: Option<&str>,
 ) -> Option<String> {
-  let Some(vary) = vary.filter(|v| !v.trim().is_empty()) else {
+  let Some(vary) = vary.map(trim_ascii_whitespace).filter(|v| !v.is_empty()) else {
     return Some(String::new());
   };
-  if vary.trim() == "*" {
+  if vary == "*" {
     return None;
   }
 
   let mut hasher = Sha256::new();
   let mut saw_field = false;
   for field in vary.split(',') {
-    let name = field.trim();
+    let name = trim_ascii_whitespace(field);
     if name.is_empty() {
       continue;
     }
@@ -371,7 +381,7 @@ impl CacheOfflineNetworkFetcher {
   }
 
   fn is_http_like(url: &str) -> bool {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() {
       return false;
     }
@@ -464,7 +474,7 @@ impl CacheKindMismatchFallbackFetcher {
   }
 
   fn is_http_like(url: &str) -> bool {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() {
       return false;
     }
@@ -2707,6 +2717,39 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
         ))),
       }
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_bundle_page_scheme_checks_do_not_ignore_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(
+      !is_data_url(&format!("{nbsp}data:text/plain,hi")),
+      "NBSP should not be treated as ASCII whitespace when checking data: URLs"
+    );
+    assert!(
+      !is_about_url(&format!("{nbsp}about:blank")),
+      "NBSP should not be treated as ASCII whitespace when checking about: URLs"
+    );
+    assert!(is_data_url(" data:text/plain,hi"));
+    assert!(is_about_url("\tabout:blank"));
+  }
+
+  #[cfg(feature = "disk_cache")]
+  #[test]
+  fn non_ascii_whitespace_bundle_page_is_http_like_does_not_ignore_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert!(!CacheOfflineNetworkFetcher::is_http_like(&format!(
+      "{nbsp}https://example.com/"
+    )));
+    assert!(CacheOfflineNetworkFetcher::is_http_like(
+      " https://example.com/"
+    ));
+    assert!(!CacheKindMismatchFallbackFetcher::is_http_like(&format!(
+      "{nbsp}https://example.com/"
+    )));
+    assert!(CacheKindMismatchFallbackFetcher::is_http_like(
+      " https://example.com/"
+    ));
   }
 
   #[test]
