@@ -17,6 +17,16 @@ use vm_js::{
   Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError,
 };
 
+pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
+  "setTimeout does not currently support string handlers";
+pub(crate) const SET_TIMEOUT_NOT_CALLABLE_ERROR: &str = "setTimeout callback is not callable";
+pub(crate) const SET_INTERVAL_STRING_HANDLER_ERROR: &str =
+  "setInterval does not currently support string handlers";
+pub(crate) const SET_INTERVAL_NOT_CALLABLE_ERROR: &str = "setInterval callback is not callable";
+pub(crate) const QUEUE_MICROTASK_STRING_HANDLER_ERROR: &str =
+  "queueMicrotask does not currently support string callbacks";
+pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str = "queueMicrotask callback is not callable";
+
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
 const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
@@ -214,12 +224,10 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
-    return Err(throw_type_error(
-      "setTimeout does not currently support string handlers",
-    ));
+    return Err(throw_type_error(SET_TIMEOUT_STRING_HANDLER_ERROR));
   }
   if !is_callable(scope, handler) {
-    return Err(throw_type_error("setTimeout callback is not callable"));
+    return Err(throw_type_error(SET_TIMEOUT_NOT_CALLABLE_ERROR));
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -332,12 +340,10 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
-    return Err(throw_type_error(
-      "setInterval does not currently support string handlers",
-    ));
+    return Err(throw_type_error(SET_INTERVAL_STRING_HANDLER_ERROR));
   }
   if !is_callable(scope, handler) {
-    return Err(throw_type_error("setInterval callback is not callable"));
+    return Err(throw_type_error(SET_INTERVAL_NOT_CALLABLE_ERROR));
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -447,12 +453,10 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
 ) -> Result<Value, VmError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(callback, Value::String(_)) {
-    return Err(throw_type_error(
-      "queueMicrotask does not currently support string callbacks",
-    ));
+    return Err(throw_type_error(QUEUE_MICROTASK_STRING_HANDLER_ERROR));
   }
   if !is_callable(scope, callback) {
-    return Err(throw_type_error("queueMicrotask callback is not callable"));
+    return Err(throw_type_error(QUEUE_MICROTASK_NOT_CALLABLE_ERROR));
   }
 
   let Value::Object(_global_obj) = this else {
@@ -861,10 +865,7 @@ mod tests {
     let Err(VmError::TypeError(msg)) = err else {
       panic!("expected setTimeout to return VmError::TypeError for non-callable callback");
     };
-    assert_eq!(
-      msg,
-      "setTimeout callback is not callable"
-    );
+    assert_eq!(msg, SET_TIMEOUT_NOT_CALLABLE_ERROR);
 
     Ok(())
   }

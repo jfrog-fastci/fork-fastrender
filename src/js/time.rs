@@ -38,14 +38,22 @@ impl WebTime {
 
   /// Implementation of `performance.now()`.
   pub fn performance_now<Host>(&self, event_loop: &EventLoop<Host>) -> f64 {
-    duration_to_ms_f64(event_loop.now())
+    self.performance_now_from_duration(event_loop.now())
   }
 
   /// Implementation of `Date.now()`.
   pub fn date_now<Host>(&self, event_loop: &EventLoop<Host>) -> i64 {
+    self.date_now_from_duration(event_loop.now())
+  }
+
+  pub(crate) fn performance_now_from_duration(&self, now: Duration) -> f64 {
+    duration_to_ms_f64(now)
+  }
+
+  pub(crate) fn date_now_from_duration(&self, now: Duration) -> i64 {
     self
       .time_origin_unix_ms
-      .saturating_add(duration_to_millis_i64(event_loop.now()))
+      .saturating_add(duration_to_millis_i64(now))
   }
 }
 
