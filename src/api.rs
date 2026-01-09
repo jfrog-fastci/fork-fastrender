@@ -6425,27 +6425,47 @@ impl FastRender {
         fit_canvas,
       );
 
+      // Offset applied during paint to account for viewport scrolling.
+      let offset = Point::new(-scroll.x, -scroll.y);
+
       if let Some(store) = artifacts.as_deref_mut() {
         if store.request().fragment_tree {
           store.fragment_tree = Some(fragment_tree.clone());
         }
         if store.request().display_list {
+          // Capture a paint-accurate display list: use the stacking-context-aware builder and
+          // apply the same scroll offset/canvas bounds as the paint stage. This keeps snapshots
+          // useful for debugging paint order and compositing (e.g. mix-blend-mode).
           let viewport = fragment_tree.viewport_size();
-          let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
-            .with_font_context(self.font_context.clone())
-            .with_device_pixel_ratio(self.device_pixel_ratio)
-            .with_viewport_size(viewport.width, viewport.height)
-            .with_scroll_state(scroll_state.clone());
-          if let Some(base_url) = &self.base_url {
-            builder.set_base_url(base_url.clone());
+          let svg_filter_defs = fragment_tree.svg_filter_defs.clone();
+          let svg_id_defs = fragment_tree.svg_id_defs.clone();
+          let base_url = self.base_url.clone();
+          let build_display_list_for_root = |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
+            let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
+              .with_font_context(self.font_context.clone())
+              .with_svg_filter_defs(svg_filter_defs.clone())
+              .with_svg_id_defs(svg_id_defs.clone())
+              .with_scroll_state(scroll_state.clone())
+              .with_device_pixel_ratio(self.device_pixel_ratio)
+              .with_parallelism(&paint_parallelism)
+              .with_max_iframe_depth(self.max_iframe_depth)
+              .with_viewport_size(viewport.width, viewport.height)
+              .with_culling_viewport_size(target_width as f32, target_height as f32);
+            if let Some(base_url) = base_url.as_ref() {
+              builder.set_base_url(base_url.clone());
+            }
+            builder.build_with_stacking_tree_offset(root, offset)
+          };
+
+          let mut display_list = build_display_list_for_root(&fragment_tree.root);
+          for extra in &fragment_tree.additional_fragments {
+            display_list.append(build_display_list_for_root(extra));
           }
-          let display_list = builder.build_tree(&fragment_tree);
           store.display_list = Some(display_list);
         }
       }
 
       // Paint to pixmap
-      let offset = Point::new(-scroll.x, -scroll.y);
       let paint_rss_start = memory_sampling_enabled
         .then(crate::memory::current_rss_bytes)
         .flatten();
