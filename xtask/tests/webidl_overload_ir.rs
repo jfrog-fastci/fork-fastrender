@@ -1,12 +1,20 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
-use webidl_ir::{parse_default_value, parse_idl_type_complete, IdlType, NamedType, NamedTypeKind, NumericType, StringType};
+use webidl_ir::{
+  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind, NumericType,
+  StringType,
+};
 
 use xtask::webidl::overload_ir::{
   are_distinguishable, compute_dispatch_plan, compute_effective_overload_set, distinguishing_argument_index,
   validate_overload_set, Optionality, Overload, OverloadArgument, Origin, WorldContext,
   EffectiveOverloadEntry, EffectiveOverloadSet,
 };
+use xtask::webidl::resolve::{resolve_webidl_world, ExposureTarget};
+use xtask::webidl::semantic::SemanticInterfaceMemberKind;
+use xtask::webidl::type_resolution::expand_typedefs_in_type;
+use xtask::webidl::{ast::IdlLiteral, load::{load_combined_webidl, WebIdlSource}, parse_webidl, SemanticWorld};
 
 #[derive(Default)]
 struct TestWorld {
@@ -326,4 +334,178 @@ fn event_target_add_event_listener_effective_overload_set() {
     assert_eq!(g.entries.len(), 1);
     assert_eq!(g.distinguishing_argument_index, None);
   }
+}
+
+fn default_value_from_idl_literal(lit: &IdlLiteral) -> Option<DefaultValue> {
+  match lit {
+    IdlLiteral::Null => Some(DefaultValue::Null),
+    IdlLiteral::Undefined => Some(DefaultValue::Undefined),
+    IdlLiteral::Boolean(b) => Some(DefaultValue::Boolean(*b)),
+    // `parse_default_value` already knows how to parse WebIDL numeric literals and special values.
+    IdlLiteral::Number(n) => parse_default_value(n).ok(),
+    IdlLiteral::String(s) => Some(DefaultValue::String(s.clone())),
+    IdlLiteral::EmptyObject => Some(DefaultValue::EmptyDictionary),
+    IdlLiteral::EmptyArray => Some(DefaultValue::EmptySequence),
+    // `Infinity` / `NaN` appear as identifiers in the lightweight xtask parser; accept them.
+    IdlLiteral::Identifier(id) => parse_default_value(id).ok(),
+  }
+}
+
+#[test]
+fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_world() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+
+  let sources = [WebIdlSource {
+    rel_path: "specs/whatwg-dom/dom.bs",
+    label: "DOM",
+  }];
+
+  let loaded = load_combined_webidl(repo_root, &sources).unwrap();
+  if !loaded.missing_sources.is_empty() {
+    for (label, path) in &loaded.missing_sources {
+      eprintln!("skipping semantic overload test: missing {label} source at {}", path.display());
+    }
+    return;
+  }
+
+  // Limit this smoke test to Window-exposed definitions so we validate a realistic per-global
+  // overload set.
+  let parsed = parse_webidl(&loaded.combined_idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed).filter_by_exposure(ExposureTarget::Window);
+  let semantic = SemanticWorld::from_resolved(&resolved);
+  let type_ctx = semantic.build_type_context();
+
+  let mut failures = Vec::<String>::new();
+
+  // A small set of "core DOM" interfaces whose members exercise optional args, unions, dictionaries,
+  // and interface inheritance.
+  for iface_name in ["EventTarget", "Node", "Element", "Document", "Window"] {
+    let Some(iface) = semantic.interfaces.get(iface_name) else {
+      continue;
+    };
+
+    // Group operation overloads by (operation name, static flag). This is the minimal key for
+    // WebIDL overload sets for named operations.
+    let mut ops: BTreeMap<(String, bool), Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)>> =
+      BTreeMap::new();
+    let mut ctors: Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)> = Vec::new();
+
+    for member in &iface.members {
+      let Some(parsed) = member.parsed.as_ref() else {
+        continue;
+      };
+      match parsed {
+        SemanticInterfaceMemberKind::Constructor { arguments } => {
+          ctors.push((member.raw.clone(), arguments.clone()));
+        }
+        SemanticInterfaceMemberKind::Operation {
+          name: Some(name),
+          arguments,
+          static_,
+          special: None,
+          ..
+        } => {
+          ops
+            .entry((name.clone(), *static_))
+            .or_default()
+            .push((member.raw.clone(), arguments.clone()));
+        }
+        _ => {}
+      }
+    }
+
+    if !ctors.is_empty() {
+      let overloads = ctors
+        .iter()
+        .map(|(raw, args)| Overload {
+          name: "constructor".into(),
+          arguments: args
+            .iter()
+            .map(|arg| {
+              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty)
+                .unwrap_or_else(|e| panic!("expand typedefs in {iface_name} constructor arg {}: {e}", arg.name));
+              OverloadArgument {
+                name: Some(arg.name.clone()),
+                ty,
+                optionality: if arg.variadic {
+                  Optionality::Variadic
+                } else if arg.optional {
+                  Optionality::Optional
+                } else {
+                  Optionality::Required
+                },
+                default: arg.default.as_ref().and_then(default_value_from_idl_literal),
+              }
+            })
+            .collect(),
+          origin: Some(Origin {
+            interface: iface_name.to_string(),
+            raw_member: raw.clone(),
+          }),
+        })
+        .collect::<Vec<_>>();
+
+      if let Err(diags) = compute_dispatch_plan(&overloads, &semantic) {
+        failures.push(format!(
+          "{iface_name} constructor overload set failed validation:\n{}",
+          diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+        ));
+      }
+    }
+
+    for ((op_name, _static_), entries) in ops {
+      let overloads = entries
+        .iter()
+        .map(|(raw, args)| Overload {
+          name: op_name.clone(),
+          arguments: args
+            .iter()
+            .map(|arg| {
+              let ty = expand_typedefs_in_type(&type_ctx, &arg.ty)
+                .unwrap_or_else(|e| panic!("expand typedefs in {iface_name}.{op_name} arg {}: {e}", arg.name));
+              OverloadArgument {
+                name: Some(arg.name.clone()),
+                ty,
+                optionality: if arg.variadic {
+                  Optionality::Variadic
+                } else if arg.optional {
+                  Optionality::Optional
+                } else {
+                  Optionality::Required
+                },
+                default: arg.default.as_ref().and_then(default_value_from_idl_literal),
+              }
+            })
+            .collect(),
+          origin: Some(Origin {
+            interface: iface_name.to_string(),
+            raw_member: raw.clone(),
+          }),
+        })
+        .collect::<Vec<_>>();
+
+      if let Err(diags) = compute_dispatch_plan(&overloads, &semantic) {
+        failures.push(format!(
+          "{iface_name}.{op_name} overload set failed validation:\n{}",
+          diags
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+        ));
+      }
+    }
+  }
+
+  assert!(
+    failures.is_empty(),
+    "semantic-world overload planning failed:\n\n{}",
+    failures.join("\n\n")
+  );
 }

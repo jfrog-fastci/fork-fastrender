@@ -14,6 +14,7 @@ use std::fmt;
 use webidl_ir::{DefaultValue, DistinguishabilityCategory, IdlType, NamedType, NamedTypeKind, TypeAnnotation};
 
 use super::resolve::ResolvedWebIdlWorld;
+use super::semantic::SemanticWorld;
 
 /// Minimal context required for interface-like distinguishability.
 ///
@@ -31,6 +32,15 @@ pub trait WorldContext {
 }
 
 impl WorldContext for ResolvedWebIdlWorld {
+  fn interface_inherits(&self, interface: &str) -> Option<&str> {
+    self
+      .interfaces
+      .get(interface)
+      .and_then(|i| i.inherits.as_deref())
+  }
+}
+
+impl WorldContext for SemanticWorld {
   fn interface_inherits(&self, interface: &str) -> Option<&str> {
     self
       .interfaces
@@ -770,4 +780,3 @@ pub fn compute_dispatch_plan<C: WorldContext>(
 
   Ok(OverloadDispatchPlan { effective, groups })
 }
-

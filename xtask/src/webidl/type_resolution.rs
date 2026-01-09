@@ -280,7 +280,7 @@ fn parse_identifier_prefix(s: &str) -> Result<(&str, &str)> {
   Ok((&s[..i], &s[i..]))
 }
 
-fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlType> {
+pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlType> {
   #[derive(Default)]
   struct Ctx {
     in_progress: BTreeSet<String>,
