@@ -186,3 +186,36 @@ fn suite_dom_tests_pass() {
     "dom suite should have no mismatches: {report:#?}"
   );
 }
+
+#[test]
+#[cfg(feature = "vmjs")]
+fn suite_filter_supports_comma_separated_globs() {
+  let corpus_root = corpus_root();
+
+  let report = run_suite(&SuiteConfig {
+    wpt_root: corpus_root.clone(),
+    manifest_path: corpus_root.join("expectations.toml"),
+    shard: None,
+    filter: Some(
+      "dom/element_matches_closest.window.js,events/eventtarget.window.js".to_string(),
+    ),
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    fail_on: FailOn::New,
+    backend: BackendSelection::VmJs,
+  })
+  .expect("run suite");
+
+  assert_eq!(
+    report.summary.total, 2,
+    "expected filter to select exactly two tests: {report:#?}"
+  );
+  assert_eq!(
+    report.summary.passed, 2,
+    "expected selected tests to pass: {report:#?}"
+  );
+  assert!(
+    report.summary.mismatches.is_none(),
+    "expected no mismatches: {report:#?}"
+  );
+}

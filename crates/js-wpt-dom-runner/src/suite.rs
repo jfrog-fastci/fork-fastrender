@@ -128,6 +128,34 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
   match pattern {
     None => Ok(Filter::All),
     Some(raw) => {
+      // Prefer globs for simple patterns, but allow callers to specify a comma-separated list of
+      // glob patterns (e.g. `dom/**,event*/**`) to select multiple suites at once.
+      if raw.contains(',') {
+        let parts: Vec<&str> = raw.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+        if parts.len() > 1 {
+          let mut builder = GlobSetBuilder::new();
+          let mut all_valid = true;
+          for part in &parts {
+            match Glob::new(part) {
+              Ok(glob) => {
+                builder.add(glob);
+              }
+              Err(_) => {
+                all_valid = false;
+                break;
+              }
+            }
+          }
+
+          if all_valid {
+            let set = builder
+              .build()
+              .map_err(|err| anyhow!("invalid glob: {err}"))?;
+            return Ok(Filter::Glob(set));
+          }
+        }
+      }
+
       if let Ok(glob) = Glob::new(raw) {
         let mut builder = GlobSetBuilder::new();
         builder.add(glob);
