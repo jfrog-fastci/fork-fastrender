@@ -45,7 +45,7 @@ pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,
   ScriptSchedulerAction,
 };
-pub use time::{install_time_bindings, WebTime};
+pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,

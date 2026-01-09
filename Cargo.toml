@@ -95,6 +95,7 @@ read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
 webidl-js-runtime = { path = "crates/webidl-js-runtime" }
+vm-js = { path = "engines/ecma-rs/vm-js" }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.

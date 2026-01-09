@@ -1140,6 +1140,7 @@ dependencies = [
  "url",
  "urlencoding",
  "usvg",
+ "vm-js",
  "walkdir",
  "webidl-js-runtime",
  "wgpu",
