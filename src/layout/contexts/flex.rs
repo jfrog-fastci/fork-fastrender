@@ -4946,11 +4946,12 @@ fn flex_child_fingerprint(
   children.len().hash(&mut h);
   for child in children {
     check_layout_deadline(deadline_counter)?;
-    // The cached Taffy template only memoizes the style-to-Taffy conversion, which depends on the
-    // computed style (and the parent flex container style) but not on box type or formatting
-    // context. Including those would unnecessarily fragment the template cache and hurt reuse on
-    // component-heavy pages.
+    // The cached Taffy template memoizes the style-to-Taffy conversion. Most conversion output
+    // depends only on the computed style (and parent flex container style), but some bits (such as
+    // whether the node is a replaced element) come from BoxNode metadata. Include those so we
+    // don't reuse templates across incompatible leaf styles.
     taffy_flex_style_fingerprint(child.style.as_ref()).hash(&mut h);
+    child.is_replaced().hash(&mut h);
   }
   Ok(h.finish())
 }
@@ -5007,13 +5008,14 @@ impl FlexFormattingContext {
       let mut child_styles = Vec::with_capacity(root_children.len());
       for child in root_children {
         check_layout_deadline(&mut deadline_counter)?;
-        child_styles.push(std::sync::Arc::new(SendSyncStyle(
-          self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(root_style))?,
-        )));
+        let mut style =
+          self.computed_style_to_taffy_base(child.style.as_ref(), false, Some(root_style))?;
+        style.item_is_replaced = child.is_replaced();
+        child_styles.push(std::sync::Arc::new(SendSyncStyle(style)));
       }
-      let root_style = std::sync::Arc::new(SendSyncStyle(
-        self.computed_style_to_taffy_base(root_style, true, None)?,
-      ));
+      let mut root_converted = self.computed_style_to_taffy_base(root_style, true, None)?;
+      root_converted.item_is_replaced = box_node.is_replaced();
+      let root_style = std::sync::Arc::new(SendSyncStyle(root_converted));
       let template = std::sync::Arc::new(CachedTaffyTemplate {
         root_style,
         child_styles,
@@ -5186,6 +5188,7 @@ impl FlexFormattingContext {
   ) -> Result<taffy::style::Style, LayoutError> {
     let mut style =
       self.computed_style_to_taffy_base(box_node.style.as_ref(), is_root, containing_flex)?;
+    style.item_is_replaced = box_node.is_replaced();
     self.apply_flex_intrinsic_size_keywords(
       box_node,
       is_root,
@@ -12062,6 +12065,28 @@ mod tests {
     assert!(
       Arc::ptr_eq(&template_a, &template_b),
       "expected second build to reuse existing cached template"
+    );
+  }
+
+  #[test]
+  fn flex_child_fingerprint_includes_replacedness() {
+    let shared_style = Arc::new(ComputedStyle::default());
+    let normal = BoxNode::new_block(shared_style.clone(), FormattingContextType::Block, vec![]);
+    let replaced = BoxNode::new_replaced(shared_style, ReplacedType::Canvas, None, None);
+
+    let children_normal: Vec<&BoxNode> = vec![&normal];
+    let children_replaced: Vec<&BoxNode> = vec![&replaced];
+
+    let mut deadline_counter = 0usize;
+    let normal_fp =
+      super::flex_child_fingerprint(&children_normal, &mut deadline_counter).expect("fingerprint");
+    let mut deadline_counter = 0usize;
+    let replaced_fp = super::flex_child_fingerprint(&children_replaced, &mut deadline_counter)
+      .expect("fingerprint");
+
+    assert_ne!(
+      normal_fp, replaced_fp,
+      "flex template fingerprints should differ for replaced vs non-replaced leaves"
     );
   }
 
