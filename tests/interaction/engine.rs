@@ -1626,6 +1626,220 @@ fn submit_click_includes_selected_select_option_in_query() {
 }
 
 #[test]
+fn submit_click_includes_form_associated_control_outside_form_in_query() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "form",
+          vec![("id", "f"), ("action", "/search")],
+          vec![el("input", vec![("id", "submit"), ("type", "submit")], vec![])],
+        ),
+        el(
+          "input",
+          vec![("id", "q"), ("name", "q"), ("value", "abc"), ("form", "f")],
+          vec![],
+        ),
+      ],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+
+  let (_changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=abc".to_string()
+    }
+  );
+}
+
+#[test]
+fn submit_click_prefers_select_option_value_attribute_over_text_content() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("action", "/search")],
+        vec![
+          el(
+            "select",
+            vec![("id", "sel"), ("name", "s")],
+            vec![
+              el("option", vec![("id", "o1"), ("value", "1")], vec![]),
+              el(
+                "option",
+                vec![("id", "o2"), ("value", "2"), ("selected", "")],
+                vec![],
+              ),
+            ],
+          ),
+          el("input", vec![("id", "submit"), ("type", "submit")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+
+  let (_changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?s=2".to_string()
+    }
+  );
+}
+
+#[test]
+fn submit_click_defaults_action_to_document_url_when_action_is_missing() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f")],
+        vec![
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "abc")],
+            vec![],
+          ),
+          el("input", vec![("id", "submit"), ("type", "submit")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+
+  let (_changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/doc?q=abc".to_string()
+    }
+  );
+}
+
+#[test]
 fn select_listbox_click_marks_user_validity() {
   let mut dom = doc(vec![el(
     "html",
