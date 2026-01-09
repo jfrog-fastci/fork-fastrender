@@ -254,6 +254,10 @@ fn node_text_content_getter_and_setter() -> Result<(), VmError> {
   let text_content_get =
     get_accessor_getter(scope.heap(), el_obj, &key_text_content).expect("textContent getter exists");
 
+  // DOM: `Document.textContent` is `null`.
+  let doc_text = vm.call(&mut scope, text_content_get, document_val, &[])?;
+  assert!(matches!(doc_text, Value::Null));
+
   let got = vm.call(&mut scope, text_content_get, el_val, &[])?;
   let got_s = match got {
     Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
@@ -263,6 +267,12 @@ fn node_text_content_getter_and_setter() -> Result<(), VmError> {
 
   let text_content_set =
     get_accessor_setter(scope.heap(), el_obj, &key_text_content).expect("textContent setter exists");
+
+  // DOM: setting `Document.textContent` is a no-op.
+  let arg_ignored = Value::String(scope.alloc_string("ignored")?);
+  vm.call(&mut scope, text_content_set, document_val, &[arg_ignored])?;
+  assert!(dom.borrow().get_element_by_id("root").is_some());
+
   let arg_replaced = Value::String(scope.alloc_string("replaced")?);
   let r = vm.call(&mut scope, text_content_set, el_val, &[arg_replaced])?;
   assert!(matches!(r, Value::Undefined));
@@ -430,4 +440,3 @@ fn element_class_list_dom_token_list() -> Result<(), VmError> {
   realm.teardown(&mut heap);
   Ok(())
 }
-

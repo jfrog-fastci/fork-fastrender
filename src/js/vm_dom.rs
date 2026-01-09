@@ -530,10 +530,13 @@ fn dom_node_text_content_getter(
     NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
     NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
     NodeKind::Doctype { .. } => Ok(Value::Null),
+    // DOM `Node.textContent` returns `null` for `Document` nodes.
+    //
+    // https://dom.spec.whatwg.org/#dom-node-textcontent
+    NodeKind::Document { .. } => Ok(Value::Null),
 
     NodeKind::Element { .. }
     | NodeKind::Slot { .. }
-    | NodeKind::Document { .. }
     | NodeKind::ShadowRoot { .. }
     | NodeKind::DocumentFragment => {
       let mut out = String::new();
@@ -572,6 +575,8 @@ fn dom_node_text_content_setter(
   // Mutate the underlying DOM tree.
   let mut dom = host.dom.borrow_mut();
   match &dom.node(node_id).kind {
+    // `Document.textContent = ...` is a no-op (the getter returns `null` too).
+    NodeKind::Document { .. } => return Ok(Value::Undefined),
     NodeKind::Text { .. } => {
       if let Err(err) = dom.set_text_data(node_id, &new_text) {
         return throw_dom_error(scope, host, err);
@@ -600,7 +605,6 @@ fn dom_node_text_content_setter(
     }
     NodeKind::Element { .. }
     | NodeKind::Slot { .. }
-    | NodeKind::Document { .. }
     | NodeKind::ShadowRoot { .. }
     | NodeKind::DocumentFragment => {}
   }
