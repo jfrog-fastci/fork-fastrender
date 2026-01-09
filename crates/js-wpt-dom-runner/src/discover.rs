@@ -1,9 +1,13 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum JsTestKind {
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum TestKind {
+  /// `*.html` tests which run in a Window realm.
+  Html,
   /// `*.window.js` tests which run in a Window realm.
   Window,
   /// `*.any.js` tests which can run in multiple realms; we currently only run the window variant.
@@ -16,16 +20,16 @@ pub enum JsTestKind {
   SharedWorker,
 }
 
-impl JsTestKind {
+impl TestKind {
   pub fn is_runnable_in_window(&self) -> bool {
-    matches!(self, JsTestKind::Window | JsTestKind::Any)
+    matches!(self, TestKind::Html | TestKind::Window | TestKind::Any)
   }
 
   pub fn skip_reason(&self) -> Option<&'static str> {
     match self {
-      JsTestKind::Worker => Some("worker tests are not supported yet"),
-      JsTestKind::ServiceWorker => Some("service worker tests are not supported yet"),
-      JsTestKind::SharedWorker => Some("shared worker tests are not supported yet"),
+      TestKind::Worker => Some("worker tests are not supported yet"),
+      TestKind::ServiceWorker => Some("service worker tests are not supported yet"),
+      TestKind::SharedWorker => Some("shared worker tests are not supported yet"),
       _ => None,
     }
   }
@@ -37,7 +41,7 @@ pub struct TestCase {
   pub id: String,
   /// Full filesystem path to the test file.
   pub path: PathBuf,
-  pub kind: JsTestKind,
+  pub kind: TestKind,
 }
 
 impl TestCase {
@@ -86,22 +90,25 @@ pub enum DiscoverError {
   Walk(#[from] walkdir::Error),
 }
 
-fn classify_js_test(path: &Path) -> Option<JsTestKind> {
+fn classify_js_test(path: &Path) -> Option<TestKind> {
   let file_name = path.file_name()?.to_string_lossy();
+  if file_name.ends_with(".html") || file_name.ends_with(".xhtml") {
+    return Some(TestKind::Html);
+  }
   if file_name.ends_with(".window.js") {
-    return Some(JsTestKind::Window);
+    return Some(TestKind::Window);
   }
   if file_name.ends_with(".any.js") {
-    return Some(JsTestKind::Any);
+    return Some(TestKind::Any);
   }
   if file_name.ends_with(".worker.js") || file_name.ends_with(".worker-module.js") {
-    return Some(JsTestKind::Worker);
+    return Some(TestKind::Worker);
   }
   if file_name.ends_with(".serviceworker.js") || file_name.ends_with(".serviceworker-module.js") {
-    return Some(JsTestKind::ServiceWorker);
+    return Some(TestKind::ServiceWorker);
   }
   if file_name.ends_with(".sharedworker.js") || file_name.ends_with(".sharedworker-module.js") {
-    return Some(JsTestKind::SharedWorker);
+    return Some(TestKind::SharedWorker);
   }
   None
 }

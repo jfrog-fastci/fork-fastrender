@@ -9,12 +9,19 @@
 //! The intent is to grow this runner alongside the JS + DOM implementation without pulling in a
 //! heavyweight external harness.
 
-mod meta;
 mod discover;
+mod meta;
 mod runner;
+mod suite;
 pub mod wpt_fs;
+mod wpt_report;
 
-pub use discover::{discover_tests, JsTestKind, TestCase};
+pub use discover::{discover_tests, TestCase, TestKind};
 pub use meta::{MetaDirective, MetaParseResult};
 pub use runner::{RunError, RunOutcome, RunResult, Runner, RunnerConfig};
+pub use suite::{
+  run_suite, should_fail, ExpectationOutcome, MismatchSummary, Report, SuiteConfig, Summary,
+  TestOutcome, TestResult, REPORT_SCHEMA_VERSION,
+};
 pub use wpt_fs::WptFs;
+pub use wpt_report::{WptReport, WptSubtest};

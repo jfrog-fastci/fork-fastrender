@@ -1,6 +1,8 @@
 use crate::discover::TestCase;
 use crate::meta::parse_leading_meta;
 use crate::wpt_fs::{WptFs, WptFsError};
+use crate::wpt_report::WptReport;
+use regex::Regex;
 use rquickjs::{Context, Object, Runtime};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,6 +35,7 @@ pub enum RunOutcome {
 #[derive(Debug, Clone)]
 pub struct RunResult {
   pub outcome: RunOutcome,
+  pub wpt_report: Option<WptReport>,
 }
 
 pub type RunResultResult = Result<RunResult, RunError>;
@@ -66,15 +69,20 @@ impl Runner {
     if let Some(reason) = test.kind.skip_reason() {
       return Ok(RunResult {
         outcome: RunOutcome::Skip(reason.to_string()),
+        wpt_report: None,
       });
     }
     if !test.kind.is_runnable_in_window() {
       return Ok(RunResult {
         outcome: RunOutcome::Skip("unsupported test kind".to_string()),
+        wpt_report: None,
       });
     }
 
-    self.run_js_test_in_window(test)
+    match test.kind {
+      crate::discover::TestKind::Html => self.run_html_test_in_window(test),
+      _ => self.run_js_test_in_window(test),
+    }
   }
 
   fn run_js_test_in_window(&self, test: &TestCase) -> RunResultResult {
@@ -96,21 +104,69 @@ impl Runner {
 
     let base_dir = id_dir(&test.id);
 
-    let mut script_urls = Vec::new();
+    let mut scripts = Vec::new();
     // Always load testharness.js + FastRender reporter shim first.
-    script_urls.push("/resources/testharness.js".to_string());
-    script_urls.push("/resources/fastrender_testharness_report.js".to_string());
+    scripts.push(ScriptToRun::External(
+      "/resources/testharness.js".to_string(),
+    ));
+    scripts.push(ScriptToRun::External(
+      "/resources/fastrender_testharness_report.js".to_string(),
+    ));
     for url in meta.scripts {
       if url == "/resources/testharness.js"
         || url == "resources/testharness.js"
         || url == "/resources/fastrender_testharness_report.js"
         || url == "resources/fastrender_testharness_report.js"
+        || url == "/resources/testharnessreport.js"
+        || url == "resources/testharnessreport.js"
       {
         continue;
       }
-      script_urls.push(url);
+      scripts.push(ScriptToRun::External(url));
+    }
+    scripts.push(ScriptToRun::Inline(test_source));
+
+    self.run_scripts_in_window(test, &base_dir, scripts, timeout)
+  }
+
+  fn run_html_test_in_window(&self, test: &TestCase) -> RunResultResult {
+    let html_source = self.fs.read_to_string(&test.path)?;
+    let base_dir = id_dir(&test.id);
+
+    let mut scripts = Vec::new();
+    scripts.push(ScriptToRun::External(
+      "/resources/testharness.js".to_string(),
+    ));
+    scripts.push(ScriptToRun::External(
+      "/resources/fastrender_testharness_report.js".to_string(),
+    ));
+
+    for script in parse_html_scripts(&html_source)? {
+      match script {
+        ScriptToRun::External(url)
+          if url == "/resources/testharness.js"
+            || url == "resources/testharness.js"
+            || url == "/resources/fastrender_testharness_report.js"
+            || url == "resources/fastrender_testharness_report.js"
+            || url == "/resources/testharnessreport.js"
+            || url == "resources/testharnessreport.js" =>
+        {
+          continue;
+        }
+        other => scripts.push(other),
+      }
     }
 
+    self.run_scripts_in_window(test, &base_dir, scripts, self.config.default_timeout)
+  }
+
+  fn run_scripts_in_window(
+    &self,
+    test: &TestCase,
+    base_dir: &str,
+    scripts: Vec<ScriptToRun>,
+    timeout: Duration,
+  ) -> RunResultResult {
     let rt = Runtime::new().map_err(|e| RunError::Js(e.to_string()))?;
 
     // Interrupt handler for per-test wall-time.
@@ -145,42 +201,67 @@ impl Runner {
         .eval::<(), _>(FASTR_REPORT_HOOK)
         .map_err(|e| RunError::Js(e.to_string()))?;
 
-      // Load scripts.
-      for url in script_urls {
-        let path = self.fs.resolve_url(&base_dir, &url)?;
-        let src = self.fs.read_to_string(&path)?;
-        ctx.eval::<(), _>(src).map_err(|e| RunError::Js(e.to_string()))?;
-      }
+      // Load / evaluate scripts in-order. If a script throws, attempt to surface it as a harness
+      // error via `window.onerror` so the reporter can emit a deterministic payload.
+      for script in scripts {
+        let src = match script {
+          ScriptToRun::External(url) => {
+            let path = self.fs.resolve_url(base_dir, &url)?;
+            self.fs.read_to_string(&path)?
+          }
+          ScriptToRun::Inline(src) => src,
+        };
 
-      // Evaluate the test source itself.
-      ctx
-        .eval::<(), _>(test_source)
-        .map_err(|e| RunError::Js(e.to_string()))?;
+        if let Err(err) = ctx.eval::<(), _>(src) {
+          let msg = err.to_string();
+          // If the interrupt handler fired, treat as a timeout and propagate.
+          if msg.contains("interrupted") || msg.contains("Interrupt") {
+            return Err(RunError::Js(msg));
+          }
+
+          // Best-effort: call `window.onerror(message, source, lineno, colno, error)` to let the
+          // harness mark a file-level error and run completion callbacks.
+          let onerror: Option<rquickjs::Function> = globals
+            .get("onerror")
+            .map_err(|e| RunError::Js(e.to_string()))?;
+          if let Some(onerror) = onerror {
+            let _ = onerror.call::<_, ()>((msg.clone(), "", 0i32, 0i32, msg.clone()));
+            break;
+          }
+
+          return Err(RunError::Js(msg));
+        }
+      }
 
       Ok(())
     });
 
     if let Err(err) = init {
       let outcome = match err {
-        RunError::Js(msg) if msg.contains("interrupted") || msg.contains("Interrupt") => RunOutcome::Timeout,
+        RunError::Js(msg) if msg.contains("interrupted") || msg.contains("Interrupt") => {
+          RunOutcome::Timeout
+        }
         RunError::Js(msg) => RunOutcome::Error(msg),
         other => return Err(other),
       };
-      return Ok(RunResult { outcome });
+      return Ok(RunResult {
+        outcome,
+        wpt_report: None,
+      });
     }
 
     // Drive the minimal event loop until the reporter hook is called or we time out.
-    let outcome = loop {
+    let (outcome, wpt_report) = loop {
       if Instant::now() >= *deadline {
-        break RunOutcome::Timeout;
+        break (RunOutcome::Timeout, None);
       }
 
       // Run any queued Promise jobs (microtasks).
       if let Err(msg) = drain_promise_jobs(&rt) {
         if msg.contains("interrupted") || msg.contains("Interrupt") {
-          break RunOutcome::Timeout;
+          break (RunOutcome::Timeout, None);
         }
-        break RunOutcome::Error(msg);
+        break (RunOutcome::Error(msg), None);
       }
 
       let poll = ctx.with(|ctx| -> Result<(bool, i32), RunError> {
@@ -196,40 +277,62 @@ impl Runner {
       let (did_report, ran_timers) = match poll {
         Ok(v) => v,
         Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
-          break RunOutcome::Timeout
+          break (RunOutcome::Timeout, None)
         }
-        Err(RunError::Js(msg)) => break RunOutcome::Error(msg),
+        Err(RunError::Js(msg)) => break (RunOutcome::Error(msg), None),
         Err(other) => return Err(other),
       };
 
       if did_report {
-        let report = ctx.with(|ctx| -> Result<(Option<String>, Option<String>), RunError> {
+        let report = ctx.with(|ctx| -> Result<Option<String>, RunError> {
           let globals = ctx.globals();
-          let file_status: Option<String> = globals
-            .get("__fastrender_file_status")
+          let json: Option<String> = globals
+            .get("__fastrender_wpt_report_json")
             .map_err(|e| RunError::Js(e.to_string()))?;
-          let message: Option<String> = globals
-            .get("__fastrender_message")
-            .map_err(|e| RunError::Js(e.to_string()))?;
-          Ok((file_status, message))
+          Ok(json)
         });
-        let (file_status, message) = match report {
+        let json = match report {
           Ok(v) => v,
           Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
-            break RunOutcome::Timeout
+            break (RunOutcome::Timeout, None)
           }
-          Err(RunError::Js(msg)) => break RunOutcome::Error(msg),
+          Err(RunError::Js(msg)) => break (RunOutcome::Error(msg), None),
           Err(other) => return Err(other),
         };
 
-        break match file_status.as_deref() {
-          Some("pass") => RunOutcome::Pass,
-          Some("fail") => RunOutcome::Fail(message.unwrap_or_else(|| "test failed".to_string())),
-          Some("timeout") => RunOutcome::Timeout,
-          Some("error") => RunOutcome::Error(message.unwrap_or_else(|| "harness error".to_string())),
-          Some(other) => RunOutcome::Error(format!("unknown file_status: {other}")),
-          None => RunOutcome::Error("missing fastrender testharness report".to_string()),
+        let Some(json) = json else {
+          break (
+            RunOutcome::Error("missing fastrender testharness report".to_string()),
+            None,
+          );
         };
+
+        let parsed: WptReport = match serde_json::from_str(&json) {
+          Ok(v) => v,
+          Err(err) => {
+            break (
+              RunOutcome::Error(format!(
+                "failed to parse fastrender testharness report: {err}"
+              )),
+              None,
+            )
+          }
+        };
+
+        let msg = parsed
+          .message
+          .clone()
+          .or_else(|| first_nonpass_message(&parsed.subtests));
+
+        let outcome = match parsed.file_status.as_str() {
+          "pass" => RunOutcome::Pass,
+          "fail" => RunOutcome::Fail(msg.unwrap_or_else(|| "test failed".to_string())),
+          "timeout" => RunOutcome::Timeout,
+          "error" => RunOutcome::Error(msg.unwrap_or_else(|| "harness error".to_string())),
+          other => RunOutcome::Error(format!("unknown file_status: {other}")),
+        };
+
+        break (outcome, Some(parsed));
       }
 
       if ran_timers == 0 {
@@ -239,7 +342,10 @@ impl Runner {
     };
 
     // If the interrupt handler fired, QuickJS surfaces it as an eval error. Map it to Timeout.
-    Ok(RunResult { outcome })
+    Ok(RunResult {
+      outcome,
+      wpt_report,
+    })
   }
 }
 
@@ -650,17 +756,62 @@ const FASTR_REPORT_HOOK: &str = r#"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
   g.__fastrender_wpt_report_called = false;
-  g.__fastrender_file_status = null;
-  g.__fastrender_harness_status = null;
-  g.__fastrender_message = null;
-  g.__fastrender_stack = null;
+  g.__fastrender_wpt_report_json = null;
 
   g.__fastrender_wpt_report = function (payload) {
     g.__fastrender_wpt_report_called = true;
-    g.__fastrender_file_status = payload && payload.file_status !== undefined ? payload.file_status : null;
-    g.__fastrender_harness_status = payload && payload.harness_status !== undefined ? payload.harness_status : null;
-    g.__fastrender_message = payload && payload.message !== undefined ? payload.message : null;
-    g.__fastrender_stack = payload && payload.stack !== undefined ? payload.stack : null;
+    try {
+      g.__fastrender_wpt_report_json = JSON.stringify(payload);
+    } catch (e) {
+      g.__fastrender_wpt_report_json = null;
+    }
   };
 })();
 "#;
+
+#[derive(Debug, Clone)]
+enum ScriptToRun {
+  External(String),
+  Inline(String),
+}
+
+fn parse_html_scripts(source: &str) -> Result<Vec<ScriptToRun>, RunError> {
+  // Minimal (non-spec-compliant) extraction of script tags sufficient for the curated offline
+  // corpus under `tests/wpt_dom/tests`.
+  let script_re =
+    Regex::new(r"(?is)<script([^>]*)>(.*?)</script>").map_err(|e| RunError::Js(e.to_string()))?;
+  // `regex` does not support backreferences, so we match single-quoted and double-quoted values
+  // separately.
+  let src_re = Regex::new(r#"(?is)\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let mut out = Vec::new();
+  for cap in script_re.captures_iter(source) {
+    let attrs = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+    let body = cap.get(2).map(|m| m.as_str()).unwrap_or_default();
+    if let Some(src_cap) = src_re.captures(attrs) {
+      let src = src_cap
+        .get(1)
+        .or_else(|| src_cap.get(2))
+        .map(|m| m.as_str())
+        .unwrap_or_default();
+      out.push(ScriptToRun::External(src.to_string()));
+    } else {
+      out.push(ScriptToRun::Inline(body.to_string()));
+    }
+  }
+  Ok(out)
+}
+
+fn first_nonpass_message(subtests: &[crate::wpt_report::WptSubtest]) -> Option<String> {
+  for st in subtests {
+    if st.status != "pass" {
+      if let Some(msg) = &st.message {
+        if !msg.is_empty() {
+          return Some(msg.clone());
+        }
+      }
+    }
+  }
+  None
+}
