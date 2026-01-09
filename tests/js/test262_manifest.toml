@@ -34,6 +34,18 @@ id = "language/expressions/addition/S11.6.1_A2.1_T1.js"
 status = "pass"
 
 [[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.2_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.2_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.3_T1.js"
+status = "pass"
+
+[[expectations]]
 id = "language/expressions/addition/S11.6.1_A2.4_T1.js"
 status = "pass"
 
@@ -43,6 +55,150 @@ status = "pass"
 
 [[expectations]]
 id = "language/expressions/addition/S11.6.1_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T1.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T1.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T1.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T2.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T2.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T2.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T2.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.1_T2.5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T1.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T1.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T2.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T2.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T2.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A3.2_T2.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T7.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T8.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A4_T9.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/bigint-and-number.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/bigint-arithmetic.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/bigint-errors.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/bigint-toprimitive.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/bigint-wrapped-values.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/coerce-bigint-to-string.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/coerce-symbol-to-prim-err.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/coerce-symbol-to-prim-invocation.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/coerce-symbol-to-prim-return-obj.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/coerce-symbol-to-prim-return-prim.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/get-symbol-to-prim-err.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/order-of-evaluation.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/symbol-to-string.js"
 status = "pass"
 
 [[expectations]]
