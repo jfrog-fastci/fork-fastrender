@@ -10020,6 +10020,50 @@ mod tests {
   }
 
   #[test]
+  fn svg_external_feimage_href_renders() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let main_svg = r#"
+      <svg xmlns="http://www.w3.org/2000/svg" width="1" height="1">
+        <filter id="f" x="0" y="0" width="1" height="1" filterUnits="userSpaceOnUse">
+          <feImage href="/img.png" x="0" y="0" width="1" height="1" preserveAspectRatio="none"/>
+        </filter>
+        <rect width="1" height="1" filter="url(#f)"/>
+      </svg>
+    "#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <feImage href> should inline into a data URL and render red pixel"
+    );
+  }
+
+  #[test]
   fn svg_external_image_xlink_href_renders() {
     let main_url = "https://example.test/main.svg";
     let img_url = "https://example.test/img.png";
