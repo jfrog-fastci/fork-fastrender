@@ -1,8 +1,11 @@
 use crate::dom2;
 use crate::web::events;
 
-/// Host-owned document state that composes the mutable DOM tree (`dom2`), the event listener
-/// registry (`web::events`), and bookkeeping for `Document.currentScript`.
+/// Host-owned document state that composes the mutable DOM tree (`dom2`) and bookkeeping for
+/// `Document.currentScript`.
+///
+/// Event listeners are stored on the underlying [`dom2::Document`] via its
+/// [`dom2::Document::events`] registry.
 ///
 /// This is intentionally renderer/engine agnostic so that JS/WebIDL bindings can depend on it
 /// without embedding rendering pipeline details.

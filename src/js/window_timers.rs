@@ -590,14 +590,18 @@ mod tests {
 
   fn set_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str, value: Value) {
     let key_s = scope.alloc_string(name).unwrap();
-    scope.push_root(Value::String(key_s)).unwrap();
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root key string");
     let key = PropertyKey::from_string(key_s);
     scope.define_property(obj, key, data_desc(value)).unwrap();
   }
 
   fn init_log(scope: &mut Scope<'_>, global: vm_js::GcObject) {
     let log_obj = scope.alloc_object().unwrap();
-    scope.push_root(Value::Object(log_obj)).unwrap();
+    scope
+      .push_root(Value::Object(log_obj))
+      .expect("push root log object");
     set_prop(scope, global, "__log_obj", Value::Object(log_obj));
     set_prop(scope, global, "__log_len", Value::Number(0.0));
   }
@@ -612,10 +616,14 @@ mod tests {
       _ => panic!("missing __log_len"),
     };
     let key_s = scope.alloc_string(&len.to_string()).unwrap();
-    scope.push_root(Value::String(key_s)).unwrap();
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root log key");
     let key = PropertyKey::from_string(key_s);
     let label_s = scope.alloc_string(label).unwrap();
-    scope.push_root(Value::String(label_s)).unwrap();
+    scope
+      .push_root(Value::String(label_s))
+      .expect("push root log label");
     scope
       .define_property(log_obj, key, data_desc(Value::String(label_s)))
       .unwrap();
@@ -625,7 +633,9 @@ mod tests {
   fn read_log(heap: &mut Heap, realm: &Realm) -> Vec<String> {
     let mut scope = heap.scope();
     let global = realm.global_object();
-    scope.push_root(Value::Object(global)).unwrap();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
     let log_obj = match get_prop(&mut scope, global, "__log_obj") {
       Value::Object(o) => o,
       _ => panic!("missing __log_obj"),
@@ -659,7 +669,9 @@ mod tests {
   ) -> vm_js::GcObject {
     let id = vm.register_native_call(native).expect("register_native_call");
     let name_s = scope.alloc_string(name).unwrap();
-    scope.push_root(Value::String(name_s)).unwrap();
+    scope
+      .push_root(Value::String(name_s))
+      .expect("push root callback name");
     scope.alloc_native_function(id, None, name_s, 0).unwrap()
   }
 
@@ -1011,7 +1023,9 @@ mod tests {
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let cb = make_callback(vm, &mut scope, "cb", cb_capture_args);
         let x_s = scope.alloc_string("x").unwrap();
-        scope.push_root(Value::String(x_s)).unwrap();
+        scope
+          .push_root(Value::String(x_s))
+          .expect("push root arg string");
         vm.call(
           &mut scope,
           set_timeout,
@@ -1069,7 +1083,9 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let handler_s = scope.alloc_string("alert(1)").unwrap();
-        scope.push_root(Value::String(handler_s)).unwrap();
+        scope
+          .push_root(Value::String(handler_s))
+          .expect("push root handler string");
         vm.call(
           &mut scope,
           set_timeout,

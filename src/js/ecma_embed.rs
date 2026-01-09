@@ -329,8 +329,7 @@ impl ScriptRealm for VmJsScriptRealm {
       scope.alloc_object().map_err(vm_error_to_runtime)?
     };
     let value = Value::Object(obj);
-    self
-      .env
+    self.env
       .set(&mut self.heap, name, value)
       .map_err(vm_error_to_runtime)?;
     self.host_functions.insert(

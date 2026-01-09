@@ -152,6 +152,13 @@ impl VmJsRuntime {
           return Err(err);
         }
       };
+      if root_ids.try_reserve_exact(1).is_err() {
+        self.heap.remove_root(id);
+        for id in root_ids.drain(..) {
+          self.heap.remove_root(id);
+        }
+        return Err(VmError::OutOfMemory);
+      }
       root_ids.push(id);
     }
 
