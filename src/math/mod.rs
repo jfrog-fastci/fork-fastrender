@@ -863,7 +863,19 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             variant: parse_mathvariant(node),
           }
         }),
-        "ms" | "mtext" => normalized_text(node, true).map(|text| MathNode::Text {
+        "ms" => normalized_text(node, true).map(|text| {
+          let lquote = node.get_attribute_ref("lquote").unwrap_or("\"");
+          let rquote = node.get_attribute_ref("rquote").unwrap_or("\"");
+          let mut quoted = String::with_capacity(lquote.len() + text.len() + rquote.len());
+          quoted.push_str(lquote);
+          quoted.push_str(&text);
+          quoted.push_str(rquote);
+          MathNode::Text {
+            text: quoted,
+            variant: parse_mathvariant(node),
+          }
+        }),
+        "mtext" => normalized_text(node, true).map(|text| MathNode::Text {
           text,
           variant: parse_mathvariant(node),
         }),
@@ -3745,6 +3757,30 @@ mod tests {
       "expected mathvariant=normal on <math> to select upright glyphs without synthetic slant, got {}",
       upright_run.synthetic_oblique
     );
+  }
+
+  #[test]
+  fn ms_wraps_text_in_default_quotes() {
+    let parsed = parse_math_from_html("<math><ms>abc</ms></math>");
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Text { text, .. } = &children[0] else {
+      panic!("expected text child");
+    };
+    assert_eq!(text, "\"abc\"");
+  }
+
+  #[test]
+  fn ms_wraps_text_in_custom_quotes() {
+    let parsed = parse_math_from_html("<math><ms lquote=\"[\" rquote=\"]\">abc</ms></math>");
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Text { text, .. } = &children[0] else {
+      panic!("expected text child");
+    };
+    assert_eq!(text, "[abc]");
   }
 
   #[test]

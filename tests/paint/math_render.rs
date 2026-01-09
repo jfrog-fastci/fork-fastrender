@@ -157,6 +157,18 @@ fn math_stretchy_ops_match_golden() {
 }
 
 #[test]
+fn math_ms_quotes_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_ms_quotes")).expect("load math_ms_quotes");
+    let png = renderer
+      .render_to_png(&html, 240, 120)
+      .expect("render math ms quotes");
+    compare_golden("math_ms_quotes", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_fractions_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
