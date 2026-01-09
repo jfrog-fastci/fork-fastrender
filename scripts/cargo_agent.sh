@@ -67,6 +67,36 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
+# Compatibility: allow callers to pass `-p <pkg>` before the subcommand.
+#
+# Cargo requires `-p/--package` to come *after* the subcommand:
+#   cargo test -p my_crate
+# not:
+#   cargo -p my_crate test
+#
+# Some internal docs/tools historically used the latter ordering, so we accept it here and
+# normalize to Cargo's expected argv shape.
+if [[ "${1:-}" == +* && ( "${2:-}" == "-p" || "${2:-}" == "--package" ) ]]; then
+  if [[ $# -lt 4 ]]; then
+    usage
+    exit 2
+  fi
+  toolchain="$1"
+  pkg="$3"
+  subcmd="$4"
+  shift 4
+  set -- "${toolchain}" "${subcmd}" -p "${pkg}" "$@"
+elif [[ "${1:-}" == "-p" || "${1:-}" == "--package" ]]; then
+  if [[ $# -lt 3 ]]; then
+    usage
+    exit 2
+  fi
+  pkg="$2"
+  subcmd="$3"
+  shift 3
+  set -- "${subcmd}" -p "${pkg}" "$@"
+fi
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
