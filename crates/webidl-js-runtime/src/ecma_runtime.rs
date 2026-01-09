@@ -1397,15 +1397,22 @@ fn string_to_bigint(rt: &mut VmJsRuntime, s: GcString) -> Result<JsBigInt, VmErr
 fn parse_bigint(text: &str) -> Option<JsBigInt> {
   let trimmed = text.trim();
   if trimmed.is_empty() {
-    return None;
+    // `StringToBigInt` accepts an empty/whitespace-only string and treats it as 0.
+    return Some(JsBigInt::zero());
   }
 
-  let (negative, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
-    (true, rest)
+  // `StringToBigInt` parses a SignedInteger (decimal digits with optional sign) *or* a
+  // NonDecimalIntegerLiteral (0x/0o/0b, no sign).
+  let sign = if let Some(rest) = trimmed.strip_prefix('-') {
+    Some((true, rest))
   } else if let Some(rest) = trimmed.strip_prefix('+') {
-    (false, rest)
+    Some((false, rest))
   } else {
-    (false, trimmed)
+    None
+  };
+  let (negative, rest) = match sign {
+    Some((negative, rest)) => (negative, rest),
+    None => (false, trimmed),
   };
 
   let (radix, digits) = if let Some(rest) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
@@ -1417,6 +1424,11 @@ fn parse_bigint(text: &str) -> Option<JsBigInt> {
   } else {
     (10, rest)
   };
+
+  // Signed non-decimal forms (e.g. "-0x10") are not valid StringToBigInt inputs.
+  if radix != 10 && sign.is_some() {
+    return None;
+  }
 
   if digits.is_empty() {
     return None;
