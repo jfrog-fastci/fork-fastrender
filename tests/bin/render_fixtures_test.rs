@@ -140,6 +140,78 @@ fn render_fixtures_writes_png_output() {
 }
 
 #[test]
+fn render_fixtures_force_light_mode_overrides_background() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "bg",
+    "<!doctype html><html><head><style>html, body { margin: 0; background: rgb(0, 0, 0); }</style></head><body></body></html>",
+  );
+
+  let out_dark = temp.path().join("out_dark");
+  let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dark.to_str().unwrap(),
+      "--fixtures",
+      "bg",
+      "--viewport",
+      "16x16",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+    ])
+    .status()
+    .expect("run render_fixtures (dark)");
+  assert!(status.success(), "expected render_fixtures to succeed");
+
+  let img = image::open(out_dark.join("bg.png")).expect("decode bg.png");
+  let px = img.get_pixel(0, 0).0;
+  assert_eq!(px, [0, 0, 0, 255], "expected black background without patch");
+
+  let out_light = temp.path().join("out_light");
+  let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_light.to_str().unwrap(),
+      "--fixtures",
+      "bg",
+      "--viewport",
+      "16x16",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+      "--force-light-mode",
+    ])
+    .status()
+    .expect("run render_fixtures (force light)");
+  assert!(status.success(), "expected render_fixtures to succeed");
+
+  let img = image::open(out_light.join("bg.png")).expect("decode bg.png");
+  let px = img.get_pixel(0, 0).0;
+  assert_eq!(
+    px,
+    [255, 255, 255, 255],
+    "expected forced white background"
+  );
+}
+
+#[test]
 fn render_fixtures_help_mentions_determinism_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .arg("--help")

@@ -1519,6 +1519,9 @@ fn build_render_fixtures_command(
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
   cmd.arg("--timeout").arg(args.timeout.to_string());
+  // Match the chrome baseline harness which forces a white background + light color-scheme by
+  // default (unless `xtask chrome-baseline-fixtures --allow-dark-mode` is used).
+  cmd.arg("--force-light-mode");
   if args.fit_canvas_to_content {
     cmd.arg("--fit-canvas-to-content");
   }

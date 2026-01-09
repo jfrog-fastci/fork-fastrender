@@ -135,6 +135,13 @@ struct Cli {
   /// reuse of per-thread scratch buffers.
   #[arg(long)]
   reset_paint_scratch: bool,
+
+  /// Force a light color scheme + white page background (matches the default chrome baseline fixture harness).
+  ///
+  /// This is useful when diffing against Chrome screenshots captured via `xtask chrome-baseline-fixtures`,
+  /// which injects `html, body { background: white !important; color-scheme: light !important; ... }`.
+  #[arg(long)]
+  force_light_mode: bool,
 }
 
 #[derive(Clone)]
@@ -153,6 +160,7 @@ struct RenderShared {
   font_config: FontConfig,
   write_snapshot: bool,
   out_dir: PathBuf,
+  force_light_mode: bool,
 }
 
 #[derive(Clone)]
@@ -444,6 +452,7 @@ fn run(cli: Cli) -> io::Result<()> {
     font_config,
     write_snapshot: cli.write_snapshot,
     out_dir: cli.out_dir.clone(),
+    force_light_mode: cli.force_light_mode,
   };
 
   println!(
@@ -1399,6 +1408,15 @@ fn render_fixture(
         size: None,
       };
     }
+  };
+
+  let html = if shared.force_light_mode {
+    fastrender::css::loader::inject_css_into_html(
+      &html,
+      "html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }",
+    )
+  } else {
+    html
   };
 
   let page_start = Instant::now();
