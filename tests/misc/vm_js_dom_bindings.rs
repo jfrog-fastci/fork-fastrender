@@ -76,6 +76,14 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
     _ => panic!("document should be an object"),
   };
 
+  // document.hasChildNodes() should be false on a new empty document.
+  let key_has_child_nodes = PropertyKey::from_string(scope.alloc_string("hasChildNodes")?);
+  let has_child_nodes = get_data_property_value(scope.heap(), document_obj, &key_has_child_nodes)
+    .expect("document.hasChildNodes should exist");
+  let has_children =
+    vm.call_without_host(&mut scope, has_child_nodes, document_val, &[])?;
+  assert_eq!(has_children, Value::Bool(false));
+
   // document.createElement("div") -> Element wrapper.
   let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
   let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
@@ -87,6 +95,10 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
     Value::Object(o) => o,
     _ => panic!("createElement should return an object"),
   };
+
+  // Element wrappers should also expose Node.hasChildNodes.
+  let el_has_children = vm.call_without_host(&mut scope, has_child_nodes, el_val, &[])?;
+  assert_eq!(el_has_children, Value::Bool(false));
 
   // el.setAttribute("id", "foo")
   let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
@@ -103,6 +115,11 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
     .expect("appendChild exists");
   let appended = vm.call_without_host(&mut scope, append_child, document_val, &[el_val])?;
   assert_eq!(appended, el_val, "appendChild should return the child");
+
+  // document.hasChildNodes() should now return true.
+  let doc_has_children =
+    vm.call_without_host(&mut scope, has_child_nodes, document_val, &[])?;
+  assert_eq!(doc_has_children, Value::Bool(true));
 
   // Validate DOM mutation.
   let root = dom.borrow().root();
@@ -165,6 +182,11 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   // Document nodes only allow a single element child; append under the existing <div id="foo">.
   dom.borrow_mut().append_child(found, script_id).unwrap();
   current_script.borrow_mut().current_script = Some(script_id);
+
+  // The <div id="foo"> wrapper should observe the new child.
+  let el_has_children =
+    vm.call_without_host(&mut scope, has_child_nodes, el_val, &[])?;
+  assert_eq!(el_has_children, Value::Bool(true));
 
   let cs1 = vm.call_without_host(&mut scope, current_script_get, document_val, &[])?;
   assert!(matches!(cs1, Value::Object(_)));

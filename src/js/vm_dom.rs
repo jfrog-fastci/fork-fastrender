@@ -546,6 +546,24 @@ fn dom_node_append_child(
   Ok(child_val)
 }
 
+fn dom_node_has_child_nodes(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  match host.dom.borrow().children(node_id) {
+    Ok(children) => Ok(Value::Bool(!children.is_empty())),
+    Err(err) => throw_dom_error(scope, host, err),
+  }
+}
+
 fn dom_element_set_attribute(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -945,6 +963,7 @@ pub fn install_dom_bindings_with_limits(
   let call_get_element_by_id = vm.register_native_call(dom_document_get_element_by_id)?;
   let call_query_selector = vm.register_native_call(dom_document_query_selector)?;
   let call_append_child = vm.register_native_call(dom_node_append_child)?;
+  let call_has_child_nodes = vm.register_native_call(dom_node_has_child_nodes)?;
   let call_set_attribute = vm.register_native_call(dom_element_set_attribute)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
@@ -960,6 +979,7 @@ pub fn install_dom_bindings_with_limits(
   install_method(&mut scope, proto_document, "getElementById", call_get_element_by_id, 1)?;
   install_method(&mut scope, proto_document, "querySelector", call_query_selector, 1)?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
+  install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
   install_accessor(
