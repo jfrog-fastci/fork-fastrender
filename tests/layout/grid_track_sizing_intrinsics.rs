@@ -3,6 +3,7 @@ use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
+use fastrender::style::types::AspectRatio;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::style::types::WordBreak;
@@ -156,5 +157,71 @@ fn grid_spanning_item_contributes_to_intrinsic_width() {
     fragment.bounds.width(),
     100.0,
     "intrinsic max-content width",
+  );
+}
+
+#[test]
+fn grid_fr_max_content_uses_cross_axis_estimate_for_aspect_ratio() {
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+  container_style.grid_template_columns = vec![GridTrack::Fr(1.0)];
+  container_style.grid_template_rows = vec![GridTrack::Length(Length::px(40.0))];
+  let container_style = Arc::new(container_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.aspect_ratio = AspectRatio::Ratio(2.0);
+  child_style.grid_column_start = 1;
+  child_style.grid_column_end = 2;
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![child]);
+
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(500.0, 200.0))
+    .expect("grid layout");
+
+  assert_approx(
+    fragment.bounds.width(),
+    80.0,
+    "intrinsic max-content width from stretched aspect-ratio child",
+  );
+}
+
+#[test]
+fn grid_fr_max_content_uses_cross_axis_estimate_for_auto_ratio() {
+  let fc = GridFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+  container_style.grid_template_columns = vec![GridTrack::Fr(1.0)];
+  container_style.grid_template_rows = vec![GridTrack::Length(Length::px(40.0))];
+  let container_style = Arc::new(container_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.aspect_ratio = AspectRatio::AutoRatio(2.0);
+  child_style.grid_column_start = 1;
+  child_style.grid_column_end = 2;
+  child_style.grid_row_start = 1;
+  child_style.grid_row_end = 2;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![child]);
+
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(500.0, 200.0))
+    .expect("grid layout");
+
+  assert_approx(
+    fragment.bounds.width(),
+    80.0,
+    "intrinsic max-content width from stretched auto-ratio child",
   );
 }

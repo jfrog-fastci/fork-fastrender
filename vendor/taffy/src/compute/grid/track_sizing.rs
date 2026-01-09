@@ -460,11 +460,13 @@ pub(super) fn track_sizing_algorithm<Tree: LayoutPartialTree>(
     tree,
     axis,
     axis_tracks,
+    other_axis_tracks,
     items,
     axis_min_size,
     axis_max_size,
     axis_available_space_for_expansion,
     inner_node_size,
+    get_track_size_estimate,
   );
 
   // 11.8. Stretch auto Tracks
@@ -1466,15 +1468,17 @@ fn maximise_tracks(
 /// This step sizes flexible tracks using the largest value it can assign to an fr without exceeding the available space.
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn expand_flexible_tracks(
-  tree: &mut impl LayoutPartialTree,
+fn expand_flexible_tracks<Tree: LayoutPartialTree>(
+  tree: &mut Tree,
   axis: AbstractAxis,
   axis_tracks: &mut [GridTrack],
+  other_axis_tracks: &[GridTrack],
   items: &mut [GridItem],
   axis_min_size: Option<f32>,
   axis_max_size: Option<f32>,
   axis_available_space_for_expansion: AvailableSpace,
   inner_node_size: Size<Option<f32>>,
+  get_track_size_estimate: fn(&GridTrack, Option<f32>, &Tree) -> Option<f32>,
 ) {
   // First, find the grid’s used flex fraction:
   let flex_fraction = match axis_available_space_for_expansion {
@@ -1520,9 +1524,18 @@ fn expand_flexible_tracks(
           .filter(|item| item.crosses_flexible_track(axis))
           .map(|item| {
             let tracks = &axis_tracks[item.track_range_excluding_lines(axis)];
-            // TODO: plumb estimate of other axis size (known_dimensions) in here rather than just passing Size::NONE?
+            // When computing max-content contributions for flex tracks under a max-content constraint,
+            // we must supply an estimate of the item's available space in the other axis. Otherwise
+            // `GridItem::known_dimensions()` cannot apply stretch alignment + aspect-ratio, causing
+            // intrinsic contributions to incorrectly collapse to 0.
+            let available_space = item.available_space_cached(
+              axis,
+              other_axis_tracks,
+              inner_node_size.get(axis.other()),
+              |track, basis| get_track_size_estimate(track, basis, tree),
+            );
             let max_content_contribution =
-              item.max_content_contribution_cached(axis, tree, Size::NONE, inner_node_size);
+              item.max_content_contribution_cached(axis, tree, available_space, inner_node_size);
             find_size_of_fr(tracks, max_content_contribution)
           })
           .max_by(|a, b| a.total_cmp(b))
