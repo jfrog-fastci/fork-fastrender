@@ -11574,9 +11574,10 @@ fn apply_declaration_with_base_internal_with_order(
           let current_start = styles
             .grid_column_raw
             .as_ref()
-            .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+            .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
+            .map(|s| trim_ascii_whitespace(s))
             .unwrap_or("auto");
-          styles.grid_column_raw = Some(format!("{} / {}", current_start, kw));
+          styles.grid_column_raw = Some(format!("{current_start} / {kw}"));
         }
       }
     }
@@ -11602,9 +11603,10 @@ fn apply_declaration_with_base_internal_with_order(
           let current_start = styles
             .grid_row_raw
             .as_ref()
-            .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+            .map(|raw| raw.split_once('/').map(|(s, _)| s).unwrap_or(raw))
+            .map(|s| trim_ascii_whitespace(s))
             .unwrap_or("auto");
-          styles.grid_row_raw = Some(format!("{} / {}", current_start, kw));
+          styles.grid_row_raw = Some(format!("{current_start} / {kw}"));
         }
       }
     }

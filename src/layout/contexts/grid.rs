@@ -2768,6 +2768,46 @@ impl GridFormattingContext {
           self.convert_grid_template(&style.grid_template_rows, style);
       }
 
+      // `grid-template-areas` defines the explicit grid size even when no explicit template tracks
+      // are provided via `grid-template-columns/rows`. In that case, CSS uses `auto` sizing for the
+      // template tracks (and `grid-auto-{rows,columns}` for any additional implicit tracks).
+      //
+      // Taffy has historically treated area-only grids as having no explicit tracks, which can
+      // yield incorrect track sizing in some real-world layouts. Mirror the CSS behavior by
+      // synthesizing explicit `auto` tracks for the area-defined grid size.
+      if !style.grid_template_areas.is_empty() {
+        let css_row_count = style.grid_template_areas.len();
+        let css_col_count = style
+          .grid_template_areas
+          .iter()
+          .map(|row| row.len())
+          .max()
+          .unwrap_or(0);
+
+        let make_auto_tracks =
+          |count: usize| -> Vec<GridTemplateComponent<String>> {
+            (0..count)
+              .map(|_| GridTemplateComponent::Single(TrackSizingFunction::AUTO))
+              .collect()
+          };
+
+        if swap_grid_axes {
+          if taffy_style.grid_template_columns.is_empty() && css_row_count > 0 {
+            taffy_style.grid_template_columns = make_auto_tracks(css_row_count);
+          }
+          if taffy_style.grid_template_rows.is_empty() && css_col_count > 0 {
+            taffy_style.grid_template_rows = make_auto_tracks(css_col_count);
+          }
+        } else {
+          if taffy_style.grid_template_columns.is_empty() && css_col_count > 0 {
+            taffy_style.grid_template_columns = make_auto_tracks(css_col_count);
+          }
+          if taffy_style.grid_template_rows.is_empty() && css_row_count > 0 {
+            taffy_style.grid_template_rows = make_auto_tracks(css_row_count);
+          }
+        }
+      }
+
       // Subgrid flags + extra line names.
       taffy_style.subgrid_columns = if swap_grid_axes {
         css_row_subgrid

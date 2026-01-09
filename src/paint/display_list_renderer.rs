@@ -14081,6 +14081,72 @@ impl DisplayListRenderer {
   }
 
   fn render_image(&mut self, item: &ImageItem) -> Result<()> {
+    // Some pixmap backends have historically failed to respect nested clip masks when drawing
+    // images. To keep `overflow: hidden` robust for replaced elements, opportunistically crop the
+    // image to the current clip bounds when no transform is active.
+    let mut clipped_item: Option<ImageItem> = None;
+    let item = if self.canvas.transform() == Transform::identity() {
+      if let Some(clip_device) = self.canvas.clip_bounds() {
+        if self.scale.is_finite() && self.scale > 0.0 {
+          let inv_scale = 1.0 / self.scale;
+          let clip_css = Rect::from_xywh(
+            clip_device.x() * inv_scale,
+            clip_device.y() * inv_scale,
+            clip_device.width() * inv_scale,
+            clip_device.height() * inv_scale,
+          );
+          let dest_css = item.dest_rect;
+          let Some(visible_css) = dest_css.intersection(clip_css) else {
+            return Ok(());
+          };
+          if visible_css != dest_css {
+            let dest_w = dest_css.width();
+            let dest_h = dest_css.height();
+            let src_w = item.image.width as f32;
+            let src_h = item.image.height as f32;
+            if dest_w > 0.0 && dest_h > 0.0 && src_w > 0.0 && src_h > 0.0 {
+              let base_src = item
+                .src_rect
+                .unwrap_or_else(|| Rect::from_xywh(0.0, 0.0, src_w, src_h));
+
+              let rel_x0 = (visible_css.min_x() - dest_css.min_x()) / dest_w;
+              let rel_y0 = (visible_css.min_y() - dest_css.min_y()) / dest_h;
+              let rel_x1 = (visible_css.max_x() - dest_css.min_x()) / dest_w;
+              let rel_y1 = (visible_css.max_y() - dest_css.min_y()) / dest_h;
+
+              let rel_x0 = rel_x0.clamp(0.0, 1.0);
+              let rel_y0 = rel_y0.clamp(0.0, 1.0);
+              let rel_x1 = rel_x1.clamp(0.0, 1.0);
+              let rel_y1 = rel_y1.clamp(0.0, 1.0);
+
+              let src_x = base_src.x() + rel_x0 * base_src.width();
+              let src_y = base_src.y() + rel_y0 * base_src.height();
+              let src_w = (rel_x1 - rel_x0) * base_src.width();
+              let src_h = (rel_y1 - rel_y0) * base_src.height();
+
+              if src_x.is_finite()
+                && src_y.is_finite()
+                && src_w.is_finite()
+                && src_h.is_finite()
+                && src_w > 0.0
+                && src_h > 0.0
+              {
+                clipped_item = Some(ImageItem {
+                  dest_rect: visible_css,
+                  image: item.image.clone(),
+                  filter_quality: item.filter_quality,
+                  src_rect: Some(Rect::from_xywh(src_x, src_y, src_w, src_h)),
+                });
+              }
+            }
+          }
+        }
+      }
+      clipped_item.as_ref().unwrap_or(item)
+    } else {
+      item
+    };
+
     let mut dest_rect = self.ds_rect(item.dest_rect);
     if self.canvas.apply_clip(dest_rect).is_none() {
       return Ok(());

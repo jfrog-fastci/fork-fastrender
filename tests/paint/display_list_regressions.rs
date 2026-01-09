@@ -125,6 +125,40 @@ fn overflow_clip_masks_content() {
 }
 
 #[test]
+fn overflow_clip_clips_replaced_svg() {
+  // Regression: ensure nested clips (`overflow: hidden` on both a container and a replaced SVG)
+  // restrict raster image drawing.
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(33 36 38); }
+      .outer {
+        width: 50px;
+        height: 20px;
+        overflow: hidden;
+        background: rgb(33 36 38);
+      }
+      svg {
+        display: block;
+        width: 50px;
+        height: 40px;
+        margin-top: -10px;
+        overflow: hidden;
+      }
+    </style>
+    <div class="outer">
+      <svg viewBox="0 0 50 40" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="50" height="40" fill="white" />
+      </svg>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  assert_close(pixel(&pixmap, 10, 10), (255, 255, 255, 255), 2);
+  assert_close(pixel(&pixmap, 10, 25), (33, 36, 38, 255), 2);
+}
+
+#[test]
 fn blend_mode_screen_applies() {
   let html = r#"
     <!doctype html>
