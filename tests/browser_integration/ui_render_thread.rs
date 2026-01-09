@@ -4,19 +4,27 @@ use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig}
 use fastrender::interaction::KeyAction;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::text::font_db::FontConfig;
+use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
   spawn_browser_render_thread, spawn_browser_render_thread_for_test, NavigationReason, PointerButton,
-  TabId, UiToWorker, WorkerToUi,
+  RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use super::support::{
-  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, TempSite,
+  DEFAULT_TIMEOUT,
 };
 use std::time::Duration;
 
 fn factory_for_tests() -> FastRenderFactory {
   let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
   FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer)).unwrap()
+}
+
+fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
+  let x_px = ((x_css as f32) * frame.dpr).round() as u32;
+  let y_px = ((y_css as f32) * frame.dpr).round() as u32;
+  super::support::rgba_at(&frame.pixmap, x_px, y_px)
 }
 
 #[test]
@@ -263,4 +271,116 @@ fn enter_submits_focused_text_input_form() {
     saw_commit,
     "expected NavigationCommitted for {expected_url} (keyboard submit)"
   );
+}
+
+#[test]
+fn select_dropdown_choose_updates_dom_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #sel { position: absolute; left: 0; top: 0; width: 120px; height: 24px; }
+      #box { position: absolute; left: 0; top: 40px; width: 64px; height: 64px; background: rgb(255,0,0); }
+      select:has(option[selected][value="b"]) + #box { background: rgb(0,255,0); }
+    </style>
+  </head>
+  <body>
+    <select id="sel">
+      <option value="a" selected>Red</option>
+      <option value="b">Green</option>
+    </select>
+    <div id="box"></div>
+  </body>
+</html>
+"#,
+  );
+
+  let factory = factory_for_tests();
+  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(create_tab_msg_with_cancel(tab_id, None, cancel))
+    .unwrap();
+  tx.send(viewport_changed_msg(tab_id, (160, 160), 1.0))
+    .unwrap();
+  tx.send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .unwrap();
+
+  let frame = match super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  }) {
+    Some(WorkerToUi::FrameReady { frame, .. }) => frame,
+    Some(other) => panic!("expected FrameReady, got {other:?}"),
+    None => panic!("timed out waiting for FrameReady"),
+  };
+  assert_eq!(rgba_at_css(&frame, 10, 50), [255, 0, 0, 255]);
+
+  while rx.try_recv().is_ok() {}
+
+  // Click the <select> to open the dropdown.
+  tx.send(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: (10.0, 10.0),
+    button: PointerButton::Primary,
+  })
+  .unwrap();
+  tx.send(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (10.0, 10.0),
+    button: PointerButton::Primary,
+  })
+  .unwrap();
+
+  let msg = super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SelectDropdownOpened { .. })
+  })
+  .expect("expected SelectDropdownOpened message");
+
+  let WorkerToUi::SelectDropdownOpened {
+    select_node_id,
+    control,
+    ..
+  } = msg
+  else {
+    unreachable!("filtered above");
+  };
+
+  let option_node_id = control
+    .items
+    .iter()
+    .find_map(|item| match item {
+      SelectItem::Option {
+        node_id, value, ..
+      } if value == "b" => Some(*node_id),
+      _ => None,
+    })
+    .expect("expected option value=b in select control");
+
+  while rx.try_recv().is_ok() {}
+
+  tx.send(UiToWorker::SelectDropdownChoose {
+    tab_id,
+    select_node_id,
+    option_node_id,
+  })
+  .unwrap();
+
+  let frame = match super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  }) {
+    Some(WorkerToUi::FrameReady { frame, .. }) => frame,
+    Some(other) => panic!("expected FrameReady, got {other:?}"),
+    None => panic!("timed out waiting for FrameReady after SelectDropdownChoose"),
+  };
+  assert_eq!(rgba_at_css(&frame, 10, 50), [0, 255, 0, 255]);
+
+  drop(tx);
+  handle.join().unwrap();
 }
