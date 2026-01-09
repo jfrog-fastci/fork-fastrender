@@ -159,10 +159,11 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       // host hook adapter for each run so nested jobs are queued onto the same microtask queue.
       let mut hooks = VmJsHostHooks::new(event_loop);
       let mut ctx = VmJsJobContext { host, realm };
-      let job = job_cell_for_closure
-        .borrow_mut()
-        .take()
-        .expect("vm-js promise job should run at most once");
+      let Some(job) = job_cell_for_closure.borrow_mut().take() else {
+        // This microtask should run at most once. If the event loop misbehaves, treat the extra run
+        // as a no-op rather than panicking (FastRender must not panic in production code).
+        return Ok(());
+      };
       let job_result =
         job.run(&mut ctx, &mut hooks)
           .map_err(|err| Error::Other(format!("vm-js job failed: {err}")));
