@@ -656,43 +656,29 @@ pub enum PseudoElement {
   SliderTrack,
   /// Any vendor-specific pseudo-element we don't model, kept to avoid selector-list invalidation.
   Vendor(CssString),
-  Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
-  /// Per CSS Shadow Parts, `::part()` accepts one or more idents; when multiple are supplied the
-  /// pseudo represents the intersection of those part-name buckets.
-  Part(Box<[CssString]>),
 }
 
 impl selectors::parser::PseudoElement for PseudoElement {
   type Impl = FastRenderSelectorImpl;
+
+  fn valid_after_slotted(&self) -> bool {
+    // Per CSS Pseudo 4 + CSS Scoping, `::slotted()` may be followed by *tree-abiding*
+    // pseudo-elements.
+    matches!(
+      self,
+      PseudoElement::Before
+        | PseudoElement::After
+        | PseudoElement::Marker
+        | PseudoElement::FirstLine
+        | PseudoElement::FirstLetter
+    )
+  }
 }
 
 impl std::hash::Hash for PseudoElement {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     std::mem::discriminant(self).hash(state);
     match self {
-      PseudoElement::Slotted(selectors) => {
-        struct HashWriter<'a, H: std::hash::Hasher>(&'a mut H);
-
-        impl<H: std::hash::Hasher> fmt::Write for HashWriter<'_, H> {
-          fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.0.write(s.as_bytes());
-            Ok(())
-          }
-        }
-
-        selectors.len().hash(state);
-        let mut writer = HashWriter(state);
-        for selector in selectors.iter() {
-          writer.0.write_u8(0);
-          let _ = selector.to_css(&mut writer);
-        }
-      }
-      PseudoElement::Part(names) => {
-        names.len().hash(state);
-        for name in names.iter() {
-          name.hash(state);
-        }
-      }
       PseudoElement::Vendor(name) => name.hash(state),
       _ => {}
     }
@@ -738,26 +724,6 @@ impl ToCss for PseudoElement {
       PseudoElement::Vendor(name) => {
         dest.write_str("::")?;
         name.to_css(dest)
-      }
-      PseudoElement::Slotted(selectors) => {
-        dest.write_str("::slotted(")?;
-        for (i, selector) in selectors.iter().enumerate() {
-          if i > 0 {
-            dest.write_str(", ")?;
-          }
-          selector.to_css(dest)?;
-        }
-        dest.write_str(")")
-      }
-      PseudoElement::Part(names) => {
-        dest.write_str("::part(")?;
-        for (i, name) in names.iter().enumerate() {
-          if i > 0 {
-            dest.write_str(" ")?;
-          }
-          name.to_css(dest)?;
-        }
-        dest.write_str(")")
       }
     }
   }
@@ -872,6 +838,14 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
         ctx.prefixes.get(prefix).cloned()
       }
     })
+  }
+
+  fn parse_slotted(&self) -> bool {
+    true
+  }
+
+  fn parse_part(&self) -> bool {
+    true
   }
 
   fn parse_nth_child_of(&self) -> bool {
@@ -1198,16 +1172,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     if parsing_has_argument() {
       return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
     }
-    let lowered = name.to_ascii_lowercase();
-    match lowered.as_str() {
-      "slotted" => parse_slotted_pseudo_element(parser, &name),
-      "part" => parse_part_pseudo_element(parser, &name),
-      _ => Err(
-        parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
-          name,
-        )),
-      ),
-    }
+    Err(parser.new_custom_error(
+      SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
+    ))
   }
 
   fn parse_is_and_where(&self) -> bool {
@@ -1342,78 +1309,6 @@ pub(crate) fn build_relative_selectors(
     .collect::<Vec<_>>()
     .into_boxed_slice()
 }
-
-fn parse_slotted_pseudo_element<'i, 't>(
-  parser: &mut Parser<'i, 't>,
-  name: &cssparser::CowRcStr<'i>,
-) -> std::result::Result<PseudoElement, ParseError<'i, SelectorParseErrorKind<'i>>> {
-  // Per CSS Scoping, ::slotted() accepts a single <compound-selector>.
-  // Reject selector lists (commas), combinators, and pseudo-elements inside the argument.
-  let list = SelectorList::parse_disallow_pseudo(
-    &PseudoClassParser,
-    parser,
-    selectors::parser::ParseRelative::No,
-  )
-  .map_err(|_| {
-    parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
-      name.clone(),
-    ))
-  })?;
-
-  let selectors: Vec<_> = list.slice().iter().cloned().collect();
-  if selectors.len() != 1 || selectors.iter().any(selector_has_combinators) {
-    return Err(
-      parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
-        name.clone(),
-      )),
-    );
-  }
-
-  Ok(PseudoElement::Slotted(selectors.into_boxed_slice()))
-}
-
-fn parse_part_pseudo_element<'i, 't>(
-  parser: &mut Parser<'i, 't>,
-  name: &cssparser::CowRcStr<'i>,
-) -> std::result::Result<PseudoElement, ParseError<'i, SelectorParseErrorKind<'i>>> {
-  // Per CSS Shadow Parts, ::part() accepts one or more <ident> tokens, representing the
-  // intersection of those part-name buckets. Reject anything other than a whitespace-separated
-  // identifier list.
-  parser.skip_whitespace();
-  let mut idents: Vec<CssString> = Vec::new();
-  let first =
-    match parser.expect_ident() {
-      Ok(first) => CssString::from(first.as_ref()),
-      Err(_) => {
-        return Err(parser.new_custom_error(
-          SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
-        ))
-      }
-    };
-  idents.push(first);
-
-  loop {
-    parser.skip_whitespace();
-    if parser.is_exhausted() {
-      break;
-    }
-    let ident = match parser.expect_ident() {
-      Ok(ident) => CssString::from(ident.as_ref()),
-      Err(_) => {
-        return Err(parser.new_custom_error(
-          SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
-        ))
-      }
-    };
-    idents.push(ident);
-  }
-
-  idents.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-  idents.dedup_by(|a, b| a.as_str() == b.as_str());
-
-  Ok(PseudoElement::Part(idents.into_boxed_slice()))
-}
-
 fn selector_has_combinators(selector: &Selector<FastRenderSelectorImpl>) -> bool {
   let mut iter = selector.iter();
   loop {
@@ -2289,13 +2184,23 @@ mod tests {
 
   #[test]
   fn parses_shadow_pseudo_elements() {
-    let mut input = ParserInput::new("div::slotted(.a)");
-    let mut parser = Parser::new(&mut input);
-    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+    let list = parse_selector_list("div::slotted(.a)");
+    let selector = list.slice().first().expect("one selector");
+    assert!(selector.is_slotted());
+    assert!(selector.pseudo_element().is_none());
 
-    let mut input = ParserInput::new("button::part(name)");
-    let mut parser = Parser::new(&mut input);
-    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+    let list = parse_selector_list("button::part(name)");
+    let selector = list.slice().first().expect("one selector");
+    assert!(selector.is_part());
+    assert_eq!(
+      selector
+        .parts()
+        .expect("parts list")
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>(),
+      vec!["name"]
+    );
   }
 
   #[test]
@@ -2419,24 +2324,17 @@ mod tests {
 
   #[test]
   fn parses_part_with_multiple_names() {
-    let parse_part = |selector_text: &str| {
-      let mut input = ParserInput::new(selector_text);
-      let mut parser = Parser::new(&mut input);
-      let list =
-        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).expect("parse");
-      list
-        .slice()
-        .first()
-        .expect("selector")
-        .pseudo_element()
-        .expect("part pseudo")
-        .clone()
-    };
-
-    let a = parse_part("button::part(name badge)");
-    let b = parse_part("button::part(badge name)");
-    assert_eq!(a, b, "part names should be order-insensitive");
-    assert_eq!(a.to_css_string(), "::part(badge name)");
+    let list = parse_selector_list("button::part(name badge)");
+    let selector = list.slice().first().expect("selector");
+    assert!(selector.is_part());
+    let names: Vec<_> = selector
+      .parts()
+      .expect("parts list")
+      .iter()
+      .map(|s| s.as_str())
+      .collect();
+    assert_eq!(names, vec!["name", "badge"]);
+    assert_eq!(selector.to_css_string(), "button::part(name badge)");
   }
 
   #[test]
@@ -2460,20 +2358,11 @@ mod tests {
 
   #[test]
   fn to_css_serializes_pseudo_elements() {
-    let mut input = ParserInput::new(".foo");
-    let mut parser = Parser::new(&mut input);
-    let selector_list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
-      .expect("should parse selector");
-    let selector = selector_list
-      .slice()
-      .first()
-      .expect("expected selector")
-      .clone();
-    let slotted = PseudoElement::Slotted(vec![selector].into_boxed_slice());
-    assert_eq!(slotted.to_css_string(), "::slotted(.foo)");
+    let list = parse_selector_list("div::slotted(.foo)");
+    assert_eq!(list.slice().first().unwrap().to_css_string(), "div::slotted(.foo)");
 
-    let part = PseudoElement::Part(vec![CssString::from("name")].into_boxed_slice());
-    assert_eq!(part.to_css_string(), "::part(name)");
+    let list = parse_selector_list("button::part(name)");
+    assert_eq!(list.slice().first().unwrap().to_css_string(), "button::part(name)");
 
     assert_eq!(PseudoElement::Placeholder.to_css_string(), "::placeholder");
     assert_eq!(
@@ -2694,10 +2583,7 @@ mod tests {
     let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
       .expect("parse part selector");
     let selector = list.slice().first().expect("one selector");
-    assert!(matches!(
-      selector.pseudo_element(),
-      Some(PseudoElement::Part(_))
-    ));
+    assert!(selector.is_part());
     assert_eq!(selector.to_css_string(), "div::part(foo)");
 
     let mut input = ParserInput::new("slot:slotted(span)");
@@ -2705,10 +2591,7 @@ mod tests {
     let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
       .expect("parse slotted selector");
     let selector = list.slice().first().expect("one selector");
-    assert!(matches!(
-      selector.pseudo_element(),
-      Some(PseudoElement::Slotted(_))
-    ));
+    assert!(selector.is_slotted());
     assert_eq!(selector.to_css_string(), "slot::slotted(span)");
   }
 

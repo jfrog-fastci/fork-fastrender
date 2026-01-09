@@ -6880,8 +6880,6 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FootnoteMarker => true,
       PseudoElement::MozFocusInner | PseudoElement::MozFocusOuter => false,
       PseudoElement::Selection => false,
-      PseudoElement::Slotted(_) => false,
-      PseudoElement::Part(_) => true,
       PseudoElement::Vendor(_) => false,
     }
   }
@@ -6979,15 +6977,28 @@ impl<'a> Element for ElementRef<'a> {
   }
 
   fn is_part(&self, name: &CssString) -> bool {
-    self
-      .node
-      .get_attribute_ref("part")
-      .map(|value| {
-        value
-          .split_ascii_whitespace()
-          .any(|token| token == name.as_str())
-      })
-      .unwrap_or(false)
+    let Some(parts) = self.node.get_attribute_ref("part") else {
+      return false;
+    };
+
+    let target = name.as_str();
+    if parts.split_ascii_whitespace().any(|token| token == target) {
+      return true;
+    }
+
+    // FastRender historically treated a shadow host's `exportparts` as renaming the parts exposed
+    // to its containing scope (including the document). This isn't covered by the selectors crate's
+    // built-in `::part()` matching, so we mirror the previous behavior here by treating exported
+    // part aliases as additional part names on elements in that host's shadow tree.
+    let Some(host) = self.containing_shadow_host() else {
+      return false;
+    };
+    let Some(imported) = host.imported_part(name) else {
+      return false;
+    };
+    parts
+      .split_ascii_whitespace()
+      .any(|token| token == imported.as_str())
   }
 
   fn is_empty(&self) -> bool {
