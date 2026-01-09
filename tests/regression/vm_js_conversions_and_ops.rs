@@ -58,7 +58,8 @@ fn tonumber_parses_whitespace_radixes_and_infinity() {
   let value = rt.exec_script(r#"+'0x10' === 16"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 
-  // Non-decimal numeric strings do not accept an explicit sign; they parse to NaN.
+  // Signed hex/binary/octal forms are *not* valid `StringToNumber` inputs.
+  // (e.g. `Number("-0x10")` is `NaN`; use `parseInt` for signed radix parsing).
   let value = rt.exec_script(r#"+'+0x10' !== +'+0x10'"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 
