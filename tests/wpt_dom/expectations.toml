@@ -23,11 +23,6 @@ status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
 
 [[expectations]]
-id = "smoke/async-timeout-pass.html"
+id = "smoke/document_head_body.window.js"
 status = "skip"
-reason = "HTML testharness helpers are not supported by the vm-js runner yet."
-
-[[expectations]]
-id = "smoke/promise-pass.html"
-status = "skip"
-reason = "HTML testharness helpers are not supported by the vm-js runner yet."
+reason = "Uses upstream testharness.js APIs (`test(...)`) that are not implemented by the minimal runner yet."

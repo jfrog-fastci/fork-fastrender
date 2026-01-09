@@ -128,26 +128,37 @@ fn build_filter(pattern: Option<&str>) -> Result<Filter> {
   match pattern {
     None => Ok(Filter::All),
     Some(raw) => {
-      // Prefer globs for simple patterns, but allow callers to specify a comma-separated list of
-      // glob patterns (e.g. `dom/**,event*/**`) to select multiple suites at once.
+      let raw = raw.trim();
+      if raw.is_empty() {
+        return Ok(Filter::All);
+      }
+
+      // Support a comma-separated list of glob patterns for suite presets that want a union of
+      // directories (e.g. `dom/**,event_loop/**,events/**`).
+      //
+      // Each segment is treated as an independent glob. If any segment fails to parse as a glob we
+      // fall back to the legacy `glob or regex` behavior below.
       if raw.contains(',') {
-        let parts: Vec<&str> = raw.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
-        if parts.len() > 1 {
+        let parts: Vec<&str> = raw
+          .split(',')
+          .map(str::trim)
+          .filter(|part| !part.is_empty())
+          .collect();
+        if !parts.is_empty() {
           let mut builder = GlobSetBuilder::new();
-          let mut all_valid = true;
-          for part in &parts {
+          let mut ok = true;
+          for part in parts {
             match Glob::new(part) {
               Ok(glob) => {
                 builder.add(glob);
               }
               Err(_) => {
-                all_valid = false;
+                ok = false;
                 break;
               }
             }
           }
-
-          if all_valid {
+          if ok {
             let set = builder
               .build()
               .map_err(|err| anyhow!("invalid glob: {err}"))?;
@@ -386,4 +397,25 @@ fn summarize(results: &[TestResult]) -> Summary {
   }
 
   summary
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn filter_globset_supports_comma_separated_globs() {
+    let filter = build_filter(Some("dom/**,events/**")).expect("parse filter");
+    assert!(filter.matches("dom/element_matches_closest.window.js"));
+    assert!(filter.matches("events/eventtarget.window.js"));
+    assert!(!filter.matches("smoke/sync-pass.html"));
+  }
+
+  #[test]
+  fn filter_globset_trims_whitespace_and_ignores_empty_segments() {
+    let filter = build_filter(Some(" dom/** , , events/** ,")).expect("parse filter");
+    assert!(filter.matches("dom/element_query_selector.window.js"));
+    assert!(filter.matches("events/eventtarget_order.window.js"));
+    assert!(!filter.matches("event_loop/settimeout_args.window.js"));
+  }
 }
