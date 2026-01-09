@@ -520,7 +520,7 @@ mod tests {
   }
 
   #[test]
-  fn vm_js_job_context_heap_mut_uses_host_heap_mut_accessor() -> crate::Result<()> {
+  fn vm_js_job_context_add_root_uses_host_heap_mut_accessor() -> crate::Result<()> {
     let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
     let limits = vm_js::HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024);
 

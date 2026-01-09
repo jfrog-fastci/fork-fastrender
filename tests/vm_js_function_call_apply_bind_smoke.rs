@@ -32,6 +32,7 @@ impl Drop for TestRealm {
 fn reflect_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],

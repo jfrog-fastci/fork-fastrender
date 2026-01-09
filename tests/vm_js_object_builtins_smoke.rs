@@ -17,6 +17,7 @@ struct TestRealm {
 fn return_two_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],

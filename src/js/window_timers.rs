@@ -758,7 +758,7 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -781,7 +781,7 @@ mod tests {
         _ => Value::Number(0.0),
       };
       let clear_interval = get_prop(scope, global, "clearInterval");
-      let _ = vm.call(scope, clear_interval, Value::Object(global), &[id])?;
+      let _ = vm.call_with_host(scope, host, clear_interval, Value::Object(global), &[id])?;
     }
 
     Ok(Value::Undefined)

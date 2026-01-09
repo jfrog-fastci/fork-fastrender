@@ -152,6 +152,65 @@ fn line_boxes_shorten_next_to_right_float_over_entire_line_height() {
 }
 
 #[test]
+fn rtl_line_boxes_shorten_next_to_inline_end_float_and_expand_after_float_ends() {
+  // In RTL, `float:inline-end` maps to the physical left side. Line boxes should still shorten and
+  // shift away from the float, then return to full width once the float no longer overlaps.
+  let html = "<!doctype html><style>\
+    body{margin:0;}\
+    #wrap{width:100px;direction:rtl;}\
+    .float{float:inline-end;width:60px;height:20px;background:#00f;}\
+    .para{font-size:0;line-height:10px;}\
+    .piece{display:inline-block;width:30px;height:10px;background:#0f0;vertical-align:top;}\
+  </style>\
+  <div id=wrap><div class=float></div><div class=para><span class=piece></span><span class=piece></span><span class=piece></span></div></div>";
+
+  let lines = line_bounds_for(html, 100.0);
+  assert_eq!(lines.len(), 3);
+
+  assert!((lines[0].x() - 60.0).abs() < 0.5);
+  assert!((lines[0].y() - 0.0).abs() < 0.5);
+  assert!((lines[0].width() - 40.0).abs() < 0.5);
+
+  assert!((lines[1].x() - 60.0).abs() < 0.5);
+  assert!((lines[1].y() - 10.0).abs() < 0.5);
+  assert!((lines[1].width() - 40.0).abs() < 0.5);
+
+  assert!((lines[2].x() - 0.0).abs() < 0.5);
+  assert!((lines[2].y() - 20.0).abs() < 0.5);
+  assert!((lines[2].width() - 100.0).abs() < 0.5);
+}
+
+#[test]
+fn rtl_line_boxes_shorten_next_to_inline_start_float_over_entire_line_height() {
+  // In RTL, `float:inline-start` maps to the physical right side. When the float overlaps only part
+  // of a line's vertical span, range queries should still use the most constrained width for the
+  // entire line box (matching the LTR `float:right` behavior).
+  let html = "<!doctype html><style>\
+    body{margin:0;}\
+    #wrap{width:100px;direction:rtl;}\
+    .float{float:inline-start;width:60px;height:15px;background:#00f;}\
+    .para{font-size:0;line-height:10px;}\
+    .piece{display:inline-block;width:30px;height:10px;background:#0f0;vertical-align:top;}\
+  </style>\
+  <div id=wrap><div class=float></div><div class=para><span class=piece></span><span class=piece></span><span class=piece></span></div></div>";
+
+  let lines = line_bounds_for(html, 100.0);
+  assert_eq!(lines.len(), 3);
+
+  assert!((lines[0].x() - 0.0).abs() < 0.5);
+  assert!((lines[0].y() - 0.0).abs() < 0.5);
+  assert!((lines[0].width() - 40.0).abs() < 0.5);
+
+  assert!((lines[1].x() - 0.0).abs() < 0.5);
+  assert!((lines[1].y() - 10.0).abs() < 0.5);
+  assert!((lines[1].width() - 40.0).abs() < 0.5);
+
+  assert!((lines[2].x() - 0.0).abs() < 0.5);
+  assert!((lines[2].y() - 20.0).abs() < 0.5);
+  assert!((lines[2].width() - 100.0).abs() < 0.5);
+}
+
+#[test]
 fn clear_breaks_margin_collapse_and_pushes_below_float() {
   // Container with a float and a following block that clears it. The clearing block's margin-top
   // must not collapse through the parent once clearance is introduced.
