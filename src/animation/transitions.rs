@@ -452,6 +452,16 @@ impl TransitionState {
         let existing = element.running.get(&name_arc).cloned();
 
         if let Some(existing) = existing {
+          // CSS Transitions 1: If `transition-property` changes such that the transition would not
+          // have started, the running transition must be cancelled and the property value snaps to
+          // its final value immediately. Timing/duration/delay changes do *not* affect a running
+          // transition, but `transition-property` removal is special-cased.
+          if !eligible.contains_key(&name_arc) {
+            element.running.remove(&name_arc);
+            element.completed.remove(&name_arc);
+            continue;
+          }
+
           if let Some(existing_target) =
             TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
           {

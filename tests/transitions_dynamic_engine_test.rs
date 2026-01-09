@@ -498,7 +498,7 @@ fn assert_grey_range(px: (u8, u8, u8, u8), range: std::ops::RangeInclusive<u8>) 
 }
 
 #[test]
-fn removing_transition_property_does_not_cancel_running_transition() -> Result<()> {
+fn removing_transition_property_cancels_running_transition() -> Result<()> {
   ensure_test_env();
 
   let html = r#"
@@ -531,16 +531,17 @@ fn removing_transition_property_does_not_cancel_running_transition() -> Result<(
   let mid = doc.render_frame()?;
   assert_mid_grey(pixel(&mid, 50, 50));
 
-  // Disable transitions at the same timestamp. Transition parameters must be frozen, so the
-  // running transition continues unaffected.
+  // Disable transitions at the same timestamp. Per CSS Transitions 1, changing
+  // `transition-property` such that the transition would not have started cancels the running
+  // transition and the property snaps to its final value immediately.
   assert!(set_class(&mut doc, "box", "b no"));
-  let still_mid = doc.render_frame()?;
-  assert_mid_grey(pixel(&still_mid, 50, 50));
+  let snapped = doc.render_frame()?;
+  assert_eq!(pixel(&snapped, 50, 50), (0, 0, 0, 255));
 
-  // Verify the transition continues running after the parameter change.
+  // Verify the element remains at the final value after cancellation.
   doc.set_animation_time_ms(600.0);
   let after = doc.render_frame()?;
-  assert_grey_range(pixel(&after, 50, 50), 95..=110);
+  assert_eq!(pixel(&after, 50, 50), (0, 0, 0, 255));
 
   doc.set_animation_time_ms(1000.0);
   let end = doc.render_frame()?;
