@@ -1,4 +1,6 @@
 use crate::dom::parse_html;
+use crate::dom::{DomNode, DomNodeType};
+use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -165,3 +167,32 @@ fn matches_selector_returns_false_for_non_elements_and_inert_template_descendant
   );
 }
 
+#[test]
+fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
+  // Build a minimal renderer DOM tree with a single `<wbr>` element.
+  let root = DomNode {
+    node_type: DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+    },
+    children: vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "wbr".to_string(),
+        namespace: "".to_string(),
+        attributes: vec![("id".to_string(), "w".to_string())],
+      },
+      children: Vec::new(),
+    }],
+  };
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let wbr = doc.get_element_by_id("w").expect("missing `<wbr>` element");
+
+  let all = doc.query_selector_all("wbr", None).unwrap();
+  assert_eq!(all, vec![wbr]);
+  assert_eq!(doc.query_selector("wbr", None).unwrap(), Some(wbr));
+
+  // Verify that `:scope` anchors to the provided scoping root and that the root itself participates
+  // in matching.
+  assert_eq!(doc.query_selector(":scope", Some(wbr)).unwrap(), Some(wbr));
+  assert_eq!(doc.query_selector_all(":scope", Some(wbr)).unwrap(), vec![wbr]);
+}

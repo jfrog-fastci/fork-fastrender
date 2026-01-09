@@ -179,3 +179,52 @@ fn renderer_dom_mapping_handles_deep_trees_without_recursion_overflow() {
     }
   );
 }
+
+#[test]
+fn renderer_dom_mapping_models_wbr_synthetic_zwsp_nodes() {
+  // The renderer synthesizes a trailing ZWSP text node for HTML `<wbr>` elements so line breaking
+  // can treat it as a break opportunity. The dom2 snapshot/mapping must account for these synthetic
+  // nodes while still mapping them back to the real `<wbr>` `NodeId`.
+  let root = DomNode {
+    node_type: DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+    },
+    children: vec![DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "wbr".to_string(),
+        namespace: "".to_string(),
+        attributes: vec![("id".to_string(), "w".to_string())],
+      },
+      children: Vec::new(),
+    }],
+  };
+  let doc = Document::from_renderer_dom(&root);
+  let snapshot = doc.to_renderer_dom_with_mapping();
+
+  let renderer_ids = crate::dom::enumerate_dom_ids(&snapshot.dom);
+  assert_eq!(
+    renderer_ids.len(),
+    doc.nodes_len() + 1,
+    "expected the renderer snapshot to include one synthetic node for the `<wbr>` ZWSP child"
+  );
+
+  let wbr_id = doc.get_element_by_id("w").expect("missing `<wbr>` element");
+  let wbr_preorder = snapshot
+    .mapping
+    .preorder_for_node_id(wbr_id)
+    .expect("missing preorder id for `<wbr>` element");
+
+  // In this minimal tree, the synthetic ZWSP should be the immediate next preorder id after the
+  // `<wbr>` element.
+  let zwsp_preorder = wbr_preorder + 1;
+  assert_eq!(
+    snapshot.mapping.node_id_for_preorder(zwsp_preorder),
+    Some(wbr_id),
+    "synthetic ZWSP node should map back to its parent `<wbr>` element"
+  );
+  assert_eq!(
+    snapshot.mapping.preorder_for_node_id(wbr_id),
+    Some(wbr_preorder),
+    "reverse mapping for `<wbr>` should remain the element's own preorder id"
+  );
+}
