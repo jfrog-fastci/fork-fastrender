@@ -5,6 +5,8 @@
 //! and self contained so it can be reused by layout/paint and tests without
 //! wiring a full animation engine.
 
+pub mod timing;
+
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
