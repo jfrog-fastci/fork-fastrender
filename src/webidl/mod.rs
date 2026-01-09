@@ -157,6 +157,15 @@ mod tests {
         "expected URLSearchParams to contain {member}: {params_member_names:?}"
       );
     }
+    assert!(
+      params.members.iter().any(|m| m.raw.starts_with("iterable")),
+      "expected URLSearchParams to contain iterable member; found: {:?}",
+      params
+        .members
+        .iter()
+        .map(|m| m.raw)
+        .collect::<Vec<_>>()
+    );
   }
 
   #[test]

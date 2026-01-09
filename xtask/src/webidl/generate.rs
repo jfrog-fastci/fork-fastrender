@@ -66,8 +66,8 @@ fn generate_rust_module_unformatted(world: &ResolvedWebIdlWorld) -> String {
      // - specs/whatwg-dom/dom.bs\n\
      // - specs/whatwg-html/source\n\
      // - specs/whatwg-url/url.bs\n\
-      // - specs/whatwg-fetch/fetch.bs\n\
-      \n\
+     // - specs/whatwg-fetch/fetch.bs\n\
+     \n\
      use super::*;\n"
   );
 
@@ -307,8 +307,7 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
     .arg("2021")
     .arg("--config-path")
     .arg(rustfmt_config_path)
-    // Suppress the leading `<path>:` header rustfmt prints for `--emit stdout` (otherwise the
-    // random tempfile name makes the generator nondeterministic).
+    // Suppress the leading `<path>:` header rustfmt can print for `--emit stdout`.
     .arg("--quiet")
     .args(["--emit", "stdout"])
     .stdin(Stdio::piped())
