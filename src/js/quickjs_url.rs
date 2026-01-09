@@ -7,7 +7,7 @@
 //! IDL-generated bindings later.
 #![cfg(test)]
 
-use fastrender::js::{Url, UrlSearchParams};
+use fastrender::js::{Url, UrlLimits, UrlSearchParams};
 use rquickjs::class::{Trace, Tracer};
 // rquickjs uses `function::Opt<T>` for optional JS parameters (missing argument => `None`).
 use rquickjs::function::Opt;
@@ -39,14 +39,15 @@ impl JsUrl {
       Some(v) if v.is_undefined() => None,
       Some(v) => Some(v.get::<String>()?),
     };
-    let inner = Url::parse(&url, base.as_deref())
+    let limits = UrlLimits::default();
+    let inner = Url::parse(&url, base.as_deref(), &limits)
       .map_err(|_| Exception::throw_type(&ctx, "Invalid URL"))?;
     Ok(Self { inner })
   }
 
   #[qjs(get, enumerable, configurable)]
   pub fn href(&self) -> String {
-    self.inner.href()
+    self.inner.href().expect("href")
   }
 
   #[qjs(get)]
@@ -56,7 +57,7 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn protocol(&self) -> String {
-    self.inner.protocol()
+    self.inner.protocol().expect("protocol")
   }
 
   #[qjs(set, rename = "protocol")]
@@ -66,7 +67,7 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn host(&self) -> String {
-    self.inner.host()
+    self.inner.host().expect("host")
   }
 
   #[qjs(set, rename = "host")]
@@ -76,7 +77,7 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn hostname(&self) -> String {
-    self.inner.hostname()
+    self.inner.hostname().expect("hostname")
   }
 
   #[qjs(set, rename = "hostname")]
@@ -86,7 +87,7 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn port(&self) -> String {
-    self.inner.port()
+    self.inner.port().expect("port")
   }
 
   #[qjs(set, rename = "port")]
@@ -96,7 +97,7 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn pathname(&self) -> String {
-    self.inner.pathname()
+    self.inner.pathname().expect("pathname")
   }
 
   #[qjs(set, rename = "pathname")]
@@ -106,32 +107,32 @@ impl JsUrl {
 
   #[qjs(get)]
   pub fn search(&self) -> String {
-    self.inner.search()
+    self.inner.search().expect("search")
   }
 
   #[qjs(set, rename = "search")]
   pub fn set_search(&self, value: String) {
-    self.inner.set_search(&value);
+    let _ = self.inner.set_search(&value);
   }
 
   #[qjs(get)]
   pub fn hash(&self) -> String {
-    self.inner.hash()
+    self.inner.hash().expect("hash")
   }
 
   #[qjs(set, rename = "hash")]
   pub fn set_hash(&self, value: String) {
-    self.inner.set_hash(&value);
+    let _ = self.inner.set_hash(&value);
   }
 
   #[qjs(rename = "toJSON")]
   pub fn to_json(&self) -> String {
-    self.inner.to_json()
+    self.inner.to_json().expect("to_json")
   }
 
   #[qjs(rename = "toString")]
   pub fn to_string(&self) -> String {
-    self.inner.href()
+    self.inner.href().expect("href")
   }
 }
 
@@ -153,7 +154,8 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for JsUrlSearchParams {
 impl JsUrlSearchParams {
   #[qjs(constructor)]
   pub fn new<'js>(ctx: Ctx<'js>, init: Opt<Value<'js>>) -> Result<Self, Error> {
-    let params = UrlSearchParams::default();
+    let limits = UrlLimits::default();
+    let params = UrlSearchParams::new(&limits);
 
     let Some(init) = init.0 else {
       return Ok(Self { inner: params });
@@ -172,7 +174,9 @@ impl JsUrlSearchParams {
           .map_err(|_| Exception::throw_type(&ctx, "Invalid URLSearchParams init"))?;
         let name: String = pair.get(0)?;
         let value: String = pair.get(1)?;
-        params.append(name, value);
+        params
+          .append(&name, &value)
+          .map_err(|_| Exception::throw_type(&ctx, "Invalid URLSearchParams init"))?;
       }
       return Ok(Self { inner: params });
     }
@@ -183,7 +187,9 @@ impl JsUrlSearchParams {
       for key in obj.keys::<String>() {
         let key = key?;
         let value: String = obj.get(key.as_str())?;
-        params.append(key, value);
+        params
+          .append(&key, &value)
+          .map_err(|_| Exception::throw_type(&ctx, "Invalid URLSearchParams init"))?;
       }
       return Ok(Self { inner: params });
     }
@@ -191,47 +197,51 @@ impl JsUrlSearchParams {
     // string (and any non-object)
     let s: String = init.get()?;
     Ok(Self {
-      inner: UrlSearchParams::parse(&s),
+      inner: UrlSearchParams::parse(&s, &limits)
+        .map_err(|_| Exception::throw_type(&ctx, "Invalid URLSearchParams init"))?,
     })
   }
 
   #[qjs(get)]
   pub fn size(&self) -> usize {
-    self.inner.size()
+    self.inner.size().expect("size")
   }
 
   pub fn append(&self, name: String, value: String) {
-    self.inner.append(name, value);
+    self.inner.append(&name, &value).expect("append");
   }
 
   pub fn delete(&self, name: String, value: Opt<String>) {
-    self.inner.delete(&name, value.0.as_deref());
+    self
+      .inner
+      .delete(&name, value.0.as_deref())
+      .expect("delete");
   }
 
   pub fn get(&self, name: String) -> Option<String> {
-    self.inner.get(&name)
+    self.inner.get(&name).expect("get")
   }
 
   #[qjs(rename = "getAll")]
   pub fn get_all(&self, name: String) -> Vec<String> {
-    self.inner.get_all(&name)
+    self.inner.get_all(&name).expect("get_all")
   }
 
   pub fn has(&self, name: String, value: Opt<String>) -> bool {
-    self.inner.has(&name, value.0.as_deref())
+    self.inner.has(&name, value.0.as_deref()).expect("has")
   }
 
   pub fn set(&self, name: String, value: String) {
-    self.inner.set(&name, value);
+    self.inner.set(&name, &value).expect("set");
   }
 
   pub fn sort(&self) {
-    self.inner.sort();
+    self.inner.sort().expect("sort");
   }
 
   #[qjs(rename = "toString")]
   pub fn to_string(&self) -> String {
-    self.inner.to_string()
+    self.inner.serialize().expect("serialize")
   }
 
   /// Internal helper used by the JS-level iterator shim.
@@ -239,6 +249,7 @@ impl JsUrlSearchParams {
     self
       .inner
       .pairs()
+      .expect("pairs")
       .into_iter()
       .map(|(name, value)| vec![name, value])
       .collect()

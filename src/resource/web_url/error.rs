@@ -10,6 +10,20 @@ pub enum WebUrlLimitKind {
   TotalQueryBytes,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebUrlSetter {
+  Href,
+  Protocol,
+  Username,
+  Password,
+  Host,
+  Hostname,
+  Port,
+  Pathname,
+  Search,
+  Hash,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebUrlError {
   OutOfMemory,
@@ -21,6 +35,20 @@ pub enum WebUrlError {
     attempted: usize,
   },
   InvalidUtf8,
+  InvalidBase {
+    base: String,
+    source: ::url::ParseError,
+  },
+  Parse {
+    input: String,
+    base: Option<String>,
+    source: ::url::ParseError,
+  },
+  SetterFailure {
+    setter: WebUrlSetter,
+    value: String,
+    source: Option<::url::ParseError>,
+  },
 }
 
 impl From<TryReserveError> for WebUrlError {
@@ -43,6 +71,27 @@ impl std::fmt::Display for WebUrlError {
         f,
         "limit exceeded ({kind:?}): attempted {attempted} bytes/items (limit {limit})"
       ),
+      WebUrlError::InvalidBase { base, source } => {
+        write!(f, "invalid base URL {base:?}: {source}")
+      }
+      WebUrlError::Parse { input, base, source } => {
+        if let Some(base) = base {
+          write!(f, "failed to parse URL {input:?} with base {base:?}: {source}")
+        } else {
+          write!(f, "failed to parse URL {input:?}: {source}")
+        }
+      }
+      WebUrlError::SetterFailure {
+        setter,
+        value,
+        source,
+      } => {
+        if let Some(source) = source {
+          write!(f, "failed to set {setter:?} to {value:?}: {source}")
+        } else {
+          write!(f, "failed to set {setter:?} to {value:?}")
+        }
+      }
     }
   }
 }

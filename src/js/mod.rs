@@ -68,7 +68,7 @@ pub use script_scheduler::{
   ScriptScheduler, ScriptSchedulerAction,
 };
 pub use time::{install_time_bindings, TimeBindings, WebTime};
-pub use url::{Url, UrlError, UrlSearchParams};
+pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use window_timers::install_window_timers_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;

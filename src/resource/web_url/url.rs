@@ -1,405 +1,454 @@
-use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind, WebUrlSetter};
 use crate::resource::web_url::limits::WebUrlLimits;
 use crate::resource::web_url::search_params::WebUrlSearchParams;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+pub(crate) struct WebUrlInner {
+  pub(crate) url: ::url::Url,
+}
+
+/// A bounded, WHATWG-shaped URL wrapper intended for hostile input (e.g. JS bindings).
+#[derive(Debug, Clone)]
 pub struct WebUrl {
-  url: ::url::Url,
+  pub(crate) inner: Rc<RefCell<WebUrlInner>>,
+  limits: WebUrlLimits,
 }
 
 impl WebUrl {
-  pub fn parse(input: &str, base: Option<&str>, limits: &WebUrlLimits) -> Result<Self, WebUrlError> {
-    if input.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: input.len(),
-      });
-    }
-    if let Some(base) = base {
-      if base.len() > limits.max_input_bytes {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::InputBytes,
-          limit: limits.max_input_bytes,
-          attempted: base.len(),
-        });
-      }
-    }
+  /// Parse an input string into a URL, optionally resolving against `base`.
+  pub fn parse(
+    input: &str,
+    base: Option<&str>,
+    limits: &WebUrlLimits,
+  ) -> Result<Self, WebUrlError> {
+    enforce_input_len(input, limits)?;
 
     let parsed = match base {
       Some(base) => {
-        let base_url = ::url::Url::parse(base).map_err(|_| WebUrlError::ParseError)?;
-        ::url::Url::options()
-          .base_url(Some(&base_url))
-          .parse(input)
-          .map_err(|_| WebUrlError::ParseError)?
+        enforce_input_len(base, limits)?;
+
+        let base_url = match ::url::Url::parse(base) {
+          Ok(url) => url,
+          Err(source) => {
+            return Err(WebUrlError::InvalidBase {
+              base: try_clone_str(base)?,
+              source,
+            })
+          }
+        };
+
+        match ::url::Url::options().base_url(Some(&base_url)).parse(input) {
+          Ok(url) => url,
+          Err(source) => {
+            return Err(WebUrlError::Parse {
+              input: try_clone_str(input)?,
+              base: Some(try_clone_str(base)?),
+              source,
+            })
+          }
+        }
       }
-      None => ::url::Url::parse(input).map_err(|_| WebUrlError::ParseError)?,
+      None => match ::url::Url::parse(input) {
+        Ok(url) => url,
+        Err(source) => {
+          return Err(WebUrlError::Parse {
+            input: try_clone_str(input)?,
+            base: None,
+            source,
+          })
+        }
+      },
     };
 
-    // Enforce the max serialized length after normalization.
-    if parsed.as_str().len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: parsed.as_str().len(),
-      });
-    }
+    enforce_href_len(parsed.as_str(), limits)?;
 
-    // Validate the query string under the URLSearchParams limits so `url.searchParams` can always
-    // parse the associated query without unbounded work.
-    if let Some(query) = parsed.query() {
-      let _ = WebUrlSearchParams::parse(query, limits)?;
-    }
-
-    Ok(Self { url: parsed })
+    Ok(Self {
+      inner: Rc::new(RefCell::new(WebUrlInner { url: parsed })),
+      limits: limits.clone(),
+    })
   }
 
-  pub fn can_parse(input: &str, base: Option<&str>, limits: &WebUrlLimits) -> bool {
-    Self::parse(input, base, limits).is_ok()
+  /// Equivalent to the WHATWG `URL.href` getter.
+  pub fn href(&self) -> Result<String, WebUrlError> {
+    let inner = self.inner.borrow();
+    enforce_href_len(inner.url.as_str(), &self.limits)?;
+    try_clone_str(inner.url.as_str())
   }
 
-  pub fn href(&self, limits: &WebUrlLimits) -> Result<String, WebUrlError> {
-    let href = self.url.as_str();
-    if href.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: href.len(),
-      });
-    }
-    try_clone_str(href)
-  }
+  /// Equivalent to the WHATWG `URL.href` setter.
+  pub fn set_href(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
-  pub fn set_href(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+    let parsed = match ::url::Url::parse(value) {
+      Ok(url) => url,
+      Err(source) => {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Href,
+          value: try_clone_str(value)?,
+          source: Some(source),
+        })
+      }
+    };
 
-    // Spec-wise, the href setter parses against the existing URL as a base.
-    let base_url = self.url.clone();
-    let parsed = ::url::Url::options()
-      .base_url(Some(&base_url))
-      .parse(value)
-      .map_err(|_| WebUrlError::ParseError)?;
-
-    Self::validate_url(&parsed, limits)?;
-    self.url = parsed;
+    enforce_href_len(parsed.as_str(), &self.limits)?;
+    self.inner.borrow_mut().url = parsed;
     Ok(())
   }
 
-  pub fn origin(&self) -> String {
-    self.url.origin().ascii_serialization()
+  /// Equivalent to the WHATWG `URL.toJSON()` method.
+  pub fn to_json(&self) -> Result<String, WebUrlError> {
+    self.href()
   }
 
+  /// Equivalent to the WHATWG `URL.origin` getter.
+  pub fn origin(&self) -> String {
+    self.inner.borrow().url.origin().ascii_serialization()
+  }
+
+  /// Equivalent to the WHATWG `URL.protocol` getter.
   pub fn protocol(&self) -> Result<String, WebUrlError> {
-    let scheme = self.url.scheme();
+    let inner = self.inner.borrow();
+    let scheme = inner.url.scheme();
     let mut out = String::new();
-    out.try_reserve_exact(scheme.len() + 1)?;
+    out.try_reserve_exact(scheme.len().saturating_add(1))?;
     out.push_str(scheme);
     out.push(':');
     Ok(out)
   }
 
-  pub fn set_protocol(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+  /// Equivalent to the WHATWG `URL.protocol` setter.
+  pub fn set_protocol(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
     let scheme = value.strip_suffix(':').unwrap_or(value);
-    let mut cloned = self.url.clone();
-    cloned
-      .set_scheme(scheme)
-      .map_err(|_| WebUrlError::ParseError)?;
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+
+    self.mutate_url(|url| {
+      if url.set_scheme(scheme).is_err() {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Protocol,
+          value: try_clone_str(value)?,
+          source: None,
+        });
+      }
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.username` getter.
   pub fn username(&self) -> Result<String, WebUrlError> {
-    try_clone_str(self.url.username())
+    try_clone_str(self.inner.borrow().url.username())
   }
 
-  pub fn set_username(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
-    let mut cloned = self.url.clone();
-    cloned
-      .set_username(value)
-      .map_err(|_| WebUrlError::ParseError)?;
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+  /// Equivalent to the WHATWG `URL.username` setter.
+  pub fn set_username(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
+
+    self.mutate_url(|url| {
+      if url.set_username(value).is_err() {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Username,
+          value: try_clone_str(value)?,
+          source: None,
+        });
+      }
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.password` getter.
   pub fn password(&self) -> Result<String, WebUrlError> {
-    match self.url.password() {
-      Some(pw) => try_clone_str(pw),
-      None => Ok(String::new()),
-    }
+    let inner = self.inner.borrow();
+    let pw = inner.url.password().unwrap_or("");
+    try_clone_str(pw)
   }
 
-  pub fn set_password(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
-    let mut cloned = self.url.clone();
-    // Spec: empty string is still a password (not "no password").
-    cloned.set_password(Some(value)).map_err(|_| WebUrlError::ParseError)?;
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+  /// Equivalent to the WHATWG `URL.password` setter.
+  pub fn set_password(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
+
+    self.mutate_url(|url| {
+      if url.set_password(Some(value)).is_err() {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Password,
+          value: try_clone_str(value)?,
+          source: None,
+        });
+      }
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.host` getter.
   pub fn host(&self) -> Result<String, WebUrlError> {
-    let Some(host) = self.url.host_str() else {
+    let inner = self.inner.borrow();
+    let Some(host) = inner.url.host_str() else {
       return Ok(String::new());
     };
-    let port = self.url.port();
+
+    let port = inner.url.port();
     let mut out = String::new();
-    let port_len = port.map(|p| 1 + p.to_string().len()).unwrap_or(0);
-    out.try_reserve_exact(host.len() + port_len)?;
+    // Reserve enough for `host`, plus `:`, plus a 5-digit port.
+    out.try_reserve_exact(host.len().saturating_add(6))?;
     out.push_str(host);
     if let Some(port) = port {
+      use std::fmt::Write as _;
       out.push(':');
-      out.push_str(&port.to_string());
+      write!(&mut out, "{port}").expect("writing to String should not fail");
     }
     Ok(out)
   }
 
-  pub fn set_host(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+  /// Equivalent to the WHATWG `URL.host` setter.
+  pub fn set_host(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
-    let (host, port) = split_host_and_port(value);
-    let mut cloned = self.url.clone();
-    if host.is_empty() {
-      cloned.set_host(None).map_err(|_| WebUrlError::ParseError)?;
-    } else {
-      cloned
-        .set_host(Some(host))
-        .map_err(|_| WebUrlError::ParseError)?;
-    }
-    cloned.set_port(port).map_err(|_| WebUrlError::ParseError)?;
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
-  }
-
-  pub fn hostname(&self) -> Result<String, WebUrlError> {
-    match self.url.host_str() {
-      Some(host) => try_clone_str(host),
-      None => Ok(String::new()),
-    }
-  }
-
-  pub fn set_hostname(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
-
-    let mut cloned = self.url.clone();
     if value.is_empty() {
-      cloned.set_host(None).map_err(|_| WebUrlError::ParseError)?;
-    } else {
-      cloned
-        .set_host(Some(value))
-        .map_err(|_| WebUrlError::ParseError)?;
-    }
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
-  }
-
-  pub fn port(&self) -> Result<String, WebUrlError> {
-    match self.url.port() {
-      Some(port) => try_clone_str(&port.to_string()),
-      None => Ok(String::new()),
-    }
-  }
-
-  pub fn set_port(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
+      return self.mutate_url(|url| {
+        if let Err(source) = url.set_host(None) {
+          return Err(WebUrlError::SetterFailure {
+            setter: WebUrlSetter::Host,
+            value: try_clone_str(value)?,
+            source: Some(source),
+          });
+        }
+        if url.set_port(None).is_err() {
+          return Err(WebUrlError::SetterFailure {
+            setter: WebUrlSetter::Host,
+            value: try_clone_str(value)?,
+            source: None,
+          });
+        }
+        Ok(())
       });
     }
+
+    // Parse `value` as the authority component by constructing a temporary URL. This delegates
+    // host/IPv6/port parsing to `url` without requiring a custom parser here.
+    let tmp = {
+      let inner = self.inner.borrow();
+      parse_authority_with_scheme(inner.url.scheme(), value, &self.limits, WebUrlSetter::Host)?
+    };
+    let host = tmp.host_str();
+    let port = tmp.port();
+
+    self.mutate_url(|url| {
+      if let Err(source) = url.set_host(host) {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Host,
+          value: try_clone_str(value)?,
+          source: Some(source),
+        });
+      }
+      if url.set_port(port).is_err() {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Host,
+          value: try_clone_str(value)?,
+          source: None,
+        });
+      }
+      Ok(())
+    })
+  }
+
+  /// Equivalent to the WHATWG `URL.hostname` getter.
+  pub fn hostname(&self) -> Result<String, WebUrlError> {
+    let inner = self.inner.borrow();
+    let host = inner.url.host_str().unwrap_or("");
+    try_clone_str(host)
+  }
+
+  /// Equivalent to the WHATWG `URL.hostname` setter.
+  pub fn set_hostname(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
+
+    let host = if value.is_empty() { None } else { Some(value) };
+    self.mutate_url(|url| {
+      if let Err(source) = url.set_host(host) {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Hostname,
+          value: try_clone_str(value)?,
+          source: Some(source),
+        });
+      }
+      Ok(())
+    })
+  }
+
+  /// Equivalent to the WHATWG `URL.port` getter.
+  pub fn port(&self) -> Result<String, WebUrlError> {
+    let Some(port) = self.inner.borrow().url.port() else {
+      return Ok(String::new());
+    };
+    let mut out = String::new();
+    out.try_reserve_exact(5)?;
+    use std::fmt::Write as _;
+    write!(&mut out, "{port}").expect("writing to String should not fail");
+    Ok(out)
+  }
+
+  /// Equivalent to the WHATWG `URL.port` setter.
+  pub fn set_port(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
     let port = if value.is_empty() {
       None
     } else {
-      Some(value.parse::<u16>().map_err(|_| WebUrlError::ParseError)?)
+      let parsed = match value.parse::<u16>() {
+        Ok(parsed) => parsed,
+        Err(_) => {
+          return Err(WebUrlError::SetterFailure {
+            setter: WebUrlSetter::Port,
+            value: try_clone_str(value)?,
+            source: None,
+          })
+        }
+      };
+      Some(parsed)
     };
 
-    let mut cloned = self.url.clone();
-    cloned.set_port(port).map_err(|_| WebUrlError::ParseError)?;
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+    self.mutate_url(|url| {
+      if url.set_port(port).is_err() {
+        return Err(WebUrlError::SetterFailure {
+          setter: WebUrlSetter::Port,
+          value: try_clone_str(value)?,
+          source: None,
+        });
+      }
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.pathname` getter.
   pub fn pathname(&self) -> Result<String, WebUrlError> {
-    try_clone_str(self.url.path())
+    try_clone_str(self.inner.borrow().url.path())
   }
 
-  pub fn set_pathname(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+  /// Equivalent to the WHATWG `URL.pathname` setter.
+  pub fn set_pathname(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
-    let mut cloned = self.url.clone();
-    cloned.set_path(value);
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+    self.mutate_url(|url| {
+      url.set_path(value);
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.search` getter.
   pub fn search(&self) -> Result<String, WebUrlError> {
-    let Some(query) = self.url.query() else {
+    let inner = self.inner.borrow();
+    let Some(query) = inner.url.query() else {
       return Ok(String::new());
     };
     let mut out = String::new();
-    out.try_reserve_exact(query.len() + 1)?;
+    out.try_reserve_exact(query.len().saturating_add(1))?;
     out.push('?');
     out.push_str(query);
     Ok(out)
   }
 
-  pub fn set_search(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+  /// Equivalent to the WHATWG `URL.search` setter.
+  ///
+  /// - `""` clears the query.
+  /// - Otherwise a leading `?` is stripped.
+  pub fn set_search(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
-    let mut cloned = self.url.clone();
-    if value.is_empty() {
-      cloned.set_query(None);
-    } else {
-      let query = value.strip_prefix('?').unwrap_or(value);
-      if query.len() > limits.max_input_bytes {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::InputBytes,
-          limit: limits.max_input_bytes,
-          attempted: query.len(),
-        });
+    self.mutate_url(|url| {
+      if value.is_empty() {
+        url.set_query(None);
+        return Ok(());
       }
-      let _ = WebUrlSearchParams::parse(query, limits)?;
-      cloned.set_query(Some(query));
-    }
-
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+      let query = value.strip_prefix('?').unwrap_or(value);
+      url.set_query(Some(query));
+      Ok(())
+    })
   }
 
+  /// Equivalent to the WHATWG `URL.hash` getter.
   pub fn hash(&self) -> Result<String, WebUrlError> {
-    let Some(fragment) = self.url.fragment() else {
+    let inner = self.inner.borrow();
+    let Some(fragment) = inner.url.fragment() else {
       return Ok(String::new());
     };
     let mut out = String::new();
-    out.try_reserve_exact(fragment.len() + 1)?;
+    out.try_reserve_exact(fragment.len().saturating_add(1))?;
     out.push('#');
     out.push_str(fragment);
     Ok(out)
   }
 
-  pub fn set_hash(&mut self, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if value.len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: value.len(),
-      });
-    }
+  /// Equivalent to the WHATWG `URL.hash` setter.
+  ///
+  /// - `""` clears the fragment.
+  /// - Otherwise a leading `#` is stripped.
+  pub fn set_hash(&self, value: &str) -> Result<(), WebUrlError> {
+    enforce_input_len(value, &self.limits)?;
 
-    let mut cloned = self.url.clone();
-    if value.is_empty() {
-      cloned.set_fragment(None);
-    } else {
+    self.mutate_url(|url| {
+      if value.is_empty() {
+        url.set_fragment(None);
+        return Ok(());
+      }
       let fragment = value.strip_prefix('#').unwrap_or(value);
-      cloned.set_fragment(Some(fragment));
+      url.set_fragment(Some(fragment));
+      Ok(())
+    })
+  }
+
+  /// Return a live `URLSearchParams` view over this URL's query string.
+  pub fn search_params(&self) -> WebUrlSearchParams {
+    WebUrlSearchParams::associated(self.inner.clone(), self.limits.clone())
+  }
+
+  fn mutate_url<F>(&self, f: F) -> Result<(), WebUrlError>
+  where
+    F: FnOnce(&mut ::url::Url) -> Result<(), WebUrlError>,
+  {
+    let mut inner = self.inner.borrow_mut();
+    let before = inner.url.clone();
+
+    if let Err(err) = f(&mut inner.url) {
+      inner.url = before;
+      return Err(err);
     }
 
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
+    if let Err(err) = enforce_href_len(inner.url.as_str(), &self.limits) {
+      inner.url = before;
+      return Err(err);
+    }
+
     Ok(())
   }
+}
 
-  pub fn query(&self) -> Option<&str> {
-    self.url.query()
+impl std::fmt::Display for WebUrl {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.inner.borrow().url.as_str())
   }
+}
 
-  pub fn search_params(&self, limits: &WebUrlLimits) -> Result<WebUrlSearchParams, WebUrlError> {
-    match self.url.query() {
-      Some(query) => WebUrlSearchParams::parse(query, limits),
-      None => Ok(WebUrlSearchParams::new()),
-    }
+fn enforce_input_len(input: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
+  if input.len() > limits.max_input_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::InputBytes,
+      limit: limits.max_input_bytes,
+      attempted: input.len(),
+    });
   }
+  Ok(())
+}
 
-  pub fn set_search_params(
-    &mut self,
-    params: &WebUrlSearchParams,
-    limits: &WebUrlLimits,
-  ) -> Result<(), WebUrlError> {
-    let serialized = params.serialize(limits)?;
-    let mut cloned = self.url.clone();
-    if serialized.is_empty() {
-      cloned.set_query(None);
-    } else {
-      cloned.set_query(Some(serialized.as_str()));
-    }
-    Self::validate_url(&cloned, limits)?;
-    self.url = cloned;
-    Ok(())
+fn enforce_href_len(href: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
+  if href.len() > limits.max_input_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::InputBytes,
+      limit: limits.max_input_bytes,
+      attempted: href.len(),
+    });
   }
-
-  fn validate_url(url: &::url::Url, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    if url.as_str().len() > limits.max_input_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: url.as_str().len(),
-      });
-    }
-    if let Some(query) = url.query() {
-      let _ = WebUrlSearchParams::parse(query, limits)?;
-    }
-    Ok(())
-  }
+  Ok(())
 }
 
 fn try_clone_str(value: &str) -> Result<String, WebUrlError> {
@@ -409,15 +458,42 @@ fn try_clone_str(value: &str) -> Result<String, WebUrlError> {
   Ok(out)
 }
 
-fn split_host_and_port(input: &str) -> (&str, Option<u16>) {
-  if let Some((host, port)) = input.rsplit_once(':') {
-    if port.is_empty() {
-      return (host, None);
-    }
-    if let Ok(port) = port.parse::<u16>() {
-      return (host, Some(port));
-    }
+fn parse_authority_with_scheme(
+  scheme: &str,
+  authority: &str,
+  limits: &WebUrlLimits,
+  setter: WebUrlSetter,
+) -> Result<::url::Url, WebUrlError> {
+  // `{scheme}://{authority}`.
+  let capacity = scheme
+    .len()
+    .checked_add(3)
+    .and_then(|len| len.checked_add(authority.len()))
+    .ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::InputBytes,
+      limit: limits.max_input_bytes,
+      attempted: usize::MAX,
+    })?;
+  if capacity > limits.max_input_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::InputBytes,
+      limit: limits.max_input_bytes,
+      attempted: capacity,
+    });
   }
-  (input, None)
-}
 
+  let mut tmp = String::new();
+  tmp.try_reserve_exact(capacity)?;
+  tmp.push_str(scheme);
+  tmp.push_str("://");
+  tmp.push_str(authority);
+
+  match ::url::Url::parse(&tmp) {
+    Ok(url) => Ok(url),
+    Err(source) => Err(WebUrlError::SetterFailure {
+      setter,
+      value: try_clone_str(authority)?,
+      source: Some(source),
+    }),
+  }
+}

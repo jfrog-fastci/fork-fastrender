@@ -1,232 +1,539 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind};
 use crate::resource::web_url::limits::WebUrlLimits;
+use crate::resource::web_url::url::WebUrlInner;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+enum WebUrlSearchParamsInner {
+  /// A standalone `URLSearchParams` list with its own storage.
+  Standalone {
+    pairs: Rc<RefCell<Vec<(String, String)>>>,
+  },
+  /// A `URLSearchParams` view over an associated `WebUrl`.
+  Associated {
+    url: Rc<RefCell<WebUrlInner>>,
+  },
+}
+
+/// A bounded, WHATWG-shaped URLSearchParams list that preserves duplicates and stable ordering.
+#[derive(Clone, Debug)]
 pub struct WebUrlSearchParams {
-  pairs: Vec<(String, String)>,
+  inner: WebUrlSearchParamsInner,
+  limits: WebUrlLimits,
 }
 
 impl WebUrlSearchParams {
-  pub fn new() -> Self {
-    Self { pairs: Vec::new() }
+  pub fn new(limits: &WebUrlLimits) -> Self {
+    Self {
+      inner: WebUrlSearchParamsInner::Standalone {
+        pairs: Rc::new(RefCell::new(Vec::new())),
+      },
+      limits: limits.clone(),
+    }
   }
 
-  pub fn len(&self) -> usize {
-    self.pairs.len()
-  }
-
-  pub fn is_empty(&self) -> bool {
-    self.pairs.is_empty()
-  }
-
-  pub fn pairs(&self) -> &[(String, String)] {
-    &self.pairs
-  }
-
+  /// Parse a raw query string such as `"a=b&c=d"` or a leading-`?` variant such as `"?a=b"`.
   pub fn parse(input: &str, limits: &WebUrlLimits) -> Result<Self, WebUrlError> {
-    let input = input.strip_prefix('?').unwrap_or(input);
+    let pairs = parse_urlencoded_pairs(input, limits)?;
+    Ok(Self {
+      inner: WebUrlSearchParamsInner::Standalone {
+        pairs: Rc::new(RefCell::new(pairs)),
+      },
+      limits: limits.clone(),
+    })
+  }
 
-    if input.len() > limits.max_input_bytes {
+  pub(crate) fn associated(url: Rc<RefCell<WebUrlInner>>, limits: WebUrlLimits) -> Self {
+    Self {
+      inner: WebUrlSearchParamsInner::Associated { url },
+      limits,
+    }
+  }
+
+  pub fn len(&self) -> Result<usize, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => Ok(pairs.borrow().len()),
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
+        Ok(pairs.len())
+      }
+    }
+  }
+
+  /// Equivalent to the WHATWG `URLSearchParams.size` getter.
+  pub fn size(&self) -> Result<usize, WebUrlError> {
+    self.len()
+  }
+
+  pub fn is_empty(&self) -> Result<bool, WebUrlError> {
+    Ok(self.len()? == 0)
+  }
+
+  /// Return a cloned list of name/value pairs in stable list order.
+  pub fn pairs(&self) -> Result<Vec<(String, String)>, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs = pairs.borrow();
+        let mut out = Vec::new();
+        out.try_reserve(pairs.len())?;
+        for (n, v) in pairs.iter() {
+          out.try_reserve(1)?;
+          out.push((try_clone_str(n)?, try_clone_str(v)?));
+        }
+        Ok(out)
+      }
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)
+      }
+    }
+  }
+
+  pub fn get(&self, name: &str) -> Result<Option<String>, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => Ok(pairs
+        .borrow()
+        .iter()
+        .find_map(|(n, v)| if n == name { Some(v.as_str()) } else { None })
+        .map(try_clone_str)
+        .transpose()?),
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
+        for (n, v) in pairs {
+          if n == name {
+            return Ok(Some(v));
+          }
+        }
+        Ok(None)
+      }
+    }
+  }
+
+  pub fn get_all(&self, name: &str) -> Result<Vec<String>, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs = pairs.borrow();
+        let mut out = Vec::new();
+        for (n, v) in pairs.iter() {
+          if n == name {
+            out.try_reserve(1)?;
+            out.push(try_clone_str(v)?);
+          }
+        }
+        Ok(out)
+      }
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
+        let mut out = Vec::new();
+        for (n, v) in pairs {
+          if n == name {
+            out.try_reserve(1)?;
+            out.push(v);
+          }
+        }
+        Ok(out)
+      }
+    }
+  }
+
+  pub fn has(&self, name: &str, value: Option<&str>) -> Result<bool, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => Ok(match value {
+        None => pairs.borrow().iter().any(|(n, _)| n == name),
+        Some(value) => pairs.borrow().iter().any(|(n, v)| n == name && v == value),
+      }),
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
+        Ok(match value {
+          None => pairs.into_iter().any(|(n, _)| n == name),
+          Some(value) => pairs.into_iter().any(|(n, v)| n == name && v == value),
+        })
+      }
+    }
+  }
+
+  pub fn append(&self, name: &str, value: &str) -> Result<(), WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let mut pairs = pairs.borrow_mut();
+        enforce_append_limits(&pairs, name, value, &self.limits)?;
+
+        let name = try_clone_str(name)?;
+        let value = try_clone_str(value)?;
+
+        pairs.try_reserve(1)?;
+        pairs.push((name, value));
+
+        // Ensure the resulting list remains serializable within output limits.
+        if let Err(err) = serialize_urlencoded_pairs(&pairs, &self.limits) {
+          pairs.pop();
+          return Err(err);
+        }
+        Ok(())
+      }
+      WebUrlSearchParamsInner::Associated { url } => {
+        self.mutate_associated(url, |pairs| {
+          enforce_append_limits(pairs, name, value, &self.limits)?;
+          pairs.try_reserve(1)?;
+          pairs.push((try_clone_str(name)?, try_clone_str(value)?));
+          Ok(())
+        })
+      }
+    }
+  }
+
+  pub fn delete(&self, name: &str, value: Option<&str>) -> Result<(), WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        match value {
+          None => pairs.borrow_mut().retain(|(n, _)| n != name),
+          Some(value) => pairs.borrow_mut().retain(|(n, v)| n != name || v != value),
+        }
+        Ok(())
+      }
+      WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
+        match value {
+          None => pairs.retain(|(n, _)| n != name),
+          Some(value) => pairs.retain(|(n, v)| n != name || v != value),
+        }
+        Ok(())
+      }),
+    }
+  }
+
+  /// Set the first matching pair's value and remove any remaining pairs with the same name.
+  ///
+  /// If no existing pair matches `name`, append a new pair to the end of the list.
+  pub fn set(&self, name: &str, value: &str) -> Result<(), WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs_ref = pairs.borrow();
+        enforce_set_limits(&pairs_ref, name, value, &self.limits)?;
+
+        let old_len = pairs_ref.len();
+        let mut out: Vec<(String, String)> = Vec::new();
+        out.try_reserve(old_len.saturating_add(1))?;
+
+        let mut inserted = false;
+        let mut new_value = try_clone_str(value)?;
+        let mut new_key = if pairs_ref.iter().any(|(n, _)| n == name) {
+          None
+        } else {
+          Some(try_clone_str(name)?)
+        };
+
+        for (n, v) in pairs_ref.iter() {
+          if n == name {
+            if !inserted {
+              inserted = true;
+              out.push((try_clone_str(n)?, std::mem::take(&mut new_value)));
+            }
+          } else {
+            out.push((try_clone_str(n)?, try_clone_str(v)?));
+          }
+        }
+        if !inserted {
+          out.push((new_key.take().expect("new_key set when !inserted"), new_value));
+        }
+
+        // Ensure the new list remains serializable within output limits before committing the
+        // mutation.
+        serialize_urlencoded_pairs(&out, &self.limits)?;
+
+        drop(pairs_ref);
+        *pairs.borrow_mut() = out;
+        Ok(())
+      }
+      WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
+        enforce_set_limits(pairs, name, value, &self.limits)?;
+
+        let old_len = pairs.len();
+        let mut out: Vec<(String, String)> = Vec::new();
+        out.try_reserve(old_len.saturating_add(1))?;
+
+        let mut inserted = false;
+        let mut new_value = try_clone_str(value)?;
+        let mut new_key = if pairs.iter().any(|(n, _)| n == name) {
+          None
+        } else {
+          Some(try_clone_str(name)?)
+        };
+
+        let old = std::mem::take(pairs);
+        for (n, v) in old.into_iter() {
+          if n == name {
+            if !inserted {
+              inserted = true;
+              out.push((n, std::mem::take(&mut new_value)));
+            }
+          } else {
+            out.push((n, v));
+          }
+        }
+        if !inserted {
+          out.push((new_key.take().expect("new_key set when !inserted"), new_value));
+        }
+
+        *pairs = out;
+        Ok(())
+      }),
+    }
+  }
+
+  pub fn sort(&self) -> Result<(), WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        pairs.borrow_mut().sort_by(|(a, _), (b, _)| cmp_utf16(a, b));
+        Ok(())
+      }
+      WebUrlSearchParamsInner::Associated { url } => self.mutate_associated(url, |pairs| {
+        pairs.sort_by(|(a, _), (b, _)| cmp_utf16(a, b));
+        Ok(())
+      }),
+    }
+  }
+
+  /// Serialize this list using the x-www-form-urlencoded rules.
+  pub fn serialize(&self) -> Result<String, WebUrlError> {
+    match &self.inner {
+      WebUrlSearchParamsInner::Standalone { pairs } => {
+        let pairs = pairs.borrow();
+        serialize_urlencoded_pairs(&pairs, &self.limits)
+      }
+      WebUrlSearchParamsInner::Associated { url } => {
+        let url = url.borrow();
+        let pairs = parse_urlencoded_pairs(url.url.query().unwrap_or(""), &self.limits)?;
+        serialize_urlencoded_pairs(&pairs, &self.limits)
+      }
+    }
+  }
+
+  fn mutate_associated<F>(&self, url: &Rc<RefCell<WebUrlInner>>, f: F) -> Result<(), WebUrlError>
+  where
+    F: FnOnce(&mut Vec<(String, String)>) -> Result<(), WebUrlError>,
+  {
+    let mut inner = url.borrow_mut();
+    let before = inner.url.clone();
+
+    let query = inner.url.query().unwrap_or("");
+    let mut pairs = parse_urlencoded_pairs(query, &self.limits)?;
+
+    f(&mut pairs)?;
+
+    let serialized = serialize_urlencoded_pairs(&pairs, &self.limits)?;
+    if serialized.is_empty() {
+      inner.url.set_query(None);
+    } else {
+      inner.url.set_query(Some(serialized.as_str()));
+    }
+
+    let attempted = inner.url.as_str().len();
+    if attempted > self.limits.max_input_bytes {
+      inner.url = before;
       return Err(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::InputBytes,
-        limit: limits.max_input_bytes,
-        attempted: input.len(),
+        limit: self.limits.max_input_bytes,
+        attempted,
       });
     }
 
-    if input.is_empty() {
-      return Ok(Self::new());
-    }
-
-    // Capacity hint: count `&` up to the configured max to avoid repeated growth while still
-    // being linear time with small constants.
-    let mut estimate = 1usize;
-    for byte in input.as_bytes() {
-      if *byte == b'&' {
-        estimate = estimate.saturating_add(1);
-        if estimate >= limits.max_query_pairs {
-          break;
-        }
-      }
-    }
-    estimate = estimate.min(limits.max_query_pairs);
-
-    let mut pairs = Vec::new();
-    pairs.try_reserve(estimate)?;
-
-    let mut total_decoded_bytes: usize = 0;
-
-    for part in input.split('&') {
-      if part.is_empty() {
-        continue;
-      }
-
-      let next_count = pairs
-        .len()
-        .checked_add(1)
-        .ok_or(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::QueryPairs,
-          limit: limits.max_query_pairs,
-          attempted: usize::MAX,
-        })?;
-      if next_count > limits.max_query_pairs {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::QueryPairs,
-          limit: limits.max_query_pairs,
-          attempted: next_count,
-        });
-      }
-
-      let (name_part, value_part) = match part.split_once('=') {
-        Some((name, value)) => (name, value),
-        None => (part, ""),
-      };
-
-      let name_decoded_len = urlencoded_decoded_len(name_part);
-      let value_decoded_len = urlencoded_decoded_len(value_part);
-      let pair_decoded_len = name_decoded_len
-        .checked_add(value_decoded_len)
-        .ok_or(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::TotalQueryBytes,
-          limit: limits.max_total_query_bytes,
-          attempted: usize::MAX,
-        })?;
-
-      let next_total = total_decoded_bytes
-        .checked_add(pair_decoded_len)
-        .ok_or(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::TotalQueryBytes,
-          limit: limits.max_total_query_bytes,
-          attempted: usize::MAX,
-        })?;
-      if next_total > limits.max_total_query_bytes {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::TotalQueryBytes,
-          limit: limits.max_total_query_bytes,
-          attempted: next_total,
-        });
-      }
-
-      let name = decode_urlencoded_component(name_part, name_decoded_len)?;
-      let value = decode_urlencoded_component(value_part, value_decoded_len)?;
-
-      // No further allocations for updating these counters.
-      total_decoded_bytes = next_total;
-
-      pairs.try_reserve(1)?;
-      pairs.push((name, value));
-    }
-
-    Ok(Self { pairs })
-  }
-
-  pub fn replace_all(&mut self, input: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    let parsed = Self::parse(input, limits)?;
-    self.pairs = parsed.pairs;
     Ok(())
   }
+}
 
-  pub fn from_pairs<I, K, V>(pairs: I, limits: &WebUrlLimits) -> Result<Self, WebUrlError>
-  where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<str>,
-    V: AsRef<str>,
-  {
-    let mut out = Vec::new();
-    let mut total_decoded_bytes: usize = 0;
+fn enforce_append_limits(
+  pairs: &[(String, String)],
+  name: &str,
+  value: &str,
+  limits: &WebUrlLimits,
+) -> Result<(), WebUrlError> {
+  let next_count = pairs.len().checked_add(1).ok_or(WebUrlError::LimitExceeded {
+    kind: WebUrlLimitKind::QueryPairs,
+    limit: limits.max_query_pairs,
+    attempted: usize::MAX,
+  })?;
+  if next_count > limits.max_query_pairs {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::QueryPairs,
+      limit: limits.max_query_pairs,
+      attempted: next_count,
+    });
+  }
 
-    for (k, v) in pairs.into_iter() {
-      let next_count = out.len().checked_add(1).ok_or(WebUrlError::LimitExceeded {
+  let current_total = total_decoded_bytes(pairs, limits)?;
+  let pair_len = name.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
+    kind: WebUrlLimitKind::TotalQueryBytes,
+    limit: limits.max_total_query_bytes,
+    attempted: usize::MAX,
+  })?;
+  let next_total = current_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
+    kind: WebUrlLimitKind::TotalQueryBytes,
+    limit: limits.max_total_query_bytes,
+    attempted: usize::MAX,
+  })?;
+  if next_total > limits.max_total_query_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: next_total,
+    });
+  }
+
+  Ok(())
+}
+
+fn enforce_set_limits(
+  pairs: &[(String, String)],
+  name: &str,
+  value: &str,
+  limits: &WebUrlLimits,
+) -> Result<(), WebUrlError> {
+  let mut next_count: usize = 0;
+  let mut next_total: usize = 0;
+  let mut inserted = false;
+
+  for (n, v) in pairs {
+    if n == name {
+      if inserted {
+        continue;
+      }
+      inserted = true;
+      next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::QueryPairs,
         limit: limits.max_query_pairs,
         attempted: usize::MAX,
       })?;
-      if next_count > limits.max_query_pairs {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::QueryPairs,
-          limit: limits.max_query_pairs,
-          attempted: next_count,
-        });
-      }
-
-      let k = k.as_ref();
-      let v = v.as_ref();
-
-      let pair_len = k.len().checked_add(v.len()).ok_or(WebUrlError::LimitExceeded {
+      let pair_len = n.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::TotalQueryBytes,
         limit: limits.max_total_query_bytes,
         attempted: usize::MAX,
       })?;
-
-      let next_total = total_decoded_bytes.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
+      next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::TotalQueryBytes,
         limit: limits.max_total_query_bytes,
         attempted: usize::MAX,
       })?;
-      if next_total > limits.max_total_query_bytes {
-        return Err(WebUrlError::LimitExceeded {
-          kind: WebUrlLimitKind::TotalQueryBytes,
-          limit: limits.max_total_query_bytes,
-          attempted: next_total,
-        });
-      }
-
-      let key = try_clone_str(k)?;
-      let value = try_clone_str(v)?;
-
-      total_decoded_bytes = next_total;
-      out.try_reserve(1)?;
-      out.push((key, value));
-    }
-
-    Ok(Self { pairs: out })
-  }
-
-  pub fn serialize(&self, limits: &WebUrlLimits) -> Result<String, WebUrlError> {
-    if self.pairs.is_empty() {
-      return Ok(String::new());
-    }
-
-    let mut bytes = Vec::new();
-    let mut written: usize = 0;
-    for (idx, (name, value)) in self.pairs.iter().enumerate() {
-      if idx != 0 {
-        push_byte_limited(&mut bytes, b'&', &mut written, limits.max_input_bytes)?;
-      }
-      append_urlencoded_limited(
-        &mut bytes,
-        name.as_bytes(),
-        &mut written,
-        limits.max_input_bytes,
-      )?;
-      push_byte_limited(&mut bytes, b'=', &mut written, limits.max_input_bytes)?;
-      append_urlencoded_limited(
-        &mut bytes,
-        value.as_bytes(),
-        &mut written,
-        limits.max_input_bytes,
-      )?;
-    }
-
-    // The output is ASCII; UTF-8 conversion should never fail.
-    String::from_utf8(bytes).map_err(|_| WebUrlError::InvalidUtf8)
-  }
-
-  pub fn append(
-    &mut self,
-    name: &str,
-    value: &str,
-    limits: &WebUrlLimits,
-  ) -> Result<(), WebUrlError> {
-    let next_count = self
-      .pairs
-      .len()
-      .checked_add(1)
-      .ok_or(WebUrlError::LimitExceeded {
+    } else {
+      next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::QueryPairs,
         limit: limits.max_query_pairs,
         attempted: usize::MAX,
       })?;
+      let pair_len = n.len().checked_add(v.len()).ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
+      next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: limits.max_total_query_bytes,
+        attempted: usize::MAX,
+      })?;
+    }
+  }
+
+  if !inserted {
+    next_count = next_count.checked_add(1).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::QueryPairs,
+      limit: limits.max_query_pairs,
+      attempted: usize::MAX,
+    })?;
+    let pair_len = name.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+    next_total = next_total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+  }
+
+  if next_count > limits.max_query_pairs {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::QueryPairs,
+      limit: limits.max_query_pairs,
+      attempted: next_count,
+    });
+  }
+  if next_total > limits.max_total_query_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: next_total,
+    });
+  }
+
+  Ok(())
+}
+
+fn total_decoded_bytes(pairs: &[(String, String)], limits: &WebUrlLimits) -> Result<usize, WebUrlError> {
+  let mut total: usize = 0;
+  for (n, v) in pairs {
+    let pair_len = n.len().checked_add(v.len()).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+    total = total.checked_add(pair_len).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+  }
+  Ok(total)
+}
+
+fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(String, String)>, WebUrlError> {
+  let input = input.strip_prefix('?').unwrap_or(input);
+
+  if input.len() > limits.max_input_bytes {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::InputBytes,
+      limit: limits.max_input_bytes,
+      attempted: input.len(),
+    });
+  }
+
+  if input.is_empty() {
+    return Ok(Vec::new());
+  }
+
+  // Capacity hint: count `&` up to the configured max to avoid repeated growth while still being
+  // linear time with small constants.
+  let mut estimate = 1usize;
+  for byte in input.as_bytes() {
+    if *byte == b'&' {
+      estimate = estimate.saturating_add(1);
+      if estimate >= limits.max_query_pairs {
+        break;
+      }
+    }
+  }
+  estimate = estimate.min(limits.max_query_pairs);
+
+  let mut pairs = Vec::new();
+  pairs.try_reserve(estimate)?;
+
+  let mut total_decoded_bytes: usize = 0;
+
+  for part in input.split('&') {
+    if part.is_empty() {
+      continue;
+    }
+
+    let next_count = pairs.len().checked_add(1).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::QueryPairs,
+      limit: limits.max_query_pairs,
+      attempted: usize::MAX,
+    })?;
     if next_count > limits.max_query_pairs {
       return Err(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::QueryPairs,
@@ -235,7 +542,24 @@ impl WebUrlSearchParams {
       });
     }
 
-    let (current_total, next_total) = total_query_bytes_checked(&self.pairs, name, value, limits)?;
+    let (name_part, value_part) = match part.split_once('=') {
+      Some((name, value)) => (name, value),
+      None => (part, ""),
+    };
+
+    let name_decoded_len = urlencoded_decoded_len(name_part);
+    let value_decoded_len = urlencoded_decoded_len(value_part);
+    let pair_decoded_len = name_decoded_len.checked_add(value_decoded_len).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
+
+    let next_total = total_decoded_bytes.checked_add(pair_decoded_len).ok_or(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: limits.max_total_query_bytes,
+      attempted: usize::MAX,
+    })?;
     if next_total > limits.max_total_query_bytes {
       return Err(WebUrlError::LimitExceeded {
         kind: WebUrlLimitKind::TotalQueryBytes,
@@ -244,96 +568,43 @@ impl WebUrlSearchParams {
       });
     }
 
-    self.pairs.try_reserve(1)?;
-    self.pairs.push((try_clone_str(name)?, try_clone_str(value)?));
+    let name = decode_urlencoded_component(name_part, name_decoded_len)?;
+    let value = decode_urlencoded_component(value_part, value_decoded_len)?;
 
-    // Ensure the resulting list can be serialized under the configured output limits.
-    if let Err(err) = self.serialize(limits) {
-      self.pairs.pop();
-      // Restore byte accounting (no allocations required).
-      debug_assert_eq!(total_query_bytes(&self.pairs), current_total);
-      return Err(err);
-    }
-
-    Ok(())
+    total_decoded_bytes = next_total;
+    pairs.try_reserve(1)?;
+    pairs.push((name, value));
   }
 
-  pub fn delete(&mut self, name: &str, value: Option<&str>) {
-    match value {
-      None => self.pairs.retain(|(n, _)| n != name),
-      Some(value) => self.pairs.retain(|(n, v)| n != name || v != value),
-    }
+  Ok(pairs)
+}
+
+fn serialize_urlencoded_pairs(
+  pairs: &[(String, String)],
+  limits: &WebUrlLimits,
+) -> Result<String, WebUrlError> {
+  if pairs.is_empty() {
+    return Ok(String::new());
   }
 
-  pub fn get(&self, name: &str) -> Option<&str> {
-    self
-      .pairs
-      .iter()
-      .find_map(|(n, v)| if n == name { Some(v.as_str()) } else { None })
+  let mut bytes = Vec::new();
+  let mut written: usize = 0;
+  for (idx, (name, value)) in pairs.iter().enumerate() {
+    if idx != 0 {
+      push_byte_limited(&mut bytes, b'&', &mut written, limits.max_input_bytes)?;
+    }
+    append_urlencoded_limited(&mut bytes, name.as_bytes(), &mut written, limits.max_input_bytes)?;
+    push_byte_limited(&mut bytes, b'=', &mut written, limits.max_input_bytes)?;
+    append_urlencoded_limited(
+      &mut bytes,
+      value.as_bytes(),
+      &mut written,
+      limits.max_input_bytes,
+    )?;
   }
 
-  pub fn get_all(&self, name: &str) -> Vec<&str> {
-    self
-      .pairs
-      .iter()
-      .filter_map(|(n, v)| if n == name { Some(v.as_str()) } else { None })
-      .collect()
-  }
-
-  pub fn has(&self, name: &str, value: Option<&str>) -> bool {
-    match value {
-      None => self.pairs.iter().any(|(n, _)| n == name),
-      Some(value) => self.pairs.iter().any(|(n, v)| n == name && v == value),
-    }
-  }
-
-  pub fn set(&mut self, name: &str, value: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
-    // Build the new list without mutating `self` until we've validated all limits.
-    let mut out: Vec<(String, String)> = Vec::new();
-    out.try_reserve(self.pairs.len().saturating_add(1))?;
-
-    let mut seen = false;
-    for (n, v) in self.pairs.iter() {
-      if n == name {
-        if !seen {
-          seen = true;
-          out.push((try_clone_str(n)?, try_clone_str(value)?));
-        }
-      } else {
-        out.push((try_clone_str(n)?, try_clone_str(v)?));
-      }
-    }
-    if !seen {
-      out.push((try_clone_str(name)?, try_clone_str(value)?));
-    }
-
-    if out.len() > limits.max_query_pairs {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::QueryPairs,
-        limit: limits.max_query_pairs,
-        attempted: out.len(),
-      });
-    }
-
-    let total = total_query_bytes(&out);
-    if total > limits.max_total_query_bytes {
-      return Err(WebUrlError::LimitExceeded {
-        kind: WebUrlLimitKind::TotalQueryBytes,
-        limit: limits.max_total_query_bytes,
-        attempted: total,
-      });
-    }
-
-    let candidate = WebUrlSearchParams { pairs: out };
-    candidate.serialize(limits)?;
-    let WebUrlSearchParams { pairs } = candidate;
-    self.pairs = pairs;
-    Ok(())
-  }
-
-  pub fn sort(&mut self) {
-    self.pairs.sort_by(|(a, _), (b, _)| cmp_utf16(a, b));
-  }
+  // The output is ASCII; UTF-8 conversion should never fail.
+  String::from_utf8(bytes).map_err(|_| WebUrlError::InvalidUtf8)
 }
 
 fn try_clone_str(value: &str) -> Result<String, WebUrlError> {
@@ -398,7 +669,6 @@ fn decode_urlencoded_component(input: &str, decoded_len: usize) -> Result<String
     }
   }
 
-  // Enforce `decoded_len` strictly: if our accounting ever diverges, clamp to a safe error.
   if out.len() != decoded_len {
     return Err(WebUrlError::InvalidUtf8);
   }
@@ -448,9 +718,6 @@ fn append_urlencoded_limited(
 ) -> Result<(), WebUrlError> {
   for &byte in input {
     match byte {
-      // The application/x-www-form-urlencoded percent-encode set leaves:
-      //   ALPHA / DIGIT / "*" / "-" / "." / "_"
-      // unescaped and percent-encodes everything else, with space mapped to `+`.
       b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
         push_byte_limited(output, byte, written, max_bytes)?;
       }
@@ -488,33 +755,6 @@ fn hex_upper(value: u8) -> u8 {
     10..=15 => b'A' + (value - 10),
     _ => b'0',
   }
-}
-
-fn total_query_bytes(pairs: &[(String, String)]) -> usize {
-  pairs
-    .iter()
-    .map(|(n, v)| n.len().saturating_add(v.len()))
-    .sum()
-}
-
-fn total_query_bytes_checked(
-  pairs: &[(String, String)],
-  name: &str,
-  value: &str,
-  limits: &WebUrlLimits,
-) -> Result<(usize, usize), WebUrlError> {
-  let current_total = total_query_bytes(pairs);
-  let added = name.len().checked_add(value.len()).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: limits.max_total_query_bytes,
-    attempted: usize::MAX,
-  })?;
-  let next_total = current_total.checked_add(added).ok_or(WebUrlError::LimitExceeded {
-    kind: WebUrlLimitKind::TotalQueryBytes,
-    limit: limits.max_total_query_bytes,
-    attempted: usize::MAX,
-  })?;
-  Ok((current_total, next_total))
 }
 
 fn cmp_utf16(a: &str, b: &str) -> std::cmp::Ordering {
