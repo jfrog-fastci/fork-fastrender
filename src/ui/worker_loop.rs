@@ -312,11 +312,20 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
         navigate_tab(tab_id, tab, &ui_tx, url, reason);
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-        // This legacy worker loop does not implement history navigation.
+      UiToWorker::GoBack { tab_id } | UiToWorker::GoForward { tab_id } => {
+        let _ = ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: "navigation history is not tracked by this worker loop; ignoring back/forward".to_string(),
+        });
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-        // History navigation is not implemented in this minimal worker loop.
+      UiToWorker::Reload { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let Some(url) = tab.url.clone() else {
+          continue;
+        };
+        navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::Reload);
       }
       UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
         // Legacy headless worker loop does not model tab history beyond simple navigations.
