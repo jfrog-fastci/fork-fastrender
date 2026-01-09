@@ -110,6 +110,30 @@ fn outer_html_does_not_escape_script_text() {
 }
 
 #[test]
+fn outer_html_does_not_escape_style_text() {
+  let root = parse_html(
+    r#"<!doctype html><html><body><div id=target><style>.a{content:"a < b & c"}</style></div></body></html>"#,
+  )
+  .unwrap();
+  let doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  let html = doc.get_outer_html(div).unwrap();
+  assert!(
+    html.contains("a < b & c"),
+    "expected raw '<'/'&' in serialized <style> text, got: {html}"
+  );
+  assert!(
+    !html.contains("&lt;"),
+    "unexpected escaping inside <style> text, got: {html}"
+  );
+  assert!(
+    !html.contains("&amp;"),
+    "unexpected escaping inside <style> text, got: {html}"
+  );
+}
+
+#[test]
 fn inner_html_does_not_escape_script_or_style_text() {
   let root = parse_html(
     r#"<!doctype html><html><body>
