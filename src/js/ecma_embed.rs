@@ -233,6 +233,10 @@ impl ScriptRealm for VmJsScriptRealm {
     source: &str,
     budget: ScriptBudgetOverride,
   ) -> Result<ScriptValue, ScriptError> {
+    // If a previous evaluation was interrupted, the VM interrupt token stays set until the host
+    // resets it. Without this, all subsequent evaluations would immediately terminate.
+    self.interrupt_flag.store(false, Ordering::Relaxed);
+
     let render_deadline =
       crate::render_control::active_deadline().or_else(crate::render_control::root_deadline);
     let budget = self.derive_budget(render_deadline.as_ref(), &budget);
@@ -864,5 +868,33 @@ mod tests {
       realm.heap.get_string(s).unwrap().as_code_units(),
       &[0x0061, 0xD800, 0x0062]
     );
+  }
+
+  #[test]
+  fn interrupt_is_reset_between_evaluations() {
+    let deadline = RenderDeadline::new(None, Some(Arc::new(|| true)));
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    let err = crate::render_control::with_deadline(Some(&deadline), || {
+      realm.eval_script("interrupt.js", "1+2")
+    })
+    .unwrap_err();
+    assert!(matches!(
+      err,
+      ScriptError::Termination {
+        reason: ScriptTerminationReason::Interrupted,
+        ..
+      }
+    ));
+
+    let value = realm.eval_script("ok.js", "1+2").unwrap();
+    assert_eq!(value, ScriptValue::Number(3.0));
   }
 }

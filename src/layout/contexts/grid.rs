@@ -11623,9 +11623,8 @@ mod tests {
     let normal_fp = super::grid_child_fingerprint(&children_normal, false, &mut deadline_counter)
       .expect("fingerprint");
     let mut deadline_counter = 0usize;
-    let replaced_fp =
-      super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
-        .expect("fingerprint");
+    let replaced_fp = super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
+      .expect("fingerprint");
 
     assert_ne!(
       normal_fp, replaced_fp,
