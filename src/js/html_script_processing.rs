@@ -50,10 +50,11 @@ struct JsExecutionGuard {
 impl JsExecutionGuard {
   fn enter(state: &Rc<RefCell<HtmlScriptProcessingState>>) -> Self {
     let mut state_ref = state.borrow_mut();
-    state_ref.js_execution_depth = state_ref
-      .js_execution_depth
-      .checked_add(1)
-      .expect("js execution depth overflow");
+    let next = state_ref.js_execution_depth.saturating_add(1);
+    if next == state_ref.js_execution_depth {
+      debug_assert!(false, "js execution depth overflow");
+    }
+    state_ref.js_execution_depth = next;
     Self {
       state: Rc::clone(state),
     }
@@ -63,10 +64,12 @@ impl JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let mut state = self.state.borrow_mut();
-    state.js_execution_depth = state
-      .js_execution_depth
-      .checked_sub(1)
-      .expect("js execution depth underflow");
+    let prev = state.js_execution_depth;
+    if prev == 0 {
+      debug_assert!(false, "js execution depth underflow");
+      return;
+    }
+    state.js_execution_depth = prev - 1;
   }
 }
 
