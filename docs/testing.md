@@ -108,6 +108,17 @@ cargo xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.js
 cargo run --release --bin pageset_progress -- report --rank-accuracy
 ```
 
+Preferred workflow for refreshing the committed accuracy telemetry:
+
+```bash
+# Runs `fixture-chrome-diff`, then syncs `<out>/report.json` into progress/pages/*.json, and prints
+# the current top-10 worst accuracy entries.
+cargo xtask refresh-progress-accuracy
+
+# Refresh only the top-N worst accuracy pages from the existing progress JSON:
+cargo xtask refresh-progress-accuracy --from-progress progress/pages --top-worst-accuracy 10
+```
+
 When driving this from pageset runs, you can select the relevant fixtures directly from the
 committed `progress/pages/*.json` artifacts:
 

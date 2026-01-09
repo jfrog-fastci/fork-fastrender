@@ -21,6 +21,7 @@ mod lint_no_panics;
 mod page_loop;
 mod pageset_triage;
 mod recapture_page_fixtures;
+mod refresh_progress_accuracy;
 mod sync_progress_accuracy;
 mod update_pageset_guardrails;
 mod update_pageset_guardrails_budgets;
@@ -54,6 +55,9 @@ fn main() -> Result<()> {
     }
     Commands::SyncProgressAccuracy(args) => {
       sync_progress_accuracy::run_sync_progress_accuracy(args)
+    }
+    Commands::RefreshProgressAccuracy(args) => {
+      refresh_progress_accuracy::run_refresh_progress_accuracy(args)
     }
     Commands::UpdatePagesetGuardrails(args) => {
       update_pageset_guardrails::run_update_pageset_guardrails(args)
@@ -124,6 +128,8 @@ enum Commands {
   RecapturePageFixtures(recapture_page_fixtures::RecapturePageFixturesArgs),
   /// Sync deterministic fixture accuracy metrics into `progress/pages/*.json`
   SyncProgressAccuracy(sync_progress_accuracy::SyncProgressAccuracyArgs),
+  /// Run `fixture-chrome-diff` and sync its report into `progress/pages/*.json` (one-command refresh).
+  RefreshProgressAccuracy(refresh_progress_accuracy::RefreshProgressAccuracyArgs),
   /// Update `tests/pages/pageset_guardrails.json` based on `progress/pages/*.json`
   #[command(alias = "update-pageset-timeouts")]
   UpdatePagesetGuardrails(update_pageset_guardrails::UpdatePagesetGuardrailsArgs),

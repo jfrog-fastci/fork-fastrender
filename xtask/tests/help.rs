@@ -21,6 +21,7 @@ fn help_lists_commands() {
       && stdout.contains("chrome-baseline-fixtures")
       && stdout.contains("fixture-chrome-diff")
       && stdout.contains("fixture-determinism")
+      && stdout.contains("refresh-progress-accuracy")
       && stdout.contains("capture-accuracy-fixtures")
       && stdout.contains("pageset")
       && stdout.contains("pageset-diff")
@@ -215,6 +216,36 @@ fn fixture_determinism_help_mentions_flags() {
       && stdout.contains("--ignore-alpha")
       && stdout.contains("--allow-differences")
       && stdout.contains("--no-build"),
+    "help output should mention key flags; got:\n{stdout}"
+  );
+}
+
+#[test]
+fn refresh_progress_accuracy_help_mentions_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["refresh-progress-accuracy", "--help"])
+    .output()
+    .expect("run cargo xtask refresh-progress-accuracy --help");
+
+  assert!(
+    output.status.success(),
+    "refresh-progress-accuracy help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--progress-dir")
+      && stdout.contains("--out-dir")
+      && stdout.contains("--fixtures")
+      && stdout.contains("--from-progress")
+      && stdout.contains("--only-failures")
+      && stdout.contains("--top-worst-accuracy")
+      && stdout.contains("--tolerance")
+      && stdout.contains("--max-diff-percent")
+      && stdout.contains("--ignore-alpha")
+      && stdout.contains("--max-perceptual-distance")
+      && stdout.contains("--dry-run")
+      && stdout.contains("--print-top-worst"),
     "help output should mention key flags; got:\n{stdout}"
   );
 }
