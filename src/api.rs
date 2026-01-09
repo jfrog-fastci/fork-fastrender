@@ -10285,6 +10285,65 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
+    // Install this renderer's configured runtime toggles while performing layout.
+    //
+    // Layout may run on a helper thread with a larger stack, and may recurse for nested browsing
+    // contexts. `runtime::with_runtime_toggles` uses a process-global lock to serialize toggles
+    // overrides across threads; calling it from the helper thread would deadlock because the
+    // spawning thread holds the lock while waiting for the helper thread to join.
+    //
+    // Therefore, only install the global toggle override on the *calling* thread (i.e. when we are
+    // not already executing within a layout stack helper thread). The helper thread (and any
+    // nested layout calls it makes) will observe the same toggles via the global runtime toggles
+    // state that remains active until the join completes.
+    if !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
+      let runtime_toggles = Arc::clone(&self.runtime_toggles);
+      return runtime::with_runtime_toggles(runtime_toggles, || {
+        self.layout_document_for_media_with_artifacts_impl(
+          dom,
+          width,
+          height,
+          media_type,
+          options,
+          viewport_scroll,
+          deadline,
+          stage_mem_budget_bytes,
+          trace,
+          layout_parallelism,
+          stats,
+        )
+      });
+    }
+
+    self.layout_document_for_media_with_artifacts_impl(
+      dom,
+      width,
+      height,
+      media_type,
+      options,
+      viewport_scroll,
+      deadline,
+      stage_mem_budget_bytes,
+      trace,
+      layout_parallelism,
+      stats,
+    )
+  }
+
+  fn layout_document_for_media_with_artifacts_impl(
+    &mut self,
+    dom: &DomNode,
+    width: u32,
+    height: u32,
+    media_type: MediaType,
+    options: LayoutDocumentOptions,
+    viewport_scroll: Point,
+    deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
+    trace: &TraceHandle,
+    layout_parallelism: LayoutParallelism,
+    stats: Option<&mut RenderStatsRecorder>,
+  ) -> Result<LayoutArtifacts> {
     let needs_large_stack = matches!(media_type, MediaType::Print) || cfg!(debug_assertions);
     if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get())
     {
@@ -10356,35 +10415,29 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    // Layout can consult runtime toggles (e.g. media preference overrides). Ensure the renderer's
-    // configured toggles are active so library users can override env-derived behavior without
-    // mutating process environment variables.
-    let runtime_toggles = Arc::clone(&self.runtime_toggles);
-    runtime::with_runtime_toggles(runtime_toggles, || {
-      let inherited_deadline = crate::render_control::active_deadline();
-      let deadline = deadline.or(inherited_deadline.as_ref());
-      let _deadline_guard = DeadlineGuard::install(deadline);
-      let clone_timer = stats.as_deref().and_then(|rec| rec.timer());
-      let (dom_with_state, needs_top_layer_state) =
-        dom::clone_dom_with_deadline_and_top_layer_hint(dom, RenderStage::DomParse)?;
-      if let Some(rec) = stats.as_deref_mut() {
-        RenderStatsRecorder::add_ms(&mut rec.stats.timings.dom_clone_ms, clone_timer);
-      }
-      self.layout_document_for_media_with_artifacts_owned(
-        dom_with_state,
-        needs_top_layer_state,
-        width,
-        height,
-        media_type,
-        options,
-        viewport_scroll,
-        deadline,
-        stage_mem_budget_bytes,
-        trace,
-        layout_parallelism,
-        stats,
-      )
-    })
+    let inherited_deadline = crate::render_control::active_deadline();
+    let deadline = deadline.or(inherited_deadline.as_ref());
+    let _deadline_guard = DeadlineGuard::install(deadline);
+    let clone_timer = stats.as_deref().and_then(|rec| rec.timer());
+    let (dom_with_state, needs_top_layer_state) =
+      dom::clone_dom_with_deadline_and_top_layer_hint(dom, RenderStage::DomParse)?;
+    if let Some(rec) = stats.as_deref_mut() {
+      RenderStatsRecorder::add_ms(&mut rec.stats.timings.dom_clone_ms, clone_timer);
+    }
+    self.layout_document_for_media_with_artifacts_owned(
+      dom_with_state,
+      needs_top_layer_state,
+      width,
+      height,
+      media_type,
+      options,
+      viewport_scroll,
+      deadline,
+      stage_mem_budget_bytes,
+      trace,
+      layout_parallelism,
+      stats,
+    )
   }
 
   fn layout_document_for_media_with_artifacts_owned(
