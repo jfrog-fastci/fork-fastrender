@@ -47,20 +47,18 @@ fn pk(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {
   rt.property_key_from_str(name)
 }
 
-fn value_to_string(rt: &VmJsRuntime, v: Value) -> Result<String, VmError> {
-  let Value::String(s) = v else {
-    return Err(VmError::Unimplemented("expected Value::String"));
-  };
-  Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+fn string_value_to_utf16_lossy(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
+  let units = rt.with_string_code_units(v, |view| view.to_vec())?;
+  Ok(String::from_utf16_lossy(&units))
 }
 
 fn to_dom_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
-  let v = rt.to_string(v)?;
-  value_to_string(rt, v)
+  let s = rt.to_string(v)?;
+  string_value_to_utf16_lossy(rt, s)
 }
 
 fn to_usv_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
-  // `vm-js`'s `to_utf8_lossy` already performs surrogate replacement, which is sufficient for these
+  // `String::from_utf16_lossy` performs surrogate replacement, which is sufficient for these
   // binding-level smoke tests.
   to_dom_string(rt, v)
 }
@@ -68,18 +66,15 @@ fn to_usv_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
 const BYTESTRING_RANGE_ERR: &str = "ByteString value must only contain code units in range 0..=255";
 
 fn to_byte_string(rt: &mut VmJsRuntime, v: Value) -> Result<Vec<u8>, VmError> {
-  let v = rt.to_string(v)?;
-  let Value::String(s) = v else {
-    return Err(rt.throw_type_error("ToString did not return a string"));
-  };
-  let units = rt.heap().get_string(s)?.as_code_units();
+  let s = rt.to_string(v)?;
+  let units = rt.with_string_code_units(s, |view| view.to_vec())?;
 
   let mut out = Vec::new();
   out
     .try_reserve_exact(units.len())
     .map_err(|_| VmError::OutOfMemory)?;
 
-  for &u in units {
+  for u in units {
     if u > 0xFF {
       return Err(rt.throw_type_error(BYTESTRING_RANGE_ERR));
     }
@@ -135,9 +130,9 @@ fn convert_add_event_listener_options_dict(
 }
 
 fn alloc_symbol(rt: &mut VmJsRuntime, description: &str) -> Result<Value, VmError> {
-  let desc = rt.alloc_string_value(description)?;
+  let desc = rt.alloc_string(description)?;
   let Value::String(desc) = desc else {
-    return Err(rt.throw_type_error("symbol description did not allocate as a string"));
+    return Err(VmError::Unimplemented("expected JS string value"));
   };
   let sym = rt.heap_mut().symbol_for(desc)?;
   let _ = rt.heap_mut().add_root(Value::Symbol(sym));
@@ -157,12 +152,12 @@ fn assert_type_error(rt: &mut VmJsRuntime, err: VmError, expected_message: &str)
   let name = rt
     .get(thrown, name_key)
     .and_then(|v| rt.to_string(v))
-    .and_then(|v| value_to_string(rt, v))
+    .and_then(|v| string_value_to_utf16_lossy(rt, v))
     .unwrap();
   let message = rt
     .get(thrown, message_key)
     .and_then(|v| rt.to_string(v))
-    .and_then(|v| value_to_string(rt, v))
+    .and_then(|v| string_value_to_utf16_lossy(rt, v))
     .unwrap();
 
   assert_eq!(name, "TypeError");

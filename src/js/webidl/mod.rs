@@ -4,4 +4,7 @@
 //! trait boundary here so the eventual DOM bindings can depend on `fastrender::js::webidl` without
 //! pulling in additional crates directly.
 
-pub use webidl_js_runtime::{IteratorRecord, JsOwnPropertyDescriptor, JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+pub use webidl_js_runtime::{
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, VmJsRuntime,
+  WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+};

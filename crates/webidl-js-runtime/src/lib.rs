@@ -16,5 +16,8 @@ pub use overload_resolution::{
   resolve_overload, throw_no_matching_overload, ConvertedArgument, OverloadArg, OverloadSig,
   Optionality, ResolvedOverload, WebIdlValue,
 };
-pub use runtime::{IteratorRecord, JsOwnPropertyDescriptor, JsRuntime, WebIdlJsRuntime};
+pub use runtime::{
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlHooks,
+  WebIdlJsRuntime, WebIdlLimits,
+};
 pub use to_js::{to_js, to_js_with_limits, ToJsLimits};

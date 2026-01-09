@@ -6,7 +6,9 @@
 
 use crate::runtime::WebIdlJsRuntime;
 
-use webidl_ir::{IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext, WebIdlValue};
+use webidl_ir::{
+  IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext, WebIdlValue,
+};
 
 /// Limits applied while converting WebIDL values back into JavaScript.
 ///

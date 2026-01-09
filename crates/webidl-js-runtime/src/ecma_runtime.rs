@@ -1,5 +1,6 @@
 use crate::runtime::{
-  IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlJsRuntime,
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlHooks,
+  WebIdlJsRuntime, WebIdlLimits,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -70,6 +71,7 @@ pub struct VmJsRuntime {
   objects: HashMap<GcObject, HostObject>,
   // Intern pool for common strings used as property keys.
   interned_strings: HashMap<String, GcString>,
+  webidl_limits: WebIdlLimits,
   well_known_iterator: Option<GcSymbol>,
   well_known_async_iterator: Option<GcSymbol>,
 }
@@ -84,6 +86,7 @@ impl VmJsRuntime {
       heap: Heap::new(limits),
       objects: HashMap::new(),
       interned_strings: HashMap::new(),
+      webidl_limits: WebIdlLimits::default(),
       well_known_iterator: None,
       well_known_async_iterator: None,
     }
@@ -628,6 +631,40 @@ impl Default for VmJsRuntime {
   }
 }
 
+impl WebIdlHooks<Value> for VmJsRuntime {
+  fn is_platform_object(&self, value: Value) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    matches!(
+      self.objects.get(&obj).map(|o| &o.kind),
+      Some(HostObjectKind::PlatformObject { .. })
+    )
+  }
+
+  fn implements_interface(&self, value: Value, interface: InterfaceId) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    let Some(host) = self.objects.get(&obj) else {
+      return false;
+    };
+    match &host.kind {
+      HostObjectKind::PlatformObject {
+        primary_interface,
+        implements,
+        ..
+      } => {
+        InterfaceId::from_name(primary_interface) == interface
+          || implements
+            .iter()
+            .any(|name| InterfaceId::from_name(name) == interface)
+      }
+      _ => false,
+    }
+  }
+}
+
 impl JsRuntime for VmJsRuntime {
   type JsValue = Value;
   type PropertyKey = PropertyKey;
@@ -653,6 +690,15 @@ impl JsRuntime for VmJsRuntime {
     self.alloc_string_value(value)
   }
 
+  fn alloc_string_from_code_units(&mut self, units: &[u16]) -> Result<Value, VmError> {
+    let handle = {
+      let mut scope = self.heap.scope();
+      scope.alloc_string_from_code_units(units)?
+    };
+    root_value(&mut self.heap, Value::String(handle));
+    Ok(Value::String(handle))
+  }
+
   fn is_undefined(&self, value: Value) -> bool {
     matches!(value, Value::Undefined)
   }
@@ -660,6 +706,24 @@ impl JsRuntime for VmJsRuntime {
   fn is_null(&self, value: Value) -> bool {
     matches!(value, Value::Null)
   }
+
+  fn with_string_code_units<R>(
+    &mut self,
+    string: Value,
+    f: impl FnOnce(&[u16]) -> R,
+  ) -> Result<R, VmError> {
+    let handle = match string {
+      Value::String(s) => s,
+      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
+        Some(HostObjectKind::StringObject { string_data }) => *string_data,
+        _ => return Err(self.throw_type_error("value is not a string")),
+      },
+      _ => return Err(self.throw_type_error("value is not a string")),
+    };
+    let js = self.heap.get_string(handle)?;
+    Ok(f(js.as_code_units()))
+  }
+
   fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
     self.prop_key_str(s)
   }
@@ -1035,6 +1099,14 @@ impl JsRuntime for VmJsRuntime {
 }
 
 impl WebIdlJsRuntime for VmJsRuntime {
+  fn limits(&self) -> WebIdlLimits {
+    self.webidl_limits
+  }
+
+  fn hooks(&self) -> &dyn WebIdlHooks<Value> {
+    self
+  }
+
   fn symbol_iterator(&mut self) -> Result<PropertyKey, VmError> {
     if let Some(sym) = self.well_known_iterator {
       return Ok(PropertyKey::Symbol(sym));

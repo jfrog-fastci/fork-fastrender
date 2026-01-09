@@ -4,6 +4,63 @@
 //! operations. This module defines the minimal operations that the binding layer needs from an
 //! embedded JS engine.
 
+/// A stable identifier for a WebIDL interface.
+///
+/// Binding generators can assign unique IDs per interface and then use those IDs for fast runtime
+/// checks (e.g. `instanceof`-like checks for platform objects).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InterfaceId(pub u32);
+
+impl InterfaceId {
+  /// Derive a stable [`InterfaceId`] from an interface name.
+  ///
+  /// This uses the 32-bit FNV-1a hash of the UTF-8 bytes. It is primarily intended for unit tests
+  /// and scaffolding runtimes (like `VmJsRuntime`) that store interface names but still want to
+  /// participate in InterfaceId-based hooks.
+  pub fn from_name(name: &str) -> Self {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in name.as_bytes() {
+      hash ^= b as u32;
+      hash = hash.wrapping_mul(0x0100_0193);
+    }
+    Self(hash)
+  }
+}
+
+/// Resource limits for WebIDL conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebIdlLimits {
+  /// Maximum length (in UTF-16 code units) allowed for string conversions that allocate.
+  pub max_string_code_units: usize,
+  /// Maximum length allowed for list/sequence conversions that allocate.
+  pub max_sequence_length: usize,
+  /// Maximum number of entries allowed when converting WebIDL records to objects.
+  pub max_record_entries: usize,
+}
+
+impl Default for WebIdlLimits {
+  fn default() -> Self {
+    Self {
+      // Arbitrary but sane defaults for early scaffolding; embedders should set these explicitly.
+      max_string_code_units: 1 << 20,
+      max_sequence_length: 1 << 20,
+      max_record_entries: 1 << 20,
+    }
+  }
+}
+
+/// Runtime/embedding-provided hooks needed for WebIDL conversions.
+///
+/// In particular, WebIDL interface conversions need to detect "platform objects" (objects owned by
+/// the embedding, not the JS engine) and test whether they implement a given interface.
+pub trait WebIdlHooks<V> {
+  /// Returns whether `value` is an embedding-defined platform object.
+  fn is_platform_object(&self, value: V) -> bool;
+
+  /// Returns whether `value` implements the WebIDL interface `interface`.
+  fn implements_interface(&self, value: V, interface: InterfaceId) -> bool;
+}
+
 /// A concrete own-property descriptor returned by [`JsRuntime::get_own_property`].
 ///
 /// Web IDL currently only requires the `[[Enumerable]]` flag, but we expose the "shape" of a
@@ -48,8 +105,19 @@ pub trait JsRuntime {
   fn js_boolean(&self, value: bool) -> Self::JsValue;
   fn js_number(&self, value: f64) -> Self::JsValue;
   fn alloc_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error>;
+  fn alloc_string_from_code_units(&mut self, units: &[u16]) -> Result<Self::JsValue, Self::Error>;
   fn is_undefined(&self, value: Self::JsValue) -> bool;
   fn is_null(&self, value: Self::JsValue) -> bool;
+
+  /// Temporarily exposes the UTF-16 code units of a JS string value.
+  ///
+  /// Implementations may accept both string primitives and String objects.
+  /// The code units are borrowed from the runtime and must not escape the callback.
+  fn with_string_code_units<R>(
+    &mut self,
+    string: Self::JsValue,
+    f: impl FnOnce(&[u16]) -> R,
+  ) -> Result<R, Self::Error>;
 
   /// Constructs a property key from a Rust string.
   ///
@@ -147,6 +215,9 @@ pub trait JsRuntime {
 
 /// Web IDL-specific runtime hooks that sit on top of the core ECMAScript operations.
 pub trait WebIdlJsRuntime: JsRuntime {
+  fn limits(&self) -> WebIdlLimits;
+  fn hooks(&self) -> &dyn WebIdlHooks<Self::JsValue>;
+
   /// `%Symbol.iterator%`.
   fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
   /// `%Symbol.asyncIterator%`.
