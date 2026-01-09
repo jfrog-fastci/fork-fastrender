@@ -66,8 +66,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn heap_mut(&mut self) -> &mut vm_js::Heap {
-    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap
+    self.host.vm_js_heap_mut()
   }
 
   fn call(
@@ -110,13 +109,11 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
-    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.add_root(value)
+    self.host.vm_js_heap_mut().add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.remove_root(id);
+    self.host.vm_js_heap_mut().remove_root(id);
   }
 }
 
@@ -231,6 +228,7 @@ mod tests {
   use crate::js::RunLimits;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
+  use vm_js::VmJobContext as _;
   use vm_js::VmHostHooks as _;
 
   static JOB_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -520,6 +518,65 @@ mod tests {
       msg.contains("vm-js job failed: type error: boom"),
       "msg={msg}"
     );
+  }
+
+  #[test]
+  fn vm_js_job_context_heap_mut_uses_host_heap_mut_accessor() -> crate::Result<()> {
+    let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
+    let limits = vm_js::HeapLimits::new(8 * 1024 * 1024, 4 * 1024 * 1024);
+
+    struct Host {
+      vm: vm_js::Vm,
+      heap_a: vm_js::Heap,
+      heap_b: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap_a
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap_b
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap_a)
+      }
+    }
+
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap_a: vm_js::Heap::new(limits),
+      heap_b: vm_js::Heap::new(limits),
+    };
+
+    // `VmJsJobContext::heap_mut()` should route through `VmJsEngineHost::vm_js_heap_mut` so hosts
+    // can override which heap is exposed without forcing a `vm_js_vm_and_heap_mut` borrow.
+    let root_id = {
+      let mut ctx = VmJsJobContext {
+        host: &mut host,
+        realm: None,
+      };
+      ctx.heap_mut().add_root(vm_js::Value::Null).map_err(vm_err)?
+    };
+
+    assert_eq!(host.heap_b.get_root(root_id), Some(vm_js::Value::Null));
+    assert_eq!(
+      host.heap_a.get_root(root_id),
+      None,
+      "root should not be stored in heap_a when vm_js_heap_mut is overridden"
+    );
+
+    {
+      let mut ctx = VmJsJobContext {
+        host: &mut host,
+        realm: None,
+      };
+      ctx.remove_root(root_id);
+    }
+    assert_eq!(host.heap_b.get_root(root_id), None);
+    Ok(())
   }
 
   #[test]
