@@ -1403,6 +1403,10 @@ impl FragmentationAnalyzer {
         fragmentainer_size = fragmentainer_size.max((forced_pos - start).max(BREAK_EPSILON));
       }
 
+      let saved_line_starts = self.line_starts.clone();
+      let saved_deadline_counter = self.deadline_counter;
+      let saved_opportunity_cursor = opportunity_cursor;
+
       let next = self.select_next_boundary(
         start,
         fragmentainer_size,
@@ -1410,6 +1414,43 @@ impl FragmentationAnalyzer {
         &mut opportunity_cursor,
         &atomic,
       );
+      let default_line_starts = self.line_starts.clone();
+      let default_deadline_counter = self.deadline_counter;
+      let default_opportunity_cursor = opportunity_cursor;
+
+      // The computed `fragmentainer_size` targets the ideal balanced height, but the chosen break
+      // opportunity can still fall *before* `min_boundary` if there is no legal break between
+      // `min_boundary` and the ideal limit. That would leave more remaining content than can fit in
+      // the remaining fragmentainers, causing the final fragment to overflow even when a valid
+      // boundary exists within the physical max fragmentainer size.
+      //
+      // If this happens, retry with the physical max fragmentainer size to force a later boundary
+      // when possible.
+      let next = if next + BREAK_EPSILON < min_boundary
+        && max_fragmentainer_size > fragmentainer_size + BREAK_EPSILON
+      {
+        self.line_starts = saved_line_starts;
+        self.deadline_counter = saved_deadline_counter;
+        opportunity_cursor = saved_opportunity_cursor;
+
+        let retry = self.select_next_boundary(
+          start,
+          max_fragmentainer_size,
+          effective_total,
+          &mut opportunity_cursor,
+          &atomic,
+        );
+        if retry + BREAK_EPSILON >= min_boundary {
+          retry
+        } else {
+          self.line_starts = default_line_starts;
+          self.deadline_counter = default_deadline_counter;
+          opportunity_cursor = default_opportunity_cursor;
+          next
+        }
+      } else {
+        next
+      };
       debug_assert!(
         next + BREAK_EPSILON >= start,
         "boundaries must not move backwards"
@@ -2777,38 +2818,49 @@ pub(crate) fn normalize_fragment_margins(
   // Reset carried collapsed margin from previous fragmentainer by reapplying the fragment's own
   // top margin to the first block that starts this slice.
   if !is_first_fragment {
-    if let Some(min_start) = fragment
-      .children
-      .iter()
-      .map(|c| {
-        axis.flow_offset(
-          axis.block_start(&c.bounds),
-          axis.block_size(&c.bounds),
-          fragment_block_size,
-        )
-      })
-      .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-    {
-      for child in fragment.children_mut().iter_mut().filter(|c| {
+    // Margin restoration should preserve the relative positions of in-flow siblings within the
+    // fragment. Translating only the first child can accidentally "consume" the collapsed margin
+    // between the first and second blocks, shrinking the spacing between them.
+    //
+    // Compute the delta needed to position the first in-flow block at its desired `margin-top`,
+    // then translate all in-flow block children by the same amount.
+    let mut min_start: Option<f32> = None;
+    for child in fragment.children.iter().filter(|c| c.block_metadata.is_some()) {
+      let start = axis.flow_offset(
+        axis.block_start(&child.bounds),
+        axis.block_size(&child.bounds),
+        fragment_block_size,
+      );
+      min_start = Some(match min_start {
+        None => start,
+        Some(prev) => prev.min(start),
+      });
+    }
+
+    if let Some(min_start) = min_start {
+      let mut delta: Option<f32> = None;
+      for child in fragment.children.iter().filter(|c| c.block_metadata.is_some()) {
         let start = axis.flow_offset(
-          axis.block_start(&c.bounds),
-          axis.block_size(&c.bounds),
+          axis.block_start(&child.bounds),
+          axis.block_size(&child.bounds),
           fragment_block_size,
         );
-        (start - min_start).abs() < EPSILON
-      }) {
-        if let Some(meta) = child.block_metadata.as_ref() {
-          if meta.clipped_top {
-            continue;
-          }
-          let desired_top = meta.margin_top;
-          let child_start = axis.flow_offset(
-            axis.block_start(&child.bounds),
-            axis.block_size(&child.bounds),
-            fragment_block_size,
-          );
-          let delta = desired_top - child_start;
-          if delta.abs() > EPSILON {
+        if (start - min_start).abs() >= EPSILON {
+          continue;
+        }
+        let Some(meta) = child.block_metadata.as_ref() else {
+          continue;
+        };
+        if meta.clipped_top {
+          continue;
+        }
+        delta = Some(meta.margin_top - start);
+        break;
+      }
+
+      if let Some(delta) = delta {
+        if delta.abs() > EPSILON {
+          for child in fragment.children_mut().iter_mut().filter(|c| c.block_metadata.is_some()) {
             translate_fragment_in_parent_space(child, axis.block_translation(delta));
           }
         }
@@ -4478,7 +4530,7 @@ mod tests {
   use super::*;
   use crate::layout::axis::FragmentAxes;
   use crate::style::float::Float;
-  use crate::tree::fragment_tree::{GridFragmentationInfo, GridTrackRanges};
+  use crate::tree::fragment_tree::{BlockFragmentMetadata, GridFragmentationInfo, GridTrackRanges};
   use std::sync::Arc;
   use std::time::{Duration, Instant};
 
@@ -4558,6 +4610,82 @@ mod tests {
         .all(|b| *b <= 0.0 + BREAK_EPSILON || *b >= 30.0 - BREAK_EPSILON),
       "no boundary should fall inside the atomic range: {boundaries:?}"
     );
+  }
+
+  #[test]
+  fn balanced_boundaries_respects_remaining_capacity() {
+    // The balanced boundary selection must not choose a break so early that the remaining content
+    // cannot fit within the remaining fragmentainers capped at `max_fragmentainer_size`.
+    //
+    // This regression models the MDN multicol example where 4 equal-height blocks with margins
+    // should balance 2-per-column. The ideal height (384/2=192) would pick the first break at 100,
+    // but the remaining 284px cannot fit in one 200px column; the balanced algorithm must choose
+    // the 200px break instead.
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    fn block(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
+      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      node.style = Some(style.clone());
+      node
+    }
+
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 384.0),
+      vec![
+        block(&style, 1, 0.0),
+        block(&style, 2, 100.0),
+        block(&style, 3, 200.0),
+        block(&style, 4, 300.0),
+      ],
+      style.clone(),
+    );
+    let mut analyzer = FragmentationAnalyzer::new(
+      &root,
+      FragmentationContext::Column,
+      default_axes(),
+      false,
+      None,
+    );
+    let boundaries = analyzer
+      .balanced_boundaries(2, 200.0, analyzer.content_extent())
+      .expect("balanced boundaries");
+    assert_eq!(boundaries, vec![0.0, 200.0, 384.0]);
+  }
+
+  #[test]
+  fn normalize_fragment_margins_preserves_in_flow_spacing_in_continuations() {
+    let axis = axis_from_fragment_axes(default_axes());
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let style = Arc::new(style);
+
+    fn child(style: &Arc<ComputedStyle>, id: usize, y: f32) -> FragmentNode {
+      let mut node = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, y, 100.0, 84.0), id, vec![]);
+      node.style = Some(style.clone());
+      node.block_metadata = Some(BlockFragmentMetadata {
+        margin_top: 16.0,
+        margin_bottom: 16.0,
+        clipped_top: false,
+        clipped_bottom: false,
+      });
+      node
+    }
+
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 284.0),
+      vec![
+        child(&style, 1, 0.0),
+        child(&style, 2, 100.0),
+        child(&style, 3, 200.0),
+      ],
+      style,
+    );
+    normalize_fragment_margins(&mut fragment, false, true, &axis);
+
+    let positions: Vec<f32> = fragment.children.iter().map(|c| c.bounds.y()).collect();
+    assert_eq!(positions, vec![16.0, 116.0, 216.0]);
   }
 
   #[test]

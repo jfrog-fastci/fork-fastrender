@@ -9293,6 +9293,109 @@ mod tests {
   }
 
   #[test]
+  fn multicol_balance_distributes_blocks_with_margins() {
+    fn block_with_id(id: usize, style: Arc<ComputedStyle>) -> BoxNode {
+      let mut node = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+      node.id = id;
+      node
+    }
+
+    fn fragments_with_id<'a>(root: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
+      fn walk<'a>(node: &'a FragmentNode, id: usize, out: &mut Vec<&'a FragmentNode>) {
+        if let FragmentContent::Block {
+          box_id: Some(box_id),
+        } = &node.content
+        {
+          if *box_id == id {
+            out.push(node);
+          }
+        }
+        for child in node.children.iter() {
+          walk(child, id, out);
+        }
+      }
+
+      let mut out = Vec::new();
+      walk(root, id, &mut out);
+      out
+    }
+
+    let mut multicol_style = ComputedStyle::default();
+    multicol_style.display = Display::Block;
+    multicol_style.column_count = Some(2);
+    multicol_style.column_gap = Length::px(16.0);
+    let multicol_style = Arc::new(multicol_style);
+
+    let mut child_style = (*block_style_with_height(84.0)).clone();
+    child_style.margin_top = Some(Length::px(16.0));
+    child_style.margin_bottom = Some(Length::px(16.0));
+    let child_style = Arc::new(child_style);
+
+    let mut multicol = BoxNode::new_block(
+      multicol_style,
+      FormattingContextType::Block,
+      vec![
+        block_with_id(7001, child_style.clone()),
+        block_with_id(7002, child_style.clone()),
+        block_with_id(7003, child_style.clone()),
+        block_with_id(7004, child_style),
+      ],
+    );
+    multicol.id = 7000;
+
+    let fc = BlockFormattingContext::new();
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+    let fragment = fc.layout(&multicol, &constraints).expect("multicol layout");
+
+    let col_width = (200.0 - 16.0) / 2.0;
+    let col2_x = col_width + 16.0;
+
+    let expected = [
+      (7001, 0.0, 0.0, col_width, 84.0),
+      (7002, 0.0, 100.0, col_width, 84.0),
+      // The second column begins with the third block, which must have its own margin-top applied.
+      (7003, col2_x, 16.0, col_width, 84.0),
+      // The inter-block margin between the third and fourth blocks must still apply (16px).
+      (7004, col2_x, 116.0, col_width, 84.0),
+    ];
+
+    for (id, x, y, w, h) in expected {
+      let hits = fragments_with_id(&fragment, id);
+      assert_eq!(hits.len(), 1, "expected exactly one fragment for box_id={}", id);
+      let frag = hits[0];
+      assert!(
+        (frag.bounds.x() - x).abs() < 0.1,
+        "box_id={} expected x≈{}, got {}",
+        id,
+        x,
+        frag.bounds.x()
+      );
+      assert!(
+        (frag.bounds.y() - y).abs() < 0.1,
+        "box_id={} expected y≈{}, got {}",
+        id,
+        y,
+        frag.bounds.y()
+      );
+      assert!(
+        (frag.bounds.width() - w).abs() < 0.1,
+        "box_id={} expected width≈{}, got {}",
+        id,
+        w,
+        frag.bounds.width()
+      );
+      assert!(
+        (frag.bounds.height() - h).abs() < 0.1,
+        "box_id={} expected height≈{}, got {}",
+        id,
+        h,
+        frag.bounds.height()
+      );
+    }
+  }
+
+  #[test]
   fn multicol_segment_offset_skips_offscreen_auto() {
     let _guard = content_visibility_test_guard();
 
