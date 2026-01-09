@@ -29,7 +29,7 @@ use super::types::FontFaceRule;
 use super::types::FontFaceSource;
 use super::types::FontFaceStyle;
 use super::types::FontFaceUrlSource;
-use super::types::FontFeatureValuesGroup;
+use super::types::FontFeatureValueType;
 use super::types::FontFeatureValuesRule;
 use super::types::FontFormatKeyword;
 use super::types::FontPaletteBase;
@@ -3390,7 +3390,7 @@ fn parse_font_feature_values_rule<'i, 't>(
 
       match nested.next_including_whitespace() {
         Ok(Token::AtKeyword(kw)) => {
-          let Some(group) = FontFeatureValuesGroup::from_at_keyword(kw.as_ref()) else {
+          let Some(group) = FontFeatureValueType::from_at_keyword(kw.as_ref()) else {
             skip_at_rule(nested);
             continue;
           };
@@ -3402,7 +3402,7 @@ fn parse_font_feature_values_rule<'i, 't>(
           }
 
           let parsed_group = nested.parse_nested_block(|group_parser| {
-            let mut map: FxHashMap<String, Vec<u8>> = FxHashMap::default();
+            let mut map: FxHashMap<String, Vec<u32>> = FxHashMap::default();
 
             while !group_parser.is_exhausted() {
               if !css_deadline_allows_progress() {
@@ -3426,7 +3426,7 @@ fn parse_font_feature_values_rule<'i, 't>(
                 continue;
               }
 
-              let mut values: Vec<u8> = Vec::new();
+              let mut values: Vec<u32> = Vec::new();
               let mut valid = true;
 
               loop {
@@ -3442,7 +3442,7 @@ fn parse_font_feature_values_rule<'i, 't>(
                     int_value: Some(v), ..
                   }) => {
                     if (1..=99).contains(v) {
-                      values.push(*v as u8);
+                      values.push(*v as u32);
                     } else {
                       valid = false;
                       skip_to_semicolon(group_parser);

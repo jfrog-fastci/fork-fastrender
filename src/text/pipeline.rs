@@ -49,7 +49,7 @@
 //! - HarfBuzz documentation: <https://harfbuzz.github.io/>
 //! - rustybuzz documentation: <https://docs.rs/rustybuzz/>
 
-use crate::css::types::FontFeatureValuesGroup;
+use crate::css::types::FontFeatureValueType;
 use crate::css::types::FontPaletteBase;
 use crate::error::Result;
 use crate::error::TextError;
@@ -2423,15 +2423,15 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     push_toggle(&mut features, *b"hist", true);
   }
 
-  let resolve_list = |group: FontFeatureValuesGroup, name: &str| {
+  let resolve_list = |ty: FontFeatureValueType, name: &str| {
     style
       .font_feature_values
-      .lookup(font_family, group, name)
+      .lookup(font_family, ty, name)
       .unwrap_or(&[])
   };
 
   let resolve_single =
-    |group: FontFeatureValuesGroup, name: &str| resolve_list(group, name).first().copied();
+    |ty: FontFeatureValueType, name: &str| resolve_list(ty, name).first().copied();
 
   if let Some(set) = alternates.stylistic.as_ref() {
     // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.
@@ -2439,15 +2439,15 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     features.retain(|f| f.tag != tag);
 
     let value = match set {
-      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValuesGroup::Stylistic, name.as_str())
+        resolve_single(FontFeatureValueType::Stylistic, name.as_str())
       }
     };
     if let Some(value) = value {
       features.push(Feature {
         tag,
-        value: value as u32,
+        value,
         start: 0,
         end: u32::MAX,
       });
@@ -2457,12 +2457,12 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   for set in &alternates.stylesets {
     match set {
       FontVariantAlternateValue::Number(idx) => {
-        if let Some(tag) = number_tag(b"ss", *idx) {
+        if let Some(tag) = number_tag(b"ss", u32::from(*idx)) {
           push_toggle(&mut features, tag, true);
         }
       }
       FontVariantAlternateValue::Name(name) => {
-        for &idx in resolve_list(FontFeatureValuesGroup::Styleset, name.as_str()) {
+        for &idx in resolve_list(FontFeatureValueType::Styleset, name.as_str()) {
           if let Some(tag) = number_tag(b"ss", idx) {
             push_toggle(&mut features, tag, true);
           }
@@ -2474,7 +2474,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   for cv in &alternates.character_variants {
     match cv {
       FontVariantAlternateValue::Number(idx) => {
-        if let Some(tag) = number_tag(b"cv", *idx) {
+        if let Some(tag) = number_tag(b"cv", u32::from(*idx)) {
           let tag = Tag::from_bytes(&tag);
           features.push(Feature {
             tag,
@@ -2485,7 +2485,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
         }
       }
       FontVariantAlternateValue::Name(name) => {
-        for &idx in resolve_list(FontFeatureValuesGroup::CharacterVariant, name.as_str()) {
+        for &idx in resolve_list(FontFeatureValueType::CharacterVariant, name.as_str()) {
           if let Some(tag) = number_tag(b"cv", idx) {
             let tag = Tag::from_bytes(&tag);
             features.push(Feature {
@@ -2508,13 +2508,12 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     features.retain(|f| f.tag != swsh_tag && f.tag != cswh_tag);
 
     let value = match swash {
-      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValuesGroup::Swash, name.as_str())
+        resolve_single(FontFeatureValueType::Swash, name.as_str())
       }
     };
     if let Some(value) = value {
-      let value = value as u32;
       features.push(Feature {
         tag: swsh_tag,
         value,
@@ -2535,15 +2534,15 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     features.retain(|f| f.tag != tag);
 
     let value = match orn {
-      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValuesGroup::Ornaments, name)
+        resolve_single(FontFeatureValueType::Ornaments, name)
       }
     };
     if let Some(value) = value {
       features.push(Feature {
         tag,
-        value: value as u32,
+        value,
         start: 0,
         end: u32::MAX,
       });
@@ -2556,15 +2555,15 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     features.retain(|f| f.tag != tag);
 
     let value = match annotation {
-      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValuesGroup::Annotation, name)
+        resolve_single(FontFeatureValueType::Annotation, name)
       }
     };
     if let Some(value) = value {
       features.push(Feature {
         tag,
-        value: value as u32,
+        value,
         start: 0,
         end: u32::MAX,
       });
@@ -10856,8 +10855,8 @@ mod tests {
     );
   }
 }
-fn number_tag(prefix: &[u8; 2], n: u8) -> Option<[u8; 4]> {
-  if n == 0 {
+fn number_tag(prefix: &[u8; 2], n: u32) -> Option<[u8; 4]> {
+  if n == 0 || n > 99 {
     return None;
   }
   let mut tag = [b' ', b' ', b' ', b' '];
@@ -10865,7 +10864,7 @@ fn number_tag(prefix: &[u8; 2], n: u8) -> Option<[u8; 4]> {
   tag[1] = prefix[1];
   let tens = (n / 10) % 10;
   let ones = n % 10;
-  tag[2] = b'0' + tens;
-  tag[3] = b'0' + ones;
+  tag[2] = b'0' + (tens as u8);
+  tag[3] = b'0' + (ones as u8);
   Some(tag)
 }

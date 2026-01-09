@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{CssRule, FontFeatureValuesGroup};
+use fastrender::css::types::{CssRule, FontFeatureValueType};
 use fastrender::dom;
 use fastrender::style::cascade::{apply_styles, StyledNode};
 use fastrender::text::font_db::FontDatabase;
@@ -50,16 +50,16 @@ fn parses_font_feature_values_rules() {
 
   let styleset = rule
     .groups
-    .get(&FontFeatureValuesGroup::Styleset)
+    .get(&FontFeatureValueType::Styleset)
     .expect("expected @styleset group");
-  assert_eq!(styleset.get("disambiguation"), Some(&vec![2u8]));
-  assert_eq!(styleset.get("alt"), Some(&vec![1u8, 2u8]));
+  assert_eq!(styleset.get("disambiguation"), Some(&vec![2u32]));
+  assert_eq!(styleset.get("alt"), Some(&vec![1u32, 2u32]));
 
   let swash = rule
     .groups
-    .get(&FontFeatureValuesGroup::Swash)
+    .get(&FontFeatureValueType::Swash)
     .expect("expected @swash group");
-  assert_eq!(swash.get("swashy"), Some(&vec![7u8]));
+  assert_eq!(swash.get("swashy"), Some(&vec![7u32]));
 }
 
 #[test]
@@ -85,10 +85,10 @@ fn font_feature_values_registry_respects_layer_order() {
   assert_eq!(
     node.styles.font_feature_values.lookup(
       "Inter",
-      FontFeatureValuesGroup::Styleset,
+      FontFeatureValueType::Styleset,
       "disambiguation"
     ),
-    Some([2u8].as_slice())
+    Some([2u32].as_slice())
   );
 }
 
@@ -123,10 +123,10 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
   assert_eq!(
     node.styles.font_feature_values.lookup(
       &family,
-      FontFeatureValuesGroup::Styleset,
+      FontFeatureValueType::Styleset,
       "disambiguation"
     ),
-    Some([2u8].as_slice())
+    Some([2u32].as_slice())
   );
 
   let text = "A";

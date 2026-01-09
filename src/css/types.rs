@@ -3807,9 +3807,9 @@ pub struct KeyframesRule {
   pub keyframes: Vec<Keyframe>,
 }
 
-/// Feature group inside `@font-feature-values`.
+/// Feature value type inside `@font-feature-values`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FontFeatureValuesGroup {
+pub enum FontFeatureValueType {
   Stylistic,
   Styleset,
   CharacterVariant,
@@ -3818,7 +3818,7 @@ pub enum FontFeatureValuesGroup {
   Annotation,
 }
 
-impl FontFeatureValuesGroup {
+impl FontFeatureValueType {
   pub fn from_at_keyword(keyword: &str) -> Option<Self> {
     if keyword.eq_ignore_ascii_case("stylistic") {
       Some(Self::Stylistic)
@@ -3844,7 +3844,7 @@ impl FontFeatureValuesGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontFeatureValuesRule {
   pub font_families: Vec<String>,
-  pub groups: FxHashMap<FontFeatureValuesGroup, FxHashMap<String, Vec<u8>>>,
+  pub groups: FxHashMap<FontFeatureValueType, FxHashMap<String, Vec<u32>>>,
 }
 
 impl FontFeatureValuesRule {
