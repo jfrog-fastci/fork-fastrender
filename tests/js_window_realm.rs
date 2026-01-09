@@ -323,6 +323,24 @@ fn js_execution_can_observe_window_globals() -> Result<()> {
 }
 
 #[test]
+fn location_url_components_are_exposed_to_js_execution() -> Result<()> {
+  let url = "https://example.com:8080/path/to/page?query=1#hash";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script(
+      "location.protocol + '|' + location.host + '|' + location.hostname + '|' + location.port + '|' + location.pathname + '|' + location.search + '|' + location.hash + '|' + location.origin",
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(
+    get_string(realm.heap(), value),
+    "https:|example.com:8080|example.com|8080|/path/to/page|?query=1|#hash|https://example.com:8080"
+  );
+  Ok(())
+}
+
+#[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
   struct JsExecutor {

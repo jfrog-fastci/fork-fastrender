@@ -476,6 +476,180 @@ fn location_href_set_native(
   ))
 }
 
+fn location_set_unimplemented_native(
+  _vm: &mut Vm,
+  _scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  Err(VmError::TypeError(
+    "Navigation via location is not implemented yet",
+  ))
+}
+
+fn parse_location_url(scope: &mut Scope<'_>, location_obj: GcObject) -> Result<Option<Url>, VmError> {
+  let key = alloc_key(scope, LOCATION_URL_KEY)?;
+  let value = scope
+    .heap()
+    .object_get_own_data_property_value(location_obj, &key)?
+    .unwrap_or(Value::Undefined);
+  let Value::String(s) = value else {
+    return Ok(None);
+  };
+  let href = scope.heap().get_string(s)?.to_utf8_lossy();
+  Ok(Url::parse(&href).ok())
+}
+
+fn location_protocol_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let protocol = format!("{}:", url.scheme());
+  Ok(Value::String(scope.alloc_string(&protocol)?))
+}
+
+fn location_host_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let host = url.host_str().unwrap_or("");
+  let port = url.port();
+  let mut out = String::new();
+  out.push_str(host);
+  if let Some(port) = port {
+    use std::fmt::Write as _;
+    out.push(':');
+    let _ = write!(&mut out, "{port}");
+  }
+  Ok(Value::String(scope.alloc_string(&out)?))
+}
+
+fn location_hostname_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  Ok(Value::String(scope.alloc_string(url.host_str().unwrap_or(""))?))
+}
+
+fn location_port_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let Some(port) = url.port() else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  Ok(Value::String(scope.alloc_string(&port.to_string())?))
+}
+
+fn location_pathname_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  Ok(Value::String(scope.alloc_string(url.path())?))
+}
+
+fn location_search_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let Some(query) = url.query() else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let search = format!("?{query}");
+  Ok(Value::String(scope.alloc_string(&search)?))
+}
+
+fn location_hash_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(location_obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(url) = parse_location_url(scope, location_obj)? else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let Some(fragment) = url.fragment() else {
+    return Ok(Value::String(scope.alloc_string("")?));
+  };
+  let hash = format!("#{fragment}");
+  Ok(Value::String(scope.alloc_string(&hash)?))
+}
+
 fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
   let mut i = buf.len();
   if value == 0 {
@@ -762,6 +936,13 @@ fn init_window_globals(
   let document_key = alloc_key(&mut scope, "document")?;
 
   let href_key = alloc_key(&mut scope, "href")?;
+  let protocol_key = alloc_key(&mut scope, "protocol")?;
+  let host_key = alloc_key(&mut scope, "host")?;
+  let hostname_key = alloc_key(&mut scope, "hostname")?;
+  let port_key = alloc_key(&mut scope, "port")?;
+  let pathname_key = alloc_key(&mut scope, "pathname")?;
+  let search_key = alloc_key(&mut scope, "search")?;
+  let hash_key = alloc_key(&mut scope, "hash")?;
   let document_url_key = alloc_key(&mut scope, "URL")?;
 
   let url_s = scope.alloc_string(&config.document_url)?;
@@ -808,6 +989,167 @@ fn init_window_globals(
       kind: PropertyKind::Accessor {
         get: Value::Object(href_get_func),
         set: Value::Object(href_set_func),
+      },
+    },
+  )?;
+
+  let location_set_call_id = vm.register_native_call(location_set_unimplemented_native)?;
+  let location_set_name = scope.alloc_string("set location")?;
+  scope.push_root(Value::String(location_set_name))?;
+  let location_set_func =
+    scope.alloc_native_function(location_set_call_id, None, location_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(location_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(location_set_func))?;
+
+  let protocol_get_call_id = vm.register_native_call(location_protocol_get_native)?;
+  let protocol_get_name = scope.alloc_string("get protocol")?;
+  scope.push_root(Value::String(protocol_get_name))?;
+  let protocol_get_func =
+    scope.alloc_native_function(protocol_get_call_id, None, protocol_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(protocol_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(protocol_get_func))?;
+  scope.define_property(
+    location_obj,
+    protocol_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(protocol_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let host_get_call_id = vm.register_native_call(location_host_get_native)?;
+  let host_get_name = scope.alloc_string("get host")?;
+  scope.push_root(Value::String(host_get_name))?;
+  let host_get_func = scope.alloc_native_function(host_get_call_id, None, host_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(host_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(host_get_func))?;
+  scope.define_property(
+    location_obj,
+    host_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(host_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let hostname_get_call_id = vm.register_native_call(location_hostname_get_native)?;
+  let hostname_get_name = scope.alloc_string("get hostname")?;
+  scope.push_root(Value::String(hostname_get_name))?;
+  let hostname_get_func =
+    scope.alloc_native_function(hostname_get_call_id, None, hostname_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(hostname_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(hostname_get_func))?;
+  scope.define_property(
+    location_obj,
+    hostname_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(hostname_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let port_get_call_id = vm.register_native_call(location_port_get_native)?;
+  let port_get_name = scope.alloc_string("get port")?;
+  scope.push_root(Value::String(port_get_name))?;
+  let port_get_func = scope.alloc_native_function(port_get_call_id, None, port_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(port_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(port_get_func))?;
+  scope.define_property(
+    location_obj,
+    port_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(port_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let pathname_get_call_id = vm.register_native_call(location_pathname_get_native)?;
+  let pathname_get_name = scope.alloc_string("get pathname")?;
+  scope.push_root(Value::String(pathname_get_name))?;
+  let pathname_get_func =
+    scope.alloc_native_function(pathname_get_call_id, None, pathname_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(pathname_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(pathname_get_func))?;
+  scope.define_property(
+    location_obj,
+    pathname_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(pathname_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let search_get_call_id = vm.register_native_call(location_search_get_native)?;
+  let search_get_name = scope.alloc_string("get search")?;
+  scope.push_root(Value::String(search_get_name))?;
+  let search_get_func =
+    scope.alloc_native_function(search_get_call_id, None, search_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(search_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(search_get_func))?;
+  scope.define_property(
+    location_obj,
+    search_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(search_get_func),
+        set: Value::Object(location_set_func),
+      },
+    },
+  )?;
+
+  let hash_get_call_id = vm.register_native_call(location_hash_get_native)?;
+  let hash_get_name = scope.alloc_string("get hash")?;
+  scope.push_root(Value::String(hash_get_name))?;
+  let hash_get_func = scope.alloc_native_function(hash_get_call_id, None, hash_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(hash_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(hash_get_func))?;
+  scope.define_property(
+    location_obj,
+    hash_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(hash_get_func),
+        set: Value::Object(location_set_func),
       },
     },
   )?;
