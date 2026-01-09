@@ -148,7 +148,6 @@ pub fn apply_wheel_scroll_at_point(
   };
 
   let mut next = scroll_state.clone();
-  let mut any_element_scrolled = false;
 
   match root_kind {
     HitTestRoot::Root => {
@@ -169,17 +168,6 @@ pub fn apply_wheel_scroll_at_point(
       }
       patch_listbox_scroll_bounds(viewport_size, &mut chain);
 
-      let before_viewport = chain
-        .last()
-        .map(|s| s.scroll)
-        .unwrap_or(original_viewport);
-
-      let before_elements: Vec<(usize, Point)> = chain
-        .iter()
-        .take(chain.len().saturating_sub(1))
-        .filter_map(|state| state.container.box_id().map(|id| (id, state.scroll)))
-        .collect();
-
       apply_scroll_chain(&mut chain, delta, options);
 
       for (idx, state) in chain.iter().enumerate() {
@@ -188,16 +176,6 @@ pub fn apply_wheel_scroll_at_point(
         } else if let Some(id) = state.container.box_id() {
           next.elements.insert(id, state.scroll);
         }
-      }
-
-      any_element_scrolled = before_elements
-        .iter()
-        .any(|(id, before)| next.element_offset(*id) != *before);
-
-      let viewport_scrolled = next.viewport != before_viewport;
-      if !any_element_scrolled && !viewport_scrolled {
-        next.viewport =
-          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
       }
     }
     HitTestRoot::Additional(idx) => {
@@ -208,16 +186,6 @@ pub fn apply_wheel_scroll_at_point(
       };
 
       let mut chain = build_scroll_chain_with_root_mode(root, root.bounds.size, &path, false);
-
-      let before_elements: Vec<(usize, Point)> = chain
-        .iter()
-        .filter_map(|state| {
-          state
-            .container
-            .box_id()
-            .map(|id| (id, sanitize_scroll(scroll_state.element_offset(id))))
-        })
-        .collect();
 
       for state in chain.iter_mut() {
         if let Some(id) = state.container.box_id() {
@@ -234,10 +202,6 @@ pub fn apply_wheel_scroll_at_point(
         }
       }
 
-      any_element_scrolled = before_elements
-        .iter()
-        .any(|(id, before)| next.element_offset(*id) != *before);
-
       if result.remaining != Point::ZERO {
         next.viewport = apply_viewport_delta(
           fragment_tree,
@@ -246,12 +210,6 @@ pub fn apply_wheel_scroll_at_point(
           result.remaining,
           options,
         );
-      }
-
-      let viewport_scrolled = next.viewport != original_viewport;
-      if !any_element_scrolled && !viewport_scrolled {
-        next.viewport =
-          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
       }
     }
   }
