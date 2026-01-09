@@ -502,7 +502,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
          };
 
         let action = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(
+          engine.pointer_up_with_scroll(
             dom,
             box_tree,
             fragment_tree,

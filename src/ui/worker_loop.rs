@@ -824,7 +824,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let engine = &mut tab.interaction;
 
         let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(
+          engine.pointer_up_with_scroll(
             dom,
             box_tree,
             fragment_tree,

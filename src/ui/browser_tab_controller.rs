@@ -277,7 +277,7 @@ impl BrowserTabController {
 
     let mut action = InteractionAction::None;
     let changed = self.document.mutate_dom(|dom| {
-      let (dom_changed, next_action) = self.interaction.pointer_up(
+      let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
         dom,
         unsafe { &*box_tree_ptr },
         unsafe { &*fragment_tree_ptr },

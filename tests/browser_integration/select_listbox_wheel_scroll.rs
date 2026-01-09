@@ -150,7 +150,7 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
     let _ = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
     let (changed, _action) =
-      engine.pointer_up(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point, "", "");
+      engine.pointer_up_with_scroll(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point, "", "");
     (changed, ())
   })?;
 

@@ -189,7 +189,7 @@ fn radio_click_is_scoped_to_nearest_form() {
     ),
     "expected pointer_down to set active state"
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -377,7 +377,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
     );
   }
 
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -436,7 +436,7 @@ fn link_click_emits_navigation_with_resolved_url() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -497,7 +497,7 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -559,7 +559,7 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -624,7 +624,7 @@ fn checkbox_click_toggles_checked_attribute() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -915,7 +915,7 @@ fn label_click_activates_associated_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -981,7 +981,7 @@ fn radio_click_checks_and_focuses() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1059,7 +1059,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, _) = engine.pointer_up(
+  let (changed, _) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1083,7 +1083,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &ScrollState::default(),
     Point::new(5.0, 60.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1152,7 +1152,7 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1256,7 +1256,7 @@ fn submit_click_navigates_and_marks_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1365,7 +1365,7 @@ fn submit_button_click_submits_get_form_with_query_and_submitter() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1727,7 +1727,7 @@ fn select_listbox_click_marks_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 25.0),
   );
-  let (changed, _action) = engine.pointer_up(
+  let (changed, _action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -1832,7 +1832,7 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2211,7 +2211,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2282,7 +2282,7 @@ fn inert_link_does_not_navigate() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2341,7 +2341,7 @@ fn disabled_checkbox_does_not_toggle_checked() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2405,7 +2405,7 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2496,7 +2496,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
   );
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2517,7 +2517,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &ScrollState::default(),
     Point::new(5.0, 45.0),
   );
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2869,7 +2869,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &ScrollState::default(),
     Point::new(5.0, 15.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -2910,7 +2910,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &ScrollState::default(),
     Point::new(5.0, 25.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3037,7 +3037,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     &ScrollState::default(),
     Point::new(5.0, 15.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3064,7 +3064,7 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
     &ScrollState::default(),
     Point::new(5.0, 15.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3250,7 +3250,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
     &scroll,
     Point::new(5.0, 5.0),
   );
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3599,7 +3599,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
 
   // Left edge should set min.
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3612,7 +3612,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
 
   // Near 56% should snap to the nearest step.
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(56.0, 10.0));
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3625,7 +3625,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
 
   // Right edge should set max.
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3756,7 +3756,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   // Disabled range.
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3774,7 +3774,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   // Readonly range.
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 50.0));
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 50.0));
-  engine.pointer_up(
+  engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3827,7 +3827,7 @@ fn range_click_focuses_input() {
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(10.0, 10.0));
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3893,7 +3893,7 @@ fn tabindex_zero_element_click_focuses_without_focus_visible() {
     &scroll,
     Point::new(10.0, 10.0),
   );
-  let (changed, action) = engine.pointer_up(
+  let (changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
@@ -3966,7 +3966,7 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
   let mut engine = InteractionEngine::new();
   let scroll = ScrollState::default();
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
-  let (changed, _) = engine.pointer_up(
+  let (changed, _) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,

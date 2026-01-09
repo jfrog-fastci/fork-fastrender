@@ -375,7 +375,6 @@ impl BrowserRuntime {
         }
         let delta_x = if delta_x.is_finite() { delta_x } else { 0.0 };
         let delta_y = if delta_y.is_finite() { delta_y } else { 0.0 };
-
         let Some(doc) = tab.document.as_mut() else {
           // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
           // so it can be applied when the first frame is rendered.
@@ -734,8 +733,15 @@ impl BrowserRuntime {
       return;
     };
     let (dom_changed, action, anchor_css) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let (dom_changed, action) =
-        engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &document_url, &base_url);
+      let (dom_changed, action) = engine.pointer_up_with_scroll(
+        dom,
+        box_tree,
+        fragment_tree,
+        scroll,
+        viewport_point,
+        &document_url,
+        &base_url,
+      );
 
       let anchor_css = match &action {
         InteractionAction::OpenSelectDropdown { select_node_id, .. } => {

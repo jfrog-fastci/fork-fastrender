@@ -214,7 +214,7 @@ impl BrowserWorkerRuntime {
         if button != PointerButton::Primary && button != PointerButton::None {
           return;
         }
-        self.pointer_up(tab_id, pos_css);
+        self.handle_pointer_up(tab_id, pos_css);
       }
       UiToWorker::SelectDropdownChoose {
         tab_id,
@@ -573,7 +573,7 @@ impl BrowserWorkerRuntime {
     }
   }
 
-  fn pointer_up(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
+  fn handle_pointer_up(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
@@ -589,7 +589,7 @@ impl BrowserWorkerRuntime {
     };
     let viewport_point = Point::new(pos_css.0, pos_css.1);
 
-    let (dom_changed, action) = tab.interaction.pointer_up(
+    let (dom_changed, action) = tab.interaction.pointer_up_with_scroll(
       dom,
       prepared.box_tree(),
       prepared.fragment_tree(),

@@ -1603,7 +1603,7 @@ impl InteractionEngine {
   /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
   /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
-  pub fn pointer_up(
+  pub fn pointer_up_with_scroll(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
@@ -1776,6 +1776,31 @@ impl InteractionEngine {
     }
 
     (dom_changed, action)
+  }
+
+  /// Legacy wrapper for [`InteractionEngine::pointer_up_with_scroll`] that assumes no scrolling.
+  ///
+  /// This is suitable for call sites that do not maintain scroll state (e.g. unit tests), but UI
+  /// layers should generally call `pointer_up_with_scroll` so hit-testing stays aligned with the
+  /// visible, scrolled content (including element scroll containers like `<select size>` listboxes).
+  pub fn pointer_up(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    viewport_point: Point,
+    document_url: &str,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
+    self.pointer_up_with_scroll(
+      dom,
+      box_tree,
+      fragment_tree,
+      &ScrollState::default(),
+      viewport_point,
+      document_url,
+      base_url,
+    )
   }
 
   /// Insert typed text into focused text control (input/textarea) and set focus-visible.

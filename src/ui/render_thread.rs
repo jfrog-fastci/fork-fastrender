@@ -196,7 +196,7 @@ impl BrowserRenderThread {
         pos_css,
         button,
       } => {
-        self.pointer_up(tab_id, pos_css, button);
+        self.handle_pointer_up(tab_id, pos_css, button);
       }
       UiToWorker::SelectDropdownChoose {
         tab_id,
@@ -558,7 +558,7 @@ impl BrowserRenderThread {
     }
   }
 
-  fn pointer_up(&mut self, tab_id: TabId, pos_css: (f32, f32), button: PointerButton) {
+  fn handle_pointer_up(&mut self, tab_id: TabId, pos_css: (f32, f32), button: PointerButton) {
     if !matches!(button, PointerButton::Primary) {
       return;
     }
@@ -591,8 +591,8 @@ impl BrowserRenderThread {
       let document_url = tab.url.as_deref().unwrap_or("");
 
       let mut action = InteractionAction::None;
-      let changed = doc.mutate_dom(|dom| {
-        let (dom_changed, act) = tab.interaction.pointer_up(
+       let changed = doc.mutate_dom(|dom| {
+        let (dom_changed, act) = tab.interaction.pointer_up_with_scroll(
           dom,
           &box_tree,
           &fragments,

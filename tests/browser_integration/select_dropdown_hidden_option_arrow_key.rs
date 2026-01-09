@@ -85,7 +85,7 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
     let mut changed = false;
 
     changed |= engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
-    let (up_changed, _action) = engine.pointer_up(
+    let (up_changed, _action) = engine.pointer_up_with_scroll(
       dom,
       box_tree,
       fragment_tree,
