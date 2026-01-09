@@ -1551,6 +1551,15 @@ impl<'a> Iterator for FragmentIterator<'a> {
   }
 }
 
+/// Identifies which root fragment was hit by [`FragmentTree::hit_test_path`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTestRoot {
+  /// The primary fragment root stored in [`FragmentTree::root`].
+  Root,
+  /// One of [`FragmentTree::additional_fragments`].
+  Additional(usize),
+}
+
 /// The fragment tree - output of layout
 ///
 /// Contains the root fragment and provides tree-level operations.
@@ -1673,6 +1682,132 @@ impl FragmentTree {
       hits.extend(root.fragments_at_point(point));
     }
     hits
+  }
+
+  /// Returns the child-index path to the topmost fragment at `point`.
+  ///
+  /// The returned path is equivalent to the fragment returned by
+  /// `self.hit_test(point).first()`, but encoded as an ancestor chain of child indices. The path is
+  /// relative to the returned [`HitTestRoot`]. An empty path means the chosen root fragment itself.
+  ///
+  /// Hit testing mirrors [`FragmentNode::fragments_at_point`] semantics:
+  /// - Later siblings are considered "on top" (reverse child order).
+  /// - Deepest descendants are preferred.
+  /// - Overflow clipping only applies on axes where `overflow_{x,y} != visible`.
+  ///
+  /// Non-finite coordinates (NaN / ±inf) are treated as "no hit".
+  pub fn hit_test_path(&self, point: Point) -> Option<(HitTestRoot, Vec<usize>)> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+      return None;
+    }
+
+    if let Some(path) = Self::hit_test_path_within_root(&self.root, point) {
+      return Some((HitTestRoot::Root, path));
+    }
+
+    for (idx, root) in self.additional_fragments.iter().enumerate() {
+      if let Some(path) = Self::hit_test_path_within_root(root, point) {
+        return Some((HitTestRoot::Additional(idx), path));
+      }
+    }
+
+    None
+  }
+
+  fn hit_test_path_within_root(root: &FragmentNode, point: Point) -> Option<Vec<usize>> {
+    struct Frame<'a> {
+      node: &'a FragmentNode,
+      point: Point,
+      next_child: usize,
+      index_in_parent: Option<usize>,
+    }
+
+    fn should_descend(node: &FragmentNode, point: Point) -> bool {
+      let (clip_x, clip_y) = node
+        .style
+        .as_ref()
+        .map(|style| {
+          (
+            style.overflow_x != Overflow::Visible,
+            style.overflow_y != Overflow::Visible,
+          )
+        })
+        .unwrap_or((false, false));
+
+      let within_x = point.x >= node.bounds.min_x() && point.x <= node.bounds.max_x();
+      let within_y = point.y >= node.bounds.min_y() && point.y <= node.bounds.max_y();
+
+      (!clip_x || within_x) && (!clip_y || within_y)
+    }
+
+    fn make_frame<'a>(
+      node: &'a FragmentNode,
+      point: Point,
+      index_in_parent: Option<usize>,
+    ) -> Frame<'a> {
+      let next_child = if should_descend(node, point) {
+        node.children.len()
+      } else {
+        0
+      };
+      Frame {
+        node,
+        point,
+        next_child,
+        index_in_parent,
+      }
+    }
+
+    // Stack-safe DFS that mirrors `FragmentNode::fragments_at_point` ordering. The stack always
+    // contains the current ancestor chain, so the path can be materialized from indices stored in
+    // each frame without cloning partial paths.
+    let mut stack = Vec::new();
+    stack.push(make_frame(root, point, None));
+
+    while !stack.is_empty() {
+      let child = {
+        let frame = stack
+          .last_mut()
+          .expect("stack non-empty in hit_test_path_within_root");
+        if frame.next_child == 0 {
+          None
+        } else {
+          frame.next_child -= 1;
+          let child_index = frame.next_child;
+          let node = frame.node;
+          let local_point = Point::new(
+            frame.point.x - node.bounds.x(),
+            frame.point.y - node.bounds.y(),
+          );
+          let child = &node.children[child_index];
+          Some(make_frame(child, local_point, Some(child_index)))
+        }
+      };
+
+      if let Some(child) = child {
+        stack.push(child);
+        continue;
+      }
+
+      let is_hit = {
+        let frame = stack
+          .last()
+          .expect("stack non-empty in hit_test_path_within_root");
+        frame.node.contains_point(frame.point)
+      };
+
+      if is_hit {
+        let path = stack
+          .iter()
+          .filter_map(|frame| frame.index_in_parent)
+          .collect();
+        return Some(path);
+      }
+
+      stack.pop();
+    }
+
+    None
   }
 
   /// Returns an iterator over all fragments in paint order
@@ -2165,6 +2300,92 @@ mod tests {
     let hits = parent.fragments_at_point(Point::new(120.0, 20.0));
     assert_eq!(hits.len(), 1);
     assert!(std::ptr::eq(hits[0], &parent.children[0]));
+  }
+
+  #[test]
+  fn test_hit_test_path_overlapping_prefers_later_sibling() {
+    let child1 = FragmentNode::new_block(Rect::from_xywh(10.0, 10.0, 50.0, 50.0), vec![]);
+    let child2 = FragmentNode::new_block(Rect::from_xywh(30.0, 30.0, 50.0, 50.0), vec![]);
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child1, child2],
+    );
+    let tree = FragmentTree::new(root);
+    let point = Point::new(40.0, 40.0);
+
+    let hits = tree.hit_test(point);
+    assert!(std::ptr::eq(hits[0], &tree.root.children[1]));
+    assert_eq!(
+      tree.hit_test_path(point),
+      Some((HitTestRoot::Root, vec![1]))
+    );
+  }
+
+  #[test]
+  fn test_hit_test_path_overflow_clips_x_only() {
+    let child = FragmentNode::new_block(Rect::from_xywh(10.0, 90.0, 50.0, 50.0), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Visible;
+
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      Arc::new(style),
+    );
+    let tree = FragmentTree::new(root);
+
+    assert_eq!(
+      tree.hit_test_path(Point::new(20.0, 120.0)),
+      Some((HitTestRoot::Root, vec![0]))
+    );
+  }
+
+  #[test]
+  fn test_hit_test_path_overflow_clips_y_only() {
+    let child = FragmentNode::new_block(Rect::from_xywh(90.0, 10.0, 50.0, 50.0), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Hidden;
+
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      vec![child],
+      Arc::new(style),
+    );
+    let tree = FragmentTree::new(root);
+
+    assert_eq!(
+      tree.hit_test_path(Point::new(120.0, 20.0)),
+      Some((HitTestRoot::Root, vec![0]))
+    );
+  }
+
+  #[test]
+  fn test_hit_test_path_deep_chain_stack_safe() {
+    const DEPTH: usize = 20_000;
+    let handle = std::thread::Builder::new()
+      .stack_size(256 * 1024)
+      .spawn(|| {
+        let mut root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![]);
+        for _ in 0..DEPTH {
+          root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 1.0, 1.0), vec![root]);
+        }
+
+        let tree = FragmentTree::new(root);
+        let (hit_root, path) = tree
+          .hit_test_path(Point::new(0.5, 0.5))
+          .expect("expected a hit path");
+        assert_eq!(hit_root, HitTestRoot::Root);
+        assert_eq!(path.len(), DEPTH);
+        assert!(path.iter().all(|&idx| idx == 0));
+
+        std::mem::forget(tree);
+      })
+      .expect("spawn hit-test path thread");
+    handle.join().expect("hit-test path thread join");
   }
 
   #[test]
