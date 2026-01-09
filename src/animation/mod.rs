@@ -2768,6 +2768,54 @@ fn transparent_box_shadow_like(shadow: &BoxShadow) -> BoxShadow {
   }
 }
 
+fn add_box_shadow_list(a: &[BoxShadow], b: &[BoxShadow]) -> Option<Vec<BoxShadow>> {
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    match (a.get(idx), b.get(idx)) {
+      (Some(a), Some(b)) => {
+        if a.inset != b.inset {
+          return None;
+        }
+        if !a.color.a.is_finite() || !b.color.a.is_finite() {
+          return None;
+        }
+        let ax = a.offset_x.to_px();
+        let ay = a.offset_y.to_px();
+        let ab = a.blur_radius.to_px();
+        let aspread = a.spread_radius.to_px();
+        let bx = b.offset_x.to_px();
+        let by = b.offset_y.to_px();
+        let bb = b.blur_radius.to_px();
+        let bspread = b.spread_radius.to_px();
+        if !ax.is_finite()
+          || !ay.is_finite()
+          || !ab.is_finite()
+          || !aspread.is_finite()
+          || !bx.is_finite()
+          || !by.is_finite()
+          || !bb.is_finite()
+          || !bspread.is_finite()
+        {
+          return None;
+        }
+        out.push(BoxShadow {
+          offset_x: Length::px(ax + bx),
+          offset_y: Length::px(ay + by),
+          blur_radius: Length::px((ab + bb).max(0.0)),
+          spread_radius: Length::px(aspread + bspread),
+          color: add_color(a.color, b.color),
+          inset: a.inset,
+        });
+      }
+      (Some(a), None) => out.push(a.clone()),
+      (None, Some(b)) => out.push(b.clone()),
+      (None, None) => {}
+    }
+  }
+  Some(out)
+}
+
 fn interpolate_single_box_shadow(a: &BoxShadow, b: &BoxShadow, t: f32) -> Option<BoxShadow> {
   if a.inset != b.inset {
     return None;
@@ -2867,6 +2915,47 @@ fn transparent_text_shadow_like(shadow: &TextShadow) -> TextShadow {
     blur_radius: Length::px(0.0),
     color: Some(Rgba::new(color.r, color.g, color.b, 0.0)),
   }
+}
+
+fn add_text_shadow_list(a: &[TextShadow], b: &[TextShadow]) -> Option<Vec<TextShadow>> {
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    match (a.get(idx), b.get(idx)) {
+      (Some(a), Some(b)) => {
+        let ca = a.color.unwrap_or(Rgba::BLACK);
+        let cb = b.color.unwrap_or(Rgba::BLACK);
+        if !ca.a.is_finite() || !cb.a.is_finite() {
+          return None;
+        }
+        let ax = a.offset_x.to_px();
+        let ay = a.offset_y.to_px();
+        let ab = a.blur_radius.to_px();
+        let bx = b.offset_x.to_px();
+        let by = b.offset_y.to_px();
+        let bb = b.blur_radius.to_px();
+        if !ax.is_finite()
+          || !ay.is_finite()
+          || !ab.is_finite()
+          || !bx.is_finite()
+          || !by.is_finite()
+          || !bb.is_finite()
+        {
+          return None;
+        }
+        out.push(TextShadow {
+          offset_x: Length::px(ax + bx),
+          offset_y: Length::px(ay + by),
+          blur_radius: Length::px((ab + bb).max(0.0)),
+          color: Some(add_color(ca, cb)),
+        });
+      }
+      (Some(a), None) => out.push(a.clone()),
+      (None, Some(b)) => out.push(b.clone()),
+      (None, None) => {}
+    }
+  }
+  Some(out)
 }
 
 fn interpolate_single_text_shadow(a: &TextShadow, b: &TextShadow, t: f32) -> Option<TextShadow> {
@@ -5059,6 +5148,12 @@ fn apply_additive_animation_value(
       }
       Some(AnimatedValue::BorderRadius(out))
     }
+    (AnimatedValue::BoxShadow(under), AnimatedValue::BoxShadow(effect)) => {
+      add_box_shadow_list(under, effect).map(AnimatedValue::BoxShadow)
+    }
+    (AnimatedValue::TextShadow(under), AnimatedValue::TextShadow(effect)) => {
+      add_text_shadow_list(under, effect).map(AnimatedValue::TextShadow)
+    }
     _ => None,
   };
 
@@ -5338,6 +5433,193 @@ fn accumulate_iteration_value(
         };
       }
       Some(AnimatedValue::BorderRadius(out))
+    }
+    (
+      AnimatedValue::BoxShadow(cur),
+      AnimatedValue::BoxShadow(start),
+      AnimatedValue::BoxShadow(end),
+    ) => {
+      let max_len = cur.len().max(start.len()).max(end.len());
+      let iter = iteration as f32;
+      let iter_i = iteration as i128;
+      let mut out = Vec::with_capacity(max_len);
+      for idx in 0..max_len {
+        let cur_shadow = if let Some(shadow) = cur.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = start.get(idx) {
+          transparent_box_shadow_like(shadow)
+        } else if let Some(shadow) = end.get(idx) {
+          transparent_box_shadow_like(shadow)
+        } else {
+          continue;
+        };
+        let start_shadow = if let Some(shadow) = start.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = end.get(idx) {
+          transparent_box_shadow_like(shadow)
+        } else {
+          continue;
+        };
+        let end_shadow = if let Some(shadow) = end.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = start.get(idx) {
+          transparent_box_shadow_like(shadow)
+        } else {
+          continue;
+        };
+
+        if cur_shadow.inset != start_shadow.inset || cur_shadow.inset != end_shadow.inset {
+          return None;
+        }
+        if !cur_shadow.color.a.is_finite()
+          || !start_shadow.color.a.is_finite()
+          || !end_shadow.color.a.is_finite()
+        {
+          return None;
+        }
+
+        let cx = cur_shadow.offset_x.to_px();
+        let cy = cur_shadow.offset_y.to_px();
+        let cb = cur_shadow.blur_radius.to_px();
+        let cs = cur_shadow.spread_radius.to_px();
+        let sx = start_shadow.offset_x.to_px();
+        let sy = start_shadow.offset_y.to_px();
+        let sb = start_shadow.blur_radius.to_px();
+        let ss = start_shadow.spread_radius.to_px();
+        let ex = end_shadow.offset_x.to_px();
+        let ey = end_shadow.offset_y.to_px();
+        let eb = end_shadow.blur_radius.to_px();
+        let es = end_shadow.spread_radius.to_px();
+        if !cx.is_finite()
+          || !cy.is_finite()
+          || !cb.is_finite()
+          || !cs.is_finite()
+          || !sx.is_finite()
+          || !sy.is_finite()
+          || !sb.is_finite()
+          || !ss.is_finite()
+          || !ex.is_finite()
+          || !ey.is_finite()
+          || !eb.is_finite()
+          || !es.is_finite()
+        {
+          return None;
+        }
+
+        let r = clamp_color_channel_i128(
+          cur_shadow.color.r as i128
+            + iter_i * (end_shadow.color.r as i128 - start_shadow.color.r as i128),
+        );
+        let g = clamp_color_channel_i128(
+          cur_shadow.color.g as i128
+            + iter_i * (end_shadow.color.g as i128 - start_shadow.color.g as i128),
+        );
+        let b = clamp_color_channel_i128(
+          cur_shadow.color.b as i128
+            + iter_i * (end_shadow.color.b as i128 - start_shadow.color.b as i128),
+        );
+        let alpha =
+          (cur_shadow.color.a + iter * (end_shadow.color.a - start_shadow.color.a)).clamp(0.0, 1.0);
+        if !alpha.is_finite() {
+          return None;
+        }
+
+        out.push(BoxShadow {
+          offset_x: Length::px(cx + iter * (ex - sx)),
+          offset_y: Length::px(cy + iter * (ey - sy)),
+          blur_radius: Length::px((cb + iter * (eb - sb)).max(0.0)),
+          spread_radius: Length::px(cs + iter * (es - ss)),
+          color: Rgba::new(r, g, b, alpha),
+          inset: cur_shadow.inset,
+        });
+      }
+      Some(AnimatedValue::BoxShadow(out))
+    }
+    (
+      AnimatedValue::TextShadow(cur),
+      AnimatedValue::TextShadow(start),
+      AnimatedValue::TextShadow(end),
+    ) => {
+      let max_len = cur.len().max(start.len()).max(end.len());
+      let iter = iteration as f32;
+      let iter_i = iteration as i128;
+      let mut out = Vec::with_capacity(max_len);
+      for idx in 0..max_len {
+        let cur_shadow = if let Some(shadow) = cur.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = start.get(idx) {
+          transparent_text_shadow_like(shadow)
+        } else if let Some(shadow) = end.get(idx) {
+          transparent_text_shadow_like(shadow)
+        } else {
+          continue;
+        };
+        let start_shadow = if let Some(shadow) = start.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = end.get(idx) {
+          transparent_text_shadow_like(shadow)
+        } else {
+          continue;
+        };
+        let end_shadow = if let Some(shadow) = end.get(idx) {
+          shadow.clone()
+        } else if let Some(shadow) = start.get(idx) {
+          transparent_text_shadow_like(shadow)
+        } else {
+          continue;
+        };
+
+        let cur_color = cur_shadow.color.unwrap_or(Rgba::BLACK);
+        let start_color = start_shadow.color.unwrap_or(Rgba::BLACK);
+        let end_color = end_shadow.color.unwrap_or(Rgba::BLACK);
+        if !cur_color.a.is_finite() || !start_color.a.is_finite() || !end_color.a.is_finite() {
+          return None;
+        }
+
+        let cx = cur_shadow.offset_x.to_px();
+        let cy = cur_shadow.offset_y.to_px();
+        let cb = cur_shadow.blur_radius.to_px();
+        let sx = start_shadow.offset_x.to_px();
+        let sy = start_shadow.offset_y.to_px();
+        let sb = start_shadow.blur_radius.to_px();
+        let ex = end_shadow.offset_x.to_px();
+        let ey = end_shadow.offset_y.to_px();
+        let eb = end_shadow.blur_radius.to_px();
+        if !cx.is_finite()
+          || !cy.is_finite()
+          || !cb.is_finite()
+          || !sx.is_finite()
+          || !sy.is_finite()
+          || !sb.is_finite()
+          || !ex.is_finite()
+          || !ey.is_finite()
+          || !eb.is_finite()
+        {
+          return None;
+        }
+
+        let r = clamp_color_channel_i128(
+          cur_color.r as i128 + iter_i * (end_color.r as i128 - start_color.r as i128),
+        );
+        let g = clamp_color_channel_i128(
+          cur_color.g as i128 + iter_i * (end_color.g as i128 - start_color.g as i128),
+        );
+        let b = clamp_color_channel_i128(
+          cur_color.b as i128 + iter_i * (end_color.b as i128 - start_color.b as i128),
+        );
+        let alpha = (cur_color.a + iter * (end_color.a - start_color.a)).clamp(0.0, 1.0);
+        if !alpha.is_finite() {
+          return None;
+        }
+
+        out.push(TextShadow {
+          offset_x: Length::px(cx + iter * (ex - sx)),
+          offset_y: Length::px(cy + iter * (ey - sy)),
+          blur_radius: Length::px((cb + iter * (eb - sb)).max(0.0)),
+          color: Some(Rgba::new(r, g, b, alpha)),
+        });
+      }
+      Some(AnimatedValue::TextShadow(out))
     }
     (
       AnimatedValue::Translate(cur),
