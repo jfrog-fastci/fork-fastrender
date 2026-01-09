@@ -722,27 +722,26 @@ fn parse_rule<'i, 't>(
     if kw.eq_ignore_ascii_case("namespace") {
       return parse_namespace_rule(parser, namespace_state, is_top_level);
     }
-    if is_top_level {
-      // Any non-`@import`/`@namespace` at-rule ends the prelude, except that empty `@layer`
-      // statements are permitted before the `@import`/`@namespace` group begins.
-      if !kw.eq_ignore_ascii_case("layer") {
+    if kw.eq_ignore_ascii_case("media") {
+      let parsed = parse_media_rule(
+        parser,
+        errors,
+        parent_selectors,
+        css_source,
+        media_ctx,
+        media_query_cache.as_deref_mut(),
+        parsed_media_query_list_cache,
+        namespace_state,
+      )?;
+      // `@media` rules are not ignored by parsing just because they don't match; pruned
+      // `@media` blocks still terminate the stylesheet prelude.
+      if is_top_level {
         namespace_state.end_prelude();
       }
-    }
-    if kw.eq_ignore_ascii_case("media") {
-      return parse_media_rule(
-        parser,
-        errors,
-        parent_selectors,
-        css_source,
-        media_ctx,
-        media_query_cache.as_deref_mut(),
-        parsed_media_query_list_cache,
-        namespace_state,
-      );
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("container") {
-      return parse_container_rule(
+      let parsed = parse_container_rule(
         parser,
         errors,
         parent_selectors,
@@ -751,10 +750,14 @@ fn parse_rule<'i, 't>(
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
         namespace_state,
-      );
+      )?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("scope") {
-      return parse_scope_rule(
+      let parsed = parse_scope_rule(
         parser,
         errors,
         parent_selectors,
@@ -763,10 +766,14 @@ fn parse_rule<'i, 't>(
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
         namespace_state,
-      );
+      )?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("supports") {
-      return parse_supports_rule(
+      let parsed = parse_supports_rule(
         parser,
         errors,
         parent_selectors,
@@ -775,7 +782,13 @@ fn parse_rule<'i, 't>(
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
         namespace_state,
-      );
+      )?;
+      // `@supports` rules are not ignored by parsing just because they don't match; pruned
+      // `@supports` blocks still terminate the stylesheet prelude.
+      if is_top_level {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("layer") {
       let parsed = parse_layer_rule(
@@ -796,7 +809,7 @@ fn parse_rule<'i, 't>(
       return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("starting-style") {
-      return parse_starting_style_rule(
+      let parsed = parse_starting_style_rule(
         parser,
         errors,
         parent_selectors,
@@ -805,28 +818,60 @@ fn parse_rule<'i, 't>(
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
         namespace_state,
-      );
+      )?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("page") {
-      return parse_page_rule(parser, css_source);
+      let parsed = parse_page_rule(parser, css_source)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("counter-style") {
-      return parse_counter_style_rule(parser);
+      let parsed = parse_counter_style_rule(parser)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("font-feature-values") {
-      return parse_font_feature_values_rule(parser, css_source);
+      let parsed = parse_font_feature_values_rule(parser, css_source)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("font-palette-values") {
-      return parse_font_palette_values_rule(parser, css_source);
+      let parsed = parse_font_palette_values_rule(parser, css_source)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("font-face") {
-      return parse_font_face_rule(parser);
+      let parsed = parse_font_face_rule(parser)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("keyframes") || kw.eq_ignore_ascii_case("-webkit-keyframes") {
-      return parse_keyframes_rule(parser, css_source);
+      let parsed = parse_keyframes_rule(parser, css_source)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("property") {
-      return parse_property_rule(parser);
+      let parsed = parse_property_rule(parser)?;
+      if is_top_level && parsed.is_some() {
+        namespace_state.end_prelude();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("position-try") {
       return parse_position_try_rule(parser);
@@ -836,11 +881,8 @@ fn parse_rule<'i, 't>(
     return Ok(None);
   }
 
-  if is_top_level {
-    namespace_state.end_prelude();
-  }
   // Parse style rule
-  parse_style_rule(
+  let parsed = parse_style_rule(
     parser,
     errors,
     parent_selectors,
@@ -849,8 +891,11 @@ fn parse_rule<'i, 't>(
     media_query_cache.as_deref_mut(),
     parsed_media_query_list_cache,
     namespace_state,
-  )
-  .map(|opt| opt.map(CssRule::Style))
+  )?;
+  if is_top_level && parsed.is_some() {
+    namespace_state.end_prelude();
+  }
+  Ok(parsed.map(CssRule::Style))
 }
 
 #[inline]

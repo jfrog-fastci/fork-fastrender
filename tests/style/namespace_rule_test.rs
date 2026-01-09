@@ -177,3 +177,37 @@ fn import_rules_inside_media_rules_are_ignored() {
   assert!(!media.rules.iter().any(|rule| matches!(rule, CssRule::Import(_))));
   assert!(media.rules.iter().any(|rule| matches!(rule, CssRule::Style(_))));
 }
+
+#[test]
+fn namespace_rules_after_ignored_style_rules_are_applied() {
+  let html = r#"<svg><foreignObject id="svg"></foreignObject></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    svg|foreignObject { display: inline; } /* invalid selector before namespace */
+    @namespace svg "http://www.w3.org/2000/svg";
+    foreignObject { display: block; }
+    svg|foreignObject { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let fo = find_by_id(&styled, "svg").expect("foreignObject");
+  assert_eq!(display(fo), "none");
+}
+
+#[test]
+fn namespace_rules_after_ignored_at_rules_are_applied() {
+  let html = r#"<svg><foreignObject id="svg"></foreignObject></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @unknown foo;
+    @namespace svg "http://www.w3.org/2000/svg";
+    foreignObject { display: block; }
+    svg|foreignObject { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let fo = find_by_id(&styled, "svg").expect("foreignObject");
+  assert_eq!(display(fo), "none");
+}
