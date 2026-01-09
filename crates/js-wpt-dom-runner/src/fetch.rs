@@ -1,5 +1,28 @@
-use fastrender::js::resolve_url;
 use rquickjs::{Ctx, Function, Object, Result as JsResult};
+use thiserror::Error;
+use url::Url;
+
+#[derive(Debug, Error)]
+enum UrlResolveError {
+  #[error("relative URL has no base URL")]
+  RelativeUrlWithoutBase,
+  #[error(transparent)]
+  Url(#[from] url::ParseError),
+}
+
+fn resolve_url(input: &str, base_url: Option<&str>) -> Result<String, UrlResolveError> {
+  if base_url.is_none() {
+    match Url::parse(input) {
+      Ok(url) => return Ok(url.to_string()),
+      Err(url::ParseError::RelativeUrlWithoutBase) => return Err(UrlResolveError::RelativeUrlWithoutBase),
+      Err(err) => return Err(UrlResolveError::Url(err)),
+    }
+  }
+
+  let base = Url::parse(base_url.expect("base_url is Some"))?;
+  let url = base.join(input)?;
+  Ok(url.to_string())
+}
 
 pub fn install_fetch_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<()> {
   // Host hook used by the JS shims to perform WHATWG URL resolution using Rust's `url` crate.
