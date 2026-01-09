@@ -1,6 +1,7 @@
 use crate::api::{render_html_with_shared_resources, ResourceContext, ResourceKind};
 use crate::error::{Error, RenderStage};
 use crate::geometry::Rect;
+use crate::html::content_security_policy::CspPolicy;
 use crate::html::encoding::decode_html_bytes;
 use crate::image_loader::ImageCache;
 use crate::paint::display_list::ImageData;
@@ -761,6 +762,7 @@ pub(crate) fn render_iframe_src(
   cache.set_base_url(final_url.clone());
   let nested_origin = origin_from_url(&final_url);
   let response_referrer_policy = resource.response_referrer_policy;
+  let response_csp = CspPolicy::from_response_headers(&resource);
   let nested_context = context.as_ref().map(|ctx| {
     let mut nested = ctx
       .for_origin(nested_origin)
@@ -777,6 +779,8 @@ pub(crate) fn render_iframe_src(
     if let Some(policy) = response_referrer_policy {
       nested.referrer_policy = policy;
     }
+    // Iframe subresources are controlled by the iframe document's own CSP, not the parent.
+    nested.csp = response_csp.clone();
     nested
   });
   let policy_for_render = nested_context
@@ -1156,6 +1160,7 @@ mod tests {
       document_url: Some("https://parent-a.test/page-a.html".to_string()),
       referrer_policy: ReferrerPolicy::OriginWhenCrossOrigin,
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));
@@ -1180,6 +1185,7 @@ mod tests {
       document_url: Some("https://parent-b.test/page-b.html".to_string()),
       referrer_policy: ReferrerPolicy::OriginWhenCrossOrigin,
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));
@@ -1247,6 +1253,7 @@ mod tests {
       document_url: Some("https://parent.test/shared.html".to_string()),
       referrer_policy: ReferrerPolicy::Origin,
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));
@@ -1271,6 +1278,7 @@ mod tests {
       document_url: Some("https://parent.test/shared.html".to_string()),
       referrer_policy: ReferrerPolicy::NoReferrer,
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));
@@ -1339,6 +1347,7 @@ mod tests {
         same_origin_only: true,
         ..ResourceAccessPolicy::default()
       },
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));
@@ -1408,6 +1417,7 @@ mod tests {
       document_url: Some("https://parent.test/".to_string()),
       referrer_policy: ReferrerPolicy::default(),
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     }));

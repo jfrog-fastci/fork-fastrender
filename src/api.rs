@@ -92,6 +92,7 @@ use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::html::encoding::decode_html_bytes;
 use crate::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
+use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::html::viewport::ViewportLength;
 use crate::image_loader::ImageCache;
 use crate::image_output::encode_image;
@@ -1592,6 +1593,7 @@ pub struct ResourceContext {
   pub document_url: Option<String>,
   pub referrer_policy: ReferrerPolicy,
   pub policy: ResourceAccessPolicy,
+  pub csp: Option<CspPolicy>,
   pub diagnostics: Option<SharedRenderDiagnostics>,
   pub iframe_depth_remaining: Option<usize>,
 }
@@ -1695,13 +1697,69 @@ impl ResourceContext {
       ResourceKind::Document => self.policy.allows_document_with_final(url, final_url),
       _ => self.policy.allows_with_final(url, final_url),
     };
-    match allowed {
-      Ok(()) => Ok(()),
-      Err(err) => {
+    if let Err(err) = allowed {
+      self.record_violation(kind, url, final_url, err.reason.clone());
+      return Err(err);
+    }
+
+    if let Some(csp) = self.csp.as_ref() {
+      let directive = match kind {
+        ResourceKind::Stylesheet => CspDirective::StyleSrc,
+        ResourceKind::Image => CspDirective::ImgSrc,
+        ResourceKind::Font => CspDirective::FontSrc,
+        ResourceKind::Other => CspDirective::ConnectSrc,
+        ResourceKind::Document => CspDirective::FrameSrc,
+      };
+      let doc_origin = self.policy.document_origin.as_ref();
+
+      let check_one = |label: &str, candidate: &str| -> std::result::Result<(), PolicyError> {
+        let parsed = Url::parse(candidate)
+          .ok()
+          .or_else(|| {
+            self
+              .document_url
+              .as_deref()
+              .and_then(|base| Url::parse(base).ok())
+              .and_then(|base| base.join(candidate).ok())
+          })
+          .or_else(|| {
+            doc_origin
+              .filter(|origin| origin.scheme() == "file" || origin.host().is_some())
+              .and_then(|origin| Url::parse(&format!("{origin}/")).ok())
+              .and_then(|base| base.join(candidate).ok())
+          })
+          .ok_or_else(|| PolicyError {
+            reason: format!(
+              "Blocked by Content-Security-Policy ({}) for {label} URL (invalid URL): {candidate}",
+              directive.as_str()
+            ),
+          })?;
+        let resolved = parsed.as_str();
+        if csp.allows_url(directive, doc_origin, &parsed) {
+          Ok(())
+        } else {
+          Err(PolicyError {
+            reason: format!(
+              "Blocked by Content-Security-Policy ({}) for {label} URL: {resolved}",
+              directive.as_str()
+            ),
+          })
+        }
+      };
+
+      if let Err(err) = check_one("requested", url) {
         self.record_violation(kind, url, final_url, err.reason.clone());
-        Err(err)
+        return Err(err);
+      }
+      if let Some(final_url) = final_url {
+        if let Err(err) = check_one("final", final_url) {
+          self.record_violation(kind, url, Some(final_url), err.reason.clone());
+          return Err(err);
+        }
       }
     }
+
+    Ok(())
   }
 
   /// Clone this context with a different document origin.
@@ -1710,6 +1768,7 @@ impl ResourceContext {
       document_url: self.document_url.clone(),
       referrer_policy: self.referrer_policy,
       policy: self.policy.for_origin(origin),
+      csp: self.csp.clone(),
       diagnostics: self.diagnostics.clone(),
       iframe_depth_remaining: self.iframe_depth_remaining,
     }
@@ -5206,6 +5265,7 @@ impl FastRender {
         Some(&deadline),
         stats,
         ReferrerPolicy::default(),
+        None,
         trace_handle,
       );
       drop(_root_span);
@@ -5221,6 +5281,7 @@ impl FastRender {
     deadline: Option<&RenderDeadline>,
     stats: Option<&mut RenderStatsRecorder>,
     initial_referrer_policy: ReferrerPolicy,
+    initial_csp: Option<CspPolicy>,
     trace: &TraceHandle,
   ) -> Result<RenderOutputs> {
     let (width, height) = options
@@ -5242,11 +5303,13 @@ impl FastRender {
       .map(|diag| SharedRenderDiagnostics {
         inner: Arc::clone(diag),
       });
-    let context = Some(self.build_resource_context(
+    let mut built = self.build_resource_context(
       self.document_url_hint(),
       shared_diagnostics,
       initial_referrer_policy,
-    ));
+    );
+    built.csp = initial_csp;
+    let context = Some(built);
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
     let result = self.render_html_internal(
       html,
@@ -5304,7 +5367,7 @@ impl FastRender {
 
   /// Prepares HTML for repeated painting without re-running parse/style/layout.
   pub fn prepare_html(&mut self, html: &str, options: RenderOptions) -> Result<PreparedDocument> {
-    self.prepare_html_internal(html, options)
+    self.prepare_html_internal(html, options, ReferrerPolicy::default(), None)
   }
 
   /// Prepares an existing DOM tree for repeated painting without reparsing HTML.
@@ -5336,7 +5399,7 @@ impl FastRender {
     let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
     let previous_sink = self.diagnostics.take();
     self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
-    let document = self.prepare_html_internal(html, options);
+    let document = self.prepare_html_internal(html, options, ReferrerPolicy::default(), None);
     self.set_diagnostics_sink(previous_sink);
     let document = document?;
     let diagnostics = diagnostics
@@ -5403,16 +5466,20 @@ impl FastRender {
       // plumbing as the normal render path.
       let initial_referrer_policy =
         crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
-      let inlining_context =
-        self.build_resource_context(self.document_url_hint(), None, initial_referrer_policy);
       let shared_diagnostics = Some(SharedRenderDiagnostics {
         inner: Arc::clone(&diagnostics),
       });
-      let context = Some(self.build_resource_context(
+      let initial_csp = crate::html::content_security_policy::extract_csp_from_html(html);
+      let mut inlining_context =
+        self.build_resource_context(self.document_url_hint(), shared_diagnostics.clone(), initial_referrer_policy);
+      inlining_context.csp = initial_csp.clone();
+      let mut built = self.build_resource_context(
         self.document_url_hint(),
         shared_diagnostics,
         initial_referrer_policy,
-      ));
+      );
+      built.csp = initial_csp;
+      let context = Some(built);
       let (prev_self_ctx, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
 
       let result = (|| -> Result<PrepareResult> {
@@ -5452,6 +5519,22 @@ impl FastRender {
               ctx.referrer_policy = policy;
               // Propagate the updated policy to all caches/fetchers that hold a copy of the current
               // resource context.
+              self.push_resource_context(Some(ctx));
+            }
+          }
+        }
+        if let Some(meta_csp) =
+          crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+        {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            let changed = match ctx.csp.as_mut() {
+              Some(existing) => existing.extend(meta_csp),
+              None => {
+                ctx.csp = Some(meta_csp);
+                true
+              }
+            };
+            if changed {
               self.push_resource_context(Some(ctx));
             }
           }
@@ -5743,6 +5826,22 @@ impl FastRender {
         if let Some(mut ctx) = self.resource_context.clone() {
           ctx.referrer_policy = policy;
           // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(&dom)? {
+      if let Some(mut ctx) = self.resource_context.clone() {
+        let changed = match ctx.csp.as_mut() {
+          Some(existing) => existing.extend(meta_csp),
+          None => {
+            ctx.csp = Some(meta_csp);
+            true
+          }
+        };
+        if changed {
+          // Propagate the updated CSP to all caches/fetchers that hold a copy of the current
           // resource context.
           self.push_resource_context(Some(ctx));
         }
@@ -6311,6 +6410,8 @@ impl FastRender {
     &mut self,
     html: &str,
     options: RenderOptions,
+    initial_referrer_policy: ReferrerPolicy,
+    initial_csp: Option<CspPolicy>,
   ) -> Result<PreparedDocument> {
     let toggles = self.resolve_runtime_toggles(&options);
     let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
@@ -6325,11 +6426,13 @@ impl FastRender {
         .map(|diag| SharedRenderDiagnostics {
           inner: Arc::clone(diag),
         });
-      let context = Some(self.build_resource_context(
+      let mut built = self.build_resource_context(
         self.document_url_hint(),
         shared_diagnostics,
-        ReferrerPolicy::default(),
-      ));
+        initial_referrer_policy,
+      );
+      built.csp = initial_csp;
+      let context = Some(built);
       let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
 
       let result = self.prepare_html_internal_inner(html, options, trace_handle);
@@ -6408,6 +6511,22 @@ impl FastRender {
             ctx.referrer_policy = policy;
             // Propagate the updated policy to all caches/fetchers that hold a copy of the current
             // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+      if let Some(meta_csp) =
+        crate::html::content_security_policy::extract_csp_with_deadline(dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
             self.push_resource_context(Some(ctx));
           }
         }
@@ -6687,6 +6806,20 @@ impl FastRender {
         }
       }
     }
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(&dom)? {
+      if let Some(mut ctx) = self.resource_context.clone() {
+        let changed = match ctx.csp.as_mut() {
+          Some(existing) => existing.extend(meta_csp),
+          None => {
+            ctx.csp = Some(meta_csp);
+            true
+          }
+        };
+        if changed {
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
 
     if let Some(start) = stage_start.as_mut() {
       let now = Instant::now();
@@ -6961,6 +7094,22 @@ impl FastRender {
           }
         }
       }
+      if let Some(meta_csp) =
+        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
     }
 
     if let Some(start) = stage_start.as_mut() {
@@ -7126,7 +7275,7 @@ impl FastRender {
             let html = format!(
               "<!doctype html><html><body style=\"margin:0;background:#ffebee;color:#c62828;display:flex;align-items:center;justify-content:center;font:16px sans-serif;\">Failed to fetch document</body></html>"
             );
-            return self.prepare_html_internal(&html, options);
+            return self.prepare_html_internal(&html, options, ReferrerPolicy::default(), None);
           }
           let reason = e.to_string();
           let source = Arc::new(e);
@@ -7141,7 +7290,9 @@ impl FastRender {
       self.set_document_url(hint);
       self.set_base_url(hint);
       let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
-      self.prepare_html_internal(&html, options)
+      let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
+      let initial_csp = CspPolicy::from_response_headers(&resource);
+      self.prepare_html_internal(&html, options, initial_referrer_policy, initial_csp)
     })();
     self.set_diagnostics_sink(previous_sink);
     let document = document?;
@@ -7424,6 +7575,7 @@ impl FastRender {
     let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
     let mut captured = RenderArtifacts::new(artifacts);
     let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
+    let initial_csp = CspPolicy::from_response_headers(resource);
     let outputs = self.render_html_with_options_internal_with_deadline(
       &html,
       options,
@@ -7431,6 +7583,7 @@ impl FastRender {
       Some(&deadline),
       stats.as_deref_mut(),
       initial_referrer_policy,
+      initial_csp,
       trace,
     );
     if !had_sink {
@@ -7554,6 +7707,7 @@ impl FastRender {
           Some(&deadline),
           stats_recorder.as_mut(),
           ReferrerPolicy::default(),
+          None,
           trace_handle,
         )?;
         let diagnostics = diagnostics
@@ -8736,6 +8890,20 @@ impl FastRender {
           }
         }
       }
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
 
       let result = self.accessibility_tree_with_options_for_dom(dom, options);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
@@ -8792,6 +8960,22 @@ impl FastRender {
           }
         }
       }
+      if let Some(meta_csp) =
+        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
 
       let result = self.accessibility_tree_with_options_for_dom(&dom, options);
       self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
@@ -8838,11 +9022,13 @@ impl FastRender {
           inner: Arc::clone(diag),
         });
       let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
-      let context = Some(self.build_resource_context(
+      let mut built = self.build_resource_context(
         self.document_url_hint(),
         shared_diagnostics,
         initial_referrer_policy,
-      ));
+      );
+      built.csp = CspPolicy::from_response_headers(resource);
+      let context = Some(built);
       let (prev_self, prev_image, prev_layout_image, prev_font) =
         self.push_resource_context(context);
 
@@ -8858,6 +9044,22 @@ impl FastRender {
             ctx.referrer_policy = policy;
             // Propagate the updated policy to all caches/fetchers that hold a copy of the current
             // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+      if let Some(meta_csp) =
+        crate::html::content_security_policy::extract_csp_with_deadline(&dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
             self.push_resource_context(Some(ctx));
           }
         }
@@ -9115,6 +9317,20 @@ impl FastRender {
         }
       }
     }
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+      if let Some(mut ctx) = self.resource_context.clone() {
+        let changed = match ctx.csp.as_mut() {
+          Some(existing) => existing.extend(meta_csp),
+          None => {
+            ctx.csp = Some(meta_csp);
+            true
+          }
+        };
+        if changed {
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
     let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
@@ -9178,6 +9394,20 @@ impl FastRender {
           ctx.referrer_policy = policy;
           // Propagate the updated policy to all caches/fetchers that hold a copy of the current
           // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+      if let Some(mut ctx) = self.resource_context.clone() {
+        let changed = match ctx.csp.as_mut() {
+          Some(existing) => existing.extend(meta_csp),
+          None => {
+            ctx.csp = Some(meta_csp);
+            true
+          }
+        };
+        if changed {
           self.push_resource_context(Some(ctx));
         }
       }
@@ -10539,6 +10769,20 @@ impl FastRender {
         }
       }
     }
+    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
+      if let Some(mut ctx) = self.resource_context.clone() {
+        let changed = match ctx.csp.as_mut() {
+          Some(existing) => existing.extend(meta_csp),
+          None => {
+            ctx.csp = Some(meta_csp);
+            true
+          }
+        };
+        if changed {
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
     let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
@@ -10917,6 +11161,7 @@ impl FastRender {
       document_url: document_url.map(|url| url.to_string()),
       referrer_policy,
       policy,
+      csp: None,
       diagnostics,
       iframe_depth_remaining: Some(self.max_iframe_depth),
     }
@@ -11081,13 +11326,15 @@ impl FastRender {
   ) -> std::result::Result<String, RenderError> {
     let referrer_policy =
       crate::html::referrer_policy::extract_referrer_policy_from_html(html).unwrap_or_default();
+    let csp = crate::html::content_security_policy::extract_csp_from_html(html);
     let base_hint = trim_ascii_whitespace(base_url);
     let document_url = if base_hint.is_empty() {
       None
     } else {
       Some(base_hint)
     };
-    let resource_context = self.build_resource_context(document_url, None, referrer_policy);
+    let mut resource_context = self.build_resource_context(document_url, None, referrer_policy);
+    resource_context.csp = csp;
     let base_url = if let Some(base_hint) = document_url {
       crate::css::loader::infer_base_url(html, base_hint)
     } else {
@@ -11320,8 +11567,10 @@ impl FastRender {
         break;
       }
       if let Some(ctx) = resource_context {
-        if let Err(err) = ctx.policy.allows(&css_url) {
-          diagnostics.record_message(ResourceKind::Stylesheet, &css_url, err.reason);
+        if let Err(err) = ctx.check_allowed(ResourceKind::Stylesheet, &css_url) {
+          if ctx.diagnostics.is_none() {
+            diagnostics.record_message(ResourceKind::Stylesheet, &css_url, err.reason.clone());
+          }
           continue;
         }
       }
@@ -11358,14 +11607,19 @@ impl FastRender {
             );
           }
           if let Some(ctx) = resource_context {
-            if ctx
-              .check_allowed_with_final(
-                ResourceKind::Stylesheet,
-                &css_url,
-                res.final_url.as_deref(),
-              )
-              .is_err()
-            {
+            if let Err(err) = ctx.check_allowed_with_final(
+              ResourceKind::Stylesheet,
+              &css_url,
+              res.final_url.as_deref(),
+            ) {
+              if ctx.diagnostics.is_none() {
+                diagnostics.record_message_with_final(
+                  ResourceKind::Stylesheet,
+                  &css_url,
+                  res.final_url.as_deref(),
+                  err.reason,
+                );
+              }
               continue;
             }
           }
@@ -11418,10 +11672,11 @@ impl FastRender {
                   rec.record_fetch(ResourceKind::Stylesheet);
                 }
                 if let Some(resource_ctx) = resource_context {
-                  if let Err(err) = resource_ctx.policy.allows(u) {
-                    let reason = err.reason;
-                    diagnostics.record_message(ResourceKind::Stylesheet, u, &reason);
-                    return Err(Error::Resource(ResourceError::new(u.to_string(), reason)));
+                  if let Err(err) = resource_ctx.check_allowed(ResourceKind::Stylesheet, u) {
+                    if resource_ctx.diagnostics.is_none() {
+                      diagnostics.record_message(ResourceKind::Stylesheet, u, err.reason.clone());
+                    }
+                    return Err(Error::Resource(ResourceError::new(u.to_string(), err.reason)));
                   }
                 }
 
@@ -11452,10 +11707,15 @@ impl FastRender {
                         u,
                         res.final_url.as_deref(),
                       ) {
-                        return Err(Error::Resource(ResourceError::new(
-                          u.to_string(),
-                          err.reason,
-                        )));
+                        if resource_ctx.diagnostics.is_none() {
+                          diagnostics.record_message_with_final(
+                            ResourceKind::Stylesheet,
+                            u,
+                            res.final_url.as_deref(),
+                            err.reason.clone(),
+                          );
+                        }
+                        return Err(Error::Resource(ResourceError::new(u.to_string(), err.reason)));
                       }
                     }
                     if let Err(err) =
@@ -18975,6 +19235,7 @@ pub(crate) fn render_html_with_shared_resources(
       document_url: Some("https://example.com/".to_string()),
       referrer_policy: Default::default(),
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: Some(SharedRenderDiagnostics {
         inner: Arc::clone(&sink),
       }),
@@ -19012,6 +19273,7 @@ pub(crate) fn render_html_with_shared_resources(
       document_url: Some("https://example.com/".to_string()),
       referrer_policy: Default::default(),
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: Some(SharedRenderDiagnostics {
         inner: Arc::clone(&sink),
       }),
@@ -19221,6 +19483,7 @@ pub(crate) fn render_html_with_shared_resources(
       document_url: Some("https://example.com/doc.html".to_string()),
       referrer_policy: Default::default(),
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     };
@@ -24638,6 +24901,7 @@ pub(crate) fn render_html_with_shared_resources(
         same_origin_only: true,
         allowed_origins: Vec::new(),
       },
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     };
@@ -24663,6 +24927,106 @@ pub(crate) fn render_html_with_shared_resources(
         )
         .is_ok(),
       "expected document navigations to remain allowed even when redirected cross-origin",
+    );
+  }
+
+  #[test]
+  fn csp_style_src_self_blocks_cross_origin_stylesheet_fetch() {
+    let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="https://cdn.test/a.css">
+      </head><body><div>Hello</div></body></html>"#;
+    let document_url = "https://example.test/page.html";
+    let stylesheet_url = "https://cdn.test/a.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "body { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let mut resource = FetchedResource::with_final_url(
+      html.as_bytes().to_vec(),
+      Some("text/html; charset=utf-8".to_string()),
+      Some(document_url.to_string()),
+    );
+    resource.response_headers = Some(vec![(
+      "Content-Security-Policy".to_string(),
+      "style-src 'self'".to_string(),
+    )]);
+
+    let result = renderer
+      .render_fetched_html_with_options(
+        &resource,
+        Some(document_url),
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .expect("render should succeed");
+
+    assert!(
+      fetcher.requests().is_empty(),
+      "blocked stylesheet should not be fetched"
+    );
+    assert!(
+      result
+        .diagnostics
+        .fetch_errors
+        .iter()
+        .any(|e| e.kind == ResourceKind::Stylesheet
+          && e.url == stylesheet_url
+          && e.message.contains("Content-Security-Policy")
+          && e.message.contains("style-src")),
+      "expected CSP violation to be recorded for blocked stylesheet"
+    );
+  }
+
+  #[test]
+  fn csp_img_src_none_blocks_image_load() {
+    let image_url = "https://img.test/a.svg";
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      image_url,
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>"#,
+      "image/svg+xml",
+    ));
+    let mut renderer = FastRender::with_config_and_fetcher(
+      FastRenderConfig::default(),
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let html = format!(
+      r#"<!doctype html><html><head>
+        <meta http-equiv="Content-Security-Policy" content="img-src 'none'">
+      </head><body><img src="{image_url}" width="10" height="10"></body></html>"#
+    );
+
+    let result = renderer
+      .render_html_with_diagnostics(&html, RenderOptions::new().with_viewport(32, 32))
+      .expect("render should succeed");
+
+    assert!(
+      !fetcher.requests().iter().any(|req| req.url == image_url),
+      "blocked image should not be fetched"
+    );
+    assert!(
+      result
+        .diagnostics
+        .fetch_errors
+        .iter()
+        .any(|e| e.kind == ResourceKind::Image
+          && e.url == image_url
+          && e.message.contains("Content-Security-Policy")
+          && e.message.contains("img-src")),
+      "expected CSP violation to be recorded for blocked image"
     );
   }
 
@@ -25374,6 +25738,7 @@ pub(crate) fn render_html_with_shared_resources(
         document_origin: Some(origin),
         ..ResourceAccessPolicy::default()
       },
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     };
@@ -25731,6 +26096,7 @@ pub(crate) fn render_html_with_shared_resources(
       document_url: Some(document_url.to_string()),
       referrer_policy: ReferrerPolicy::default(),
       policy: ResourceAccessPolicy::default(),
+      csp: None,
       diagnostics: None,
       iframe_depth_remaining: None,
     };

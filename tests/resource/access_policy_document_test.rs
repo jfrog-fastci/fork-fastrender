@@ -13,6 +13,7 @@ fn iframe_documents_ignore_same_origin_subresource_policy() {
     policy,
     document_url: None,
     referrer_policy: Default::default(),
+    csp: None,
     diagnostics: None,
     iframe_depth_remaining: None,
   };
@@ -63,6 +64,7 @@ fn document_loads_still_apply_mixed_content_and_file_restrictions() {
     },
     document_url: None,
     referrer_policy: Default::default(),
+    csp: None,
     diagnostics: None,
     iframe_depth_remaining: None,
   };
@@ -82,6 +84,7 @@ fn document_loads_still_apply_mixed_content_and_file_restrictions() {
     },
     document_url: None,
     referrer_policy: Default::default(),
+    csp: None,
     diagnostics: None,
     iframe_depth_remaining: None,
   };
