@@ -1208,6 +1208,44 @@ fn table_context_for_descendant(ancestors: &[&DomNode]) -> Option<TableContext> 
   }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListContext {
+  List,
+  Presentational,
+  NotList,
+}
+
+fn list_context_for_container(node: &DomNode) -> ListContext {
+  match parse_aria_role_attr(node) {
+    Some(ParsedRole::Presentational) => ListContext::Presentational,
+    Some(ParsedRole::Explicit(role)) => {
+      if role == "list" {
+        ListContext::List
+      } else {
+        ListContext::NotList
+      }
+    }
+    None => ListContext::List,
+  }
+}
+
+fn nearest_html_ancestor_with_tag<'a>(
+  ancestors: &'a [&DomNode],
+  tags: &[&str],
+) -> Option<&'a DomNode> {
+  for ancestor in ancestors.iter().rev() {
+    if !is_html_element(ancestor) {
+      continue;
+    }
+    let Some(tag) = ancestor.tag_name() else {
+      continue;
+    };
+    if tags.iter().any(|t| tag.eq_ignore_ascii_case(t)) {
+      return Some(*ancestor);
+    }
+  }
+  None
+}
 fn compute_role(
   node: &StyledNode,
   ancestors: &[&DomNode],
@@ -1259,10 +1297,28 @@ fn compute_role(
     "figure" => Some("figure".to_string()),
     "ul" | "ol" | "menu" => Some("list".to_string()),
     "menuitem" => Some("menuitem".to_string()),
-    "li" => Some("listitem".to_string()),
+    "li" => {
+      let list_ancestor = nearest_html_ancestor_with_tag(ancestors, &["ul", "ol", "menu"]);
+      match list_ancestor.map(list_context_for_container) {
+        Some(ListContext::List) => Some("listitem".to_string()),
+        _ => None,
+      }
+    }
     "dl" => Some("list".to_string()),
-    "dt" => Some("term".to_string()),
-    "dd" => Some("definition".to_string()),
+    "dt" => {
+      let dl_ancestor = nearest_html_ancestor_with_tag(ancestors, &["dl"]);
+      match dl_ancestor.map(list_context_for_container) {
+        Some(ListContext::List) => Some("term".to_string()),
+        _ => None,
+      }
+    }
+    "dd" => {
+      let dl_ancestor = nearest_html_ancestor_with_tag(ancestors, &["dl"]);
+      match dl_ancestor.map(list_context_for_container) {
+        Some(ListContext::List) => Some("definition".to_string()),
+        _ => None,
+      }
+    }
     "table" => Some("table".to_string()),
     "thead" | "tbody" | "tfoot" => matches!(
       table_ctx,

@@ -280,6 +280,11 @@ pub enum StackingContextReason {
   /// Has backdrop-filter
   BackdropFilter,
 
+  /// Backface-visibility: hidden. This does not create a CSS stacking context, but is tracked to
+  /// ensure the display list can re-establish the correct backface-visibility chain when fragments
+  /// are promoted out of non-stacking ancestors.
+  BackfaceVisibility,
+
   /// CSS containment (layout, paint, etc.)
   Containment,
 

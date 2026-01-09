@@ -872,6 +872,9 @@ fn accessibility_label_snapshot_json() {
         "value": null,
         "level": null,
         "html_tag": "input",
+        "relations": {
+          "described_by": ["help"]
+        },
         "states": {
           "focusable": true,
           "disabled": false,
