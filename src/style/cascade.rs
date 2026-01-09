@@ -40,6 +40,7 @@ use crate::dom::ancestor_bloom_enabled;
 use crate::dom::build_selector_bloom_store;
 use crate::dom::compute_slot_assignment_with_ids;
 use crate::dom::enumerate_dom_ids;
+use crate::dom::exportparts_exportable_pseudo;
 use crate::dom::next_selector_cache_epoch;
 use crate::dom::parse_exportparts;
 use crate::dom::reset_has_counters;
@@ -13279,24 +13280,7 @@ fn part_names(node: &DomNode) -> Vec<CssString> {
   names
 }
 
-fn exportparts_pseudo_internal_name(pseudo: &PseudoElement) -> Option<&'static str> {
-  // `exportparts="::pseudo: name"` only accepts fully-styleable pseudo-elements.
-  //
-  // FastRender currently models full pseudo-element style computation for generated-box pseudos;
-  // exclude restricted pseudos like ::first-line/::first-letter.
-  match pseudo {
-    PseudoElement::Before => Some("::before"),
-    PseudoElement::After => Some("::after"),
-    PseudoElement::Marker => Some("::marker"),
-    PseudoElement::Backdrop => Some("::backdrop"),
-    _ => None,
-  }
-}
-
 fn exported_pseudo_part_names(node_id: usize, pseudo: &PseudoElement, dom_maps: &DomMaps) -> Vec<CssString> {
-  let Some(internal_name) = exportparts_pseudo_internal_name(pseudo) else {
-    return Vec::new();
-  };
   let Some(mappings) = dom_maps.exportparts_map.get(&node_id) else {
     return Vec::new();
   };
@@ -13304,7 +13288,10 @@ fn exported_pseudo_part_names(node_id: usize, pseudo: &PseudoElement, dom_maps: 
   let mut exported = Vec::new();
   let mut seen: HashSet<&str> = HashSet::new();
   for (internal, alias) in mappings.iter() {
-    if !internal.eq_ignore_ascii_case(internal_name) {
+    let Some(mapped) = exportparts_exportable_pseudo(internal) else {
+      continue;
+    };
+    if &mapped != pseudo {
       continue;
     }
     // Ignore identity/invalid mappings like `::before` or `::before:` (parse_exportparts will

@@ -60,17 +60,70 @@ fn exportparts_pseudo_forwarding_allows_part_selector_to_style_before() {
   assert_eq!(before.color, Rgba::rgb(1, 2, 3));
   assert_eq!(
     before.content_value,
-     ContentValue::Items(vec![ContentItem::String("X".to_string())])
-   );
- }
+    ContentValue::Items(vec![ContentItem::String("X".to_string())])
+  );
+}
 
 #[test]
-fn exportparts_pseudo_forwarding_allows_part_selector_to_style_marker() {
+fn exportparts_pseudo_forwarding_allows_part_selector_to_style_file_selector_button() {
+  let html = r#"
+    <x-host id="host">
+      <template shadowroot="open">
+        <input id="file" type="file" exportparts="::file-selector-button: upload-button">
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_styles(
+    html,
+    r#"
+      x-host::part(upload-button) {
+        color: rgb(1, 2, 3);
+      }
+    "#,
+  );
+  let input = find_by_id(&styled, "file").expect("shadow input");
+  let button = input
+    .file_selector_button_styles
+    .as_ref()
+    .expect("generated ::file-selector-button");
+
+  assert_eq!(button.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
+fn exportparts_pseudo_forwarding_allows_part_selector_to_style_slider_thumb() {
+  let html = r#"
+    <x-host id="host">
+      <template shadowroot="open">
+        <input id="range" type="range" exportparts="::slider-thumb: thumb">
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_styles(
+    html,
+    r#"
+      x-host::part(thumb) {
+        color: rgb(1, 2, 3);
+      }
+    "#,
+  );
+  let input = find_by_id(&styled, "range").expect("shadow input");
+  let thumb = input
+    .slider_thumb_styles
+    .as_ref()
+    .expect("generated ::slider-thumb");
+  assert_eq!(thumb.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
+fn exportparts_pseudo_forwarding_does_not_forward_marker() {
   let html = r#"
     <x-host id="host">
       <template shadowroot="open">
         <ul>
-          <li id="li" exportparts="::marker: bullet">Item</li>
+          <li id="li" style="color: rgb(9, 9, 9)" exportparts="::marker: bullet">Item</li>
         </ul>
       </template>
     </x-host>
@@ -88,8 +141,8 @@ fn exportparts_pseudo_forwarding_allows_part_selector_to_style_marker() {
   let li = find_by_id(&styled, "li").expect("shadow list item");
   let marker = li.marker_styles.as_ref().expect("generated ::marker");
 
-  assert_eq!(marker.color, Rgba::rgb(1, 2, 3));
-  assert_eq!(
+  assert_eq!(marker.color, Rgba::rgb(9, 9, 9));
+  assert_ne!(
     marker.content_value,
     ContentValue::Items(vec![ContentItem::String("X".to_string())])
   );

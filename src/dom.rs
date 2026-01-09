@@ -3132,20 +3132,6 @@ pub fn compute_part_export_map_with_ids(
     let mut shadow_stack: Vec<&DomNode> = Vec::new();
     shadow_stack.push(shadow_root);
 
-    let exportable_pseudo = |internal: &str| -> Option<PseudoElement> {
-      if internal.eq_ignore_ascii_case("::before") {
-        Some(PseudoElement::Before)
-      } else if internal.eq_ignore_ascii_case("::after") {
-        Some(PseudoElement::After)
-      } else if internal.eq_ignore_ascii_case("::marker") {
-        Some(PseudoElement::Marker)
-      } else if internal.eq_ignore_ascii_case("::backdrop") {
-        Some(PseudoElement::Backdrop)
-      } else {
-        None
-      }
-    };
-
     while let Some(node) = shadow_stack.pop() {
       check_active_periodic(
         &mut deadline_counter,
@@ -3175,7 +3161,7 @@ pub fn compute_part_export_map_with_ids(
             RenderStage::Cascade,
           )
           .map_err(Error::Render)?;
-          let Some(pseudo) = exportable_pseudo(&internal) else {
+          let Some(pseudo) = exportparts_exportable_pseudo(&internal) else {
             continue;
           };
           // `exportparts` pseudo forwarding requires an explicit outer ident; ignore identity/invalid
@@ -4431,6 +4417,39 @@ pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
     }
   }
   mappings
+}
+
+pub(crate) fn exportparts_exportable_pseudo(internal: &str) -> Option<PseudoElement> {
+  // Per CSS Shadow Parts, `exportparts="::pseudo: name"` only forwards fully-styleable
+  // pseudo-elements. Reject restricted pseudos like `::marker` and `::placeholder`.
+  if internal.eq_ignore_ascii_case("::before") {
+    Some(PseudoElement::Before)
+  } else if internal.eq_ignore_ascii_case("::after") {
+    Some(PseudoElement::After)
+  } else if internal.eq_ignore_ascii_case("::backdrop")
+    || internal.eq_ignore_ascii_case("::-webkit-backdrop")
+    || internal.eq_ignore_ascii_case("::-ms-backdrop")
+  {
+    Some(PseudoElement::Backdrop)
+  } else if internal.eq_ignore_ascii_case("::file-selector-button")
+    || internal.eq_ignore_ascii_case("::-webkit-file-upload-button")
+  {
+    Some(PseudoElement::FileSelectorButton)
+  } else if internal.eq_ignore_ascii_case("::slider-thumb")
+    || internal.eq_ignore_ascii_case("::-webkit-slider-thumb")
+    || internal.eq_ignore_ascii_case("::-moz-range-thumb")
+    || internal.eq_ignore_ascii_case("::-ms-thumb")
+  {
+    Some(PseudoElement::SliderThumb)
+  } else if internal.eq_ignore_ascii_case("::slider-track")
+    || internal.eq_ignore_ascii_case("::-webkit-slider-runnable-track")
+    || internal.eq_ignore_ascii_case("::-moz-range-track")
+    || internal.eq_ignore_ascii_case("::-ms-track")
+  {
+    Some(PseudoElement::SliderTrack)
+  } else {
+    None
+  }
 }
 
 fn parse_finite_number(value: &str) -> Option<f64> {

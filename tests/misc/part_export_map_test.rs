@@ -182,3 +182,61 @@ fn part_export_map_includes_exportparts_pseudo_elements() {
     "exportparts must expose the element's ::before pseudo-element as a part target"
   );
 }
+
+#[test]
+fn part_export_map_includes_exportparts_file_selector_button_pseudo_element() {
+  let html = r#"
+    <div id="host">
+      <template shadowrootmode="open">
+        <input id="file" type="file" exportparts="::file-selector-button: upload-button">
+      </template>
+    </div>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+  let host_id = node_id_by_html_id(&dom, &ids, "host");
+  let file_id = node_id_by_html_id(&dom, &ids, "file");
+
+  let exports = map.exports_for_host(host_id).expect("host exports");
+  let targets = exports
+    .get("upload-button")
+    .expect("file-selector-button exports");
+  assert!(
+    targets.contains(&ExportedPartTarget::Pseudo {
+      node_id: file_id,
+      pseudo: PseudoElement::FileSelectorButton,
+    }),
+    "exportparts must expose the element's ::file-selector-button pseudo-element as a part target"
+  );
+}
+
+#[test]
+fn part_export_map_includes_exportparts_slider_thumb_pseudo_element() {
+  let html = r#"
+    <div id="host">
+      <template shadowrootmode="open">
+        <input id="range" type="range" exportparts="::slider-thumb: thumb">
+      </template>
+    </div>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let map = compute_part_export_map_with_ids(&dom, &ids).expect("part export map");
+
+  let host_id = node_id_by_html_id(&dom, &ids, "host");
+  let range_id = node_id_by_html_id(&dom, &ids, "range");
+
+  let exports = map.exports_for_host(host_id).expect("host exports");
+  let targets = exports.get("thumb").expect("slider thumb exports");
+  assert!(
+    targets.contains(&ExportedPartTarget::Pseudo {
+      node_id: range_id,
+      pseudo: PseudoElement::SliderThumb,
+    }),
+    "exportparts must expose the element's ::slider-thumb pseudo-element as a part target"
+  );
+}
