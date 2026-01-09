@@ -1310,6 +1310,168 @@ fn install_constructors(
     define_method(rt, prototypes.event_target, "dispatchEvent", dispatch)?;
   }
 
+  // Window/document event handler IDL attributes (MVP).
+  //
+  // Real-world pages frequently use `window.onload = ...` and `document.onreadystatechange = ...`
+  // rather than `addEventListener`. Provide minimal accessor properties that are wired into the
+  // existing `web::events::EventListenerRegistry` via an internal wrapper listener:
+  // - the wrapper is registered as a normal event listener (so it participates in dispatch),
+  // - the IDL attribute setter updates the wrapper's "current callback" slot,
+  // - the wrapper invokes that callback (if present) when the event fires.
+  //
+  // This intentionally keeps the IDL handler isolated from `addEventListener` / `removeEventListener`:
+  // the wrapper has its own listener identity, so calling `removeEventListener("load", window.onload)`
+  // does not remove the IDL handler (matching browser behaviour).
+  {
+    fn install_event_handler_idl_attribute(
+      rt: &mut VmJsRuntime,
+      obj: Value,
+      platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+      event_listeners: Rc<events::EventListenerRegistry>,
+      listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
+      expected_target: events::EventTargetId,
+      property_name: &'static str,
+      event_type: &'static str,
+    ) -> Result<(), VmError> {
+      // Current user-provided callback stored in Rust and kept alive via an explicit heap root.
+      let handler_slot: Rc<RefCell<Option<ListenerEntry>>> = Rc::new(RefCell::new(None));
+
+      // Wrapper listener registered into the event listener registry. This is the only callback
+      // exposed to the event dispatch layer; it forwards to `handler_slot` when invoked.
+      let handler_slot_for_wrapper = handler_slot.clone();
+      let wrapper = rt.alloc_function_value(move |rt, this, args| {
+        let entry = *handler_slot_for_wrapper.borrow();
+        let Some(entry) = entry else {
+          return Ok(Value::Undefined);
+        };
+
+        if rt.is_callable(entry.callback) {
+          let _ = rt.call_function(entry.callback, this, args)?;
+          return Ok(Value::Undefined);
+        }
+
+        // Support callback objects with a `handleEvent` method (consistent with `addEventListener`).
+        let handle_event_key = prop_key_str(rt, "handleEvent")?;
+        let handle_event = rt.get(entry.callback, handle_event_key)?;
+        if rt.is_callable(handle_event) {
+          let _ = rt.call_function(handle_event, entry.callback, args)?;
+        }
+        Ok(Value::Undefined)
+      })?;
+
+      // Keep the wrapper function alive even before it is registered in the listener tables.
+      let wrapper_root = rt.heap_mut().add_root(wrapper)?;
+      let wrapper_listener_id = listener_id_from_callback(rt, wrapper)?
+        .ok_or_else(|| rt.throw_type_error("internal event handler wrapper must be an object"))?;
+
+      // on* getter.
+      let handler_slot_for_get = handler_slot.clone();
+      let platform_objects_for_get = platform_objects.clone();
+      let get = rt.alloc_function_value(move |rt, this, _args| {
+        let got = extract_event_target_id(rt, &platform_objects_for_get, this)?;
+        if got != expected_target {
+          return Err(rt.throw_type_error("Illegal invocation"));
+        }
+        let entry = *handler_slot_for_get.borrow();
+        Ok(entry.map(|entry| entry.callback).unwrap_or(Value::Null))
+      })?;
+
+      // on* setter.
+      let handler_slot_for_set = handler_slot.clone();
+      let platform_objects_for_set = platform_objects.clone();
+      let event_listeners_for_set = event_listeners.clone();
+      let listener_callbacks_for_set = listener_callbacks.clone();
+      let set = rt.alloc_function_value(move |rt, this, args| {
+        let got = extract_event_target_id(rt, &platform_objects_for_set, this)?;
+        if got != expected_target {
+          return Err(rt.throw_type_error("Illegal invocation"));
+        }
+
+        let new_value = args.get(0).copied().unwrap_or(Value::Undefined);
+        let new_callback = match new_value {
+          Value::Undefined | Value::Null => None,
+          other => {
+            validate_event_listener_callback(rt, other)?;
+            Some(other)
+          }
+        };
+
+        // Ensure the wrapper listener is wired into dispatch once a non-null handler is set.
+        if new_callback.is_some() {
+          {
+            let mut callbacks = listener_callbacks_for_set.borrow_mut();
+            if !callbacks.contains_key(&wrapper_listener_id) {
+              callbacks.insert(
+                wrapper_listener_id,
+                ListenerEntry {
+                  callback: wrapper,
+                  callback_root: wrapper_root,
+                },
+              );
+            }
+          }
+
+          let _inserted = event_listeners_for_set.add_event_listener(
+            expected_target,
+            event_type,
+            wrapper_listener_id,
+            events::AddEventListenerOptions::default(),
+          );
+        }
+
+        // Update the stored handler callback + roots.
+        let mut slot = handler_slot_for_set.borrow_mut();
+        if slot
+          .as_ref()
+          .is_some_and(|existing| Some(existing.callback) == new_callback)
+        {
+          return Ok(Value::Undefined);
+        }
+
+        if let Some(existing) = slot.take() {
+          rt.heap_mut().remove_root(existing.callback_root);
+        }
+
+        if let Some(callback) = new_callback {
+          let callback_root = rt.heap_mut().add_root(callback)?;
+          *slot = Some(ListenerEntry {
+            callback,
+            callback_root,
+          });
+        }
+
+        Ok(Value::Undefined)
+      })?;
+
+      define_accessor(rt, obj, property_name, get, set)?;
+      Ok(())
+    }
+
+    // window.onload
+    install_event_handler_idl_attribute(
+      rt,
+      window,
+      platform_objects.clone(),
+      event_listeners.clone(),
+      listener_callbacks.clone(),
+      events::EventTargetId::Window,
+      "onload",
+      "load",
+    )?;
+
+    // document.onreadystatechange
+    install_event_handler_idl_attribute(
+      rt,
+      document,
+      platform_objects.clone(),
+      event_listeners.clone(),
+      listener_callbacks.clone(),
+      events::EventTargetId::Document,
+      "onreadystatechange",
+      "readystatechange",
+    )?;
+  }
+
   // Node.prototype
   {
     let dom_exception_proto = prototypes.dom_exception;

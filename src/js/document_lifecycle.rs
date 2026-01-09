@@ -698,6 +698,25 @@ mod tests {
     PropertyKey::String(s)
   }
 
+  fn set_event_handler_property(
+    rt: &mut webidl_js_runtime::VmJsRuntime,
+    obj: Value,
+    name: &str,
+    handler: Value,
+  ) {
+    use webidl_js_runtime::JsPropertyKind;
+    let key = pk(rt, name);
+    let desc = rt
+      .get_own_property(obj, key)
+      .expect("get_own_property should succeed")
+      .unwrap_or_else(|| panic!("missing expected {name} property"));
+    let JsPropertyKind::Accessor { set, .. } = desc.kind else {
+      panic!("expected {name} to be an accessor property");
+    };
+    rt.call_function(set, obj, &[handler])
+      .unwrap_or_else(|e| panic!("calling {name} setter failed: {e:?}"));
+  }
+
   fn value_as_string(rt: &webidl_js_runtime::VmJsRuntime, v: Value) -> String {
     let Value::String(s) = v else {
       panic!("expected string, got {v:?}");
@@ -748,6 +767,18 @@ mod tests {
     let document = host.realm.document();
     let window = host.realm.window();
 
+    // Ensure the IDL handler attributes exist and default to null.
+    {
+      let rt = host.realm.runtime_mut();
+      let onload_key = pk(rt, "onload");
+      assert_eq!(rt.get(window, onload_key).unwrap(), Value::Null);
+      let onrs_key = pk(rt, "onreadystatechange");
+      assert_eq!(
+        rt.get(document, onrs_key).unwrap(),
+        Value::Null
+      );
+    }
+
     // document.addEventListener("readystatechange", ...)
     {
       let log = Rc::clone(&log);
@@ -776,6 +807,23 @@ mod tests {
         .runtime_mut()
         .call_function(add, document, &[event_type, callback, Value::Undefined])
         .unwrap();
+    }
+
+    // document.onreadystatechange = ...
+    {
+      let log = Rc::clone(&log);
+      let document_for_cb = document;
+      let rt = host.realm.runtime_mut();
+      let callback = rt
+        .alloc_function_value(move |rt, _this, _args| {
+          let ready_state_key = pk(rt, "readyState");
+          let ready_state_value = rt.get(document_for_cb, ready_state_key)?;
+          let ready_state = value_as_string(rt, ready_state_value);
+          log.borrow_mut().push(format!("rsprop:{ready_state}"));
+          Ok(Value::Undefined)
+        })
+        .unwrap();
+      set_event_handler_property(rt, document, "onreadystatechange", callback);
     }
 
     // document.addEventListener("DOMContentLoaded", ...)
@@ -834,6 +882,23 @@ mod tests {
         .unwrap();
     }
 
+    // window.onload = ...
+    {
+      let log = Rc::clone(&log);
+      let document_for_cb = document;
+      let rt = host.realm.runtime_mut();
+      let callback = rt
+        .alloc_function_value(move |rt, _this, _args| {
+          let ready_state_key = pk(rt, "readyState");
+          let ready_state_value = rt.get(document_for_cb, ready_state_key)?;
+          let ready_state = value_as_string(rt, ready_state_value);
+          log.borrow_mut().push(format!("loadprop:{ready_state}"));
+          Ok(Value::Undefined)
+        })
+        .unwrap();
+      set_event_handler_property(rt, window, "onload", callback);
+    }
+
     // Initial state.
     {
       let rt = host.realm.runtime_mut();
@@ -845,17 +910,27 @@ mod tests {
 
     host.notify_parsing_completed(&mut event_loop)?;
 
-    assert_eq!(&*log.borrow(), &vec!["rs:interactive".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec!["rs:interactive".to_string(), "rsprop:interactive".to_string()]
+    );
 
     // Barrier task.
     assert!(event_loop.run_next_task(&mut host)?);
-    assert_eq!(&*log.borrow(), &vec!["rs:interactive".to_string()]);
+    assert_eq!(
+      &*log.borrow(),
+      &vec!["rs:interactive".to_string(), "rsprop:interactive".to_string()]
+    );
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
-      &vec!["rs:interactive".to_string(), "dom:interactive".to_string()]
+      &vec![
+        "rs:interactive".to_string(),
+        "rsprop:interactive".to_string(),
+        "dom:interactive".to_string()
+      ]
     );
 
     // Add a late DOMContentLoaded listener; it must not be invoked retroactively.
@@ -884,7 +959,11 @@ mod tests {
     }
     assert_eq!(
       &*log.borrow(),
-      &vec!["rs:interactive".to_string(), "dom:interactive".to_string()]
+      &vec![
+        "rs:interactive".to_string(),
+        "rsprop:interactive".to_string(),
+        "dom:interactive".to_string()
+      ]
     );
 
     // load task.
@@ -893,9 +972,12 @@ mod tests {
       &*log.borrow(),
       &vec![
         "rs:interactive".to_string(),
+        "rsprop:interactive".to_string(),
         "dom:interactive".to_string(),
         "rs:complete".to_string(),
-        "load:complete".to_string()
+        "rsprop:complete".to_string(),
+        "load:complete".to_string(),
+        "loadprop:complete".to_string()
       ]
     );
 
