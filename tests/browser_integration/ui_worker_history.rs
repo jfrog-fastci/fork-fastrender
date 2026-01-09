@@ -245,7 +245,7 @@ fn reload_does_not_create_new_history_entry() {
 }
 
 #[test]
-fn scroll_is_restored_when_going_back() {
+fn scroll_is_restored_across_back_and_forward() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("tempdir");
   let (a_url, b_url) = write_fixtures(dir.path());
@@ -261,26 +261,21 @@ fn scroll_is_restored_when_going_back() {
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
-  // `FrameReady` is followed by `ScrollStateUpdated`; drain it so subsequent scroll assertions do
-  // not accidentally observe the initial (0,0) state from navigation.
+  // `FrameReady` is followed by `ScrollStateUpdated`; drain it so the subsequent scroll assertions
+  // do not accidentally observe the initial (0,0) state from navigation.
   let _ = next_scroll_state_updated(&rx, tab_id);
 
-  tx.send(scroll_msg(tab_id, (0.0, 400.0), None))
+  // Scroll on A and ensure it is saved in history.
+  tx.send(scroll_msg(tab_id, (0.0, 240.0), None))
   .unwrap();
-  // Scroll repaint emits `FrameReady` then `ScrollStateUpdated`.
-  let frame_scrolled = next_frame_ready(&rx, tab_id);
-  let scrolled = next_scroll_state_updated(&rx, tab_id);
+  let _frame_scrolled_a = next_frame_ready(&rx, tab_id);
+  let scrolled_a = next_scroll_state_updated(&rx, tab_id);
   assert!(
-    scrolled.viewport.y > 0.0,
-    "expected scroll to increase, got {:?}",
-    scrolled.viewport
+    scrolled_a.viewport.y > 0.0,
+    "expected scroll on A to increase, got {:?}",
+    scrolled_a.viewport
   );
-  let saved_scroll_y = scrolled.viewport.y;
-  assert!(
-    (frame_scrolled.scroll_state.viewport.y - saved_scroll_y).abs() < 1.0,
-    "frame scroll should match ScrollStateUpdated (frame={:?}, saved={saved_scroll_y})",
-    frame_scrolled.scroll_state.viewport
-  );
+  let saved_scroll_y_a = scrolled_a.viewport.y;
 
   tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
@@ -288,33 +283,37 @@ fn scroll_is_restored_when_going_back() {
   let _ = next_frame_ready(&rx, tab_id);
   let _ = next_scroll_state_updated(&rx, tab_id);
 
-  tx.send(scroll_msg(tab_id, (0.0, 240.0), None))
+  tx.send(scroll_msg(tab_id, (0.0, 400.0), None))
   .unwrap();
+  // Scroll repaint emits `FrameReady` then `ScrollStateUpdated`.
   let _frame_scrolled_b = next_frame_ready(&rx, tab_id);
   let scrolled_b = next_scroll_state_updated(&rx, tab_id);
-  let saved_scroll_y_b = scrolled_b.viewport.y;
   assert!(
-    saved_scroll_y_b > 0.0,
-    "expected scroll on b to increase, got {:?}",
+    scrolled_b.viewport.y > 0.0,
+    "expected scroll on B to increase, got {:?}",
     scrolled_b.viewport
   );
+  let saved_scroll_y_b = scrolled_b.viewport.y;
 
   tx.send(UiToWorker::GoBack { tab_id }).unwrap();
-  let _ = next_navigation_committed(&rx, tab_id);
-  let frame = next_frame_ready(&rx, tab_id);
+  let (_url, _can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert!(can_go_forward, "expected can_go_forward after going back");
+  let frame_back = next_frame_ready(&rx, tab_id);
   assert!(
-    (frame.scroll_state.viewport.y - saved_scroll_y).abs() < 1.0,
-    "expected scroll restoration when going back (got {:?}, expected {saved_scroll_y})",
-    frame.scroll_state.viewport
+    (frame_back.scroll_state.viewport.y - saved_scroll_y_a).abs() < 1.0,
+    "expected back navigation to restore scroll_y ~= {saved_scroll_y_a} (got {:?})",
+    frame_back.scroll_state.viewport
   );
 
   tx.send(UiToWorker::GoForward { tab_id }).unwrap();
-  let _ = next_navigation_committed(&rx, tab_id);
-  let frame = next_frame_ready(&rx, tab_id);
+  let (_url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert!(can_go_back);
+  assert!(!can_go_forward);
+  let frame_forward = next_frame_ready(&rx, tab_id);
   assert!(
-    (frame.scroll_state.viewport.y - saved_scroll_y_b).abs() < 1.0,
-    "expected forward history entry to restore its own scroll (got {:?}, expected {saved_scroll_y_b})",
-    frame.scroll_state.viewport
+    (frame_forward.scroll_state.viewport.y - saved_scroll_y_b).abs() < 1.0,
+    "expected forward navigation to restore scroll_y ~= {saved_scroll_y_b} (got {:?})",
+    frame_forward.scroll_state.viewport
   );
 
   drop(tx);

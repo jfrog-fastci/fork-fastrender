@@ -805,7 +805,9 @@ impl App {
           tab.error = None;
           tab.stage = None;
         }
-        if self.browser_state.active_tab_id() == Some(tab_id) && !self.browser_state.chrome.address_bar_editing {
+        if self.browser_state.active_tab_id() == Some(tab_id)
+          && !self.browser_state.chrome.address_bar_editing
+        {
           self.browser_state.chrome.address_bar_text = url;
         }
       }
@@ -840,10 +842,10 @@ impl App {
       }
       fastrender::ui::WorkerToUi::NavigationFailed {
         tab_id,
+        url,
         error,
         can_go_back,
         can_go_forward,
-        ..
       } => {
         if self
           .open_select_dropdown
@@ -853,16 +855,23 @@ impl App {
           self.close_select_dropdown();
         }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.current_url = Some(url.clone());
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
+          tab.title = None;
+        }
+        if self.browser_state.active_tab_id() == Some(tab_id)
+          && !self.browser_state.chrome.address_bar_editing
+        {
+          self.browser_state.chrome.address_bar_text = url;
         }
       }
       fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.scroll_state = scroll.clone();
+          tab.scroll_state = scroll;
         }
       }
       fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
@@ -1422,6 +1431,7 @@ impl App {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
+            tab.title = None;
           }
 
           self.page_has_focus = false;
@@ -1432,18 +1442,16 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          if !self
-            .browser_state
-            .tab(tab_id)
-            .is_some_and(|tab| tab.can_go_back)
-          {
+          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+            continue;
+          };
+          if !tab.can_go_back {
             continue;
           }
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = true;
-            tab.error = None;
-            tab.stage = None;
-          }
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
+          tab.title = None;
           self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
@@ -1451,18 +1459,16 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          if !self
-            .browser_state
-            .tab(tab_id)
-            .is_some_and(|tab| tab.can_go_forward)
-          {
+          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
+            continue;
+          };
+          if !tab.can_go_forward {
             continue;
           }
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = true;
-            tab.error = None;
-            tab.stage = None;
-          }
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
+          tab.title = None;
           self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }

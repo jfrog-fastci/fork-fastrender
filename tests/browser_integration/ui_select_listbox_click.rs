@@ -47,7 +47,8 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
       <head>
         <style>
           html, body { margin: 0; padding: 0; }
-          select { display: block; width: 90px; height: 90px; padding: 0; border: 0; line-height: 30px; }
+          /* Ensure a deterministic row height so hit-testing selects the intended option row. */
+          select { display: block; width: 90px; height: 90px; padding: 0; border: 0; font-size: 20px; line-height: 30px; }
           #marker { width: 64px; height: 64px; background: rgb(255, 0, 0); }
           /* React to option[selected] mutation via :has so we can assert via pixels. */
           select:has(option#opt2[selected]) + #marker { background: rgb(0, 255, 0); }

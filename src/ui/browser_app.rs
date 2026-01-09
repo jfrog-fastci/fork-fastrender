@@ -69,8 +69,12 @@ pub struct BrowserTabState {
   /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
   /// navigation/paint work.
   pub cancel: CancelGens,
-  pub title: Option<String>,
+  /// URL shown in the address bar when this tab is active.
+  ///
+  /// This is driven exclusively by worker navigation events (e.g.
+  /// [`WorkerToUi::NavigationCommitted`]) and is *not* an authoritative history stack.
   pub current_url: Option<String>,
+  pub title: Option<String>,
   pub loading: bool,
   pub error: Option<String>,
   pub stage: Option<StageHeartbeat>,
@@ -86,8 +90,8 @@ impl BrowserTabState {
     Self {
       id: tab_id,
       cancel: CancelGens::new(),
-      title: None,
       current_url: Some(initial_url),
+      title: None,
       loading: false,
       error: None,
       stage: None,
@@ -119,7 +123,8 @@ impl BrowserTabState {
   /// `javascript:` and unknown schemes. On failure, the returned error is intended for
   /// user-facing display.
   ///
-  /// On success, this marks the tab as loading and updates `current_url`.
+  /// On success, this marks the tab as loading. `current_url` is updated exclusively via worker
+  /// navigation events so the worker remains the source of truth for history.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
     let raw_trimmed = raw.trim();
 
@@ -138,10 +143,10 @@ impl BrowserTabState {
     };
     validate_typed_url_scheme(&normalized)?;
 
-    self.current_url = Some(normalized.clone());
     self.loading = true;
     self.error = None;
     self.title = None;
+    self.stage = None;
 
     Ok(UiToWorker::Navigate {
       tab_id: self.id,
@@ -215,7 +220,8 @@ mod tab_tests {
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.current_url(), Some("about:blank"));
+    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert_eq!(tab.error, None);
     assert!(tab.loading);
   }
 
@@ -238,7 +244,8 @@ mod tab_tests {
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.current_url(), Some("https://example.com/page.html#target"));
+    assert_eq!(tab.current_url(), Some("https://example.com/page.html"));
+    assert_eq!(tab.error, None);
     assert!(tab.loading);
   }
 }
@@ -569,11 +576,13 @@ impl BrowserAppState {
         can_go_forward,
       } => {
         if let Some(tab) = self.tab_mut(tab_id) {
+          tab.current_url = Some(url.clone());
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
+          tab.title = None;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -601,6 +610,46 @@ impl BrowserAppState {
     }
 
     update
+  }
+}
+
+#[cfg(test)]
+mod browser_tab_tests {
+  use super::BrowserTabState;
+  use crate::ui::messages::{NavigationReason, UiToWorker};
+  use crate::ui::TabId;
+
+  #[test]
+  fn typed_javascript_url_is_rejected() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    assert!(tab.navigate_typed("javascript:alert(1)").is_err());
+    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert!(!tab.loading);
+  }
+
+  #[test]
+  fn typed_unknown_scheme_is_rejected() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    assert!(tab.navigate_typed("foo:bar").is_err());
+    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert!(!tab.loading);
+  }
+
+  #[test]
+  fn typed_about_url_is_allowed() {
+    let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
+    let msg = tab
+      .navigate_typed("about:blank")
+      .expect("about URL should be allowed");
+    assert!(matches!(
+      msg,
+      UiToWorker::Navigate {
+        tab_id: TabId(1),
+        ref url,
+        reason: NavigationReason::TypedUrl,
+      } if url == "about:blank"
+    ));
+    assert!(tab.loading);
   }
 }
 

@@ -168,20 +168,36 @@ impl TabEngine {
           1.0
         };
 
+        let viewport_changed = tab.viewport_css != viewport_css;
         let dpr_changed = (tab.dpr - dpr).abs() > f32::EPSILON;
+        if !viewport_changed && !dpr_changed {
+          return;
+        }
+
         tab.viewport_css = viewport_css;
         tab.dpr = dpr;
 
-        if dpr_changed {
+        // If we already have a document, produce a new frame at the updated viewport.
+        //
+        // `PreparedDocument` cannot update its device pixel ratio post-hoc, so we must re-prepare
+        // when the UI changes the DPR.
+        let needs_reprepare = tab
+          .prepared
+          .as_ref()
+          .is_some_and(|doc| (doc.device_pixel_ratio() - dpr).abs() > f32::EPSILON);
+
+        if needs_reprepare || tab.prepared.is_none() {
           let Some(entry) = tab.history.current() else {
             return;
           };
           let url = entry.url.clone();
-          tab.scroll_state = ScrollState::with_viewport(Point::new(entry.scroll_x, entry.scroll_y));
+          tab.scroll_state =
+            ScrollState::with_viewport(Point::new(entry.scroll_x, entry.scroll_y));
           let _ = navigate(renderer, ui_tx, tab_id, tab, url);
           return;
         }
 
+        // Repaint with the new viewport without mutating history.
         let Some(doc) = tab.prepared.as_ref() else {
           return;
         };
@@ -189,7 +205,7 @@ impl TabEngine {
         match doc.paint_with_options_frame(
           PreparedPaintOptions::new()
             .with_scroll_state(tab.scroll_state.clone())
-            .with_viewport(viewport_css.0, viewport_css.1),
+            .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
         ) {
           Ok(painted) => {
             tab.scroll_state = painted.scroll_state.clone();

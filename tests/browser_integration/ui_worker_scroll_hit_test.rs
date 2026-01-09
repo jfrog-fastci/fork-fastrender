@@ -16,7 +16,11 @@ use super::support::{
 // Rendering + worker startup can take a few seconds under load when tests run in parallel.
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
+fn wait_for_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> RenderedFrame {
   let deadline = Instant::now() + timeout;
   loop {
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -25,7 +29,10 @@ fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Durat
       "timed out waiting for FrameReady for {tab_id:?}"
     );
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, frame }) if msg_tab == tab_id => return frame,
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => return frame,
       Ok(_) => continue,
       Err(RecvTimeoutError::Timeout) => continue,
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected while waiting for frame"),
@@ -48,10 +55,16 @@ fn wait_for_scroll_and_frame(
     }
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, scroll: s }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::ScrollStateUpdated {
+        tab_id: msg_tab,
+        scroll: s,
+      }) if msg_tab == tab_id => {
         scroll = Some(s);
       }
-      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, frame: f }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame: f,
+      }) if msg_tab == tab_id => {
         frame = Some(f);
       }
       Ok(_) => {}
@@ -79,12 +92,19 @@ fn wait_for_navigation_committed(
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(WorkerToUi::NavigationStarted { tab_id: msg_tab, url }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::NavigationStarted {
+        tab_id: msg_tab,
+        url,
+      }) if msg_tab == tab_id => {
         if url == expected_url {
           started = true;
         }
       }
-      Ok(WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::NavigationCommitted {
+        tab_id: msg_tab,
+        url,
+        ..
+      }) if msg_tab == tab_id => {
         if url == expected_url {
           committed = true;
           break;
@@ -139,7 +159,10 @@ fn click_after_scroll_hits_link() {
 </html>
 "#,
   );
-  site.write("page2.html", "<!doctype html><html><body>page2</body></html>\n");
+  site.write(
+    "page2.html",
+    "<!doctype html><html><body>page2</body></html>\n",
+  );
   let expected_page2_url = Url::parse(&page1_url)
     .expect("parse page1 url")
     .join("page2.html")

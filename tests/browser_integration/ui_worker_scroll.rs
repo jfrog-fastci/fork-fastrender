@@ -45,14 +45,20 @@ fn recv_until<T>(
   }
 }
 
-fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
+fn wait_for_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::ui::messages::RenderedFrame {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => Some(frame),
     _ => None,
   })
 }
 
-fn wait_for_scroll_update(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::scroll::ScrollState {
+fn wait_for_scroll_update(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+) -> fastrender::scroll::ScrollState {
   recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => Some(scroll),
     _ => None,
