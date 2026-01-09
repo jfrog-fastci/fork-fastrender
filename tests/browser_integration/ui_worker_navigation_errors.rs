@@ -45,18 +45,6 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("viewport");
 
-  // `CreateTab` with `initial_url: None` triggers an initial `about:newtab` navigation. Drain it so
-  // this test can focus on the missing-file navigation flow.
-  //
-  // Wait for `LoadingState(false)` (emitted after the frame + scroll update) so we don't accidentally
-  // observe late `ScrollStateUpdated` messages from the initial navigation while asserting ordering
-  // for the failing navigation.
-  super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::LoadingState { loading: false, .. })
-  })
-  .expect("initial about:newtab LoadingState(false)");
-  while ui_rx.try_recv().is_ok() {}
-
   ui_tx
     .send(navigate_msg(
       tab_id,

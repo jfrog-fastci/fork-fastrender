@@ -147,18 +147,37 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(support::create_tab_msg(
-      tab_id,
-      Some("about:newtab".to_string()),
-    ))
+    .send(support::create_tab_msg(tab_id, None))
     .expect("CreateTab");
 
   ui_tx
     .send(support::viewport_changed_msg(tab_id, (200, 100), 2.0))
     .expect("ViewportChanged");
 
+  // A tab created without an initial URL should remain inert until the UI sends an explicit
+  // navigation.
+  let drained = support::drain_for(&ui_rx, Duration::from_millis(200));
+  assert!(
+    drained.iter().all(|msg| !matches!(
+      msg,
+      WorkerToUi::FrameReady { .. }
+        | WorkerToUi::NavigationStarted { .. }
+        | WorkerToUi::NavigationCommitted { .. }
+        | WorkerToUi::NavigationFailed { .. }
+    )),
+    "expected no navigation/frame messages before an explicit Navigate; got:\n{}",
+    support::format_messages(&drained)
+  );
+
   // Ensure the first rendered frame uses the updated viewport size + device pixel ratio, even when
-  // the `ViewportChanged` message arrives immediately after `CreateTab`.
+  // the `ViewportChanged` message arrives before the first navigation.
+  ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("Navigate");
   let frame = wait_for_frame_with_meta(&ui_rx, tab_id, (200, 100), 2.0);
   assert_pixmap_matches_viewport(&frame);
 

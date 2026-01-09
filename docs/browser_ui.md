@@ -146,8 +146,10 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 
 - `CreateTab { tab_id, initial_url, cancel }`
   - Creates a new tab on the worker side.
-  - If `initial_url` is `None`, the worker treats it as `about:newtab` (so callers always get an
-    initial navigation + frame without needing a separate `Navigate` message).
+  - If `initial_url` is `None`, the tab is created in an “empty” state and will not produce any
+    navigation/frame messages until the UI sends an explicit `Navigate`.
+    - UIs that want a default page (e.g. `about:newtab`) should provide it explicitly via
+      `initial_url: Some("about:newtab".to_string())`.
 - `NewTab { tab_id, initial_url }` — optional alias for `CreateTab` (kept for protocol flexibility).
 - `CloseTab { tab_id }`
 - `SetActiveTab { tab_id }`

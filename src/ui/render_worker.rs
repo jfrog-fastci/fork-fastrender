@@ -90,7 +90,6 @@ struct TabState {
   history: TabHistory,
   loading: bool,
   pending_history_entry: bool,
-  needs_default_newtab: bool,
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
@@ -111,7 +110,6 @@ impl TabState {
       history: TabHistory::new(),
       loading: false,
       pending_history_entry: false,
-      needs_default_newtab: false,
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
@@ -374,29 +372,16 @@ struct BrowserRuntime {
   factory: FastRenderFactory,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
-  /// When `true`, tabs created without an explicit initial URL will auto-navigate to
-  /// `about:newtab` (matching the interactive browser UI).
-  ///
-  /// Some integration tests (and alternate embedders) prefer to keep tabs inert until they
-  /// explicitly send a `Navigate` message; keeping this behaviour configurable allows tests to
-  /// disable the default navigation when needed.
-  auto_newtab_on_create: bool,
 }
 
 impl BrowserRuntime {
-  fn new(
-    ui_rx: Receiver<UiToWorker>,
-    ui_tx: Sender<WorkerToUi>,
-    factory: FastRenderFactory,
-    auto_newtab_on_create: bool,
-  ) -> Self {
+  fn new(ui_rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, factory: FastRenderFactory) -> Self {
     Self {
       ui_rx,
       ui_tx,
       factory,
       tabs: HashMap::new(),
       active_tab: None,
-      auto_newtab_on_create,
     }
   }
 
@@ -404,63 +389,10 @@ impl BrowserRuntime {
     loop {
       // If there is no pending work, block for the next message.
       if !self.has_pending_jobs() {
-        // Newly-created tabs without an explicit initial URL should default to `about:newtab`.
-        //
-        // To avoid racing against callers that enqueue additional messages immediately after
-        // `CreateTab` (e.g. `ViewportChanged` + `Navigate`), wait briefly for any message before
-        // kicking off the default navigation. This keeps tests/UI deterministic and lets callers
-        // override the initial navigation without being forced to cancel an in-flight job.
-        let default_newtab_target = self
-          .active_tab
-          .and_then(|tab_id| {
-            self
-              .tabs
-              .get(&tab_id)
-              .is_some_and(|tab| tab.needs_default_newtab)
-              .then_some(tab_id)
-          })
-          .or_else(|| {
-            self
-              .tabs
-              .iter()
-              .find_map(|(tab_id, tab)| tab.needs_default_newtab.then_some(*tab_id))
-          });
-
-        if let Some(tab_id) = default_newtab_target {
-          let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-          loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            match self.ui_rx.recv_timeout(remaining) {
-              Ok(msg) => {
-                self.handle_message(msg);
-
-                // If the tab was closed or we received an explicit navigation, stop waiting and
-                // resume the main event loop.
-                let still_needs_newtab = self
-                  .tabs
-                  .get(&tab_id)
-                  .is_some_and(|tab| tab.needs_default_newtab);
-                if !still_needs_newtab || self.has_pending_jobs() {
-                  break;
-                }
-              }
-              Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                self.schedule_navigation(
-                  tab_id,
-                  about_pages::ABOUT_NEWTAB.to_string(),
-                  NavigationReason::TypedUrl,
-                );
-                break;
-              }
-              Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-          }
-        } else {
-          let Ok(msg) = self.ui_rx.recv() else {
-            break;
-          };
-          self.handle_message(msg);
-        }
+        let Ok(msg) = self.ui_rx.recv() else {
+          break;
+        };
+        self.handle_message(msg);
       }
 
       // If a navigation is pending, coalesce any queued messages (viewport changes, rapid scroll
@@ -557,12 +489,6 @@ impl BrowserRuntime {
         self.active_tab.get_or_insert(tab_id);
         if let Some(url) = initial_url {
           self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
-        } else if self.auto_newtab_on_create {
-          self.schedule_navigation(
-            tab_id,
-            about_pages::ABOUT_NEWTAB.to_string(),
-            NavigationReason::TypedUrl,
-          );
         }
       }
       UiToWorker::NewTab { tab_id, initial_url } => {
@@ -570,12 +496,6 @@ impl BrowserRuntime {
         self.active_tab.get_or_insert(tab_id);
         if let Some(url) = initial_url {
           self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
-        } else if self.auto_newtab_on_create {
-          self.schedule_navigation(
-            tab_id,
-            about_pages::ABOUT_NEWTAB.to_string(),
-            NavigationReason::TypedUrl,
-          );
         }
       }
       UiToWorker::CloseTab { tab_id } => {
@@ -867,14 +787,6 @@ impl BrowserRuntime {
       return;
     }
 
-    // Any explicit navigation request overrides the "default new tab" placeholder navigation.
-    {
-      let Some(tab) = self.tabs.get_mut(&tab_id) else {
-        return;
-      };
-      tab.needs_default_newtab = false;
-    }
-
     match reason {
       NavigationReason::TypedUrl => {
         // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
@@ -945,7 +857,6 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
-    tab.needs_default_newtab = false;
     let had_pending_navigation = tab.loading;
     let had_pending_history_entry = tab.pending_history_entry;
 
@@ -2195,7 +2106,7 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
 /// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
 /// usable from tests to exercise end-to-end interaction wiring.
 pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, true)
+  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)
 }
 
 /// Spawn a UI worker with an optional per-frame artificial delay (test-only).
@@ -2203,12 +2114,7 @@ pub fn spawn_ui_worker_for_test(
   name: impl Into<String>,
   test_render_delay_ms: Option<u64>,
 ) -> crate::Result<UiWorkerHandle> {
-  spawn_worker_with_factory_inner(
-    name.into(),
-    test_render_delay_ms,
-    default_ui_worker_factory()?,
-    false,
-  )
+  spawn_worker_with_factory_inner(name.into(), test_render_delay_ms, default_ui_worker_factory()?)
 }
 
 /// Spawn a UI worker using a preconfigured [`FastRenderFactory`].
@@ -2218,14 +2124,13 @@ pub fn spawn_ui_worker_with_factory(
   name: impl Into<String>,
   factory: FastRenderFactory,
 ) -> crate::Result<UiWorkerHandle> {
-  spawn_worker_with_factory_inner(name.into(), None, factory, true)
+  spawn_worker_with_factory_inner(name.into(), None, factory)
 }
 
 fn spawn_worker_with_factory_inner(
   name: String,
   test_render_delay_ms: Option<u64>,
   factory: FastRenderFactory,
-  auto_newtab_on_create: bool,
 ) -> crate::Result<UiWorkerHandle> {
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
@@ -2249,8 +2154,7 @@ fn spawn_worker_with_factory_inner(
         TestRenderDelayGuard
       });
 
-      let mut runtime =
-        BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory, auto_newtab_on_create);
+      let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory);
       runtime.run();
     })?;
 
@@ -2275,8 +2179,7 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 pub fn spawn_browser_worker_with_name(
   name: impl Into<String>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  let handle =
-    spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, true)?;
+  let handle = spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -2287,12 +2190,7 @@ pub fn spawn_browser_worker_with_name(
 /// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
 /// factory.
 pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_worker_with_factory_inner(
-    "browser_worker".to_string(),
-    None,
-    factory,
-    true,
-  )?;
+  let handle = spawn_worker_with_factory_inner("browser_worker".to_string(), None, factory)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -2308,7 +2206,6 @@ pub fn spawn_browser_worker_for_test(
     "browser_worker".to_string(),
     test_render_delay_ms,
     default_ui_worker_factory()?,
-    true,
   )?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,

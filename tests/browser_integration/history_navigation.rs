@@ -118,11 +118,11 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
 
   let tab_id = TabId(1);
   worker_tx
-    .send(create_tab_msg(tab_id, None))
+    .send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
     .expect("send CreateTab");
 
-  // New tabs always perform an initial `about:newtab` navigation. Wait for it to commit so the rest
-  // of this test has deterministic history state (and so subsequent navigations don't race it).
+  // Start on `about:newtab` so the rest of this test has deterministic history state (and so
+  // subsequent navigations don't race it).
   let (committed_newtab, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(committed_newtab, "about:newtab");
   assert!(!can_back);

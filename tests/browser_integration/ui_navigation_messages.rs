@@ -81,18 +81,6 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
     .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
     .expect("send ViewportChanged");
 
-  // `CreateTab` triggers an initial navigation (default `about:newtab`) which becomes the first
-  // history entry. Wait for it to finish so this test can make deterministic assertions about the
-  // subsequent file:// navigation messages and history flags.
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::LoadingState { loading: false, .. })
-  })
-  .expect("timed out waiting for initial about:newtab navigation completion");
-
-  // Drain follow-up messages (FrameReady, etc) so the next collection only sees the file://
-  // navigation.
-  let _ = support::drain_for(&handle.ui_rx, std::time::Duration::from_millis(50));
-
   handle
     .ui_tx
     .send(support::navigate_msg(
@@ -154,8 +142,8 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
       } if msg_url == &url => {
         committed_idx.get_or_insert(idx);
         assert_eq!(title.as_deref(), Some("Hello"));
-        // We expect the user to be able to go back to the initial `about:newtab` entry.
-        assert!(*can_go_back);
+        // This is the first committed history entry for a tab created without an initial URL.
+        assert!(!*can_go_back);
         assert!(!can_go_forward);
       }
       WorkerToUi::LoadingState {

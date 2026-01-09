@@ -148,13 +148,12 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(create_tab_msg(tab_id, None))
+  tx.send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
   .unwrap();
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
-  // New tabs always perform an initial `about:newtab` navigation. Wait for it to complete so this
-  // test has deterministic history state.
+  // Start on `about:newtab` so history state is initialized deterministically.
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, "about:newtab");
   assert!(!can_go_back);
@@ -209,7 +208,7 @@ fn reload_does_not_create_new_history_entry() {
 
   let (tx, rx, handle) = spawn_worker();
   let tab_id = TabId(1);
-  tx.send(create_tab_msg(tab_id, None))
+  tx.send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
   .unwrap();
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
