@@ -275,23 +275,96 @@ impl BrowserRuntime {
       UiToWorker::Scroll {
         tab_id,
         delta_css,
-        pointer_css: _,
+        pointer_css,
       } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
         };
 
-        tab.cancel.bump_paint();
-        tab.needs_repaint = true;
-        tab.wants_scroll_update = true;
+        // Ignore invalid/no-op scroll deltas.
+        let delta_x = delta_css.0;
+        let delta_y = delta_css.1;
+        if (!delta_x.is_finite() && !delta_y.is_finite()) || (delta_x == 0.0 && delta_y == 0.0) {
+          return;
+        }
+        let delta_x = if delta_x.is_finite() { delta_x } else { 0.0 };
+        let delta_y = if delta_y.is_finite() { delta_y } else { 0.0 };
 
-        let mut next = tab.scroll_state.clone();
-        next.viewport.x = (next.viewport.x + delta_css.0).max(0.0);
-        next.viewport.y = (next.viewport.y + delta_css.1).max(0.0);
-        tab.scroll_state = next.clone();
+        let Some(doc) = tab.document.as_mut() else {
+          // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
+          // so it can be applied when the first frame is rendered.
+          let mut next = tab.scroll_state.clone();
+          next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+          next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+          if next != tab.scroll_state {
+            tab.scroll_state = next;
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+            tab.wants_scroll_update = true;
+          }
+          return;
+        };
 
-        if let Some(doc) = tab.document.as_mut() {
-          doc.set_scroll_state(next);
+        let current_scroll = doc.scroll_state();
+        let mut changed = false;
+
+        if let Some(pointer_css) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
+          // Apply scroll wheel deltas to the scroll container under the pointer (including element
+          // scroll offsets like `<select size>` listboxes).
+          match doc.wheel_scroll_at_viewport_point(Point::new(pointer_css.0, pointer_css.1), (delta_x, delta_y)) {
+            Ok(scrolled) => {
+              changed = scrolled;
+              if changed {
+                tab.scroll_state = doc.scroll_state();
+              }
+            }
+            Err(_) => {
+              // No cached layout yet; fall back to basic viewport scrolling below.
+            }
+          }
+        }
+
+        // If no pointer position was provided (or we couldn't apply wheel scrolling), treat this as
+        // a basic viewport scroll and clamp to the content bounds when possible.
+        if !changed {
+          let mut next = current_scroll.clone();
+
+          if let Some(prepared) = doc.prepared() {
+            let viewport = prepared.fragment_tree().viewport_size();
+            let content = prepared.fragment_tree().content_size();
+            let max_scroll_x = (content.width() - viewport.width).max(0.0);
+            let max_scroll_y = (content.height() - viewport.height).max(0.0);
+
+            let apply_axis = |current: f32, delta: f32, max: f32| {
+              if delta == 0.0 || !delta.is_finite() {
+                return current;
+              }
+              let value = current + delta;
+              if value.is_finite() {
+                value.clamp(0.0, max)
+              } else {
+                current
+              }
+            };
+
+            next.viewport.x = apply_axis(next.viewport.x, delta_x, max_scroll_x);
+            next.viewport.y = apply_axis(next.viewport.y, delta_y, max_scroll_y);
+          } else {
+            next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+            next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+          }
+
+          if next != current_scroll {
+            doc.set_scroll_state(next.clone());
+            tab.scroll_state = next;
+            changed = true;
+          }
+        }
+
+        if changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+          tab.wants_scroll_update = true;
         }
       }
       UiToWorker::PointerMove {
@@ -432,6 +505,10 @@ impl BrowserRuntime {
     );
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scroll_state = tab.scroll_state.clone();
+      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
+        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
+      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
       let changed = tab
         .interaction
         .pointer_move(dom, box_tree, fragment_tree, page_point);
@@ -462,6 +539,10 @@ impl BrowserRuntime {
     );
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scroll_state = tab.scroll_state.clone();
+      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
+        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
+      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
       let changed = tab
         .interaction
         .pointer_down(dom, box_tree, fragment_tree, page_point);
@@ -492,6 +573,10 @@ impl BrowserRuntime {
       return;
     };
     let (dom_changed, action) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scroll_state = tab.scroll_state.clone();
+      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
+        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
+      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
       let (dom_changed, action) =
         tab
           .interaction
