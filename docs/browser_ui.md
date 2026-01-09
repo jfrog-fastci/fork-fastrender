@@ -149,13 +149,22 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 
 **UI → worker** (`UiToWorker`) includes requests like:
 
+- `CreateTab { tab_id, initial_url, cancel }`
+  - Creates a new tab on the worker side.
+  - If `initial_url` is `None`, the worker treats it as `about:newtab` (so callers always get an
+    initial navigation + frame without needing a separate `Navigate` message).
+- `NewTab { tab_id, initial_url }` — optional alias for `CreateTab` (kept for protocol flexibility).
+- `CloseTab { tab_id }`
+- `SetActiveTab { tab_id }`
 - `Navigate { tab_id, url, reason }`
+- History actions (`GoBack { tab_id }`, `GoForward { tab_id }`, `Reload { tab_id }`)
 - `Tick { tab_id }` — periodic “event loop slice” / repaint driver (used by JS-capable workers)
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
 - `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
   a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
+- `SelectDropdownCancel { tab_id }` — user dismissed a dropdown popup (Escape/click-away)
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
 at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
@@ -169,6 +178,7 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `SelectDropdownOpened { tab_id, select_node_id, control, anchor_css }` — request the UI open a
   dropdown popup for a `<select>` control, with an explicit `anchor_css` in **viewport-local CSS
   pixels** so the popup can be positioned relative to the rendered frame.
+- `SelectDropdownClosed { tab_id }` — close/dismiss any open dropdown popup for the tab
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
