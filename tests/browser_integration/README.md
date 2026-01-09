@@ -101,11 +101,12 @@ It provides (among other things):
 
 ## Global stage listener locking
 
-Stage heartbeats (`WorkerToUi::Stage`) are delivered via a process-global stage listener, so tests
-that rely on them must not run concurrently within the same integration test binary.
+Some integration tests install `GlobalStageListenerGuard`, which is process-global. While it is
+installed, *all* renders in the process will invoke the listener, which can leak stage events
+across tests and add overhead.
 
-If your test expects stage heartbeats (or registers a stage listener), acquire the global lock for
-the duration of the test:
+If your test expects stage heartbeats (or registers a stage listener), acquire the lock for the
+duration of the test:
 
 ```rust
 let _lock = crate::browser_integration::stage_listener_test_lock();

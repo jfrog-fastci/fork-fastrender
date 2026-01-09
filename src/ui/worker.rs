@@ -3,7 +3,7 @@ use crate::error::{Error, RenderError};
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::interaction::scroll_offset_for_fragment_target;
-use crate::render_control::{GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
+use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::text::font_db::FontConfig;
@@ -20,23 +20,22 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use url::Url;
 
-/// Install a stage listener that forwards heartbeats to the UI for the lifetime of the returned
-/// guard.
+/// Install a stage listener (scoped to the current thread) that forwards heartbeats to the UI for
+/// the lifetime of the returned guard.
 ///
 /// # Concurrency
 ///
-/// Stage listeners are global (shared by the entire process). The browser UI currently assumes
-/// that the render worker executes at most one render job at a time.
+/// Stage listeners are stored in a thread-local stack. Independent render worker threads can render
+/// concurrently without clobbering each other's listeners.
 ///
-/// If we introduce concurrent rendering (multiple render worker threads or overlapping prepare +
-/// paint jobs), this implementation must be replaced with per-job routing (e.g. making stage
-/// listeners scoped per-thread/job, or attaching a job identifier to the heartbeat).
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+/// If we introduce *overlapping* render jobs on the same thread, this must be replaced with per-job
+/// routing (e.g. tagging stage heartbeats with a job identifier).
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
-  GlobalStageListenerGuard::new(listener)
+  push_stage_listener(Some(listener))
 }
 
 struct LoadingStateGuard {
@@ -1049,8 +1048,9 @@ fn navigate_tab(
   let _loading_guard = LoadingStateGuard::new(tab_id, tx.clone());
 
   // Forward `StageHeartbeat` updates while we perform the render pipeline work for this navigation.
-  // This is intentionally scoped to the synchronous "navigation" job so we don't leak a
-  // process-global stage listener across unrelated renders (including those from other tabs).
+  // This is intentionally scoped to the synchronous "navigation" job so we don't leak stage
+  // forwarding across unrelated renders handled by this worker (e.g. subsequent scroll/hover
+  // repaints).
   let _stage_guard = forward_stage_heartbeats(tab_id, tx.clone());
 
   let push_history = matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick);

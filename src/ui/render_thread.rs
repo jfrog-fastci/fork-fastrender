@@ -2,7 +2,9 @@ use crate::api::{BrowserDocument, FastRenderFactory, RenderOptions};
 use crate::error::{Error, RenderError};
 use crate::geometry::Point;
 use crate::interaction::{InteractionAction, InteractionEngine};
-use crate::render_control::{DeadlineGuard, GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
+use crate::render_control::{
+  push_stage_listener, DeadlineGuard, RenderDeadline, StageHeartbeat, StageListenerGuard,
+};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
@@ -828,11 +830,11 @@ fn is_cancel_timeout(err: &Error) -> bool {
   matches!(err, Error::Render(RenderError::Timeout { .. }))
 }
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
-  GlobalStageListenerGuard::new(listener)
+  push_stage_listener(Some(listener))
 }
 
 fn repaint_tab(tab_id: TabId, tab: &mut TabState, ui_tx: Sender<WorkerToUi>, _reason: RepaintReason) {

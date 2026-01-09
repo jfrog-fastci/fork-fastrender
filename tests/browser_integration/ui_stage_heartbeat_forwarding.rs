@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
-use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
 use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::{PreparedPaintOptions, RenderOptions};
@@ -9,7 +9,7 @@ use fastrender::ui::test_worker::spawn_ui_worker as spawn_ui_worker_loop;
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg, format_messages, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+  create_tab_msg, format_messages, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
 };
 
 fn assert_stage_order(stages: &[StageHeartbeat], expected: &[StageHeartbeat]) {
@@ -108,8 +108,8 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
   );
   assert_stage_order(&tab2_stages, &expected);
 
-  // Stage forwarding must be scoped to the job: once the job completes, the global stage listener
-  // should be removed.
+  // Stage forwarding must be scoped to the job: once the job completes, the stage listener should
+  // be removed.
   record_stage(StageHeartbeat::DomParse);
   assert!(
     rx.try_recv().is_err(),
@@ -132,8 +132,15 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     <html>
       <head>
         <link rel="stylesheet" href="style.css">
+        <style>
+          #hover-target { width: 120px; height: 40px; background: rgb(1, 2, 3); }
+          #hover-target:hover { background: rgb(4, 5, 6); }
+        </style>
       </head>
-      <body>Hello</body>
+      <body>
+        <div id="hover-target">Hover</div>
+        <div style="height: 2000px;"></div>
+      </body>
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
@@ -160,18 +167,25 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
   let mut messages = Vec::new();
   let mut saw_frame = false;
+  let mut saw_loading_done = false;
 
-  while std::time::Instant::now() < deadline {
+  while std::time::Instant::now() < deadline && !(saw_frame && saw_loading_done) {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => {
         if matches!(msg, WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id) {
           saw_frame = true;
         }
-        messages.push(msg);
-        if saw_frame {
-          break;
+        if matches!(
+          msg,
+          WorkerToUi::LoadingState {
+            tab_id: got,
+            loading: false,
+          } if got == tab_id
+        ) {
+          saw_loading_done = true;
         }
+        messages.push(msg);
       }
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -183,7 +197,16 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     messages.push(msg);
   }
 
-  assert!(saw_frame, "expected FrameReady message for worker loop navigation");
+  assert!(
+    saw_frame,
+    "expected FrameReady message for worker loop navigation; got:\n{}",
+    format_messages(&messages)
+  );
+  assert!(
+    saw_loading_done,
+    "expected LoadingState(false) message after navigation; got:\n{}",
+    format_messages(&messages)
+  );
 
   let stages: Vec<StageHeartbeat> = messages
     .iter()
@@ -200,13 +223,40 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     "expected stage heartbeats for worker loop tab, got none"
   );
 
-  // Stage forwarding must be scoped to the job: once the navigation completes, the global stage
-  // listener should be removed.
+  // Stage forwarding must be scoped to the navigation job. Pointer moves trigger a repaint without
+  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
   while ui_rx.try_recv().is_ok() {}
-  record_stage(StageHeartbeat::DomParse);
+  ui_tx
+    .send(UiToWorker::PointerMove {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::None,
+    })
+    .expect("PointerMove");
+
+  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT;
+  let mut saw_frame_after_input = false;
+  let mut saw_stage_after_input = false;
+  while std::time::Instant::now() < deadline && !saw_frame_after_input {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
+      Ok(msg) => match msg {
+        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
+          saw_stage_after_input = true;
+        }
+        WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id => {
+          saw_frame_after_input = true;
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  assert!(saw_frame_after_input, "expected FrameReady after PointerMove");
   assert!(
-    ui_rx.try_recv().is_err(),
-    "expected stage listener to be cleared after worker loop navigation"
+    !saw_stage_after_input,
+    "unexpected stage heartbeats during PointerMove repaint (stage listener leaked?)"
   );
 
   drop(ui_tx);
@@ -229,7 +279,10 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
       <head>
         <link rel="stylesheet" href="style.css">
       </head>
-      <body>Hello</body>
+      <body>
+        Hello
+        <div style="height: 2000px;"></div>
+      </body>
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
@@ -251,18 +304,25 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
   let mut messages = Vec::new();
   let mut saw_frame = false;
+  let mut saw_loading_done = false;
 
-  while std::time::Instant::now() < deadline {
+  while std::time::Instant::now() < deadline && !(saw_frame && saw_loading_done) {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => {
         if matches!(msg, WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id) {
           saw_frame = true;
         }
-        messages.push(msg);
-        if saw_frame {
-          break;
+        if matches!(
+          msg,
+          WorkerToUi::LoadingState {
+            tab_id: got,
+            loading: false,
+          } if got == tab_id
+        ) {
+          saw_loading_done = true;
         }
+        messages.push(msg);
       }
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -277,6 +337,11 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   assert!(
     saw_frame,
     "expected FrameReady message for navigation; got:\n{}",
+    format_messages(&messages)
+  );
+  assert!(
+    saw_loading_done,
+    "expected LoadingState(false) message after navigation; got:\n{}",
     format_messages(&messages)
   );
 
@@ -307,13 +372,38 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   ];
   assert_stage_order(&stages, &expected);
 
-  // Stage forwarding must be scoped to the job: once the navigation completes, the global stage
-  // listener should be removed.
+  // Stage forwarding must be scoped to the navigation job. Scrolling triggers a repaint without
+  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
   while ui_rx.try_recv().is_ok() {}
-  record_stage(StageHeartbeat::DomParse);
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 80.0), None))
+    .expect("Scroll");
+
+  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT;
+  let mut saw_scroll_frame = false;
+  let mut saw_stage_after_scroll = false;
+  while std::time::Instant::now() < deadline && !saw_scroll_frame {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
+      Ok(msg) => match msg {
+        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
+          saw_stage_after_scroll = true;
+        }
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+          if frame.scroll_state.viewport.y > 0.0 {
+            saw_scroll_frame = true;
+          }
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    ui_rx.try_recv().is_err(),
-    "expected stage listener to be cleared after history worker navigation"
+    !saw_stage_after_scroll,
+    "unexpected stage heartbeats during scroll repaint (stage listener leaked?)"
   );
 
   drop(ui_tx);

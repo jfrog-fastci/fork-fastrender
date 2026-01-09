@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
-use fastrender::render_control::{record_stage, StageHeartbeat};
+use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -59,7 +58,10 @@ fn stage_listener_is_cleared_after_navigation_job() {
           body { background: rgb(1, 2, 3); }
         </style>
       </head>
-      <body>hello</body>
+      <body>
+        hello
+        <div style="height: 2000px;"></div>
+      </body>
     </html>
   "#;
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
@@ -90,11 +92,37 @@ fn stage_listener_is_cleared_after_navigation_job() {
   // Drain any pending messages (including stage heartbeats emitted during the navigation job).
   while ui_rx.try_recv().is_ok() {}
 
-  // The stage listener is global across the process; once the job completes it must be cleared.
-  record_stage(StageHeartbeat::DomParse);
+  // Stage forwarding must be scoped to the navigation job. Scrolling triggers a repaint without
+  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 80.0), None))
+    .expect("Scroll");
+
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
+  let mut saw_scroll_frame = false;
+  let mut saw_stage_after_scroll = false;
+  while Instant::now() < deadline && !saw_scroll_frame {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match ui_rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(msg) => match msg {
+        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
+          saw_stage_after_scroll = true;
+        }
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
+          if frame.scroll_state.viewport.y > 0.0 {
+            saw_scroll_frame = true;
+          }
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    ui_rx.recv_timeout(Duration::from_millis(200)).is_err(),
-    "expected no WorkerToUi messages after record_stage()"
+    !saw_stage_after_scroll,
+    "unexpected stage heartbeats during scroll repaint (stage listener leaked?)"
   );
 
   drop(ui_tx);

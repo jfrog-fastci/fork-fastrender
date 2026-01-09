@@ -4,7 +4,7 @@ use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::dom_mutation;
 use crate::interaction::{absolute_bounds_for_box_id, hit_test_dom, InteractionAction, InteractionEngine};
-use crate::render_control::{GlobalStageListenerGuard, RenderDeadline, StageHeartbeat};
+use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
 use crate::ui::cancel::CancelGens;
@@ -430,20 +430,20 @@ fn non_empty_url_fragment(url: &str) -> Option<String> {
     })
 }
 
-/// Install a stage listener that forwards heartbeats to the UI for the lifetime of the returned
-/// guard.
+/// Install a thread-local stage listener that forwards heartbeats to the UI for the lifetime of the
+/// returned guard.
 ///
 /// # Concurrency
 ///
-/// Stage listeners are process-global. `run_worker_loop` processes messages sequentially, so this
-/// worker must execute at most one render job at a time while the listener is installed (i.e. no
-/// overlapping navigations / paints).
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+/// The stage listener installed by [`push_stage_listener`] is thread-local. `run_worker_loop`
+/// processes messages sequentially, and scoping the guard prevents stage messages from leaking into
+/// subsequent repaints (scroll, hover, etc).
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
-  GlobalStageListenerGuard::new(listener)
+  push_stage_listener(Some(listener))
 }
 
 fn emit_frame(
@@ -605,8 +605,8 @@ fn perform_navigation(
   let outcome = {
     // Forward render stage heartbeats for the duration of this navigation job only.
     //
-    // The stage listener is global across the process, so it must be scoped to avoid leaking
-    // across jobs (and to prevent unrelated `record_stage` calls from being forwarded to the UI).
+    // The stage listener is thread-local, but still must be scoped to avoid leaking across jobs
+    // (and to prevent unrelated repaints from being forwarded to the UI as stage messages).
     let _stage_guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
 
     let options =

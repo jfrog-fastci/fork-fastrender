@@ -6,7 +6,7 @@ use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{dom_mutation, InteractionAction, InteractionEngine};
-use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
@@ -71,12 +71,12 @@ impl TabState {
   }
 }
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
-  GlobalStageListenerGuard::new(listener)
+  push_stage_listener(Some(listener))
 }
 
 fn clamp_viewport((w, h): (u32, u32)) -> (u32, u32) {

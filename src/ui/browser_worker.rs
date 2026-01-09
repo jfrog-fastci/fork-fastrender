@@ -4,7 +4,9 @@ use crate::geometry::{Point, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_offset_for_fragment_target;
 use crate::js::{EventLoop, RunLimits, RunUntilIdleOutcome};
-use crate::render_control::{with_deadline, GlobalStageListenerGuard, StageHeartbeat};
+use crate::render_control::{
+  push_stage_listener, with_deadline, StageHeartbeat, StageListenerGuard,
+};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
@@ -18,12 +20,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
-fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> GlobalStageListenerGuard {
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
   let listener = Arc::new(move |stage: StageHeartbeat| {
     // Best-effort: UI might have dropped its receiver.
     let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
   });
-  GlobalStageListenerGuard::new(listener)
+  push_stage_listener(Some(listener))
 }
 
 const NAVIGATION_RUN_LIMITS: RunLimits = RunLimits {
@@ -349,8 +351,8 @@ impl BrowserWorker {
       return Ok(());
     };
 
-    // Install stage forwarding only for the duration of this tick. The stage listener is global,
-    // but the browser UI worker is single-threaded so we can safely swap it per tick.
+    // Install stage forwarding only for the duration of this tick so we don't leak stage messages
+    // across unrelated renders.
     let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
 
     match tab.event_loop.run_until_idle(&mut tab.host, TICK_RUN_LIMITS)? {

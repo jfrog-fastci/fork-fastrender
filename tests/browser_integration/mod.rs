@@ -79,10 +79,10 @@ fn ensure_browser_test_env() {
   });
 }
 
-// `GlobalStageListenerGuard` (used by stage heartbeat forwarding) is process-global. While it is
-// installed, *all* renders in the process will invoke the listener, which can leak stage messages
-// across tests and add overhead. Serialize browser UI integration tests with this lock to keep CI
-// runs deterministic under `cargo test`'s default parallelism.
+// `GlobalStageListenerGuard` is process-global. While it is installed, *all* renders in the process
+// will invoke the listener, which can leak stage messages across tests and add overhead. Serialize
+// browser UI integration tests with this lock to keep CI runs deterministic under `cargo test`'s
+// default parallelism.
 #[cfg(feature = "browser_ui")]
 pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
   ensure_browser_test_env();
