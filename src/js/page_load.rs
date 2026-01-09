@@ -186,7 +186,7 @@ where
         self.finished_document = Some(doc);
         let actions = self.scheduler.parsing_completed()?;
         self.apply_actions(actions, event_loop)?;
-        self.lifecycle.parsing_completed(event_loop)?;
+        self.notify_parsing_completed(event_loop)?;
         Ok(false)
       }
     }

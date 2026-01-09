@@ -20,6 +20,33 @@ pub trait DocumentLifecycleHost {
   /// example, if the lifecycle is invoked before parsing completes).
   fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> Result<R>;
 
+  /// Notify the lifecycle that HTML parsing has completed.
+  ///
+  /// This updates `document.readyState` to `interactive` and fires `readystatechange` immediately
+  /// (when the state transition occurs), then updates the internal lifecycle state machine so that
+  /// `DOMContentLoaded`/`load` can be queued once any pending deferred scripts have executed.
+  fn notify_parsing_completed(&mut self, event_loop: &mut EventLoop<Self>) -> Result<()>
+  where
+    Self: Sized + 'static,
+  {
+    // HTML sets `document.readyState` to `interactive` once parsing is complete, even if deferred
+    // scripts still need to run before `DOMContentLoaded`.
+    let ready_state_changed = self.with_dom_mut(|dom| {
+      if dom.ready_state() == DocumentReadyState::Loading {
+        dom.set_ready_state(DocumentReadyState::Interactive);
+        true
+      } else {
+        false
+      }
+    });
+
+    if ready_state_changed {
+      fire_ready_state_change(self)?;
+    }
+
+    self.document_lifecycle_mut().parsing_completed(event_loop)
+  }
+
   /// Dispatch a DOM event to `target`.
   ///
   /// Hosts should implement this using the canonical event system:
@@ -40,7 +67,6 @@ pub trait DocumentLifecycleHost {
 ///
 /// It intentionally does **not** model:
 /// - subresource loading
-/// - `readystatechange`
 /// - navigation / BFCache
 #[derive(Debug, Clone)]
 pub struct DocumentLifecycle {
@@ -96,6 +122,10 @@ impl DocumentLifecycle {
   ///
   /// This does not immediately fire events; it only queues them once any pending deferred scripts
   /// have executed.
+  ///
+  /// Note: this method does **not** update `document.readyState`. Embeddings should call
+  /// [`DocumentLifecycleHost::notify_parsing_completed`] to perform the `loading` → `interactive`
+  /// transition at the correct time (before deferred scripts execute).
   pub fn parsing_completed<Host: DocumentLifecycleHost + 'static>(
     &mut self,
     event_loop: &mut EventLoop<Host>,
@@ -158,8 +188,10 @@ fn fire_dom_content_loaded<Host: DocumentLifecycleHost>(host: &mut Host) -> Resu
     lifecycle.dom_content_loaded_queued = false;
   }
 
-  // `document.readyState` transitions to `interactive` once parsing is complete and deferred
-  // scripts have finished executing, immediately before dispatching DOMContentLoaded.
+  // `document.readyState` transitions to `interactive` once parsing is complete (even before
+  // deferred scripts execute). As a defensive fallback for embeddings that forget to call
+  // `DocumentLifecycleHost::notify_parsing_completed`, set it here if still `loading` so the
+  // DOMContentLoaded event observes the spec state.
   let ready_state_changed = host.with_dom_mut(|dom| {
     if dom.ready_state() == DocumentReadyState::Loading {
       dom.set_ready_state(DocumentReadyState::Interactive);
@@ -376,16 +408,18 @@ mod tests {
 
     assert_eq!(host.dom.ready_state().as_str(), "loading");
 
-    host.lifecycle.parsing_completed(&mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
 
-    // Must be queued as tasks (not synchronous dispatch).
-    assert!(log.borrow().is_empty());
-    assert_eq!(host.dom.ready_state().as_str(), "loading");
+    // `DOMContentLoaded`/`load` must be queued as tasks (not synchronous dispatch). The
+    // `readystatechange` event for the `loading` → `interactive` transition is fired immediately
+    // when parsing completes.
+    assert_eq!(&*log.borrow(), &vec!["rs".to_string()]);
+    assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // Barrier task (microtask checkpoint boundary).
     assert!(event_loop.run_next_task(&mut host)?);
-    assert!(log.borrow().is_empty());
-    assert_eq!(host.dom.ready_state().as_str(), "loading");
+    assert_eq!(&*log.borrow(), &vec!["rs".to_string()]);
+    assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);
@@ -441,7 +475,7 @@ mod tests {
       AddEventListenerOptions::default(),
     );
 
-    host.lifecycle.parsing_completed(&mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
     assert!(event_loop.run_next_task(&mut host)?); // barrier
     assert!(event_loop.run_next_task(&mut host)?); // DOMContentLoaded
 
@@ -519,17 +553,18 @@ mod tests {
 
     // One deferred script pending.
     host.lifecycle.register_deferred_script();
-    host.lifecycle.parsing_completed(&mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
 
     // No lifecycle tasks should be queued yet.
     assert!(!event_loop.run_next_task(&mut host)?);
-    assert!(log.borrow().is_empty());
-    assert_eq!(host.dom.ready_state().as_str(), "loading");
+    assert_eq!(&*log.borrow(), &vec!["rs".to_string()]);
+    assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // Queue a single "deferred script" task that enqueues a microtask and then signals completion.
     {
       let log = Rc::clone(&log);
       event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+        assert_eq!(host.dom.ready_state().as_str(), "interactive");
         log.borrow_mut().push("script:d1".to_string());
         let log_for_micro = Rc::clone(&log);
         event_loop.queue_microtask(move |_host, _event_loop| {
@@ -545,26 +580,34 @@ mod tests {
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
-      &vec!["script:d1".to_string(), "microtask:d1".to_string()]
+      &vec![
+        "rs".to_string(),
+        "script:d1".to_string(),
+        "microtask:d1".to_string()
+      ]
     );
-    assert_eq!(host.dom.ready_state().as_str(), "loading");
+    assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // Barrier task.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
-      &vec!["script:d1".to_string(), "microtask:d1".to_string()]
+      &vec![
+        "rs".to_string(),
+        "script:d1".to_string(),
+        "microtask:d1".to_string()
+      ]
     );
-    assert_eq!(host.dom.ready_state().as_str(), "loading");
+    assert_eq!(host.dom.ready_state().as_str(), "interactive");
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);
     assert_eq!(
       &*log.borrow(),
       &vec![
+        "rs".to_string(),
         "script:d1".to_string(),
         "microtask:d1".to_string(),
-        "rs".to_string(),
         "dom".to_string()
       ]
     );
@@ -575,9 +618,9 @@ mod tests {
     assert_eq!(
       &*log.borrow(),
       &vec![
+        "rs".to_string(),
         "script:d1".to_string(),
         "microtask:d1".to_string(),
-        "rs".to_string(),
         "dom".to_string(),
         "rs".to_string(),
         "load".to_string()
@@ -741,11 +784,13 @@ mod tests {
       assert_eq!(ready_state, "loading");
     }
 
-    host.lifecycle.parsing_completed(&mut event_loop)?;
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    assert_eq!(&*log.borrow(), &vec!["rs:interactive".to_string()]);
 
     // Barrier task.
     assert!(event_loop.run_next_task(&mut host)?);
-    assert!(log.borrow().is_empty());
+    assert_eq!(&*log.borrow(), &vec!["rs:interactive".to_string()]);
 
     // DOMContentLoaded task.
     assert!(event_loop.run_next_task(&mut host)?);

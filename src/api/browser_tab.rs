@@ -968,7 +968,7 @@ impl BrowserTab {
   pub(crate) fn on_parsing_completed(&mut self) -> Result<()> {
     let actions = self.host.scheduler.parsing_completed()?;
     self.host.apply_scheduler_actions(actions, &mut self.event_loop)?;
-    self.host.lifecycle.parsing_completed(&mut self.event_loop)?;
+    self.host.notify_parsing_completed(&mut self.event_loop)?;
     Ok(())
   }
 
