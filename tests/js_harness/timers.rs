@@ -154,3 +154,73 @@ fn harness_set_timeout_rejects_string_handler() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn harness_promises_run_after_script_completes() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      console.log("sync-start");
+      Promise.resolve().then(() => console.log("promise"));
+      console.log("sync-end");
+    "#,
+  )?;
+
+  // Promise jobs should run at the microtask checkpoint after script evaluation.
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec![
+      "sync-start".to_string(),
+      "sync-end".to_string(),
+      "promise".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
+fn harness_promise_and_queue_microtask_preserve_ordering() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      Promise.resolve().then(() => console.log("p1"));
+      queueMicrotask(() => console.log("qm"));
+      Promise.resolve().then(() => console.log("p2"));
+    "#,
+  )?;
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec!["p1".to_string(), "qm".to_string(), "p2".to_string()]
+  );
+  Ok(())
+}
+
+#[test]
+fn harness_promise_jobs_run_between_timer_tasks() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      setTimeout(() => {
+        console.log("t1");
+        Promise.resolve().then(() => console.log("p"));
+      }, 0);
+      setTimeout(() => console.log("t2"), 0);
+    "#,
+  )?;
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec!["t1".to_string(), "p".to_string(), "t2".to_string()]
+  );
+  Ok(())
+}

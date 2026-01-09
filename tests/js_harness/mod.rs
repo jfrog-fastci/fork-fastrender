@@ -65,6 +65,7 @@ fn js_fire_timer(
     })
   });
   result.map_err(|e| Error::Other(format!("JS error: {e}")))?;
+  drain_promise_jobs(host, event_loop)?;
   Ok(())
 }
 
@@ -73,6 +74,21 @@ fn js_eval(host: *mut HostState, event_loop: *mut EventLoop<HostState>, src: &st
     (*host).js_ctx.with(|ctx| ctx.eval::<(), _>(src))
   });
   result.map_err(|e| Error::Other(format!("JS eval error: {e}")))?;
+  drain_promise_jobs(host, event_loop)?;
+  Ok(())
+}
+
+fn drain_promise_jobs(host: *mut HostState, event_loop: *mut EventLoop<HostState>) -> Result<()> {
+  let result = with_current_env(host, event_loop, || unsafe {
+    loop {
+      match (*host).js_rt.execute_pending_job() {
+        Ok(true) => continue,
+        Ok(false) => return Ok(()),
+        Err(err) => return Err(err),
+      }
+    }
+  });
+  result.map_err(|e| Error::Other(format!("JS promise job error: {e}")))?;
   Ok(())
 }
 
@@ -179,8 +195,10 @@ const JS_BOOTSTRAP: &str = r##"
   g.queueMicrotask = function (cb) {
     if (typeof cb === "string") throw new TypeError("queueMicrotask does not currently support string callbacks");
     if (typeof cb !== "function") throw new TypeError("queueMicrotask callback is not callable");
-    var id = g.__fastrender_host_queue_microtask();
-    callbacks.set(id, { cb: cb, microtask: true, args: [] });
+    // Use the engine's promise jobs as the microtask queue so ordering matches Promise callbacks.
+    Promise.resolve().then(function () {
+      cb.apply(undefined, []);
+    });
   };
 })();
 "##;

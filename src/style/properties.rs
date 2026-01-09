@@ -6658,6 +6658,131 @@ pub(crate) fn apply_property_from_source(
       styles.background_repeats = source.background_repeats.clone();
       styles.rebuild_background_layers();
     }
+    "background-repeat-x" => {
+      let mut xs: Vec<_> = source.background_repeats.iter().map(|rep| rep.x).collect();
+      if xs.is_empty() {
+        xs.push(BackgroundLayer::default().repeat.x);
+      }
+      styles.ensure_background_lists();
+      let layer_count = xs.len().max(styles.background_repeats.len()).max(1);
+      let mut repeats = Vec::with_capacity(layer_count);
+      for idx in 0..layer_count {
+        let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+        let source_rep = styles
+          .background_repeats
+          .get(source_idx)
+          .copied()
+          .unwrap_or_else(|| BackgroundLayer::default().repeat);
+        let x_kw = xs.get(idx).copied().unwrap_or_else(|| *xs.last().unwrap());
+        repeats.push(BackgroundRepeat {
+          x: x_kw,
+          y: source_rep.y,
+        });
+      }
+      styles.background_repeats = repeats.into();
+      styles.rebuild_background_layers();
+    }
+    "background-repeat-y" => {
+      let mut ys: Vec<_> = source.background_repeats.iter().map(|rep| rep.y).collect();
+      if ys.is_empty() {
+        ys.push(BackgroundLayer::default().repeat.y);
+      }
+      styles.ensure_background_lists();
+      let layer_count = ys.len().max(styles.background_repeats.len()).max(1);
+      let mut repeats = Vec::with_capacity(layer_count);
+      for idx in 0..layer_count {
+        let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+        let source_rep = styles
+          .background_repeats
+          .get(source_idx)
+          .copied()
+          .unwrap_or_else(|| BackgroundLayer::default().repeat);
+        let y_kw = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());
+        repeats.push(BackgroundRepeat {
+          x: source_rep.x,
+          y: y_kw,
+        });
+      }
+      styles.background_repeats = repeats.into();
+      styles.rebuild_background_layers();
+    }
+    "background-repeat-inline" => {
+      let source_inline_horizontal = inline_axis_is_horizontal(source.writing_mode);
+      let mut inline_values: Vec<_> = source
+        .background_repeats
+        .iter()
+        .map(|rep| if source_inline_horizontal { rep.x } else { rep.y })
+        .collect();
+      if inline_values.is_empty() {
+        inline_values.push(BackgroundLayer::default().repeat.x);
+      }
+
+      styles.ensure_background_lists();
+      let inline_horizontal = inline_axis_is_horizontal(styles.writing_mode);
+      let layer_count = inline_values
+        .len()
+        .max(styles.background_repeats.len())
+        .max(1);
+      let mut repeats = Vec::with_capacity(layer_count);
+      for idx in 0..layer_count {
+        let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+        let source_rep = styles
+          .background_repeats
+          .get(source_idx)
+          .copied()
+          .unwrap_or_else(|| BackgroundLayer::default().repeat);
+        let inline_kw = inline_values
+          .get(idx)
+          .copied()
+          .unwrap_or_else(|| *inline_values.last().unwrap());
+        let mut rep = source_rep;
+        if inline_horizontal {
+          rep.x = inline_kw;
+        } else {
+          rep.y = inline_kw;
+        }
+        repeats.push(rep);
+      }
+      styles.background_repeats = repeats.into();
+      styles.rebuild_background_layers();
+    }
+    "background-repeat-block" => {
+      let source_block_horizontal = block_axis_is_horizontal(source.writing_mode);
+      let mut block_values: Vec<_> = source
+        .background_repeats
+        .iter()
+        .map(|rep| if source_block_horizontal { rep.x } else { rep.y })
+        .collect();
+      if block_values.is_empty() {
+        block_values.push(BackgroundLayer::default().repeat.x);
+      }
+
+      styles.ensure_background_lists();
+      let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
+      let layer_count = block_values.len().max(styles.background_repeats.len()).max(1);
+      let mut repeats = Vec::with_capacity(layer_count);
+      for idx in 0..layer_count {
+        let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+        let source_rep = styles
+          .background_repeats
+          .get(source_idx)
+          .copied()
+          .unwrap_or_else(|| BackgroundLayer::default().repeat);
+        let block_kw = block_values
+          .get(idx)
+          .copied()
+          .unwrap_or_else(|| *block_values.last().unwrap());
+        let mut rep = source_rep;
+        if block_horizontal {
+          rep.x = block_kw;
+        } else {
+          rep.y = block_kw;
+        }
+        repeats.push(rep);
+      }
+      styles.background_repeats = repeats.into();
+      styles.rebuild_background_layers();
+    }
     "image-resolution" => styles.image_resolution = source.image_resolution,
     "background-position" => {
       styles.background_positions = source.background_positions.clone();
@@ -14090,7 +14215,132 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "background-repeat" => {
-      if let Some(repeats) = parse_layer_list(resolved_value, parse_background_repeat) {
+      let writing_mode = styles.writing_mode;
+      if let Some(repeats) = parse_layer_list(resolved_value, |value| {
+        parse_background_repeat(value, writing_mode)
+      }) {
+        styles.background_repeats = repeats.into();
+        styles.rebuild_background_layers();
+      }
+    }
+    "background-repeat-x" => {
+      let parse = |value: &PropertyValue| match value {
+        PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
+        _ => None,
+      };
+      if let Some(values) = parse_layer_list(resolved_value, parse) {
+        styles.ensure_background_lists();
+        let default = BackgroundLayer::default().repeat;
+        let layer_count = values.len().max(styles.background_repeats.len()).max(1);
+        let mut repeats = Vec::with_capacity(layer_count);
+        for idx in 0..layer_count {
+          let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+          let source = styles
+            .background_repeats
+            .get(source_idx)
+            .copied()
+            .unwrap_or(default);
+          let x_kw = values
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| values.last().copied().unwrap());
+          repeats.push(BackgroundRepeat { x: x_kw, y: source.y });
+        }
+        styles.background_repeats = repeats.into();
+        styles.rebuild_background_layers();
+      }
+    }
+    "background-repeat-y" => {
+      let parse = |value: &PropertyValue| match value {
+        PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
+        _ => None,
+      };
+      if let Some(values) = parse_layer_list(resolved_value, parse) {
+        styles.ensure_background_lists();
+        let default = BackgroundLayer::default().repeat;
+        let layer_count = values.len().max(styles.background_repeats.len()).max(1);
+        let mut repeats = Vec::with_capacity(layer_count);
+        for idx in 0..layer_count {
+          let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+          let source = styles
+            .background_repeats
+            .get(source_idx)
+            .copied()
+            .unwrap_or(default);
+          let y_kw = values
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| values.last().copied().unwrap());
+          repeats.push(BackgroundRepeat { x: source.x, y: y_kw });
+        }
+        styles.background_repeats = repeats.into();
+        styles.rebuild_background_layers();
+      }
+    }
+    "background-repeat-inline" => {
+      let parse = |value: &PropertyValue| match value {
+        PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
+        _ => None,
+      };
+      if let Some(values) = parse_layer_list(resolved_value, parse) {
+        styles.ensure_background_lists();
+        let inline_horizontal = inline_axis_is_horizontal(styles.writing_mode);
+        let default = BackgroundLayer::default().repeat;
+        let layer_count = values.len().max(styles.background_repeats.len()).max(1);
+        let mut repeats = Vec::with_capacity(layer_count);
+        for idx in 0..layer_count {
+          let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+          let source = styles
+            .background_repeats
+            .get(source_idx)
+            .copied()
+            .unwrap_or(default);
+          let inline_kw = values
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| values.last().copied().unwrap());
+          let mut rep = source;
+          if inline_horizontal {
+            rep.x = inline_kw;
+          } else {
+            rep.y = inline_kw;
+          }
+          repeats.push(rep);
+        }
+        styles.background_repeats = repeats.into();
+        styles.rebuild_background_layers();
+      }
+    }
+    "background-repeat-block" => {
+      let parse = |value: &PropertyValue| match value {
+        PropertyValue::Keyword(kw) => parse_repeat_keyword(kw),
+        _ => None,
+      };
+      if let Some(values) = parse_layer_list(resolved_value, parse) {
+        styles.ensure_background_lists();
+        let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
+        let default = BackgroundLayer::default().repeat;
+        let layer_count = values.len().max(styles.background_repeats.len()).max(1);
+        let mut repeats = Vec::with_capacity(layer_count);
+        for idx in 0..layer_count {
+          let source_idx = styles.background_repeats.len().saturating_sub(1).min(idx);
+          let source = styles
+            .background_repeats
+            .get(source_idx)
+            .copied()
+            .unwrap_or(default);
+          let block_kw = values
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| values.last().copied().unwrap());
+          let mut rep = source;
+          if block_horizontal {
+            rep.x = block_kw;
+          } else {
+            rep.y = block_kw;
+          }
+          repeats.push(rep);
+        }
         styles.background_repeats = repeats.into();
         styles.rebuild_background_layers();
       }
@@ -14571,7 +14821,10 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "mask-repeat" => {
-      if let Some(repeats) = parse_layer_list(resolved_value, parse_background_repeat) {
+      let writing_mode = styles.writing_mode;
+      if let Some(repeats) =
+        parse_layer_list(resolved_value, |value| parse_background_repeat(value, writing_mode))
+      {
         styles.mask_repeats = repeats.into();
         styles.rebuild_mask_layers();
       }
@@ -14613,7 +14866,7 @@ fn apply_declaration_with_base_internal_with_order(
       let layers = split_layers(&tokens);
       let mut parsed_layers = Vec::new();
       for layer_tokens in layers {
-        if let Some(parsed) = parse_mask_shorthand(&layer_tokens) {
+        if let Some(parsed) = parse_mask_shorthand(&layer_tokens, styles.writing_mode) {
           parsed_layers.push(parsed);
         }
       }
@@ -14679,6 +14932,7 @@ fn apply_declaration_with_base_internal_with_order(
           is_dark_color_scheme,
           styles.forced_colors,
           allow_color,
+          styles.writing_mode,
         ) {
           parsed_layers.push(parsed);
         }
@@ -19183,13 +19437,25 @@ fn parse_repeat_keyword(kw: &str) -> Option<BackgroundRepeatKeyword> {
   }
 }
 
-fn parse_background_repeat(value: &PropertyValue) -> Option<BackgroundRepeat> {
+fn parse_background_repeat(value: &PropertyValue, writing_mode: WritingMode) -> Option<BackgroundRepeat> {
   match value {
     PropertyValue::Keyword(kw) => {
       if kw.eq_ignore_ascii_case("repeat-x") {
         Some(BackgroundRepeat::repeat_x())
       } else if kw.eq_ignore_ascii_case("repeat-y") {
         Some(BackgroundRepeat::repeat_y())
+      } else if kw.eq_ignore_ascii_case("repeat-inline") {
+        if inline_axis_is_horizontal(writing_mode) {
+          Some(BackgroundRepeat::repeat_x())
+        } else {
+          Some(BackgroundRepeat::repeat_y())
+        }
+      } else if kw.eq_ignore_ascii_case("repeat-block") {
+        if block_axis_is_horizontal(writing_mode) {
+          Some(BackgroundRepeat::repeat_x())
+        } else {
+          Some(BackgroundRepeat::repeat_y())
+        }
       } else {
         parse_repeat_keyword(kw).map(|k| BackgroundRepeat { x: k, y: k })
       }
@@ -31168,6 +31434,7 @@ mod tests {
       false,
       false,
       true,
+      WritingMode::HorizontalTb,
     )
     .expect("background shorthand parsed");
     assert!(matches!(parsed.image, Some(BackgroundImage::None)));
@@ -34433,7 +34700,7 @@ fn mask_clip_to_origin(clip: MaskClip) -> Option<MaskOrigin> {
   }
 }
 
-fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
+fn parse_mask_shorthand(tokens: &[PropertyValue], writing_mode: WritingMode) -> Option<MaskShorthand> {
   if tokens.is_empty() {
     return None;
   }
@@ -34507,7 +34774,7 @@ fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
     }
 
     if shorthand.repeat.is_none() {
-      if let Some(rep) = parse_background_repeat(token) {
+      if let Some(rep) = parse_background_repeat(token, writing_mode) {
         shorthand.repeat = Some(rep);
         idx += 1;
         continue;
@@ -34516,7 +34783,7 @@ fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
         if let PropertyValue::Keyword(_) = token {
           if let PropertyValue::Keyword(_) = tokens[idx + 1] {
             let pair = PropertyValue::Multiple(vec![token.clone(), tokens[idx + 1].clone()]);
-            if let Some(rep) = parse_background_repeat(&pair) {
+            if let Some(rep) = parse_background_repeat(&pair, writing_mode) {
               shorthand.repeat = Some(rep);
               idx += 2;
               continue;
@@ -34610,6 +34877,7 @@ fn parse_background_shorthand(
   is_dark_color_scheme: bool,
   forced_colors: bool,
   allow_color: bool,
+  writing_mode: WritingMode,
 ) -> Option<BackgroundShorthand> {
   if tokens.is_empty() {
     return None;
@@ -34711,7 +34979,7 @@ fn parse_background_shorthand(
 
     // Repeat
     if shorthand.repeat.is_none() {
-      if let Some(rep) = parse_background_repeat(token) {
+      if let Some(rep) = parse_background_repeat(token, writing_mode) {
         shorthand.repeat = Some(rep);
         idx += 1;
         continue;
@@ -34720,7 +34988,7 @@ fn parse_background_shorthand(
         if let PropertyValue::Keyword(_) = token {
           if let PropertyValue::Keyword(_) = tokens[idx + 1] {
             let pair = PropertyValue::Multiple(vec![token.clone(), tokens[idx + 1].clone()]);
-            if let Some(rep) = parse_background_repeat(&pair) {
+            if let Some(rep) = parse_background_repeat(&pair, writing_mode) {
               shorthand.repeat = Some(rep);
               idx += 2;
               continue;

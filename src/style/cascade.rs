@@ -33902,6 +33902,7 @@ fn apply_cascaded_declarations<'a, F>(
   let mut any_other_normal = false;
   let mut any_other_important = false;
   let mut any_color_scheme_decl = false;
+  let mut any_writing_mode_decl = false;
   let mut any_custom_revert_layer = false;
   let mut any_registered_custom_var = false;
   let mut any_non_custom_revert_layer = false;
@@ -33945,6 +33946,9 @@ fn apply_cascaded_declarations<'a, F>(
         }
         if !any_color_scheme_decl && declaration.property.as_str() == "color-scheme" {
           any_color_scheme_decl = true;
+        }
+        if !any_writing_mode_decl && declaration.property.as_str() == "writing-mode" {
+          any_writing_mode_decl = true;
         }
         if !any_non_custom_revert_layer {
           if let PropertyValue::Keyword(kw) = &declaration.value {
@@ -34305,6 +34309,129 @@ fn apply_cascaded_declarations<'a, F>(
   let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
   let is_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
 
+  // Resolve `writing-mode` early so logical background longhands (e.g.
+  // `background-position-inline`, `background-repeat-inline`) map using the final writing mode,
+  // regardless of declaration order. This mirrors the `color-scheme` early pass above.
+  if any_writing_mode_decl {
+    let mut writing_mode_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
+    let mut writing_mode_layer_snapshot_stratum: Option<(u8, bool)> = None;
+
+    if any_other_normal {
+      for &rule_idx in rule_order.iter() {
+        if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
+          continue;
+        }
+        let rule = &matched_rules[rule_idx];
+        let revert_base = match rule.origin {
+          StyleOrigin::UserAgent => defaults,
+          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+        };
+
+        for declaration in rule.declarations.iter() {
+          if declaration.important || declaration.property.is_custom() {
+            continue;
+          }
+          if declaration.property.as_str() != "writing-mode" {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          let revert_layer_base = if track_revert_layer {
+            let stratum = (rule.origin.rank(), false);
+            if writing_mode_layer_snapshot_stratum != Some(stratum) {
+              writing_mode_layer_snapshots.clear();
+              writing_mode_layer_snapshot_stratum = Some(stratum);
+            }
+            let layer_order = &rule.layer_order;
+            let layer_base = match writing_mode_layer_snapshots.get_mut(layer_order.as_ref()) {
+              Some(existing) => existing,
+              None => {
+                writing_mode_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                writing_mode_layer_snapshots
+                  .get_mut(layer_order.as_ref())
+                  .expect("layer snapshot inserted")
+              }
+            };
+            Some(&*layer_base)
+          } else {
+            None
+          };
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            is_dark_color_scheme,
+          );
+        }
+      }
+    }
+
+    if any_other_important {
+      for &rule_idx in important_rule_order.iter() {
+        if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
+          continue;
+        }
+
+        let rule = &matched_rules[rule_idx];
+        let revert_base = match rule.origin {
+          StyleOrigin::UserAgent => defaults,
+          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+        };
+
+        let (start, end) = important_other_ranges[rule_idx];
+        let decls = rule.declarations.as_ref();
+        for &decl_order in important_other_decl_orders[start..end].iter() {
+          let declaration = &decls[decl_order];
+          debug_assert!(declaration.important);
+          debug_assert!(!declaration.property.is_custom());
+          if declaration.property.as_str() != "writing-mode" {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          let revert_layer_base = if track_revert_layer {
+            let stratum = (rule.origin.rank(), true);
+            if writing_mode_layer_snapshot_stratum != Some(stratum) {
+              writing_mode_layer_snapshots.clear();
+              writing_mode_layer_snapshot_stratum = Some(stratum);
+            }
+            let layer_order = &rule.layer_order;
+            let layer_base = match writing_mode_layer_snapshots.get_mut(layer_order.as_ref()) {
+              Some(existing) => existing,
+              None => {
+                writing_mode_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                writing_mode_layer_snapshots
+                  .get_mut(layer_order.as_ref())
+                  .expect("layer snapshot inserted")
+              }
+            };
+            Some(&*layer_base)
+          } else {
+            None
+          };
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            is_dark_color_scheme,
+          );
+        }
+      }
+    }
+  }
+
   // Then apply all other declarations in cascade order
   if track_revert_layer {
     // When `revert-layer` can occur (directly or via `var()` substitution), record the per-layer
@@ -34331,6 +34458,7 @@ fn apply_cascaded_declarations<'a, F>(
         if declaration.important
           || declaration.property.is_custom()
           || declaration.property.as_str() == "color-scheme"
+          || declaration.property.as_str() == "writing-mode"
         {
           continue;
         }
@@ -34364,6 +34492,7 @@ fn apply_cascaded_declarations<'a, F>(
         if declaration.important
           || declaration.property.is_custom()
           || declaration.property.as_str() == "color-scheme"
+          || declaration.property.as_str() == "writing-mode"
         {
           continue;
         }
@@ -34413,6 +34542,9 @@ fn apply_cascaded_declarations<'a, F>(
         debug_assert!(declaration.important);
         debug_assert!(!declaration.property.is_custom());
         if declaration.property.as_str() == "color-scheme" {
+          continue;
+        }
+        if declaration.property.as_str() == "writing-mode" {
           continue;
         }
         if !filter(declaration) {
