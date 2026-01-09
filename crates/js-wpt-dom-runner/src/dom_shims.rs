@@ -25,10 +25,12 @@ const DOM_SHIM: &str = r#"
   function Document() { illegal(); }
   function DocumentFragment() { illegal(); }
   function Element() { illegal(); }
+  function Text() { illegal(); }
 
   Object.setPrototypeOf(Document.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
+  Object.setPrototypeOf(Text.prototype, Node.prototype);
 
   // Attach the existing `document` object (created by Rust) to `Document.prototype`.
   if (typeof g.document !== "object" || g.document === null) {
@@ -88,6 +90,11 @@ const DOM_SHIM: &str = r#"
     return makeNode(DocumentFragment.prototype, id);
   };
 
+  Document.prototype.createTextNode = function (data) {
+    var id = g.__fastrender_dom_create_text_node(String(data));
+    return makeNode(Text.prototype, id);
+  };
+
   Object.defineProperty(Element.prototype, "innerHTML", {
     get: function () {
       return g.__fastrender_dom_get_inner_html(nodeIdFromThis(this));
@@ -112,6 +119,16 @@ const DOM_SHIM: &str = r#"
   Element.prototype.removeAttribute = function (name) {
     g.__fastrender_dom_remove_attribute(nodeIdFromThis(this), String(name));
   };
+
+  Object.defineProperty(Text.prototype, "data", {
+    get: function () {
+      return g.__fastrender_dom_get_text_data(nodeIdFromThis(this));
+    },
+    set: function (value) {
+      g.__fastrender_dom_set_text_data(nodeIdFromThis(this), String(value));
+    },
+    configurable: true,
+  });
 
   Object.defineProperty(Element.prototype, "id", {
     get: function () {
@@ -254,6 +271,7 @@ const DOM_SHIM: &str = r#"
   Object.defineProperty(g, "Document", { value: Document, configurable: true, writable: true });
   Object.defineProperty(g, "DocumentFragment", { value: DocumentFragment, configurable: true, writable: true });
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
+  Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
 })();
 "#;
 
@@ -398,6 +416,10 @@ impl Dom {
       },
       parent,
     )
+  }
+
+  fn create_text_node(&mut self, data: &str) -> NodeId {
+    self.create_text(data, None)
   }
 
   fn create_document_fragment(&mut self) -> NodeId {
@@ -591,6 +613,24 @@ impl Dom {
     if let Some(idx) = attributes.iter().position(|(n, _)| n.eq_ignore_ascii_case(&name)) {
       attributes.remove(idx);
     }
+    Ok(())
+  }
+
+  fn get_text_data(&self, node: NodeId) -> Result<String, DomShimError> {
+    let node = self.node_checked(node)?;
+    let NodeKind::Text { content } = &node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+    Ok(content.clone())
+  }
+
+  fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<(), DomShimError> {
+    let node = self.node_checked_mut(node)?;
+    let NodeKind::Text { content } = &mut node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+    content.clear();
+    content.push_str(data);
     Ok(())
   }
 
@@ -854,6 +894,14 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let create_text_node = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |data: String| -> JsResult<i32> {
+      let id = dom.borrow_mut().create_text_node(&data);
+      Ok(id.0 as i32)
+    }
+  })?;
+
   let get_inner_html = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32| -> JsResult<String> {
@@ -864,6 +912,33 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
         .borrow()
         .get_inner_html(NodeId(node_id as usize))
         .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let get_text_data = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<String> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_text_data(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let set_text_data = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32, data: String| -> JsResult<()> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow_mut()
+        .set_text_data(NodeId(node_id as usize), &data)
+        .map_err(dom_error_to_js_error)?;
+      Ok(())
     }
   })?;
 
@@ -982,8 +1057,11 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     "__fastrender_dom_create_document_fragment",
     create_document_fragment,
   )?;
+  globals.set("__fastrender_dom_create_text_node", create_text_node)?;
   globals.set("__fastrender_dom_get_inner_html", get_inner_html)?;
   globals.set("__fastrender_dom_set_inner_html", set_inner_html)?;
+  globals.set("__fastrender_dom_get_text_data", get_text_data)?;
+  globals.set("__fastrender_dom_set_text_data", set_text_data)?;
   globals.set("__fastrender_dom_get_attribute", get_attribute)?;
   globals.set("__fastrender_dom_set_attribute", set_attribute)?;
   globals.set("__fastrender_dom_remove_attribute", remove_attribute)?;

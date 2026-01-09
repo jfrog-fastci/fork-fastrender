@@ -37,6 +37,22 @@ test(() => {
 }, "document.createDocumentFragment");
 
 test(() => {
+  assert_equals(typeof document.createTextNode, "function");
+  const text = document.createTextNode("hi");
+  assert_true(text instanceof Text, "createTextNode should return a Text");
+  assert_true(text instanceof Node, "Text should inherit from Node");
+  assert_equals(text.data, "hi");
+
+  text.data = "a&b<>";
+  assert_equals(text.data, "a&b<>");
+
+  const el = document.createElement("div");
+  el.appendChild(text);
+  assert_equals(el.innerHTML, "a&amp;b&lt;&gt;");
+  assert_equals(el.outerHTML, "<div>a&amp;b&lt;&gt;</div>");
+}, "document.createTextNode + Text.data");
+
+test(() => {
   assert_equals(document.documentElement.tagName, "HTML");
   assert_equals(document.head.tagName, "HEAD");
   assert_equals(document.body.tagName, "BODY");
