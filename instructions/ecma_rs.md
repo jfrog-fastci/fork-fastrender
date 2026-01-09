@@ -144,6 +144,32 @@ If a submodule bump breaks compilation with errors around `Vm::call` arity or na
 signatures, update both FastRender's native handlers and any engine-internal callers like
 `webidl-vm-js`.
 
+## Common integration gotcha: `vm-js` Promise job / microtask GC safety (FastRender requirement)
+
+FastRender’s HTML-shaped `EventLoop` owns the microtask queue. That queue is **not traced** by the
+`vm-js` GC, so queued Promise jobs must be GC-safe: any `vm_js::Value` captured by a queued job must
+be kept alive until the job runs (or is discarded).
+
+When bumping `engines/ecma-rs`, ensure the pinned `vm-js` commit includes **both**:
+
+1. **GC-safe jobs** (persistent roots):
+   - `vm_js::Job` supports owning persistent roots (e.g. `Job::add_root`, `Job::run`, `Job::discard`),
+     and Promise job constructors root captured handles so they survive `Heap::collect_garbage()`
+     between enqueue and execution.
+2. **Canonical host hook API surface**:
+   - Promise jobs are scheduled through `vm_js::VmHostHooks::host_enqueue_promise_job(job, realm)`
+     (avoid older/duplicate job-queue traits/APIs).
+
+FastRender encodes this expectation via:
+
+- a compile-time API guard in `src/js/ecma_microtasks.rs` (fails fast if `vm-js` regresses), and
+- regression tests:
+  - `src/js/ecma_microtasks.rs`: `vm_js_promise_jobs_root_captured_values_until_run`
+  - `tests/vm_js_promise_job_rooting.rs`
+
+Before landing an `ecma-rs` bump, run those tests; they intentionally force GC between enqueue and
+the microtask checkpoint to catch stale-handle regressions.
+
 ## Running `ecma-rs` commands safely (resource limits)
 
 JS conformance workloads can be pathological. Use OS caps from the FastRender repo when running
