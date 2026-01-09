@@ -63,7 +63,7 @@ impl std::fmt::Display for BackendKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendSelection {
-  /// Choose the best backend available in the current build (prefer vm-js when available).
+  /// Choose the best backend available in the current build (prefer `vm-js` when available).
   Auto,
   QuickJs,
   VmJs,

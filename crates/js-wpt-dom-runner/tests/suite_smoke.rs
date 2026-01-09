@@ -13,12 +13,12 @@ fn corpus_root() -> PathBuf {
 fn backend_quickjs_or_vmjs() -> BackendSelection {
   // Pick an explicit backend so local debugging env vars don't affect test results.
   //
-  // Prefer QuickJS when it is available, but allow running the suite smoke tests with
-  // `--no-default-features --features vmjs` (i.e. vm-js only).
-  if cfg!(feature = "quickjs") {
-    BackendSelection::QuickJs
-  } else {
+  // Prefer vm-js when it is available, but allow running the suite smoke tests with
+  // `--no-default-features --features quickjs` (i.e. QuickJS only).
+  if cfg!(feature = "vmjs") {
     BackendSelection::VmJs
+  } else {
+    BackendSelection::QuickJs
   }
 }
 

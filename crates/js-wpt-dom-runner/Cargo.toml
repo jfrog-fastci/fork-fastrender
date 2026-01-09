@@ -5,14 +5,14 @@ edition = "2021"
 publish = false
 
 [features]
-default = ["quickjs"]
+default = ["vmjs"]
 
-# QuickJS (`rquickjs`) backend (current default). This will be replaced by the in-tree `vm-js`
-# backend once FastRender's host bindings + event loop are ready.
-quickjs = ["dep:rquickjs"]
-
-# `ecma-rs/vm-js` backend (optional; enabled with `--features vmjs`).
+# `ecma-rs/vm-js` backend (default).
 vmjs = ["dep:vm-js", "dep:parse-js"]
+
+# QuickJS (`rquickjs`) backend (optional). Useful for comparison/debugging, but it is not
+# deterministic (timers are wall-clock based) and provides only minimal DOM shims.
+quickjs = ["dep:rquickjs"]
 
 [dependencies]
 anyhow = "1"
