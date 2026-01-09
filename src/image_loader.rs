@@ -1094,6 +1094,54 @@ fn find_xml_start_tag_end(svg_content: &str, start: usize, limit: usize) -> Opti
   None
 }
 
+fn svg_data_url_mime_from_content_type(content_type: Option<&str>) -> Option<String> {
+  let content_type = content_type?;
+  let mime = content_type
+    .split(';')
+    .next()
+    .map(|ct| ct.trim_matches(|c: char| matches!(c, ' ' | '\t')))?;
+  if mime.is_empty() {
+    return None;
+  }
+  let lowered = mime.to_ascii_lowercase();
+  if lowered == "image/jpg" {
+    return Some("image/jpeg".to_string());
+  }
+  if lowered.starts_with("image/") {
+    return Some(lowered);
+  }
+  None
+}
+
+fn sniff_svg_image_data_url_mime(bytes: &[u8]) -> Option<&'static str> {
+  if bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" {
+    return Some("image/png");
+  }
+  if bytes.len() >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff {
+    return Some("image/jpeg");
+  }
+  if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") {
+    return Some("image/gif");
+  }
+  if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+    return Some("image/webp");
+  }
+  let probe_len = bytes.len().min(1024);
+  let Ok(prefix) = std::str::from_utf8(&bytes[..probe_len]) else {
+    return None;
+  };
+  if svg_text_looks_like_markup(prefix) {
+    return Some("image/svg+xml");
+  }
+  None
+}
+
+fn svg_data_url_mime_for_response(content_type: Option<&str>, bytes: &[u8]) -> String {
+  svg_data_url_mime_from_content_type(content_type)
+    .or_else(|| sniff_svg_image_data_url_mime(bytes).map(|m| m.to_string()))
+    .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
 /// Best-effort preprocessor that inlines external raster image references (`<image>` / `<feImage>`)
 /// by fetching the referenced resource and rewriting its `href` into a base64 `data:` URL.
 fn inline_svg_image_references<'a>(
@@ -1266,23 +1314,34 @@ fn inline_svg_image_references<'a>(
         let decoded = unescape_xml_attr_value(raw_value);
         let trimmed = trim_ascii_whitespace(decoded.as_ref());
         if trimmed.is_empty()
-          || trimmed.contains('#')
+          || trimmed.starts_with('#')
           || crate::resource::is_data_url(trimmed)
           || is_about_url(trimmed)
         {
           continue;
         }
 
+        let (href_no_fragment, href_fragment) = trimmed
+          .split_once('#')
+          .map(|(before, frag)| (before, Some(frag)))
+          .unwrap_or((trimmed, None));
+        let href_no_fragment = trim_ascii_whitespace(href_no_fragment);
+        let href_fragment = href_fragment.filter(|frag| !frag.is_empty());
+        if href_no_fragment.is_empty() {
+          continue;
+        }
+
         let Some(resolved_base) = effective_base_url
           .as_deref()
-          .and_then(|base| resolve_against_base(base, trimmed))
-          .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
+          .and_then(|base| resolve_against_base(base, href_no_fragment))
+          .or_else(|| Url::parse(href_no_fragment).ok().map(|u| u.to_string()))
         else {
           continue;
         };
-        let Ok(resolved_url) = Url::parse(&resolved_base) else {
+        let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
           continue;
         };
+        resolved_url.set_fragment(None);
         if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
           continue;
         }
@@ -1348,13 +1407,7 @@ fn inline_svg_image_references<'a>(
             break 'node_loop;
           }
 
-          let mime = res
-            .content_type
-            .as_deref()
-            .and_then(|ct| ct.split(';').next())
-            .map(|ct| ct.trim_matches(|c: char| matches!(c, ' ' | '\t')))
-            .filter(|ct| !ct.is_empty())
-            .unwrap_or("application/octet-stream");
+          let mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
 
           let base64_len = u64::try_from(bytes_len)
             .ok()
@@ -1382,12 +1435,22 @@ fn inline_svg_image_references<'a>(
           data_url
         };
 
-        let growth = data_url.len().saturating_sub(original_value_len);
+        let mut replacement = data_url;
+        if let Some(fragment) = href_fragment {
+          replacement.push('#');
+          replacement.push_str(fragment);
+        }
+        let replacement = match escape_xml_attr_value(&replacement) {
+          Cow::Borrowed(_) => replacement,
+          Cow::Owned(escaped) => escaped,
+        };
+
+        let growth = replacement.len().saturating_sub(original_value_len);
         if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
           break 'node_loop;
         }
         injected_bytes = injected_bytes.saturating_add(growth);
-        replacements.push((value_range, data_url));
+        replacements.push((value_range, replacement));
         continue;
       }
 
@@ -1409,23 +1472,34 @@ fn inline_svg_image_references<'a>(
       let decoded = unescape_xml_attr_value(raw_value);
       let trimmed = trim_ascii_whitespace(decoded.as_ref());
       if trimmed.is_empty()
-        || trimmed.contains('#')
+        || trimmed.starts_with('#')
         || crate::resource::is_data_url(trimmed)
         || is_about_url(trimmed)
       {
         continue;
       }
 
+      let (href_no_fragment, href_fragment) = trimmed
+        .split_once('#')
+        .map(|(before, frag)| (before, Some(frag)))
+        .unwrap_or((trimmed, None));
+      let href_no_fragment = trim_ascii_whitespace(href_no_fragment);
+      let href_fragment = href_fragment.filter(|frag| !frag.is_empty());
+      if href_no_fragment.is_empty() {
+        continue;
+      }
+
       let Some(resolved_base) = effective_base_url
         .as_deref()
-        .and_then(|base| resolve_against_base(base, trimmed))
-        .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
+        .and_then(|base| resolve_against_base(base, href_no_fragment))
+        .or_else(|| Url::parse(href_no_fragment).ok().map(|u| u.to_string()))
       else {
         continue;
       };
-      let Ok(resolved_url) = Url::parse(&resolved_base) else {
+      let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
         continue;
       };
+      resolved_url.set_fragment(None);
       if resolved_url.scheme() != "http" && resolved_url.scheme() != "https" {
         continue;
       }
@@ -1490,13 +1564,7 @@ fn inline_svg_image_references<'a>(
           break 'node_loop;
         }
 
-        let mime = res
-          .content_type
-          .as_deref()
-          .and_then(|ct| ct.split(';').next())
-          .map(|ct| ct.trim_matches(|c: char| matches!(c, ' ' | '\t')))
-          .filter(|ct| !ct.is_empty())
-          .unwrap_or("application/octet-stream");
+        let mime = svg_data_url_mime_for_response(res.content_type.as_deref(), &res.bytes);
 
         let base64_len = u64::try_from(bytes_len)
           .ok()
@@ -1524,12 +1592,22 @@ fn inline_svg_image_references<'a>(
         data_url
       };
 
-      let growth = data_url.len().saturating_sub(original_value_len);
+      let mut replacement = data_url;
+      if let Some(fragment) = href_fragment {
+        replacement.push('#');
+        replacement.push_str(fragment);
+      }
+      let replacement = match escape_xml_attr_value(&replacement) {
+        Cow::Borrowed(_) => replacement,
+        Cow::Owned(escaped) => escaped,
+      };
+
+      let growth = replacement.len().saturating_sub(original_value_len);
       if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
         break 'node_loop;
       }
       injected_bytes = injected_bytes.saturating_add(growth);
-      replacements.push((value_range, data_url));
+      replacements.push((value_range, replacement));
     }
   }
 
@@ -9639,9 +9717,46 @@ mod tests {
       "external <image href> should inline into a data URL and render red pixel"
     );
   }
+
+  #[test]
+  fn svg_external_image_xlink_href_renders() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1" height="1"><image xlink:href="/img.png" width="1" height="1"/></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <image xlink:href> should inline into a data URL and render red pixel"
+    );
+  }
  
   #[test]
-  fn svg_external_image_href_blocked_by_policy_not_fetched() {
+  fn svg_external_image_blocked_by_policy() {
     let doc_url = "https://example.test/";
     let main_url = "https://example.test/main.svg";
     let img_url = "https://cross.test/img.png";
