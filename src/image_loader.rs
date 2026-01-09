@@ -3829,7 +3829,7 @@ impl ImageCache {
     let mut url_refs_seen = 0usize;
     let mut css_budget_remaining = MAX_CSS_BYTES_SCANNED;
 
-    let mut check_url = |raw: &str| -> Result<()> {
+    let mut check_url = |raw: &str, base: &str| -> Result<()> {
       let href = trim_ascii_whitespace(raw);
       if href.is_empty()
         || href.starts_with('#')
@@ -3849,7 +3849,7 @@ impl ImageCache {
         }));
       }
 
-      let resolved = resolve_against_base(svg_url, href).unwrap_or_else(|| href.to_string());
+      let resolved = resolve_against_base(base, href).unwrap_or_else(|| href.to_string());
       if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved) {
         return Err(Error::Image(ImageError::LoadFailed {
           url: resolved,
@@ -4031,6 +4031,10 @@ impl ImageCache {
 
     for node in doc.descendants() {
       if node.is_element() {
+        let xml_base_chain = svg_xml_base_chain_for_node(node);
+        let base = apply_svg_xml_base_chain(Some(svg_url), &xml_base_chain)
+          .unwrap_or_else(|| svg_url.to_string());
+
         for attr in node.attributes() {
           let local_name = attr
             .name()
@@ -4041,7 +4045,7 @@ impl ImageCache {
           if local_name == "href"
             || (local_name == "src" && node.tag_name().name() == "image")
           {
-            check_url(attr.value())?;
+            check_url(attr.value(), &base)?;
             continue;
           }
 
@@ -4051,7 +4055,7 @@ impl ImageCache {
               false,
               &mut css_budget_remaining,
               svg_url,
-              &mut check_url,
+              &mut |url| check_url(url, &base),
             )?;
             continue;
           }
@@ -4061,7 +4065,7 @@ impl ImageCache {
             false,
             &mut css_budget_remaining,
             svg_url,
-            &mut check_url,
+            &mut |url| check_url(url, &base),
           )?;
         }
 
@@ -4070,7 +4074,9 @@ impl ImageCache {
           for child in node.children() {
             if child.is_text() {
               if let Some(text) = child.text() {
-                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut check_url)?;
+                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut |url| {
+                  check_url(url, &base)
+                })?;
               }
             }
           }
@@ -9839,6 +9845,38 @@ mod tests {
       requests.is_empty(),
       "fetcher should not be called for policy-blocked URLs, got: {requests:?}"
     );
+  }
+
+  #[test]
+  fn svg_policy_scan_respects_xml_base() {
+    let doc_url = "https://doc.test/";
+    let svg_url = "https://doc.test/main.svg";
+    let blocked_url = "https://cross.test/a.png";
+
+    let fetcher = MapFetcher::default();
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="https://cross.test/" width="1" height="1"><image href="a.png" width="1" height="1"/></svg>"#;
+
+    let err = cache
+      .enforce_svg_resource_policy(svg, svg_url)
+      .expect_err("expected policy block based on xml:base");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, blocked_url);
+        assert!(
+          reason.contains("Blocked SVG subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
   }
 
   #[test]
