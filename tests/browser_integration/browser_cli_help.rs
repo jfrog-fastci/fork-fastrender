@@ -1,10 +1,15 @@
-#![cfg(feature = "browser_ui")]
+#![cfg(all(target_os = "linux", feature = "browser_ui"))]
 
 use std::process::Command;
 
 #[test]
 fn browser_help_exits_successfully_without_startup_logs() {
-  let output = Command::new(env!("CARGO_BIN_EXE_browser"))
+  let run_limited = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .join("scripts/run_limited.sh");
+  let output = Command::new("bash")
+    .arg(run_limited)
+    .args(["--as", "64G", "--"])
+    .arg(env!("CARGO_BIN_EXE_browser"))
     .arg("--help")
     .output()
     .expect("spawn browser --help");
@@ -29,4 +34,3 @@ fn browser_help_exits_successfully_without_startup_logs() {
     "expected --help to exit before startup/mem-limit logging, got stderr:\n{stderr}"
   );
 }
-
