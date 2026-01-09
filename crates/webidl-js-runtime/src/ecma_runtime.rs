@@ -3,6 +3,7 @@ use crate::runtime::{
   WebIdlJsRuntime, WebIdlLimits,
 };
 use std::collections::HashMap;
+use std::num::IntErrorKind;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, PropertyDescriptor, PropertyKey,
@@ -56,8 +57,8 @@ pub struct VmJsRuntime {
   string_data_symbol: Option<GcSymbol>,
   boolean_data_symbol: Option<GcSymbol>,
   number_data_symbol: Option<GcSymbol>,
-  symbol_data_symbol: Option<GcSymbol>,
   bigint_data_symbol: Option<GcSymbol>,
+  symbol_data_symbol: Option<GcSymbol>,
 
   last_swept_gc_runs: u64,
 
@@ -97,8 +98,8 @@ impl VmJsRuntime {
       string_data_symbol: None,
       boolean_data_symbol: None,
       number_data_symbol: None,
-      symbol_data_symbol: None,
       bigint_data_symbol: None,
+      symbol_data_symbol: None,
       last_swept_gc_runs: 0,
       interned_window: None,
       interned_document: None,
@@ -238,8 +239,8 @@ impl VmJsRuntime {
     self.string_data_symbol == Some(*sym)
       || self.boolean_data_symbol == Some(*sym)
       || self.number_data_symbol == Some(*sym)
-      || self.symbol_data_symbol == Some(*sym)
       || self.bigint_data_symbol == Some(*sym)
+      || self.symbol_data_symbol == Some(*sym)
   }
 
   /// Create a property key for the given string.
@@ -553,6 +554,64 @@ impl VmJsRuntime {
       Ok(v) => Ok(v),
       Err(_) => Ok(f64::NAN),
     }
+  }
+
+  fn bigint_from_string(&mut self, s: GcString) -> Result<JsBigInt, VmError> {
+    let js = self.heap.get_string(s)?;
+    let text = js.to_utf8_lossy();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+      return Ok(JsBigInt::zero());
+    }
+
+    let has_sign = trimmed.starts_with('-') || trimmed.starts_with('+');
+    let (negative, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
+      (true, rest)
+    } else if let Some(rest) = trimmed.strip_prefix('+') {
+      (false, rest)
+    } else {
+      (false, trimmed)
+    };
+
+    if rest.is_empty() {
+      return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
+    }
+
+    let parse_mag = |rt: &mut Self, digits: &str, radix: u32| match u128::from_str_radix(digits, radix)
+    {
+      Ok(v) => Ok(v),
+      Err(err) => match err.kind() {
+        IntErrorKind::PosOverflow => Err(rt.throw_range_error("BigInt value is too large")),
+        _ => Err(rt.throw_syntax_error("Cannot convert string to a BigInt")),
+      },
+    };
+
+    let magnitude = if has_sign {
+      parse_mag(self, rest, 10)?
+    } else if let Some(rest) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+      if rest.is_empty() {
+        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
+      }
+      parse_mag(self, rest, 16)?
+    } else if let Some(rest) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+      if rest.is_empty() {
+        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
+      }
+      parse_mag(self, rest, 2)?
+    } else if let Some(rest) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+      if rest.is_empty() {
+        return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
+      }
+      parse_mag(self, rest, 8)?
+    } else {
+      parse_mag(self, rest, 10)?
+    };
+
+    let mut bigint = JsBigInt::from_u128(magnitude);
+    if negative {
+      bigint = bigint.negate();
+    }
+    Ok(bigint)
   }
 
   fn to_string_from_number(&mut self, n: f64) -> Result<GcString, VmError> {
@@ -917,8 +976,8 @@ impl JsRuntime for VmJsRuntime {
       Value::String(string_data) => Ok(self.alloc_string_object_from_handle(string_data)?),
       Value::Bool(boolean_data) => Ok(self.alloc_boolean_object_value(boolean_data)?),
       Value::Number(number_data) => Ok(self.alloc_number_object_value(number_data)?),
-      Value::Symbol(symbol_data) => Ok(self.alloc_symbol_object_value(symbol_data)?),
       Value::BigInt(bigint_data) => Ok(self.alloc_bigint_object_value(bigint_data)?),
+      Value::Symbol(symbol_data) => Ok(self.alloc_symbol_object_value(symbol_data)?),
     }
   }
 
@@ -989,7 +1048,7 @@ impl JsRuntime for VmJsRuntime {
         Value::Bool(true) => rt.alloc_string_handle("true")?,
         Value::Bool(false) => rt.alloc_string_handle("false")?,
         Value::Number(n) => rt.to_string_from_number(n)?,
-        Value::BigInt(n) => rt.alloc_string_handle(&n.to_decimal_string())?,
+        Value::BigInt(b) => rt.alloc_string_handle(&b.to_decimal_string())?,
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
         }
@@ -1053,44 +1112,44 @@ impl JsRuntime for VmJsRuntime {
 
   fn to_bigint(&mut self, value: Value) -> Result<Value, VmError> {
     self.sweep_dead_host_objects_if_needed();
-
     self.with_stack_roots([value], |rt| {
-      let bigint = match value {
-        Value::BigInt(b) => b,
-        Value::Bool(b) => {
-          if b {
-            JsBigInt::from_u128(1)
+      // Spec: <https://tc39.es/ecma262/#sec-tobigint>.
+      let prim = match value {
+        Value::Object(obj) => {
+          if let Some(string_data) = rt.string_object_data(obj)? {
+            Value::String(string_data)
+          } else if let Some(boolean_data) = rt.boolean_object_data(obj)? {
+            Value::Bool(boolean_data)
+          } else if let Some(number_data) = rt.number_object_data(obj)? {
+            Value::Number(number_data)
+          } else if let Some(bigint_data) = rt.bigint_object_data(obj)? {
+            Value::BigInt(bigint_data)
+          } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
+            Value::Symbol(symbol_data)
           } else {
-            JsBigInt::zero()
+            // Approximate `ToPrimitive(obj, number)` by falling back to our existing `ToString`
+            // stub. (Plain objects stringify to "[object Object]".)
+            rt.to_string(value)?
           }
         }
-        Value::Number(n) => number_to_bigint(rt, n)?,
-        Value::String(s) => string_to_bigint(rt, s)?,
+        other => other,
+      };
+
+      let bigint = match prim {
+        Value::BigInt(b) => b,
+        Value::Bool(true) => JsBigInt::from_u128(1),
+        Value::Bool(false) => JsBigInt::zero(),
+        Value::String(s) => rt.bigint_from_string(s)?,
         Value::Undefined | Value::Null => {
           return Err(rt.throw_type_error("Cannot convert null or undefined to a BigInt"));
+        }
+        Value::Number(_) => {
+          return Err(rt.throw_type_error("Cannot convert a Number value to a BigInt"));
         }
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
         }
-        Value::Object(obj) => {
-          if let Some(bigint_data) = rt.bigint_object_data(obj)? {
-            bigint_data
-          } else if let Some(string_data) = rt.string_object_data(obj)? {
-            string_to_bigint(rt, string_data)?
-          } else if let Some(boolean_data) = rt.boolean_object_data(obj)? {
-            if boolean_data {
-              JsBigInt::from_u128(1)
-            } else {
-              JsBigInt::zero()
-            }
-          } else if let Some(number_data) = rt.number_object_data(obj)? {
-            number_to_bigint(rt, number_data)?
-          } else if rt.symbol_object_data(obj)?.is_some() {
-            return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
-          } else {
-            return Err(rt.throw_type_error("Cannot convert object to BigInt"));
-          }
-        }
+        Value::Object(_) => unreachable!("ToPrimitive should have produced a primitive value"),
       };
 
       Ok(Value::BigInt(bigint))
@@ -1098,12 +1157,7 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn to_numeric(&mut self, value: Value) -> Result<Value, VmError> {
-    // Spec: <https://tc39.es/ecma262/#sec-tonumeric>
-    //
-    // `vm-js`'s `Value` enum now includes BigInt primitives, so treat them as numeric directly.
-    // Also handle BigInt wrapper objects created by our `ToObject` shim by unwrapping the hidden
-    // internal slot.
-    if matches!(value, Value::BigInt(_)) {
+    if let Value::BigInt(_) = value {
       return Ok(value);
     }
     if let Value::Object(obj) = value {
@@ -1386,84 +1440,6 @@ impl WebIdlJsRuntime for VmJsRuntime {
   }
 }
 
-fn number_to_bigint(rt: &mut VmJsRuntime, n: f64) -> Result<JsBigInt, VmError> {
-  if !n.is_finite() {
-    return Err(rt.throw_range_error("Cannot convert a non-finite number to a BigInt"));
-  }
-  if n.fract() != 0.0 {
-    return Err(rt.throw_range_error("Cannot convert a non-integer number to a BigInt"));
-  }
-  // BigInt does not have a distinct -0 value; treat both +0 and -0 as 0n.
-  if n == 0.0 {
-    return Ok(JsBigInt::zero());
-  }
-  let negative = n.is_sign_negative();
-  let abs = n.abs();
-  if abs > (u128::MAX as f64) {
-    return Err(rt.throw_range_error("BigInt conversion overflow"));
-  }
-  let mag = abs as u128;
-  let mut out = JsBigInt::from_u128(mag);
-  if negative {
-    out = out.negate();
-  }
-  Ok(out)
-}
-
-fn string_to_bigint(rt: &mut VmJsRuntime, s: GcString) -> Result<JsBigInt, VmError> {
-  let js = rt.heap.get_string(s)?;
-  let text = js.to_utf8_lossy();
-  parse_bigint(&text).ok_or_else(|| rt.throw_syntax_error("Cannot convert string to BigInt"))
-}
-
-fn parse_bigint(text: &str) -> Option<JsBigInt> {
-  let trimmed = text.trim();
-  if trimmed.is_empty() {
-    // `StringToBigInt` accepts an empty/whitespace-only string and treats it as 0.
-    return Some(JsBigInt::zero());
-  }
-
-  // `StringToBigInt` parses a SignedInteger (decimal digits with optional sign) *or* a
-  // NonDecimalIntegerLiteral (0x/0o/0b, no sign).
-  let sign = if let Some(rest) = trimmed.strip_prefix('-') {
-    Some((true, rest))
-  } else if let Some(rest) = trimmed.strip_prefix('+') {
-    Some((false, rest))
-  } else {
-    None
-  };
-  let (negative, rest) = match sign {
-    Some((negative, rest)) => (negative, rest),
-    None => (false, trimmed),
-  };
-
-  let (radix, digits) = if let Some(rest) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-    (16, rest)
-  } else if let Some(rest) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-    (8, rest)
-  } else if let Some(rest) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-    (2, rest)
-  } else {
-    (10, rest)
-  };
-
-  // Signed non-decimal forms (e.g. "-0x10") are not valid StringToBigInt inputs.
-  if radix != 10 && sign.is_some() {
-    return None;
-  }
-
-  if digits.is_empty() {
-    return None;
-  }
-
-  let mag = u128::from_str_radix(digits, radix).ok()?;
-  let mut out = JsBigInt::from_u128(mag);
-  if negative {
-    out = out.negate();
-  }
-  Some(out)
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1490,12 +1466,14 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "42");
     let s = rt.to_string(Value::Number(-0.0)).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "0");
-    let s = rt.to_string(Value::BigInt(JsBigInt::from_u128(42))).unwrap();
+    let s = rt
+      .to_string(Value::BigInt(JsBigInt::from_u128(42)))
+      .unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "42");
     let s = rt
-      .to_string(Value::BigInt(JsBigInt::from_u128(1).negate()))
+      .to_string(Value::BigInt(JsBigInt::from_u128(42).negate()))
       .unwrap();
-    assert_eq!(as_utf8_lossy(&rt, s), "-1");
+    assert_eq!(as_utf8_lossy(&rt, s), "-42");
   }
 
   #[test]
@@ -1523,6 +1501,71 @@ mod tests {
     assert!(rt.to_number(s).unwrap().is_nan());
   }
 
+  fn thrown_error_name(rt: &mut VmJsRuntime, err: VmError) -> String {
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown error, got {other:?}"),
+    };
+    let name_key = rt.prop_key_str("name").unwrap();
+    let name_value = rt.get(thrown, name_key).unwrap();
+    as_utf8_lossy(rt, name_value)
+  }
+
+  #[test]
+  fn to_number_on_bigint_throws_type_error() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let err = rt
+      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .unwrap_err();
+    assert_eq!(thrown_error_name(&mut rt, err), "TypeError");
+  }
+
+  #[test]
+  fn to_bigint_conversions() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    assert_eq!(
+      rt.to_bigint(Value::Bool(true)).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(1))
+    );
+    assert_eq!(
+      rt.to_bigint(Value::Bool(false)).unwrap(),
+      Value::BigInt(JsBigInt::zero())
+    );
+
+    let s = rt.alloc_string_value("  123  ").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(123))
+    );
+    let s = rt.alloc_string_value("-123").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(123).negate())
+    );
+    let s = rt.alloc_string_value("0x10").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(16))
+    );
+
+    let s = rt.alloc_string_value("-0x10").unwrap();
+    let err = rt.to_bigint(s).unwrap_err();
+    assert_eq!(thrown_error_name(&mut rt, err), "SyntaxError");
+
+    let err = rt.to_bigint(Value::Number(1.0)).unwrap_err();
+    assert_eq!(thrown_error_name(&mut rt, err), "TypeError");
+
+    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(7))).unwrap();
+    assert_eq!(
+      rt.to_bigint(obj).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(7))
+    );
+
+    let obj = rt.to_object(Value::Number(7.0)).unwrap();
+    let err = rt.to_bigint(obj).unwrap_err();
+    assert_eq!(thrown_error_name(&mut rt, err), "TypeError");
+  }
+
   #[test]
   fn to_boolean_bigint() {
     let mut rt = VmJsRuntime::new();
@@ -1530,66 +1573,6 @@ mod tests {
     assert!(rt
       .to_boolean(Value::BigInt(JsBigInt::from_u128(1)))
       .unwrap());
-  }
-
-  #[test]
-  fn to_number_bigint_throws_type_error() {
-    let mut rt = VmJsRuntime::new();
-    let err = rt
-      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
-      .unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown TypeError, got {other:?}"),
-    };
-
-    let name_key = rt.prop_key_str("name").unwrap();
-    let name_value = rt.get(thrown, name_key).unwrap();
-    assert_eq!(as_utf8_lossy(&rt, name_value), "TypeError");
-  }
-
-  #[test]
-  fn to_bigint_conversions() {
-    let mut rt = VmJsRuntime::new();
-
-    assert_eq!(
-      rt.to_bigint(Value::Bool(true)).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(1))
-    );
-    assert_eq!(
-      rt.to_bigint(Value::Number(5.0)).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(5))
-    );
-
-    let err = rt.to_bigint(Value::Number(1.5)).unwrap_err();
-    let thrown = match err {
-      VmError::Throw(v) => v,
-      other => panic!("expected thrown RangeError, got {other:?}"),
-    };
-    let name_key = rt.prop_key_str("name").unwrap();
-    let name_value = rt.get(thrown, name_key).unwrap();
-    assert_eq!(as_utf8_lossy(&rt, name_value), "RangeError");
-
-    let s = rt.alloc_string_value("42").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(42))
-    );
-
-    let s = rt.alloc_string_value("0x10").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(16))
-    );
-
-    let s = rt.alloc_string_value("-16").unwrap();
-    assert_eq!(
-      rt.to_bigint(s).unwrap(),
-      Value::BigInt(JsBigInt::from_u128(16).negate())
-    );
-
-    let obj = rt.to_object(Value::BigInt(JsBigInt::from_u128(2))).unwrap();
-    assert_eq!(rt.to_bigint(obj).unwrap(), Value::BigInt(JsBigInt::from_u128(2)));
   }
 
   #[test]

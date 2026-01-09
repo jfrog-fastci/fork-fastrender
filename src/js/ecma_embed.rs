@@ -92,6 +92,10 @@ pub enum ScriptValue {
   Null,
   Bool(bool),
   Number(f64),
+  /// UTF-8 string value.
+  ///
+  /// Note: BigInt values are currently surfaced as decimal strings because this shim does not yet
+  /// expose a dedicated BigInt variant.
   String(String),
   /// Non-primitive values are currently surfaced as opaque markers.
   Object,
@@ -907,7 +911,7 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
-    Value::BigInt(b) => !b.is_zero(),
+    Value::BigInt(n) => !n.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
@@ -1038,11 +1042,11 @@ fn abstract_equality(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<bool, 
       }
 
       // Object-to-primitive conversions.
-      (Object(_), String(_) | Number(_) | Symbol(_)) => {
+      (Object(_), String(_) | Number(_) | BigInt(_) | Symbol(_)) => {
         let prim = to_primitive(&mut scope, a)?;
         a = scope.push_root(prim)?;
       }
-      (String(_) | Number(_) | Symbol(_), Object(_)) => {
+      (String(_) | Number(_) | BigInt(_) | Symbol(_), Object(_)) => {
         let prim = to_primitive(&mut scope, b)?;
         b = scope.push_root(prim)?;
       }
