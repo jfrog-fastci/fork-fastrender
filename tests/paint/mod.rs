@@ -37,6 +37,7 @@ mod color_mix_polar_display_list_test;
 mod clip_path_polygon_path;
 mod contain_paint;
 mod determinism_repeat_test;
+mod display_contents;
 mod display_list_color_fonts_test;
 mod display_list_font_palette_overrides_test;
 mod display_list_paint_multi_root;

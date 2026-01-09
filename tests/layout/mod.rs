@@ -18,6 +18,7 @@ mod container_query_replaced_style_refresh;
 mod container_query_scrollbar_gutter;
 mod content_visibility_auto_skip;
 mod details_open_state;
+mod display_contents;
 mod empty_inline_boxes;
 mod first_line_first_letter_integration_test;
 mod first_pseudo_layout;
