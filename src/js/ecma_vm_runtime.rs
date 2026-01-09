@@ -690,42 +690,74 @@ fn expect_simple_binding_identifier<'a>(
   }
 }
 
-fn to_timer_id(value: Value) -> TimerId {
-  match value {
-    Value::Number(n) if n.is_finite() => n.trunc() as i32,
-    Value::Bool(true) => 1,
-    Value::Bool(false) | Value::Undefined | Value::Null => 0,
-    _ => 0,
+fn throw_type_error(vm: &Vm, scope: &mut Scope<'_>, message: &str) -> VmError {
+  let Some(intr) = vm.intrinsics() else {
+    // This runtime always creates a `vm-js` Realm (which initializes intrinsics), but keep this
+    // branch non-panicking so host embeddings can surface a useful error instead of crashing.
+    return VmError::Unimplemented("intrinsics not initialized");
+  };
+  match vm_js::new_error(scope, intr.type_error_prototype(), "TypeError", message) {
+    Ok(value) => VmError::Throw(value),
+    Err(_) => VmError::Throw(Value::Undefined),
   }
 }
 
-fn to_timeout_ms(value: Value) -> i64 {
-  match value {
-    Value::Number(n) if n.is_finite() => n.trunc() as i64,
-    Value::Bool(true) => 1,
-    Value::Bool(false) | Value::Undefined | Value::Null => 0,
-    _ => 0,
+fn to_number_or_throw_type_error(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> std::result::Result<f64, VmError> {
+  match scope.heap_mut().to_number(value) {
+    Ok(n) => Ok(n),
+    Err(VmError::TypeError(msg)) => Err(throw_type_error(vm, scope, msg)),
+    Err(err) => Err(err),
   }
 }
 
-fn throw_type_error(scope: &mut Scope<'_>, message: &str) -> VmError {
-  let s = scope
-    .alloc_string(&format!("TypeError: {message}"))
-    .map_err(|err| match err {
-      VmError::OutOfMemory => VmError::OutOfMemory,
-      other => other,
-    });
+fn normalize_delay_ms(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> std::result::Result<u64, VmError> {
+  let mut n = to_number_or_throw_type_error(vm, scope, value)?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  if n < 0.0 {
+    n = 0.0;
+  }
+  // `ToIntegerOrInfinity` rounds toward zero.
+  let n = n.trunc();
+  if n >= u64::MAX as f64 {
+    Ok(u64::MAX)
+  } else {
+    Ok(n as u64)
+  }
+}
 
-  match s {
-    Ok(s) => VmError::Throw(Value::String(s)),
-    Err(err) => err,
+fn normalize_timer_id(
+  vm: &Vm,
+  scope: &mut Scope<'_>,
+  value: Value,
+) -> std::result::Result<TimerId, VmError> {
+  let mut n = to_number_or_throw_type_error(vm, scope, value)?;
+  if !n.is_finite() || n.is_nan() {
+    n = 0.0;
+  }
+  let n = n.trunc();
+  if n >= i32::MAX as f64 {
+    Ok(i32::MAX)
+  } else if n <= i32::MIN as f64 {
+    Ok(i32::MIN)
+  } else {
+    Ok(n as i32)
   }
 }
 
 // --- Native web API globals ---
 
 fn native_queue_microtask<State: 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -736,12 +768,14 @@ fn native_queue_microtask<State: 'static>(
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(callback, Value::String(_)) {
     return Err(throw_type_error(
+      vm,
       scope,
       "queueMicrotask does not currently support string callbacks",
     ));
   }
   if !scope.heap().is_callable(callback)? {
     return Err(throw_type_error(
+      vm,
       scope,
       "queueMicrotask callback is not callable",
     ));
@@ -786,7 +820,7 @@ fn native_queue_microtask<State: 'static>(
 }
 
 fn native_set_timeout<State: 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -797,19 +831,24 @@ fn native_set_timeout<State: 'static>(
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
     return Err(throw_type_error(
+      vm,
       scope,
       "setTimeout does not currently support string handlers",
     ));
   }
   if !scope.heap().is_callable(handler)? {
     return Err(throw_type_error(
+      vm,
       scope,
       "setTimeout callback is not callable",
     ));
   }
 
-  let timeout_ms = args.get(1).copied().map(to_timeout_ms).unwrap_or(0);
-  let delay_ms = timeout_ms.max(0) as u64;
+  // Root the handler across delay conversion (which may allocate/GC for object delays).
+  let handler = scope.push_root(handler)?;
+
+  let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let delay_ms = normalize_delay_ms(vm, scope, delay_value)?;
   let delay = Duration::from_millis(delay_ms);
 
   let callback_root = scope.heap_mut().add_root(handler)?;
@@ -897,7 +936,7 @@ fn native_set_timeout<State: 'static>(
 }
 
 fn native_clear_timeout<State: 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -905,7 +944,8 @@ fn native_clear_timeout<State: 'static>(
   _this: Value,
   args: &[Value],
 ) -> std::result::Result<Value, VmError> {
-  let id = args.get(0).copied().map(to_timer_id).unwrap_or(0);
+  let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let id = normalize_timer_id(vm, scope, id_value)?;
   ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     (&mut *event_loop_ptr).clear_timeout(id);
     if let Some(entry) = (*host_ptr).timers.remove(&id) {
@@ -919,7 +959,7 @@ fn native_clear_timeout<State: 'static>(
 }
 
 fn native_set_interval<State: 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -930,19 +970,24 @@ fn native_set_interval<State: 'static>(
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
   if matches!(handler, Value::String(_)) {
     return Err(throw_type_error(
+      vm,
       scope,
       "setInterval does not currently support string handlers",
     ));
   }
   if !scope.heap().is_callable(handler)? {
     return Err(throw_type_error(
+      vm,
       scope,
       "setInterval callback is not callable",
     ));
   }
 
-  let timeout_ms = args.get(1).copied().map(to_timeout_ms).unwrap_or(0);
-  let interval_ms = timeout_ms.max(0) as u64;
+  // Root the handler across delay conversion (which may allocate/GC for object delays).
+  let handler = scope.push_root(handler)?;
+
+  let interval_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let interval_ms = normalize_delay_ms(vm, scope, interval_value)?;
   let interval = Duration::from_millis(interval_ms);
 
   let callback_root = scope.heap_mut().add_root(handler)?;
@@ -1027,7 +1072,7 @@ fn native_set_interval<State: 'static>(
 }
 
 fn native_clear_interval<State: 'static>(
-  _vm: &mut Vm,
+  vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHost,
   _hooks: &mut dyn VmHostHooks,
@@ -1035,7 +1080,8 @@ fn native_clear_interval<State: 'static>(
   _this: Value,
   args: &[Value],
 ) -> std::result::Result<Value, VmError> {
-  let id = args.get(0).copied().map(to_timer_id).unwrap_or(0);
+  let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
+  let id = normalize_timer_id(vm, scope, id_value)?;
   ExecCtxGuard::with_current::<State, _>(|host_ptr, event_loop_ptr| unsafe {
     (&mut *event_loop_ptr).clear_interval(id);
     if let Some(entry) = (*host_ptr).timers.remove(&id) {
@@ -1088,6 +1134,7 @@ mod tests {
   use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome};
   use crate::js::ScriptType;
   use std::sync::Arc;
+  use vm_js::{PropertyKey, PropertyKind};
 
   #[derive(Default)]
   struct TestState {
@@ -1364,8 +1411,8 @@ mod tests {
     let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
 
     fn set_interval_id(
-      _vm: &mut Vm,
-      _scope: &mut Scope<'_>,
+      vm: &mut Vm,
+      scope: &mut Scope<'_>,
       _host: &mut dyn VmHost,
       _hooks: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
@@ -1373,7 +1420,7 @@ mod tests {
       args: &[Value],
     ) -> std::result::Result<Value, VmError> {
       let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
-      let id = to_timer_id(id_value);
+      let id = normalize_timer_id(vm, scope, id_value)?;
       ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
         (*host_ptr).state.interval_id = Some(id);
       });
@@ -1441,4 +1488,165 @@ mod tests {
     assert_eq!(host.state.interval_count, 3);
     Ok(())
   }
-}
+
+  fn assert_type_error_object(
+    scope: &mut Scope<'_>,
+    intrinsics: vm_js::Intrinsics,
+    value: Value,
+    expected_message: &str,
+  ) -> std::result::Result<(), VmError> {
+    let Value::Object(obj) = value else {
+      panic!("expected thrown object, got {value:?}");
+    };
+    scope.push_root(Value::Object(obj))?;
+
+    assert_eq!(
+      scope.object_get_prototype(obj)?,
+      Some(intrinsics.type_error_prototype())
+    );
+
+    let name_key_s = scope.alloc_string("name")?;
+    scope.push_root(Value::String(name_key_s))?;
+    let name_key = PropertyKey::from_string(name_key_s);
+    let name_desc = scope
+      .ordinary_get_own_property(obj, name_key)?
+      .expect("missing name property");
+    assert!(!name_desc.enumerable);
+    assert!(name_desc.configurable);
+    let PropertyKind::Data { value: name_value, .. } = name_desc.kind else {
+      panic!("name is not a data property");
+    };
+    let Value::String(name_s) = name_value else {
+      panic!("name is not a string: {name_value:?}");
+    };
+    assert_eq!(scope.heap().get_string(name_s)?.to_utf8_lossy(), "TypeError");
+
+    let msg_key_s = scope.alloc_string("message")?;
+    scope.push_root(Value::String(msg_key_s))?;
+    let msg_key = PropertyKey::from_string(msg_key_s);
+    let msg_desc = scope
+      .ordinary_get_own_property(obj, msg_key)?
+      .expect("missing message property");
+    assert!(!msg_desc.enumerable);
+    assert!(msg_desc.configurable);
+    let PropertyKind::Data { value: msg_value, .. } = msg_desc.kind else {
+      panic!("message is not a data property");
+    };
+    let Value::String(msg_s) = msg_value else {
+      panic!("message is not a string: {msg_value:?}");
+    };
+    assert_eq!(
+      scope.heap().get_string(msg_s)?.to_utf8_lossy(),
+      expected_message
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_parses_string_delay_and_respects_virtual_clock() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock.clone());
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+    host.define_global_native_function("__log_timeout", 0, log_timeout)?;
+
+    host.execute_classic_script(
+      "setTimeout(__log_timeout, '10');",
+      &classic_spec(),
+      &mut event_loop,
+    )?;
+
+    assert_eq!(host.state.log, Vec::<&'static str>::new());
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.state.log, Vec::<&'static str>::new());
+
+    clock.advance(Duration::from_millis(9));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.state.log, Vec::<&'static str>::new());
+
+    clock.advance(Duration::from_millis(1));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.state.log, vec!["timeout"]);
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_throws_type_error_object_for_non_callable_callback() -> Result<()> {
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+    let intr = *host.realm.intrinsics();
+    let host_ptr: *mut EcmaVmRuntime<TestState> = &mut host;
+    let mut hooks = RuntimeHostHooks { host: host_ptr };
+    let mut dummy_host = ();
+
+    let mut scope = host.heap.scope();
+    let callee = scope.alloc_object().map_err(map_vm_error)?;
+
+    let err = native_set_timeout::<TestState>(
+      &mut host.vm,
+      &mut scope,
+      &mut dummy_host,
+      &mut hooks,
+      callee,
+      Value::Undefined,
+      &[Value::Number(0.0), Value::Number(0.0)],
+    )
+    .expect_err("expected setTimeout to throw");
+
+    let VmError::Throw(value) = err else {
+      panic!("expected VmError::Throw, got {err:?}");
+    };
+    assert_type_error_object(
+      &mut scope,
+      intr,
+      value,
+      "setTimeout callback is not callable",
+    )
+    .map_err(map_vm_error)?;
+    Ok(())
+  }
+
+  #[test]
+  fn clear_timeout_throws_type_error_object_for_symbol_handle() -> Result<()> {
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+    let intr = *host.realm.intrinsics();
+    let host_ptr: *mut EcmaVmRuntime<TestState> = &mut host;
+    let mut hooks = RuntimeHostHooks { host: host_ptr };
+    let mut dummy_host = ();
+
+    let mut scope = host.heap.scope();
+    let callee = scope.alloc_object().map_err(map_vm_error)?;
+    let sym = scope.alloc_symbol(Some("t")).map_err(map_vm_error)?;
+
+    let err = native_clear_timeout::<TestState>(
+      &mut host.vm,
+      &mut scope,
+      &mut dummy_host,
+      &mut hooks,
+      callee,
+      Value::Undefined,
+      &[Value::Symbol(sym)],
+    )
+    .expect_err("expected clearTimeout to throw");
+
+    let VmError::Throw(value) = err else {
+      panic!("expected VmError::Throw, got {err:?}");
+    };
+    assert_type_error_object(
+      &mut scope,
+      intr,
+      value,
+      "Cannot convert a Symbol value to a number",
+    )
+    .map_err(map_vm_error)?;
+    Ok(())
+  }
+} 
