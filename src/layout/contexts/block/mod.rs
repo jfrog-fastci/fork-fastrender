@@ -565,6 +565,7 @@ impl BlockFormattingContext {
         constraints,
         box_y,
         nearest_positioned_cb,
+        nearest_fixed_cb,
       )?;
       self.maybe_attach_footnote_anchor(
         child,
@@ -2901,7 +2902,8 @@ impl BlockFormattingContext {
     containing_width: f32,
     constraints: &LayoutConstraints,
     box_y: f32,
-    _nearest_positioned_cb: &ContainingBlock,
+    nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
   ) -> Result<FragmentNode, LayoutError> {
     let style = &child.style;
     let toggles = crate::debug::runtime::runtime_toggles();
@@ -3049,7 +3051,7 @@ impl BlockFormattingContext {
 
     // Replaced elements are usually treated as layout leaves, but form controls can have generated
     // ::before/::after pseudo-element children. Only out-of-flow pseudo boxes are generated, so
-    // lay them out here against the replaced element's padding box.
+    // lay them out here.
     if !child.children.is_empty() {
       let border_top = resolve_border_side(
         style,
@@ -3071,7 +3073,7 @@ impl BlockFormattingContext {
         (box_width - computed_width.border_left - computed_width.border_right).max(0.0),
         (box_height - border_top - border_bottom).max(0.0),
       );
-      let cb = ContainingBlock::with_viewport_and_bases(
+      let padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
         Some(padding_rect.size.width),
@@ -3081,7 +3083,21 @@ impl BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
-      let factory = self.child_factory_for_cb(cb);
+      // Translate the inherited containing blocks into the replaced element's local coordinate
+      // space so abs/fixed positioned pseudo-elements resolve against the same reference boxes as
+      // normal descendants would.
+      let base_factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
+      let mut factory = base_factory.translated_for_child(bounds.origin);
+      if style.establishes_abs_containing_block()
+        && padding_cb != factory.nearest_positioned_cb()
+      {
+        factory = factory.with_positioned_cb(padding_cb);
+      }
+      if style.establishes_fixed_containing_block()
+        && padding_cb != factory.nearest_fixed_cb()
+      {
+        factory = factory.with_fixed_cb(padding_cb);
+      }
       for positioned_child in child.children.iter().filter(|desc| {
         desc
           .style
@@ -3105,6 +3121,11 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let fc = factory.get(fc_type);
+        let cb = if matches!(original_style.position, Position::Fixed) {
+          factory.nearest_fixed_cb()
+        } else {
+          factory.nearest_positioned_cb()
+        };
         let child_constraints = LayoutConstraints::new(
           AvailableSpace::Definite(cb.rect.size.width),
           cb

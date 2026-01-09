@@ -9597,7 +9597,7 @@ impl FlexFormattingContext {
             );
             // Replaced boxes are usually treated as leaves, but form controls can have generated
             // ::before/::after pseudo-element children. Only out-of-flow pseudos are generated, so
-            // lay them out here against the replaced element's padding box.
+            // lay them out here.
             if !child_box.children.is_empty() {
               let style = &child_box.style;
               let percentage_base_px = bounds.width().max(0.0);
@@ -9616,12 +9616,12 @@ impl FlexFormattingContext {
                 style,
               );
               let padding_rect = Rect::from_xywh(
-                bounds.x() + border_left,
-                bounds.y() + border_top,
+                border_left,
+                border_top,
                 (bounds.width() - border_left - border_right).max(0.0),
                 (bounds.height() - border_top - border_bottom).max(0.0),
               );
-              let cb = ContainingBlock::with_viewport_and_bases(
+              let padding_cb = ContainingBlock::with_viewport_and_bases(
                 padding_rect,
                 self.viewport_size,
                 Some(padding_rect.size.width),
@@ -9630,12 +9630,17 @@ impl FlexFormattingContext {
 
               let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
               let font_context = self.font_context.clone();
-              let base_factory = self.factory.clone();
-              let abs_factory = if cb == base_factory.nearest_positioned_cb() {
-                base_factory.clone()
-              } else {
-                base_factory.with_positioned_cb(cb)
-              };
+              let mut abs_factory = factory.translated_for_child(bounds.origin);
+              if style.establishes_abs_containing_block()
+                && padding_cb != abs_factory.nearest_positioned_cb()
+              {
+                abs_factory = abs_factory.with_positioned_cb(padding_cb);
+              }
+              if style.establishes_fixed_containing_block()
+                && padding_cb != abs_factory.nearest_fixed_cb()
+              {
+                abs_factory = abs_factory.with_fixed_cb(padding_cb);
+              }
               for positioned_child in child_box.children.iter().filter(|desc| {
                 desc
                   .style
@@ -9659,6 +9664,11 @@ impl FlexFormattingContext {
                   .formatting_context()
                   .unwrap_or(FormattingContextType::Block);
                 let fc = abs_factory.get(fc_type);
+                let cb = if matches!(original_style.position, Position::Fixed) {
+                  abs_factory.nearest_fixed_cb()
+                } else {
+                  abs_factory.nearest_positioned_cb()
+                };
                 let child_constraints = LayoutConstraints::new(
                   CrateAvailableSpace::Definite(cb.rect.size.width),
                   cb
@@ -9753,11 +9763,6 @@ impl FlexFormattingContext {
                   FragmentContent::Line { .. }
                   | FragmentContent::RunningAnchor { .. }
                   | FragmentContent::FootnoteAnchor { .. } => {}
-                }
-                let offset = Point::new(-bounds.x(), -bounds.y());
-                child_fragment.bounds = child_fragment.bounds.translate(offset);
-                if let Some(logical) = child_fragment.logical_override {
-                  child_fragment.logical_override = Some(logical.translate(offset));
                 }
                 fragment.children_mut().push(child_fragment);
               }

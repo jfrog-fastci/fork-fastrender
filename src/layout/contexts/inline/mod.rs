@@ -11961,6 +11961,7 @@ impl InlineFormattingContext {
       let font_context = self.font_context.clone();
       let base_factory = self.factory.clone();
       let viewport_size = self.viewport_size;
+      let viewport_fixed_cb = base_factory.viewport_fixed_cb();
       let abs_factory = if abs_cb == base_factory.nearest_positioned_cb() {
         base_factory.clone()
       } else {
@@ -11971,32 +11972,32 @@ impl InlineFormattingContext {
       } else {
         base_factory.with_fixed_cb(default_fixed_cb)
       };
-       let mut custom_abs_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
-       let mut custom_fixed_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
-       for positioned_child in &positioned_children {
-         let Some(id) = positioned_child.containing_block_id else {
-           continue;
-         };
-         let Some(custom_cb) = positioned_containing_blocks.get(&id).copied() else {
-           continue;
-         };
-         if custom_cb != abs_cb && !custom_abs_factories.contains_key(&id) {
-           custom_abs_factories.insert(id, base_factory.with_positioned_cb(custom_cb));
-         }
-         if custom_cb != default_fixed_cb && !custom_fixed_factories.contains_key(&id) {
-           custom_fixed_factories.insert(id, base_factory.with_fixed_cb(custom_cb));
-         }
-       }
-       let layout_positioned_child = |positioned_child: &PositionedChild| {
-         let PositionedChild {
-           node: child_ref,
-           box_id,
-           containing_block_id,
-           parent_box_id,
-         } = *positioned_child;
-         // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
-         // current layout run. The tree is not moved while `layout_with_floats` executes.
-         let child = unsafe { child_ref.get() };
+      let mut custom_abs_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
+      let mut custom_fixed_factories: HashMap<usize, FormattingContextFactory> = HashMap::new();
+      for positioned_child in &positioned_children {
+        let Some(id) = positioned_child.containing_block_id else {
+          continue;
+        };
+        let Some(custom_cb) = positioned_containing_blocks.get(&id).copied() else {
+          continue;
+        };
+        if custom_cb != abs_cb && !custom_abs_factories.contains_key(&id) {
+          custom_abs_factories.insert(id, base_factory.with_positioned_cb(custom_cb));
+        }
+        if custom_cb != default_fixed_cb && !custom_fixed_factories.contains_key(&id) {
+          custom_fixed_factories.insert(id, base_factory.with_fixed_cb(custom_cb));
+        }
+      }
+      let layout_positioned_child = |positioned_child: &PositionedChild| {
+        let PositionedChild {
+          node: child_ref,
+          box_id,
+          containing_block_id,
+          parent_box_id,
+        } = *positioned_child;
+        // SAFETY: `PositionedChild` stores pointers into the (immutable) box tree owned by the
+        // current layout run. The tree is not moved while `layout_with_floats` executes.
+        let child = unsafe { child_ref.get() };
         let custom_cb = containing_block_id
           .and_then(|id| positioned_containing_blocks.get(&id))
           .copied();
@@ -12014,17 +12015,22 @@ impl InlineFormattingContext {
         } else {
           (abs_cb, false)
         };
+        let is_viewport_fixed = matches!(
+          child.style.position,
+          crate::style::position::Position::Fixed
+        ) && child_cb == viewport_fixed_cb;
 
-        let mut child_static_position = if let Some(anchor) = anchor_positions.get(&box_id).copied() {
-          anchor
-        } else if let Some(id) = containing_block_id {
-          positioned_containing_blocks
-            .get(&id)
-            .map(|cb| cb.origin())
-            .unwrap_or(default_static_position)
-        } else {
-          default_static_position
-        };
+        let mut child_static_position =
+          if let Some(anchor) = anchor_positions.get(&box_id).copied() {
+            anchor
+          } else if let Some(id) = containing_block_id {
+            positioned_containing_blocks
+              .get(&id)
+              .map(|cb| cb.origin())
+              .unwrap_or(default_static_position)
+          } else {
+            default_static_position
+          };
         if !adjust_static_position && child_cb == cb && root_establishes_abs_cb {
           // Static positions are tracked in the inline formatting context's content coordinate space.
           // When the positioned containing block is the padding box (bounded by the padding edge),
@@ -12250,13 +12256,14 @@ impl InlineFormattingContext {
           | FragmentContent::RunningAnchor { .. }
           | FragmentContent::FootnoteAnchor { .. } => {}
         }
-        Ok(child_fragment)
+        Ok((child_fragment, is_viewport_fixed))
       };
 
       fn attach_positioned_fragment_to_replaced(
         merged_children: &mut Vec<FragmentNode>,
         containing_block_id: Option<usize>,
         mut fragment: FragmentNode,
+        is_viewport_fixed: bool,
       ) {
         let Some(containing_block_id) = containing_block_id else {
           merged_children.push(fragment);
@@ -12301,10 +12308,12 @@ impl InlineFormattingContext {
           return;
         };
 
-        let offset = Point::new(-origin.x, -origin.y);
-        fragment.bounds = fragment.bounds.translate(offset);
-        if let Some(logical) = fragment.logical_override {
-          fragment.logical_override = Some(logical.translate(offset));
+        if !is_viewport_fixed {
+          let offset = Point::new(-origin.x, -origin.y);
+          fragment.bounds = fragment.bounds.translate(offset);
+          if let Some(logical) = fragment.logical_override {
+            fragment.logical_override = Some(logical.translate(offset));
+          }
         }
 
         let Some((&target_index, parent_path)) = path.split_last() else {
@@ -12342,11 +12351,12 @@ impl InlineFormattingContext {
           {
             return Err(LayoutError::Timeout { elapsed });
           }
-          let fragment = result?;
+          let (fragment, is_viewport_fixed) = result?;
           attach_positioned_fragment_to_replaced(
             &mut merged_children,
             positioned_child.containing_block_id,
             fragment,
+            is_viewport_fixed,
           );
         }
       } else {
@@ -12356,11 +12366,12 @@ impl InlineFormattingContext {
           {
             return Err(LayoutError::Timeout { elapsed });
           }
-          let fragment = layout_positioned_child(child)?;
+          let (fragment, is_viewport_fixed) = layout_positioned_child(child)?;
           attach_positioned_fragment_to_replaced(
             &mut merged_children,
             child.containing_block_id,
             fragment,
+            is_viewport_fixed,
           );
         }
       }
