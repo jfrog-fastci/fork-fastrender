@@ -25,7 +25,7 @@ reason = "Intentional harness-level error used to validate uncaught exception cl
 [[expectations]]
 id = "events/eventtarget.window.js"
 status = "skip"
-reason = "Requires DOM `document` + element tree shims (event path through Document/Elements), not supported by the vm-js runner yet."
+reason = "Uses JS features not supported by the vm-js WPT runner yet (e.g. arrays, arrow functions) plus additional DOM surface beyond the current shims."
 
 [[expectations]]
 glob = "dom/**"

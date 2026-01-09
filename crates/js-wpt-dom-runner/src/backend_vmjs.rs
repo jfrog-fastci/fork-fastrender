@@ -706,6 +706,8 @@ struct JsWptRuntime {
   next_promise_job_id: u64,
   promise_job_runner: Option<GcObject>,
   promise_prototype: Option<GcObject>,
+  event_target_proto: Option<GcObject>,
+  node_proto: Option<GcObject>,
   global_object: GcObject,
   keys: CachedKeys,
   pub(crate) event_loop: EventLoop,
@@ -753,6 +755,8 @@ impl JsWptRuntime {
       next_promise_job_id: 1,
       promise_job_runner: None,
       promise_prototype: None,
+      event_target_proto: None,
+      node_proto: None,
       global_object,
       keys,
       event_loop: EventLoop::new(),
@@ -815,9 +819,87 @@ impl JsWptRuntime {
     )?;
     self.env.set("location", Value::Object(location));
 
+    // --- Minimal DOM shims ---
+    //
+    // The vm-js WPT runner is not a full browser environment; it only needs enough "window-like"
+    // APIs for the curated DOM/event-loop tests. For events, we want to be able to construct an
+    // event propagation path that includes `window` and `document`, so we treat:
+    // - the global object as an `EventTarget`,
+    // - `document` as an `EventTarget` node,
+    // - elements returned by `document.createElement` as `EventTarget` nodes,
+    // - `appendChild` as a parent-pointer setter for building the propagation chain.
+
+    // Register `window` (the global object) as an EventTarget so other nodes can point to it.
+    let event_target_proto = self.event_target_proto()?;
+    if !self.event_targets.contains_key(&self.global_object) {
+      self
+        .heap
+        .object_set_prototype(self.global_object, Some(event_target_proto))?;
+      self.event_targets.insert(
+        self.global_object,
+        EventTargetState {
+          parent: None,
+          listeners: HashMap::new(),
+        },
+      );
+    }
+
+    // Node prototype (inherits EventTarget, adds appendChild).
+    let node_proto = self.alloc_object()?;
+    self
+      .heap
+      .object_set_prototype(node_proto, Some(event_target_proto))?;
+    let append_child = self.alloc_native_function(native_node_append_child)?;
+    let append_child_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("appendChild")?)
+    };
+    self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
+    self.node_proto = Some(node_proto);
+
+    // `document` object: node + createElement + URL.
     let document = self.alloc_object()?;
+    self.heap.object_set_prototype(document, Some(node_proto))?;
+    self.event_targets.insert(
+      document,
+      EventTargetState {
+        parent: Some(self.global_object),
+        listeners: HashMap::new(),
+      },
+    );
     self.define_data_prop(document, PropertyKey::from_string(self.keys.url), href_value)?;
+    let create_element = self.alloc_native_function(native_document_create_element)?;
+    let create_element_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("createElement")?)
+    };
+    self.define_data_prop(
+      document,
+      create_element_key,
+      Value::Object(create_element),
+    )?;
+
     self.env.set("document", Value::Object(document));
+
+    // Expose `window.document` and `window.location` for harness code that expects them.
+    let document_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("document")?)
+    };
+    let location_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("location")?)
+    };
+    self.define_data_prop(
+      self.global_object,
+      document_key,
+      Value::Object(document),
+    )?;
+    self.define_data_prop(
+      self.global_object,
+      location_key,
+      Value::Object(location),
+    )?;
 
     Ok(())
   }
@@ -922,6 +1004,7 @@ impl JsWptRuntime {
     };
     self.define_data_prop(et_ctor, prototype_key, Value::Object(et_proto))?;
     self.env.set("EventTarget", Value::Object(et_ctor));
+    self.event_target_proto = Some(et_proto);
 
     Ok(())
   }
@@ -988,6 +1071,18 @@ impl JsWptRuntime {
     self
       .promise_job_runner
       .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Promise job runner")))
+  }
+
+  fn event_target_proto(&self) -> Result<GcObject, JsError> {
+    self
+      .event_target_proto
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("EventTarget prototype")))
+  }
+
+  fn node_proto(&self) -> Result<GcObject, JsError> {
+    self
+      .node_proto
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Node prototype")))
   }
 
   fn alloc_promise_with_state(&mut self, status: PromiseStatus, value: Value) -> Result<GcObject, JsError> {
@@ -1974,6 +2069,73 @@ fn parse_listener_options(rt: &mut JsWptRuntime, value: Value) -> Result<Listene
       passive: false,
     },
   })
+}
+
+fn native_document_create_element(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(document) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: createElement called on non-object",
+    )?)));
+  };
+  if !rt.event_targets.contains_key(&document) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: createElement called on non-document",
+    )?)));
+  }
+
+  let tag_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let tag = string_from_value(rt, tag_value)?;
+
+  let elem = rt.alloc_object()?;
+  let node_proto = rt.node_proto()?;
+  rt.heap.object_set_prototype(elem, Some(node_proto))?;
+  rt.event_targets.insert(
+    elem,
+    EventTargetState {
+      parent: None,
+      listeners: HashMap::new(),
+    },
+  );
+
+  let tag_name_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("tagName")?)
+  };
+  let tag_name_value = rt.alloc_string_value(&tag)?;
+  rt.define_data_prop(elem, tag_name_key, tag_name_value)?;
+
+  Ok(Value::Object(elem))
+}
+
+fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(parent) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: appendChild called on non-object",
+    )?)));
+  };
+  if !rt.event_targets.contains_key(&parent) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: appendChild called on non-Node",
+    )?)));
+  }
+
+  let Value::Object(child) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: appendChild requires a Node",
+    )?)));
+  };
+  let Some(child_state) = rt.event_targets.get_mut(&child) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: appendChild requires a Node",
+    )?)));
+  };
+
+  child_state.parent = Some(parent);
+  Ok(Value::Object(child))
 }
 
 fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
