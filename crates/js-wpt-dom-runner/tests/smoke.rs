@@ -252,3 +252,8 @@ fn runs_document_fragment_append_semantics_test() {
 fn runs_node_sibling_props_test() {
   assert_wpt_pass("dom/node_sibling_props.window.js");
 }
+
+#[test]
+fn runs_error_constructor_smoke_test() {
+  assert_wpt_pass("dom/error_constructor.window.js");
+}
