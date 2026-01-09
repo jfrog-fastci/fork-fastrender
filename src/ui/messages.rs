@@ -2,11 +2,16 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::cancel::CancelGens;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::Mutex;
 
 pub use crate::interaction::KeyAction;
 use tiny_skia::Pixmap;
 
 static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+pub(crate) static TAB_ID_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Identifier for a browser UI tab.
 ///
@@ -220,13 +225,10 @@ pub enum WorkerToUi {
 mod tests {
   use super::*;
   use std::collections::HashSet;
-  use std::sync::Mutex;
-
-  static TEST_TAB_ID_LOCK: Mutex<()> = Mutex::new(());
 
   #[test]
   fn tab_id_new_generates_unique_ids() {
-    let _lock = TEST_TAB_ID_LOCK.lock().unwrap();
+    let _lock = TAB_ID_TEST_LOCK.lock().unwrap();
     let mut ids = HashSet::new();
     for _ in 0..1024 {
       assert!(ids.insert(TabId::new()));
@@ -235,7 +237,7 @@ mod tests {
 
   #[test]
   fn tab_id_new_does_not_panic_on_counter_wraparound() {
-    let _lock = TEST_TAB_ID_LOCK.lock().unwrap();
+    let _lock = TAB_ID_TEST_LOCK.lock().unwrap();
 
     let prev = NEXT_TAB_ID.swap(u64::MAX - 1, Ordering::Relaxed);
 

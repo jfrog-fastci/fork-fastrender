@@ -15,6 +15,17 @@ pub enum ChromeAction {
   AddressBarFocusChanged(bool),
 }
 
+#[derive(Default, Debug, Clone, Copy)]
+struct ChromeShortcuts {
+  new_tab: bool,
+  close_tab: bool,
+  reload: bool,
+  back: bool,
+  forward: bool,
+  next_tab: bool,
+  prev_tab: bool,
+}
+
 pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
 
@@ -49,6 +60,7 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       let (can_back, can_forward, loading) = active
         .map(|t| (t.can_go_back, t.can_go_forward, t.loading))
         .unwrap_or((false, false, false));
+      let stage = active.and_then(|t| t.stage);
 
       if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
         actions.push(ChromeAction::Back);
@@ -80,7 +92,11 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       }
 
       if loading {
-        ui.label("Loading…");
+        let stage = stage.filter(|s| *s != crate::render_control::StageHeartbeat::Done);
+        match stage {
+          Some(stage) => ui.label(format!("Loading… {}", stage.as_str())),
+          None => ui.label("Loading…"),
+        };
       }
     });
 
@@ -91,6 +107,58 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       }
     }
   });
+
+  let shortcuts = if app.chrome.address_bar_has_focus || ctx.wants_keyboard_input() {
+    ChromeShortcuts::default()
+  } else {
+    ctx.input(|i| ChromeShortcuts {
+      new_tab: i.modifiers.command && i.key_pressed(egui::Key::T),
+      close_tab: i.modifiers.command && i.key_pressed(egui::Key::W),
+      reload: i.modifiers.command && i.key_pressed(egui::Key::R),
+      back: i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft),
+      forward: i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
+      next_tab: i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Tab),
+      prev_tab: i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Tab),
+    })
+  };
+
+  if shortcuts.new_tab {
+    actions.push(ChromeAction::NewTab);
+  }
+  if shortcuts.close_tab {
+    if let Some(tab_id) = app.active_tab_id() {
+      actions.push(ChromeAction::CloseTab(tab_id));
+    }
+  }
+  if shortcuts.reload {
+    actions.push(ChromeAction::Reload);
+  }
+  if shortcuts.back {
+    actions.push(ChromeAction::Back);
+  }
+  if shortcuts.forward {
+    actions.push(ChromeAction::Forward);
+  }
+
+  if shortcuts.next_tab || shortcuts.prev_tab {
+    let Some(active_id) = app.active_tab_id() else {
+      return actions;
+    };
+    let Some(active_idx) = app.tabs.iter().position(|t| t.id == active_id) else {
+      return actions;
+    };
+    if app.tabs.is_empty() {
+      return actions;
+    }
+    let len = app.tabs.len();
+    let next_idx = if shortcuts.prev_tab {
+      (active_idx + len - 1) % len
+    } else {
+      (active_idx + 1) % len
+    };
+    let target = app.tabs[next_idx].id;
+    actions.push(ChromeAction::ActivateTab(target));
+  }
 
   actions
 }

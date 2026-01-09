@@ -53,7 +53,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
   let window = WindowBuilder::new()
-    .with_title("FastRender (browser_ui)")
+    .with_title("FastRender")
     .build(&event_loop)?;
 
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<fastrender::ui::UiToWorker>();
@@ -384,6 +384,7 @@ fn apply_address_space_limit_from_env() {
 #[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
+  window_title_cache: String,
 
   surface: wgpu::Surface,
   device: wgpu::Device,
@@ -482,6 +483,7 @@ impl App {
 
     Ok(Self {
       window,
+      window_title_cache: String::new(),
       surface,
       device,
       queue,
@@ -525,6 +527,19 @@ impl App {
     let _ = self
       .ui_to_worker_tx
       .send(fastrender::ui::UiToWorker::SetActiveTab { tab_id });
+
+    self.sync_window_title();
+  }
+
+  fn sync_window_title(&mut self) {
+    let title = match self.browser_state.active_tab() {
+      Some(tab) => format!("{} — FastRender", tab.display_title()),
+      None => "FastRender".to_string(),
+    };
+    if title != self.window_title_cache {
+      self.window.set_title(&title);
+      self.window_title_cache = title;
+    }
   }
 
   fn set_pixels_per_point(&mut self, ppp: f32) {
@@ -637,6 +652,7 @@ impl App {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.loading = true;
           tab.error = None;
+          tab.stage = None;
           tab.pending_nav_url = Some(url.clone());
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
@@ -660,6 +676,7 @@ impl App {
           }
           tab.loading = false;
           tab.error = None;
+          tab.stage = None;
           tab.sync_nav_flags_from_history();
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
@@ -875,6 +892,11 @@ impl App {
         let Some(key) = input.virtual_keycode else {
           return;
         };
+        // Prevent ctrl/cmd+tab from being forwarded to the page (we use it for tab switching at
+        // the chrome level).
+        if key == VirtualKeyCode::Tab && self.egui_ctx.input(|i| i.modifiers.command) {
+          return;
+        }
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
@@ -950,10 +972,25 @@ impl App {
             tex.destroy(&mut self.egui_renderer);
           }
 
-          let new_active = self.browser_state.remove_tab(tab_id);
+          let close_result = self.browser_state.remove_tab(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::CloseTab { tab_id });
 
-          if let Some(new_active) = new_active {
+          if let Some(created_tab) = close_result.created_tab {
+            let initial_url = "about:newtab".to_string();
+            let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
+              tab_id: created_tab,
+              initial_url: Some(initial_url),
+            });
+            let _ = self
+              .ui_to_worker_tx
+              .send(UiToWorker::SetActiveTab { tab_id: created_tab });
+            self.viewport_cache_tab = None;
+            self.page_has_focus = false;
+            let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
+              tab_id: created_tab,
+              reason: RepaintReason::Explicit,
+            });
+          } else if let Some(new_active) = close_result.new_active {
             let _ = self
               .ui_to_worker_tx
               .send(UiToWorker::SetActiveTab { tab_id: new_active });
@@ -985,6 +1022,7 @@ impl App {
           let Some(tab) = self.browser_state.tab_mut(tab_id) else {
             continue;
           };
+          tab.stage = None;
           let msg = match tab.navigate_typed(&raw) {
             Ok(msg) => msg,
             Err(err) => {
@@ -1015,6 +1053,7 @@ impl App {
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
+            tab.stage = None;
             tab.pending_nav_url = Some(url.clone());
           }
 
@@ -1035,6 +1074,7 @@ impl App {
             tab.sync_nav_flags_from_history();
             tab.loading = true;
             tab.error = None;
+            tab.stage = None;
             tab.pending_nav_url = Some(url.clone());
             Some(url)
           })() else {
@@ -1059,6 +1099,7 @@ impl App {
             tab.sync_nav_flags_from_history();
             tab.loading = true;
             tab.error = None;
+            tab.stage = None;
             tab.pending_nav_url = Some(url.clone());
             Some(url)
           })() else {
@@ -1089,6 +1130,7 @@ impl App {
 
     let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state);
     self.handle_chrome_actions(chrome_actions);
+    self.sync_window_title();
 
     egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();

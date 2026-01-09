@@ -159,6 +159,14 @@ pub struct BrowserAppState {
   pub chrome: ChromeState,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoveTabResult {
+  /// New active tab id (only set when the closed tab was the active tab).
+  pub new_active: Option<TabId>,
+  /// New tab created to maintain the "at least one tab" invariant.
+  pub created_tab: Option<TabId>,
+}
+
 impl BrowserAppState {
   pub fn new() -> Self {
     Self {
@@ -211,31 +219,47 @@ impl BrowserAppState {
   }
 
   /// Removes a tab, returning the new active tab if the active tab changed.
-  pub fn remove_tab(&mut self, tab_id: TabId) -> Option<TabId> {
+  ///
+  /// Invariant: closing the last tab will immediately create a new `about:newtab` tab and make it
+  /// active.
+  pub fn remove_tab(&mut self, tab_id: TabId) -> RemoveTabResult {
     let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
-      return None;
+      return RemoveTabResult {
+        new_active: None,
+        created_tab: None,
+      };
     };
 
     self.tabs.remove(idx);
 
     let was_active = self.active_tab == Some(tab_id);
     if !was_active {
-      return None;
+      return RemoveTabResult {
+        new_active: None,
+        created_tab: None,
+      };
     }
 
-    let new_active = if self.tabs.is_empty() {
-      None
-    } else {
-      // Prefer the tab that shifted into the removed index, otherwise the new last tab.
-      self
-        .tabs
-        .get(idx)
-        .or_else(|| self.tabs.last())
-        .map(|tab| tab.id)
-    };
-    self.active_tab = new_active;
+    if self.tabs.is_empty() {
+      let new_tab_id = TabId::new();
+      self.push_tab(
+        BrowserTabState::new(new_tab_id, "about:newtab".to_string()),
+        true,
+      );
+      return RemoveTabResult {
+        new_active: Some(new_tab_id),
+        created_tab: Some(new_tab_id),
+      };
+    }
+
+    // Prefer the tab that shifted into the removed index, otherwise the new last tab.
+    let new_active = self.tabs.get(idx).or_else(|| self.tabs.last()).unwrap().id;
+    self.active_tab = Some(new_active);
     self.sync_address_bar_to_active();
-    new_active
+    RemoveTabResult {
+      new_active: Some(new_active),
+      created_tab: None,
+    }
   }
 
   pub fn sync_address_bar_to_active(&mut self) {
@@ -247,5 +271,56 @@ impl BrowserAppState {
       .current_url()
       .map(str::to_string)
       .unwrap_or_default();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn closing_last_tab_immediately_creates_newtab() {
+    let _lock = crate::ui::messages::TAB_ID_TEST_LOCK
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut app = BrowserAppState::new();
+
+    let tab_id = TabId(1_000_000);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      true,
+    );
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.active_tab_id(), Some(tab_id));
+
+    let result = app.remove_tab(tab_id);
+
+    assert_eq!(app.tabs.len(), 1);
+    let new_tab_id = app.active_tab_id().expect("must have active tab after close");
+    assert_ne!(new_tab_id, tab_id);
+    assert_eq!(result.new_active, Some(new_tab_id));
+    assert_eq!(result.created_tab, Some(new_tab_id));
+    assert_eq!(
+      app.tab(new_tab_id).and_then(|t| t.current_url()),
+      Some("about:newtab")
+    );
+  }
+
+  #[test]
+  fn closing_active_tab_keeps_existing_tab_when_available() {
+    let mut app = BrowserAppState::new();
+
+    let a = TabId(1_000_000);
+    let b = TabId(1_000_001);
+    app.push_tab(BrowserTabState::new(a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(b, "about:newtab".to_string()), false);
+    assert_eq!(app.active_tab_id(), Some(a));
+
+    let result = app.remove_tab(a);
+    assert_eq!(result.created_tab, None);
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.active_tab_id(), Some(b));
+    assert_eq!(result.new_active, Some(b));
   }
 }
