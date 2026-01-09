@@ -1,3 +1,2 @@
 globalThis.__step = "one";
-setClass("box", "step1");
-
+setClass("root", "step1");

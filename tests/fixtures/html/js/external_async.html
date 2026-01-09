@@ -1,20 +1,19 @@
 <!doctype html>
-<html>
+<html id="root" class="off">
   <head>
     <meta charset="utf-8">
     <style>
       html, body { margin: 0; padding: 0; }
       #box { width: 64px; height: 64px; }
-      .off { background: rgb(255, 0, 0); }
-      .on { background: rgb(0, 0, 255); }
+      html.off #box { background: rgb(255, 0, 0); }
+      html.on #box { background: rgb(0, 0, 255); }
     </style>
     <!-- `async` scripts must be able to run before parsing completes. -->
     <script src="assets/async.js" async></script>
   </head>
   <body>
-    <div id="box" class="off"></div>
+    <div id="box"></div>
     <!-- Extra markup to ensure there is "more document" after the async script. -->
     <div style="display:none">padding</div>
   </body>
 </html>
-

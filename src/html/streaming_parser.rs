@@ -14,7 +14,7 @@ use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
-use std::cell::Ref;
+use std::cell::{Ref, RefMut};
 
 /// Output of a [`StreamingHtmlParser::pump`] call.
 ///
@@ -116,6 +116,17 @@ impl StreamingHtmlParser {
   /// Panics if called after the parser has finished (after `pump` returns [`Finished`](StreamingParserYield::Finished)).
   pub fn document(&self) -> Ref<'_, Document> {
     self.parser.sink().document()
+  }
+
+  /// Mutably borrow the current partially-built document.
+  ///
+  /// The returned borrow must not be held across calls to [`pump`](Self::pump), since pumping will
+  /// mutate the underlying DOM via interior mutability.
+  ///
+  /// # Panics
+  /// Panics if called after the parser has finished (after `pump` returns [`Finished`](StreamingParserYield::Finished)).
+  pub fn document_mut(&self) -> RefMut<'_, Document> {
+    self.parser.sink().document_mut()
   }
 
   /// Returns the current parse-time base URL.

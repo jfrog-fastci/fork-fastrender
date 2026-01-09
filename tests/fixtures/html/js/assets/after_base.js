@@ -1,6 +1,5 @@
 if (globalThis.__before) {
-  setClass("box", "after");
+  setClass("root", "after");
 } else {
-  setClass("box", "off");
+  setClass("root", "off");
 }
-

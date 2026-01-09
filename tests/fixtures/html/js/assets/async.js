@@ -1,2 +1,1 @@
-setClass("box", "on");
-
+setClass("root", "on");

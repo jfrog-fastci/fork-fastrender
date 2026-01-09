@@ -1,11 +1,12 @@
-use fastrender::dom::{parse_html_with_options, DomNode, DomNodeType, DomParseOptions, HTML_NAMESPACE};
 use fastrender::dom2::Document;
 use fastrender::error::{Error, Result};
 use fastrender::html::base_url_tracker::BaseUrlTracker;
+use fastrender::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use fastrender::js::{
-  determine_script_type, ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome,
-  ScriptElementSpec, ScriptExecutor, ScriptLoader, VirtualClock,
+  ClassicScriptScheduler, EventLoop, RunLimits, RunUntilIdleOutcome, ScriptExecutor, ScriptLoader,
+  VirtualClock,
 };
+use fastrender::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{FastRender, RenderOptions, ResourcePolicy};
 use rquickjs::{Context as JsContext, Function as JsFunction, Runtime as JsRuntime};
@@ -46,21 +47,30 @@ fn file_url_for_path(path: &Path) -> Result<String> {
     .map_err(|()| Error::Other(format!("failed to convert path to file:// URL: {path:?}")))
 }
 
-fn read_script_source(url: &str) -> String {
-  let Ok(parsed) = Url::parse(url) else {
-    return String::new();
-  };
+fn read_script_source(url: &str) -> Result<String> {
+  let parsed = Url::parse(url)
+    .map_err(|err| Error::Other(format!("invalid script URL {url:?}: {err}")))?;
   if parsed.scheme() != "file" {
-    return String::new();
+    return Err(Error::Other(format!(
+      "unexpected non-file script URL (scheme={}): {url:?}",
+      parsed.scheme()
+    )));
   }
-  let Ok(path) = parsed.to_file_path() else {
-    return String::new();
-  };
-  std::fs::read_to_string(path).unwrap_or_default()
+  let path = parsed
+    .to_file_path()
+    .map_err(|()| Error::Other(format!("failed to convert file:// URL to path: {url:?}")))?;
+  std::fs::read_to_string(&path)
+    .map_err(|err| Error::Other(format!("failed to read script source {url:?}: {err}")))
+}
+
+#[derive(Clone)]
+enum DocumentAccess {
+  Parsing(Rc<RefCell<StreamingHtmlParser>>),
+  Final(Rc<RefCell<Document>>),
 }
 
 struct FixtureHost {
-  dom: Rc<RefCell<Document>>,
+  dom: Rc<RefCell<DocumentAccess>>,
   js_rt: JsRuntime,
   js_ctx: JsContext,
   next_handle: usize,
@@ -69,9 +79,8 @@ struct FixtureHost {
 }
 
 impl FixtureHost {
-  fn new(dom: Document) -> Result<Self> {
-    let dom = Rc::new(RefCell::new(dom));
-
+  fn new(dom_access: DocumentAccess) -> Result<Self> {
+    let dom = Rc::new(RefCell::new(dom_access));
     let js_rt = JsRuntime::new().map_err(|err| Error::Other(err.to_string()))?;
     let js_ctx = JsContext::full(&js_rt).map_err(|err| Error::Other(err.to_string()))?;
 
@@ -80,12 +89,24 @@ impl FixtureHost {
         let globals = ctx.globals();
         let dom_for_fn = Rc::clone(&dom);
         let set_class = JsFunction::new(ctx.clone(), move |id: String, class_name: String| {
-          let selector = format!("#{id}");
-          let mut doc = dom_for_fn.borrow_mut();
-          let Ok(Some(node)) = doc.query_selector(&selector, None) else {
-            return;
-          };
-          let _ = doc.set_attribute(node, "class", &class_name);
+          let target = dom_for_fn.borrow().clone();
+          match target {
+            DocumentAccess::Parsing(parser) => {
+              let parser = parser.borrow();
+              let mut doc = parser.document_mut();
+              let Some(node) = doc.get_element_by_id(&id) else {
+                return;
+              };
+              let _ = doc.set_attribute(node, "class", &class_name);
+            }
+            DocumentAccess::Final(doc) => {
+              let mut doc = doc.borrow_mut();
+              let Some(node) = doc.get_element_by_id(&id) else {
+                return;
+              };
+              let _ = doc.set_attribute(node, "class", &class_name);
+            }
+          }
         })?;
         globals.set("setClass", set_class)?;
         Ok(())
@@ -102,11 +123,36 @@ impl FixtureHost {
     })
   }
 
-  fn dom_snapshot(&self) -> DomNode {
-    self
-      .dom
-      .borrow()
-      .to_renderer_dom()
+  fn switch_to_final_document(&mut self, document: Document) {
+    let rc = Rc::new(RefCell::new(document));
+    *self.dom.borrow_mut() = DocumentAccess::Final(Rc::clone(&rc));
+  }
+
+  fn dom_snapshot(&self) -> fastrender::dom::DomNode {
+    match &*self.dom.borrow() {
+      DocumentAccess::Parsing(parser) => {
+        let parser = parser.borrow();
+        let doc = parser.document();
+        doc.to_renderer_dom()
+      }
+      DocumentAccess::Final(doc) => doc.borrow().to_renderer_dom(),
+    }
+  }
+
+  fn root_class(&self) -> Option<String> {
+    fn read(doc: &Document) -> Option<String> {
+      let root = doc.get_element_by_id("root")?;
+      doc.get_attribute(root, "class").map(|s| s.to_string())
+    }
+
+    match &*self.dom.borrow() {
+      DocumentAccess::Parsing(parser) => {
+        let parser = parser.borrow();
+        let doc = parser.document();
+        read(&doc)
+      }
+      DocumentAccess::Final(doc) => read(&doc.borrow()),
+    }
   }
 
   fn complete_url(&mut self, url: &str) -> Result<()> {
@@ -115,7 +161,7 @@ impl FixtureHost {
         "attempted to complete unknown script load url={url}"
       )));
     };
-    let source = read_script_source(url);
+    let source = read_script_source(url)?;
     self.completed.push_back((handle, source));
     Ok(())
   }
@@ -125,10 +171,15 @@ impl ScriptLoader for FixtureHost {
   type Handle = usize;
 
   fn load_blocking(&mut self, url: &str) -> Result<String> {
-    Ok(read_script_source(url))
+    read_script_source(url)
   }
 
   fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
+    if self.handles_by_url.contains_key(url) {
+      return Err(Error::Other(format!(
+        "duplicate start_load call for script URL {url:?}"
+      )));
+    }
     let handle = self.next_handle;
     self.next_handle += 1;
     self.handles_by_url.insert(url.to_string(), handle);
@@ -144,7 +195,7 @@ impl ScriptExecutor for FixtureHost {
   fn execute_classic_script(
     &mut self,
     script_text: &str,
-    _spec: &ScriptElementSpec,
+    _spec: &fastrender::js::ScriptElementSpec,
     _event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
     let _ = &self.js_rt;
@@ -156,145 +207,87 @@ impl ScriptExecutor for FixtureHost {
   }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct WalkFlags {
-  in_head: bool,
-  in_foreign_namespace: bool,
-  in_template: bool,
-}
-
-impl Default for WalkFlags {
-  fn default() -> Self {
-    Self {
-      in_head: false,
-      in_foreign_namespace: false,
-      in_template: false,
-    }
-  }
-}
-
 struct JsFixtureHarness {
-  traversal_dom: DomNode,
   document_url: String,
-  base_tracker: BaseUrlTracker,
+  parser: Rc<RefCell<StreamingHtmlParser>>,
   host: FixtureHost,
   scheduler: ClassicScriptScheduler<FixtureHost>,
   event_loop: EventLoop<FixtureHost>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PumpOutcome {
+  NeedMoreInput,
+  Finished,
+}
+
 impl JsFixtureHarness {
   fn from_fixture(name: &str) -> Result<Self> {
-    let html = read_fixture(name)?;
-    let traversal_dom = parse_html_with_options(&html, DomParseOptions::javascript_enabled())?;
-    let dom2 = Document::from_renderer_dom(&traversal_dom);
-
     let fixture_url = file_url_for_path(&fixture_path(name))?;
-    let base_tracker = BaseUrlTracker::new(Some(&fixture_url));
+    let parser = Rc::new(RefCell::new(StreamingHtmlParser::new(Some(&fixture_url))));
 
-    let host = FixtureHost::new(dom2)?;
+    let host = FixtureHost::new(DocumentAccess::Parsing(Rc::clone(&parser)))?;
     let scheduler = ClassicScriptScheduler::<FixtureHost>::new();
     let clock = Arc::new(VirtualClock::new());
     let clock_for_loop: Arc<dyn fastrender::js::Clock> = clock;
     let event_loop = EventLoop::<FixtureHost>::with_clock(clock_for_loop);
 
     Ok(Self {
-      traversal_dom,
       document_url: fixture_url,
-      base_tracker,
+      parser,
       host,
       scheduler,
       event_loop,
     })
   }
 
-  fn discover_scripts_and_base(&mut self) -> Result<()> {
-    let mut stack: Vec<(&DomNode, WalkFlags)> = vec![(&self.traversal_dom, WalkFlags::default())];
+  fn push_str(&mut self, chunk: &str) {
+    self.parser.borrow_mut().push_str(chunk);
+  }
 
-    while let Some((node, flags)) = stack.pop() {
-      let (tag_name, namespace, attrs) = match &node.node_type {
-        DomNodeType::Element {
-          tag_name,
-          namespace,
-          attributes,
-        } => (Some(tag_name.as_str()), namespace.as_str(), Some(attributes.as_slice())),
-        DomNodeType::Slot {
-          namespace,
-          attributes,
-          ..
-        } => (Some("slot"), namespace.as_str(), Some(attributes.as_slice())),
-        _ => (None, "", None),
-      };
+  fn set_eof(&mut self) {
+    self.parser.borrow_mut().set_eof();
+  }
 
-      if let (Some(tag_name), Some(attrs)) = (tag_name, attrs) {
-        let is_html_namespace = namespace.is_empty() || namespace == HTML_NAMESPACE;
-        let in_foreign_namespace = flags.in_foreign_namespace || !is_html_namespace;
-
-        if tag_name.eq_ignore_ascii_case("base") {
-          self.base_tracker.on_element_inserted(
-            tag_name,
-            namespace,
-            attrs,
-            flags.in_head,
-            in_foreign_namespace,
-            flags.in_template,
-          );
-        }
-
-        if tag_name.eq_ignore_ascii_case("script") {
-          let async_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("async"));
-          let defer_attr = attrs.iter().any(|(k, _)| k.eq_ignore_ascii_case("defer"));
-          let raw_src = attrs
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("src"))
-            .map(|(_, v)| v.as_str());
-          let src = raw_src.and_then(|raw| self.base_tracker.resolve_script_src(raw));
-
-          let mut inline_text = String::new();
-          for child in &node.children {
-            if let DomNodeType::Text { content } = &child.node_type {
-              inline_text.push_str(content);
-            }
-          }
-
-          let spec = ScriptElementSpec {
-            base_url: self.base_tracker.current_base_url(),
-            src,
-            inline_text,
-            async_attr,
-            defer_attr,
-            parser_inserted: true,
-            script_type: determine_script_type(node),
+  fn pump_until_stalled(&mut self) -> Result<PumpOutcome> {
+    loop {
+      let yield_ = { self.parser.borrow_mut().pump() };
+      match yield_ {
+        StreamingParserYield::Script {
+          script,
+          base_url_at_this_point,
+        } => {
+          let spec = {
+            let parser = self.parser.borrow();
+            let doc = parser.document();
+            let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+            build_parser_inserted_script_element_spec_dom2(&doc, script, &base)
           };
-
           self
             .scheduler
             .handle_script(&mut self.host, &mut self.event_loop, spec)?;
+          continue;
         }
-      }
-
-      // Compute traversal flags for descendants.
-      let mut child_flags = flags;
-      if let Some(tag_name) = tag_name {
-        if tag_name.eq_ignore_ascii_case("head") {
-          child_flags.in_head = true;
+        StreamingParserYield::NeedMoreInput => return Ok(PumpOutcome::NeedMoreInput),
+        StreamingParserYield::Finished { document } => {
+          self.host.switch_to_final_document(document);
+          return Ok(PumpOutcome::Finished);
         }
-        if tag_name.eq_ignore_ascii_case("template") {
-          child_flags.in_template = true;
-        }
-      }
-
-      if let Some(namespace) = node.namespace() {
-        if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
-          child_flags.in_foreign_namespace = true;
-        }
-      }
-
-      for child in node.children.iter().rev() {
-        stack.push((child, child_flags));
       }
     }
+  }
 
-    Ok(())
+  fn pump_to_completion(&mut self) -> Result<()> {
+    loop {
+      match self.pump_until_stalled()? {
+        PumpOutcome::NeedMoreInput => {
+          return Err(Error::Other(
+            "unexpected NeedMoreInput while pumping with EOF set".to_string(),
+          ));
+        }
+        PumpOutcome::Finished => return Ok(()),
+      }
+    }
   }
 
   fn run_event_loop_until_idle(&mut self) -> Result<RunUntilIdleOutcome> {
@@ -326,12 +319,16 @@ fn js_inline_script_mutation_affects_render() -> Result<()> {
   let options = RenderOptions::new().with_viewport(64, 64);
 
   let mut harness = JsFixtureHarness::from_fixture("inline_mutation.html")?;
-  harness.discover_scripts_and_base()?;
+  let html = read_fixture("inline_mutation.html")?;
+  harness.push_str(&html);
+  harness.set_eof();
+  harness.pump_to_completion()?;
+
   harness
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;
-
   assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(harness.host.root_class().as_deref(), Some("on"));
 
   let actual = harness.render(options.clone())?;
   let expected = render_static_fixture("inline_mutation_static.html", options)?;
@@ -348,7 +345,10 @@ fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
   let options = RenderOptions::new().with_viewport(64, 64);
 
   let mut harness = JsFixtureHarness::from_fixture("external_defer.html")?;
-  harness.discover_scripts_and_base()?;
+  let html = read_fixture("external_defer.html")?;
+  harness.push_str(&html);
+  harness.set_eof();
+  harness.pump_to_completion()?;
 
   let doc_url = Url::parse(&harness.document_url).expect("fixture URL should parse");
   let defer1_url = doc_url
@@ -367,10 +367,18 @@ fn js_external_defer_scripts_execute_in_order_after_parsing() -> Result<()> {
     .scheduler
     .poll(&mut harness.host, &mut harness.event_loop)?;
 
+  assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.host.root_class().as_deref(),
+    Some("off"),
+    "defer scripts must not execute before parsing is marked finished"
+  );
+
   harness
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;
   assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(harness.host.root_class().as_deref(), Some("step2"));
 
   let actual = harness.render(options.clone())?;
   let expected = render_static_fixture("external_defer_static.html", options)?;
@@ -387,7 +395,21 @@ fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Resul
   let options = RenderOptions::new().with_viewport(64, 64);
 
   let mut harness = JsFixtureHarness::from_fixture("external_async.html")?;
-  harness.discover_scripts_and_base()?;
+  let html = read_fixture("external_async.html")?;
+  let marker = "<div style=\"display:none\">padding</div>";
+  let (first, second) = html
+    .split_once(marker)
+    .ok_or_else(|| Error::Other("async fixture missing chunk marker".to_string()))?;
+
+  harness.push_str(first);
+  match harness.pump_until_stalled()? {
+    PumpOutcome::NeedMoreInput => {}
+    PumpOutcome::Finished => {
+      return Err(Error::Other(
+        "async fixture unexpectedly finished parsing before async load completed".to_string(),
+      ));
+    }
+  }
 
   let doc_url = Url::parse(&harness.document_url).expect("fixture URL should parse");
   let async_url = doc_url
@@ -400,9 +422,17 @@ fn js_external_async_script_runs_without_waiting_for_parsing_complete() -> Resul
     .scheduler
     .poll(&mut harness.host, &mut harness.event_loop)?;
 
-  // The critical assertion: we render after driving the event loop, without calling `finish_parsing`
-  // yet. If `async` execution were incorrectly gated on parsing completion, this would not match.
   assert_eq!(harness.run_event_loop_until_idle()?, RunUntilIdleOutcome::Idle);
+  assert_eq!(
+    harness.host.root_class().as_deref(),
+    Some("on"),
+    "async scripts should be able to mutate the document before parsing completes"
+  );
+
+  harness.push_str(marker);
+  harness.push_str(second);
+  harness.set_eof();
+  harness.pump_to_completion()?;
 
   let actual = harness.render(options.clone())?;
   let expected = render_static_fixture("external_async_static.html", options)?;
@@ -424,7 +454,10 @@ fn js_base_url_timing_script_before_base_href_uses_document_url() -> Result<()> 
   let options = RenderOptions::new().with_viewport(64, 64);
 
   let mut harness = JsFixtureHarness::from_fixture("base_url_timing.html")?;
-  harness.discover_scripts_and_base()?;
+  let html = read_fixture("base_url_timing.html")?;
+  harness.push_str(&html);
+  harness.set_eof();
+  harness.pump_to_completion()?;
   harness
     .scheduler
     .finish_parsing(&mut harness.host, &mut harness.event_loop)?;

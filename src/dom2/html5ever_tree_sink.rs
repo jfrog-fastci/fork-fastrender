@@ -9,7 +9,7 @@ use markup5ever::{LocalName, Namespace, QualName};
 use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
-use std::cell::{Ref, RefCell};
+use std::cell::{Ref, RefCell, RefMut};
 
 use super::{Document, NodeId, NodeKind};
 
@@ -65,6 +65,10 @@ impl Dom2TreeSink {
 
   pub fn document(&self) -> Ref<'_, Document> {
     self.document.borrow()
+  }
+
+  pub fn document_mut(&self) -> RefMut<'_, Document> {
+    self.document.borrow_mut()
   }
 
   pub fn base_url_tracker(&self) -> Ref<'_, BaseUrlTracker> {

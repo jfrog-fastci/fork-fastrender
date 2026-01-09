@@ -1,13 +1,13 @@
 <!doctype html>
-<html>
+<html id="root" class="off">
   <head>
     <meta charset="utf-8">
     <style>
       html, body { margin: 0; padding: 0; }
       #box { width: 64px; height: 64px; }
-      .off { background: rgb(255, 0, 0); }
-      .before { background: rgb(0, 0, 255); }
-      .after { background: rgb(0, 255, 0); }
+      html.off #box { background: rgb(255, 0, 0); }
+      html.before #box { background: rgb(0, 0, 255); }
+      html.after #box { background: rgb(0, 255, 0); }
     </style>
     <!-- The first script appears before the <base> element. Its `src` must resolve against the
          document URL (not the later base href), otherwise it won't run. -->
@@ -17,7 +17,6 @@
     <script src="after_base.js"></script>
   </head>
   <body>
-    <div id="box" class="off"></div>
+    <div id="box"></div>
   </body>
 </html>
-

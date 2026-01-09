@@ -1,17 +1,16 @@
 <!doctype html>
-<html>
+<html id="root" class="step2">
   <head>
     <meta charset="utf-8">
     <style>
       html, body { margin: 0; padding: 0; }
       #box { width: 64px; height: 64px; }
-      .off { background: rgb(255, 0, 0); }
-      .step1 { background: rgb(0, 0, 255); }
-      .step2 { background: rgb(0, 255, 0); }
+      html.off #box { background: rgb(255, 0, 0); }
+      html.step1 #box { background: rgb(0, 0, 255); }
+      html.step2 #box { background: rgb(0, 255, 0); }
     </style>
   </head>
   <body>
-    <div id="box" class="step2"></div>
+    <div id="box"></div>
   </body>
 </html>
-
