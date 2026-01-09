@@ -341,10 +341,17 @@ fn scaled_metrics_for_style(
 ///
 /// CSS leaves the exact thickness up to the user agent. We choose representative values to
 /// reserve space for scrollbars during layout:
-/// - `auto`: typical platform scrollbar thickness (15px on our Linux/Chrome fixture baseline)
+/// - `auto`: typical platform scrollbar thickness (15px on Linux/Chrome with classic scrollbars)
 /// - `thin`: a slimmer scrollbar (8px)
 /// - `none`: no space reserved
+///
+/// When `FASTR_HIDE_SCROLLBARS` is enabled (used by the fixture Chrome baseline harness), scrollbars
+/// behave like overlay/hidden scrollbars and reserve *no* layout space regardless of the computed
+/// `scrollbar-width` value.
 pub fn resolve_scrollbar_width(style: &ComputedStyle) -> f32 {
+  if crate::debug::runtime::runtime_toggles().truthy("FASTR_HIDE_SCROLLBARS") {
+    return 0.0;
+  }
   match style.scrollbar_width {
     ScrollbarWidth::Auto => 15.0,
     ScrollbarWidth::Thin => 8.0,
@@ -1195,6 +1202,7 @@ fn resolve_font_relative(len: Length, font_size: f32, root_font_size: f32) -> f3
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::style::types::BoxSizing;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::Overflow;
@@ -1208,6 +1216,8 @@ mod tests {
   use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ReplacedBox;
   use crate::PositionedStyle;
+  use std::collections::HashMap;
+  use std::sync::Arc;
 
   #[test]
   fn resolve_length_with_percentage_rejects_non_finite_contexts() {
@@ -2429,15 +2439,35 @@ mod tests {
 
   #[test]
   fn resolves_scrollbar_width_keywords() {
-    let mut style = ComputedStyle::default();
-    style.scrollbar_width = ScrollbarWidth::Auto;
-    assert_eq!(resolve_scrollbar_width(&style), 15.0);
+    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      let mut style = ComputedStyle::default();
+      style.scrollbar_width = ScrollbarWidth::Auto;
+      assert_eq!(resolve_scrollbar_width(&style), 15.0);
 
-    style.scrollbar_width = ScrollbarWidth::Thin;
-    assert_eq!(resolve_scrollbar_width(&style), 8.0);
+      style.scrollbar_width = ScrollbarWidth::Thin;
+      assert_eq!(resolve_scrollbar_width(&style), 8.0);
 
-    style.scrollbar_width = ScrollbarWidth::None;
-    assert_eq!(resolve_scrollbar_width(&style), 0.0);
+      style.scrollbar_width = ScrollbarWidth::None;
+      assert_eq!(resolve_scrollbar_width(&style), 0.0);
+    });
+  }
+
+  #[test]
+  fn hide_scrollbars_toggle_forces_zero_scrollbar_width() {
+    with_thread_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_HIDE_SCROLLBARS".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let mut style = ComputedStyle::default();
+        style.scrollbar_width = ScrollbarWidth::Auto;
+        assert_eq!(resolve_scrollbar_width(&style), 0.0);
+
+        style.scrollbar_width = ScrollbarWidth::Thin;
+        assert_eq!(resolve_scrollbar_width(&style), 0.0);
+      },
+    );
   }
 
   #[test]

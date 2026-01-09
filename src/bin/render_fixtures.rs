@@ -144,6 +144,9 @@ struct Cli {
   /// - hide scrollbars (match Chrome `--hide-scrollbars`),
   /// - disable CSS animations/transitions.
   ///
+  /// It also matches the Chrome baseline harness' `--hide-scrollbars` behavior (no reserved
+  /// scrollbar gutters).
+  ///
   /// This flag is primarily intended for `xtask fixture-chrome-diff` (FastRender vs Chrome fixture
   /// diffs). Most other uses of `render_fixtures` should render the raw fixture HTML.
   #[arg(long)]
@@ -309,7 +312,7 @@ fn main() {
   }
 }
 
-fn fixture_runtime_toggles() -> RuntimeToggles {
+fn fixture_runtime_toggles(patch_html_for_chrome_baseline: bool) -> RuntimeToggles {
   let mut raw = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
     .collect::<HashMap<_, _>>();
@@ -321,6 +324,17 @@ fn fixture_runtime_toggles() -> RuntimeToggles {
   raw
     .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
     .or_insert_with(|| "500".to_string());
+  // `xtask chrome-baseline-fixtures` renders fixtures via headless Chrome with `--hide-scrollbars`.
+  // In this mode Chrome does *not* reserve classic scrollbar gutters, so pages paint to the right
+  // edge (and `scrollbar-gutter: stable` has no effect).
+  //
+  // Match that behavior when `--patch-html-for-chrome-baseline` is enabled so
+  // `xtask fixture-chrome-diff` is comparing like-for-like.
+  if patch_html_for_chrome_baseline {
+    raw
+      .entry("FASTR_HIDE_SCROLLBARS".to_string())
+      .or_insert_with(|| "1".to_string());
+  }
   RuntimeToggles::from_map(raw)
 }
 
@@ -438,7 +452,7 @@ fn run(cli: Cli) -> io::Result<()> {
     .with_meta_viewport(true)
     .with_resource_policy(resource_policy)
     .with_font_sources(font_config.clone())
-    .with_runtime_toggles(fixture_runtime_toggles());
+    .with_runtime_toggles(fixture_runtime_toggles(cli.patch_html_for_chrome_baseline));
 
   let render_pool = FastRenderPool::with_config(
     FastRenderPoolConfig::new()

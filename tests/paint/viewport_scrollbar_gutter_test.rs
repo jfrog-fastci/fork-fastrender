@@ -94,6 +94,53 @@ fn viewport_fixed_elements_paint_into_scrollbar_gutter() {
     gutter.blue(),
     gutter.alpha()
   );
+
+  let below_banner = pixmap.pixel(99, 50).expect("below-banner pixel");
+  assert!(
+    below_banner.blue() > 200 && below_banner.red() < 80 && below_banner.green() < 80,
+    "expected canvas background (blue) in the stable scrollbar gutter below the fixed banner, got rgba({}, {}, {}, {})",
+    below_banner.red(),
+    below_banner.green(),
+    below_banner.blue(),
+    below_banner.alpha()
+  );
+}
+
+#[test]
+fn hide_scrollbars_disables_scrollbar_gutter_stable() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([
+    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    ("FASTR_HIDE_SCROLLBARS".to_string(), "1".to_string()),
+  ]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // Headless Chrome fixture baselines are captured with `--hide-scrollbars`. In that mode scrollbars
+  // reserve no layout space, even if `scrollbar-gutter: stable` is set.
+  let html = r#"<!doctype html>
+    <style>
+      html { background: rgb(0, 0, 255); scrollbar-gutter: stable; }
+      body { margin: 0; overflow-y: auto; background: transparent; }
+      #marker { background: rgb(255, 0, 0); height: 50px; width: 100%; }
+      .tall { height: 200px; }
+    </style>
+    <div id="marker"></div>
+    <div class="tall"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 100, 100)
+    .expect("render should succeed");
+
+  let edge = pixmap.pixel(99, 25).expect("edge pixel");
+  assert!(
+    edge.red() > 200 && edge.green() < 80 && edge.blue() < 80,
+    "expected marker background (red) to extend to the right edge when scrollbars are hidden, got rgba({}, {}, {}, {})",
+    edge.red(),
+    edge.green(),
+    edge.blue(),
+    edge.alpha()
+  );
 }
 
 #[test]

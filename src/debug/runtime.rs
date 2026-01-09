@@ -445,6 +445,10 @@ impl DebugConfig {
     );
     config.insert_bool("FASTR_FULL_PAGE", truthy(raw.get("FASTR_FULL_PAGE"), false));
     config.insert_bool(
+      "FASTR_HIDE_SCROLLBARS",
+      truthy(raw.get("FASTR_HIDE_SCROLLBARS"), false),
+    );
+    config.insert_bool(
       "FASTR_COMPAT_REPLACED_MAX_WIDTH_100",
       truthy(raw.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), true),
     );

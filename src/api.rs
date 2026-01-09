@@ -4558,7 +4558,7 @@ mod viewport_resolution_tests {
 const MAX_VIEWPORT_GUTTER_ITERATIONS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
-struct ViewportScrollbarParams {
+struct ResolvedViewportScrollbarParams {
   overflow_x: crate::style::types::Overflow,
   overflow_y: crate::style::types::Overflow,
   scrollbar_gutter: crate::style::types::ScrollbarGutter,
@@ -4611,7 +4611,7 @@ fn viewport_used_overflow(mut overflow: crate::style::types::Overflow) -> crate:
   overflow
 }
 
-fn resolve_viewport_scrollbar_params(styled_tree: &StyledNode) -> ViewportScrollbarParams {
+fn resolve_viewport_scrollbar_params(styled_tree: &StyledNode) -> ResolvedViewportScrollbarParams {
   let root_element = find_document_element_node(styled_tree).unwrap_or(styled_tree);
   let root_style = root_element.styles.as_ref();
   let scrollbar_gutter = root_style.scrollbar_gutter;
@@ -4639,7 +4639,7 @@ fn resolve_viewport_scrollbar_params(styled_tree: &StyledNode) -> ViewportScroll
     }
   }
 
-  ViewportScrollbarParams {
+  ResolvedViewportScrollbarParams {
     overflow_x: viewport_used_overflow(overflow_x),
     overflow_y: viewport_used_overflow(overflow_y),
     scrollbar_gutter,
@@ -4670,7 +4670,6 @@ fn viewport_should_reserve_gutter(
     false
   }
 }
-
 fn force_box_overflow_visible(node: &mut BoxNode, styled_node_id: usize) {
   if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
     let mut style = (*node.style).clone();
@@ -11109,6 +11108,7 @@ impl FastRender {
     } else {
       None
     };
+    let viewport_scrollbars = resolve_viewport_scrollbar_params(&styled_tree);
 
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, cascade_timer);
@@ -11166,9 +11166,7 @@ impl FastRender {
     if let Some(root_element) = find_document_element_node(&styled_tree) {
       force_box_overflow_visible(&mut box_tree.root, root_element.node_id);
     }
-    if let Some(body_node_id) =
-      resolve_viewport_scrollbar_params(&styled_tree).propagated_body_styled_node_id
-    {
+    if let Some(body_node_id) = viewport_scrollbars.propagated_body_styled_node_id {
       force_box_overflow_visible(&mut box_tree.root, body_node_id);
     }
 
