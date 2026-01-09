@@ -4498,6 +4498,7 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-orientation"
       | "letter-spacing"
       | "word-spacing"
+      | "text-anchor"
       | "white-space"
       | "line-break"
       | "break-before"
@@ -6637,6 +6638,7 @@ pub(crate) fn apply_property_from_source(
     "marker-start" => styles.svg_marker_start = source.svg_marker_start.clone(),
     "marker-mid" => styles.svg_marker_mid = source.svg_marker_mid.clone(),
     "marker-end" => styles.svg_marker_end = source.svg_marker_end.clone(),
+    "text-anchor" => styles.svg_text_anchor = source.svg_text_anchor,
     "background-image" => {
       styles.background_images = source.background_images.clone();
       styles.rebuild_background_layers();
@@ -6920,6 +6922,10 @@ fn apply_global_keyword(
       }
       "marker-end" => {
         styles.svg_marker_end = Some(SvgUrlOrNone::None);
+        return true;
+      }
+      "text-anchor" => {
+        styles.svg_text_anchor = Some(SvgTextAnchor::Start);
         return true;
       }
       _ => {}
@@ -13722,6 +13728,17 @@ fn apply_declaration_with_base_internal_with_order(
     "marker-end" => {
       if let Some(value) = resolve_svg_url_or_none(resolved_value) {
         styles.svg_marker_end = Some(value);
+      }
+    }
+    "text-anchor" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("start") {
+          styles.svg_text_anchor = Some(SvgTextAnchor::Start);
+        } else if kw.eq_ignore_ascii_case("middle") {
+          styles.svg_text_anchor = Some(SvgTextAnchor::Middle);
+        } else if kw.eq_ignore_ascii_case("end") {
+          styles.svg_text_anchor = Some(SvgTextAnchor::End);
+        }
       }
     }
 

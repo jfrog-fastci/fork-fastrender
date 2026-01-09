@@ -1023,6 +1023,17 @@ pub enum StrokeDasharray {
   Values(Arc<[LengthOrNumber]>),
 }
 
+/// SVG `text-anchor` property.
+///
+/// This is used to control how SVG `<text>` positions its rendered glyphs relative
+/// to the `x` coordinate (start/middle/end).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SvgTextAnchor {
+  Start,
+  Middle,
+  End,
+}
+
 /// Computed value for `appearance`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Appearance {

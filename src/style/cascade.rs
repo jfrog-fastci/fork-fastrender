@@ -17256,6 +17256,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.svg_marker_start = parent.svg_marker_start.clone();
   styles.svg_marker_mid = parent.svg_marker_mid.clone();
   styles.svg_marker_end = parent.svg_marker_end.clone();
+  styles.svg_text_anchor = parent.svg_text_anchor;
 
   // CSS Custom Properties inherit according to registration.
   styles.custom_property_registry = parent.custom_property_registry.clone();

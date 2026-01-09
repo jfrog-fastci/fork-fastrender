@@ -1629,6 +1629,92 @@ fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opt
   any.then_some(out)
 }
 
+fn push_css_font_family_list(out: &mut String, families: &[String]) {
+  for (idx, family) in families.iter().enumerate() {
+    if idx != 0 {
+      out.push_str(", ");
+    }
+    if family.contains(' ') && !(family.starts_with('"') && family.ends_with('"')) {
+      out.push('"');
+      out.push_str(family);
+      out.push('"');
+    } else {
+      out.push_str(family);
+    }
+  }
+}
+
+fn svg_text_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
+  use crate::style::types::SvgTextAnchor;
+  use std::fmt::Write as _;
+
+  let parent = parent?;
+
+  let mut out = String::new();
+  let mut any = false;
+
+  let mut start_decl = |out: &mut String, any: &mut bool| {
+    if *any {
+      out.push_str("; ");
+    } else {
+      *any = true;
+    }
+  };
+
+  if style.font_family != parent.font_family && !style.font_family.is_empty() {
+    start_decl(&mut out, &mut any);
+    out.push_str("font-family: ");
+    push_css_font_family_list(&mut out, &style.font_family);
+  }
+
+  if style.font_size.is_finite() && style.font_size != parent.font_size {
+    start_decl(&mut out, &mut any);
+    let _ = write!(&mut out, "font-size: {:.2}px", style.font_size);
+  }
+
+  if style.font_weight != parent.font_weight {
+    start_decl(&mut out, &mut any);
+    let _ = write!(&mut out, "font-weight: {}", style.font_weight.to_u16());
+  }
+
+  if style.font_style != parent.font_style {
+    start_decl(&mut out, &mut any);
+    out.push_str("font-style: ");
+    match style.font_style {
+      FontStyle::Italic => out.push_str("italic"),
+      FontStyle::Oblique(Some(angle)) => {
+        let _ = write!(&mut out, "oblique {}deg", angle);
+      }
+      FontStyle::Oblique(None) => out.push_str("oblique"),
+      FontStyle::Normal => out.push_str("normal"),
+    }
+  }
+
+  if style.letter_spacing.is_finite() && style.letter_spacing != parent.letter_spacing {
+    start_decl(&mut out, &mut any);
+    let _ = write!(&mut out, "letter-spacing: {:.2}px", style.letter_spacing);
+  }
+
+  if style.word_spacing.is_finite() && style.word_spacing != parent.word_spacing {
+    start_decl(&mut out, &mut any);
+    let _ = write!(&mut out, "word-spacing: {:.2}px", style.word_spacing);
+  }
+
+  if let Some(anchor) = style.svg_text_anchor {
+    if parent.svg_text_anchor != Some(anchor) {
+      start_decl(&mut out, &mut any);
+      out.push_str("text-anchor: ");
+      match anchor {
+        SvgTextAnchor::Start => out.push_str("start"),
+        SvgTextAnchor::Middle => out.push_str("middle"),
+        SvgTextAnchor::End => out.push_str("end"),
+      }
+    }
+  }
+
+  any.then_some(out)
+}
+
 fn serialize_svg_mask_subtree_with_namespaces(
   styled: &StyledNode,
   inherited_xmlns: &[(String, String)],
@@ -1770,6 +1856,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
 
       if current_ns == SVG_NAMESPACE {
         if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+        if let Some(extra) = svg_text_style(&styled.styles, parent_svg_styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
         if let Some(extra) = svg_paint_style(&styled.styles, parent_svg_styles) {
@@ -2206,6 +2295,7 @@ fn serialize_svg_subtree(
 
   fn root_style_base(style: &ComputedStyle) -> String {
     use std::fmt::Write as _;
+    use crate::style::types::SvgTextAnchor;
 
     let mut out = String::with_capacity(64);
     out.push_str("color: rgba(");
@@ -2222,18 +2312,7 @@ fn serialize_svg_subtree(
 
     if !style.font_family.is_empty() {
       out.push_str("; font-family: ");
-      for (idx, family) in style.font_family.iter().enumerate() {
-        if idx != 0 {
-          out.push_str(", ");
-        }
-        if family.contains(' ') && !(family.starts_with('"') && family.ends_with('"')) {
-          out.push('"');
-          out.push_str(family);
-          out.push('"');
-        } else {
-          out.push_str(family);
-        }
-      }
+      push_css_font_family_list(&mut out, &style.font_family);
     }
 
     let _ = write!(&mut out, "; font-size: {:.2}px", style.font_size);
@@ -2245,6 +2324,21 @@ fn serialize_svg_subtree(
       }
       FontStyle::Oblique(None) => out.push_str("; font-style: oblique"),
       FontStyle::Normal => {}
+    }
+
+    if style.letter_spacing.is_finite() && style.letter_spacing != 0.0 {
+      let _ = write!(&mut out, "; letter-spacing: {:.2}px", style.letter_spacing);
+    }
+    if style.word_spacing.is_finite() && style.word_spacing != 0.0 {
+      let _ = write!(&mut out, "; word-spacing: {:.2}px", style.word_spacing);
+    }
+    if let Some(anchor) = style.svg_text_anchor {
+      out.push_str("; text-anchor: ");
+      match anchor {
+        SvgTextAnchor::Start => out.push_str("start"),
+        SvgTextAnchor::Middle => out.push_str("middle"),
+        SvgTextAnchor::End => out.push_str("end"),
+      }
     }
 
     if style.opacity.is_finite() && style.opacity != 1.0 {
@@ -2669,6 +2763,10 @@ fn serialize_svg_subtree(
 
         if current_ns == SVG_NAMESPACE {
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+            let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+            merge_style_attribute(attrs_mut, &extra);
+          }
+          if let Some(extra) = svg_text_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             merge_style_attribute(attrs_mut, &extra);
           }

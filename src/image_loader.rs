@@ -24,13 +24,13 @@ use crate::resource::{ensure_http_success, ensure_image_mime_sane, origin_from_u
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
+use crate::text::font_db::FontConfig;
 use crate::url_normalize::normalize_url_reference_for_resolution;
 use crate::svg::{
   map_svg_aspect_ratio, parse_svg_length_px, parse_svg_view_box,
   svg_intrinsic_dimensions_from_attributes, svg_view_box_root_transform, SvgPreserveAspectRatio,
   SvgViewBox,
 };
-use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::CrossOriginAttribute;
 use avif_decode::Decoder as AvifDecoder;
 use avif_decode::Image as AvifImage;

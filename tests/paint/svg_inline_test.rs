@@ -286,6 +286,64 @@ fn inline_svg_fill_url_gradient_from_css_works_when_document_css_injection_disab
 }
 
 #[test]
+fn inline_svg_text_anchor_css_matches_attribute_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+
+      let css_version = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        text { font-family: Cantarell; text-anchor: middle; font-size: 20px; fill: black; }
+      </style>
+      <svg width="100" height="40" viewBox="0 0 100 40">
+        <text x="50" y="20">AB</text>
+      </svg>
+      "#;
+
+      let reference_version = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        text { font-family: Cantarell; font-size: 20px; fill: black; }
+      </style>
+      <svg width="100" height="40" viewBox="0 0 100 40">
+        <text x="50" y="20" text-anchor="middle">AB</text>
+      </svg>
+      "#;
+
+      let pix1 =
+        render_html_with_svg_document_css_injection_disabled(&mut renderer, css_version, 100, 40);
+      let pix2 = render_html_with_svg_document_css_injection_disabled(
+        &mut renderer,
+        reference_version,
+        100,
+        40,
+      );
+
+      assert_eq!(
+        pix1.data(),
+        pix2.data(),
+        "CSS text-anchor should serialize equivalently to the SVG text-anchor attribute when document CSS injection is disabled"
+      );
+
+      let has_non_white_pixel = pix1
+        .data()
+        .chunks_exact(4)
+        .any(|rgba| rgba[0] < 250 || rgba[1] < 250 || rgba[2] < 250);
+      assert!(
+        has_non_white_pixel,
+        "expected text to render (found no non-white pixels)"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_root_opacity_is_not_double_applied() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

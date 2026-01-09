@@ -70,13 +70,13 @@ const GLYPH_COVERAGE_CACHE_SHARD_LIMIT: usize = 16;
 type GlyphCoverageCacheHasher = BuildHasherDefault<FxHasher>;
 
 #[derive(Clone, Copy)]
-struct BundledFont {
-  name: &'static str,
-  data: &'static [u8],
+pub(crate) struct BundledFont {
+  pub(crate) name: &'static str,
+  pub(crate) data: &'static [u8],
 }
 
 // Ordered from general text to narrower script fallbacks so generic families stay stable.
-const BUNDLED_FONTS: &[BundledFont] = &[
+pub(crate) const BUNDLED_FONTS: &[BundledFont] = &[
   // Roboto Flex provides a modern variable sans face with sane line metrics, helping pages that
   // fall back to generic `sans-serif` (e.g. sites that request Helvetica/Arial but ship no web
   // fonts in offline fixtures). It is not necessarily the default generic fallback (see
@@ -263,7 +263,7 @@ const BUNDLED_FONTS: &[BundledFont] = &[
     data: include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf"),
   },
 ];
-const BUNDLED_EMOJI_FONTS: &[BundledFont] = &[BundledFont {
+pub(crate) const BUNDLED_EMOJI_FONTS: &[BundledFont] = &[BundledFont {
   name: "FastRender Emoji",
   data: include_bytes!("../../tests/fixtures/fonts/FastRenderEmoji.ttf"),
 }];

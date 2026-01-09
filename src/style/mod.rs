@@ -175,6 +175,7 @@ use types::ShapeOutside;
 use types::StrokeDasharray;
 use types::StrokeLinecap;
 use types::StrokeLinejoin;
+use types::SvgTextAnchor;
 use types::SvgUrlOrNone;
 use types::TabSize;
 use types::TableLayout;
@@ -1174,6 +1175,7 @@ pub struct ComputedStyle {
   pub svg_marker_start: Option<SvgUrlOrNone>,
   pub svg_marker_mid: Option<SvgUrlOrNone>,
   pub svg_marker_end: Option<SvgUrlOrNone>,
+  pub svg_text_anchor: Option<SvgTextAnchor>,
 
   pub background_color: Rgba,
   /// Author-specified background values (lists preserved for layer repetition rules)
@@ -1578,6 +1580,7 @@ impl Default for ComputedStyle {
       svg_marker_start: None,
       svg_marker_mid: None,
       svg_marker_end: None,
+      svg_text_anchor: None,
       background_color: Rgba::TRANSPARENT,
       background_images: vec![default_layer.image.clone()].into(),
       background_positions: vec![default_layer.position.clone()].into(),

@@ -460,6 +460,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-align",
   "text-align-all",
   "text-align-last",
+  "text-anchor",
   "text-combine-upright",
   "text-decoration",
   "text-decoration-color",
