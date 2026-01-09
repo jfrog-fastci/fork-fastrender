@@ -161,6 +161,22 @@ pub fn install_time_bindings(
       global_data_desc(Value::Object(perf_now)),
     )?;
 
+    // `Performance.timeOrigin` is the epoch timestamp (ms) that corresponds to `performance.now() == 0`.
+    // This is derived from the deterministic `WebTime` configuration so tests can control it.
+    let time_origin_key = PropertyKey::from_string(scope.alloc_string("timeOrigin")?);
+    scope.define_property(
+      performance,
+      time_origin_key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Data {
+          value: Value::Number(web_time.time_origin_unix_ms as f64),
+          writable: false,
+        },
+      },
+    )?;
+
     let perf_key = PropertyKey::from_string(scope.alloc_string("performance")?);
     scope.define_property(
       global,
@@ -312,6 +328,13 @@ mod tests {
 
     let date_now = get_object_property(&mut heap, date_obj, "now");
     let perf_now = get_object_property(&mut heap, performance_obj, "now");
+    let time_origin = get_object_property(&mut heap, performance_obj, "timeOrigin");
+
+    assert_eq!(
+      time_origin,
+      Value::Number(web_time.time_origin_unix_ms as f64),
+      "performance.timeOrigin should reflect WebTime origin"
+    );
 
     let v = call0(&mut vm, &mut heap, date_now, Value::Object(date_obj));
     assert_eq!(
