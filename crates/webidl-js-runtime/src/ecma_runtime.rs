@@ -1035,14 +1035,7 @@ impl WebIdlJsRuntime for VmJsRuntime {
   }
 
   fn implements_interface(&self, value: Value, interface: &str) -> bool {
-    let _ = interface;
-    let Value::Object(obj) = value else {
-      return false;
-    };
-    // `vm-js` does not yet provide a native platform-object model. As a placeholder we treat any
-    // host-owned object as implementing all WebIDL interfaces; generated bindings can refine this
-    // once interface wrappers exist.
-    self.objects.contains_key(&obj)
+    VmJsRuntime::implements_interface(self, value, interface)
   }
 
   fn is_string_object(&self, value: Value) -> bool {

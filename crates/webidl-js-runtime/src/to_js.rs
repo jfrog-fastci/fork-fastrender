@@ -4,7 +4,7 @@
 //! returning results back into JS. This module provides a small, runtime-agnostic implementation
 //! that operates on [`webidl_ir::WebIdlValue`] (a host-side representation of IDL values).
 
-use crate::runtime::{JsRuntime, WebIdlJsRuntime};
+use crate::runtime::WebIdlJsRuntime;
 
 use webidl_ir::{DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind, NumericType, TypeContext, WebIdlValue};
 
@@ -330,6 +330,7 @@ fn dictionary_member_type<'a>(schema: &'a [DictionaryMemberSchema], name: &str) 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::runtime::JsRuntime;
   use crate::VmJsRuntime;
   use vm_js::Value;
   use webidl_ir::{parse_idl_type_complete, DictionarySchema};
