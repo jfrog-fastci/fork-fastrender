@@ -721,6 +721,56 @@ mod tests {
   }
 
   #[test]
+  fn dictionary_to_object_inserts_members_in_lexicographic_order(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    // Declare members out of order; WebIDL dictionary algorithms require lexicographical ordering
+    // when converting to/from JS.
+    ctx.add_dictionary(DictionarySchema {
+      name: "Order".to_string(),
+      inherits: None,
+      members: vec![
+        DictionaryMemberSchema {
+          name: "b".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("long")?,
+          default: None,
+        },
+        DictionaryMemberSchema {
+          name: "a".to_string(),
+          required: false,
+          ty: parse_idl_type_complete("long")?,
+          default: None,
+        },
+      ],
+    });
+
+    let ty = parse_idl_type_complete("Order")?;
+    let value = WebIdlValue::Dictionary {
+      name: "Order".to_string(),
+      members: BTreeMap::from([
+        ("a".to_string(), WebIdlValue::Long(1)),
+        ("b".to_string(), WebIdlValue::Long(2)),
+      ]),
+    };
+
+    let mut rt = VmJsRuntime::new();
+    let obj = to_js(&mut rt, &ctx, &ty, &value)?;
+
+    let keys = rt.own_property_keys(obj)?;
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+      let s = rt.property_key_to_js_string(key)?;
+      let Value::String(handle) = s else {
+        return Err("expected string key".into());
+      };
+      out.push(rt.heap().get_string(handle)?.to_utf8_lossy());
+    }
+    assert_eq!(out, vec!["a", "b"]);
+    Ok(())
+  }
+
+  #[test]
   fn dictionary_applies_member_defaults() -> Result<(), Box<dyn std::error::Error>> {
     let mut ctx = TypeContext::default();
     ctx.add_dictionary(DictionarySchema {
