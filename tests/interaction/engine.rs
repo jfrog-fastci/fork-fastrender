@@ -61,6 +61,18 @@ fn find_by_id<'a>(root: &'a DomNode, html_id: &str) -> Option<&'a DomNode> {
   None
 }
 
+fn find_by_id_mut<'a>(root: &'a mut DomNode, html_id: &str) -> Option<&'a mut DomNode> {
+  if root.get_attribute_ref("id") == Some(html_id) {
+    return Some(root);
+  }
+  for child in root.children.iter_mut() {
+    if let Some(found) = find_by_id_mut(child, html_id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 fn attr_value(root: &DomNode, html_id: &str, attr: &str) -> Option<String> {
   find_by_id(root, html_id)
     .and_then(|node| node.get_attribute_ref(attr))
@@ -636,6 +648,219 @@ fn checkbox_click_toggles_checked_attribute() {
     attr_value(&dom, "cb", "data-fastr-focus").as_deref(),
     Some("true"),
     "clicking a checkbox should focus it"
+  );
+}
+
+#[test]
+fn space_key_toggles_focused_checkbox() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "cb"), ("type", "checkbox")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let cb_dom_id = node_id(&dom, "cb");
+  let mut cb_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  cb_box.styled_node_id = Some(cb_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![cb_box],
+  ));
+  let cb_box_id = find_box_id_for_styled_node(&box_tree, cb_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      cb_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let _ = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://x/",
+    "https://x/",
+  );
+  assert!(has_attr(&dom, "cb", "checked"), "click should check the box");
+
+  let (changed, action) = engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
+  assert!(changed, "space should toggle the checkbox");
+  assert_eq!(action, InteractionAction::None);
+  assert!(
+    !has_attr(&dom, "cb", "checked"),
+    "space should uncheck the focused checkbox"
+  );
+  assert_eq!(
+    attr_value(&dom, "cb", "data-fastr-focus-visible").as_deref(),
+    Some("true"),
+    "keyboard interaction should set focus-visible"
+  );
+}
+
+#[test]
+fn space_key_activates_focused_radio() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![],
+        vec![
+          el(
+            "input",
+            vec![("id", "r1"), ("type", "radio"), ("name", "g"), ("checked", "")],
+            vec![],
+          ),
+          el("input", vec![("id", "r2"), ("type", "radio"), ("name", "g")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let r1_dom_id = node_id(&dom, "r1");
+  let mut r1_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  r1_box.styled_node_id = Some(r1_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![r1_box],
+  ));
+  let r1_box_id = find_box_id_for_styled_node(&box_tree, r1_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      r1_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  // Focus r1 via pointer click. It starts checked, so activation should be a no-op.
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let _ = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://x/",
+    "https://x/",
+  );
+
+  // Simulate script clearing checked state while the control remains focused.
+  let r1 = find_by_id_mut(&mut dom, "r1").expect("r1 node");
+  fastrender::interaction::dom_mutation::remove_attr(r1, "checked");
+  assert!(!has_attr(&dom, "r1", "checked"));
+
+  let (changed, action) = engine.key_activate(&mut dom, KeyAction::Space, "https://x/", "https://x/");
+  assert!(changed, "space should activate the radio");
+  assert_eq!(action, InteractionAction::None);
+  assert!(
+    has_attr(&dom, "r1", "checked"),
+    "space should check the focused radio"
+  );
+  assert!(
+    !has_attr(&dom, "r2", "checked"),
+    "other radios in the group should remain unchecked"
+  );
+  assert_eq!(
+    attr_value(&dom, "r1", "data-fastr-focus-visible").as_deref(),
+    Some("true"),
+    "keyboard interaction should set focus-visible"
+  );
+}
+
+#[test]
+fn enter_key_on_focused_link_emits_navigation() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("a", vec![("id", "link"), ("href", "foo")], vec![])],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
+  let _ = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+
+  let (changed, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Enter,
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert!(changed, "enter should set focus-visible");
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/base/foo".to_string()
+    }
   );
 }
 
@@ -2039,7 +2264,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     "https://x/",
   );
   engine.text_input(&mut dom, "X");
-  engine.key_action(&mut dom, KeyAction::Backspace);
+  let _ = engine.key_action(&mut dom, KeyAction::Backspace);
   assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("hi"));
 
   // Readonly input.
@@ -2060,7 +2285,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     "https://x/",
   );
   engine.text_input(&mut dom, "X");
-  engine.key_action(&mut dom, KeyAction::Backspace);
+  let _ = engine.key_action(&mut dom, KeyAction::Backspace);
   assert_eq!(attr_value(&dom, "readonly", "value").as_deref(), Some("hi"));
 }
 
