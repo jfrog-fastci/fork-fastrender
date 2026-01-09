@@ -2429,7 +2429,12 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
       .unwrap_or(&[])
   };
 
-  let resolve_first = |ty: FontFeatureValueType, name: &str| resolve_list(ty, name).first().copied();
+  // CSS Fonts 4 requires @stylistic/@swash/@ornaments/@annotation definitions to be single-valued;
+  // multi-valued definitions are syntax errors and must be ignored.
+  let resolve_single = |ty: FontFeatureValueType, name: &str| {
+    let values = resolve_list(ty, name);
+    (values.len() == 1).then(|| values[0])
+  };
 
   if let Some(set) = alternates.stylistic.as_ref() {
     // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.
@@ -2439,7 +2444,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match set {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_first(FontFeatureValueType::Stylistic, name.as_str())
+        resolve_single(FontFeatureValueType::Stylistic, name.as_str())
       }
     };
     if let Some(value) = value {
@@ -2517,7 +2522,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match swash {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_first(FontFeatureValueType::Swash, name.as_str())
+        resolve_single(FontFeatureValueType::Swash, name.as_str())
       }
     };
     if let Some(value) = value {
@@ -2543,7 +2548,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match orn {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_first(FontFeatureValueType::Ornaments, name)
+        resolve_single(FontFeatureValueType::Ornaments, name)
       }
     };
     if let Some(value) = value {
@@ -2564,7 +2569,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match annotation {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_first(FontFeatureValueType::Annotation, name)
+        resolve_single(FontFeatureValueType::Annotation, name)
       }
     };
     if let Some(value) = value {
@@ -10390,6 +10395,97 @@ mod tests {
 
     let features = collect_opentype_features(&style, "Inter");
     assert_eq!(tag_value(&features, b"cv02"), Some(7));
+  }
+
+  #[test]
+  fn named_swash_ignores_multi_value_definitions() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Example".to_string()]);
+    let mut values = FxHashMap::default();
+    values.insert("fancy".to_string(), vec![3u32, 5u32]);
+    rule.groups.insert(FontFeatureValueType::Swash, values);
+    registry.register(rule);
+    assert_eq!(
+      registry.lookup("Example", FontFeatureValueType::Swash, "fancy"),
+      Some([3u32, 5u32].as_slice())
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style.font_variant_alternates.swash =
+      Some(FontVariantAlternateValue::Name("fancy".to_string()));
+
+    let feats = collect_opentype_features(&style, "Example");
+    let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+    for f in feats {
+      seen.insert(f.tag.to_bytes(), f.value);
+    }
+    assert!(
+      seen.get(b"swsh").is_none(),
+      "expected invalid @swash definition to be ignored"
+    );
+    assert!(
+      seen.get(b"cswh").is_none(),
+      "expected invalid @swash definition to be ignored"
+    );
+  }
+
+  #[test]
+  fn named_annotation_ignores_multi_value_definitions() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Example".to_string()]);
+    let mut values = FxHashMap::default();
+    values.insert("circled".to_string(), vec![1u32, 2u32]);
+    rule.groups.insert(FontFeatureValueType::Annotation, values);
+    registry.register(rule);
+    assert_eq!(
+      registry.lookup("Example", FontFeatureValueType::Annotation, "circled"),
+      Some([1u32, 2u32].as_slice())
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style.font_variant_alternates.annotation =
+      Some(FontVariantAlternateValue::Name("circled".to_string()));
+
+    let feats = collect_opentype_features(&style, "Example");
+    let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+    for f in feats {
+      seen.insert(f.tag.to_bytes(), f.value);
+    }
+    assert!(
+      seen.get(b"nalt").is_none(),
+      "expected invalid @annotation definition to be ignored"
+    );
+  }
+
+  #[test]
+  fn named_stylistic_ignores_multi_value_definitions() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Example".to_string()]);
+    let mut values = FxHashMap::default();
+    values.insert("alt".to_string(), vec![2u32, 3u32]);
+    rule.groups.insert(FontFeatureValueType::Stylistic, values);
+    registry.register(rule);
+    assert_eq!(
+      registry.lookup("Example", FontFeatureValueType::Stylistic, "alt"),
+      Some([2u32, 3u32].as_slice())
+    );
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style.font_variant_alternates.stylistic =
+      Some(FontVariantAlternateValue::Name("alt".to_string()));
+
+    let feats = collect_opentype_features(&style, "Example");
+    let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
+    for f in feats {
+      seen.insert(f.tag.to_bytes(), f.value);
+    }
+    assert!(
+      seen.get(b"salt").is_none(),
+      "expected invalid @stylistic definition to be ignored"
+    );
   }
 
   #[test]
