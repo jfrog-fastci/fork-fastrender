@@ -21,6 +21,7 @@ mod fixed_cb_propagation;
 mod inline_abspos_padding_edge;
 mod pages;
 mod js_url_bindings;
+mod vm_js_url_bindings;
 mod pseudo_element_generated_content;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;

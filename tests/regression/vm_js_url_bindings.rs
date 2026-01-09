@@ -224,3 +224,4 @@ fn url_instance_initialization_survives_gc_pressure() {
   rt.heap_mut().remove_root(url_root);
   rt.heap_mut().remove_root(global_root);
 }
+
