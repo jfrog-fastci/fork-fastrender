@@ -99,14 +99,11 @@ It provides (among other things):
 - Pixmap sampling helpers (`rgba_at`) for rendering assertions.
 - `WorkerToUi` debug formatting (`format_messages`) for clearer assertion failures.
 
-## Global stage listener locking
+## Global integration test lock
 
-Some integration tests install `GlobalStageListenerGuard`, which is process-global. While it is
-installed, *all* renders in the process will invoke the listener, which can leak stage events
-across tests and add overhead.
-
-If your test expects stage heartbeats (or registers a stage listener), acquire the lock for the
-duration of the test:
+Some browser integration tests use process-global test hooks (for example
+`render_control::set_test_render_delay_ms`) and other shared state. To avoid cross-test
+interference, acquire the global lock for the duration of the test:
 
 ```rust
 let _lock = crate::browser_integration::stage_listener_test_lock();

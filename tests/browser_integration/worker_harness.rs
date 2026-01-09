@@ -4,9 +4,8 @@ use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
 use fastrender::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_runtime::spawn_browser_worker_runtime_thread;
-use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use fastrender::render_control::StageHeartbeat;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -17,7 +16,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
-  Stage { tab_id: TabId },
+  Stage { tab_id: TabId, stage: StageHeartbeat },
   FrameReady {
     tab_id: TabId,
     viewport_css: (u32, u32),
@@ -76,7 +75,7 @@ impl WorkerToUiEvent {
 
 fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
   match msg {
-    WorkerToUi::Stage { tab_id, stage: _ } => (WorkerToUiEvent::Stage { tab_id }, None),
+    WorkerToUi::Stage { tab_id, stage } => (WorkerToUiEvent::Stage { tab_id, stage }, None),
     WorkerToUi::FrameReady { tab_id, frame } => {
       let event = WorkerToUiEvent::FrameReady {
         tab_id,
@@ -166,29 +165,18 @@ pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEv
 }
 
 pub struct WorkerHarness {
-  // Many browser integration tests use `GlobalStageListenerGuard`, which is process-global and can
-  // significantly slow down concurrent renders (stage events from unrelated renders will also be
-  // forwarded to whichever test installed the listener). To avoid flaky timeouts, the headless
-  // worker runtime harness serializes itself with stage-listener tests.
+  // The browser integration suite mutates a handful of process-global knobs (e.g.
+  // `render_control::set_test_render_delay_ms`). Serialize the worker runtime harness with the rest
+  // of the suite so those overrides don't leak across tests and cause flakiness/timeouts.
   _stage_lock: std::sync::MutexGuard<'static, ()>,
   ui_tx: Option<Sender<UiToWorker>>,
   ui_rx: Receiver<WorkerToUi>,
   handle: Option<JoinHandle<()>>,
-  stages: Arc<Mutex<Vec<StageHeartbeat>>>,
-  _stage_guard: Option<GlobalStageListenerGuard>,
 }
 
 impl WorkerHarness {
   pub fn spawn() -> Self {
     let stage_lock = super::stage_listener_test_lock();
-    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
-    let stages_for_listener = Arc::clone(&stages);
-    let stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
-      // Only used for debugging failing/hanging integration tests; ignore poison.
-      if let Ok(mut guard) = stages_for_listener.lock() {
-        guard.push(stage);
-      }
-    }));
     let (ui_tx, worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
     let (worker_tx, ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
@@ -204,8 +192,6 @@ impl WorkerHarness {
       ui_tx: Some(ui_tx),
       ui_rx,
       handle: Some(handle),
-      stages,
-      _stage_guard: Some(stage_guard),
     }
   }
 
@@ -249,8 +235,7 @@ impl WorkerHarness {
     loop {
       let now = Instant::now();
       if now >= deadline {
-        let stages = self.stages.lock().ok();
-        panic!("timed out waiting for worker event; stages={stages:?}; got {events:?}");
+        panic!("timed out waiting for worker event; got {events:?}");
       }
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
@@ -279,8 +264,7 @@ impl WorkerHarness {
     loop {
       let now = Instant::now();
       if now >= deadline {
-        let stages = self.stages.lock().ok();
-        panic!("timed out waiting for FrameReady; stages={stages:?}; got {events:?}");
+        panic!("timed out waiting for FrameReady; got {events:?}");
       }
       let remaining = deadline.saturating_duration_since(now);
       let msg = match self.ui_rx.recv_timeout(remaining) {
