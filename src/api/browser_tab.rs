@@ -515,6 +515,24 @@ impl BrowserTab {
     Self::from_html_with_js_execution_options(html, options, executor, JsExecutionOptions::default())
   }
 
+  pub fn from_html_with_event_loop<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    event_loop: EventLoop<BrowserTabHost>,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    Self::from_html_with_event_loop_and_js_execution_options(
+      html,
+      options,
+      executor,
+      event_loop,
+      JsExecutionOptions::default(),
+    )
+  }
+
   pub fn from_html_with_js_execution_options<E>(
     html: &str,
     options: RenderOptions,
@@ -536,6 +554,41 @@ impl BrowserTab {
       js_execution_options,
     );
     let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
+
+    let mut tab = Self {
+      trace: trace_handle,
+      trace_output,
+      host,
+      event_loop,
+    };
+    tab.host.reset_scripting_state(None);
+    tab.discover_and_schedule_scripts(None)?;
+    Ok(tab)
+  }
+
+  pub fn from_html_with_event_loop_and_js_execution_options<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    mut event_loop: EventLoop<BrowserTabHost>,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+
+    let document = BrowserDocumentDom2::from_html(html, options)?;
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      trace_handle.clone(),
+      js_execution_options,
+    );
     event_loop.set_trace_handle(trace_handle.clone());
     event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
 
@@ -676,6 +729,17 @@ impl BrowserTab {
         return Ok(RunUntilStableOutcome::Stable { frames_rendered });
       }
     }
+  }
+
+  /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
+  /// rendered frame when the document becomes dirty.
+  pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
+    if self.event_loop.pending_microtask_count() > 0 {
+      self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+    } else {
+      let _ = self.event_loop.run_next_task(&mut self.host)?;
+    }
+    self.render_if_needed()
   }
 
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {

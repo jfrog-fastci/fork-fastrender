@@ -7,7 +7,7 @@ use crate::js::{
 use crate::js::webidl::VmJsRuntime;
 use std::sync::Arc;
 
-use super::BrowserDocumentDom2;
+use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunUntilStableStopReason {
@@ -50,6 +50,10 @@ pub struct BrowserDocumentJs {
 }
 
 impl BrowserDocumentJs {
+  pub fn from_html(html: &str, options: RenderOptions) -> Result<Self> {
+    Ok(Self::new(BrowserDocumentDom2::from_html(html, options)?))
+  }
+
   pub fn new(document: BrowserDocumentDom2) -> Self {
     Self::with_js_execution_options(document, JsExecutionOptions::default())
   }
@@ -90,6 +94,27 @@ impl BrowserDocumentJs {
 
   pub fn document_mut(&mut self) -> &mut BrowserDocumentDom2 {
     &mut self.document
+  }
+
+  pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
+    self.document.render_if_needed()
+  }
+
+  /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
+  /// rendered frame when the document becomes dirty.
+  pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
+    let mut event_loop = self
+      .event_loop
+      .take()
+      .expect("BrowserDocumentJs should always have an event loop");
+
+    if event_loop.pending_microtask_count() > 0 {
+      event_loop.perform_microtask_checkpoint(self)?;
+    } else {
+      let _ = event_loop.run_next_task(self)?;
+    }
+    self.event_loop = Some(event_loop);
+    self.render_if_needed()
   }
 
   pub fn js_runtime(&self) -> &VmJsRuntime {
@@ -375,6 +400,50 @@ mod tests {
     let outcome = runtime.run_until_stable(10)?;
     assert_eq!(outcome, RunUntilStableOutcome::Stable { frames_rendered: 1 });
     assert_eq!(&*log.borrow(), &["task", "microtask"]);
+    assert!(!runtime.document().is_dirty());
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_rerenders_each_task_turn() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    runtime.document_mut().render_frame()?;
+
+    runtime.event_loop_mut().queue_task(TaskSource::Script, |host, _event_loop| {
+      set_first_text(host.document.dom_mut(), "a");
+      Ok(())
+    })?;
+    runtime.event_loop_mut().queue_task(TaskSource::Script, |host, _event_loop| {
+      set_first_text(host.document.dom_mut(), "b");
+      Ok(())
+    })?;
+
+    assert!(runtime.tick_frame()?.is_some(), "expected render after task 1");
+    let id = first_text_node_id(runtime.document().dom()).expect("text node");
+    let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
+      panic!("expected text node");
+    };
+    assert_eq!(content, "a");
+
+    assert!(runtime.tick_frame()?.is_some(), "expected render after task 2");
+    let id = first_text_node_id(runtime.document().dom()).expect("text node");
+    let NodeKind::Text { content } = &runtime.document().dom().node(id).kind else {
+      panic!("expected text node");
+    };
+    assert_eq!(content, "b");
+
+    assert!(runtime.tick_frame()?.is_none(), "expected no further work");
     assert!(!runtime.document().is_dirty());
     Ok(())
   }
