@@ -455,20 +455,16 @@ impl Evaluator<'_> {
       .heap_mut()
       .add_root(Value::Undefined)
       .map_err(vm_error_to_runtime)?;
-
     let result = (|| {
       let mut last_value = Value::Undefined;
-
       for stmt in stmts {
         if let Some(v) = self.exec_stmt(scope, stmt)? {
           last_value = v;
           scope.heap_mut().set_root(last_root, v);
         }
       }
-
       Ok(last_value)
     })();
-
     scope.heap_mut().remove_root(last_root);
     result
   }

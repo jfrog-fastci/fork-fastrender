@@ -212,6 +212,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, pairs: Vec<Vec<String>>| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
+        // Avoid cloning `pair` entries if we can; `append` will clone into its own storage.
+        // This preserves order and duplicates per the URL Standard.
         let params = WebUrlSearchParams::new(&state.limits);
         for pair in pairs {
           if pair.len() != 2 {
