@@ -89,6 +89,7 @@ pub fn install_dom_bindings<'js, Host>(
 where
   Host: DomHost + 'static,
 {
+  ensure_weakref_intrinsic(&ctx)?;
   let document = Object::new(ctx.clone())?;
   globals.set("document", document.clone())?;
 
@@ -152,6 +153,17 @@ where
   document.set("head", head)?;
   document.set("body", body)?;
 
+  Ok(())
+}
+
+fn ensure_weakref_intrinsic<'js>(ctx: &Ctx<'js>) -> JsResult<()> {
+  // `Context::full` doesn't necessarily include the WeakRef intrinsic; ensure it is present since
+  // we use it to cache node wrappers without leaking JS objects.
+  if !ctx.globals().contains_key("WeakRef")? {
+    unsafe {
+      rquickjs::qjs::JS_AddIntrinsicWeakRef(ctx.as_raw().as_ptr());
+    }
+  }
   Ok(())
 }
 
@@ -768,11 +780,58 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
   }
 
-  // Node id -> JS object mapping so selector queries can preserve identity.
+  // Node id -> JS wrapper mapping so selector queries can preserve identity without pinning wrapper
+  // objects in memory.
   var nodeById = g.__fastrender_node_by_id;
   if (!nodeById) {
     nodeById = new Map();
     g.__fastrender_node_by_id = nodeById;
+  }
+
+  var nodeByIdFinalizer = g.__fastrender_node_by_id_finalizer;
+  if (!nodeByIdFinalizer && typeof g.FinalizationRegistry === "function") {
+    nodeByIdFinalizer = new g.FinalizationRegistry(function (id) {
+      try {
+        nodeById.delete(id);
+      } catch (_e) {
+        // Ignore.
+      }
+    });
+    g.__fastrender_node_by_id_finalizer = nodeByIdFinalizer;
+  }
+
+  function getCachedNode(id) {
+    var entry = nodeById.get(id);
+    if (!entry) return null;
+    if (typeof entry.deref === "function") {
+      var obj = entry.deref();
+      if (obj == null) {
+        try {
+          nodeById.delete(id);
+        } catch (_e) {
+          // Ignore.
+        }
+        return null;
+      }
+      return obj;
+    }
+    // Backwards compatibility: allow strong references if WeakRef isn't available.
+    return entry;
+  }
+
+  function setCachedNode(id, obj) {
+    try {
+      if (typeof g.WeakRef === "function") {
+        nodeById.set(id, new g.WeakRef(obj));
+        if (nodeByIdFinalizer && typeof nodeByIdFinalizer.register === "function") {
+          nodeByIdFinalizer.register(obj, id);
+        }
+        return;
+      }
+    } catch (_e) {
+      // Fall through to strong caching.
+    }
+    nodeById.set(id, obj);
   }
 
   function ensureNodeBasics(obj, id, kind) {
@@ -783,7 +842,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
     if (!("parentNode" in obj)) define(obj, "parentNode", null);
     ensureArrayProp(obj, "childNodes");
     if (!("ownerDocument" in obj)) define(obj, "ownerDocument", doc);
-    nodeById.set(id, obj);
+    setCachedNode(id, obj);
     return obj;
   }
 
@@ -946,7 +1005,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
     g.__fastrender_dom_remove_child(parentId, this.__node_id);
 
     // Best-effort: update JS-side `childNodes` for the parent wrapper if it exists.
-    var parentObj = nodeById.get(parentId);
+    var parentObj = getCachedNode(parentId);
     if (parentObj && Array.isArray(parentObj.childNodes)) {
       var idx = parentObj.childNodes.indexOf(this);
       if (idx >= 0) parentObj.childNodes.splice(idx, 1);
@@ -1420,7 +1479,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
       return doc;
     }
 
-    var existing = nodeById.get(id);
+    var existing = getCachedNode(id);
     if (existing) return existing;
 
     var obj = {};
@@ -2351,6 +2410,36 @@ const DOM_BINDINGS_SHIM: &str = r##"
       })
       .map_err(|e| Error::Other(e.to_string()))?;
     assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn node_wrapper_cache_uses_weakref() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var el = document.createElement("div");
+            var id = el.__node_id;
+            if (id == null) return false;
+            var cache = globalThis.__fastrender_node_by_id;
+            if (!cache || typeof cache.get !== "function") return false;
+            var entry = cache.get(id);
+            // Wrapper caching should not pin objects in memory: we store WeakRef handles in the map.
+            return entry && typeof entry.deref === "function";
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected wrapper cache to store WeakRef values");
     Ok(())
   }
 
