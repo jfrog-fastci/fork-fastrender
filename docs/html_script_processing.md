@@ -30,6 +30,9 @@ What exists today (in-tree):
   - `src/dom/scripting_parser.rs`: `parse_html_with_scripting(...)` pauses at `</script>` boundaries
     and yields a `ScriptToken` plus a partial DOM snapshot (currently backed by
     `markup5ever_rcdom`).
+  - (Planned home) `src/html/streaming_parser.rs`: a dedicated streaming parser driver that feeds
+    input incrementally and pauses/resumes around parser-blocking scripts while building a live
+    `dom2` document (via the TreeSink noted below).
 - **Parse-time base URL tracking:**
   - `src/html/base_url_tracker.rs`: `BaseUrlTracker` tracks `<base href>` as the parser progresses
     so `<script src>` resolution uses the base URL *at script preparation time*.
@@ -54,11 +57,12 @@ What exists today (in-tree):
     mutations.
   - `src/dom2/import.rs`: current bridge for constructing `dom2::Document` from the renderer’s
     immutable `crate::dom::DomNode`.
-  - **Missing piece:** an `html5ever::tree_builder::TreeSink` implementation backed by `dom2`, so the
-    parser can build the live DOM directly while pausing/resuming at scripts.
+  - **Missing piece:** an `html5ever::tree_builder::TreeSink` implementation backed by `dom2`
+    (expected to live under `src/dom2/`), so the parser can build the live DOM directly while
+    pausing/resuming at scripts.
 - **End-to-end harness (not a full HTML parser):**
   - `src/js/html_scripting.rs`: a small harness used by unit tests to exercise script/style
-    interaction and event loop semantics.
+    interaction and event loop semantics (Task 129).
 - **Legacy tooling (deprecated for execution):**
   - `src/js/dom_scripts.rs::extract_script_elements()`: post-parse DOM scanning for tooling only
     (not spec-correct for execution).
