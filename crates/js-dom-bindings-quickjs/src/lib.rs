@@ -707,6 +707,7 @@ impl Node {
         return Ok(());
       }
       NodeKind::Document { .. }
+      | NodeKind::DocumentFragment
       | NodeKind::Element { .. }
       | NodeKind::Slot { .. }
       | NodeKind::ShadowRoot { .. } => {
@@ -1266,7 +1267,7 @@ fn node_type(dom: &Document, node_id: NodeId) -> i32 {
     NodeKind::Comment { .. } => 8,
     NodeKind::Document { .. } => 9,
     NodeKind::Doctype { .. } => 10,
-    NodeKind::ShadowRoot { .. } => 11,
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
   }
 }
 
@@ -1289,7 +1290,7 @@ fn node_name(dom: &Document, node_id: NodeId) -> String {
     NodeKind::ProcessingInstruction { target, .. } => target.clone(),
     NodeKind::Document { .. } => "#document".to_string(),
     NodeKind::Doctype { name, .. } => name.clone(),
-    NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+    NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
   }
 }
 
