@@ -240,20 +240,30 @@ impl ResourceAccessPolicy {
       return Ok(());
     };
 
-    let effective_url = final_url.unwrap_or(target_url);
-    let parsed = match Url::parse(effective_url) {
+    let effective_url_raw = final_url.unwrap_or(target_url);
+    let mut effective_url = Cow::Borrowed(effective_url_raw);
+    let parsed = match Url::parse(effective_url_raw) {
       Ok(parsed) => parsed,
       Err(_) => {
-        if enforce_same_origin
-          && (effective_url.starts_with("http://") || effective_url.starts_with("https://"))
-        {
-          return Err(PolicyError {
-            reason: format!("Blocked subresource with invalid or missing host: {effective_url}"),
-          });
+        if enforce_same_origin && matches!(classify_scheme(effective_url_raw), ResourceScheme::Http | ResourceScheme::Https) {
+          if let Some(normalized) = normalize_http_url_for_fetch(effective_url_raw) {
+            effective_url = Cow::Owned(normalized);
+            Url::parse(effective_url.as_ref()).map_err(|_| PolicyError {
+              reason: format!(
+                "Blocked subresource with invalid or missing host: {effective_url_raw}"
+              ),
+            })?
+          } else {
+            return Err(PolicyError {
+              reason: format!("Blocked subresource with invalid or missing host: {effective_url_raw}"),
+            });
+          }
+        } else {
+          return Ok(());
         }
-        return Ok(());
       }
     };
+    let effective_url = effective_url.as_ref();
 
     let target_origin = DocumentOrigin::from_parsed_url(&parsed);
     if target_origin.is_http_like() && target_origin.host().is_none() && enforce_same_origin {
@@ -813,6 +823,11 @@ fn normalize_http_url_for_fetch(raw: &str) -> Option<String> {
       }
       b'|' => {
         out.push_str("%7C");
+        changed = true;
+        i += 1;
+      }
+      b'\\' => {
+        out.push_str("%5C");
         changed = true;
         i += 1;
       }
@@ -7651,6 +7666,8 @@ impl ResourceFetcher for HttpFetcher {
   }
 
   fn fetch_with_context(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    let normalized = normalize_http_url_for_fetch(url);
+    let url = normalized.as_deref().unwrap_or(url);
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data(kind, url),
@@ -7663,15 +7680,16 @@ impl ResourceFetcher for HttpFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    render_control::check_root(render_stage_hint_for_context(kind, req.url))
-      .map_err(Error::Render)?;
-    match self.policy.ensure_url_allowed(req.url)? {
-      ResourceScheme::Data => self.fetch_data(kind, req.url),
-      ResourceScheme::File => self.fetch_file(kind, req.url),
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    match self.policy.ensure_url_allowed(url)? {
+      ResourceScheme::Data => self.fetch_data(kind, url),
+      ResourceScheme::File => self.fetch_file(kind, url),
       ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
         kind,
         req.destination,
-        req.url,
+        url,
         None,
         None,
         req.client_origin,
@@ -7679,17 +7697,19 @@ impl ResourceFetcher for HttpFetcher {
         req.referrer_policy,
         req.credentials_mode,
       ),
-      ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
+      ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
   }
 
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.fetch.destination.into();
-    render_control::check_root(render_stage_hint_for_context(kind, req.fetch.url))
+    let normalized = normalize_http_url_for_fetch(req.fetch.url);
+    let url = normalized.as_deref().unwrap_or(req.fetch.url);
+    render_control::check_root(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
-    validate_http_method(req.fetch.url, req.method)?;
-    let scheme = self.policy.ensure_url_allowed(req.fetch.url)?;
+    validate_http_method(url, req.method)?;
+    let scheme = self.policy.ensure_url_allowed(url)?;
 
     let method_is_get = req.method.eq_ignore_ascii_case("GET");
     let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
@@ -7715,7 +7735,7 @@ impl ResourceFetcher for HttpFetcher {
         let mut res = self.fetch_http_request_with_context(
           kind,
           req.fetch.destination,
-          req.fetch.url,
+          url,
           req.method,
           req.redirect,
           req.headers,
@@ -7767,8 +7787,10 @@ impl ResourceFetcher for HttpFetcher {
   fn request_header_value(&self, req: FetchRequest<'_>, header_name: &str) -> Option<String> {
     // Use the same header construction logic as the HTTP backend so cache variant keys match the
     // actual request header values (including browser-like `Origin`/`Referer` handling).
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
     let headers = build_http_header_pairs(
-      req.url,
+      url,
       &self.user_agent,
       &self.accept_language,
       SUPPORTED_ACCEPT_ENCODING,
@@ -7807,15 +7829,16 @@ impl ResourceFetcher for HttpFetcher {
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    render_control::check_root(render_stage_hint_for_context(kind, req.url))
-      .map_err(Error::Render)?;
-    match self.policy.ensure_url_allowed(req.url)? {
-      ResourceScheme::Data => self.fetch_data(kind, req.url),
-      ResourceScheme::File => self.fetch_file(kind, req.url),
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    match self.policy.ensure_url_allowed(url)? {
+      ResourceScheme::Data => self.fetch_data(kind, url),
+      ResourceScheme::File => self.fetch_file(kind, url),
       ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
         kind,
         req.destination,
-        req.url,
+        url,
         None,
         Some(HttpCacheValidators {
           etag,
@@ -7826,7 +7849,7 @@ impl ResourceFetcher for HttpFetcher {
         req.referrer_policy,
         req.credentials_mode,
       ),
-      ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
+      ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
   }
@@ -7847,6 +7870,8 @@ impl ResourceFetcher for HttpFetcher {
       return Ok(res);
     }
 
+    let normalized = normalize_http_url_for_fetch(url);
+    let url = normalized.as_deref().unwrap_or(url);
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
@@ -7884,15 +7909,16 @@ impl ResourceFetcher for HttpFetcher {
       return Ok(res);
     }
 
-    render_control::check_root(render_stage_hint_for_context(kind, req.url))
-      .map_err(Error::Render)?;
-    match self.policy.ensure_url_allowed(req.url)? {
-      ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
-      ResourceScheme::File => self.fetch_file_prefix(kind, req.url, max_bytes),
+    let normalized = normalize_http_url_for_fetch(req.url);
+    let url = normalized.as_deref().unwrap_or(req.url);
+    render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
+    match self.policy.ensure_url_allowed(url)? {
+      ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
+      ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_partial(
         kind,
         req.destination,
-        req.url,
+        url,
         max_bytes,
         req.client_origin,
         req.referrer_url,
@@ -7900,7 +7926,7 @@ impl ResourceFetcher for HttpFetcher {
         req.credentials_mode,
       ),
       ResourceScheme::Relative => {
-        self.fetch_file_prefix(kind, &format!("file://{}", req.url), max_bytes)
+        self.fetch_file_prefix(kind, &format!("file://{}", url), max_bytes)
       }
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
@@ -7922,6 +7948,8 @@ impl ResourceFetcher for HttpFetcher {
     etag: Option<&str>,
     last_modified: Option<&str>,
   ) -> Result<FetchedResource> {
+    let normalized = normalize_http_url_for_fetch(url);
+    let url = normalized.as_deref().unwrap_or(url);
     render_control::check_root(render_stage_hint_for_context(kind, url)).map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Http | ResourceScheme::Https => {
@@ -11213,6 +11241,41 @@ mod tests {
       ReferrerPolicy::parse_value_list(&format!("no-referrer{nbsp}unsafe-url")).is_none(),
       "NBSP must not split referrer policy token lists"
     );
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_example_pipe_in_query_is_parseable_and_idempotent() {
+    let input = "https://example.com/foo?q=a|b";
+    let normalized = normalize_http_url_for_fetch(input).expect("normalized");
+    assert_eq!(normalized, "https://example.com/foo?q=a%7Cb");
+    assert!(Url::parse(&normalized).is_ok());
+    assert_eq!(normalize_http_url_for_fetch(&normalized), None);
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_example_space_in_path_is_parseable_and_idempotent() {
+    let input = "https://example.com/a b.png";
+    let normalized = normalize_http_url_for_fetch(input).expect("normalized");
+    assert_eq!(normalized, "https://example.com/a%20b.png");
+    assert!(Url::parse(&normalized).is_ok());
+    assert_eq!(normalize_http_url_for_fetch(&normalized), None);
+  }
+
+  #[test]
+  fn normalize_http_url_for_fetch_does_not_touch_already_encoded_urls() {
+    let input = "https://example.com/foo?q=a%7Cb";
+    assert_eq!(normalize_http_url_for_fetch(input), None);
+  }
+
+  #[test]
+  fn resource_access_policy_same_origin_allows_http_url_after_normalization() {
+    let origin = origin_from_url("https://example.com").expect("origin");
+    let mut policy = ResourceAccessPolicy::default();
+    policy.document_origin = Some(origin);
+    policy.same_origin_only = true;
+    policy
+      .allows("https://example.com/foo?q=a|b")
+      .expect("same-origin URL should be allowed");
   }
 
   #[test]
