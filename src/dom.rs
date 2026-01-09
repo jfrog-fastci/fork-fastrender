@@ -32,7 +32,7 @@ use selectors::relative_selector::cache::RelativeSelectorCachedMatch;
 use selectors::Element;
 use selectors::OpaqueElement;
 use serde::{Deserialize, Serialize};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -4918,14 +4918,22 @@ impl<'a> ElementRef<'a> {
   }
 
   /// Return the language of this element, inherited from ancestors if absent.
-  fn language(&self) -> Option<&'a str> {
-    // Walk from self up through ancestors (closest first) for lang/xml:lang
-    if let Some(lang) = self.lang_attribute(self.node) {
+  fn language(&self) -> Option<Cow<'a, str>> {
+    // Walk from self up through ancestors (closest first) for lang/xml:lang.
+    if let Some(lang) = self.lang_attribute(self.node).filter(|l| !l.is_empty()) {
+      let lang = normalize_language_tag_for_selector_matching(lang);
+      if lang.is_empty() {
+        return None;
+      }
       return Some(lang);
     }
 
     for ancestor in self.all_ancestors.iter().rev() {
-      if let Some(lang) = self.lang_attribute(ancestor) {
+      if let Some(lang) = self.lang_attribute(ancestor).filter(|l| !l.is_empty()) {
+        let lang = normalize_language_tag_for_selector_matching(lang);
+        if lang.is_empty() {
+          return None;
+        }
         return Some(lang);
       }
     }
@@ -5953,18 +5961,76 @@ fn matches_an_plus_b(a: i32, b: i32, position: i32) -> bool {
   }
 }
 
+fn language_tag_is_normalized(tag: &str) -> bool {
+  let bytes = tag.as_bytes();
+  if bytes.first() == Some(&b'-') || bytes.last() == Some(&b'-') {
+    return false;
+  }
+
+  let mut prev_was_sep = false;
+  for &b in bytes {
+    if b == b'_' {
+      return false;
+    }
+    if (b'A'..=b'Z').contains(&b) {
+      return false;
+    }
+    if b == b'-' {
+      if prev_was_sep {
+        return false;
+      }
+      prev_was_sep = true;
+    } else {
+      prev_was_sep = false;
+    }
+  }
+
+  true
+}
+
+fn normalize_language_tag_for_selector_matching<'a>(tag: &'a str) -> Cow<'a, str> {
+  let trimmed = trim_ascii_whitespace_html(tag);
+  if trimmed.is_empty() {
+    return Cow::Borrowed("");
+  }
+
+  if language_tag_is_normalized(trimmed) {
+    return Cow::Borrowed(trimmed);
+  }
+
+  let mut out = String::with_capacity(trimmed.len());
+  let mut last_was_sep = true;
+  for ch in trimmed.chars() {
+    let ch = if ch == '_' { '-' } else { ch };
+    if ch == '-' {
+      if last_was_sep {
+        continue;
+      }
+      out.push('-');
+      last_was_sep = true;
+    } else {
+      out.push(ch.to_ascii_lowercase());
+      last_was_sep = false;
+    }
+  }
+  if last_was_sep {
+    out.pop();
+  }
+  Cow::Owned(out)
+}
+
 fn lang_matches(range: &str, lang: &str) -> bool {
   if range == "*" {
+    return !lang.is_empty();
+  }
+  if range == lang {
     return true;
   }
-  if range.eq_ignore_ascii_case(lang) {
-    return true;
-  }
-  // Prefix match with boundary (BCP47 language tags are ASCII-case-insensitive).
+  // Prefix match with boundary.
   let Some(prefix) = lang.as_bytes().get(..range.len()) else {
     return false;
   };
-  prefix.eq_ignore_ascii_case(range.as_bytes()) && lang.as_bytes().get(range.len()) == Some(&b'-')
+  prefix == range.as_bytes() && lang.as_bytes().get(range.len()) == Some(&b'-')
 }
 
 pub(crate) fn supports_placeholder(input_type: Option<&str>) -> bool {
@@ -6673,7 +6739,7 @@ impl<'a> Element for ElementRef<'a> {
         .unwrap_or(false),
       PseudoClass::Lang(langs) => {
         if let Some(lang) = self.language() {
-          langs.iter().any(|range| lang_matches(range, lang))
+          langs.iter().any(|range| lang_matches(range, lang.as_ref()))
         } else {
           false
         }
@@ -11011,6 +11077,42 @@ mod tests {
       node,
       &ancestors,
       &PseudoClass::Lang(vec!["fr".into(), "en".into()])
+    ));
+  }
+
+  #[test]
+  fn lang_matches_normalizes_underscores_and_whitespace() {
+    let child = element("p", vec![]);
+    let container = element_with_attrs("div", vec![("lang", " sr_Cyrl_RS ")], vec![child]);
+    let root = element("html", vec![container]);
+    let ancestors: Vec<&DomNode> = vec![&root, &root.children[0]];
+    let node = &root.children[0].children[0];
+
+    assert!(matches(
+      node,
+      &ancestors,
+      &PseudoClass::Lang(vec!["sr".into()])
+    ));
+    assert!(matches(
+      node,
+      &ancestors,
+      &PseudoClass::Lang(vec!["sr-cyrl".into()])
+    ));
+    assert!(matches(
+      node,
+      &ancestors,
+      &PseudoClass::Lang(vec!["sr-cyrl-rs".into()])
+    ));
+
+    assert!(!matches(
+      node,
+      &ancestors,
+      &PseudoClass::Lang(vec!["en".into()])
+    ));
+    assert!(!matches(
+      node,
+      &ancestors,
+      &PseudoClass::Lang(vec!["sr-latn".into()])
     ));
   }
 

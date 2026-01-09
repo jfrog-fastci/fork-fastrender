@@ -9,6 +9,7 @@ use crate::dom::ElementAttrCache;
 use crate::dom::SelectorBloomStore;
 use crate::dom::SiblingListCache;
 use crate::error::RenderError;
+use crate::style::normalize_language_tag;
 use cssparser::ParseError;
 use cssparser::Parser;
 use cssparser::ToCss;
@@ -1021,7 +1022,13 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
               ))
             }
           };
-          langs.push(range.as_ref().to_ascii_lowercase());
+          let normalized = normalize_language_tag(range.as_ref());
+          if normalized.is_empty() {
+            return Err(parser.new_custom_error(
+              SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
+            ));
+          }
+          langs.push(normalized);
           if parser.try_parse(|p| p.expect_comma()).is_err() {
             break;
           }
@@ -1455,6 +1462,23 @@ mod tests {
       )
       .expect("nth-child pseudo should parse");
     assert!(matches!(nth, PseudoClass::NthChild(_, _, _)));
+  }
+
+  #[test]
+  fn parses_lang_ranges_normalized() {
+    use selectors::parser::Component;
+
+    let list = parse_selector_list("div:lang(sr_Cyrl_RS)");
+    let selector = list.slice().first().expect("one selector");
+    let mut found = false;
+    for component in selector.iter_raw_match_order() {
+      if let Component::NonTSPseudoClass(PseudoClass::Lang(langs)) = component {
+        assert_eq!(langs, &vec!["sr-cyrl-rs".to_string()]);
+        found = true;
+      }
+    }
+    assert!(found, "selector should contain :lang()");
+    assert_eq!(selector.to_css_string(), "div:lang(sr-cyrl-rs)");
   }
 
   #[test]
