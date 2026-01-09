@@ -162,6 +162,42 @@ fn legend_shrinks_to_fit_in_fieldset() {
 }
 
 #[test]
+fn legend_shrinks_to_fit_in_fieldset_vertical_rl() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      fieldset#fs {
+        width: 40px;
+        height: 200px;
+        margin: 0;
+        padding: 0;
+        border: 1px solid black;
+        writing-mode: vertical-rl;
+      }
+      legend#lg { margin: 0; padding: 0; }
+    </style>
+    <fieldset id="fs">
+      <legend id="lg">Legend</legend>
+    </fieldset>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let intermediates = layout_intermediates(&mut renderer, html, 80, 240);
+  let fs = inspect_id(&intermediates, "fs");
+  let lg = inspect_id(&intermediates, "lg");
+
+  let fs_bounds = block_bounds(&fs);
+  let lg_bounds = block_bounds(&lg);
+
+  assert!(
+    lg_bounds.height < fs_bounds.height * 0.75,
+    "legend should shrink-to-fit instead of filling the fieldset inline size (fieldset_height={} legend_height={})",
+    fs_bounds.height,
+    lg_bounds.height
+  );
+}
+
+#[test]
 fn fieldset_without_legend_does_not_introduce_extra_offset() {
   let html = r#"<!doctype html>
     <style>
