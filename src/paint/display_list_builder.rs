@@ -11164,6 +11164,14 @@ impl DisplayListBuilder {
     let trimmed = trim_ascii_whitespace_start(src);
     let inline_svg = trimmed.starts_with('<');
 
+    fn contains_foreign_object_tag(svg: &str) -> bool {
+      const NEEDLE: &[u8] = b"foreignobject";
+      let bytes = svg.as_bytes();
+      bytes
+        .windows(NEEDLE.len())
+        .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+    }
+
     let (resolved_src, image) = if inline_svg {
       use std::collections::hash_map::DefaultHasher;
       use std::hash::{Hash, Hasher};
@@ -11226,15 +11234,93 @@ impl DisplayListBuilder {
         return None;
       }
     };
-    let rgba = image.to_oriented_rgba(orientation);
-    let (w, h) = rgba.dimensions();
-    if w == 0 || h == 0 {
-      if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
-        breakdown.record_image_decode(start.elapsed());
+
+    let mut rendered_svg_with_foreign_object: Option<ImageData> = None;
+    if image.is_vector {
+      let svg_markup = if inline_svg {
+        Some(trimmed)
+      } else {
+        image.svg_content.as_deref()
+      };
+      if let Some(svg_markup) = svg_markup.filter(|svg| contains_foreign_object_tag(svg)) {
+        let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+          self.device_pixel_ratio
+        } else {
+          1.0
+        };
+
+        let rendered_width_css = image.width() as f32;
+        let rendered_height_css = image.height() as f32;
+        let foreign_object_dpr =
+          crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+            svg_markup,
+            base_dpr,
+            rendered_width_css,
+            rendered_height_css,
+            rendered_width_css,
+            rendered_height_css,
+          );
+
+        if let Some(resolved_svg) =
+          crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+            svg_markup,
+            "",
+            &self.font_ctx,
+            image_cache,
+            foreign_object_dpr,
+            self.max_iframe_depth,
+          )
+        {
+          let render_w = ((image.width() as f32) * base_dpr).ceil().max(1.0) as u32;
+          let render_h = ((image.height() as f32) * base_dpr).ceil().max(1.0) as u32;
+          if render_w > 0 && render_h > 0 {
+            let render_url = key.url.as_str();
+            if let Ok(pixmap) = image_cache.render_svg_pixmap_at_size(
+              &resolved_svg,
+              render_w,
+              render_h,
+              render_url,
+              base_dpr,
+            ) {
+              let pixels = pixmap.data().to_vec();
+              // Apply `image-orientation` semantics to match `CachedImage::to_oriented_rgba`.
+              let mut rgba = image::RgbaImage::from_raw(render_w, render_h, pixels)?;
+              match orientation.quarter_turns % 4 {
+                0 => {}
+                1 => rgba = image::imageops::rotate90(&rgba),
+                2 => rgba = image::imageops::rotate180(&rgba),
+                3 => rgba = image::imageops::rotate270(&rgba),
+                _ => {}
+              }
+              if orientation.flip_x {
+                rgba = image::imageops::flip_horizontal(&rgba);
+              }
+
+              let (w, h) = rgba.dimensions();
+              if w > 0 && h > 0 {
+                let mut data = ImageData::new_premultiplied(w, h, css_w, css_h, rgba.into_raw());
+                data.has_intrinsic_ratio = has_intrinsic_ratio;
+                rendered_svg_with_foreign_object = Some(data);
+              }
+            }
+          }
+        }
       }
-      return None;
     }
-    let mut image_data = ImageData::new(w, h, css_w, css_h, rgba.into_raw());
+
+    let mut image_data = if let Some(custom) = rendered_svg_with_foreign_object {
+      custom
+    } else {
+      let rgba = image.to_oriented_rgba(orientation);
+      let (w, h) = rgba.dimensions();
+      if w == 0 || h == 0 {
+        if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
+          breakdown.record_image_decode(start.elapsed());
+        }
+        return None;
+      }
+      ImageData::new(w, h, css_w, css_h, rgba.into_raw())
+    };
     image_data.has_intrinsic_ratio = has_intrinsic_ratio;
     let image_data = Arc::new(image_data);
 

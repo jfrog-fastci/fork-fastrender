@@ -77,6 +77,369 @@ fn foreign_object_clip_path_id(info: &ForeignObjectInfo, idx: usize) -> String {
 // HTML plus a copy of the document-level CSS. Cap the total size so pathological SVGs cannot force
 // multi-megabyte allocations (and potentially OOM aborts) during this nested render path.
 const MAX_FOREIGN_OBJECT_DOC_BYTES: usize = 8 * 1024 * 1024;
+// Extracting foreignObject HTML from SVG markup requires copying the subtree into an owned string
+// so it can be fed through the HTML pipeline. Cap the total extracted markup to avoid pathological
+// SVGs forcing unbounded allocations.
+const MAX_FOREIGN_OBJECT_EXTRACTED_BYTES: usize = MAX_FOREIGN_OBJECT_DOC_BYTES;
+const MAX_FOREIGN_OBJECTS_PER_SVG: usize = 64;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExtractedForeignObjectMarkup {
+  pub placeholder: String,
+  pub attributes: Vec<(String, String)>,
+  pub x: Option<f32>,
+  pub y: Option<f32>,
+  pub width: Option<f32>,
+  pub height: Option<f32>,
+  pub html: String,
+}
+
+fn svg_markup_contains_foreign_object(svg: &str) -> bool {
+  const NEEDLE: &[u8] = b"foreignobject";
+  let bytes = svg.as_bytes();
+  bytes
+    .windows(NEEDLE.len())
+    .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+}
+
+fn parse_svg_number_attr(value: &str) -> Option<f32> {
+  let value = trim_xml_whitespace(value);
+  if value.is_empty() {
+    return None;
+  }
+
+  // SVG numeric attributes are commonly written as `12`, `12.5`, or `12px`. Be conservative and
+  // reject percentage-based lengths or unknown units.
+  let bytes = value.as_bytes();
+  let mut end = 0usize;
+  while end < bytes.len() {
+    let b = bytes[end];
+    if b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.' | b'e' | b'E') {
+      end += 1;
+    } else {
+      break;
+    }
+  }
+  if end == 0 {
+    return None;
+  }
+  let num = value[..end].parse::<f32>().ok()?;
+  if !num.is_finite() {
+    return None;
+  }
+
+  let suffix = trim_xml_whitespace(&value[end..]);
+  if suffix.is_empty() || suffix.eq_ignore_ascii_case("px") {
+    Some(num)
+  } else {
+    None
+  }
+}
+
+fn parse_overflow_keyword(value: &str) -> Option<Overflow> {
+  let value = trim_ascii_whitespace_html_css(value);
+  if value.eq_ignore_ascii_case("visible") {
+    Some(Overflow::Visible)
+  } else if value.eq_ignore_ascii_case("hidden") {
+    Some(Overflow::Hidden)
+  } else if value.eq_ignore_ascii_case("scroll") {
+    Some(Overflow::Scroll)
+  } else if value.eq_ignore_ascii_case("auto") {
+    Some(Overflow::Auto)
+  } else if value.eq_ignore_ascii_case("clip") {
+    Some(Overflow::Clip)
+  } else {
+    None
+  }
+}
+
+fn parse_foreign_object_overflow(attrs: &[(String, String)]) -> (Overflow, Overflow) {
+  let mut overflow_x = Overflow::Visible;
+  let mut overflow_y = Overflow::Visible;
+
+  for (name, value) in attrs {
+    if name.eq_ignore_ascii_case("overflow") {
+      if let Some(overflow) = parse_overflow_keyword(value) {
+        overflow_x = overflow;
+        overflow_y = overflow;
+      }
+    } else if name.eq_ignore_ascii_case("style") {
+      for decl in value.split(';') {
+        let decl = trim_ascii_whitespace_html_css(decl);
+        if decl.is_empty() {
+          continue;
+        }
+        let Some((prop, prop_value)) = decl.split_once(':') else {
+          continue;
+        };
+        let prop = trim_ascii_whitespace_html_css(prop);
+        let prop_value = trim_ascii_whitespace_html_css(prop_value);
+        if prop.eq_ignore_ascii_case("overflow") {
+          if let Some(overflow) = parse_overflow_keyword(prop_value) {
+            overflow_x = overflow;
+            overflow_y = overflow;
+          }
+        } else if prop.eq_ignore_ascii_case("overflow-x") {
+          if let Some(overflow) = parse_overflow_keyword(prop_value) {
+            overflow_x = overflow;
+          }
+        } else if prop.eq_ignore_ascii_case("overflow-y") {
+          if let Some(overflow) = parse_overflow_keyword(prop_value) {
+            overflow_y = overflow;
+          }
+        }
+      }
+    }
+  }
+
+  (overflow_x, overflow_y)
+}
+
+fn parse_foreign_object_opacity(attrs: &[(String, String)]) -> f32 {
+  let mut opacity: Option<f32> = None;
+  for (name, value) in attrs {
+    if name.eq_ignore_ascii_case("opacity") {
+      opacity = trim_ascii_whitespace_html_css(value).parse::<f32>().ok();
+    } else if name.eq_ignore_ascii_case("style") {
+      for decl in value.split(';') {
+        let decl = trim_ascii_whitespace_html_css(decl);
+        if decl.is_empty() {
+          continue;
+        }
+        let Some((prop, prop_value)) = decl.split_once(':') else {
+          continue;
+        };
+        if trim_ascii_whitespace_html_css(prop).eq_ignore_ascii_case("opacity") {
+          opacity = trim_ascii_whitespace_html_css(prop_value).parse::<f32>().ok();
+        }
+      }
+    }
+  }
+  let opacity = opacity.unwrap_or(1.0);
+  if opacity.is_finite() {
+    opacity.clamp(0.0, 1.0)
+  } else {
+    1.0
+  }
+}
+
+fn foreign_object_inner_markup(svg: &str, node: roxmltree::Node<'_, '_>) -> Option<String> {
+  let mut start: Option<usize> = None;
+  let mut end: Option<usize> = None;
+  for child in node.children() {
+    let range = child.range();
+    start = Some(start.map_or(range.start, |s| s.min(range.start)));
+    end = Some(end.map_or(range.end, |e| e.max(range.end)));
+  }
+
+  let Some((start, end)) = start.zip(end) else {
+    return Some(String::new());
+  };
+  if end < start || end > svg.len() {
+    return None;
+  }
+  let slice = svg.get(start..end)?;
+  if slice.len() > MAX_FOREIGN_OBJECT_EXTRACTED_BYTES {
+    return None;
+  }
+  Some(slice.to_string())
+}
+
+/// Parses raw SVG markup and replaces each `<foreignObject>` subtree with a placeholder comment.
+///
+/// This is used when rasterizing SVG images loaded from external sources (e.g. `<img src=...>`),
+/// where the DOM serialization path that normally captures foreignObject metadata is not available.
+pub(crate) fn extract_foreign_objects_from_svg_markup(
+  svg: &str,
+) -> Option<(String, Vec<ExtractedForeignObjectMarkup>)> {
+  if !svg_markup_contains_foreign_object(svg) {
+    return None;
+  }
+
+  let doc = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(svg)))
+    .ok()
+    .and_then(|doc| doc.ok())?;
+  let mut nodes: Vec<roxmltree::Node<'_, '_>> = doc
+    .descendants()
+    .filter(|node| {
+      if !node.is_element() {
+        return false;
+      }
+      let tag = node.tag_name();
+      if !tag.name().eq_ignore_ascii_case("foreignObject") {
+        return false;
+      }
+      match tag.namespace() {
+        Some("http://www.w3.org/2000/svg") | None => true,
+        _ => false,
+      }
+    })
+    .collect();
+
+  if nodes.is_empty() {
+    return None;
+  }
+  if nodes.len() > MAX_FOREIGN_OBJECTS_PER_SVG {
+    nodes.truncate(MAX_FOREIGN_OBJECTS_PER_SVG);
+  }
+
+  // Ensure nodes are processed in document order so placeholders line up with visual ordering.
+  nodes.sort_by_key(|node| node.range().start);
+
+  let mut out_svg = String::new();
+  // Reserve for the original markup plus placeholder overhead.
+  let placeholder_overhead = nodes
+    .len()
+    .saturating_mul("<!--FASTRENDER_FOREIGN_OBJECT_-->".len() + 16);
+  out_svg
+    .try_reserve_exact(svg.len().saturating_add(placeholder_overhead))
+    .ok()?;
+
+  let mut extracted: Vec<ExtractedForeignObjectMarkup> = Vec::new();
+  extracted.try_reserve(nodes.len()).ok()?;
+
+  let mut cursor = 0usize;
+  let mut total_extracted_bytes = 0usize;
+  let mut placeholder_index = 0usize;
+  for node in nodes {
+    let range = node.range();
+    if range.start < cursor || range.end < range.start || range.end > svg.len() {
+      continue;
+    }
+    out_svg.push_str(svg.get(cursor..range.start)?);
+
+    let placeholder = format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", placeholder_index);
+    placeholder_index += 1;
+    out_svg.push_str(&placeholder);
+    cursor = range.end;
+
+    let mut attrs: Vec<(String, String)> = Vec::new();
+    attrs.try_reserve(node.attributes().len()).ok()?;
+    for attr in node.attributes() {
+      attrs.push((attr.name().to_string(), attr.value().to_string()));
+    }
+
+    let html = if total_extracted_bytes >= MAX_FOREIGN_OBJECT_EXTRACTED_BYTES {
+      String::new()
+    } else {
+      match foreign_object_inner_markup(svg, node) {
+        Some(html) => {
+          total_extracted_bytes = total_extracted_bytes.saturating_add(html.len());
+          if total_extracted_bytes <= MAX_FOREIGN_OBJECT_EXTRACTED_BYTES {
+            html
+          } else {
+            // Exceeded the global budget; drop the extracted markup and stop attempting further
+            // nested extraction (but still strip the foreignObject nodes from the SVG).
+            String::new()
+          }
+        }
+        None => String::new(),
+      }
+    };
+
+    let x = node.attribute("x").and_then(parse_svg_number_attr);
+    let y = node.attribute("y").and_then(parse_svg_number_attr);
+    let width = node.attribute("width").and_then(parse_svg_number_attr);
+    let height = node.attribute("height").and_then(parse_svg_number_attr);
+
+    extracted.push(ExtractedForeignObjectMarkup {
+      placeholder,
+      attributes: attrs,
+      x,
+      y,
+      width,
+      height,
+      html,
+    });
+  }
+
+  out_svg.push_str(svg.get(cursor..)?);
+
+  Some((out_svg, extracted))
+}
+
+/// Best-effort foreignObject inlining for arbitrary SVG markup strings.
+///
+/// Unlike `inline_svg_with_foreign_objects` (which is fed pre-extracted `ForeignObjectInfo`
+/// structures from the DOM serialization pipeline), this helper parses the SVG markup directly and
+/// skips individual foreignObjects that cannot be resolved (e.g. missing dimensions).
+pub(crate) fn inline_svg_foreign_objects_from_markup(
+  svg: &str,
+  shared_css: &str,
+  font_ctx: &FontContext,
+  image_cache: &ImageCache,
+  device_pixel_ratio: f32,
+  max_iframe_depth: usize,
+) -> Option<String> {
+  let (placeholder_svg, extracted) = extract_foreign_objects_from_svg_markup(svg)?;
+  if extracted.is_empty() {
+    return Some(placeholder_svg);
+  }
+
+  let svg_doc =
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roxmltree::Document::parse(&placeholder_svg)))
+    .ok()
+    .and_then(|doc| doc.ok());
+
+  let default_style = Arc::new(crate::style::ComputedStyle::default());
+
+  let mut out_svg = String::new();
+  out_svg.try_reserve_exact(placeholder_svg.len()).ok()?;
+  out_svg.push_str(&placeholder_svg);
+
+  for (idx, extracted) in extracted.into_iter().enumerate() {
+    if trim_xml_whitespace(&extracted.html).is_empty() {
+      replace_placeholder_or_insert(&mut out_svg, &extracted.placeholder, "")?;
+      continue;
+    }
+
+    let x = extracted.x.unwrap_or(0.0);
+    let y = extracted.y.unwrap_or(0.0);
+    let Some(width) = extracted.width.filter(|v| v.is_finite() && *v > 0.0) else {
+      replace_placeholder_or_insert(&mut out_svg, &extracted.placeholder, "")?;
+      continue;
+    };
+    let Some(height) = extracted.height.filter(|v| v.is_finite() && *v > 0.0) else {
+      replace_placeholder_or_insert(&mut out_svg, &extracted.placeholder, "")?;
+      continue;
+    };
+
+    let opacity = parse_foreign_object_opacity(&extracted.attributes);
+    let (overflow_x, overflow_y) = parse_foreign_object_overflow(&extracted.attributes);
+
+    let info = ForeignObjectInfo {
+      placeholder: extracted.placeholder,
+      attributes: extracted.attributes,
+      x,
+      y,
+      width,
+      height,
+      opacity,
+      background: None,
+      html: extracted.html,
+      style: Arc::clone(&default_style),
+      overflow_x,
+      overflow_y,
+    };
+
+    let transform_scale = foreign_object_transform_scale(svg_doc.as_ref(), &info.placeholder, &info.attributes);
+    let replacement = (|| {
+      let (data_url, image_bounds) = render_foreign_object_data_url(
+        &info,
+        shared_css,
+        font_ctx,
+        image_cache,
+        device_pixel_ratio * transform_scale,
+        max_iframe_depth,
+      )?;
+      foreign_object_image_tag(&info, &data_url, idx, image_bounds)
+    })()
+    .unwrap_or_default();
+    replace_placeholder_or_insert(&mut out_svg, &info.placeholder, &replacement)?;
+  }
+
+  Some(out_svg)
+}
 
 /// Compute the device pixel ratio to use when rasterizing `<foreignObject>` HTML into a PNG.
 ///
@@ -1105,6 +1468,50 @@ mod tests {
       .expect("decode png");
     assert_eq!(decoded.width(), 2);
     assert_eq!(decoded.height(), 2);
+  }
+
+  #[test]
+  fn inlines_foreign_object_from_raw_markup() {
+    use crate::image_loader::ImageCache;
+    use crate::text::font_loader::FontContext;
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+      <foreignObject x="0" y="0" width="20" height="20">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background:red"></div>
+      </foreignObject>
+    </svg>"#;
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+
+    let resolved = super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
+      .expect("resolved svg");
+
+    assert!(
+      resolved.contains("data:image/png;base64,"),
+      "expected injected PNG data URL, got {resolved:?}"
+    );
+  }
+
+  #[test]
+  fn rasterizes_inlined_foreign_object_svg() {
+    use crate::image_loader::ImageCache;
+    use crate::text::font_loader::FontContext;
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+      <foreignObject x="0" y="0" width="20" height="20">
+        <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background:red"></div>
+      </foreignObject>
+    </svg>"#;
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+
+    let resolved = super::inline_svg_foreign_objects_from_markup(svg, "", &font_ctx, &image_cache, 1.0, 0)
+      .expect("resolved svg");
+    let pixmap = image_cache
+      .render_svg_pixmap_at_size(&resolved, 20, 20, "inline-svg", 1.0)
+      .expect("render pixmap");
+    let px = pixmap.pixel(10, 10).expect("center px");
+    assert_eq!((px.red(), px.green(), px.blue(), px.alpha()), (255, 0, 0, 255));
   }
 
   #[test]
