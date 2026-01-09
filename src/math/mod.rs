@@ -441,6 +441,10 @@ pub enum MathNode {
     text: String,
     /// `<mo form="...">` override. If omitted, the form is inferred from row context.
     form: Option<OperatorForm>,
+    /// `<mo fence="...">` override.
+    fence: Option<bool>,
+    /// `<mo separator="...">` override.
+    separator: Option<bool>,
     /// `<mo stretchy="...">` override. If omitted, the operator dictionary default is used.
     stretchy: Option<bool>,
     /// `<mo symmetric="...">` override. If omitted, the operator dictionary default is used.
@@ -449,6 +453,12 @@ pub enum MathNode {
     minsize: Option<MathLength>,
     /// `<mo maxsize="...">` override.
     maxsize: Option<MathLength>,
+    /// `<mo largeop="...">` override.
+    large_op: Option<bool>,
+    /// `<mo movablelimits="...">` override.
+    movable_limits: Option<bool>,
+    /// `<mo accent="...">` override.
+    accent: Option<bool>,
     /// `<mo lspace="...">` override.
     lspace: Option<MathLengthOrKeyword>,
     /// `<mo rspace="...">` override.
@@ -1100,6 +1110,19 @@ fn empty_text_node() -> MathNode {
   }
 }
 
+fn infer_accent_from_script(node: &MathNode) -> bool {
+  MathLayoutContext::operator_like(node)
+    .map(|op| {
+      let mut props = MathLayoutContext::operator_default_properties(
+        op.text,
+        op.form.unwrap_or(OperatorForm::Infix),
+      );
+      props.accent = op.accent.unwrap_or(props.accent);
+      props.accent
+    })
+    .unwrap_or(false)
+}
+
 /// Parse a DomNode subtree into a MathNode tree.
 pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
   match &node.node_type {
@@ -1179,15 +1202,25 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let minsize = parse_math_length(node.get_attribute_ref("minsize"));
           let maxsize = parse_math_length(node.get_attribute_ref("maxsize"));
           let form = parse_operator_form(node.get_attribute_ref("form"));
+          let fence = parse_display_style(node.get_attribute_ref("fence"));
+          let separator = parse_display_style(node.get_attribute_ref("separator"));
+          let large_op = parse_display_style(node.get_attribute_ref("largeop"));
+          let movable_limits = parse_display_style(node.get_attribute_ref("movablelimits"));
+          let accent = parse_display_style(node.get_attribute_ref("accent"));
           let lspace = parse_math_space(node.get_attribute_ref("lspace"));
           let rspace = parse_math_space(node.get_attribute_ref("rspace"));
           MathNode::Operator {
             text,
             form,
+            fence,
+            separator,
             stretchy,
             symmetric,
             minsize,
             maxsize,
+            large_op,
+            movable_limits,
+            accent,
             lspace,
             rspace,
             variant: parse_mathvariant(node),
@@ -1296,7 +1329,8 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let mut children = parse_children(node).into_iter();
           let base = children.next().unwrap_or_else(empty_text_node);
           let over = children.next().unwrap_or_else(empty_text_node);
-          let accent = parse_display_style(node.get_attribute_ref("accent")).unwrap_or(false);
+          let accent_attr = parse_display_style(node.get_attribute_ref("accent"));
+          let accent = accent_attr.unwrap_or_else(|| infer_accent_from_script(&over));
           Some(MathNode::Over {
             base: Box::new(base),
             over: Box::new(over),
@@ -1307,8 +1341,8 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let mut children = parse_children(node).into_iter();
           let base = children.next().unwrap_or_else(empty_text_node);
           let under = children.next().unwrap_or_else(empty_text_node);
-          let accentunder =
-            parse_display_style(node.get_attribute_ref("accentunder")).unwrap_or(false);
+          let accentunder_attr = parse_display_style(node.get_attribute_ref("accentunder"));
+          let accentunder = accentunder_attr.unwrap_or_else(|| infer_accent_from_script(&under));
           Some(MathNode::Under {
             base: Box::new(base),
             under: Box::new(under),
@@ -1320,9 +1354,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let base = children.next().unwrap_or_else(empty_text_node);
           let under = children.next().unwrap_or_else(empty_text_node);
           let over = children.next().unwrap_or_else(empty_text_node);
-          let accent = parse_display_style(node.get_attribute_ref("accent")).unwrap_or(false);
-          let accentunder =
-            parse_display_style(node.get_attribute_ref("accentunder")).unwrap_or(false);
+          let accent_attr = parse_display_style(node.get_attribute_ref("accent"));
+          let accentunder_attr = parse_display_style(node.get_attribute_ref("accentunder"));
+          let accent = accent_attr.unwrap_or_else(|| infer_accent_from_script(&over));
+          let accentunder = accentunder_attr.unwrap_or_else(|| infer_accent_from_script(&under));
           Some(MathNode::UnderOver {
             base: Box::new(base),
             under: Box::new(under),
@@ -1394,10 +1429,15 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             row.push(MathNode::Operator {
               text: open,
               form: None,
+              fence: Some(true),
+              separator: None,
               stretchy: Some(true),
               symmetric: None,
               minsize: None,
               maxsize: None,
+              large_op: None,
+              movable_limits: None,
+              accent: None,
               lspace: None,
               rspace: None,
               variant: Some(MathVariant::Normal),
@@ -1414,10 +1454,15 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
                 row.push(MathNode::Operator {
                   text: sep.to_string(),
                   form: None,
+                  fence: None,
+                  separator: Some(true),
                   stretchy: Some(false),
                   symmetric: None,
                   minsize: None,
                   maxsize: None,
+                  large_op: None,
+                  movable_limits: None,
+                  accent: None,
                   lspace: None,
                   rspace: None,
                   variant: Some(MathVariant::Normal),
@@ -1430,10 +1475,15 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             row.push(MathNode::Operator {
               text: close,
               form: None,
+              fence: Some(true),
+              separator: None,
               stretchy: Some(true),
               symmetric: None,
               minsize: None,
               maxsize: None,
+              large_op: None,
+              movable_limits: None,
+              accent: None,
               lspace: None,
               rspace: None,
               variant: Some(MathVariant::Normal),
@@ -1545,6 +1595,7 @@ struct OperatorProperties {
   stretchy: bool,
   large_op: bool,
   movable_limits: bool,
+  accent: bool,
   symmetric: bool,
   minsize: Option<MathLength>,
   maxsize: Option<MathLength>,
@@ -1556,10 +1607,15 @@ struct OperatorProperties {
 struct OperatorLike<'a> {
   text: &'a str,
   form: Option<OperatorForm>,
+  fence: Option<bool>,
+  separator: Option<bool>,
   stretchy: Option<bool>,
   symmetric: Option<bool>,
   minsize: Option<MathLength>,
   maxsize: Option<MathLength>,
+  large_op: Option<bool>,
+  movable_limits: Option<bool>,
+  accent: Option<bool>,
   lspace: Option<MathLengthOrKeyword>,
   rspace: Option<MathLengthOrKeyword>,
 }
@@ -1572,6 +1628,7 @@ impl OperatorProperties {
       stretchy: false,
       large_op: false,
       movable_limits: false,
+      accent: false,
       symmetric: false,
       minsize: None,
       maxsize: None,
@@ -1685,6 +1742,7 @@ impl MathLayoutContext {
         stretchy: props.stretchy,
         large_op: props.large_op,
         movable_limits: props.movable_limits,
+        accent: props.accent,
         // MathML Core: common delimiters default symmetric stretching.
         symmetric: props.fence,
         minsize: None,
@@ -1700,20 +1758,30 @@ impl MathLayoutContext {
       MathNode::Operator {
         text,
         form,
+        fence,
+        separator,
         stretchy,
         symmetric,
         minsize,
         maxsize,
+        large_op,
+        movable_limits,
+        accent,
         lspace,
         rspace,
         ..
       } => Some(OperatorLike {
         text: text.as_str(),
         form: *form,
+        fence: *fence,
+        separator: *separator,
         stretchy: *stretchy,
         symmetric: *symmetric,
         minsize: *minsize,
         maxsize: *maxsize,
+        large_op: *large_op,
+        movable_limits: *movable_limits,
+        accent: *accent,
         lspace: *lspace,
         rspace: *rspace,
       }),
@@ -2505,10 +2573,36 @@ impl MathLayoutContext {
       };
       let form = Self::inferred_operator_form(children, idx);
       let mut props = Self::operator_default_properties(op.text, form);
+      props.fence = op.fence.unwrap_or(props.fence);
+      props.separator = op.separator.unwrap_or(props.separator);
       props.stretchy = op.stretchy.unwrap_or(props.stretchy);
       props.symmetric = op.symmetric.unwrap_or(props.symmetric);
       props.minsize = op.minsize.or(props.minsize);
       props.maxsize = op.maxsize.or(props.maxsize);
+      props.large_op = op.large_op.unwrap_or(props.large_op);
+      props.movable_limits = op.movable_limits.unwrap_or(props.movable_limits);
+      props.accent = op.accent.unwrap_or(props.accent);
+
+      // If an operator is forced to be a fence/separator but the author didn't specify
+      // `lspace`/`rspace`, adjust spacing defaults to match the MathML Core operator attributes.
+      //
+      // In the full operator dictionary these are distinct properties, but this simplified
+      // implementation derives spacing primarily from `lspace`/`rspace`.
+      if props.fence {
+        if op.lspace.is_none() {
+          props.lspace = MathLengthOrKeyword::Zero;
+        }
+        if op.rspace.is_none() {
+          props.rspace = MathLengthOrKeyword::Zero;
+        }
+      } else if props.separator {
+        if op.lspace.is_none() {
+          props.lspace = MathLengthOrKeyword::Zero;
+        }
+        if op.rspace.is_none() {
+          props.rspace = MathLengthOrKeyword::Thin;
+        }
+      }
       props.lspace = op.lspace.unwrap_or(props.lspace);
       props.rspace = op.rspace.unwrap_or(props.rspace);
       operator_props[idx] = Some(props);
@@ -3197,8 +3291,10 @@ impl MathLayoutContext {
       if let Some(op) = Self::operator_like(base) {
         // MathML Core operator dictionary: large operators such as ∑ have movable limits in
         // display style, but become scripts in inline style.
-        let form = op.form.unwrap_or(OperatorForm::Infix);
-        if Self::operator_default_properties(op.text, form).movable_limits {
+        let mut props =
+          Self::operator_default_properties(op.text, op.form.unwrap_or(OperatorForm::Infix));
+        props.movable_limits = op.movable_limits.unwrap_or(props.movable_limits);
+        if props.movable_limits {
           return self.layout_superscript(base, over, under, style, base_style);
         }
       }
@@ -3428,7 +3524,6 @@ impl MathLayoutContext {
       annotations,
     }
   }
-
   fn layout_sqrt(
     &mut self,
     body: &MathNode,
@@ -4372,6 +4467,11 @@ mod tests {
   use crate::text::font_db::FontConfig;
   use std::path::PathBuf;
 
+  fn font_ctx_with_fonts() -> FontContext {
+    static CTX: std::sync::OnceLock<FontContext> = std::sync::OnceLock::new();
+    CTX.get_or_init(FontContext::new).clone()
+  }
+
   fn find_math_element<'a>(node: &'a crate::dom::DomNode) -> Option<&'a crate::dom::DomNode> {
     if node
       .tag_name()
@@ -4859,7 +4959,7 @@ mod tests {
       frame: None,
       frame_spacing: None,
     });
-    let ctx = FontContext::new();
+    let ctx = font_ctx_with_fonts();
     let layout = layout_mathml(&node, &style, &ctx);
     assert!(layout.width > 0.0);
     assert!(layout.height > 0.0);
@@ -5527,7 +5627,7 @@ mod tests {
     style.font_family = vec!["STIX Two Math".to_string()].into();
 
     let node =
-      parse_math_from_html("<math><mover accent=\"true\"><mi>x</mi><mo>¯</mo></mover></math>");
+      parse_math_from_html(r#"<math><mover accent="true"><mi>x</mi><mo>¯</mo></mover></math>"#);
     let layout = layout_mathml(&node, &style, &ctx);
     let base_run = find_run(&layout, "x");
     let accent_run = find_run(&layout, "¯");
@@ -5641,6 +5741,88 @@ mod tests {
       "expected minsize to increase stretchy delimiter height: enforced={}, baseline={}",
       enforced,
       baseline
+    );
+  }
+
+  #[test]
+  fn parses_mo_operator_attribute_overrides() {
+    let parsed = parse_math_from_html(
+      r#"<math><mo fence="true" separator="true" largeop="true" movablelimits="true" accent="true">+</mo></math>"#,
+    );
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Operator {
+      text,
+      fence,
+      separator,
+      large_op,
+      movable_limits,
+      accent,
+      ..
+    } = &children[0]
+    else {
+      panic!("expected operator child");
+    };
+    assert_eq!(text, "+");
+    assert_eq!(*fence, Some(true));
+    assert_eq!(*separator, Some(true));
+    assert_eq!(*large_op, Some(true));
+    assert_eq!(*movable_limits, Some(true));
+    assert_eq!(*accent, Some(true));
+  }
+
+  #[test]
+  fn movablelimits_override_controls_inline_munderover_layout() {
+    let ctx = math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let default_tree =
+      parse_math_from_html("<math><munderover><mo>+</mo><mi>i</mi><mi>n</mi></munderover></math>");
+    let override_tree = parse_math_from_html(
+      r#"<math><munderover><mo movablelimits="true">+</mo><mi>i</mi><mi>n</mi></munderover></math>"#,
+    );
+    let default_layout = layout_mathml(&default_tree, &style, &ctx);
+    let override_layout = layout_mathml(&override_tree, &style, &ctx);
+    assert!(
+      override_layout.height < default_layout.height * 0.8,
+      "expected movablelimits=true to switch to scripts (smaller height): {} vs {}",
+      override_layout.height,
+      default_layout.height
+    );
+  }
+
+  #[test]
+  fn mover_accent_infers_style_from_overscript_mo_accent_property() {
+    let ctx = math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let accent_true =
+      parse_math_from_html(r#"<math><mover><mi>x</mi><mo accent="true">¯</mo></mover></math>"#);
+    let layout_true = layout_mathml(&accent_true, &style, &ctx);
+    let base_run = find_run(&layout_true, "x");
+    let over_run = find_run(&layout_true, "¯");
+    assert!(
+      (over_run.font_size - base_run.font_size).abs() < 0.01,
+      "expected accent overscript to use base font size: {} vs {}",
+      over_run.font_size,
+      base_run.font_size
+    );
+
+    let accent_false =
+      parse_math_from_html(r#"<math><mover><mi>x</mi><mo accent="false">¯</mo></mover></math>"#);
+    let layout_false = layout_mathml(&accent_false, &style, &ctx);
+    let base_run = find_run(&layout_false, "x");
+    let over_run = find_run(&layout_false, "¯");
+    assert!(
+      over_run.font_size < base_run.font_size - 0.1,
+      "expected non-accent overscript to use script font size: {} vs {}",
+      over_run.font_size,
+      base_run.font_size
     );
   }
 }

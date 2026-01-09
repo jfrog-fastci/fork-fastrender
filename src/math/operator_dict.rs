@@ -19,6 +19,7 @@ pub(super) struct OperatorDictProperties {
   pub stretchy: bool,
   pub large_op: bool,
   pub movable_limits: bool,
+  pub accent: bool,
   pub lspace: MathLengthOrKeyword,
   pub rspace: MathLengthOrKeyword,
 }
@@ -45,6 +46,28 @@ const fn props(
     stretchy,
     large_op,
     movable_limits,
+    accent: false,
+    lspace,
+    rspace,
+  }
+}
+
+const fn props_accent(
+  fence: bool,
+  separator: bool,
+  stretchy: bool,
+  large_op: bool,
+  movable_limits: bool,
+  lspace: MathLengthOrKeyword,
+  rspace: MathLengthOrKeyword,
+) -> OperatorDictProperties {
+  OperatorDictProperties {
+    fence,
+    separator,
+    stretchy,
+    large_op,
+    movable_limits,
+    accent: true,
     lspace,
     rspace,
   }
@@ -176,6 +199,23 @@ static OPERATOR_DICT: &[OperatorDictEntry] = &[
     text: ";",
     form: OperatorForm::Infix,
     props: props(false, true, false, false, false, MathLengthOrKeyword::Zero, MathLengthOrKeyword::Thin),
+  },
+
+  // -------------------------------------------------------------------------
+  // Accents
+  // -------------------------------------------------------------------------
+  OperatorDictEntry {
+    text: "¯",
+    form: OperatorForm::Infix,
+    props: props_accent(
+      false,
+      false,
+      false,
+      false,
+      false,
+      MathLengthOrKeyword::Zero,
+      MathLengthOrKeyword::Zero,
+    ),
   },
 
   // -------------------------------------------------------------------------
