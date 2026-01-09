@@ -495,40 +495,6 @@ fn auto_backend_ureq_timeout_slice(total: Duration) -> Duration {
   half.min(AUTO_BACKEND_UREQ_TIMEOUT_CAP)
 }
 
-fn rewrite_known_pageset_url(url: &str) -> Option<String> {
-  Url::parse(url).ok().and_then(|mut parsed| {
-    if parsed.scheme() != "https" {
-      return None;
-    }
-    let host = parsed.host_str()?;
-
-    // Some pageset domains (notably `tesco.com` and `nhk.or.jp`) do not resolve/reply reliably
-    // without the `www.` subdomain in certain environments. Rewrite to the canonical host so the
-    // pageset can still fetch and render deterministically.
-    //
-    // Note: this is intentionally scoped to a small allowlist to avoid surprising callers with
-    // implicit host changes.
-    if host.eq_ignore_ascii_case("tesco.com") {
-      parsed.set_host(Some("www.tesco.com")).ok()?;
-    } else if host.eq_ignore_ascii_case("nhk.or.jp") {
-      parsed.set_host(Some("www.nhk.or.jp")).ok()?;
-    } else if host.eq_ignore_ascii_case("developer.mozilla.org") {
-      // MDN occasionally moves pages without leaving an HTTP redirect. Rewrite known moved pages
-      // so the pageset can continue to fetch deterministically while keeping the original cache
-      // stem/progress artifact name stable.
-      if parsed.path() == "/en-US/docs/Web/CSS/CSS_multicol_layout/Using_multi-column_layouts" {
-        parsed.set_path("/en-US/docs/Web/CSS/Guides/Multicol_layout/Using");
-      } else {
-        return None;
-      }
-    } else {
-      return None;
-    }
-
-    Some(parsed.to_string())
-  })
-}
-
 fn http_browser_headers_enabled() -> bool {
   static ENABLED: OnceLock<bool> = OnceLock::new();
   *ENABLED.get_or_init(|| {
@@ -4006,10 +3972,7 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
-    let rewritten_url = rewrite_known_pageset_url(url);
-    let mut effective_url = rewritten_url
-      .map(Cow::Owned)
-      .unwrap_or_else(|| Cow::Borrowed(url));
+    let mut effective_url = Cow::Borrowed(url);
 
     let mut attempted_www_fallback = false;
     let mut www_fallback_error: Option<Error> = None;
@@ -4186,8 +4149,7 @@ impl HttpFetcher {
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
-    let rewritten_url = rewrite_known_pageset_url(url);
-    let effective_url = rewritten_url.as_deref().unwrap_or(url);
+    let effective_url = url;
     let prefer_reqwest = effective_url
       .get(..8)
       .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
@@ -12689,8 +12651,8 @@ mod tests {
   #[test]
   fn http_www_fallback_url_prefixes_www_for_dns_failures() {
     assert_eq!(
-      http_www_fallback_url("https://nhk.or.jp"),
-      Some("https://www.nhk.or.jp/".to_string())
+      http_www_fallback_url("https://example.com"),
+      Some("https://www.example.com/".to_string())
     );
     assert_eq!(
       http_www_fallback_url("http://example.com/path?x=1"),
@@ -12708,8 +12670,8 @@ mod tests {
   #[test]
   fn error_looks_like_dns_failure_matches_common_phrases() {
     let err = Error::Resource(ResourceError::new(
-      "https://nhk.or.jp",
-      "curl failed (exit code 6): Could not resolve host: nhk.or.jp",
+      "https://example.invalid",
+      "curl failed (exit code 6): Could not resolve host: example.invalid",
     ));
     assert!(error_looks_like_dns_failure(&err));
 
@@ -12741,30 +12703,27 @@ mod tests {
   }
 
   #[test]
-  fn rewrite_known_pageset_url_examples() {
-    assert_eq!(
-      rewrite_known_pageset_url("https://tesco.com").as_deref(),
-      Some("https://www.tesco.com/")
+  fn http_fetcher_contains_no_pageset_specific_url_rewrites() {
+    // Regression test: `HttpFetcher` should not contain page/site specific URL rewriting. Keeping
+    // pageset canonicalization in the pageset list (src/pageset.rs) makes fetch behavior
+    // predictable for non-pageset callers.
+    let src = include_str!("resource.rs");
+    let tesco = concat!("tesco", ".", "com");
+    let nhk = concat!("nhk", ".", "or", ".", "jp");
+    let mdn_moved = concat!(
+      "developer",
+      ".",
+      "mozilla",
+      ".",
+      "org/en-US/docs/Web/CSS/",
+      "CSS_multicol_layout",
+      "/",
+      "Using_multi-column_layouts"
     );
-    assert_eq!(
-      rewrite_known_pageset_url("https://nhk.or.jp").as_deref(),
-      Some("https://www.nhk.or.jp/")
-    );
-    assert_eq!(
-      rewrite_known_pageset_url(
-        "https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_multicol_layout/Using_multi-column_layouts"
-      )
-      .as_deref(),
-      Some("https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Multicol_layout/Using")
-    );
-    assert_eq!(
-      rewrite_known_pageset_url(
-        "https://developer.mozilla.org/en-US/docs/Web/CSS/text-orientation"
-      ),
-      None
-    );
-    assert_eq!(rewrite_known_pageset_url("https://example.com"), None);
-    assert_eq!(rewrite_known_pageset_url("http://tesco.com"), None);
+
+    assert!(!src.contains(tesco), "found forbidden hostname allowlist");
+    assert!(!src.contains(nhk), "found forbidden hostname allowlist");
+    assert!(!src.contains(mdn_moved), "found forbidden MDN path rewrite");
   }
 
   static RESOURCE_CACHE_DIAGNOSTICS_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -12803,7 +12762,7 @@ mod tests {
 
   #[test]
   fn http_browser_request_profile_for_url_examples() {
-    let doc = http_browser_request_profile_for_url("https://tesco.com");
+    let doc = http_browser_request_profile_for_url("https://example.com");
     assert_eq!(doc, FetchDestination::Document);
     assert_eq!(doc.accept(), DEFAULT_ACCEPT);
     assert_eq!(doc.sec_fetch_dest(), "document");
@@ -12813,7 +12772,7 @@ mod tests {
     assert_eq!(doc.upgrade_insecure_requests(), Some("1"));
 
     let font =
-      http_browser_request_profile_for_url("https://www.tesco.com/fonts/TESCOModern-Regular.woff2");
+      http_browser_request_profile_for_url("https://www.example.com/fonts/font.woff2");
     assert_eq!(font, FetchDestination::Font);
     assert_eq!(font.accept(), BROWSER_ACCEPT_ALL);
     assert_eq!(font.sec_fetch_dest(), "font");
