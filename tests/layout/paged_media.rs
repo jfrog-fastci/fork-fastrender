@@ -4225,6 +4225,43 @@ fn document_canvas_background_paints_above_page_background() {
 }
 
 #[test]
+fn document_canvas_background_does_not_paint_into_page_margins() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 40px;
+            background: rgb(255, 0, 0);
+          }
+          html { margin: 0; background: transparent; }
+          body {
+            margin: 0;
+            height: 10px;
+            background: rgb(0, 0, 255);
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media canvas background with margins");
+
+  assert_eq!(pixel(&pixmap, 10, 10), [255, 0, 0, 255]);
+  assert_eq!(pixel(&pixmap, 100, 100), [0, 0, 255, 255]);
+}
+
+#[test]
 fn page_border_is_painted() {
   let html = r#"
     <html>

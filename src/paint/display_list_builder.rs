@@ -2788,8 +2788,19 @@ impl DisplayListBuilder {
         }
         let target_w = canvas.0.max(context_bounds.width());
         let target_h = canvas.1.max(context_bounds.height());
-        let target_rect =
+        let default_target_rect =
           Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h);
+        // CSS Page 3 draws the document canvas background as the page box background, which is
+        // confined to the page area (inside the page margins).
+        //
+        // Pagination translates the page content subtree into the page box, so we can use that
+        // translated subtree bounds as the paint target for propagated HTML canvas backgrounds.
+        let target_rect = if is_paged_media_page_root {
+          Self::paged_media_document_canvas_rect(fragment, descendant_offset)
+            .unwrap_or(default_target_rect)
+        } else {
+          default_target_rect
+        };
         let (style, suppress_box_id, source_rect) =
           Self::root_background_candidate(fragment, descendant_offset)?;
         if !Self::has_paintable_background(&style) {
@@ -6316,6 +6327,39 @@ impl DisplayListBuilder {
     }
 
     None
+  }
+
+  fn paged_media_document_canvas_rect(page_root: &FragmentNode, origin: Point) -> Option<Rect> {
+    // Locate the synthetic paged-media document wrapper (forced z-index: 0) and use the bounds of
+    // its first non-fixed child as the document canvas area.
+    //
+    // The wrapper itself spans the full page box (including the @page margin area), while the
+    // translated page content subtree is positioned inside the margins. We want propagated HTML
+    // canvas backgrounds to paint only within that translated subtree, leaving the margins to show
+    // the @page background.
+    let mut wrapper: Option<&FragmentNode> = None;
+    let mut wrapper_area = -1.0f32;
+    for child in page_root.children.iter() {
+      if child.stacking_context.forced_z_index() != Some(0) {
+        continue;
+      }
+      let area = child.bounds.width().max(0.0) * child.bounds.height().max(0.0);
+      if area > wrapper_area {
+        wrapper = Some(child);
+        wrapper_area = area;
+      }
+    }
+    let wrapper = wrapper?;
+    let wrapper_origin = origin.translate(wrapper.bounds.origin);
+
+    let content = wrapper.children.iter().find(|child| {
+      !child
+        .style
+        .as_deref()
+        .is_some_and(|style| style.position == Position::Fixed)
+    })?;
+    let content_origin = wrapper_origin.translate(content.bounds.origin);
+    Some(Rect::new(content_origin, content.bounds.size))
   }
 
   fn build_text_clip_runs(
