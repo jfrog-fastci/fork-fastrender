@@ -1,4 +1,6 @@
-use crate::runtime::{IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlJsRuntime};
+use crate::runtime::{
+  IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlJsRuntime,
+};
 use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
@@ -23,9 +25,13 @@ enum HostObjectKind {
   SymbolObject { symbol_data: GcSymbol },
   Error { name: &'static str, message: GcString },
   // Built-in internal-slot stubs (not yet provided by `vm-js`).
-  ArrayBuffer { shared: bool },
+  ArrayBuffer {
+    shared: bool,
+  },
   DataView,
-  TypedArray { name: &'static str },
+  TypedArray {
+    name: &'static str,
+  },
 }
 
 struct HostObject {
@@ -105,7 +111,20 @@ impl VmJsRuntime {
     Ok(handle)
   }
 
-  fn prop_key_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
+  /// Creates a string [`PropertyKey`] from a Rust `&str`.
+  ///
+  /// This is a convenience for embeddings (e.g. DOM bindings) that need to define/read properties
+  /// by name without having to pattern-match a [`Value::String`] just to construct
+  /// `PropertyKey::String`.
+  ///
+  /// # GC / rooting
+  ///
+  /// `Value`/`PropertyKey` are GC handles. Today, this adapter pins all values it allocates in the
+  /// heap's persistent root set (see `root_value`), so returned keys remain valid for the lifetime
+  /// of the `VmJsRuntime`. Callers should still treat returned handles as GC-managed; a future
+  /// engine integration may require explicit rooting or scoped handles instead of globally pinning
+  /// everything.
+  pub fn prop_key_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
     Ok(PropertyKey::String(self.intern_string(s)?))
   }
 
@@ -395,11 +414,24 @@ impl VmJsRuntime {
     f(self, this, args)
   }
 
-  /// Call a JS function value.
+  /// Invokes `callee` as a function with an explicit `this` value and argument list.
   ///
-  /// This currently only supports host-defined function objects created via
-  /// [`VmJsRuntime::alloc_function_value`]. It is sufficient for early host integration plumbing
-  /// (e.g. DOM event listeners) while the full `vm-js` interpreter is still under development.
+  /// This is the minimal embedding API needed by DOM/WebIDL bindings to call event listeners and
+  /// callback interfaces.
+  ///
+  /// # Current limitations
+  ///
+  /// Only host-callable objects created via [`VmJsRuntime::alloc_function_value`] are supported
+  /// today. Attempting to call an arbitrary JS value will either throw a `TypeError` (if it is not
+  /// callable) or return [`VmError::Unimplemented`] (if it is some non-host callable we don't know
+  /// how to invoke yet).
+  ///
+  /// # GC / rooting
+  ///
+  /// `Value`/`PropertyKey` are GC handles. This runtime currently pins all values it allocates in
+  /// the heap's persistent root set, allowing callers to store handles without additional rooting.
+  /// Do not rely on this long-term: a future engine integration may require explicit rooting or
+  /// handle scopes.
   pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     <Self as JsRuntime>::call(self, callee, this, args)
   }
@@ -462,7 +494,10 @@ impl VmJsRuntime {
     } else {
       (1.0, trimmed)
     };
-    if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    if let Some(rest) = digits
+      .strip_prefix("0x")
+      .or_else(|| digits.strip_prefix("0X"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -471,7 +506,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits.strip_prefix("0b").or_else(|| digits.strip_prefix("0B")) {
+    if let Some(rest) = digits
+      .strip_prefix("0b")
+      .or_else(|| digits.strip_prefix("0B"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -480,7 +518,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits.strip_prefix("0o").or_else(|| digits.strip_prefix("0O")) {
+    if let Some(rest) = digits
+      .strip_prefix("0o")
+      .or_else(|| digits.strip_prefix("0O"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -733,11 +774,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
         Some(HostObjectKind::StringObject { string_data }) => self.to_number_from_string(*string_data)?,
         Some(HostObjectKind::BooleanObject { boolean_data }) => {
-          if *boolean_data {
-            1.0
-          } else {
-            0.0
-          }
+          if *boolean_data { 1.0 } else { 0.0 }
         }
         Some(HostObjectKind::NumberObject { number_data }) => *number_data,
         Some(HostObjectKind::SymbolObject { symbol_data }) => {
@@ -1146,5 +1183,42 @@ mod tests {
     let got = rt.get_method(obj, key).unwrap();
     assert!(got.is_some());
     assert_eq!(calls.get(), 1);
+  }
+
+  #[test]
+  fn call_function_invokes_host_function_with_this_and_args() {
+    let mut rt = VmJsRuntime::new();
+
+    let this = rt.alloc_object_value().unwrap();
+    let arg0 = rt.alloc_string_value("arg0").unwrap();
+    let arg1 = Value::Number(123.0);
+
+    let callee = rt
+      .alloc_function_value(move |rt, got_this, got_args| {
+        assert_eq!(got_this, this);
+        assert_eq!(got_args, &[arg0, arg1]);
+        rt.alloc_string_value("ret")
+      })
+      .unwrap();
+
+    let ret = rt.call_function(callee, this, &[arg0, arg1]).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, ret), "ret");
+  }
+
+  #[test]
+  fn call_function_non_callable_throws_type_error() {
+    let mut rt = VmJsRuntime::new();
+
+    let err = rt
+      .call_function(Value::Number(1.0), Value::Undefined, &[])
+      .unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown TypeError, got {other:?}"),
+    };
+
+    let name_key = rt.prop_key_str("name").unwrap();
+    let name_value = rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, name_value), "TypeError");
   }
 }
