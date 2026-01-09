@@ -311,6 +311,15 @@ pub enum MathLength {
   Px(f32),
 }
 
+/// Length adjustment used by MathML `<mpadded>` attributes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MathPaddedLength {
+  /// Absolute length assignment.
+  Absolute(MathLength),
+  /// Relative adjustment to the base dimension.
+  Relative(MathLength),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MathLengthOrKeyword {
   Length(MathLength),
@@ -524,6 +533,15 @@ pub enum MathNode {
   },
   /// MathML `<mphantom>`: lays out its child but does not paint it.
   Phantom(Box<MathNode>),
+  /// MathML `<mpadded>`: adjusts the box metrics/position of its child.
+  Padded {
+    child: Box<MathNode>,
+    width: Option<MathPaddedLength>,
+    height: Option<MathPaddedLength>,
+    depth: Option<MathPaddedLength>,
+    lspace: Option<MathPaddedLength>,
+    voffset: Option<MathPaddedLength>,
+  },
   Style {
     overrides: MathStyleOverrides,
     children: Vec<MathNode>,
@@ -770,6 +788,20 @@ fn parse_math_length(raw: Option<&str>) -> Option<MathLength> {
       .map(MathLength::Px);
   }
   value.parse::<f32>().ok().map(MathLength::Em)
+}
+
+fn parse_mpadded_length(raw: Option<&str>) -> Option<MathPaddedLength> {
+  let value = trim_ascii_whitespace(raw?);
+  if value.is_empty() {
+    return None;
+  }
+  let relative = value.starts_with('+') || value.starts_with('-');
+  let len = parse_math_length(Some(value))?;
+  Some(if relative {
+    MathPaddedLength::Relative(len)
+  } else {
+    MathPaddedLength::Absolute(len)
+  })
 }
 
 fn parse_math_length_or_keyword(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
@@ -1188,6 +1220,14 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         "mrow" => Some(MathNode::Row(parse_children(node))),
         "mphantom" => wrap_row_or_single(parse_children(node))
           .map(|child| MathNode::Phantom(Box::new(child))),
+        "mpadded" => wrap_row_or_single(parse_children(node)).map(|child| MathNode::Padded {
+          child: Box::new(child),
+          width: parse_mpadded_length(node.get_attribute_ref("width")),
+          height: parse_mpadded_length(node.get_attribute_ref("height")),
+          depth: parse_mpadded_length(node.get_attribute_ref("depth")),
+          lspace: parse_mpadded_length(node.get_attribute_ref("lspace")),
+          voffset: parse_mpadded_length(node.get_attribute_ref("voffset")),
+        }),
         "mi" => normalized_text(node, false).map(|text| MathNode::Identifier {
           text,
           variant: parse_mathvariant(node),
@@ -4429,6 +4469,70 @@ impl MathLayoutContext {
         layout.fragments.clear();
         layout
       }
+      MathNode::Padded {
+        child,
+        width,
+        height,
+        depth,
+        lspace,
+        voffset,
+      } => {
+        let mut layout = self.layout_node(child, style, base_style);
+        let base_width = layout.width;
+        let base_ascent = layout.baseline;
+        let base_descent = layout.height - layout.baseline;
+        let metrics = layout
+          .annotations
+          .trailing_glyph
+          .as_ref()
+          .and_then(|glyph| self.font_ctx.get_scaled_metrics(&glyph.font, style.font_size))
+          .unwrap_or_else(|| self.base_font_metrics(base_style, style.font_size));
+
+        let resolve = |value: MathPaddedLength, base: f32| -> f32 {
+          let (len, relative) = match value {
+            MathPaddedLength::Absolute(len) => (len, false),
+            MathPaddedLength::Relative(len) => (len, true),
+          };
+          let delta = self.resolve_length(len, style, &metrics);
+          if relative {
+            base + delta
+          } else {
+            delta
+          }
+        };
+
+        let lspace_px = lspace.map(|v| resolve(v, 0.0)).unwrap_or(0.0);
+        let voffset_px = voffset.map(|v| resolve(v, 0.0)).unwrap_or(0.0);
+
+        let mut padded_width = width.map(|v| resolve(v, base_width)).unwrap_or(base_width);
+        let mut ascent = height.map(|v| resolve(v, base_ascent)).unwrap_or(base_ascent);
+        let mut descent = depth.map(|v| resolve(v, base_descent)).unwrap_or(base_descent);
+
+        // `lspace` shifts the rendered content horizontally; when width is not explicitly set,
+        // treat it as adding extra space on the left (matching common MathML usage where mpadded
+        // introduces padding without requiring an explicit `width` adjustment).
+        if width.is_none() {
+          padded_width = base_width + lspace_px;
+        }
+        padded_width = padded_width.max(0.0);
+
+        // `voffset` shifts the content relative to the baseline. Implement this by adjusting the
+        // baseline position (ascent) while keeping the child fragments in place.
+        ascent = (ascent + voffset_px).max(0.0);
+        descent = (descent - voffset_px).max(0.0);
+
+        layout.width = padded_width;
+        layout.baseline = ascent;
+        layout.height = (ascent + descent).max(0.0);
+        if lspace_px != 0.0 {
+          layout.fragments = layout
+            .fragments
+            .into_iter()
+            .map(|frag| frag.translate(Point::new(lspace_px, 0.0)))
+            .collect();
+        }
+        layout
+      }
       MathNode::Style {
         overrides,
         children,
@@ -4592,6 +4696,89 @@ mod tests {
 
     assert_eq!(concat_glyph_text(&baseline_layout), "abc");
     assert_eq!(concat_glyph_text(&phantom_layout), "ac");
+  }
+
+  #[test]
+  fn mpadded_lspace_shifts_fragments_and_expands_width_by_default() {
+    let ctx = bundled_math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 20.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let baseline = parse_math_from_html("<math><mi>a</mi></math>");
+    let with_lspace = parse_math_from_html("<math><mpadded lspace=\"1em\"><mi>a</mi></mpadded></math>");
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let lspace_layout = layout_mathml(&with_lspace, &style, &ctx);
+
+    let baseline_origin_x = baseline_layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { origin, .. } => Some(origin.x),
+        _ => None,
+      })
+      .expect("expected baseline glyph");
+    let lspace_origin_x = lspace_layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { origin, .. } => Some(origin.x),
+        _ => None,
+      })
+      .expect("expected mpadded glyph");
+
+    let eps = 0.01;
+    assert!(
+      (lspace_origin_x - baseline_origin_x - style.font_size).abs() < eps,
+      "mpadded lspace should translate glyph origin by 1em: {} -> {}",
+      baseline_origin_x,
+      lspace_origin_x
+    );
+    assert!(
+      (lspace_layout.width - baseline_layout.width - style.font_size).abs() < eps,
+      "mpadded lspace should expand width by 1em when width is unspecified: {} -> {}",
+      baseline_layout.width,
+      lspace_layout.width
+    );
+  }
+
+  #[test]
+  fn mpadded_relative_width_adds_to_base_width() {
+    let style = ComputedStyle::default();
+    let base = parse_math_from_html("<math><mspace width=\"1em\"/></math>");
+    let padded = parse_math_from_html("<math><mpadded width=\"+1em\"><mspace width=\"1em\"/></mpadded></math>");
+
+    let base_layout = layout_mathml(&base, &style, &FontContext::empty());
+    let padded_layout = layout_mathml(&padded, &style, &FontContext::empty());
+
+    assert!(
+      (padded_layout.width - base_layout.width - style.font_size).abs() < 0.001,
+      "mpadded width=+1em should add 1em to width: {} -> {}",
+      base_layout.width,
+      padded_layout.width
+    );
+  }
+
+  #[test]
+  fn mpadded_voffset_adjusts_baseline() {
+    let ctx = bundled_math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 20.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let baseline = parse_math_from_html("<math><mi>a</mi></math>");
+    let with_voffset = parse_math_from_html("<math><mpadded voffset=\"1em\"><mi>a</mi></mpadded></math>");
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let voffset_layout = layout_mathml(&with_voffset, &style, &ctx);
+
+    assert!(
+      (voffset_layout.baseline - baseline_layout.baseline - style.font_size).abs() < 0.01,
+      "mpadded voffset should increase baseline by 1em: {} -> {}",
+      baseline_layout.baseline,
+      voffset_layout.baseline
+    );
   }
 
   #[test]
