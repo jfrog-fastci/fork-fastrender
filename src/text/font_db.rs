@@ -1124,6 +1124,34 @@ pub enum GenericFamily {
   Fangsong,
 }
 
+/// Returns additional font family names that should be treated as fallbacks for a requested *named*
+/// family.
+///
+/// Browsers typically integrate with platform font substitution (e.g. Fontconfig aliases on Linux)
+/// so that web content using "core" font names like `Helvetica` or `Arial` still produces
+/// reasonable results on systems where those exact families are not installed.
+///
+/// FastRender's font matching is based on `fontdb` and does not consult platform alias rules, so
+/// we provide a small, deterministic alias table for common web fonts. This is not intended to be
+/// exhaustive; it is a pragmatic compatibility layer to improve fidelity on pages that specify
+/// these names as primary fonts.
+pub(crate) fn named_family_aliases(name: &str) -> &'static [&'static str] {
+  if name.eq_ignore_ascii_case("Helvetica")
+    || name.eq_ignore_ascii_case("Helvetica Neue")
+    || name.eq_ignore_ascii_case("Arial")
+  {
+    // `fc-match -s Helvetica` on typical Linux environments prefers Liberation Sans first, then
+    // falls back through common sans-serif faces.
+    &["Liberation Sans", "Noto Sans", "DejaVu Sans"]
+  } else if name.eq_ignore_ascii_case("Times New Roman") || name.eq_ignore_ascii_case("Times") {
+    &["Liberation Serif", "Noto Serif", "DejaVu Serif"]
+  } else if name.eq_ignore_ascii_case("Courier New") || name.eq_ignore_ascii_case("Courier") {
+    &["Liberation Mono", "Noto Sans Mono", "DejaVu Sans Mono"]
+  } else {
+    &[]
+  }
+}
+
 impl GenericFamily {
   /// Parse a generic family name from a string
   ///

@@ -31,6 +31,7 @@ mod emoji_test;
 mod emoji_unified_test;
 mod font_face_typography_descriptors;
 mod font_fallback;
+mod font_family_alias_test;
 mod font_feature_values_test;
 mod font_metrics_test;
 mod font_palette;

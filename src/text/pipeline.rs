@@ -4607,12 +4607,24 @@ fn emoji_preference_for_cluster(cluster_text: &str, variant: FontVariantEmoji) -
 
 fn build_family_entries(style: &ComputedStyle) -> Vec<crate::text::font_fallback::FamilyEntry> {
   use crate::text::font_fallback::FamilyEntry;
+  use crate::text::font_fallback::family_name_signature;
+  use rustc_hash::FxHashSet;
   let mut entries = Vec::new();
+  let mut seen_named: FxHashSet<u64> = FxHashSet::default();
+  let push_named = |name: &str, entries: &mut Vec<FamilyEntry>, seen: &mut FxHashSet<u64>| {
+    let sig = family_name_signature(name);
+    if seen.insert(sig) {
+      entries.push(FamilyEntry::Named(name.to_string()));
+    }
+  };
   for family in style.font_family.iter() {
     if let Some(generic) = crate::text::font_db::GenericFamily::parse(family) {
       entries.push(FamilyEntry::Generic(generic));
     } else {
-      entries.push(FamilyEntry::Named(family.clone()));
+      push_named(family, &mut entries, &mut seen_named);
+      for alias in crate::text::font_db::named_family_aliases(family) {
+        push_named(alias, &mut entries, &mut seen_named);
+      }
     }
   }
 
