@@ -1185,7 +1185,6 @@ dependencies = [
  "walkdir",
  "webidl",
  "webidl-js-runtime",
- "webidl-vm-js",
  "wgpu",
  "winit",
  "wuff",

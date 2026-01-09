@@ -42,6 +42,7 @@
 
 use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
+use crate::style::display::FormattingContextType;
 use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::types::WhiteSpace;
@@ -229,8 +230,15 @@ impl AnonymousBoxCreator {
     }
 
     match parent_type {
-      // Block containers need block fixup
-      BoxType::Block(_) => Self::fixup_block_children(children, parent_style.as_ref()),
+      // Block containers need block fixup (CSS 2.1 §9.2.1.1). However, flex/grid/table formatting
+      // contexts are not block formatting contexts; their direct children participate as
+      // flex/grid/table items and must not be wrapped into anonymous block runs.
+      BoxType::Block(block) => match block.formatting_context {
+        FormattingContextType::Flex | FormattingContextType::Grid | FormattingContextType::Table => children,
+        FormattingContextType::Block | FormattingContextType::Inline => {
+          Self::fixup_block_children(children, parent_style.as_ref())
+        }
+      },
 
       // Inline containers need inline fixup
       BoxType::Inline(_) => Self::fixup_inline_children(children, parent_style),
@@ -1239,6 +1247,27 @@ mod tests {
     // Third anonymous block contains 1 inline
     assert!(fixed.children[2].is_anonymous());
     assert_eq!(fixed.children[2].children.len(), 1);
+  }
+
+  #[test]
+  fn grid_containers_do_not_wrap_inline_runs_in_anonymous_blocks() {
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = Display::Grid;
+    let grid_style = Arc::new(grid_style);
+
+    let inline1 = BoxNode::new_inline(default_style(), vec![]);
+    let block = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    let inline2 = BoxNode::new_inline(default_style(), vec![]);
+
+    let container =
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![inline1, block, inline2]);
+
+    let fixed = fixup_tree(container);
+    assert_eq!(fixed.children.len(), 3);
+    assert!(
+      fixed.children.iter().all(|child| !child.is_anonymous()),
+      "grid items must remain direct children; CSS2 anonymous block fixup does not apply to grid containers"
+    );
   }
 
   #[test]
