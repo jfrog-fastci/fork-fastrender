@@ -7,7 +7,7 @@ use fastrender::layout::fragmentation::{
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  BreakBetween, BreakInside, GridTrack, InsetValue, IntrinsicSizeKeyword, WritingMode,
+  BreakBetween, BreakInside, FlexDirection, GridTrack, InsetValue, IntrinsicSizeKeyword, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -152,6 +152,61 @@ fn forced_break_before_first_child_does_not_create_leading_empty_fragment() {
 
   assert_eq!(fragments.len(), 1);
   assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+}
+
+#[test]
+fn flex_item_forced_break_does_not_force_sibling_breaks() {
+  let mut breaker_style = ComputedStyle::default();
+  breaker_style.break_after = BreakBetween::Page;
+  let breaker_style = Arc::new(breaker_style);
+
+  let mut breaker = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
+  breaker.style = Some(breaker_style);
+  let follower = FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
+
+  let item_a = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![breaker, follower],
+  );
+  let item_b =
+    FragmentNode::new_block_with_id(Rect::from_xywh(50.0, 0.0, 40.0, 40.0), 20, vec![]);
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Row;
+  let flex = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+    vec![item_a, item_b],
+    Arc::new(flex_style),
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![flex]);
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0)).unwrap();
+  assert_eq!(fragments.len(), 2, "expected content to fragment after blank insertion");
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert_eq!(
+    fragments_with_id(&fragments[0], 2).len(),
+    0,
+    "post-break content should not be on the first page"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[0], 20).len(),
+    1,
+    "sibling flex item should remain on the first page"
+  );
+
+  assert_eq!(
+    fragments_with_id(&fragments[1], 2).len(),
+    1,
+    "post-break content should appear on the next page"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[1], 20).len(),
+    0,
+    "sibling flex item must not be duplicated or split onto the next page"
+  );
 }
 
 #[test]

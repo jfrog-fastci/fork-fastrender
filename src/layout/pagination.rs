@@ -14,7 +14,8 @@ use crate::layout::formatting_context::{
   layout_style_fingerprint, set_fragmentainer_block_size_hint, LayoutError,
 };
 use crate::layout::fragmentation::{
-  apply_float_parallel_flow_forced_break_shifts, apply_grid_parallel_flow_forced_break_shifts,
+  apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
+  apply_grid_parallel_flow_forced_break_shifts,
   clip_node, collect_atomic_ranges_with_axes, collect_forced_boundaries_for_pagination_with_axes,
   collect_table_repetition_info_with_axes, normalize_atomic_ranges, normalize_fragment_margins,
   parallel_flow_content_extent, propagate_fragment_metadata, AtomicRange, ForcedBoundary,
@@ -427,6 +428,12 @@ impl CachedLayout {
 
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
     apply_float_parallel_flow_forced_break_shifts(
+      &mut root,
+      axes,
+      style_block_size,
+      FragmentationContext::Page,
+    );
+    apply_flex_parallel_flow_forced_break_shifts(
       &mut root,
       axes,
       style_block_size,

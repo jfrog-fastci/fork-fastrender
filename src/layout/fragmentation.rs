@@ -514,6 +514,93 @@ pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
   walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
 }
 
+pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+  context: FragmentationContext,
+) {
+  if !matches!(context, FragmentationContext::Page) {
+    return;
+  }
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    axes: FragmentAxes,
+    fragmentainer_size: f32,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    let is_row_flex_container = matches!(style.display, Display::Flex | Display::InlineFlex)
+      && matches!(
+        style.flex_direction,
+        FlexDirection::Row | FlexDirection::RowReverse
+      );
+
+    if is_row_flex_container {
+      for child in node.children_mut().iter_mut() {
+        let child_style = child
+          .style
+          .as_ref()
+          .map(|s| s.as_ref())
+          .unwrap_or(default_style);
+        if !child_style.position.is_in_flow() {
+          continue;
+        }
+
+        let child_block_size = axis.block_size(&child.bounds);
+        if child_block_size <= BREAK_EPSILON {
+          continue;
+        }
+        let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+        let child_abs_end = child_abs_start + child_block_size;
+
+        let mut boundaries = collect_forced_boundaries_with_axes(child, child_abs_start, axes);
+        if boundaries.is_empty() {
+          continue;
+        }
+
+        let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
+        positions.retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
+        let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
+        else {
+          continue;
+        };
+
+        apply_parallel_flow_shifts_to_descendants(child, child_abs_start, 0.0, axis, &shifts);
+      }
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        axes,
+        fragmentainer_size,
+        default_style,
+      );
+    }
+  }
+
+  walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
+}
+
 pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
   root: &mut FragmentNode,
   axes: FragmentAxes,
@@ -568,6 +655,7 @@ pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
         context,
         axis,
         node_writing_mode,
+        false,
         false,
       );
 
@@ -951,6 +1039,7 @@ impl FragmentationAnalyzer {
       &axis,
       root_writing_mode,
       true,
+      false,
     );
 
     // Collect atomic range *candidates* independent of the current fragmentainer size.
@@ -1567,6 +1656,7 @@ pub fn fragment_tree(
     options.fragmentainer_size,
     context,
   );
+  apply_flex_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size, context);
 
   let mut analyzer =
     FragmentationAnalyzer::new(&root, context, axes, true, Some(options.fragmentainer_size));
@@ -2591,6 +2681,7 @@ fn collect_break_opportunities(
   axis: &FragmentAxis,
   inherited_writing_mode: WritingMode,
   suppress_float_descendants: bool,
+  suppress_forced_breaks: bool,
 ) {
   let default_style = default_style();
   let style = node
@@ -2626,6 +2717,8 @@ fn collect_break_opportunities(
   let node_block_size = axis.block_size(&node.bounds);
   let node_flow_start = abs_start;
   let abs_end = abs_start + node_block_size;
+  let is_row_flex_container_in_page = matches!(context, FragmentationContext::Page)
+    && is_row_flex_container(style);
 
   // When the fragment includes both grid track ranges and per-item placement metadata, break hints
   // on grid items apply to the corresponding grid line boundaries (CSS Grid 2 §Fragmenting Grid
@@ -2655,8 +2748,11 @@ fn collect_break_opportunities(
           let placement = &grid_items.items[idx];
           let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
-          let before_strength =
+          let mut before_strength =
             combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+          if suppress_forced_breaks && matches!(before_strength, BreakStrength::Forced) {
+            before_strength = BreakStrength::Auto;
+          }
           if !matches!(before_strength, BreakStrength::Auto) {
             let boundary_idx = start_line.saturating_sub(1) as usize;
             if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
@@ -2664,7 +2760,10 @@ fn collect_break_opportunities(
             }
           }
 
-          let after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+          let mut after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+          if suppress_forced_breaks && matches!(after_strength, BreakStrength::Forced) {
+            after_strength = BreakStrength::Auto;
+          }
           if !matches!(after_strength, BreakStrength::Auto) {
             let boundary_idx = end_line.saturating_sub(1) as usize;
             if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
@@ -2677,7 +2776,13 @@ fn collect_break_opportunities(
           if matches!(strength, BreakStrength::Auto) {
             continue;
           }
-          let strength = apply_avoid_penalty(strength, inside_avoid > 0);
+          let mut strength = apply_avoid_penalty(strength, inside_avoid > 0);
+          if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
+            strength = BreakStrength::Auto;
+          }
+          if matches!(strength, BreakStrength::Auto) {
+            continue;
+          }
           let pos = if boundary_idx == 0 {
             abs_start
           } else if boundary_idx == tracks.len() {
@@ -2797,6 +2902,11 @@ fn collect_break_opportunities(
       }
 
       for child in node.children.iter() {
+        let child_style = child
+          .style
+          .as_ref()
+          .map(|s| s.as_ref())
+          .unwrap_or(default_style);
         let child_writing_mode = child
           .style
           .as_ref()
@@ -2817,6 +2927,8 @@ fn collect_break_opportunities(
           &child_axis,
           child_writing_mode,
           suppress_float_descendants,
+          suppress_forced_breaks
+            || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
         );
       }
       return;
@@ -2912,6 +3024,9 @@ fn collect_break_opportunities(
     if idx == 0 && !matches!(child_break_before, BreakBetween::Auto) {
       let mut strength = combine_breaks(BreakBetween::Auto, child_break_before, context);
       strength = apply_avoid_penalty(strength, inside_avoid > 0);
+      if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
+        strength = BreakStrength::Auto;
+      }
       if strength == BreakStrength::Auto
         && matches!(child.content, FragmentContent::Block { box_id: None })
       {
@@ -2947,6 +3062,8 @@ fn collect_break_opportunities(
         &child_axis,
         child_writing_mode,
         suppress_float_descendants,
+        suppress_forced_breaks
+          || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
       );
     }
 
@@ -2962,6 +3079,9 @@ fn collect_break_opportunities(
     };
     let mut strength = combine_breaks(child_break_after, next_break_before, context);
     strength = apply_avoid_penalty(strength, inside_avoid > 0);
+    if suppress_forced_breaks && matches!(strength, BreakStrength::Forced) {
+      strength = BreakStrength::Auto;
+    }
     if strength == BreakStrength::Auto
       && matches!(child.content, FragmentContent::Block { box_id: None })
     {
@@ -3048,7 +3168,7 @@ fn collect_forced_boundaries_with_axes_internal(
   node: &FragmentNode,
   abs_start: f32,
   axes: FragmentAxes,
-  suppress_parallel_grid_item_descendants: bool,
+  suppress_parallel_flow_descendants: bool,
 ) -> Vec<ForcedBoundary> {
   let page_progression_is_ltr = axes.page_progression_is_ltr();
 
@@ -3109,7 +3229,7 @@ fn collect_forced_boundaries_with_axes_internal(
     default_style: &ComputedStyle,
     axis: &FragmentAxis,
     parent_block_size: f32,
-    suppress_parallel_grid_item_descendants: bool,
+    suppress_parallel_flow_descendants: bool,
     page_progression_is_ltr: bool,
   ) {
     let node_style = node
@@ -3117,9 +3237,10 @@ fn collect_forced_boundaries_with_axes_internal(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
-    if suppress_parallel_grid_item_descendants && node_style.float.is_floating() {
+    if suppress_parallel_flow_descendants && node_style.float.is_floating() {
       return;
     }
+    let node_is_row_flex_container = is_row_flex_container(node_style);
     let grid_items = if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
       node.grid_fragmentation.as_deref()
     } else {
@@ -3226,7 +3347,7 @@ fn collect_forced_boundaries_with_axes_internal(
     }
 
     let mut flex_line_map: Option<Vec<Option<usize>>> = None;
-    if is_row_flex_container(node_style) {
+    if node_is_row_flex_container {
       let node_block_size = parent_block_size;
       if let Some(flex_lines) = collect_row_flex_lines(
         node,
@@ -3373,12 +3494,15 @@ fn collect_forced_boundaries_with_axes_internal(
           });
         }
       }
-      let skip_parallel_flow_descendants = suppress_parallel_grid_item_descendants
+      let skip_parallel_flow_descendants = (suppress_parallel_flow_descendants
         && idx < in_flow_grid_item_count
         && grid_items
           .and_then(|grid_items| grid_items.items.get(idx))
           .map(|placement| grid_item_spans_single_track(placement, axis))
-          .unwrap_or(false);
+          .unwrap_or(false))
+        || (suppress_parallel_flow_descendants
+          && node_is_row_flex_container
+          && child_style.position.is_in_flow());
       if !skip_parallel_flow_descendants {
         collect(
           child,
@@ -3387,7 +3511,7 @@ fn collect_forced_boundaries_with_axes_internal(
           default_style,
           axis,
           child_block_size,
-          suppress_parallel_grid_item_descendants,
+          suppress_parallel_flow_descendants,
           page_progression_is_ltr,
         );
       }
@@ -3404,7 +3528,7 @@ fn collect_forced_boundaries_with_axes_internal(
     default_style,
     &axis,
     axis.block_size(&node.bounds),
-    suppress_parallel_grid_item_descendants,
+    suppress_parallel_flow_descendants,
     page_progression_is_ltr,
   );
   boundaries
