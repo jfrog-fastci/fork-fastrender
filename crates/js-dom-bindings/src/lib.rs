@@ -885,6 +885,36 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return v == null ? null : String(v);
   };
 
+  Element.prototype.querySelector = function (selectors) {
+    var id = g.__fastrender_dom_query_selector(String(selectors), this.__node_id);
+    if (id == null) return null;
+    // dom2's selector engine currently includes the scope element itself; `Element#querySelector`
+    // must only consider descendants.
+    if (id === this.__node_id) {
+      var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+      for (var i = 0; i < ids.length; i++) {
+        if (ids[i] === this.__node_id) continue;
+        return g.__fastrender_wrap_node_id(ids[i], "element");
+      }
+      return null;
+    }
+    return g.__fastrender_wrap_node_id(id, "element");
+  };
+
+  Element.prototype.querySelectorAll = function (selectors) {
+    var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i] === this.__node_id) continue;
+      out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
+    }
+    return out;
+  };
+
+  Element.prototype.matches = function (selectors) {
+    return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
+  };
+
   Element.prototype.setAttribute = function (name, value) {
     g.__fastrender_dom_set_attribute(this.__node_id, String(name), String(value));
   };
@@ -895,25 +925,6 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
   Element.prototype.hasAttribute = function (name) {
     return !!g.__fastrender_dom_has_attribute(this.__node_id, String(name));
-  };
-
-  Element.prototype.querySelector = function (selectors) {
-    var id = g.__fastrender_dom_query_selector(String(selectors), this.__node_id);
-    if (id == null) return null;
-    return g.__fastrender_wrap_node_id(id, "element");
-  };
-
-  Element.prototype.querySelectorAll = function (selectors) {
-    var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
-    var out = [];
-    for (var i = 0; i < ids.length; i++) {
-      out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
-    }
-    return out;
-  };
-
-  Element.prototype.matches = function (selectors) {
-    return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
   };
 
   function defineReflectedString(prop, attr) {
@@ -1864,6 +1875,70 @@ const DOM_BINDINGS_SHIM: &str = r##"
     assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("c"));
     assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("b"));
     assert!(dom_ref.get_element_by_id("a").is_none());
+
+    Ok(())
+  }
+
+  #[test]
+  fn selectors_api_supports_query_selector_all_and_element_methods() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let outcome = ctx
+      .with(|ctx| {
+        ctx.eval::<String, _>(
+          r##"(function () {
+            try {
+              var parent = document.createElement("div");
+              parent.id = "p";
+              parent.className = "root";
+              document.body.appendChild(parent);
+
+              var a = document.createElement("span");
+              a.id = "a";
+              a.className = "x";
+              parent.appendChild(a);
+
+              var b = document.createElement("span");
+              b.id = "b";
+              b.className = "x";
+              parent.appendChild(b);
+
+              var list = document.querySelectorAll("span.x");
+              if (!list) return "fail: document.querySelectorAll missing";
+              if (list.length !== 2) return "fail: document.querySelectorAll length=" + String(list.length);
+              if (list[0] !== a || list[1] !== b) return "fail: document.querySelectorAll identity";
+
+              var scoped = parent.querySelectorAll("span.x");
+              if (!scoped) return "fail: element.querySelectorAll missing";
+              if (scoped.length !== 2) return "fail: element.querySelectorAll length=" + String(scoped.length);
+              if (scoped[0] !== a || scoped[1] !== b) return "fail: element.querySelectorAll identity";
+
+              if (parent.querySelector("#a") !== a) return "fail: element.querySelector mismatch";
+              if (a.querySelector("span") !== null) return "fail: element.querySelector should be null";
+
+              if (!a.matches("span.x")) return "fail: matches should be true";
+              if (a.matches("div")) return "fail: matches should be false";
+
+              var threw = false;
+              try { a.matches("["); } catch (e) { threw = String(e && e.name) === "SyntaxError"; }
+              if (!threw) return "fail: matches invalid selector should throw";
+
+              return "ok";
+            } catch (e) {
+              if (!e) return "unknown error";
+              return String(e) + "\n" + String(e.stack || "");
+            }
+          })()"##,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert_eq!(outcome, "ok", "selectors JS failed: {outcome}");
 
     Ok(())
   }
