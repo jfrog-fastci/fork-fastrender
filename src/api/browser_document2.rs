@@ -40,7 +40,18 @@ impl BrowserDocument2 {
 
   /// Creates a new live `dom2` document from an HTML string using the provided renderer.
   pub fn new(renderer: super::FastRender, html: &str, options: RenderOptions) -> Result<Self> {
-    let dom = renderer.parse_html(html)?;
+    // Install a scoped render deadline so HTML parsing honors `RenderOptions::{timeout,cancel_callback}`.
+    // This keeps behavior consistent with document preparation and allows callers (e.g. browser UI
+    // workers) to cancel expensive HTML parsing when a navigation is superseded.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      renderer.parse_html(html)?
+    } else {
+      renderer.parse_html(html)?
+    };
     let dom = Document::from_renderer_dom(&dom);
     Ok(Self {
       renderer,
@@ -179,11 +190,27 @@ impl BrowserDocument2 {
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
   pub fn render_if_needed(&mut self) -> Result<Option<super::Pixmap>> {
-    if !self.is_dirty() {
+    Ok(
+      self
+        .render_if_needed_with_deadlines(None)?
+        .map(|frame| frame.pixmap),
+    )
+  }
+
+  /// Renders a new frame if anything has been invalidated since the last successful frame,
+  /// applying an optional deadline to the *paint* phase.
+  ///
+  /// This mirrors [`super::BrowserDocument::render_if_needed_with_deadlines`] for the `dom2`
+  /// backed document variant.
+  pub fn render_if_needed_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<Option<super::PaintedFrame>> {
+    if !self.is_dirty() && self.prepared.is_some() {
       return Ok(None);
     }
-    let pixmap = self.render_frame()?;
-    Ok(Some(pixmap))
+    let frame = self.render_frame_with_deadlines(paint_deadline)?;
+    Ok(Some(frame))
   }
 
   /// Renders one frame.
@@ -191,6 +218,17 @@ impl BrowserDocument2 {
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
+    Ok(self.render_frame_with_deadlines(None)?.pixmap)
+  }
+
+  /// Renders one frame, applying an optional deadline to the *paint* phase.
+  ///
+  /// When layout is required, prepare/layout is executed using the currently configured
+  /// `RenderOptions::{timeout,cancel_callback}`, then painting proceeds under `paint_deadline`.
+  pub fn render_frame_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::PaintedFrame> {
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -234,18 +272,27 @@ impl BrowserDocument2 {
 
       self.prepared = Some(prepared);
       self.last_dom_mapping = Some(snapshot);
+      // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent
+      // paint step is cancelled or fails. Clear the layout dirtiness so callers can retry paint
+      // from cache without re-running cascade/layout.
+      self.style_dirty = false;
+      self.layout_dirty = false;
+      // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
+      // can be retried.
+      self.paint_dirty = true;
     }
 
-    let frame =
-      self.paint_from_cache_frame_with_deadline_and_animation_time(None, resolved_animation_time)?;
-    let pixmap = frame.pixmap;
+    let frame = self.paint_from_cache_frame_with_deadline_and_animation_time(
+      paint_deadline,
+      resolved_animation_time,
+    )?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
       self.clear_dirty();
     }
 
-    Ok(pixmap)
+    Ok(frame)
   }
 
   /// Updates the device pixel ratio used for media queries and resolution-dependent resources.

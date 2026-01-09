@@ -281,11 +281,27 @@ impl BrowserDocumentDom2 {
   ///
   /// Returns `Ok(None)` when no dirty flags are set.
   pub fn render_if_needed(&mut self) -> Result<Option<super::Pixmap>> {
-    if !self.is_dirty() {
+    Ok(
+      self
+        .render_if_needed_with_deadlines(None)?
+        .map(|frame| frame.pixmap),
+    )
+  }
+
+  /// Renders a new frame if anything has been invalidated since the last successful frame,
+  /// applying an optional deadline to the *paint* phase.
+  ///
+  /// This mirrors [`super::BrowserDocument::render_if_needed_with_deadlines`] but operates on the
+  /// `dom2`-backed document.
+  pub fn render_if_needed_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<Option<super::PaintedFrame>> {
+    if !self.is_dirty() && self.prepared.is_some() {
       return Ok(None);
     }
-    let pixmap = self.render_frame()?;
-    Ok(Some(pixmap))
+    let frame = self.render_frame_with_deadlines(paint_deadline)?;
+    Ok(Some(frame))
   }
 
   /// Renders one frame.
@@ -293,6 +309,17 @@ impl BrowserDocumentDom2 {
   /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
   /// cached layout artifacts.
   pub fn render_frame(&mut self) -> Result<super::Pixmap> {
+    Ok(self.render_frame_with_deadlines(None)?.pixmap)
+  }
+
+  /// Renders one frame, applying an optional deadline to the *paint* phase.
+  ///
+  /// When layout is required, prepare/layout is executed using the currently configured
+  /// `RenderOptions::{timeout,cancel_callback}`, then painting proceeds under `paint_deadline`.
+  pub fn render_frame_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::PaintedFrame> {
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -331,16 +358,24 @@ impl BrowserDocumentDom2 {
       }
 
       self.prepared = Some(prepared);
+      // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent
+      // paint step is cancelled or fails. Clear the layout dirtiness so callers can retry paint
+      // from cache without re-running cascade/layout.
+      self.style_dirty = false;
+      self.layout_dirty = false;
+      // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
+      // can be retried.
+      self.paint_dirty = true;
     }
 
-    let pixmap = self.paint_from_cache_with_deadline(None)?;
+    let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
       self.clear_dirty();
     }
 
-    Ok(pixmap)
+    Ok(frame)
   }
 
   /// Paints the most recently laid-out document without re-running style/layout.
