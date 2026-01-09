@@ -4,7 +4,7 @@ use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 use fastrender::api::{FastRenderFactory, FastRenderPoolConfig};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::spawn_ui_worker_with_factory;
+use fastrender::ui::spawn_browser_worker_with_factory;
 use fastrender::{Error, Result};
 use std::collections::HashMap;
 use std::io;
@@ -113,8 +113,8 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
   let factory = FastRenderFactory::with_config(
     FastRenderPoolConfig::default().with_fetcher(fetcher),
   )?;
-  let handle = spawn_ui_worker_with_factory("fastr-browser-history-test", factory)?;
-  let (worker_tx, worker_rx, join) = handle.split();
+  let worker = spawn_browser_worker_with_factory(factory)?;
+  let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 
   let tab_id = TabId(1);
   worker_tx
@@ -211,8 +211,8 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
   let factory = FastRenderFactory::with_config(
     FastRenderPoolConfig::default().with_fetcher(fetcher),
   )?;
-  let handle = spawn_ui_worker_with_factory("fastr-browser-redirect-history-test", factory)?;
-  let (worker_tx, worker_rx, join) = handle.split();
+  let worker = spawn_browser_worker_with_factory(factory)?;
+  let (worker_tx, worker_rx, join) = (worker.tx, worker.rx, worker.join);
 
   let tab_id = TabId(1);
   worker_tx
