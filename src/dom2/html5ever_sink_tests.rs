@@ -347,3 +347,230 @@ fn mathml_annotation_xml_integration_point_allows_html_parsing_inside_annotation
     "expected <div> inside annotation-xml to be parsed as an HTML element"
   );
 }
+
+fn find_shadow_root_child(doc: &Document, host: NodeId) -> Option<NodeId> {
+  doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+}
+
+fn find_node_by_id_attribute(doc: &Document, needle: &str) -> Option<NodeId> {
+  if needle.is_empty() {
+    return None;
+  }
+  doc.nodes().iter().enumerate().find_map(|(idx, node)| {
+    let attrs = match &node.kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+      _ => return None,
+    };
+    attrs
+      .iter()
+      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == needle)
+      .then_some(NodeId(idx))
+  })
+}
+
+#[test]
+fn declarative_shadow_rootmode_attaches_and_routes_template_contents() {
+  use crate::dom::ShadowRootMode;
+
+  let doc = parse_with_dom2_sink(
+    "<!doctype html><div id=host><template shadowrootmode=open shadowrootdelegatesfocus><slot></slot></template><p id=light>light</p></div>",
+  );
+
+  let host = doc.get_element_by_id("host").expect("host element missing");
+  let shadow_root = find_shadow_root_child(&doc, host).expect("expected ShadowRoot child");
+
+  assert_eq!(
+    doc.node(host).children.first().copied(),
+    Some(shadow_root),
+    "ShadowRoot should be the first child of the host"
+  );
+  assert!(
+    doc.node(host)
+      .children
+      .iter()
+      .all(|&child| child == shadow_root || !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+    "host should only have one shadow root child"
+  );
+
+  match &doc.node(shadow_root).kind {
+    NodeKind::ShadowRoot {
+      mode,
+      delegates_focus,
+    } => {
+      assert_eq!(*mode, ShadowRootMode::Open);
+      assert!(
+        *delegates_focus,
+        "shadowrootdelegatesfocus should set delegates_focus"
+      );
+    }
+    other => panic!("expected ShadowRoot kind, got {other:?}"),
+  }
+
+  assert!(
+    doc.node(shadow_root)
+      .children
+      .iter()
+      .any(|&child| matches!(doc.node(child).kind, NodeKind::Slot { .. })),
+    "expected <slot> inside shadow root"
+  );
+
+  let light_p = doc.get_element_by_id("light").expect("light <p> missing");
+  assert_eq!(doc.node(light_p).parent, Some(host));
+  assert_ne!(doc.node(light_p).parent, Some(shadow_root));
+}
+
+#[test]
+fn second_shadowrootmode_template_falls_back_to_inert_template_element() {
+  let doc = parse_with_dom2_sink(
+    "<!doctype html><div id=host>\
+     <template shadowrootmode=open><p>shadow</p></template>\
+     <template shadowrootmode=open><script id=second></script></template>\
+     </div>",
+  );
+
+  let host = doc.get_element_by_id("host").expect("host element missing");
+  let shadow_root = find_shadow_root_child(&doc, host).expect("expected ShadowRoot child");
+
+  let templates: Vec<NodeId> = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .filter(|&child| match &doc.node(child).kind {
+      NodeKind::Element { tag_name, .. } => tag_name.eq_ignore_ascii_case("template"),
+      _ => false,
+    })
+    .collect();
+
+  assert_eq!(
+    templates.len(),
+    1,
+    "expected the second <template> to remain in the light DOM"
+  );
+  let template = templates[0];
+  assert!(
+    doc.node(template).inert_subtree,
+    "fallback <template> contents must be inert"
+  );
+
+  let second_script =
+    find_node_by_id_attribute(&doc, "second").expect("script inside fallback template missing");
+  assert!(
+    !doc.is_connected_for_scripting(second_script),
+    "script inside inert fallback template should not be connected for scripting"
+  );
+  assert_ne!(
+    doc.node(second_script).parent,
+    Some(shadow_root),
+    "fallback template contents must not be inserted into the shadow root"
+  );
+}
+
+#[test]
+fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
+  use crate::js::orchestrator::{
+    CurrentScriptHost, CurrentScriptStateHandle, ScriptBlockExecutor, ScriptOrchestrator,
+  };
+  use crate::js::{DomHost, ScriptType};
+
+  #[derive(Clone)]
+  struct Host {
+    dom: Document,
+    script_state: CurrentScriptStateHandle,
+  }
+
+  impl DomHost for Host {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
+  }
+
+  impl CurrentScriptHost for Host {
+    fn current_script_state(&self) -> &CurrentScriptStateHandle {
+      &self.script_state
+    }
+  }
+
+  #[derive(Default)]
+  struct RecordingExecutor {
+    observed: Vec<Option<NodeId>>,
+  }
+
+  impl ScriptBlockExecutor<Host> for RecordingExecutor {
+    fn execute_script(
+      &mut self,
+      host: &mut Host,
+      _orchestrator: &mut ScriptOrchestrator,
+      _script: NodeId,
+      _script_type: ScriptType,
+    ) -> crate::Result<()> {
+      self.observed.push(host.current_script());
+      Ok(())
+    }
+  }
+
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  let mut parser = PausableHtml5everParser::new_document(Dom2TreeSink::new(None), opts);
+  parser.push_str(
+    "<!doctype html><div id=host><template shadowrootmode=open><script id=s>1</script></template></div>",
+  );
+  parser.set_eof();
+
+  let script_id = match parser.pump() {
+    Html5everPump::Script(id) => id,
+    _ => panic!("expected Script boundary"),
+  };
+
+  let dom = parser.sink().document().clone();
+  assert_eq!(script_text(&dom, script_id), "1");
+  assert!(
+    dom.is_connected_for_scripting(script_id),
+    "script inside declarative shadow root should be connected for scripting"
+  );
+
+  let host_id = dom.get_element_by_id("host").expect("host element missing");
+  let shadow_root = find_shadow_root_child(&dom, host_id).expect("expected ShadowRoot child");
+  assert!(
+    dom.ancestors(script_id).any(|ancestor| ancestor == shadow_root),
+    "expected paused <script> to be a descendant of the attached ShadowRoot"
+  );
+
+  // Also assert `Document.currentScript` semantics for classic scripts inside shadow trees.
+  let mut host = Host {
+    dom,
+    script_state: CurrentScriptStateHandle::default(),
+  };
+  let mut orchestrator = ScriptOrchestrator::new();
+  let mut executor = RecordingExecutor::default();
+  orchestrator
+    .execute_script_element(&mut host, script_id, ScriptType::Classic, &mut executor)
+    .unwrap();
+  assert_eq!(
+    executor.observed,
+    vec![None],
+    "Document.currentScript must be null for classic scripts in shadow trees"
+  );
+}

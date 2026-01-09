@@ -1,4 +1,4 @@
-use crate::dom::HTML_NAMESPACE;
+use crate::dom::{ShadowRootMode, HTML_NAMESPACE};
 use crate::html::base_url_tracker::BaseUrlTracker;
 
 use html5ever::tendril::StrTendril;
@@ -10,6 +10,7 @@ use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::{Document, NodeId, NodeKind};
@@ -55,6 +56,7 @@ pub struct Dom2TreeSink {
   /// node merging. The legacy parser (html5ever → RcDom → conversion) dropped comment/doctype nodes
   /// but preserved the resulting text node splits.
   ignored_insertion_points: RefCell<FxHashSet<(NodeId, Option<NodeId>)>>,
+  declarative_shadow_templates: RefCell<HashMap<NodeId, NodeId>>,
 }
 
 impl Dom2TreeSink {
@@ -63,6 +65,7 @@ impl Dom2TreeSink {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
       ignored_insertion_points: RefCell::new(FxHashSet::default()),
+      declarative_shadow_templates: RefCell::new(HashMap::new()),
     }
   }
 
@@ -385,15 +388,13 @@ impl TreeSink for Dom2TreeSink {
     Self: 'a;
 
   fn finish(self) -> Document {
-    // `dom::parse_html` post-processes the parsed DOM to attach declarative shadow roots declared via
-    // `<template shadowrootmode=...>` (or `shadowroot=...`). Mirror that behaviour here so all
-    // html5ever-driven `dom2` parses (including streaming/script-aware parsing) produce the same
-    // final tree shape as the legacy parser.
+    // Promote any remaining declarative shadow roots that were parsed as ordinary `<template>`
+    // elements (e.g. legacy `shadowroot=` markup, or `<template shadowrootmode=...>` that failed to
+    // attach during parsing).
     //
-    // Note: this runs once parsing has finished. The streaming parser additionally performs this
-    // promotion at connected `<script>` pause points so scripts can observe the promoted tree shape.
-    // Other mid-parse snapshots (e.g. when driving html5ever directly) may still contain the
-    // original `<template>` nodes.
+    // Note: `<template shadowrootmode=...>` is primarily handled during parsing via html5ever's
+    // declarative shadow DOM hooks (`TreeSink::attach_declarative_shadow`), which ensures shadow
+    // roots exist at `<script>` pause points.
     let mut doc = self.document.into_inner();
     doc.attach_shadow_roots();
     doc
@@ -416,6 +417,79 @@ impl TreeSink for Dom2TreeSink {
 
   fn same_node(&self, x: &NodeId, y: &NodeId) -> bool {
     x == y
+  }
+
+  fn allow_declarative_shadow_roots(&self, _intended_parent: &NodeId) -> bool {
+    true
+  }
+
+  fn attach_declarative_shadow(
+    &self,
+    location: &NodeId,
+    template: &NodeId,
+    attrs: &[Attribute],
+  ) -> bool {
+    let mode_attr = attrs.iter().find_map(|attr| {
+      attr
+        .name
+        .local
+        .as_ref()
+        .eq_ignore_ascii_case("shadowrootmode")
+        .then(|| attr.value.to_string())
+    });
+    let Some(mode_attr) = mode_attr else {
+      return false;
+    };
+
+    let mode = if mode_attr.eq_ignore_ascii_case("open") {
+      ShadowRootMode::Open
+    } else if mode_attr.eq_ignore_ascii_case("closed") {
+      ShadowRootMode::Closed
+    } else {
+      return false;
+    };
+    let delegates_focus = attrs.iter().any(|attr| {
+      attr
+        .name
+        .local
+        .as_ref()
+        .eq_ignore_ascii_case("shadowrootdelegatesfocus")
+    });
+
+    let mut doc = self.document.borrow_mut();
+    let is_shadow_host = match &doc.node(*location).kind {
+      NodeKind::Element { tag_name, .. } => !tag_name.eq_ignore_ascii_case("template"),
+      NodeKind::Slot { .. } => true,
+      _ => false,
+    };
+    if !is_shadow_host {
+      return false;
+    }
+    if doc
+      .node(*location)
+      .children
+      .iter()
+      .any(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    {
+      return false;
+    }
+
+    let shadow_root_id = doc.push_node(
+      NodeKind::ShadowRoot {
+        mode,
+        delegates_focus,
+      },
+      None,
+      /* inert_subtree */ false,
+    );
+    doc.node_mut(shadow_root_id).parent = Some(*location);
+    doc.node_mut(*location).children.insert(0, shadow_root_id);
+
+    self
+      .declarative_shadow_templates
+      .borrow_mut()
+      .insert(*template, shadow_root_id);
+    true
   }
 
   fn elem_name(&self, target: &NodeId) -> Dom2ElemName {
@@ -582,7 +656,12 @@ impl TreeSink for Dom2TreeSink {
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {
     // FastRender represents template contents as children of the `<template>` element itself.
-    *target
+    self
+      .declarative_shadow_templates
+      .borrow()
+      .get(target)
+      .copied()
+      .unwrap_or(*target)
   }
 
   fn remove_from_parent(&self, target: &NodeId) {
