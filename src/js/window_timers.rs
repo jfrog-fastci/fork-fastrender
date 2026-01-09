@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use vm_js::{
   Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHostHooks,
 };
-
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
 pub(crate) const SET_TIMEOUT_NOT_CALLABLE_ERROR: &str = "setTimeout callback is not callable";

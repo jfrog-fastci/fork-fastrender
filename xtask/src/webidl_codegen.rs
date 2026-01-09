@@ -84,6 +84,22 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
     xtask::webidl::parse_webidl(&loaded.combined_idl).context("parse extracted WebIDL")?;
   let resolved = xtask::webidl::resolve::resolve_webidl_world(&parsed);
 
+  // Sanity-check that we actually pulled in the expected WHATWG URL + Fetch surfaces. This helps
+  // catch accidental extractor regressions (e.g. missing `<pre class=idl>` blocks) that would
+  // silently ship an incomplete snapshot.
+  for iface in ["URL", "URLSearchParams", "Headers", "Request", "Response"] {
+    if resolved.interfaces.get(iface).is_none() {
+      bail!("expected WebIDL interface `{iface}` in generated world");
+    }
+  }
+  if resolved
+    .interface_mixins
+    .get("WindowOrWorkerGlobalScope")
+    .is_none()
+  {
+    bail!("expected WebIDL interface mixin `WindowOrWorkerGlobalScope` in generated world");
+  }
+
   let generated = xtask::webidl::generate::generate_rust_module(&resolved, &rustfmt_config)
     .context("generate formatted WebIDL Rust module")?;
 

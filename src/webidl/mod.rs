@@ -140,38 +140,44 @@ mod tests {
       .interface("URL")
       .expect("generated world should include URL interface (WHATWG URL)");
     let url_member_names = url.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
-    assert!(
-      url_member_names.contains(&"href"),
-      "expected URL to contain href: {url_member_names:?}"
-    );
-    assert!(
-      url_member_names.contains(&"origin"),
-      "expected URL to contain origin: {url_member_names:?}"
-    );
-    assert!(
-      url_member_names.contains(&"searchParams"),
-      "expected URL to contain searchParams: {url_member_names:?}"
-    );
+    for member in ["href", "origin", "searchParams"] {
+      assert!(
+        url_member_names.contains(&member),
+        "expected URL to contain {member}: {url_member_names:?}"
+      );
+    }
 
     let params = WORLD
       .interface("URLSearchParams")
       .expect("generated world should include URLSearchParams interface (WHATWG URL)");
     let params_member_names = params.members.iter().filter_map(|m| m.name).collect::<Vec<_>>();
+    for member in ["append", "getAll", "sort", "size"] {
+      assert!(
+        params_member_names.contains(&member),
+        "expected URLSearchParams to contain {member}: {params_member_names:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn generated_world_includes_whatwg_fetch_interfaces() {
+    for iface in ["Headers", "Request", "Response"] {
+      WORLD
+        .interface(iface)
+        .unwrap_or_else(|| panic!("generated world should include {iface} interface"));
+    }
+
+    let global = WORLD
+      .interface_mixin("WindowOrWorkerGlobalScope")
+      .expect("generated world should include WindowOrWorkerGlobalScope interface mixin");
+    let global_member_names = global
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
     assert!(
-      params_member_names.contains(&"append"),
-      "expected URLSearchParams to contain append: {params_member_names:?}"
-    );
-    assert!(
-      params_member_names.contains(&"getAll"),
-      "expected URLSearchParams to contain getAll: {params_member_names:?}"
-    );
-    assert!(
-      params_member_names.contains(&"sort"),
-      "expected URLSearchParams to contain sort: {params_member_names:?}"
-    );
-    assert!(
-      params_member_names.contains(&"size"),
-      "expected URLSearchParams to contain size: {params_member_names:?}"
+      global_member_names.contains(&"fetch"),
+      "expected WindowOrWorkerGlobalScope to contain fetch: {global_member_names:?}"
     );
   }
 
