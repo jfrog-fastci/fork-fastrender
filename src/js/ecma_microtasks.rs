@@ -26,9 +26,6 @@ pub trait VmJsEngineHost {
   /// Borrow the embedded `vm-js` heap immutably.
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
-  /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
-  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
-
   /// Borrow the embedded `vm-js` heap mutably.
   ///
   /// Defaults to the heap returned by [`VmJsEngineHost::vm_js_vm_and_heap_mut`].
@@ -36,6 +33,9 @@ pub trait VmJsEngineHost {
     let (_, heap) = self.vm_js_vm_and_heap_mut();
     heap
   }
+
+  /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
+  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
 }
 
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
@@ -97,6 +97,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
     let mut scope = heap.scope();
+
     if let Some(realm) = self.realm {
       let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
         realm,
@@ -228,12 +229,85 @@ mod tests {
   use super::*;
   use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::RunLimits;
+  use std::collections::HashMap;
   use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-  use std::sync::{Arc, Mutex};
+  use std::sync::{Arc, Mutex, OnceLock};
   use vm_js::VmHostHooks as _;
   use vm_js::VmJobContext as _;
 
   static JOB_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+  #[derive(Debug, Clone, PartialEq)]
+  struct CallRecord {
+    callee: vm_js::GcObject,
+    this: vm_js::Value,
+    args: Vec<vm_js::Value>,
+  }
+
+  static JOB_CALLBACK_CALL_LOGS: OnceLock<Mutex<HashMap<usize, Arc<Mutex<Vec<CallRecord>>>>>> =
+    OnceLock::new();
+
+  fn job_callback_call_logs() -> &'static Mutex<HashMap<usize, Arc<Mutex<Vec<CallRecord>>>>> {
+    JOB_CALLBACK_CALL_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
+  }
+
+  struct HeapCallLogGuard {
+    heap_ptr: usize,
+  }
+
+  impl Drop for HeapCallLogGuard {
+    fn drop(&mut self) {
+      job_callback_call_logs()
+        .lock()
+        .unwrap()
+        .remove(&self.heap_ptr);
+    }
+  }
+
+  fn install_job_callback_call_log(
+    heap: &vm_js::Heap,
+    log: Arc<Mutex<Vec<CallRecord>>>,
+  ) -> HeapCallLogGuard {
+    let heap_ptr = heap as *const vm_js::Heap as usize;
+    job_callback_call_logs()
+      .lock()
+      .unwrap()
+      .insert(heap_ptr, log);
+    HeapCallLogGuard { heap_ptr }
+  }
+
+  fn record_native_call(
+    heap: &vm_js::Heap,
+    callee: vm_js::GcObject,
+    this: vm_js::Value,
+    args: &[vm_js::Value],
+  ) {
+    let heap_ptr = heap as *const vm_js::Heap as usize;
+    let log = job_callback_call_logs()
+      .lock()
+      .unwrap()
+      .get(&heap_ptr)
+      .cloned();
+    if let Some(log) = log {
+      log.lock().unwrap().push(CallRecord {
+        callee,
+        this,
+        args: args.to_vec(),
+      });
+    }
+  }
+
+  fn record_call_native(
+    _vm: &mut vm_js::Vm,
+    scope: &mut vm_js::Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
+    callee: vm_js::GcObject,
+    this: vm_js::Value,
+    args: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    record_native_call(scope.heap(), callee, this, args);
+    Ok(vm_js::Value::Undefined)
+  }
 
   fn noop(
     _vm: &mut vm_js::Vm,
@@ -379,6 +453,96 @@ mod tests {
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
     assert_eq!(&*log.lock().unwrap(), &["job1", "job2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_can_call_job_callbacks_via_host_call_job_callback() -> crate::Result<()> {
+    let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
+
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let log: Arc<Mutex<Vec<CallRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let _log_guard = install_job_callback_call_log(&host.heap, Arc::clone(&log));
+
+    let call_id = host
+      .vm
+      .register_native_call(record_call_native)
+      .map_err(vm_err)?;
+
+    // Queue a PromiseResolveThenableJob which, per ECMA-262, must call the thenable's `then`
+    // callback via `HostCallJobCallback` (routed through `VmHostHooks::host_call_job_callback`).
+    let thenable;
+    let then_func;
+    let resolve;
+    let reject;
+    {
+      let mut hooks = VmJsHostHooks::new(&mut event_loop);
+      let mut scope = host.heap.scope();
+
+      let thenable_obj = scope.alloc_object().map_err(vm_err)?;
+      thenable = vm_js::Value::Object(thenable_obj);
+      scope.push_root(thenable).map_err(vm_err)?;
+
+      let then_name = scope.alloc_string("then").map_err(vm_err)?;
+      scope
+        .push_root(vm_js::Value::String(then_name))
+        .map_err(vm_err)?;
+      then_func = scope
+        .alloc_native_function(call_id, None, then_name, 2)
+        .map_err(vm_err)?;
+      scope
+        .push_root(vm_js::Value::Object(then_func))
+        .map_err(vm_err)?;
+
+      resolve = vm_js::Value::Null;
+      reject = vm_js::Value::Undefined;
+
+      let then_job_callback = hooks.host_make_job_callback(then_func);
+      let job = vm_js::new_promise_resolve_thenable_job(
+        scope.heap_mut(),
+        thenable,
+        then_job_callback,
+        resolve,
+        reject,
+      )
+      .map_err(vm_err)?;
+      hooks.host_enqueue_promise_job(job, None);
+      drop(scope);
+      assert!(hooks.finish(&mut host).is_none());
+    }
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    let records = log.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.callee, then_func);
+    assert_eq!(record.this, thenable);
+    assert_eq!(record.args, vec![resolve, reject]);
     Ok(())
   }
 
@@ -550,7 +714,8 @@ mod tests {
     };
 
     // `VmJsJobContext::add_root` / `remove_root` should route through `VmJsEngineHost::vm_js_heap_mut`
-    // so hosts can override which heap stores persistent roots without forcing a `vm_js_vm_and_heap_mut` borrow.
+    // so hosts can override which heap stores persistent roots without forcing a
+    // `vm_js_vm_and_heap_mut` borrow.
     let root_id = {
       let mut ctx = VmJsJobContext {
         host: &mut host,
