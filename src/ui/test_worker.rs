@@ -1184,8 +1184,20 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
               .document
               .prepared()
               .and_then(|prepared| select_anchor_css(prepared, scroll, select_node_id))
-              .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
-
+              .filter(|rect| {
+                rect.origin.x.is_finite()
+                  && rect.origin.y.is_finite()
+                  && rect.size.width.is_finite()
+                  && rect.size.height.is_finite()
+              })
+              .unwrap_or_else(|| {
+                Rect::from_xywh(
+                  if viewport_point.x.is_finite() { viewport_point.x } else { 0.0 },
+                  if viewport_point.y.is_finite() { viewport_point.y } else { 0.0 },
+                  0.0,
+                  0.0,
+                )
+              });
             let _ = ui_tx.send(WorkerToUi::SelectDropdownOpened {
               tab_id,
               select_node_id,

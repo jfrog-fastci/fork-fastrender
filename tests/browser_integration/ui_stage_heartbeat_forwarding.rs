@@ -2,7 +2,6 @@
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::ui::UiToWorker;
 use fastrender::ui::worker::RenderWorker;
 use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::{PreparedPaintOptions, RenderOptions};

@@ -346,7 +346,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
 }
 
 #[test]
-fn select_dropdown_click_emits_open_select_dropdown_message() {
+fn select_dropdown_click_emits_select_dropdown_opened_message() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");

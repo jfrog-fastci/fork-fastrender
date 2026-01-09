@@ -595,7 +595,6 @@ impl BrowserRenderThread {
       let box_tree = prepared.box_tree().clone();
 
       let viewport_point = Point::new(pos_css.0, pos_css.1);
-      let document_url = tab.url.as_deref().unwrap_or("");
       let base_url = tab
         .base_url
         .as_deref()
@@ -617,22 +616,35 @@ impl BrowserRenderThread {
         dom_changed
       });
 
-      if let InteractionAction::Navigate { href } = action {
-        navigate_to = Some(href);
-      } else if let InteractionAction::OpenSelectDropdown {
-        select_node_id,
-        control,
-      } = action
-      {
-        if let Some(anchor_css) = select_anchor_css(&box_tree, &fragments, &scroll_state, select_node_id)
-        {
+      match action {
+        InteractionAction::Navigate { href } => {
+          navigate_to = Some(href);
+        }
+        InteractionAction::OpenSelectDropdown {
+          select_node_id,
+          control,
+        } => {
+          let anchor_css = select_anchor_css(&box_tree, &fragments, &scroll_state, select_node_id)
+            .filter(|rect| {
+              rect.origin.x.is_finite()
+                && rect.origin.y.is_finite()
+                && rect.size.width.is_finite()
+                && rect.size.height.is_finite()
+            })
+            .unwrap_or_else(|| {
+              crate::geometry::Rect::from_xywh(
+                if viewport_point.x.is_finite() { viewport_point.x } else { 0.0 },
+                if viewport_point.y.is_finite() { viewport_point.y } else { 0.0 },
+                0.0,
+                0.0,
+              )
+            });
           dropdown_opened = Some((select_node_id, control, anchor_css));
         }
-        if changed {
-          tab.cancel.bump_paint();
-          repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
-        }
-      } else if changed {
+        _ => {}
+      }
+
+      if changed && navigate_to.is_none() {
         tab.cancel.bump_paint();
         repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
       }
@@ -722,7 +734,6 @@ impl BrowserRenderThread {
       self.navigate(tab_id, href, NavigationReason::LinkClick);
     }
   }
-
   fn select_dropdown_choose(
     &mut self,
     tab_id: TabId,
@@ -753,7 +764,7 @@ impl BrowserRenderThread {
 
 fn select_anchor_css(
   box_tree: &crate::BoxTree,
-  fragment_tree_scrolled: &crate::FragmentTree,
+  fragment_tree: &crate::FragmentTree,
   scroll_state: &ScrollState,
   select_node_id: usize,
 ) -> Option<crate::geometry::Rect> {
@@ -775,8 +786,10 @@ fn select_anchor_css(
     found?
   };
 
+  let mut fragment_tree_scrolled = fragment_tree.clone();
+  crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, scroll_state);
   let page_rect =
-    crate::interaction::absolute_bounds_for_box_id(fragment_tree_scrolled, select_box_id)?;
+    crate::interaction::absolute_bounds_for_box_id(&fragment_tree_scrolled, select_box_id)?;
   Some(page_rect.translate(crate::geometry::Point::new(
     -scroll_state.viewport.x,
     -scroll_state.viewport.y,

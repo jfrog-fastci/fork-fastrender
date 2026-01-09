@@ -367,6 +367,14 @@ struct OpenSelectDropdown {
   tab_id: fastrender::ui::TabId,
   select_node_id: usize,
   control: fastrender::tree::box_tree::SelectControl,
+  /// Optional viewport-local CSS-pixel rect for positioning the popup.
+  ///
+  /// When present, this should be the `<select>` control's bounds in **viewport-local CSS
+  /// pixels** (0,0 at the top-left of the rendered viewport).
+  anchor_css: Option<fastrender::geometry::Rect>,
+  /// Fallback anchor position in egui points (cursor position).
+  ///
+  /// Used when `anchor_css` is unavailable or the page rect is not currently known.
   anchor_points: egui::Pos2,
   anchor_width_points: Option<f32>,
   /// True when this dropdown was opened with a control anchor rect
@@ -729,6 +737,7 @@ impl App {
           tab_id,
           select_node_id,
           control,
+          anchor_css: None,
           anchor_points,
           anchor_width_points: None,
           anchored_to_control: false,
@@ -759,6 +768,7 @@ impl App {
           tab_id,
           select_node_id,
           control,
+          anchor_css: Some(anchor_css),
           anchor_points,
           anchor_width_points,
           anchored_to_control: true,
@@ -902,20 +912,35 @@ impl App {
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::UiToWorker;
 
-    let (tab_id, select_node_id, anchor, anchor_width_points, control) =
+    let (tab_id, select_node_id, control, anchor_css, fallback_anchor_points, anchor_width_points) =
       match self.open_select_dropdown.as_ref() {
         Some(dropdown) => (
           dropdown.tab_id,
           dropdown.select_node_id,
+          dropdown.control.clone(),
+          dropdown.anchor_css,
           dropdown.anchor_points,
           dropdown.anchor_width_points,
-          dropdown.control.clone(),
         ),
         None => {
           self.open_select_dropdown_rect = None;
           return;
         }
       };
+
+    let mut anchor_pos_points = fallback_anchor_points;
+    let mut min_width_points = anchor_width_points
+      .filter(|w| w.is_finite() && *w > 0.0)
+      .unwrap_or(200.0);
+
+    if let Some(anchor_css) = anchor_css {
+      if let Some(mapping) = self.page_input_mapping {
+        if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+          anchor_pos_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+          min_width_points = rect_points.width().max(min_width_points);
+        }
+      }
+    }
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.close_select_dropdown();
@@ -934,62 +959,59 @@ impl App {
       tab_id.0,
       select_node_id,
     )))
-      .order(egui::Order::Foreground)
-      .fixed_pos(anchor)
-      .show(ctx, |ui| {
-        let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
-          let min_width = anchor_width_points
-            .filter(|w| w.is_finite() && *w > 0.0)
-            .unwrap_or(200.0);
-          ui.set_min_width(min_width);
-          egui::ScrollArea::vertical()
-            .max_height(240.0)
-            .show(ui, |ui| {
-              let mut clicked_item_idx: Option<usize> = None;
+    .order(egui::Order::Foreground)
+    .fixed_pos(anchor_pos_points)
+    .show(ctx, |ui| {
+      let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+        ui.set_min_width(min_width_points);
+        egui::ScrollArea::vertical()
+          .max_height(240.0)
+          .show(ui, |ui| {
+            let mut clicked_item_idx: Option<usize> = None;
 
-              for (idx, item) in control.items.iter().enumerate() {
-                match item {
-                  SelectItem::OptGroupLabel { label, disabled } => {
-                    let text = egui::RichText::new(label).strong();
-                    if *disabled {
-                      ui.add_enabled(false, egui::Label::new(text));
-                    } else {
-                      ui.label(text);
-                    }
+            for (idx, item) in control.items.iter().enumerate() {
+              match item {
+                SelectItem::OptGroupLabel { label, disabled } => {
+                  let text = egui::RichText::new(label).strong();
+                  if *disabled {
+                    ui.add_enabled(false, egui::Label::new(text));
+                  } else {
+                    ui.label(text);
                   }
-                  SelectItem::Option {
-                    label,
-                    value,
-                    selected,
-                    disabled,
-                    in_optgroup,
-                    ..
-                  } => {
-                    let base = if label.trim().is_empty() { value } else { label };
-                    let text = if *in_optgroup {
-                      format!("  {base}")
-                    } else {
-                      base.to_string()
-                    };
+                }
+                SelectItem::Option {
+                  label,
+                  value,
+                  selected,
+                  disabled,
+                  in_optgroup,
+                  ..
+                } => {
+                  let base = if label.trim().is_empty() { value } else { label };
+                  let text = if *in_optgroup {
+                    format!("  {base}")
+                  } else {
+                    base.to_string()
+                  };
 
-                    let response = ui.add_enabled(
-                      !*disabled,
-                      egui::SelectableLabel::new(*selected, text),
-                    );
-                    if response.clicked() {
-                      clicked_item_idx = Some(idx);
-                    }
+                  let response = ui.add_enabled(
+                    !*disabled,
+                    egui::SelectableLabel::new(*selected, text),
+                  );
+                  if response.clicked() {
+                    clicked_item_idx = Some(idx);
                   }
                 }
               }
+            }
 
-              clicked_item_idx
-            })
-            .inner
-        });
-
-        (frame.response.rect, frame.inner)
+            clicked_item_idx
+          })
+          .inner
       });
+
+      (frame.response.rect, frame.inner)
+    });
 
     let (popup_rect, clicked_item_idx) = popup.inner;
     self.open_select_dropdown_rect = Some(popup_rect);
@@ -1042,7 +1064,6 @@ impl App {
           position.y as f32 / self.pixels_per_point,
         );
         self.last_cursor_pos_points = Some(pos_points);
-
         if self
           .open_select_dropdown_rect
           .is_some_and(|rect| rect.contains(pos_points))

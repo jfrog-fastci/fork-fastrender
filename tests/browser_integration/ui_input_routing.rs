@@ -372,3 +372,101 @@ fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row(
 
   Ok(())
 }
+
+#[test]
+fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (200, 120);
+  let url = "https://example.com/index.html";
+
+  let html = r##"<!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #sel { position: absolute; top: 10px; left: 10px; width: 120px; height: 22px; }
+        </style>
+      </head>
+      <body>
+        <select id="sel">
+          <option id="o1" selected>One</option>
+          <option id="o2">Two</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let mut controller = BrowserTabController::from_html(tab_id, html, url, viewport_css, 1.0)?;
+
+  // Initial paint (populate prepared layout artifacts).
+  let _ = controller.handle_message(UiToWorker::RequestRepaint {
+    tab_id,
+    reason: RepaintReason::Explicit,
+  })?;
+
+  let select_node_id = dom_preorder_id(controller.document().dom(), "sel");
+  let option2_node_id = dom_preorder_id(controller.document().dom(), "o2");
+
+  // Click the select to open dropdown popup.
+  let _ = controller.handle_message(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: (15.0, 15.0),
+    button: PointerButton::Primary,
+  })?;
+  let open_msgs = controller.handle_message(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (15.0, 15.0),
+    button: PointerButton::Primary,
+  })?;
+
+  let opened = open_msgs.iter().find_map(|msg| match msg {
+    WorkerToUi::SelectDropdownOpened {
+      tab_id: msg_tab,
+      select_node_id: got_select_node_id,
+      control,
+      anchor_css,
+    } if *msg_tab == tab_id => Some((got_select_node_id, control, anchor_css)),
+    _ => None,
+  });
+  let Some((got_select_node_id, control, anchor_css)) = opened else {
+    panic!("expected WorkerToUi::SelectDropdownOpened message, got {open_msgs:?}");
+  };
+  assert_eq!(
+    *got_select_node_id, select_node_id,
+    "expected dropdown open message to reference clicked select node"
+  );
+  assert_eq!(control.items.len(), 2, "expected two option rows in SelectControl");
+  assert!(
+    anchor_css.origin.x.is_finite()
+      && anchor_css.origin.y.is_finite()
+      && anchor_css.size.width.is_finite()
+      && anchor_css.size.height.is_finite(),
+    "expected finite anchor_css rect, got {anchor_css:?}"
+  );
+
+  // Choose the second option via UI message.
+  let choose_msgs = controller.handle_message(UiToWorker::SelectDropdownChoose {
+    tab_id,
+    select_node_id,
+    option_node_id: option2_node_id,
+  })?;
+  assert!(
+    choose_msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    "expected FrameReady after selecting an option"
+  );
+
+  let opt1 = find_element_by_id(controller.document().dom(), "o1").expect("option o1");
+  let opt2 = find_element_by_id(controller.document().dom(), "o2").expect("option o2");
+  assert!(
+    opt1.get_attribute_ref("selected").is_none(),
+    "expected o1 to lose selected attribute after choosing o2"
+  );
+  assert!(
+    opt2.get_attribute_ref("selected").is_some(),
+    "expected o2 to gain selected attribute after choosing it"
+  );
+
+  Ok(())
+}

@@ -865,7 +865,7 @@ impl BrowserRuntime {
         select_node_id,
         control,
       } => {
-        // Back-compat: keep the older cursor-anchored dropdown message.
+        // Back-compat: older UIs listen for `OpenSelectDropdown`.
         let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
           tab_id,
           select_node_id,
@@ -1014,7 +1014,7 @@ impl BrowserRuntime {
           select_node_id,
           control,
         } => {
-          // Back-compat: keep the older cursor-anchored dropdown message.
+          // Back-compat: older UIs listen for `OpenSelectDropdown`.
           let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
             tab_id,
             select_node_id,
