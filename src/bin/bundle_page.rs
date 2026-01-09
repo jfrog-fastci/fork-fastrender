@@ -20,7 +20,7 @@ use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
-  request_partitioned_resource_key_for_request, request_partitioned_resource_key_v2,
+  request_partitioned_resource_key_for_request, request_partitioned_resource_key_v3,
   vary_partitioned_resource_key, Bundle,
   BundleManifest, BundleRenderConfig, BundledDocument, BundledFetcher, BundledResourceInfo,
   BUNDLE_MANIFEST, BUNDLE_VERSION,
@@ -332,6 +332,7 @@ struct RecordingRequestKey {
   kind: FetchContextKind,
   url: String,
   partition_key: String,
+  credentials_mode: FetchCredentialsMode,
 }
 
 #[cfg(feature = "disk_cache")]
@@ -550,13 +551,15 @@ impl RecordingFetcher {
       return snapshot;
     }
 
-    let mut variants_by_resource: HashMap<(FetchContextKind, String), HashSet<String>> =
-      HashMap::new();
+    let mut variants_by_resource: HashMap<
+      (FetchContextKind, String),
+      HashSet<(String, FetchCredentialsMode)>,
+    > = HashMap::new();
     for (key, _) in &by_request {
       variants_by_resource
         .entry((key.kind, key.url.clone()))
         .or_default()
-        .insert(key.partition_key.clone());
+        .insert((key.partition_key.clone(), key.credentials_mode));
     }
 
     for (key, resource) in by_request {
@@ -595,14 +598,23 @@ impl RecordingFetcher {
         continue;
       }
 
-      let manifest_key = request_partitioned_resource_key_v2(key.kind, &key.url, &key.partition_key);
+      let manifest_key = request_partitioned_resource_key_v3(
+        key.kind,
+        &key.url,
+        &key.partition_key,
+        key.credentials_mode,
+      );
       snapshot
         .entry(manifest_key)
         .or_insert_with(|| resource.clone());
       if let Some(final_url) = resource.final_url.as_deref() {
         if final_url != key.url.as_str() {
-          let manifest_key =
-            request_partitioned_resource_key_v2(key.kind, final_url, &key.partition_key);
+          let manifest_key = request_partitioned_resource_key_v3(
+            key.kind,
+            final_url,
+            &key.partition_key,
+            key.credentials_mode,
+          );
           snapshot
             .entry(manifest_key)
             .or_insert_with(|| resource.clone());
@@ -680,6 +692,7 @@ impl ResourceFetcher for RecordingFetcher {
             kind: req.destination.into(),
             url: url.clone(),
             partition_key: partition_key.to_string(),
+            credentials_mode,
           };
 
           if let Ok(map) = self.recorded_by_request.lock() {
@@ -3895,6 +3908,11 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
         FetchRequest::new(font_url, FetchDestination::Font).with_referrer_url("http://b.test/frame.html");
       let key_a = request_partitioned_resource_key_for_request(&req_a).expect("partition key A");
       let key_b = request_partitioned_resource_key_for_request(&req_b).expect("partition key B");
+      assert!(
+        key_a.contains("@@fastr:bundle:req_v3@@"),
+        "expected bundle capture to generate v3 request-partitioned manifest keys"
+      );
+      assert!(key_b.contains("@@fastr:bundle:req_v3@@"));
 
       assert!(
         snapshot.contains_key(font_url),
@@ -3928,8 +3946,18 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
   #[test]
   fn build_manifest_reuses_resource_files_for_identical_bytes() -> Result<()> {
     let font_url = "http://cdn.test/font.woff2";
-    let key_a = request_partitioned_resource_key_v2(FetchContextKind::Font, font_url, "http://a.test");
-    let key_b = request_partitioned_resource_key_v2(FetchContextKind::Font, font_url, "http://b.test");
+    let key_a = request_partitioned_resource_key_v3(
+      FetchContextKind::Font,
+      font_url,
+      "http://a.test",
+      FetchCredentialsMode::Omit,
+    );
+    let key_b = request_partitioned_resource_key_v3(
+      FetchContextKind::Font,
+      font_url,
+      "http://b.test",
+      FetchCredentialsMode::Omit,
+    );
 
     let mut res_a = FetchedResource::with_final_url(
       b"ok".to_vec(),

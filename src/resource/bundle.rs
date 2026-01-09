@@ -38,8 +38,12 @@ pub fn request_partitioned_resource_key(
 
 /// Synthetic manifest key used for request-partitioned resources keyed by the cache partition key.
 ///
-/// This is the preferred encoding for new bundles because it matches the cache partitioning logic
-/// (client origin + credential inclusion) used by [`CachingFetcher`] / [`DiskCachingFetcher`].
+/// This encoding partitions by the CORS cache partition key (initiating origin + cookie inclusion)
+/// but **does not** distinguish all [`FetchCredentialsMode`] variants.
+///
+/// New bundles should prefer [`request_partitioned_resource_key_v3`], which additionally encodes
+/// `FetchCredentialsMode` so manifest keying matches the in-memory/disk cache partitioning used by
+/// [`CachingFetcher`] / [`DiskCachingFetcher`].
 pub fn request_partitioned_resource_key_v2(
   kind: FetchContextKind,
   url: &str,
@@ -58,6 +62,33 @@ pub fn request_partitioned_resource_key_v2(
   format!("{url}@@fastr:bundle:req_v2@@kind={kind_tag}@@partition={partition_key}")
 }
 
+/// Synthetic manifest key used for request-partitioned resources keyed by the cache partition key
+/// and request [`FetchCredentialsMode`].
+///
+/// This is the preferred encoding for new bundles because it matches the cache partitioning logic
+/// used by [`CachingFetcher`] / [`DiskCachingFetcher`].
+pub fn request_partitioned_resource_key_v3(
+  kind: FetchContextKind,
+  url: &str,
+  partition_key: &str,
+  credentials_mode: FetchCredentialsMode,
+) -> String {
+  let kind_tag = match kind {
+    FetchContextKind::Document => "document",
+    FetchContextKind::Iframe => "iframe",
+    FetchContextKind::Stylesheet => "stylesheet",
+    FetchContextKind::StylesheetCors => "stylesheet-cors",
+    FetchContextKind::Image => "image",
+    FetchContextKind::ImageCors => "image-cors",
+    FetchContextKind::Font => "font",
+    FetchContextKind::Other => "other",
+  };
+  format!(
+    "{url}@@fastr:bundle:req_v3@@kind={kind_tag}@@creds={}@@partition={partition_key}",
+    credentials_mode.as_cache_tag()
+  )
+}
+
 /// Compute the request-partitioned manifest key for a fetch request.
 ///
 /// Returns `None` when the request is not in CORS mode or when CORS cache partitioning is
@@ -65,10 +96,11 @@ pub fn request_partitioned_resource_key_v2(
 pub fn request_partitioned_resource_key_for_request(req: &FetchRequest<'_>) -> Option<String> {
   let kind: FetchContextKind = req.destination.into();
   let partition_key = super::cors_cache_partition_key(req)?;
-  Some(request_partitioned_resource_key_v2(
+  Some(request_partitioned_resource_key_v3(
     kind,
     req.url,
     &partition_key,
+    req.credentials_mode,
   ))
 }
 
@@ -254,11 +286,15 @@ impl BundledResource {
 }
 
 fn bundle_key_is_request_partitioned(key: &str) -> bool {
-  key.contains("@@fastr:bundle:req_v1@@") || key.contains("@@fastr:bundle:req_v2@@")
+  key.contains("@@fastr:bundle:req_v1@@")
+    || key.contains("@@fastr:bundle:req_v2@@")
+    || key.contains("@@fastr:bundle:req_v3@@")
 }
 
 fn parse_request_partitioned_resource_kind(key: &str) -> Option<FetchContextKind> {
-  let rest = if let Some((_, rest)) = key.split_once("@@fastr:bundle:req_v2@@") {
+  let rest = if let Some((_, rest)) = key.split_once("@@fastr:bundle:req_v3@@") {
+    rest
+  } else if let Some((_, rest)) = key.split_once("@@fastr:bundle:req_v2@@") {
     rest
   } else {
     key.split_once("@@fastr:bundle:req_v1@@")?.1
@@ -700,7 +736,7 @@ impl ResourceFetcher for BundledFetcher {
         )));
       }
       let kind: FetchContextKind = destination.into();
-      let origin_key = bundle_key_is_request_partitioned(url).then_some("bundled");
+      let origin_key = lookup_is_request_partitioned.then_some("bundled");
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
           || (!super::allow_unhandled_vary_env()
@@ -758,9 +794,7 @@ impl ResourceFetcher for BundledFetcher {
     let kind: FetchContextKind = req.destination.into();
     let cors_partition_key = super::cors_cache_partition_key(&req);
     if let Some(partition_key) = cors_partition_key.as_deref() {
-      let key = request_partitioned_resource_key_v2(kind, req.url, partition_key);
-      if let Some(resource) = self.bundle.resource_for_url(&key) {
-        let res = resource.as_fetched()?;
+      let validate_vary = |res: &FetchedResource| {
         if let Some(vary) = res.vary.as_deref() {
           if super::vary_contains_star(vary)
             || (!super::allow_unhandled_vary_env()
@@ -772,6 +806,23 @@ impl ResourceFetcher for BundledFetcher {
             )));
           }
         }
+        Ok(())
+      };
+
+      // Preferred encoding: matches cache partitioning (origin key + credentials mode).
+      let key =
+        request_partitioned_resource_key_v3(kind, req.url, partition_key, req.credentials_mode);
+      if let Some(resource) = self.bundle.resource_for_url(&key) {
+        let res = resource.as_fetched()?;
+        validate_vary(&res)?;
+        return Ok(res);
+      }
+
+      // Back-compat: v2 bundles partition by the origin key but not `FetchCredentialsMode`.
+      let key = request_partitioned_resource_key_v2(kind, req.url, partition_key);
+      if let Some(resource) = self.bundle.resource_for_url(&key) {
+        let res = resource.as_fetched()?;
+        validate_vary(&res)?;
         return Ok(res);
       }
 
@@ -791,17 +842,7 @@ impl ResourceFetcher for BundledFetcher {
         );
         if let Some(resource) = self.bundle.resource_for_url(&key) {
           let res = resource.as_fetched()?;
-          if let Some(vary) = res.vary.as_deref() {
-            if super::vary_contains_star(vary)
-              || (!super::allow_unhandled_vary_env()
-                && !super::vary_is_cacheable(vary, kind, Some("bundled")))
-            {
-              return Err(Error::Other(format!(
-                "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
-                req.url
-              )));
-            }
-          }
+          validate_vary(&res)?;
           return Ok(res);
         }
 
@@ -809,17 +850,7 @@ impl ResourceFetcher for BundledFetcher {
           let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
             let res = resource.as_fetched()?;
-            if let Some(vary) = res.vary.as_deref() {
-              if super::vary_contains_star(vary)
-                || (!super::allow_unhandled_vary_env()
-                  && !super::vary_is_cacheable(vary, kind, Some("bundled")))
-              {
-                return Err(Error::Other(format!(
-                  "Bundle entry has unhandled Vary and cannot be replayed safely: {}",
-                  req.url
-                )));
-              }
-            }
+            validate_vary(&res)?;
             return Ok(res);
           }
         }
@@ -1659,6 +1690,135 @@ mod tests {
         res.bytes, b"v2",
         "expected request-partitioned entry to override unpartitioned URL entry"
       );
+    });
+  }
+
+  #[test]
+  fn bundled_fetcher_selects_request_partitioned_v3_entries_by_credentials_mode() {
+    if !super::super::http_browser_headers_enabled() {
+      eprintln!(
+        "skipping bundled_fetcher_selects_request_partitioned_v3_entries_by_credentials_mode: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let url = "https://cdn.example/font.woff2".to_string();
+    let partition_key = "https://cdn.example|cred=include";
+    let key_include = request_partitioned_resource_key_v3(
+      FetchContextKind::Font,
+      &url,
+      partition_key,
+      FetchCredentialsMode::Include,
+    );
+    let key_same_origin = request_partitioned_resource_key_v3(
+      FetchContextKind::Font,
+      &url,
+      partition_key,
+      FetchCredentialsMode::SameOrigin,
+    );
+
+    std::fs::write(tmp.path().join("font_include.woff2"), b"include").expect("write include font");
+    std::fs::write(tmp.path().join("font_same.woff2"), b"same-origin").expect("write same font");
+
+    let base_info = |path: &str| BundledResourceInfo {
+      path: path.to_string(),
+      content_type: Some("font/woff2".to_string()),
+      nosniff: false,
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      access_control_allow_origin: Some("https://cdn.example".to_string()),
+      timing_allow_origin: None,
+      vary: None,
+      access_control_allow_credentials: true,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([
+        (key_include, base_info("font_include.woff2")),
+        (key_same_origin, base_info("font_same.woff2")),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let client_origin = origin_from_url("https://cdn.example/page.html").expect("client origin");
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+    ])));
+    with_thread_runtime_toggles(toggles, || {
+      let include_req = FetchRequest::new(&url, FetchDestination::Font)
+        .with_client_origin(&client_origin)
+        .with_credentials_mode(FetchCredentialsMode::Include);
+      let same_req = FetchRequest::new(&url, FetchDestination::Font)
+        .with_client_origin(&client_origin)
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+
+      assert_eq!(
+        super::super::cors_cache_partition_key(&include_req).as_deref(),
+        Some(partition_key),
+        "expected include request to use the test partition key"
+      );
+      assert_eq!(
+        super::super::cors_cache_partition_key(&same_req).as_deref(),
+        Some(partition_key),
+        "expected same-origin request to share the test partition key with include"
+      );
+
+      let include_res = fetcher
+        .fetch_with_request(include_req)
+        .expect("fetch include entry");
+      assert_eq!(include_res.bytes, b"include");
+
+      let same_res = fetcher.fetch_with_request(same_req).expect("fetch same-origin entry");
+      assert_eq!(same_res.bytes, b"same-origin");
     });
   }
 
