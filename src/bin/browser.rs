@@ -214,10 +214,14 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
 
   const URL: &str = "about:newtab";
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
-  const DPR: f32 = 1.0;
+  // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
+  const DPR: f32 = 2.0;
   const TIMEOUT: Duration = Duration::from_secs(20);
   let (ui_to_worker_tx, worker_to_ui_rx, handle) =
     fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
+
+  let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
+  let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
 
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {
@@ -254,7 +258,10 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
         let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
         frames_seen += 1;
         last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-        if frame.viewport_css == VIEWPORT_CSS && pixmap_px == VIEWPORT_CSS {
+        if frame.viewport_css == VIEWPORT_CSS
+          && (frame.dpr - DPR).abs() <= 0.01
+          && pixmap_px == (expected_pixmap_w, expected_pixmap_h)
+        {
           smoke_summary = last_frame_meta;
           break;
         }
@@ -275,7 +282,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
       None => " (saw no FrameReady messages)".to_string(),
     };
     return Err(format!(
-      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?}{hint}"
+      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?} dpr={DPR} pixmap_px={expected_pixmap_w}x{expected_pixmap_h}{hint}"
     )
     .into());
   };
@@ -289,11 +296,11 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
       .into(),
     );
   }
-  if pixmap_w != VIEWPORT_CSS.0 || pixmap_h != VIEWPORT_CSS.1 {
+  if pixmap_w != expected_pixmap_w || pixmap_h != expected_pixmap_h {
     return Err(
       format!(
         "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
-        pixmap_w, pixmap_h, VIEWPORT_CSS.0, VIEWPORT_CSS.1
+        pixmap_w, pixmap_h, expected_pixmap_w, expected_pixmap_h
       )
       .into(),
     );
