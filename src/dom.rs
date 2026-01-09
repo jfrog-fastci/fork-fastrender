@@ -4608,6 +4608,21 @@ pub(crate) fn input_color_value_string(node: &DomNode) -> Option<String> {
   Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
+pub(crate) fn input_file_value_string(node: &DomNode) -> Option<String> {
+  if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
+    return None;
+  }
+
+  let input_type = node.get_attribute_ref("type");
+  if !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("file")) {
+    return None;
+  }
+
+  // File inputs never expose pre-filled values from markup: browsers treat their value as the empty
+  // string until the user selects a file.
+  Some(String::new())
+}
+
 fn strip_ascii_line_breaks(value: &str) -> Cow<'_, str> {
   if !value.as_bytes().iter().any(|b| matches!(*b, b'\n' | b'\r')) {
     return Cow::Borrowed(value);
@@ -5611,6 +5626,9 @@ impl<'a> ElementRef<'a> {
         return Some(value);
       }
       if let Some(value) = input_week_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_file_value_string(self.node) {
         return Some(value);
       }
       if let Some(value) = input_text_like_value_string(self.node) {
@@ -13333,6 +13351,28 @@ mod tests {
     );
     assert!(!matches(
       &required_newline_only,
+      &[],
+      &PseudoClass::Valid
+    ));
+
+    let required_file_with_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "file".to_string()),
+          ("required".to_string(), "true".to_string()),
+          ("value".to_string(), "C:\\\\fakepath\\\\hello.txt".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      matches(&required_file_with_value, &[], &PseudoClass::Invalid),
+      "file input values cannot be prefilled from markup, so required file inputs remain missing"
+    );
+    assert!(!matches(
+      &required_file_with_value,
       &[],
       &PseudoClass::Valid
     ));

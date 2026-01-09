@@ -5299,12 +5299,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         raw: raw_value.map(|v| v.to_string()),
       }
     } else if input_type.eq_ignore_ascii_case("file") {
-      let value = styled
-        .node
-        .get_attribute_ref("value")
-        .filter(|v| !v.is_empty())
-        .map(|v| v.to_string());
-      FormControlKind::File { value }
+      FormControlKind::File { value: None }
     } else {
       let size_attr = styled
         .node
@@ -7856,9 +7851,8 @@ mod tests {
     assert!(
       controls
         .iter()
-        .any(|c| matches!(&c.control, FormControlKind::File { value }
-        if value.as_deref() == Some("C:\\\\fakepath\\\\hello.txt"))),
-      "file inputs should be captured as file form controls"
+        .any(|c| matches!(&c.control, FormControlKind::File { value } if value.is_none())),
+      "file inputs should be captured as file form controls (value is never pre-filled from markup)"
     );
     assert!(
       controls

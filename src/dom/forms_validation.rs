@@ -449,7 +449,7 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
   }
 
   if input_type.eq_ignore_ascii_case("file") {
-    let value = element.node.get_attribute_ref("value").unwrap_or_default();
+    let value = super::input_file_value_string(element.node).unwrap_or_default();
     if required && value.is_empty() {
       state.value_missing = true;
     }
