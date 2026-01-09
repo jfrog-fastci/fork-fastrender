@@ -157,3 +157,26 @@ fn searchparams_cached_object_survives_gc() {
   rt.heap_mut().remove_root(url_root);
   rt.heap_mut().remove_root(global_root);
 }
+
+#[test]
+fn searchparams_get_all_returns_array_with_length_semantics() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let url = new_url(&mut rt, global, "https://example.com/?a=1&a=2", None);
+  let params = get(&mut rt, url, "searchParams");
+
+  let a = str_val(&mut rt, "a");
+  let values = call_method(&mut rt, params, "getAll", &[a]);
+
+  let length = get(&mut rt, values, "length");
+  assert_eq!(length, Value::Number(2.0));
+
+  // Array exotic objects update `length` when defining an element beyond the current length.
+  let idx_key = key(&mut rt, "5");
+  let x = str_val(&mut rt, "x");
+  rt.define_data_property(values, idx_key, x, true).unwrap();
+  let length = get(&mut rt, values, "length");
+  assert_eq!(length, Value::Number(6.0));
+}

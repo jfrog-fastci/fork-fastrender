@@ -462,8 +462,11 @@ fn init_urlsearchparams_instance(
       // WHATWG `URLSearchParams.getAll()` returns a sequence<string>, which maps to a JS Array.
       let arr = rt.alloc_array()?;
       for (idx, value) in values.iter().enumerate() {
-        let key = rt.property_key_from_u32(idx as u32)?;
+        let idx_u32: u32 = idx
+          .try_into()
+          .map_err(|_| type_error(rt, "URLSearchParams.getAll: index exceeds u32"))?;
         let value = rt.alloc_string_value(value)?;
+        let key = rt.property_key_from_u32(idx_u32)?;
         rt.define_data_property(arr, key, value, true)?;
       }
       Ok(arr)
