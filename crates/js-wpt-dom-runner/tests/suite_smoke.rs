@@ -76,3 +76,34 @@ fn suite_smoke_report_classifies_expected_failures() {
   );
   assert_eq!(mismatches.flaky, 0, "flaky mismatches");
 }
+
+#[test]
+fn suite_event_loop_tests_pass() {
+  let corpus_root = corpus_root();
+
+  let report = run_suite(&SuiteConfig {
+    wpt_root: corpus_root.clone(),
+    manifest_path: corpus_root.join("expectations.toml"),
+    shard: None,
+    filter: Some("event_loop/**".to_string()),
+    // Allow some slack for host overhead; timers are short (0-10ms) but CI can be noisy.
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
+    fail_on: FailOn::New,
+    backend: BackendSelection::VmJs,
+  })
+  .expect("run suite");
+
+  assert_eq!(
+    report.summary.total, report.summary.passed,
+    "all event_loop tests should pass: {report:#?}"
+  );
+  assert_eq!(report.summary.failed, 0);
+  assert_eq!(report.summary.timed_out, 0);
+  assert_eq!(report.summary.errored, 0);
+  assert_eq!(report.summary.skipped, 0);
+  assert!(
+    report.summary.mismatches.is_none(),
+    "event_loop suite should have no mismatches: {report:#?}"
+  );
+}

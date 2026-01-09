@@ -23,11 +23,6 @@ status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
 
 [[expectations]]
-glob = "event_loop/**"
-status = "skip"
-reason = "vm-js backend currently runs a minimal JavaScript subset; curated event-loop tests require a fuller testharness implementation."
-
-[[expectations]]
 glob = "events/**"
 status = "skip"
 reason = "EventTarget/web event tests are not supported by the vm-js WPT runner yet."

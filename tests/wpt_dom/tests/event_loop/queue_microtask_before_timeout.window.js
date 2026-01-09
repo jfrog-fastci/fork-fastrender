@@ -3,27 +3,27 @@
 //
 // Curated event-loop ordering test: microtasks (queueMicrotask) must run before timers.
 
-async_test(function (t) {
-  var log = "";
+var microtask_ran = false;
 
-  queueMicrotask(
-    t.step_func(function () {
-      log += "m";
-    })
-  );
+function report_pass() {
+  __fastrender_wpt_report({ file_status: "pass" });
+}
 
-  setTimeout(
-    t.step_func(function () {
-      log += "t";
-    }),
-    0
-  );
+function report_fail(message) {
+  __fastrender_wpt_report({ file_status: "fail", message: message });
+}
 
-  setTimeout(
-    t.step_func_done(function () {
-      assert_equals(log, "mt");
-    }),
-    0
-  );
-}, "queueMicrotask runs before setTimeout(0)");
+function on_microtask() {
+  microtask_ran = true;
+}
 
+function on_timeout() {
+  if (microtask_ran !== true) {
+    report_fail("queueMicrotask did not run before setTimeout");
+    return;
+  }
+  report_pass();
+}
+
+queueMicrotask(on_microtask);
+setTimeout(on_timeout, 0);

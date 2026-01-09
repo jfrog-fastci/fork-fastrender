@@ -4,21 +4,27 @@
 // Curated event-loop ordering test: Promise reactions run in the microtask queue and must be
 // processed before timers.
 
-async_test(function (t) {
-  var log = "";
+var then_ran = false;
 
-  Promise.resolve().then(
-    t.step_func(function () {
-      log += "p";
-    })
-  );
+function report_pass() {
+  __fastrender_wpt_report({ file_status: "pass" });
+}
 
-  setTimeout(
-    t.step_func_done(function () {
-      log += "t";
-      assert_equals(log, "pt");
-    }),
-    0
-  );
-}, "Promise.then runs before setTimeout(0)");
+function report_fail(message) {
+  __fastrender_wpt_report({ file_status: "fail", message: message });
+}
 
+function on_then(_value) {
+  then_ran = true;
+}
+
+function on_timeout() {
+  if (then_ran !== true) {
+    report_fail("Promise.then did not run before setTimeout");
+    return;
+  }
+  report_pass();
+}
+
+Promise.resolve(1).then(on_then);
+setTimeout(on_timeout, 0);
