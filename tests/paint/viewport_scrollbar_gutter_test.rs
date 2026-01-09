@@ -95,3 +95,54 @@ fn viewport_fixed_elements_paint_into_scrollbar_gutter() {
     gutter.alpha()
   );
 }
+
+#[test]
+fn viewport_scrollbar_gutter_preserves_root_border() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // When the `<body>` background is promoted to the canvas (HTML canvas background propagation),
+  // the body's border should still appear in the scrollbar gutter region (which is part of the
+  // painted canvas, even though layout is performed with a reduced viewport).
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      html { background: transparent; scrollbar-gutter: stable; }
+      body {
+        background: rgb(255, 0, 0);
+        border-top: 1px solid rgb(0, 255, 0);
+        overflow-y: auto;
+      }
+      .tall { height: 200px; }
+    </style>
+    <div class="tall"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 100, 100)
+    .expect("render should succeed");
+
+  let border = pixmap.pixel(99, 0).expect("border pixel");
+  assert!(
+    border.green() > 200 && border.red() < 80 && border.blue() < 80,
+    "expected propagated body border (green) in the scrollbar gutter, got rgba({}, {}, {}, {})",
+    border.red(),
+    border.green(),
+    border.blue(),
+    border.alpha()
+  );
+
+  let gutter = pixmap.pixel(99, 50).expect("gutter pixel");
+  assert!(
+    gutter.red() > 200 && gutter.green() < 80 && gutter.blue() < 80,
+    "expected canvas background (red) in the scrollbar gutter, got rgba({}, {}, {}, {})",
+    gutter.red(),
+    gutter.green(),
+    gutter.blue(),
+    gutter.alpha()
+  );
+}

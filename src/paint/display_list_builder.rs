@@ -239,6 +239,9 @@ pub struct DisplayListBuilder {
   /// When extending an element background to the canvas (HTML canvas background propagation),
   /// suppress painting the background on the original element to avoid double-paint seams.
   canvas_background_suppress_box_id: Option<usize>,
+  /// When propagating the root element's border to the canvas (e.g. when viewport scrollbar gutters
+  /// are reserved), suppress painting the border on the original element to avoid double-paint.
+  canvas_border_suppress_box_id: Option<usize>,
   estimated_fragments: Option<usize>,
   scroll_state: ScrollState,
   max_iframe_depth: usize,
@@ -273,8 +276,8 @@ struct BackgroundRects {
 #[derive(Clone)]
 struct RootBackground {
   paint_rect: Rect,
-  origin_rect: Rect,
   style: Arc<ComputedStyle>,
+  paint_border: bool,
 }
 
 #[inline]
@@ -1329,6 +1332,7 @@ impl DisplayListBuilder {
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
       canvas_background_suppress_box_id: None,
+      canvas_border_suppress_box_id: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -1372,6 +1376,7 @@ impl DisplayListBuilder {
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
       canvas_background_suppress_box_id: None,
+      canvas_border_suppress_box_id: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -2037,6 +2042,9 @@ impl DisplayListBuilder {
         let suppress_background = self
           .canvas_background_suppress_box_id
           .is_some_and(|id| Self::get_box_id(fragment) == Some(id));
+        let suppress_border = self
+          .canvas_border_suppress_box_id
+          .is_some_and(|id| Self::get_box_id(fragment) == Some(id));
         let (decoration_rect, decoration_clip) =
           Self::decoration_rect_and_clip(fragment, absolute_rect, style);
         let decoration_clip_pushed = decoration_clip.is_some();
@@ -2140,8 +2148,10 @@ impl DisplayListBuilder {
           );
         }
 
-        let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
-        self.emit_border_from_style(decoration_rect, style, gap);
+        if !suppress_border {
+          let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
+          self.emit_border_from_style(decoration_rect, style, gap);
+        }
         if decoration_clip_pushed {
           self.list.push(DisplayItem::PopClip);
         }
@@ -2815,6 +2825,8 @@ impl DisplayListBuilder {
         if !Self::has_paintable_background(&style) {
           return None;
         }
+        let paint_border = Self::has_paintable_border(&style)
+          && self.should_propagate_root_border(&style, source_rect, target_rect);
         // We normally only need to propagate the canvas background when the source element's
         // border box does not fully cover the paint target.
         //
@@ -2829,10 +2841,13 @@ impl DisplayListBuilder {
           return None;
         }
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
+        if paint_border {
+          self.canvas_border_suppress_box_id = Some(suppress_box_id);
+        }
         Some(RootBackground {
           paint_rect: target_rect,
-          origin_rect: source_rect,
           style,
+          paint_border,
         })
       })
     } else {
@@ -5402,6 +5417,7 @@ impl DisplayListBuilder {
       background_layers: self.background_layers.clone(),
       background_pattern_fast_paths: self.background_pattern_fast_paths.clone(),
       canvas_background_suppress_box_id: self.canvas_background_suppress_box_id,
+      canvas_border_suppress_box_id: self.canvas_border_suppress_box_id,
       estimated_fragments: self.estimated_fragments,
       scroll_state: self.scroll_state.clone(),
       max_iframe_depth: self.max_iframe_depth,
@@ -6397,6 +6413,60 @@ impl DisplayListBuilder {
         .any(|layer| layer.image.is_some())
   }
 
+  fn has_paintable_border(style: &ComputedStyle) -> bool {
+    use crate::style::types::BorderStyle;
+
+    fn side(width: Length, style: BorderStyle, color: Rgba) -> bool {
+      width.to_px() > 0.0
+        && !matches!(style, BorderStyle::None | BorderStyle::Hidden)
+        && color.alpha_u8() > 0
+    }
+
+    if !matches!(style.border_image.source, BorderImageSource::None) {
+      return true;
+    }
+
+    side(style.border_top_width, style.border_top_style, style.border_top_color)
+      || side(
+        style.border_right_width,
+        style.border_right_style,
+        style.border_right_color,
+      )
+      || side(
+        style.border_bottom_width,
+        style.border_bottom_style,
+        style.border_bottom_color,
+      )
+      || side(style.border_left_width, style.border_left_style, style.border_left_color)
+  }
+
+  fn should_propagate_root_border(
+    &self,
+    style: &ComputedStyle,
+    source_rect: Rect,
+    target_rect: Rect,
+  ) -> bool {
+    // Only treat the canvas expansion as a viewport scrollbar gutter when it matches the resolved
+    // scrollbar width. Otherwise, callers like `fit_canvas_to_content` can request much larger
+    // surfaces and we should not expand borders into that area.
+    let gutter = resolve_scrollbar_width(style).max(0.0);
+    if gutter <= 0.0 {
+      return false;
+    }
+
+    let diff_w = (target_rect.width() - source_rect.width()).max(0.0);
+    let diff_h = (target_rect.height() - source_rect.height()).max(0.0);
+    let epsilon = 0.51;
+
+    let matches_gutter = |diff: f32| {
+      diff <= epsilon
+        || (diff - gutter).abs() <= epsilon
+        || (diff - gutter * 2.0).abs() <= epsilon
+    };
+
+    (diff_w > epsilon || diff_h > epsilon) && matches_gutter(diff_w) && matches_gutter(diff_h)
+  }
+
   fn root_background_candidate(
     fragment: &FragmentNode,
     origin: Point,
@@ -6988,8 +7058,10 @@ impl DisplayListBuilder {
 
   fn emit_root_background(&mut self, root: &RootBackground) {
     let rects = Self::background_rects(root.paint_rect, &root.style, self.viewport);
-    let origin_rects = Self::background_rects(root.origin_rect, &root.style, self.viewport);
-    self.emit_background_from_style_with_rects_and_origin(&rects, &origin_rects, &root.style);
+    self.emit_background_from_style_with_rects(&rects, &root.style);
+    if root.paint_border {
+      self.emit_border_from_style(root.paint_rect, &root.style, None);
+    }
   }
 
   fn emit_background_layer_with_origin_rects(
