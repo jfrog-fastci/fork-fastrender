@@ -287,10 +287,6 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
             job.run(&mut ctx, &mut hooks)
           });
 
-          window_realm
-            .vm_mut()
-            .set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
-
           if let Some(err) = hooks.finish(window_realm.heap_mut()) {
             return Err(err);
           }
@@ -446,7 +442,6 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
         })();
         call_result
       });
-        vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
 
         if let Some(err) = hooks.finish(heap) {
           return Err(err);
@@ -991,8 +986,20 @@ mod tests {
     };
     assert_eq!(log, vec!["sync", "raf"]);
 
+    let budget = host.window.vm().budget();
+    assert!(
+      budget.fuel.is_some() || budget.deadline.is_some(),
+      "expected requestAnimationFrame callback budget to remain set"
+    );
+
     // Promise jobs are queued into the FastRender microtask queue; draining it should run the job.
     event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    let budget = host.window.vm().budget();
+    assert!(
+      budget.fuel.is_some() || budget.deadline.is_some(),
+      "expected Promise job budget to remain set"
+    );
     let log = {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       read_log(heap, realm)

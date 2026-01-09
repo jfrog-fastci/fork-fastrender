@@ -377,10 +377,6 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
             job.run(&mut ctx, &mut hooks)
           });
 
-          window_realm
-            .vm_mut()
-            .set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
-
           if let Some(err) = hooks.finish(window_realm.heap_mut()) {
             return Err(err);
           }
@@ -2062,6 +2058,57 @@ mod tests {
     assert!(
       budget.fuel.is_some() || budget.deadline.is_some(),
       "expected timer callback budget to remain set"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn promise_job_does_not_reset_vm_budget_to_unlimited() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    let job_log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    let _log_guard = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+      install_promise_job_log(heap, Arc::clone(&job_log))
+    };
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+
+      with_event_loop(event_loop, || -> Result<(), crate::error::Error> {
+        let mut scope = heap.scope();
+        let set_timeout = get_prop(&mut scope, global, "setTimeout");
+
+        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
+
+        vm.call(
+          &mut scope,
+          set_timeout,
+          Value::Object(global),
+          &[Value::Object(timeout_cb), Value::Number(0.0)],
+        )
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    assert_eq!(&*job_log.lock().unwrap(), &["timeout", "timeout_end", "job"]);
+
+    let budget = host.window.vm().budget();
+    assert!(
+      budget.fuel.is_some() || budget.deadline.is_some(),
+      "expected Promise job budget to remain set"
     );
 
     Ok(())
