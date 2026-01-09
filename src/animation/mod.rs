@@ -9668,4 +9668,35 @@ mod tests {
 
     assert_eq!(actual, expected);
   }
+
+  #[test]
+  fn transition_pairs_expands_border_color_against_all() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::All,
+      TransitionProperty::Name("border-color".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border-color"),
+      "expected shorthands to be expanded away"
+    );
+
+    // The `border-color` entry is last, so it should own the expanded longhands.
+    for side in ["border-top-color", "border-right-color", "border-bottom-color", "border-left-color"]
+    {
+      let idx = pairs
+        .iter()
+        .find(|(name, _)| *name == side)
+        .unwrap_or_else(|| panic!("missing {side}"))
+        .1;
+      assert_eq!(idx, 1, "{side} should use the border-color list index");
+    }
+  }
 }
