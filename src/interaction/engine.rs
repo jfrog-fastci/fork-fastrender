@@ -819,37 +819,6 @@ fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) 
   None
 }
 
-fn parse_range_number_attr(node: &DomNode, name: &str, default: f32) -> f32 {
-  node
-    .get_attribute_ref(name)
-    .map(trim_ascii_whitespace)
-    .filter(|v| !v.is_empty())
-    .and_then(|v| v.parse::<f32>().ok())
-    .filter(|v| v.is_finite())
-    .unwrap_or(default)
-}
-
-fn parse_range_min_max(node: &DomNode) -> (f32, f32) {
-  let min = parse_range_number_attr(node, "min", 0.0);
-  let mut max = parse_range_number_attr(node, "max", 100.0);
-  if max < min {
-    max = min;
-  }
-  (min, max)
-}
-
-fn format_range_value(value: f64) -> String {
-  // Round to 6 decimal places (ignoring `step` for MVP) and format with a stable, compact
-  // representation to avoid writing noisy float strings into the DOM.
-  const SCALE: f64 = 1_000_000.0;
-  let mut v = (value * SCALE).round() / SCALE;
-  if v == 0.0 {
-    // Canonicalize negative zero.
-    v = 0.0;
-  }
-  v.to_string()
-}
-
 fn update_range_value_from_pointer(
   index: &mut DomIndexMut,
   fragment_tree: &FragmentTree,
@@ -864,10 +833,7 @@ fn update_range_value_from_pointer(
     return false;
   }
 
-  let Some(node) = index.node(node_id) else {
-    return false;
-  };
-  if !is_range_input(node) {
+  if !index.node(node_id).is_some_and(is_range_input) {
     return false;
   }
 
@@ -886,24 +852,10 @@ fn update_range_value_from_pointer(
   }
   fraction = fraction.clamp(0.0, 1.0);
 
-  let (min, max) = parse_range_min_max(node);
-  let min = min as f64;
-  let max = max as f64;
-  let value = min + (max - min) * fraction as f64;
-  if !value.is_finite() {
-    return false;
-  }
-
-  let value_attr = format_range_value(value);
   let Some(node_mut) = index.node_mut(node_id) else {
     return false;
   };
-  let changed_value = set_node_attr(node_mut, "value", &value_attr);
-  let mut changed = changed_value;
-  if changed_value {
-    changed |= dom_mutation::mark_user_validity(node_mut);
-  }
-  changed
+  dom_mutation::set_range_value_from_ratio(node_mut, fraction)
 }
 
 fn apply_select_listbox_click(

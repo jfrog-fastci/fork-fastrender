@@ -1,6 +1,7 @@
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::dom::HTML_NAMESPACE;
+use crate::dom::{format_number, input_range_bounds};
 
 use super::dom_index::DomIndex;
 
@@ -265,6 +266,71 @@ pub fn toggle_checkbox(node: &mut DomNode) -> bool {
     changed |= mark_user_validity(node);
   }
 
+  changed
+}
+
+fn parse_finite_number(value: &str) -> Option<f64> {
+  trim_ascii_whitespace(value)
+    .parse::<f64>()
+    .ok()
+    .filter(|v| v.is_finite())
+}
+
+pub fn set_range_value_from_ratio(node: &mut DomNode, ratio: f32) -> bool {
+  if !is_input_of_type(node, "range") {
+    return false;
+  }
+
+  if is_disabled_or_inert(node) || node.get_attribute_ref("readonly").is_some() {
+    return false;
+  }
+
+  if !ratio.is_finite() {
+    return false;
+  }
+
+  let Some((min, max)) = input_range_bounds(node) else {
+    return false;
+  };
+
+  let ratio = (ratio as f64).clamp(0.0, 1.0);
+  let resolved = min + (max - min) * ratio;
+  let clamped = resolved.clamp(min, max);
+
+  let step_attr = node.get_attribute_ref("step");
+  let value = if matches!(
+    step_attr,
+    Some(step) if trim_ascii_whitespace(step).eq_ignore_ascii_case("any")
+  ) {
+    clamped
+  } else {
+    let step = step_attr
+      .and_then(parse_finite_number)
+      .filter(|step| *step > 0.0)
+      .unwrap_or(1.0);
+
+    // The allowed value step base for range inputs is the minimum value (defaulting to zero).
+    let step_base = min;
+    let steps_to_value = ((clamped - step_base) / step).round();
+    let mut aligned = step_base + steps_to_value * step;
+
+    let max_aligned = step_base + ((max - step_base) / step).floor() * step;
+    if aligned > max_aligned {
+      aligned = max_aligned;
+    }
+    if aligned < step_base {
+      aligned = step_base;
+    }
+
+    aligned.clamp(min, max)
+  };
+
+  let value_attr = format_number(value);
+  let changed_value = set_attr(node, "value", &value_attr);
+  let mut changed = changed_value;
+  if changed_value {
+    changed |= mark_user_validity(node);
+  }
   changed
 }
 

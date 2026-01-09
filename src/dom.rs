@@ -4380,7 +4380,7 @@ fn parse_finite_number(value: &str) -> Option<f64> {
     .filter(|v| v.is_finite())
 }
 
-fn format_number(mut value: f64) -> String {
+pub(crate) fn format_number(mut value: f64) -> String {
   if value == -0.0 {
     value = 0.0;
   }

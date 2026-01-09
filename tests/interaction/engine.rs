@@ -1828,18 +1828,96 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
   engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
 
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(25.0, 10.0));
-  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("2.5"));
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("3"));
   assert!(
     has_attr(&dom, "r", "data-fastr-user-validity"),
     "changing a range value should mark user validity"
   );
 
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(75.0, 10.0));
-  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("7.5"));
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("8"));
 
   // Drag beyond the right edge: clamp at max.
   engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(150.0, 10.0));
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("10"));
+}
+
+#[test]
+fn range_click_sets_min_max_and_snaps_to_step() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![
+          ("id", "r"),
+          ("type", "range"),
+          ("min", "0"),
+          ("max", "100"),
+          ("step", "10"),
+          ("value", "50"),
+        ],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let range_dom_id = node_id(&dom, "r");
+  let mut range_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  range_box.styled_node_id = Some(range_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![range_box],
+  ));
+  let range_box_id = find_box_id_for_styled_node(&box_tree, range_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      range_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Left edge should set min.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(0.0, 10.0),
+    "https://x/",
+  );
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("0"));
+
+  // Near 56% should snap to the nearest step.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(56.0, 10.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(56.0, 10.0),
+    "https://x/",
+  );
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("60"));
+
+  // Right edge should set max.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 10.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(100.0, 10.0),
+    "https://x/",
+  );
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("100"));
 }
 
 #[test]
