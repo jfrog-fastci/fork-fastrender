@@ -10595,10 +10595,6 @@ fn substitute_offline_fixture_placeholder_full(
   }
 
   match kind {
-    FetchContextKind::Image | FetchContextKind::ImageCors => {
-      *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-    }
     FetchContextKind::Font => {
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_WOFF2.to_vec();
       *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_WOFF2_MIME.to_string());
@@ -10619,11 +10615,6 @@ fn substitute_offline_fixture_placeholder_prefix(
   }
 
   match kind {
-    FetchContextKind::Image | FetchContextKind::ImageCors => {
-      let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
-      *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
-      *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-    }
     FetchContextKind::Font => {
       let take = OFFLINE_FIXTURE_PLACEHOLDER_WOFF2.len().min(read_limit);
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_WOFF2[..take].to_vec();

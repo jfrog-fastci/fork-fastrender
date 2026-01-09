@@ -7,6 +7,7 @@ mod form_control_caret_color;
 mod form_control_content_box_clip;
 mod iframe;
 mod image_pattern;
+mod missing_image_placeholder;
 mod math_content_box_clip;
 mod parallel_worker_diagnostics;
 mod srcset_slot_width_content_box;

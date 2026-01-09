@@ -5587,10 +5587,23 @@ impl DisplayListBuilder {
             } => *referrer_policy,
             _ => None,
           };
-          let reject_placeholder = matches!(
+          // `ImageCache` may return an internal 1×1 fully-transparent placeholder for non-fetchable
+          // URLs (e.g. `about:blank`) as well as other "treat as missing" cases (empty body, markup
+          // payloads, ...).
+          //
+          // For CSS `background-image` / masks, treating those as transparent is correct. For
+          // replaced `<img>`, Chrome renders a UA "broken image" placeholder (a light gray box with
+          // a subtle border), so we must *reject* the internal placeholder here and fall back to
+          // `emit_replaced_placeholder`.
+          let reject_placeholder_image = matches!(
             replaced_type,
-            ReplacedType::Embed { .. } | ReplacedType::Object { .. }
+            ReplacedType::Image { .. } | ReplacedType::Embed { .. } | ReplacedType::Object { .. }
           );
+          // `<embed>` / `<object>` are special: when the URL isn't a valid image, Chrome may still
+          // render HTML content. We model that by attempting an iframe render after rejecting the
+          // placeholder.
+          let try_iframe_fallback =
+            matches!(replaced_type, ReplacedType::Embed { .. } | ReplacedType::Object { .. });
           if let Some(image) = sources.iter().find_map(|s| {
             self.decode_image(
               s.url,
@@ -5598,7 +5611,7 @@ impl DisplayListBuilder {
               false,
               crossorigin,
               referrer_policy,
-              reject_placeholder,
+              reject_placeholder_image,
             )
           }) {
             let (content_rect, clip_radii) =
@@ -5658,7 +5671,7 @@ impl DisplayListBuilder {
             break 'paint;
           }
 
-          if reject_placeholder {
+          if try_iframe_fallback {
             if let Some(cache) = self.image_cache.as_ref() {
               let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
               if let Some(candidate) = sources.first() {
@@ -5679,13 +5692,10 @@ impl DisplayListBuilder {
             }
           }
 
-          if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
-            if self.emit_alt_text(alt, fragment, rect) {
-              break 'paint;
-            }
-          }
-
           self.emit_replaced_placeholder(replaced_type, fragment, rect);
+          if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
+            let _ = self.emit_alt_text(alt, fragment, rect);
+          }
         }
 
         if let (Some(style), Some(ctx)) = (style_for_image, self.line_decoration_ctx) {
@@ -8927,13 +8937,18 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PushClip(clip.clone()));
     }
 
-    let placeholder_color = Rgba::rgb(200, 200, 200);
+    // Keep the placeholder styling stable and browser-like. Chrome's broken image placeholder is
+    // very light; using a darker fill makes large missing images on dark-themed pages appear as
+    // empty/black, which materially hurts offline fixture diffs.
+    let (placeholder_color, stroke_color) = match replaced_type {
+      ReplacedType::Image { .. } => (Rgba::rgb(233, 233, 233), Rgba::rgb(206, 206, 206)),
+      _ => (Rgba::rgb(200, 200, 200), Rgba::rgb(150, 150, 150)),
+    };
     self.list.push(DisplayItem::FillRect(FillRectItem {
       rect: content_rect,
       color: placeholder_color,
     }));
 
-    let stroke_color = Rgba::rgb(150, 150, 150);
     self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
       rect: content_rect,
       color: stroke_color,

@@ -8,7 +8,7 @@ use crate::debug::runtime;
 use crate::error::{Error, ImageError, RenderError, RenderStage, Result};
 use crate::paint::painter::with_paint_diagnostics;
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context, MAX_PIXMAP_BYTES};
-use crate::render_control::{self, check_active, check_active_periodic, check_root, check_root_periodic};
+use crate::render_control::{self, check_root, check_root_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
 use crate::resource::CachingFetcherConfig;
@@ -4019,6 +4019,12 @@ impl ImageCache {
         return Err(blocked);
       }
     }
+    if resource.bytes.is_empty() {
+      // Treat empty bodies the same as `about:` URL placeholders: callers (notably the painters)
+      // rely on `ImageCache::is_placeholder_image` to detect missing images and render UA fallback
+      // UI for `<img>` elements.
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if should_substitute_markup_payload_for_image(
       resolved_url,
       resource.final_url.as_deref(),
@@ -4108,6 +4114,9 @@ impl ImageCache {
     resource: &FetchedResource,
     crossorigin: CrossOriginAttribute,
   ) -> Result<Arc<CachedImage>> {
+    if resource.bytes.is_empty() {
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
     if should_substitute_markup_payload_for_image(
       resolved_url,
       resource.final_url.as_deref(),
