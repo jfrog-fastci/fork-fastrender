@@ -1,6 +1,8 @@
 use crate::dom2::{self, NodeId};
 use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptStateHandle;
+use crate::js::window_env::{install_window_shims_vm_js, unregister_match_media_env, MatchMediaEnvGuard, WindowEnv};
+use crate::style::media::MediaContext;
 use base64::engine::general_purpose;
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -22,6 +24,11 @@ pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync +
 #[derive(Clone)]
 pub struct WindowRealmConfig {
   pub document_url: String,
+  /// Media context used for `window.devicePixelRatio`, viewport geometry, and `matchMedia()`.
+  ///
+  /// This should generally match the renderer's layout/styling media context for the document so
+  /// JS and CSS agree on viewport/resolution queries.
+  pub media: MediaContext,
   /// Optional ID of a host-owned `dom2::Document` to expose to minimal DOM shims on `window.document`.
   ///
   /// The ID refers to an entry in a thread-local registry managed by this module. This indirection
@@ -42,11 +49,17 @@ impl WindowRealmConfig {
   pub fn new(document_url: impl Into<String>) -> Self {
     Self {
       document_url: document_url.into(),
+      media: MediaContext::screen(800.0, 600.0),
       dom_source_id: None,
       current_script_state: None,
       console_sink: None,
       heap_limits: default_heap_limits(),
     }
+  }
+
+  pub fn with_media_context(mut self, media: MediaContext) -> Self {
+    self.media = media;
+    self
   }
 
   pub fn with_dom_source_id(mut self, id: u64) -> Self {
@@ -70,6 +83,7 @@ pub struct WindowRealm {
   realm_id: RealmId,
   console_sink_id: Option<u64>,
   current_script_source_id: Option<u64>,
+  match_media_env_id: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -107,12 +121,14 @@ impl WindowRealm {
     let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
     let realm = unsafe { &*realm_ptr };
 
-    let (console_sink_id, current_script_source_id) = init_window_globals(vm, heap, realm, &config)?;
+    let (console_sink_id, current_script_source_id, match_media_env_id) =
+      init_window_globals(vm, heap, realm, &config)?;
     Ok(Self {
       runtime,
       realm_id,
       console_sink_id,
       current_script_source_id,
+      match_media_env_id,
     })
   }
 
@@ -163,6 +179,9 @@ impl WindowRealm {
     }
     if let Some(id) = self.current_script_source_id.take() {
       unregister_current_script_source(id);
+    }
+    if let Some(id) = self.match_media_env_id.take() {
+      unregister_match_media_env(id);
     }
   }
 
@@ -3012,7 +3031,7 @@ fn init_window_globals(
   heap: &mut Heap,
   realm: &Realm,
   config: &WindowRealmConfig,
-) -> Result<(Option<u64>, Option<u64>), VmError> {
+) -> Result<(Option<u64>, Option<u64>, Option<u64>), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
 
@@ -3956,15 +3975,31 @@ fn init_window_globals(
   let report_error_key = alloc_key(&mut scope, "reportError")?;
   scope.define_property(global, report_error_key, data_desc(Value::Object(report_error_func)))?;
 
+  // --- Deterministic browser environment shims ---------------------------------
+  //
+  // Real-world scripts often gate responsive logic on these.
+  let window_env = WindowEnv::from_media(config.media.clone());
+  let match_media_guard = MatchMediaEnvGuard::new(window_env.media.clone());
+  install_window_shims_vm_js(
+    vm,
+    &mut scope,
+    realm,
+    global,
+    window_env,
+    match_media_guard.id(),
+  )?;
+
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
     current_script_guard.map(CurrentScriptSourceGuard::disarm),
+    Some(match_media_guard.disarm()),
   ))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::js::window_env::FASTRENDER_USER_AGENT;
   use std::ptr::NonNull;
   use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
 
@@ -4025,6 +4060,41 @@ mod tests {
     fn drop(&mut self) {
       unregister_dom_source(self.id);
     }
+  }
+
+  #[test]
+  fn window_env_shims_exist_and_match_media_evaluates() -> Result<(), VmError> {
+    let media = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_media_context(media),
+    )?;
+
+    let dpr = realm.exec_script("devicePixelRatio")?;
+    assert!(matches!(dpr, Value::Number(v) if (v - 2.0).abs() < f64::EPSILON));
+
+    let ua = realm.exec_script("navigator.userAgent")?;
+    assert_eq!(get_string(realm.heap(), ua), FASTRENDER_USER_AGENT);
+
+    assert_eq!(
+      realm.exec_script("matchMedia('(min-width: 700px)').matches")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("matchMedia('(min-resolution: 2dppx)').matches")?,
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.exec_script("matchMedia('(max-resolution: 1.5dppx)').matches")?,
+      Value::Bool(false)
+    );
+
+    // Listener APIs are allowed to be stubs, but they must exist and be callable.
+    assert_eq!(
+      realm.exec_script("{ const m = matchMedia('(min-width: 1px)'); m.addListener(()=>{}); m.removeListener(()=>{}); true }")?,
+      Value::Bool(true)
+    );
+
+    Ok(())
   }
 
   #[test]
