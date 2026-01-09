@@ -475,17 +475,44 @@ impl BrowserRuntime {
   }
 
   fn handle_key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return;
-    };
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
+    let mut navigate_to: Option<String> = None;
 
-    let changed = doc.mutate_dom(|dom| tab.interaction.key_action(dom, key));
-    if changed {
-      tab.cancel.bump_paint();
-      tab.needs_repaint = true;
+    {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
+      let base_url = base_url_for_links(tab).to_string();
+      let document_url = tab.last_committed_url.clone().unwrap_or_default();
+
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+
+      let mut action = InteractionAction::None;
+      let changed = doc.mutate_dom(|dom| {
+        let (dom_changed, next_action) =
+          tab
+            .interaction
+            .key_activate(dom, key, &document_url, &base_url);
+        action = next_action;
+        dom_changed
+      });
+
+      match action {
+        InteractionAction::Navigate { href } => {
+          navigate_to = Some(href);
+        }
+        _ => {
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
+        }
+      }
+    }
+
+    if let Some(href) = navigate_to {
+      self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
     }
   }
 
