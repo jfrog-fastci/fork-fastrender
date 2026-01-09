@@ -21,6 +21,7 @@ const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
 
 const DEFAULT_CALLBACK_FUEL: u64 = 1_000_000;
 const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
+const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number";
 
 fn callback_budget_from_render_deadline() -> Budget {
   // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
@@ -64,36 +65,36 @@ fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
   }
 }
 
-fn value_to_number(heap: &Heap, value: Value) -> f64 {
-  match value {
+fn value_to_number(heap: &Heap, value: Value) -> Result<f64, VmError> {
+  Ok(match value {
     Value::Undefined => f64::NAN,
     Value::Null => 0.0,
     Value::Bool(b) => if b { 1.0 } else { 0.0 },
     Value::Number(n) => n,
-    Value::String(s) => {
-      let Ok(js) = heap.get_string(s) else {
-        return f64::NAN;
-      };
-      let text = js.to_utf8_lossy();
-      let trimmed = text.trim();
-      if trimmed.is_empty() {
-        return 0.0;
+    Value::String(s) => match heap.get_string(s) {
+      Ok(js) => {
+        let text = js.to_utf8_lossy();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+          0.0
+        } else if trimmed == "Infinity" || trimmed == "+Infinity" {
+          f64::INFINITY
+        } else if trimmed == "-Infinity" {
+          f64::NEG_INFINITY
+        } else {
+          trimmed.parse::<f64>().unwrap_or(f64::NAN)
+        }
       }
-      if trimmed == "Infinity" || trimmed == "+Infinity" {
-        return f64::INFINITY;
-      }
-      if trimmed == "-Infinity" {
-        return f64::NEG_INFINITY;
-      }
-      trimmed.parse::<f64>().unwrap_or(f64::NAN)
-    }
+      Err(_) => f64::NAN,
+    },
     // Full `ToNumber` for objects requires ToPrimitive (not implemented yet).
-    Value::Symbol(_) | Value::Object(_) => f64::NAN,
-  }
+    Value::Object(_) => f64::NAN,
+    Value::Symbol(_) => return Err(throw_type_error(SYMBOL_TO_NUMBER_ERROR)),
+  })
 }
 
-fn normalize_delay_ms(heap: &Heap, value: Value) -> u64 {
-  let mut n = value_to_number(heap, value);
+fn normalize_delay_ms(heap: &Heap, value: Value) -> Result<u64, VmError> {
+  let mut n = value_to_number(heap, value)?;
   if !n.is_finite() || n.is_nan() {
     n = 0.0;
   }
@@ -103,24 +104,24 @@ fn normalize_delay_ms(heap: &Heap, value: Value) -> u64 {
   // `ToIntegerOrInfinity` rounds toward zero.
   let n = n.trunc();
   if n >= u64::MAX as f64 {
-    u64::MAX
+    Ok(u64::MAX)
   } else {
-    n as u64
+    Ok(n as u64)
   }
 }
 
-fn normalize_timer_id(heap: &Heap, value: Value) -> TimerId {
-  let mut n = value_to_number(heap, value);
+fn normalize_timer_id(heap: &Heap, value: Value) -> Result<TimerId, VmError> {
+  let mut n = value_to_number(heap, value)?;
   if !n.is_finite() || n.is_nan() {
     n = 0.0;
   }
   let n = n.trunc();
   if n >= i32::MAX as f64 {
-    i32::MAX
+    Ok(i32::MAX)
   } else if n <= i32::MIN as f64 {
-    i32::MIN
+    Ok(i32::MIN)
   } else {
-    n as i32
+    Ok(n as i32)
   }
 }
 
@@ -208,7 +209,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let delay_ms = normalize_delay_ms(scope.heap(), delay_value);
+  let delay_ms = normalize_delay_ms(scope.heap(), delay_value)?;
   let delay = Duration::from_millis(delay_ms);
   let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
 
@@ -279,7 +280,7 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let id = normalize_timer_id(scope.heap(), id_value);
+  let id = normalize_timer_id(scope.heap(), id_value)?;
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("clearTimeout called with invalid this value"));
@@ -315,7 +316,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let interval_ms = normalize_delay_ms(scope.heap(), delay_value);
+  let interval_ms = normalize_delay_ms(scope.heap(), delay_value)?;
   let interval = Duration::from_millis(interval_ms);
   let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
 
@@ -384,7 +385,7 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let id = normalize_timer_id(scope.heap(), id_value);
+  let id = normalize_timer_id(scope.heap(), id_value)?;
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("clearInterval called with invalid this value"));
@@ -820,6 +821,66 @@ mod tests {
       "setTimeout callback is not callable"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_rejects_symbol_delay() -> Result<(), VmError> {
+    let mut host = Host::new();
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    install_window_timers_bindings::<Host>(vm, realm, heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let set_timeout = get_prop(&mut scope, global, "setTimeout");
+    let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
+
+    let sym = scope.alloc_symbol(Some("delay"))?;
+    scope.push_root(Value::Symbol(sym))?;
+
+    let err = vm.call(
+      &mut scope,
+      set_timeout,
+      Value::Object(global),
+      &[Value::Object(timeout_cb), Value::Symbol(sym)],
+    );
+
+    let Err(VmError::TypeError(msg)) = err else {
+      panic!("expected setTimeout to throw a TypeError for Symbol delay");
+    };
+    assert_eq!(msg, SYMBOL_TO_NUMBER_ERROR);
+    Ok(())
+  }
+
+  #[test]
+  fn clear_timeout_rejects_symbol_handle() -> Result<(), VmError> {
+    let mut host = Host::new();
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    install_window_timers_bindings::<Host>(vm, realm, heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let clear_timeout = get_prop(&mut scope, global, "clearTimeout");
+    let sym = scope.alloc_symbol(Some("id"))?;
+    scope.push_root(Value::Symbol(sym))?;
+
+    let err = vm.call(
+      &mut scope,
+      clear_timeout,
+      Value::Object(global),
+      &[Value::Symbol(sym)],
+    );
+
+    let Err(VmError::TypeError(msg)) = err else {
+      panic!("expected clearTimeout to throw a TypeError for Symbol handle");
+    };
+    assert_eq!(msg, SYMBOL_TO_NUMBER_ERROR);
     Ok(())
   }
 
