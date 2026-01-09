@@ -208,6 +208,7 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
 
 #[test]
 fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loading() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let missing_path = dir.path().join("missing.html");
   let missing_url = Url::from_file_path(&missing_path)
@@ -324,6 +325,7 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
 
 #[test]
 fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
+  let _lock = super::stage_listener_test_lock();
   let (ui_tx, ui_rx, join) =
     spawn_model_ui_worker("fastr-ui-worker-model-unknown-about-test");
 

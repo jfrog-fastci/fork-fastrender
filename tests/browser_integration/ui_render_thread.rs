@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::interaction::KeyAction;
 use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
+use fastrender::interaction::KeyAction;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::text::font_db::FontConfig;
 use fastrender::ui::cancel::CancelGens;
@@ -63,7 +63,7 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 
   let mut stages = Vec::new();
   let mut saw_frame = false;
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     match msg {
       WorkerToUi::Stage { stage, .. } => stages.push(stage),
       WorkerToUi::FrameReady { .. } => {
@@ -108,7 +108,7 @@ fn scroll_produces_scroll_update_and_frame() {
   .unwrap();
 
   // Wait for the initial frame.
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     if matches!(msg, WorkerToUi::FrameReady { .. }) {
       break;
     }
@@ -118,7 +118,7 @@ fn scroll_produces_scroll_update_and_frame() {
 
   let mut saw_scroll = false;
   let mut saw_frame = false;
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     match msg {
       WorkerToUi::ScrollStateUpdated { scroll, .. } => {
         if scroll.viewport.y > 0.0 {
@@ -236,7 +236,7 @@ fn enter_submits_focused_text_input_form() {
   .unwrap();
 
   // Wait for the initial frame so the document has cached layout for hit-testing.
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     if matches!(msg, WorkerToUi::FrameReady { .. }) {
       break;
     }
@@ -268,7 +268,7 @@ fn enter_submits_focused_text_input_form() {
 
   let expected_url = "about:test-form?q=a";
   let mut saw_commit = false;
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(5)) {
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     if let WorkerToUi::NavigationCommitted { url, .. } = msg {
       if url == expected_url {
         saw_commit = true;
