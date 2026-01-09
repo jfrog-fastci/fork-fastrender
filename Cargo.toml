@@ -47,7 +47,9 @@ encoding_rs = "0.8"
 fs2 = { version = "0.4", optional = true }
 fontdb = "0.23"
 html5ever = "0.35"
-hyphenation = { version = "0.8", features = ["embed_en-us"] }
+ # Enable embedded hyphenation patterns so `hyphens: auto` works on real-world
+ # pageset content in multiple languages.
+ hyphenation = { version = "0.8", features = ["embed_all"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 libwebp-sys = "0.9.6"
 lru = "0.12"

@@ -20,10 +20,9 @@
 //!
 //! # Supported Languages
 //!
-//! Currently supported (with embedded patterns):
-//! - English (US) - embedded by default
-//!
-//! Additional languages can be added by enabling crate features.
+//! Hyphenation patterns are embedded for all languages listed in
+//! [`SupportedLanguage`]. This is configured via the `hyphenation` crate
+//! dependency features in `Cargo.toml`.
 //!
 //! # Example
 //!
@@ -35,9 +34,9 @@
 //!
 //! // Find hyphenation points
 //! let points = hyphenator.hyphenate("hyphenation");
-//! // Returns positions where hyphens can be inserted: [2, 6, 8]
+//! // Returns positions where hyphens can be inserted: [2, 6, 7]
 //! // "hy-phen-a-tion"
-//! # assert_eq!(points, vec![2, 6, 8]);
+//! # assert_eq!(points, vec![2, 6, 7]);
 //! # Ok(())
 //! # }
 //! ```
@@ -360,11 +359,10 @@ impl SupportedLanguage {
 
   /// Check if patterns are embedded for this language
   ///
-  /// Only English (US) patterns are embedded by default.
-  /// Other languages require enabling crate features.
+  /// Patterns are embedded for all [`SupportedLanguage`] variants in this crate
+  /// build.
   pub fn is_embedded(&self) -> bool {
-    // Only en-US is embedded by default in our configuration
-    matches!(self, Self::EnglishUS)
+    true
   }
 }
 
@@ -782,6 +780,19 @@ mod tests {
     let hyphenator = Hyphenator::new("en-us");
     assert!(hyphenator.is_ok());
 
+    // Non-English languages should load when their embedded patterns are enabled.
+    assert!(Hyphenator::new("en-gb").is_ok());
+    assert!(Hyphenator::new("de").is_ok());
+    assert!(Hyphenator::new("fr").is_ok());
+    assert!(Hyphenator::new("es").is_ok());
+    assert!(Hyphenator::new("it").is_ok());
+    assert!(Hyphenator::new("pt").is_ok());
+    assert!(Hyphenator::new("pt-br").is_ok());
+    assert!(Hyphenator::new("pt-pt").is_ok());
+    assert!(Hyphenator::new("nl").is_ok());
+    assert!(Hyphenator::new("pl").is_ok());
+    assert!(Hyphenator::new("ru").is_ok());
+
     let hyphenator = Hyphenator::new("invalid-language");
     assert!(hyphenator.is_err());
   }
@@ -809,8 +820,16 @@ mod tests {
     let hyphenator = Hyphenator::new("en-us").unwrap();
 
     let points = hyphenator.hyphenate("hyphenation");
-    // Should find hyphenation points
-    assert!(!points.is_empty());
+    assert_eq!(points, vec![2, 6, 7]);
+  }
+
+  #[test]
+  fn test_hyphenate_long_word_german_regression() {
+    let hyphenator = Hyphenator::new("de").unwrap();
+
+    // "sil-ben-tren-nung"
+    let points = hyphenator.hyphenate("silbentrennung");
+    assert_eq!(points, vec![3, 6, 10]);
   }
 
   #[test]

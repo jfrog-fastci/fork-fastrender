@@ -333,9 +333,14 @@ impl InlineFormattingContext {
   }
 
   fn hyphenator_for(&self, language: &str) -> Option<Hyphenator> {
-    Hyphenator::new(language)
-      .ok()
-      .or_else(|| self.default_hyphenator.clone())
+    let language = language.trim();
+    if language.is_empty() {
+      return self.default_hyphenator.clone();
+    }
+
+    // If the author requested a language we can't hyphenate, prefer no automatic hyphenation over
+    // hyphenating with the wrong language's patterns.
+    Hyphenator::new(language).ok()
   }
 
   fn hyphen_advance(&self, style: &ComputedStyle) -> f32 {
@@ -22319,6 +22324,127 @@ mod tests {
       .break_opportunities
       .iter()
       .any(|b| b.byte_offset > 0 && b.byte_offset < text.len()));
+  }
+
+  #[test]
+  fn hyphens_auto_hyphenates_german_in_layout() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    style.hyphens = HyphensMode::Auto;
+    style.language = "de".into();
+    let text = "donaudampfschifffahrt";
+
+    let node = BoxNode::new_text(Arc::new(style.clone()), text.to_string());
+    let item = ifc.create_text_item(&node, text).unwrap();
+    let hyphen_break = item
+      .break_opportunities
+      .iter()
+      .find(|b| b.adds_hyphen)
+      .copied()
+      .expect("expected german hyphenation break opportunity");
+
+    let before = item.advance_at_offset(hyphen_break.byte_offset);
+    let hyphen_width = ifc.hyphen_advance(&item.style);
+    let width = (before + hyphen_width + item.advance) / 2.0;
+
+    assert!(
+      before + hyphen_width <= width && width < item.advance,
+      "test width should fit pre-hyphen but not the entire word (before={before}, hyphen={hyphen_width}, width={width}, advance={})",
+      item.advance
+    );
+
+    let items = ifc
+      .create_inline_items_for_text(&node, text, false)
+      .expect("inline items");
+    let strut = ifc.compute_strut_metrics(&style);
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        width,
+        width,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+
+    assert!(lines.len() > 1, "test should wrap the long German word");
+    assert!(
+      count_hyphenated_line_ends(&lines) > 0,
+      "expected auto-hyphenation to insert hyphen opportunities; got lines={:?}",
+      line_texts(&lines)
+    );
+  }
+
+  #[test]
+  fn hyphens_auto_does_not_fallback_to_default_language() {
+    let ifc = InlineFormattingContext::new();
+    let text = "hyphenation";
+
+    // Compute a width that should force a hyphenated break when en-US patterns are used.
+    let mut en_style = ComputedStyle::default();
+    en_style.white_space = WhiteSpace::Normal;
+    en_style.hyphens = HyphensMode::Auto;
+    en_style.language = "".into();
+    let en_node = BoxNode::new_text(Arc::new(en_style.clone()), text.to_string());
+    let en_item = ifc.create_text_item(&en_node, text).unwrap();
+    let en_hyphen_break = en_item
+      .break_opportunities
+      .iter()
+      .find(|b| b.adds_hyphen)
+      .copied()
+      .expect("expected en-US hyphenation break opportunity");
+    let before = en_item.advance_at_offset(en_hyphen_break.byte_offset);
+    let hyphen_width = ifc.hyphen_advance(&en_item.style);
+    let width = (before + hyphen_width + en_item.advance) / 2.0;
+
+    // Now request an unsupported language tag. `hyphens: auto` should disable automatic
+    // hyphenation rather than silently using en-US patterns.
+    let mut style = en_style;
+    style.language = "xx".into();
+    let node = BoxNode::new_text(Arc::new(style.clone()), text.to_string());
+    let items = ifc
+      .create_inline_items_for_text(&node, text, false)
+      .expect("inline items");
+    let strut = ifc.compute_strut_metrics(&style);
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        width,
+        width,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+
+    assert_eq!(
+      count_hyphenated_line_ends(&lines),
+      0,
+      "unsupported language must not produce auto hyphenation (lines={:?})",
+      line_texts(&lines)
+    );
   }
 
   #[test]
