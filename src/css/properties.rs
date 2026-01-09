@@ -242,6 +242,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "display",
   "dynamic-range-limit",
   "empty-cells",
+  "field-sizing",
   "fill",
   "fill-opacity",
   "fill-rule",

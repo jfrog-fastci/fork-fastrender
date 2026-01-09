@@ -20,6 +20,15 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - `<input type=file>`: emits a `::file-selector-button` box plus the selected file label text.
   - `<select>`: emits a text node with the selected option label (or `"Select"` when empty).
 - Intrinsic sizing for form controls is handled in the replaced-element intrinsic sizing code and respects HTML defaults (e.g. ~`20ch` text inputs / `cols`+`rows` for `<textarea>`). It scales with the current font metrics so controls line up with surrounding text by default.
+- CSS UI 4 `field-sizing` is supported for a small subset:
+  - Applies only to form controls (replaced elements).
+  - `field-sizing: fixed` (initial) keeps the existing HTML-like intrinsic sizing behavior.
+  - `field-sizing: content` changes intrinsic sizing for:
+    - `<textarea>`: intrinsic inline size is the maximum shaped line width of the current value text; intrinsic block size is `line_count * used_line_height`.
+      - Deterministic measurement rule: newlines are treated as hard line breaks and **no wrapping** is performed for intrinsic measurement.
+    - Text-like `<input>` kinds (`text/search/url/tel/email/password/number`): intrinsic inline size is based on shaping the current value text (or placeholder when the value is empty) instead of the default ~`20ch` heuristic.
+      - Empty value+placeholder keeps the existing fallback intrinsic width.
+  - Min/max sizing constraints are still applied during layout, and padding/border follow normal CSS box sizing rules (intrinsic sizes are computed in content-box space).
 - Control kinds:
   - Text-like inputs cover `text/search/url/tel/email` (plus empty/missing `type`), password masking, `number` inputs (spinner affordance), and date-like inputs (`date`/`datetime-local`/`month`/`week`/`time`) with simple glyphs and default format placeholders.
   - Unknown `<input type=...>` falls back to `Unknown` and uses placeholder/value/type text as the label.

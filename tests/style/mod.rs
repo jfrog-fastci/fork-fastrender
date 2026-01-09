@@ -33,6 +33,7 @@ mod defaults_test;
 mod dynamic_range_limit_test;
 mod extract_print;
 mod flex_property_test;
+mod field_sizing_property_test;
 mod form_control_constraint_pseudo_test;
 mod form_validity_pseudo_test;
 mod font_variation_settings_calc_test;

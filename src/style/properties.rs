@@ -4680,6 +4680,7 @@ pub(crate) fn apply_property_from_source(
     "appearance" | "-webkit-appearance" | "-moz-appearance" => {
       styles.appearance = source.appearance.clone()
     }
+    "field-sizing" => styles.field_sizing = source.field_sizing,
     "resize" => styles.resize = source.resize,
     "box-sizing" => styles.box_sizing = source.box_sizing,
     "box-decoration-break" => styles.box_decoration_break = source.box_decoration_break,
@@ -12478,6 +12479,15 @@ fn apply_declaration_with_base_internal_with_order(
           styles.appearance = Appearance::None;
         } else {
           styles.appearance = Appearance::Keyword(kw.to_ascii_lowercase());
+        }
+      }
+    }
+    "field-sizing" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("fixed") {
+          styles.field_sizing = FieldSizing::Fixed;
+        } else if kw.eq_ignore_ascii_case("content") {
+          styles.field_sizing = FieldSizing::Content;
         }
       }
     }

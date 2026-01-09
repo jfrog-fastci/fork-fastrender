@@ -97,6 +97,7 @@ use types::CursorKeyword;
 use types::Direction;
 use types::EmptyCells;
 use types::FillRule;
+use types::FieldSizing;
 use types::FilterFunction;
 use types::FlexBasis;
 use types::FlexDirection;
@@ -811,6 +812,7 @@ pub struct ComputedStyle {
   /// `content: element(...)` in page margin boxes) and is removed from normal flow during layout.
   pub running_position: Option<String>,
   pub appearance: Appearance,
+  pub field_sizing: FieldSizing,
   pub scroll_behavior: ScrollBehavior,
   pub overscroll_behavior_x: OverscrollBehavior,
   pub overscroll_behavior_y: OverscrollBehavior,
@@ -1297,6 +1299,7 @@ impl Default for ComputedStyle {
       position: Position::Static,
       running_position: None,
       appearance: Appearance::Auto,
+      field_sizing: FieldSizing::Fixed,
       scroll_behavior: ScrollBehavior::Auto,
       overscroll_behavior_x: OverscrollBehavior::Auto,
       overscroll_behavior_y: OverscrollBehavior::Auto,

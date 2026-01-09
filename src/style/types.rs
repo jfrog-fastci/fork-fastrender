@@ -1861,6 +1861,22 @@ impl Default for Resize {
   }
 }
 
+/// CSS `field-sizing` property (CSS UI Level 4).
+///
+/// Determines whether form controls use legacy fixed intrinsic sizing (`fixed`) or size to their
+/// current text contents (`content`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldSizing {
+  Fixed,
+  Content,
+}
+
+impl Default for FieldSizing {
+  fn default() -> Self {
+    FieldSizing::Fixed
+  }
+}
+
 /// CSS `pointer-events`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerEvents {

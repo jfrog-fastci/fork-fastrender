@@ -5,6 +5,7 @@ use crate::layout::utils::{
   resolve_font_relative_length, resolve_length_with_percentage_metrics, resolve_scrollbar_width,
 };
 use crate::style::types::Appearance;
+use crate::style::types::FieldSizing;
 use crate::style::values::{Length, LengthUnit};
 use crate::style::ComputedStyle;
 use crate::text::font_db::ScaledMetrics;
@@ -25,6 +26,11 @@ const DEFAULT_SELECT_MIN_LABEL_CH: f32 = 4.0;
 const SELECT_DROPDOWN_ARROW_SPACE_PX: f32 = 14.0;
 const SELECT_DROPDOWN_INNER_INSET_PX: f32 = 2.0;
 const SELECT_LISTBOX_MAX_INDENT_PX: f32 = 10.0;
+
+// These values are mirrored from the form-control painters so content-based intrinsic sizing leaves
+// space for the same affordances.
+const TEXT_CONTROL_NUMBER_AFFORDANCE_SPACE_PX: f32 = 14.0;
+const TEXT_CONTROL_DATE_AFFORDANCE_SPACE_PX: f32 = 12.0;
 
 fn measure_text_width(
   text: &str,
@@ -86,8 +92,58 @@ pub(crate) fn intrinsic_content_size_for_form_control(
 
   match &control.control {
     FormControlKind::Text {
-      size_attr, kind, ..
+      value,
+      placeholder,
+      placeholder_style,
+      size_attr,
+      kind,
+      ..
     } => {
+      if matches!(style.field_sizing, FieldSizing::Content)
+        && matches!(
+          kind,
+          TextControlKind::Plain | TextControlKind::Password | TextControlKind::Number | TextControlKind::Date
+        )
+      {
+        let value_is_empty = value.is_empty();
+        let mut measure_style = style;
+
+        let measure_text: Option<std::borrow::Cow<'_, str>> = if !value_is_empty {
+          match kind {
+            TextControlKind::Password => {
+              let mask_len = value.chars().count().clamp(3, 50);
+              Some(std::borrow::Cow::Owned("•".repeat(mask_len)))
+            }
+            _ => Some(std::borrow::Cow::Borrowed(value.as_str())),
+          }
+        } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+          if let Some(ph_style) = placeholder_style.as_deref() {
+            measure_style = ph_style;
+          }
+          Some(std::borrow::Cow::Borrowed(ph))
+        } else if matches!(kind, TextControlKind::Date) {
+          // Mirror the form-control painter's implicit placeholder for date-like inputs.
+          if let Some(ph_style) = placeholder_style.as_deref() {
+            measure_style = ph_style;
+          }
+          Some(std::borrow::Cow::Borrowed("yyyy-mm-dd"))
+        } else {
+          None
+        };
+
+        if let Some(text) = measure_text.as_ref() {
+          let mut width = measure_text_width(text.as_ref(), measure_style, font_context, shaper, char_width);
+          if !matches!(control.appearance, Appearance::None) {
+            match kind {
+              TextControlKind::Number => width += TEXT_CONTROL_NUMBER_AFFORDANCE_SPACE_PX,
+              TextControlKind::Date => width += TEXT_CONTROL_DATE_AFFORDANCE_SPACE_PX,
+              _ => {}
+            }
+          }
+          return Size::new(width, line_height);
+        }
+      }
+
       let default_cols = match kind {
         TextControlKind::Date | TextControlKind::Number => 20,
         _ => 20,
@@ -95,7 +151,20 @@ pub(crate) fn intrinsic_content_size_for_form_control(
       let cols = size_attr.unwrap_or(default_cols as u32) as f32;
       Size::new(char_width * cols.max(1.0), line_height)
     }
-    FormControlKind::TextArea { rows, cols, .. } => {
+    FormControlKind::TextArea { value, rows, cols, .. } => {
+      if matches!(style.field_sizing, FieldSizing::Content) {
+        let mut max_width = 0.0f32;
+        let mut line_count = 0usize;
+        for line in value.split('\n') {
+          line_count += 1;
+          max_width = max_width.max(measure_text_width(line, style, font_context, shaper, char_width));
+        }
+        if line_count == 0 {
+          line_count = 1;
+        }
+        return Size::new(max_width, line_height * line_count as f32);
+      }
+
       let row_count = rows.unwrap_or(2) as f32;
       let col_count = cols.unwrap_or(20) as f32;
       Size::new(
