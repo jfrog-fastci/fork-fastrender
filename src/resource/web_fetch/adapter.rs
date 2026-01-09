@@ -6,6 +6,8 @@ use crate::resource::{
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
+use http::header::HeaderName;
+use std::collections::HashSet;
 use url::Url;
 
 use super::{
@@ -72,6 +74,14 @@ fn url_base_for_origin(origin: &DocumentOrigin) -> Option<Url> {
     (_, None) => format!("{scheme}://{host}/"),
   };
   Url::parse(&url).ok()
+}
+
+fn is_cors_safelisted_response_header_name(name: &str) -> bool {
+  // https://fetch.spec.whatwg.org/#cors-safelisted-response-header-name
+  matches!(
+    name,
+    "cache-control" | "content-language" | "content-type" | "expires" | "last-modified" | "pragma"
+  )
 }
 
 fn resolve_request_url<'a>(
@@ -375,6 +385,48 @@ pub fn execute_web_fetch<'a>(
   }
 
   response.r#type = response_type;
+  if response_type == ResponseType::Cors {
+    // https://fetch.spec.whatwg.org/#concept-filtered-response-cors
+    // Expose only the CORS-safelisted response headers plus any names listed in
+    // `Access-Control-Expose-Headers`.
+    let mut exposed: HashSet<String> = HashSet::new();
+    let mut expose_all = false;
+    if let Some(expose_header) = response
+      .headers
+      .get("access-control-expose-headers")
+      .map_err(|err| Error::Other(err.to_string()))?
+    {
+      for token in expose_header.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+          continue;
+        }
+        if token == "*" {
+          expose_all = true;
+          continue;
+        }
+        if let Ok(name) = HeaderName::from_bytes(token.as_bytes()) {
+          exposed.insert(name.as_str().to_string());
+        }
+      }
+    }
+
+    // `*` does not apply for credentialed requests.
+    let allow_all = expose_all && request.credentials != RequestCredentials::Include;
+    let mut filtered =
+      Headers::new_with_guard_and_limits(HeadersGuard::Response, response.headers.limits());
+    for (name, value) in response.headers.raw_pairs() {
+      if allow_all
+        || is_cors_safelisted_response_header_name(&name)
+        || exposed.contains(name.as_str())
+      {
+        filtered
+          .append(&name, &value)
+          .map_err(|err| Error::Other(err.to_string()))?;
+      }
+    }
+    response.headers = filtered;
+  }
   response.headers.set_guard(HeadersGuard::Immutable);
 
   Ok(response)
@@ -570,7 +622,10 @@ mod tests {
       ("Set-Cookie".to_string(), "a=b".to_string()),
     ]);
     let fetcher = StaticFetcher { resource };
-    let request = Request::new("GET", "https://example.com/a");
+    // Use a basic response surface so we can assert response headers directly (CORS responses are
+    // filtered by `Access-Control-Expose-Headers`).
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.mode = RequestMode::Navigate;
     let mut response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
 
@@ -712,7 +767,10 @@ mod tests {
       ("x-ok".to_string(), "y".to_string()),
     ]);
     let fetcher = StaticFetcher { resource };
-    let request = Request::new("GET", "https://example.com/a");
+    // Use a basic response surface so we can observe the raw header list (CORS responses are
+    // filtered by `Access-Control-Expose-Headers`).
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.mode = RequestMode::Navigate;
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.headers.get("x-ok").unwrap().as_deref(), Some("y"));
@@ -828,6 +886,77 @@ mod tests {
     assert!(err
       .to_string()
       .contains("missing Access-Control-Allow-Credentials: true"));
+  }
+
+  #[test]
+  fn cors_filters_response_headers_using_expose_headers() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    resource.response_headers = Some(vec![
+      ("content-type".to_string(), "text/plain".to_string()),
+      ("x-hidden".to_string(), "no".to_string()),
+      ("x-exposed".to_string(), "yes".to_string()),
+      (
+        "access-control-expose-headers".to_string(),
+        "x-exposed".to_string(),
+      ),
+      (
+        "access-control-allow-origin".to_string(),
+        "https://client.example".to_string(),
+      ),
+    ]);
+    let fetcher = StaticFetcher { resource };
+
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected CORS response");
+
+    assert_eq!(response.r#type, ResponseType::Cors);
+    assert_eq!(response.headers.get("content-type").unwrap().as_deref(), Some("text/plain"));
+    assert_eq!(response.headers.get("x-exposed").unwrap().as_deref(), Some("yes"));
+    assert_eq!(response.headers.get("x-hidden").unwrap(), None);
+    assert_eq!(response.headers.get("access-control-allow-origin").unwrap(), None);
+  }
+
+  #[test]
+  fn cors_expose_headers_wildcard_exposes_all_only_for_anonymous() {
+    let origin = origin_from_url("https://client.example/").expect("origin");
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    resource.access_control_allow_credentials = true;
+    resource.response_headers = Some(vec![
+      ("x-hidden".to_string(), "no".to_string()),
+      ("access-control-expose-headers".to_string(), "*".to_string()),
+    ]);
+    let fetcher = StaticFetcher {
+      resource: resource.clone(),
+    };
+
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard expose pass");
+    assert_eq!(response.headers.get("x-hidden").unwrap().as_deref(), Some("no"));
+
+    let fetcher = StaticFetcher { resource };
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Include;
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let response =
+      execute_web_fetch(&fetcher, &request, ctx).expect("expected credentialed CORS response");
+    assert_eq!(response.headers.get("x-hidden").unwrap(), None);
   }
 
   #[test]
