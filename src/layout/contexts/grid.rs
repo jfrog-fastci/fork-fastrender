@@ -3253,6 +3253,190 @@ impl GridFormattingContext {
     }
   }
 
+  fn grid_track_has_calc_percentage(track: &GridTrack) -> bool {
+    use crate::style::values::LengthUnit;
+    match track {
+      GridTrack::Length(len) | GridTrack::FitContent(len) => {
+        len.unit == LengthUnit::Calc && len.has_percentage()
+      }
+      GridTrack::MinMax(min, max) => {
+        Self::grid_track_has_calc_percentage(min) || Self::grid_track_has_calc_percentage(max)
+      }
+      GridTrack::RepeatAutoFill { tracks, .. } | GridTrack::RepeatAutoFit { tracks, .. } => {
+        tracks.iter().any(Self::grid_track_has_calc_percentage)
+      }
+      GridTrack::Auto | GridTrack::Fr(_) | GridTrack::MinContent | GridTrack::MaxContent => false,
+    }
+  }
+
+  fn style_has_calc_percentage_tracks(style: &ComputedStyle) -> bool {
+    style
+      .grid_template_columns
+      .iter()
+      .chain(style.grid_template_rows.iter())
+      .any(Self::grid_track_has_calc_percentage)
+      || style
+        .grid_auto_columns
+        .iter()
+        .chain(style.grid_auto_rows.iter())
+        .any(Self::grid_track_has_calc_percentage)
+  }
+
+  /// Patch root grid track definitions so `calc()` values mixing percentages and lengths are
+  /// resolved against a definite grid container size when available.
+  ///
+  /// Taffy track sizing supports percentages but not arbitrary `calc()` expressions. Our style
+  /// conversion previously fell back to `Length::to_px()` for unresolved `calc(%)` values, which
+  /// treats the percentage term as a raw number and can produce negative track sizes like
+  /// `calc(100% - 40px - 320px) -> -260px`. This cascades into collapsed tracks and wildly
+  /// misplaced grid items.
+  ///
+  /// When we know the grid container’s definite content-box size in a given axis, resolve those
+  /// `calc(%)` tracks to an absolute pixel length. When the base is not definite, treat them as
+  /// `auto` (CSS Grid treats percentages as auto when the container size is indefinite).
+  fn patch_root_calc_percentage_tracks(
+    &self,
+    taffy: &mut TaffyTree<*const BoxNode>,
+    root_id: TaffyNodeId,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> Result<(), LayoutError> {
+    if !Self::style_has_calc_percentage_tracks(style) {
+      return Ok(());
+    }
+
+    let Ok(existing) = taffy.style(root_id) else {
+      return Ok(());
+    };
+
+    let cb_width = constraints.width().filter(|w| w.is_finite() && *w >= 0.0).or_else(|| {
+      if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        constraints
+          .inline_percentage_base
+          .filter(|w| w.is_finite() && *w >= 0.0)
+      } else {
+        None
+      }
+    });
+    let cb_height = constraints.height().filter(|h| h.is_finite() && *h >= 0.0);
+
+    let border_box_width = constraints
+      .used_border_box_width
+      .filter(|w| w.is_finite() && *w >= 0.0)
+      .or_else(|| existing.size.width.into_option().filter(|w| w.is_finite() && *w >= 0.0))
+      .or_else(|| {
+        if existing.size.width.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          cb_width
+            .map(|base| existing.size.width.value() * base)
+            .filter(|w| w.is_finite() && *w >= 0.0)
+        } else {
+          None
+        }
+      })
+      .or(cb_width);
+    let border_box_height = constraints
+      .used_border_box_height
+      .filter(|h| h.is_finite() && *h >= 0.0)
+      .or_else(|| existing.size.height.into_option().filter(|h| h.is_finite() && *h >= 0.0))
+      .or_else(|| {
+        if existing.size.height.tag() == taffy::style::CompactLength::PERCENT_TAG {
+          cb_height
+            .map(|base| existing.size.height.value() * base)
+            .filter(|h| h.is_finite() && *h >= 0.0)
+        } else {
+          None
+        }
+      })
+      .or(cb_height);
+
+    // Padding percentages resolve against the containing block's width, so use the (physical)
+    // containing block width as the percentage base when we have one.
+    let padding_percentage_base = cb_width.unwrap_or(0.0);
+    let padding_left =
+      self.resolve_length_for_width(style.padding_left, padding_percentage_base, style);
+    let padding_right =
+      self.resolve_length_for_width(style.padding_right, padding_percentage_base, style);
+    let padding_top =
+      self.resolve_length_for_width(style.padding_top, padding_percentage_base, style);
+    let padding_bottom =
+      self.resolve_length_for_width(style.padding_bottom, padding_percentage_base, style);
+    let border_left =
+      self.resolve_length_for_width(style.used_border_left_width(), padding_percentage_base, style);
+    let border_right =
+      self.resolve_length_for_width(style.used_border_right_width(), padding_percentage_base, style);
+    let border_top =
+      self.resolve_length_for_width(style.used_border_top_width(), padding_percentage_base, style);
+    let border_bottom =
+      self.resolve_length_for_width(style.used_border_bottom_width(), padding_percentage_base, style);
+
+    let content_width_base = border_box_width.map(|w| {
+      (w - padding_left - padding_right - border_left - border_right)
+        .max(0.0)
+    });
+    let content_height_base = border_box_height.map(|h| {
+      (h - padding_top - padding_bottom - border_top - border_bottom)
+        .max(0.0)
+    });
+
+    let swap_grid_axes = existing.axes_swapped;
+    let template_columns = if swap_grid_axes {
+      &style.grid_template_rows
+    } else {
+      &style.grid_template_columns
+    };
+    let template_rows = if swap_grid_axes {
+      &style.grid_template_columns
+    } else {
+      &style.grid_template_rows
+    };
+
+    let mut updated = existing.clone();
+    updated.grid_template_columns =
+      self.convert_grid_template_with_percentage_base(template_columns, style, content_width_base);
+    updated.grid_template_rows =
+      self.convert_grid_template_with_percentage_base(template_rows, style, content_height_base);
+
+    if !style.grid_auto_columns.is_empty() || !style.grid_auto_rows.is_empty() {
+      if swap_grid_axes {
+        if !style.grid_auto_rows.is_empty() {
+          updated.grid_auto_columns = style
+            .grid_auto_rows
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, content_width_base))
+            .collect();
+        }
+        if !style.grid_auto_columns.is_empty() {
+          updated.grid_auto_rows = style
+            .grid_auto_columns
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, content_height_base))
+            .collect();
+        }
+      } else {
+        if !style.grid_auto_columns.is_empty() {
+          updated.grid_auto_columns = style
+            .grid_auto_columns
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, content_width_base))
+            .collect();
+        }
+        if !style.grid_auto_rows.is_empty() {
+          updated.grid_auto_rows = style
+            .grid_auto_rows
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, content_height_base))
+            .collect();
+        }
+      }
+    }
+
+    taffy
+      .set_style(root_id, updated)
+      .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+
+    Ok(())
+  }
+
   /// Converts GridTrack Vec to Taffy track list
   fn convert_grid_template(
     &self,
@@ -3298,6 +3482,184 @@ impl GridFormattingContext {
       }
     }
     components
+  }
+
+  fn convert_grid_template_with_percentage_base(
+    &self,
+    tracks: &[GridTrack],
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+  ) -> Vec<GridTemplateComponent<String>> {
+    let mut components = Vec::new();
+    for track in tracks {
+      match track {
+        GridTrack::RepeatAutoFill {
+          tracks: inner,
+          line_names,
+        } => {
+          let converted: Vec<TrackSizingFunction> = inner
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, percentage_base))
+            .collect();
+          let repetition = GridTemplateRepetition {
+            count: RepetitionCount::AutoFill,
+            tracks: converted,
+            line_names: line_names.clone(),
+          };
+          components.push(GridTemplateComponent::Repeat(repetition));
+        }
+        GridTrack::RepeatAutoFit {
+          tracks: inner,
+          line_names,
+        } => {
+          let converted: Vec<TrackSizingFunction> = inner
+            .iter()
+            .map(|t| self.convert_track_size_with_percentage_base(t, style, percentage_base))
+            .collect();
+          let repetition = GridTemplateRepetition {
+            count: RepetitionCount::AutoFit,
+            tracks: converted,
+            line_names: line_names.clone(),
+          };
+          components.push(GridTemplateComponent::Repeat(repetition));
+        }
+        _ => components.push(GridTemplateComponent::Single(
+          self.convert_track_size_with_percentage_base(track, style, percentage_base),
+        )),
+      }
+    }
+    components
+  }
+
+  fn convert_length_to_lp_with_percentage_base(
+    &self,
+    length: &Length,
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+  ) -> Option<LengthPercentage> {
+    use crate::style::values::LengthUnit;
+    match length.unit {
+      LengthUnit::Percent => Some(LengthPercentage::percent(length.value / 100.0)),
+      LengthUnit::Calc if length.has_percentage() => self
+        .resolve_length_px_with_base(*length, percentage_base, style)
+        .map(LengthPercentage::length),
+      _ => self
+        .resolve_length_px_with_base(*length, None, style)
+        .or_else(|| self.resolve_length_px_with_base(*length, percentage_base, style))
+        .or_else(|| (!length.has_percentage()).then(|| length.to_px()))
+        .map(LengthPercentage::length),
+    }
+  }
+
+  fn convert_track_size_with_percentage_base(
+    &self,
+    track: &GridTrack,
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+  ) -> TrackSizingFunction {
+    match track {
+      GridTrack::Length(len) => match self.convert_length_to_lp_with_percentage_base(
+        len,
+        style,
+        percentage_base,
+      ) {
+        Some(lp) => TrackSizingFunction::from(lp),
+        None => TrackSizingFunction::AUTO,
+      },
+      GridTrack::MinContent => TrackSizingFunction::MIN_CONTENT,
+      GridTrack::MaxContent => TrackSizingFunction::MAX_CONTENT,
+      GridTrack::FitContent(len) => match self.convert_length_to_lp_with_percentage_base(
+        len,
+        style,
+        percentage_base,
+      ) {
+        Some(lp) => TrackSizingFunction::fit_content(lp),
+        None => TrackSizingFunction::AUTO,
+      },
+      GridTrack::Fr(fr) => TrackSizingFunction {
+        min: MinTrackSizingFunction::AUTO,
+        max: MaxTrackSizingFunction::fr(*fr),
+      },
+      GridTrack::Auto => TrackSizingFunction::AUTO,
+      GridTrack::MinMax(min, max) => {
+        let min_fn = self.convert_min_track_with_percentage_base(min, style, percentage_base);
+        let max_fn = self.convert_max_track_with_percentage_base(max, style, percentage_base);
+        TrackSizingFunction {
+          min: min_fn,
+          max: max_fn,
+        }
+      }
+      GridTrack::RepeatAutoFill { .. } | GridTrack::RepeatAutoFit { .. } => {
+        TrackSizingFunction::AUTO
+      }
+    }
+  }
+
+  fn convert_min_track_with_percentage_base(
+    &self,
+    track: &GridTrack,
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+  ) -> MinTrackSizingFunction {
+    use crate::style::values::LengthUnit;
+    match track {
+      GridTrack::Length(len) => match len.unit {
+        LengthUnit::Percent => MinTrackSizingFunction::percent(len.value / 100.0),
+        LengthUnit::Calc if len.has_percentage() => self
+          .resolve_length_px_with_base(*len, percentage_base, style)
+          .map(MinTrackSizingFunction::length)
+          .unwrap_or_else(MinTrackSizingFunction::auto),
+        _ => self
+          .resolve_length_px_with_base(*len, None, style)
+          .or_else(|| self.resolve_length_px_with_base(*len, percentage_base, style))
+          .or_else(|| (!len.has_percentage()).then(|| len.to_px()))
+          .map(MinTrackSizingFunction::length)
+          .unwrap_or_else(MinTrackSizingFunction::auto),
+      },
+      GridTrack::MinContent => MinTrackSizingFunction::MIN_CONTENT,
+      GridTrack::MaxContent => MinTrackSizingFunction::MAX_CONTENT,
+      GridTrack::Auto => MinTrackSizingFunction::auto(),
+      _ => MinTrackSizingFunction::auto(),
+    }
+  }
+
+  fn convert_max_track_with_percentage_base(
+    &self,
+    track: &GridTrack,
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+  ) -> MaxTrackSizingFunction {
+    use crate::style::values::LengthUnit;
+    match track {
+      GridTrack::Length(len) => match len.unit {
+        LengthUnit::Percent => MaxTrackSizingFunction::percent(len.value / 100.0),
+        LengthUnit::Calc if len.has_percentage() => self
+          .resolve_length_px_with_base(*len, percentage_base, style)
+          .map(MaxTrackSizingFunction::length)
+          .unwrap_or_else(MaxTrackSizingFunction::auto),
+        _ => self
+          .resolve_length_px_with_base(*len, None, style)
+          .or_else(|| self.resolve_length_px_with_base(*len, percentage_base, style))
+          .or_else(|| (!len.has_percentage()).then(|| len.to_px()))
+          .map(MaxTrackSizingFunction::length)
+          .unwrap_or_else(MaxTrackSizingFunction::auto),
+      },
+      GridTrack::Fr(fr) => MaxTrackSizingFunction::fr(*fr),
+      GridTrack::MinContent => MaxTrackSizingFunction::MIN_CONTENT,
+      GridTrack::MaxContent => MaxTrackSizingFunction::MAX_CONTENT,
+      GridTrack::FitContent(len) => match self.convert_length_to_lp_with_percentage_base(
+        len,
+        style,
+        percentage_base,
+      ) {
+        Some(lp) => MaxTrackSizingFunction::fit_content(lp),
+        None => MaxTrackSizingFunction::auto(),
+      },
+      GridTrack::Auto
+      | GridTrack::MinMax(..)
+      | GridTrack::RepeatAutoFill { .. }
+      | GridTrack::RepeatAutoFit { .. } => MaxTrackSizingFunction::auto(),
+    }
   }
 
   /// Converts a single GridTrack to TrackSizingFunction
@@ -6170,6 +6532,8 @@ impl GridFormattingContext {
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
     }
 
+    self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
+
     // Use appropriate available space for intrinsic sizing
     let available_space = match mode {
       IntrinsicSizingMode::MinContent => taffy::geometry::Size {
@@ -8713,6 +9077,8 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
+    ctx.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, constraints)?;
+
     // Convert constraints to Taffy available space
     let mut available_space = taffy::geometry::Size {
       width: match constraints.available_width {
@@ -10044,6 +10410,8 @@ impl FormattingContext for GridFormattingContext {
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
     }
 
+    self.patch_root_calc_percentage_tracks(&mut taffy, root_id, style, &intrinsic_constraints)?;
+
     // Convert constraints to Taffy available space. The intrinsic sizing probes for block-size
     // mirror the default `FormattingContext::compute_intrinsic_block_size` implementation:
     // intrinsic available space in the inline axis, indefinite in the block axis.
@@ -10343,6 +10711,7 @@ mod tests {
   use crate::style::types::WhiteSpace;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
+  use crate::style::values::{CalcLength, LengthUnit};
   use crate::text::font_db::FontConfig;
   use crate::tree::box_tree::BoxTree;
   use std::collections::HashMap;
@@ -12929,6 +13298,77 @@ mod tests {
     let fragment = fc.layout(&grid, &constraints).unwrap();
 
     assert_eq!(fragment.children.len(), 1);
+  }
+
+  #[test]
+  fn grid_template_calc_percentage_resolves_against_definite_container_size() {
+    let fc = GridFormattingContext::with_viewport(Size::new(1000.0, 100.0));
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_column_gap = Length::px(40.0);
+    // `calc(100% - 40px - 320px)`
+    let calc = CalcLength::single(LengthUnit::Percent, 100.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 360.0), -1.0)
+      .expect("build calc length");
+    container_style.grid_template_columns = vec![
+      GridTrack::Length(Length::calc(calc)),
+      GridTrack::Length(Length::px(320.0)),
+    ];
+    container_style.grid_template_rows = vec![GridTrack::Auto];
+    let container_style = Arc::new(container_style);
+
+    let mut item1_style = ComputedStyle::default();
+    item1_style.height = Some(Length::px(10.0));
+    item1_style.grid_column_start = 1;
+    item1_style.grid_column_end = 2;
+    item1_style.grid_row_start = 1;
+    item1_style.grid_row_end = 2;
+    let mut item1 =
+      BoxNode::new_block(Arc::new(item1_style), FormattingContextType::Block, vec![]);
+    item1.id = 101;
+
+    let mut item2_style = ComputedStyle::default();
+    item2_style.height = Some(Length::px(10.0));
+    item2_style.grid_column_start = 2;
+    item2_style.grid_column_end = 3;
+    item2_style.grid_row_start = 1;
+    item2_style.grid_row_end = 2;
+    let mut item2 =
+      BoxNode::new_block(Arc::new(item2_style), FormattingContextType::Block, vec![]);
+    item2.id = 102;
+
+    let container = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Grid,
+      vec![item1, item2],
+    );
+    let constraints = LayoutConstraints::definite(1000.0, 100.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout");
+
+    let item1_fragment = find_block_fragment(&fragment, 101);
+    let item2_fragment = find_block_fragment(&fragment, 102);
+
+    let expected_first_track_width = 1000.0 - 40.0 - 320.0;
+    let expected_second_x = expected_first_track_width + 40.0;
+
+    assert!(
+      (item1_fragment.bounds.width() - expected_first_track_width).abs() < 0.5,
+      "expected first column width {:.1}, got {:.1}",
+      expected_first_track_width,
+      item1_fragment.bounds.width()
+    );
+    assert!(
+      (item2_fragment.bounds.x() - expected_second_x).abs() < 0.5,
+      "expected second column x {:.1}, got {:.1}",
+      expected_second_x,
+      item2_fragment.bounds.x()
+    );
+    assert!(
+      (item2_fragment.bounds.width() - 320.0).abs() < 0.5,
+      "expected second column width 320.0, got {:.1}",
+      item2_fragment.bounds.width()
+    );
   }
 
   #[test]

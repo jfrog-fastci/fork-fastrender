@@ -493,7 +493,11 @@ pub fn diff_png_with_alpha(
 
   let max_width = rendered_img.width().max(expected_img.width());
   let max_height = rendered_img.height().max(expected_img.height());
-  let total_pixels = (max_width as u64) * (max_height as u64);
+  // Total pixels should count the union of both image rectangles. When the max width comes from
+  // one image and the max height comes from the other, the bottom-right corner can be missing
+  // from both. Counting only pixels that are present in at least one image avoids panics and
+  // produces a more meaningful diff percentage.
+  let mut total_pixels = 0u64;
 
   let diff_bytes = u64::from(max_width)
     .checked_mul(u64::from(max_height))
@@ -545,6 +549,7 @@ pub fn diff_png_with_alpha(
 
       match (rendered_px, expected_px) {
         (Some(rendered_px), Some(expected_px)) => {
+          total_pixels += 1;
           let diff_r = rendered_px[0].abs_diff(expected_px[0]);
           let diff_g = rendered_px[1].abs_diff(expected_px[1]);
           let diff_b = rendered_px[2].abs_diff(expected_px[2]);
@@ -577,6 +582,7 @@ pub fn diff_png_with_alpha(
           }
         }
         (Some(rendered_px), None) => {
+          total_pixels += 1;
           different_pixels += 1;
           max_channel_diff = 255;
           if first_mismatch.is_none() {
@@ -589,6 +595,7 @@ pub fn diff_png_with_alpha(
           diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
         }
         (None, Some(expected_px)) => {
+          total_pixels += 1;
           different_pixels += 1;
           max_channel_diff = 255;
           if first_mismatch.is_none() {
@@ -600,7 +607,11 @@ pub fn diff_png_with_alpha(
           }
           diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
         }
-        (None, None) => unreachable!("loop bounds ensure at least one pixel is present"),
+        (None, None) => {
+          // Both images are missing this pixel (can happen when each image provides one of the max
+          // dimensions). Treat this as a transparent match.
+          diff_image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+        }
       }
     }
   }
@@ -697,6 +708,36 @@ mod tests {
     assert_eq!(
       metrics.first_mismatch_rgba,
       Some(([10, 20, 30, 255], [0, 0, 0, 0]))
+    );
+  }
+
+  #[test]
+  fn diff_png_with_alpha_handles_disjoint_corner_for_dimension_mismatch() {
+    // rendered contributes max height, expected contributes max width => bottom-right corner is
+    // out-of-bounds for both images.
+    let rendered = RgbaImage::from_pixel(1, 2, Rgba([10, 20, 30, 255]));
+    let expected = RgbaImage::from_pixel(2, 1, Rgba([10, 20, 30, 255]));
+
+    let rendered_png = crate::image_compare::encode_png(&rendered).expect("encode rendered");
+    let expected_png = crate::image_compare::encode_png(&expected).expect("encode expected");
+
+    let (metrics, _diff_png) =
+      diff_png_with_alpha(&rendered_png, &expected_png, 0, true).expect("diff");
+    assert_eq!(metrics.rendered_dimensions, (1, 2));
+    assert_eq!(metrics.expected_dimensions, (2, 1));
+    assert_eq!(metrics.total_pixels, 3, "union of 1x2 and 2x1 should be 3 pixels");
+    assert_eq!(metrics.pixel_diff, 2);
+    assert_eq!(metrics.first_mismatch, Some((1, 0)));
+    assert_eq!(
+      metrics.first_mismatch_rgba,
+      Some(([0, 0, 0, 0], [10, 20, 30, 255]))
+    );
+    let expected_diff_percent = (2.0 / 3.0) * 100.0;
+    assert!(
+      (metrics.diff_percentage - expected_diff_percent).abs() < 0.01,
+      "expected diff_percent {:.4}, got {:.4}",
+      expected_diff_percent,
+      metrics.diff_percentage
     );
   }
 }
