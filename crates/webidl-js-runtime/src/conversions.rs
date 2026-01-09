@@ -148,6 +148,7 @@ pub fn to_byte<R: WebIdlJsRuntime>(
 struct ConversionState {
   int_attrs: IntegerConversionAttrs,
   legacy_null_to_empty_string: bool,
+  legacy_treat_non_object_as_null: bool,
 }
 
 fn convert_to_idl_inner<R: WebIdlJsRuntime>(
@@ -166,6 +167,9 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
           TypeAnnotation::Clamp => out_state.int_attrs.clamp = true,
           TypeAnnotation::EnforceRange => out_state.int_attrs.enforce_range = true,
           TypeAnnotation::LegacyNullToEmptyString => out_state.legacy_null_to_empty_string = true,
+          TypeAnnotation::LegacyTreatNonObjectAsNull => {
+            out_state.legacy_treat_non_object_as_null = true;
+          }
           _ => {}
         }
       }
@@ -249,7 +253,7 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 
     IdlType::BigInt => Err(rt.throw_type_error("`bigint` conversions are not supported yet")),
 
-    IdlType::Named(NamedType { name, .. }) => convert_to_named_type(rt, v, name, ctx, typedef_stack, state),
+    IdlType::Named(named) => convert_to_named_type(rt, v, named, ctx, typedef_stack, state),
 
     IdlType::Sequence(elem_ty) => {
       if !state.int_attrs.is_empty() {
@@ -279,11 +283,12 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
 fn convert_to_named_type<R: WebIdlJsRuntime>(
   rt: &mut R,
   v: R::JsValue,
-  name: &str,
+  named: &NamedType,
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
   state: ConversionState,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
+  let name = named.name.as_str();
   if let Some(ty) = ctx.typedefs.get(name) {
     if typedef_stack.contains(&name.to_string()) {
       return Err(rt.throw_type_error(&format!(
@@ -315,7 +320,34 @@ fn convert_to_named_type<R: WebIdlJsRuntime>(
     return convert_to_dictionary(rt, v, name, ctx, typedef_stack);
   }
 
-  Err(rt.throw_type_error(&format!("Unknown named type `{name}`")))
+  match named.kind {
+    NamedTypeKind::Interface => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to an interface type",
+        ));
+      }
+      // WebIDL interface conversions are specified in terms of platform objects owned by the
+      // embedding. We validate the brand via `implements_interface` and then store the opaque host
+      // id (if available) for downstream bindings to map back to Rust objects.
+      let opaque = to_interface_opaque(rt, v, name)?;
+      Ok(ConvertedValue::PlatformObject(PlatformObject::new(opaque)))
+    }
+    NamedTypeKind::CallbackFunction | NamedTypeKind::CallbackInterface => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to a callback type",
+        ));
+      }
+      let cb = convert_to_callback_internal(rt, v, &IdlType::Named(named.clone()), state.legacy_treat_non_object_as_null)?;
+      if rt.is_null(cb) {
+        Ok(ConvertedValue::Null)
+      } else {
+        Ok(ConvertedValue::Any(cb))
+      }
+    }
+    _ => Err(rt.throw_type_error(&format!("Unknown named type `{name}`"))),
+  }
 }
 
 fn convert_to_string<R: WebIdlJsRuntime>(

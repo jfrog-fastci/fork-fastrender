@@ -165,3 +165,41 @@ fn dictionary_defaults_and_required_members() {
   assert_eq!(members, expected);
 }
 
+#[test]
+fn interface_named_type_converts_platform_object_to_opaque_id() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let opaque = 0xfeed_u64;
+  let obj = rt
+    .alloc_platform_object_value("Node", &["EventTarget"], opaque)
+    .unwrap();
+
+  let ty = IdlType::Named(NamedType {
+    name: "Node".to_string(),
+    kind: NamedTypeKind::Interface,
+  });
+
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::PlatformObject(host) = converted else {
+    panic!("expected platform object, got {converted:?}");
+  };
+  assert_eq!(host.downcast_ref::<u64>().copied(), Some(opaque));
+}
+
+#[test]
+fn interface_named_type_rejects_wrong_interface() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let obj = rt
+    .alloc_platform_object_value("Node", &["EventTarget"], 1)
+    .unwrap();
+
+  let ty = IdlType::Named(NamedType {
+    name: "Document".to_string(),
+    kind: NamedTypeKind::Interface,
+  });
+
+  assert!(convert_to_idl(&mut rt, obj, &ty, &ctx).is_err());
+}
