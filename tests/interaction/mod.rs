@@ -3,6 +3,7 @@
 mod anchor_scroll;
 mod dom_mutation;
 mod engine;
+mod fragment_geometry;
 mod hit_test;
 mod select_dom_mutation;
 mod scroll_wheel;
