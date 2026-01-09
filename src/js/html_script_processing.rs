@@ -29,6 +29,12 @@ use std::rc::Rc;
 
 #[derive(Debug, Default)]
 struct HtmlScriptProcessingState {
+  /// A small "JS is executing" counter used to model the HTML concept of the "JS execution context
+  /// stack".
+  ///
+  /// In particular, HTML performs microtask checkpoints before/after executing parser-inserted
+  /// scripts *only when* that stack is empty. This must be tracked independently of the event
+  /// loop's task state because parsing often runs inside tasks that are not executing JS.
   js_execution_depth: usize,
 }
 
@@ -43,7 +49,11 @@ struct JsExecutionGuard {
 
 impl JsExecutionGuard {
   fn enter(state: &Rc<RefCell<HtmlScriptProcessingState>>) -> Self {
-    state.borrow_mut().js_execution_depth += 1;
+    let mut state_ref = state.borrow_mut();
+    state_ref.js_execution_depth = state_ref
+      .js_execution_depth
+      .checked_add(1)
+      .expect("js execution depth overflow");
     Self {
       state: Rc::clone(state),
     }
@@ -53,8 +63,10 @@ impl JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let mut state = self.state.borrow_mut();
-    debug_assert!(state.js_execution_depth > 0, "js execution depth underflow");
-    state.js_execution_depth = state.js_execution_depth.saturating_sub(1);
+    state.js_execution_depth = state
+      .js_execution_depth
+      .checked_sub(1)
+      .expect("js execution depth underflow");
   }
 }
 
