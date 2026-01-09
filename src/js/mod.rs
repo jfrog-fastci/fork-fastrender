@@ -19,6 +19,7 @@
 pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
+pub mod ecma_microtasks;
 pub mod html_scripting;
 pub mod orchestrator;
 pub mod script_blocking_stylesheets;
@@ -37,6 +38,7 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
   TaskSource, TimerId,
 };
+pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext, VmJsJobQueue};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
 };
