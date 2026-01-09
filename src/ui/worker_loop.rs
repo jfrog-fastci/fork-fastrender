@@ -520,9 +520,24 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let engine = &mut tab.interaction;
-        let _ = tab.document.mutate_dom(|dom| engine.key_action(dom, key));
-        repaint_if_needed(tab_id, tab, &ui_tx);
+        let base_url = effective_base_url(tab).to_string();
+        let document_url = tab.url.clone().unwrap_or_default();
+        let (doc, interaction) = (&mut tab.document, &mut tab.interaction);
+        let mut action = InteractionAction::None;
+        let _ = doc.mutate_dom(|dom| {
+          let (changed, a) = interaction.key_activate(dom, key, &document_url, &base_url);
+          action = a;
+          changed
+        });
+
+        match action {
+          InteractionAction::Navigate { href } => {
+            navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+          }
+          _ => {
+            repaint_if_needed(tab_id, tab, &ui_tx);
+          }
+        }
       }
       UiToWorker::RequestRepaint { tab_id, reason: _ } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
