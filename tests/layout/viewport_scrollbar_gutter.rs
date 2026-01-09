@@ -154,6 +154,30 @@ fn viewport_auto_gutter_reserves_when_overflowing() {
 }
 
 #[test]
+fn viewport_does_not_double_reserve_when_root_overflow_auto() {
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html { overflow-y: auto; }
+          body { margin: 0; }
+          #marker { width: 100%; height: 1px; }
+          #spacer { height: 1000px; }
+        </style>
+      </head>
+      <body>
+        <div id="marker"></div>
+        <div id="spacer"></div>
+      </body>
+    </html>"#;
+
+  let viewport = (200, 100);
+  let gutter = resolve_scrollbar_width(&ComputedStyle::default());
+  let width = marker_width(html, viewport);
+  assert_close(width, viewport.0 as f32 - gutter, "marker width");
+}
+
+#[test]
 fn viewport_overflow_propagation_html_body_special_case() {
   let html = r#"<!doctype html>
     <html style="overflow: visible;">
@@ -174,4 +198,3 @@ fn viewport_overflow_propagation_html_body_special_case() {
   let width = marker_width(html, viewport);
   assert_close(width, viewport.0 as f32, "marker width");
 }
-

@@ -10939,12 +10939,18 @@ impl FastRender {
     if let Some(start) = box_gen_start {
       eprintln!("timing:box_gen {:?}", start.elapsed());
     }
+    // CSS Overflow Module Level 3: overflow viewport propagation.
+    //
+    // The overflow values used for viewport scrolling come from the root element (or, in the
+    // HTML/body special case, from the body). The element supplying those overflow values has a
+    // used overflow of `visible` so it does not establish an additional scroll container; the
+    // viewport itself is the scroll container.
+    if let Some(root_element) = find_document_element_node(&styled_tree) {
+      force_box_overflow_visible(&mut box_tree.root, root_element.node_id);
+    }
     if let Some(body_node_id) =
       resolve_viewport_scrollbar_params(&styled_tree).propagated_body_styled_node_id
     {
-      // CSS Overflow Module Level 3: when the body's overflow is propagated to the viewport, the
-      // body's own used overflow becomes `visible` so it does not establish its own scroll
-      // container.
       force_box_overflow_visible(&mut box_tree.root, body_node_id);
     }
 
