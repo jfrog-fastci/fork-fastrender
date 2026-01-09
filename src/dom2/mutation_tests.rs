@@ -697,3 +697,68 @@ fn deep_tree_mutations_are_iterative() {
     Err(DomError::HierarchyRequestError)
   );
 }
+
+#[test]
+fn clone_node_rejects_document_nodes() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  assert_eq!(doc.clone_node(doc.root(), false), Err(DomError::NotSupportedError));
+}
+
+#[test]
+fn clone_node_shallow_copies_element_kind_and_attributes_but_not_children() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let el = doc.create_element("div", "");
+  doc.set_attribute(el, "data-x", "1").unwrap();
+  doc.append_child(root, el).unwrap();
+  let child = doc.create_text("hi");
+  doc.append_child(el, child).unwrap();
+
+  let cloned = doc.clone_node(el, false).unwrap();
+  assert_eq!(doc.parent(cloned).unwrap(), None);
+  assert_eq!(doc.children(cloned).unwrap(), &[]);
+
+  match &doc.node(cloned).kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => {
+      assert_eq!(tag_name, "div");
+      assert_eq!(namespace, "");
+      assert!(attributes.iter().any(|(k, v)| k == "data-x" && v == "1"));
+    }
+    other => panic!("expected cloned element kind, got {other:?}"),
+  }
+}
+
+#[test]
+fn clone_node_deep_clones_iteratively() {
+  // Large enough to overflow typical call stacks if implemented recursively.
+  const DEPTH: usize = 20_000;
+
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let top = doc.create_element("div", "");
+  doc.append_child(root, top).unwrap();
+
+  let mut current = top;
+  for _ in 0..DEPTH {
+    let next = doc.create_element("div", "");
+    doc.append_child(current, next).unwrap();
+    current = next;
+  }
+
+  let cloned = doc.clone_node(top, true).unwrap();
+  assert_eq!(doc.parent(cloned).unwrap(), None);
+
+  let mut current = cloned;
+  for _ in 0..DEPTH {
+    let children = doc.children(current).unwrap();
+    assert_eq!(children.len(), 1);
+    current = children[0];
+  }
+  assert_eq!(doc.children(current).unwrap().len(), 0);
+}

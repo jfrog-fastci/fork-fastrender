@@ -241,6 +241,30 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_clone_node",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, subtree: bool| {
+        let mut dom = dom.borrow_mut();
+        let result = dom.mutate_dom(|dom| {
+          let node = match dom.node_id_from_index(node as usize) {
+            Ok(id) => id,
+            Err(err) => return (Err(err), false),
+          };
+          match dom.clone_node(node, subtree) {
+            Ok(cloned) => (Ok(cloned.index() as u32), false),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(id) => Ok(id),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_append_child",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -460,6 +484,12 @@ where
           Err(DomException::NoModificationAllowedError { message }) => {
             throw_dom_exception(ctx, "NoModificationAllowedError", &message)
           }
+          Err(DomException::NotSupportedError { message }) => {
+            throw_dom_exception(ctx, "NotSupportedError", &message)
+          }
+          Err(DomException::InvalidStateError { message }) => {
+            throw_dom_exception(ctx, "InvalidStateError", &message)
+          }
         }
       }
     })?,
@@ -488,6 +518,12 @@ where
           Err(DomException::NoModificationAllowedError { message }) => {
             throw_dom_exception(ctx, "NoModificationAllowedError", &message)
           }
+          Err(DomException::NotSupportedError { message }) => {
+            throw_dom_exception(ctx, "NotSupportedError", &message)
+          }
+          Err(DomException::InvalidStateError { message }) => {
+            throw_dom_exception(ctx, "InvalidStateError", &message)
+          }
         }
       }
     })?,
@@ -513,6 +549,12 @@ where
           Err(DomException::NoModificationAllowedError { message }) => {
             throw_dom_exception(ctx, "NoModificationAllowedError", &message)
           }
+          Err(DomException::NotSupportedError { message }) => {
+            throw_dom_exception(ctx, "NotSupportedError", &message)
+          }
+          Err(DomException::InvalidStateError { message }) => {
+            throw_dom_exception(ctx, "InvalidStateError", &message)
+          }
         }
       }
     })?,
@@ -536,6 +578,12 @@ where
           }
           Err(DomException::NoModificationAllowedError { message }) => {
             throw_dom_exception(ctx, "NoModificationAllowedError", &message)
+          }
+          Err(DomException::NotSupportedError { message }) => {
+            throw_dom_exception(ctx, "NotSupportedError", &message)
+          }
+          Err(DomException::InvalidStateError { message }) => {
+            throw_dom_exception(ctx, "InvalidStateError", &message)
           }
         }
       }
@@ -1036,6 +1084,16 @@ const DOM_BINDINGS_SHIM: &str = r##"
   // --- Prototypes ------------------------------------------------------------
 
   function Node() {}
+
+  Node.prototype.cloneNode = function (subtree) {
+    if (this.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    var id = g.__fastrender_dom_clone_node(this.__node_id, !!subtree);
+    var clone = wrapNodeId(id);
+    clone.parentNode = null;
+    return clone;
+  };
 
   Node.prototype.appendChild = function (child) {
     if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
@@ -2085,10 +2143,10 @@ const DOM_BINDINGS_SHIM: &str = r##"
     panic!("script with id={id} not found")
   }
 
-  fn init_ctx(
-    dom: Rc<RefCell<TestDomHost>>,
-    script_state: CurrentScriptStateHandle,
-  ) -> (Runtime, Context) {
+  fn init_ctx<H>(dom: Rc<RefCell<H>>, script_state: CurrentScriptStateHandle) -> (Runtime, Context)
+  where
+    H: DomHost + 'static,
+  {
     let rt = Runtime::new().expect("create QuickJS runtime");
     let ctx = Context::full(&rt).expect("create QuickJS context");
     ctx.with(|ctx| {
@@ -2099,6 +2157,32 @@ const DOM_BINDINGS_SHIM: &str = r##"
         .expect("init obs array");
     });
     (rt, ctx)
+  }
+
+  #[derive(Debug)]
+  struct DirtyTrackingHost {
+    dom: Dom2Document,
+    dirty_count: usize,
+  }
+
+  impl DomHost for DirtyTrackingHost {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Dom2Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Dom2Document) -> (R, bool),
+    {
+      let (result, changed) = f(&mut self.dom);
+      if changed {
+        self.dirty_count += 1;
+      }
+      result
+    }
   }
 
   struct JsObservingExecutor {
@@ -2425,6 +2509,19 @@ const DOM_BINDINGS_SHIM: &str = r##"
       );
       assert_eq!(out, "NotFoundError");
 
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            document.cloneNode();
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException);
+          }
+        })()"#,
+      );
+       assert_eq!(out, "NotSupportedError|true");
+ 
        let out = eval_str(
          &ctx,
          r#"(() => {
@@ -2436,7 +2533,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
            }
          })()"#,
        );
-      assert_eq!(out, "SyntaxError|true|false");
+       assert_eq!(out, "SyntaxError|true|false");
 
       let out = eval_str(
         &ctx,
@@ -3275,6 +3372,70 @@ const DOM_BINDINGS_SHIM: &str = r##"
       })
       .map_err(|e| Error::Other(e.to_string()))?;
     assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn node_clone_node_clones_subtrees_and_isolated_clones_do_not_invalidate_until_inserted(
+  ) -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(concat!(
+      "<!doctype html>",
+      "<html><body>",
+      "<div id=\"src\" data-x=\"1\"><span>hi</span></div>",
+      "</body></html>",
+    ))?;
+    let dom = Rc::new(RefCell::new(DirtyTrackingHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+      dirty_count: 0,
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    ctx
+      .with(|ctx| {
+        let out: String = ctx.eval(
+          r#"(function () {
+            var src = document.getElementById("src");
+            if (!src) return "missing_src";
+
+            var shallow = src.cloneNode();
+            if (shallow.parentNode !== null) return "shallow_not_detached";
+            if (shallow.id !== "src") return "shallow_bad_id:" + String(shallow.id);
+            if (shallow.getAttribute("data-x") !== "1") return "shallow_bad_attr:" + String(shallow.getAttribute("data-x"));
+            if (shallow.querySelector("span") !== null) return "shallow_has_child";
+            if (shallow.textContent !== "") return "shallow_bad_text:" + String(shallow.textContent);
+
+            var deep = src.cloneNode(true);
+            if (deep.parentNode !== null) return "deep_not_detached";
+            var span = deep.querySelector("span");
+            if (!span) return "deep_missing_span";
+            if (deep.textContent !== "hi") return "deep_bad_text:" + String(deep.textContent);
+
+            globalThis.__clone = deep;
+            return "ok";
+          })()"#,
+        )?;
+        assert_eq!(out, "ok");
+        Ok::<(), rquickjs::Error>(())
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    assert_eq!(
+      dom.borrow().dirty_count,
+      0,
+      "cloneNode should not invalidate a render host until the clone is inserted"
+    );
+
+    ctx
+      .with(|ctx| ctx.eval::<(), _>("document.body.appendChild(globalThis.__clone)"))
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    assert_eq!(
+      dom.borrow().dirty_count,
+      1,
+      "inserting the cloned subtree should invalidate the render host"
+    );
+
     Ok(())
   }
 }  

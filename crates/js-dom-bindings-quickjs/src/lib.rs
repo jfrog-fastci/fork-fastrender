@@ -565,6 +565,18 @@ impl Node {
   // Node mutation
   // ===========================================================================
 
+  #[qjs(rename = "cloneNode")]
+  fn clone_node<'js>(&self, ctx: Ctx<'js>, deep: Option<bool>) -> JsResult<Object<'js>> {
+    let deep = deep.unwrap_or(false);
+    let mut dom = self.state.dom.borrow_mut();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let cloned = dom
+      .clone_node(self.node_id, deep)
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
+    drop(dom);
+    self.state.wrap_node(ctx, cloned)
+  }
+
   #[qjs(rename = "appendChild")]
   fn append_child<'js>(&self, ctx: Ctx<'js>, child: Node) -> JsResult<Object<'js>> {
     let old_parent = self.state.dom.borrow().parent_node(child.node_id);
@@ -1301,6 +1313,7 @@ fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
   match err {
     DomError::HierarchyRequestError
     | DomError::NotFoundError
+    | DomError::NotSupportedError
     | DomError::InvalidNodeType
     | DomError::NoModificationAllowedError => {
       let name = err.code();
@@ -1316,6 +1329,8 @@ fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Erro
     DomException::NoModificationAllowedError { message } => {
       throw_dom_exception(ctx, "NoModificationAllowedError", &message)
     }
+    DomException::NotSupportedError { message } => throw_dom_exception(ctx, "NotSupportedError", &message),
+    DomException::InvalidStateError { message } => throw_dom_exception(ctx, "InvalidStateError", &message),
   }
 }
 

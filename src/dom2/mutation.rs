@@ -4,6 +4,120 @@ use super::DomError;
 use super::{Document, NodeId, NodeKind};
 
 impl Document {
+  fn clone_node_shallow(&mut self, src: NodeId, parent: Option<NodeId>) -> Result<NodeId, DomError> {
+    self.node_checked(src)?;
+
+    let (kind, inert_subtree) = {
+      let node = &self.nodes[src.index()];
+      let kind = match &node.kind {
+        NodeKind::Document { .. } => return Err(DomError::NotSupportedError),
+        NodeKind::DocumentFragment => NodeKind::DocumentFragment,
+        NodeKind::Comment { content } => NodeKind::Comment {
+          content: content.clone(),
+        },
+        NodeKind::ProcessingInstruction { target, data } => NodeKind::ProcessingInstruction {
+          target: target.clone(),
+          data: data.clone(),
+        },
+        NodeKind::Doctype {
+          name,
+          public_id,
+          system_id,
+        } => NodeKind::Doctype {
+          name: name.clone(),
+          public_id: public_id.clone(),
+          system_id: system_id.clone(),
+        },
+        NodeKind::ShadowRoot {
+          mode,
+          delegates_focus,
+        } => NodeKind::ShadowRoot {
+          mode: *mode,
+          delegates_focus: *delegates_focus,
+        },
+        NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => NodeKind::Slot {
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+          // Slot assignment is derived state; cloned nodes start detached.
+          assigned: false,
+        },
+        NodeKind::Element {
+          tag_name,
+          namespace,
+          attributes,
+        } => NodeKind::Element {
+          tag_name: tag_name.clone(),
+          namespace: namespace.clone(),
+          attributes: attributes.clone(),
+        },
+        NodeKind::Text { content } => NodeKind::Text {
+          content: content.clone(),
+        },
+      };
+
+      (kind, node.inert_subtree)
+    };
+
+    Ok(self.push_node(kind, parent, inert_subtree))
+  }
+
+  /// Clone a single node, optionally cloning its descendant subtree.
+  ///
+  /// This is a subset of the WHATWG DOM `Node.cloneNode(deep)` algorithm for the node kinds modeled
+  /// by `dom2`.
+  ///
+  /// The cloned root is always detached (`parent == None`) and belongs to the same `dom2::Document`.
+  ///
+  /// Deep cloning is implemented iteratively to avoid recursion overflow on degenerate trees.
+  pub fn clone_node(&mut self, node: NodeId, deep: bool) -> Result<NodeId, DomError> {
+    self.node_checked(node)?;
+
+    let dst_root = self.clone_node_shallow(node, None)?;
+    if !deep {
+      return Ok(dst_root);
+    }
+
+    struct Frame {
+      src: NodeId,
+      dst: NodeId,
+      next_child: usize,
+    }
+
+    let mut stack: Vec<Frame> = vec![Frame {
+      src: node,
+      dst: dst_root,
+      next_child: 0,
+    }];
+
+    while let Some(mut frame) = stack.pop() {
+      let child_src = self.nodes[frame.src.index()]
+        .children
+        .get(frame.next_child)
+        .copied();
+
+      let Some(child_src) = child_src else {
+        continue;
+      };
+
+      frame.next_child += 1;
+      let parent_dst = frame.dst;
+      stack.push(frame);
+
+      let child_dst = self.clone_node_shallow(child_src, Some(parent_dst))?;
+      stack.push(Frame {
+        src: child_src,
+        dst: child_dst,
+        next_child: 0,
+      });
+    }
+
+    Ok(dst_root)
+  }
+
   fn validate_insert_hierarchy(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
     // NodeId validation is performed by callers, but keep this self-contained for internal use.
     let parent_kind = &self.node_checked(parent)?.kind;
