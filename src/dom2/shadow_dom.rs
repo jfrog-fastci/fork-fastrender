@@ -22,6 +22,10 @@ fn is_element(kind: &NodeKind) -> bool {
   matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
 }
 
+fn is_shadow_root(kind: &NodeKind) -> bool {
+  matches!(kind, NodeKind::ShadowRoot { .. })
+}
+
 fn get_attribute<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
   attrs
     .iter()
@@ -79,7 +83,8 @@ impl Document {
 
         let first_declarative_shadow_template = {
           let node = self.node(id);
-          if is_element(&node.kind) && !is_template_element(&node.kind) {
+          let eligible_host = is_element(&node.kind) && !is_template_element(&node.kind);
+          if eligible_host && !node.children.iter().any(|&child| is_shadow_root(&self.node(child).kind)) {
             node
               .children
               .iter()
@@ -106,6 +111,15 @@ impl Document {
         is_element(host_kind) && !is_template_element(host_kind)
       };
       if !is_shadow_host {
+        continue;
+      }
+
+      if self
+        .node(id)
+        .children
+        .iter()
+        .any(|&child| is_shadow_root(&self.node(child).kind))
+      {
         continue;
       }
 
@@ -332,6 +346,7 @@ mod tests {
     let inert_span = push_element(&mut doc, inert_nested_template, "span", Vec::new(), false);
     push_text(&mut doc, inert_span, "ignored");
 
+    doc.attach_shadow_roots();
     doc.attach_shadow_roots();
 
     let roundtrip = doc.to_renderer_dom();
