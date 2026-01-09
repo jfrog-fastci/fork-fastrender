@@ -86,6 +86,11 @@ struct NavigationRequest {
   apply_fragment_scroll: bool,
 }
 
+// `UiToWorker::Tick` is the UI's periodic driver for time-based updates (CSS animations/transitions,
+// and eventually JS timers). The UI does not provide a timestamp, so we advance a fixed amount of
+// time per tick to keep behaviour deterministic for tests.
+const TICK_ANIMATION_STEP_MS: f32 = 16.0;
+
 struct TabState {
   history: TabHistory,
   loading: bool,
@@ -105,6 +110,8 @@ struct TabState {
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
   force_repaint: bool,
+
+  tick_animation_time_ms: f32,
 }
 
 impl TabState {
@@ -125,6 +132,7 @@ impl TabState {
       pending_navigation: None,
       needs_repaint: false,
       force_repaint: false,
+      tick_animation_time_ms: 0.0,
     }
   }
 }
@@ -705,10 +713,8 @@ impl BrowserRuntime {
           self.begin_navigation(tab_id, url, NavigationReason::Reload, false);
         }
       }
-      UiToWorker::Tick { .. } => {
-        // This worker implementation currently renders on-demand (input/navigation/explicit
-        // repaint). Ticks are used by newer worker models to drive JS timers/microtasks; ignore
-        // them here to avoid forcing unnecessary paints.
+      UiToWorker::Tick { tab_id } => {
+        self.handle_tick(tab_id);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -1096,6 +1102,37 @@ impl BrowserRuntime {
       tab_id,
       loading: true,
     });
+  }
+
+  fn handle_tick(&mut self, tab_id: TabId) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(doc) = tab.document.as_mut() else {
+      return;
+    };
+
+    // Only schedule animation sampling when the document contains time-dependent primitives.
+    //
+    // `BrowserDocument` resolves time-based CSS animations/transitions to a deterministic settled
+    // state unless `RenderOptions.animation_time` is set. Use ticks to advance that time (and mark
+    // paint dirty) so animated pages can produce multiple frames without explicit UI interaction.
+    let has_time_based_effects = doc.prepared().is_some_and(|prepared| {
+      let tree = prepared.fragment_tree();
+      !tree.keyframes.is_empty() || tree.transition_state.is_some()
+    });
+    if !has_time_based_effects {
+      return;
+    }
+
+    let next_time = tab.tick_animation_time_ms + TICK_ANIMATION_STEP_MS;
+    tab.tick_animation_time_ms = if next_time.is_finite() {
+      next_time
+    } else {
+      f32::MAX
+    };
+    doc.set_animation_time_ms(tab.tick_animation_time_ms);
+    tab.needs_repaint = true;
   }
 
   fn handle_pointer_move(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
@@ -1738,6 +1775,7 @@ impl BrowserRuntime {
             .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
           tab.document = Some(doc);
           tab.interaction = InteractionEngine::new();
+          tab.tick_animation_time_ms = 0.0;
           tab.last_committed_url = Some(committed_url.clone());
           tab.last_base_url = base_url.clone();
 
@@ -1813,6 +1851,7 @@ impl BrowserRuntime {
       .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
     tab.document = Some(doc);
     tab.interaction = InteractionEngine::new();
+    tab.tick_animation_time_ms = 0.0;
     tab.last_committed_url = Some(committed_url.clone());
     tab.last_base_url = base_url.clone();
 
@@ -2060,6 +2099,7 @@ impl BrowserRuntime {
       }
     };
     tab.interaction = InteractionEngine::new();
+    tab.tick_animation_time_ms = 0.0;
     tab.scroll_state = painted.scroll_state.clone();
     tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
     tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());

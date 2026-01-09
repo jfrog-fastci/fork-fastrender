@@ -1,92 +1,168 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker, WorkerToUi};
+use super::support;
+use fastrender::ui::messages::{RenderedFrame, WorkerToUi};
 use fastrender::ui::spawn_ui_worker_with_factory;
+use fastrender::ui::{TabId, UiToWorker};
 use std::time::Duration;
 
-use super::support;
+// Worker startup + navigation + rendering can take a few seconds under load when integration tests
+// run in parallel on CI; keep this timeout generous to avoid flakiness.
+const TIMEOUT: Duration = Duration::from_secs(20);
+
+fn next_frame(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
+  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
+  match msg {
+    WorkerToUi::FrameReady { frame, .. } => frame,
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+}
 
 #[test]
-fn navigation_creates_a_live_tab_and_ticks_are_safe() {
+fn tick_unknown_tab_is_noop() {
   let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker_with_factory(
-    "fastr-ui-browser-worker-live-tab-test",
+    "fastr-ui-worker-tick-unknown",
     support::deterministic_factory(),
   )
   .expect("spawn ui worker");
+  let tab_id = TabId::new();
 
-  let tab_id = TabId(1);
-
-  // Ticking an unknown tab should be a no-op.
   handle
     .ui_tx
     .send(UiToWorker::Tick { tab_id })
-    .expect("send Tick(tab)");
+    .expect("tick");
+
+  let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
   assert!(
-    support::drain_for(&handle.ui_rx, Duration::from_millis(50)).is_empty(),
-    "expected no worker messages for Tick on unknown tab"
+    msgs.is_empty(),
+    "expected no messages after ticking an unknown tab, got:\n{}",
+    support::format_messages(&msgs)
   );
+
+  handle.join().expect("worker join");
+}
+
+#[test]
+fn tick_does_not_repaint_clean_tab() {
+  let _lock = super::stage_listener_test_lock();
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-tick-clean",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
 
   handle
     .ui_tx
-    .send(support::create_tab_msg(tab_id, None))
-    .expect("send CreateTab");
+    .send(support::create_tab_msg(
+      tab_id,
+      Some("about:blank".to_string()),
+    ))
+    .expect("create tab");
   handle
     .ui_tx
     .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
-    .expect("send ViewportChanged");
-  handle
-    .ui_tx
-    .send(support::navigate_msg(
-      tab_id,
-      "about:blank".to_string(),
-      NavigationReason::TypedUrl,
-    ))
-    .expect("send Navigate");
+    .expect("viewport");
 
-  // Wait for the first frame so we know the tab is live.
-  let _frame_msg = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
+  let _initial = next_frame(&handle.ui_rx, tab_id);
+  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
   })
-  .expect("wait for initial FrameReady");
-  // Ensure the navigation completes before ticking.
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
-    matches!(
-      msg,
-      WorkerToUi::LoadingState {
-        loading: false,
-        ..
-      }
-    )
-  })
-  .expect("wait for LoadingState(false)");
+  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
+  while handle.ui_rx.try_recv().is_ok() {}
 
-  // Drain any follow-up messages so only Tick-triggered output remains.
-  let _ = support::drain_for(&handle.ui_rx, Duration::from_millis(100));
-
-  // A clean tab should not repaint on tick (this worker currently ignores Tick).
   handle
     .ui_tx
     .send(UiToWorker::Tick { tab_id })
-    .expect("send Tick(tab)");
-  let drained = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
+    .expect("tick");
+
+  let msgs = support::drain_for(&handle.ui_rx, Duration::from_millis(200));
   assert!(
-    drained
-      .iter()
-      .all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
-    "expected no FrameReady after Tick; got:\n{}",
-    support::format_messages(&drained)
+    !msgs.iter().any(|msg| matches!(msg, WorkerToUi::FrameReady { .. })),
+    "expected no FrameReady after tick on a clean tab, got:\n{}",
+    support::format_messages(&msgs)
   );
 
-  // Ensure the worker thread is still alive by requesting an explicit repaint.
+  handle.join().expect("worker join");
+}
+
+#[test]
+fn tick_emits_new_frames_for_css_animation() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            html, body { background: rgb(0, 0, 0); }
+            #box {
+              width: 64px;
+              height: 64px;
+              background: rgb(255, 0, 0);
+              animation: fade 100ms linear infinite;
+            }
+            @keyframes fade {
+              from { opacity: 0; }
+              to { opacity: 1; }
+            }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>"#,
+  );
+
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-worker-tick-animation",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId::new();
   handle
     .ui_tx
-    .send(support::request_repaint(tab_id, RepaintReason::Explicit))
-    .expect("send RequestRepaint");
-  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  })
-  .expect("wait for repaint FrameReady");
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("create tab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("viewport");
 
-  handle.join().expect("join ui worker");
+  let _initial = next_frame(&handle.ui_rx, tab_id);
+  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for ScrollStateUpdated for tab {tab_id:?}"));
+  while handle.ui_rx.try_recv().is_ok() {}
+
+  handle
+    .ui_tx
+    .send(UiToWorker::Tick { tab_id })
+    .expect("tick 1");
+  let frame1 = next_frame(&handle.ui_rx, tab_id);
+  let bytes1 = frame1.pixmap.data().to_vec();
+
+  handle
+    .ui_tx
+    .send(UiToWorker::Tick { tab_id })
+    .expect("tick 2");
+  let frame2 = next_frame(&handle.ui_rx, tab_id);
+  let bytes2 = frame2.pixmap.data().to_vec();
+
+  assert_ne!(
+    bytes1, bytes2,
+    "expected pixmap to change between tick-driven animation frames"
+  );
+
+  handle.join().expect("worker join");
 }
+

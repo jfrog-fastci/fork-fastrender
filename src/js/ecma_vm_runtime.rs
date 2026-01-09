@@ -398,7 +398,7 @@ impl Evaluator<'_> {
           return Err(VmError::Unimplemented("unbound identifier"));
         }
 
-        child.ordinary_get_with_host(self.vm, self.hooks, global_obj, key, self.global_this)
+        child.ordinary_get(self.vm, global_obj, key, self.global_this)
       }
       Expr::This(_) => Ok(self.global_this),
       Expr::Member(node) => self.eval_member_expr(scope, &node.stx),
@@ -428,7 +428,7 @@ impl Evaluator<'_> {
     let key_s = child.alloc_string(&expr.right)?;
     child.push_root(Value::String(key_s))?;
     let key = vm_js::PropertyKey::String(key_s);
-    child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)
+    child.ordinary_get(self.vm, obj, key, obj_value)
   }
 
   fn eval_call_expr(
@@ -453,7 +453,7 @@ impl Evaluator<'_> {
         let key_s = child.alloc_string(&member.stx.right)?;
         child.push_root(Value::String(key_s))?;
         let key = vm_js::PropertyKey::String(key_s);
-        let func = child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)?;
+        let func = child.ordinary_get(self.vm, obj, key, obj_value)?;
         (func, obj_value)
       }
       _ => {
@@ -1599,13 +1599,7 @@ mod tests {
         scope.push_root(global_value)?;
         let key_s = scope.alloc_string("clearInterval")?;
         scope.push_root(Value::String(key_s))?;
-        let func = scope.ordinary_get_with_host(
-          vm,
-          hooks,
-          global,
-          vm_js::PropertyKey::String(key_s),
-          global_value,
-        )?;
+        let func = scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
         vm.call_with_host(scope, hooks, func, global_value, &[Value::Number(id as f64)])?;
       }
 
