@@ -1110,6 +1110,54 @@ fn install_constructors(
         .copied()
         .ok_or_else(|| rt.throw_type_error("appendChild: missing child"))?;
       let child_id = extract_node_id(rt, &platform_objects_for_append, child)?;
+
+      // DOM special case: inserting a DocumentFragment inserts its children (in order) and empties
+      // the fragment instead of inserting the fragment node itself.
+      //
+      // `dom2` rejects inserting fragments directly, so implement the special semantics by moving
+      // the fragment's children one-by-one.
+      let is_fragment = dom_for_append
+        .borrow()
+        .nodes()
+        .get(child_id.index())
+        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+      if is_fragment {
+        let children: Vec<NodeId> = dom_for_append
+          .borrow()
+          .children(child_id)
+          .map_err(|e| rt.throw_type_error(&format!("appendChild: {e}")))?
+          .to_vec();
+
+        for &fragment_child in &children {
+          dom_for_append
+            .borrow_mut()
+            .append_child(parent_id, fragment_child)
+            .map_err(|e| rt.throw_type_error(&format!("appendChild: {e}")))?;
+        }
+
+        maybe_refresh_cached_child_nodes(
+          rt,
+          &dom_for_append,
+          &platform_objects_for_append,
+          &node_wrapper_cache_for_append,
+          document_node_id,
+          document,
+          prototypes,
+          parent_id,
+        )?;
+        maybe_refresh_cached_child_nodes(
+          rt,
+          &dom_for_append,
+          &platform_objects_for_append,
+          &node_wrapper_cache_for_append,
+          document_node_id,
+          document,
+          prototypes,
+          child_id,
+        )?;
+        return Ok(child);
+      }
+
       let old_parent = dom_for_append.borrow().parent_node(child_id);
       dom_for_append
         .borrow_mut()
@@ -1161,6 +1209,30 @@ fn install_constructors(
         Value::Undefined | Value::Null => None,
         other => Some(extract_node_id(rt, &platform_objects_for_insert, other)?),
       };
+
+      // DOM special case: inserting a DocumentFragment inserts its children (in order) and empties
+      // the fragment instead of inserting the fragment node itself.
+      let is_fragment = dom_for_insert
+        .borrow()
+        .nodes()
+        .get(child_id.index())
+        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+      if is_fragment {
+        let children: Vec<NodeId> = dom_for_insert
+          .borrow()
+          .children(child_id)
+          .map_err(|e| rt.throw_type_error(&format!("insertBefore: {e}")))?
+          .to_vec();
+
+        for &fragment_child in &children {
+          dom_for_insert
+            .borrow_mut()
+            .insert_before(parent_id, fragment_child, reference_id)
+            .map_err(|e| rt.throw_type_error(&format!("insertBefore: {e}")))?;
+        }
+        return Ok(child);
+      }
+
       dom_for_insert
         .borrow_mut()
         .insert_before(parent_id, child_id, reference_id)
@@ -1269,6 +1341,58 @@ fn install_constructors(
       let new_child_id = extract_node_id(rt, &platform_objects_for_replace, new_child)?;
       let old_child_id = extract_node_id(rt, &platform_objects_for_replace, old_child)?;
       let old_parent = dom_for_replace.borrow().parent_node(new_child_id);
+
+      // DOM special case: replacing with a DocumentFragment inserts its children (in order) at the
+      // replacement position and empties the fragment.
+      //
+      // `dom2` rejects inserting fragments directly, so implement the special semantics by moving
+      // fragment children before removing the old child.
+      let is_fragment = dom_for_replace
+        .borrow()
+        .nodes()
+        .get(new_child_id.index())
+        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+      if is_fragment {
+        let children: Vec<NodeId> = dom_for_replace
+          .borrow()
+          .children(new_child_id)
+          .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?
+          .to_vec();
+
+        for &fragment_child in &children {
+          dom_for_replace
+            .borrow_mut()
+            .insert_before(parent_id, fragment_child, Some(old_child_id))
+            .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?;
+        }
+        dom_for_replace
+          .borrow_mut()
+          .remove_child(parent_id, old_child_id)
+          .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?;
+
+        maybe_refresh_cached_child_nodes(
+          rt,
+          &dom_for_replace,
+          &platform_objects_for_replace,
+          &node_wrapper_cache_for_replace,
+          document_node_id,
+          document,
+          prototypes,
+          parent_id,
+        )?;
+        maybe_refresh_cached_child_nodes(
+          rt,
+          &dom_for_replace,
+          &platform_objects_for_replace,
+          &node_wrapper_cache_for_replace,
+          document_node_id,
+          document,
+          prototypes,
+          new_child_id,
+        )?;
+        return Ok(old_child);
+      }
+
       dom_for_replace
         .borrow_mut()
         .replace_child(parent_id, new_child_id, old_child_id)
@@ -2181,6 +2305,32 @@ fn install_constructors(
       )
     })?;
     define_method(rt, prototypes.document, "createTextNode", create_text)?;
+
+    let dom_for_create_fragment = dom.clone();
+    let platform_objects_for_create_fragment = platform_objects.clone();
+    let node_wrapper_cache_for_create_fragment = node_wrapper_cache.clone();
+    let create_document_fragment = rt.alloc_function_value(move |rt, this, _args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_create_fragment, this)?;
+      let node_id = dom_for_create_fragment
+        .borrow_mut()
+        .create_document_fragment();
+      wrap_node(
+        rt,
+        &dom_for_create_fragment,
+        &platform_objects_for_create_fragment,
+        &node_wrapper_cache_for_create_fragment,
+        document_node_id,
+        document,
+        prototypes,
+        node_id,
+      )
+    })?;
+    define_method(
+      rt,
+      prototypes.document,
+      "createDocumentFragment",
+      create_document_fragment,
+    )?;
 
     let dom_for_get_by_id = dom.clone();
     let platform_objects_for_get_by_id = platform_objects.clone();
@@ -3721,6 +3871,16 @@ mod tests {
     assert_eq!(realm.rt.get(text, node_type_key).unwrap(), Value::Number(3.0));
     let text_name = realm.rt.get(text, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, text_name), "#text");
+
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
+    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+    assert_eq!(
+      realm.rt.get(fragment, node_type_key).unwrap(),
+      Value::Number(11.0)
+    );
+    let fragment_name = realm.rt.get(fragment, node_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, fragment_name), "#document-fragment");
   }
 
   #[test]
@@ -3756,6 +3916,64 @@ mod tests {
       .call_function(append_child, document, &[div])
       .unwrap();
     assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(true));
+  }
+
+  #[test]
+  fn append_child_with_document_fragment_inserts_children_and_empties_fragment() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let parent = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let fragment = realm.rt.call_function(create_fragment, document, &[]).unwrap();
+
+    let a_tag = realm.rt.alloc_string_value("a").unwrap();
+    let a = realm
+      .rt
+      .call_function(create_element, document, &[a_tag])
+      .unwrap();
+    let b_tag = realm.rt.alloc_string_value("b").unwrap();
+    let b = realm
+      .rt
+      .call_function(create_element, document, &[b_tag])
+      .unwrap();
+
+    let fragment_append_child = realm.rt.get(fragment, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(fragment_append_child, fragment, &[a])
+      .unwrap();
+    realm
+      .rt
+      .call_function(fragment_append_child, fragment, &[b])
+      .unwrap();
+
+    let parent_append_child = realm.rt.get(parent, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(parent_append_child, parent, &[fragment])
+      .unwrap();
+
+    let parent_id = extract_node_id(&mut realm.rt, &realm.platform_objects, parent).unwrap();
+    let fragment_id =
+      extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
+    let a_id = extract_node_id(&mut realm.rt, &realm.platform_objects, a).unwrap();
+    let b_id = extract_node_id(&mut realm.rt, &realm.platform_objects, b).unwrap();
+
+    let dom_ref = realm.dom.borrow();
+    assert_eq!(dom_ref.children(parent_id).unwrap(), &[a_id, b_id]);
+    assert_eq!(dom_ref.children(fragment_id).unwrap(), &[]);
   }
 
   #[test]
