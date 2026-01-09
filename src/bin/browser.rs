@@ -378,6 +378,12 @@ struct OpenSelectDropdown {
   control: fastrender::tree::box_tree::SelectControl,
   anchor_points: egui::Pos2,
   anchor_width_points: Option<f32>,
+  /// True when this dropdown was opened with a control anchor rect
+  /// (`WorkerToUi::SelectDropdownOpened`) rather than the legacy cursor-anchored
+  /// `WorkerToUi::OpenSelectDropdown` message.
+  ///
+  /// When both messages are emitted, prefer the control-anchored variant.
+  anchored_to_control: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -737,6 +743,16 @@ impl App {
           return;
         }
 
+        // If the newer rect-anchored message already opened the dropdown for this control, ignore
+        // the legacy cursor-anchored message to avoid overriding the better anchor.
+        if self.open_select_dropdown.as_ref().is_some_and(|existing| {
+          existing.tab_id == tab_id
+            && existing.select_node_id == select_node_id
+            && existing.anchored_to_control
+        }) {
+          return;
+        }
+
         let anchor_points = self.last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0));
 
         self.open_select_dropdown = Some(OpenSelectDropdown {
@@ -745,6 +761,7 @@ impl App {
           control,
           anchor_points,
           anchor_width_points: None,
+          anchored_to_control: false,
         });
         self.open_select_dropdown_rect = None;
       }
@@ -774,6 +791,7 @@ impl App {
           control,
           anchor_points,
           anchor_width_points,
+          anchored_to_control: true,
         });
         self.open_select_dropdown_rect = None;
       }
@@ -953,11 +971,10 @@ impl App {
       .fixed_pos(anchor)
       .show(ctx, |ui| {
         let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
-          if let Some(width) = anchor_width_points {
-            ui.set_min_width(width.max(1.0));
-          } else {
-            ui.set_min_width(200.0);
-          }
+          let min_width = anchor_width_points
+            .filter(|w| w.is_finite() && *w > 0.0)
+            .unwrap_or(200.0);
+          ui.set_min_width(min_width);
           egui::ScrollArea::vertical()
             .max_height(240.0)
             .show(ui, |ui| {
@@ -1024,13 +1041,13 @@ impl App {
       self.window.request_redraw();
       return;
     };
-
     if *disabled {
       self.close_select_dropdown();
       self.window.request_redraw();
       return;
     }
 
+    // Apply selection directly rather than synthesizing key events.
     self.send_worker_msg(UiToWorker::SelectDropdownChoose {
       tab_id,
       select_node_id,
