@@ -263,8 +263,15 @@ impl Default for TransitionState {
   }
 }
 
-fn collect_element_data(box_tree: &BoxTree) -> (HashMap<ElementKey, Arc<ComputedStyle>>, HashMap<usize, ElementKey>) {
+fn collect_element_data(
+  box_tree: &BoxTree,
+) -> (
+  HashMap<ElementKey, Arc<ComputedStyle>>,
+  HashMap<ElementKey, Arc<ComputedStyle>>,
+  HashMap<usize, ElementKey>,
+) {
   let mut styles: HashMap<ElementKey, Arc<ComputedStyle>> = HashMap::new();
+  let mut starting_styles: HashMap<ElementKey, Arc<ComputedStyle>> = HashMap::new();
   let mut map: HashMap<usize, ElementKey> = HashMap::new();
 
   let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
@@ -276,6 +283,11 @@ fn collect_element_data(box_tree: &BoxTree) -> (HashMap<ElementKey, Arc<Computed
       };
       map.insert(node.id, key);
       styles.entry(key).or_insert_with(|| node.style.clone());
+      if let Some(starting_style) = node.starting_style.as_ref() {
+        starting_styles
+          .entry(key)
+          .or_insert_with(|| Arc::clone(starting_style));
+      }
     }
     if let Some(body) = node.footnote_body.as_deref() {
       stack.push(body);
@@ -285,30 +297,7 @@ fn collect_element_data(box_tree: &BoxTree) -> (HashMap<ElementKey, Arc<Computed
     }
   }
 
-  (styles, map)
-}
-
-fn collect_starting_styles(box_tree: &BoxTree) -> HashMap<ElementKey, Arc<ComputedStyle>> {
-  let mut styles: HashMap<ElementKey, Arc<ComputedStyle>> = HashMap::new();
-  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
-  while let Some(node) = stack.pop() {
-    if let (Some(styled_node_id), Some(starting_style)) =
-      (node.styled_node_id, node.starting_style.as_ref())
-    {
-      let key = ElementKey {
-        styled_node_id,
-        pseudo: node.generated_pseudo,
-      };
-      styles.entry(key).or_insert_with(|| starting_style.clone());
-    }
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
-    for child in node.children.iter().rev() {
-      stack.push(child);
-    }
-  }
-  styles
+  (styles, starting_styles, map)
 }
 
 fn default_update_context() -> AnimationResolveContext {
@@ -428,9 +417,7 @@ impl TransitionState {
     new_box_tree: &BoxTree,
     now_ms: f32,
   ) -> TransitionState {
-    let (new_styles, box_to_element) = collect_element_data(new_box_tree);
-    let starting_styles =
-      prev_box_tree.is_none().then(|| collect_starting_styles(new_box_tree));
+    let (new_styles, new_starting_styles, box_to_element) = collect_element_data(new_box_tree);
 
     let mut next = TransitionState::default();
     next.box_to_element = box_to_element;
@@ -443,7 +430,8 @@ impl TransitionState {
       let before_style_arc = prev_styles
         .as_ref()
         .and_then(|styles| styles.get(&key))
-        .or_else(|| starting_styles.as_ref().and_then(|styles| styles.get(&key)));
+        .or_else(|| new_starting_styles.get(&key))
+        .map(Arc::clone);
       let Some(before_style_arc) = before_style_arc else {
         continue;
       };

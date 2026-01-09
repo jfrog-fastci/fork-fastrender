@@ -1,4 +1,5 @@
 use fastrender::animation;
+use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::style::cascade::StyledNode;
@@ -157,6 +158,118 @@ fn remove_attr(doc: &mut BrowserDocument, element_id: &str, name: &str) -> bool 
       .with_node_mut(node_id, |node| dom_mutation::remove_attr(node, name))
       .unwrap_or(false)
   })
+}
+
+#[test]
+fn starting_style_seeds_persistent_transition_state_on_initial_render() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      @starting-style { #box { opacity: 0; } }
+      #box { width: 100px; height: 100px; background: black; opacity: 1; transition: opacity 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  // First frame should seed the @starting-style snapshot into the persistent transition state.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+  assert!(
+    base_tree.transition_state.is_some(),
+    "expected BrowserDocument to attach a persistent transition_state when animation_time is set"
+  );
+
+  let eps = 1e-3;
+  let cases = [(0.0, 0.0), (500.0, 0.5), (1000.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
+fn starting_style_seeds_persistent_transition_state_for_newly_inserted_elements() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      @starting-style { #box { opacity: 0; } }
+      #box { width: 100px; height: 100px; background: black; opacity: 1; transition: opacity 1000ms linear; }
+    </style>
+    <div id="container"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  // First frame establishes the baseline layout without the inserted element.
+  doc.render_frame()?;
+
+  // Insert the element at t=100ms; it should transition from @starting-style -> final style.
+  doc.set_animation_time_ms(100.0);
+  assert!(doc.mutate_dom(|dom| {
+    let mut index = DomIndex::build(dom);
+    let container_id = *index
+      .id_by_element_id
+      .get("container")
+      .expect("expected #container element");
+    index
+      .with_node_mut(container_id, |node| {
+        node.children.push(DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("id".to_string(), "box".to_string())],
+          },
+          children: Vec::new(),
+        });
+        true
+      })
+      .unwrap_or(false)
+  }));
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let eps = 1e-3;
+  let cases = [(100.0, 0.0), (600.0, 0.5), (1100.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
 }
 
 #[test]
