@@ -431,7 +431,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
       "queueMicrotask called without an active EventLoop",
     ));
   };
-
+ 
   // Keep the callback alive until the microtask runs.
   let root = scope.heap_mut().add_root(callback)?;
   event_loop
