@@ -10,6 +10,7 @@ mod aria_hidden_layout;
 mod block_constraints_viewport_clamp;
 mod block_margin_collapse;
 mod br_linebreak;
+mod complex_script_wrap_test;
 mod contain_layout;
 mod container_query_border_calc;
 mod container_query_percentage_padding;

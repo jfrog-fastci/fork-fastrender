@@ -11,6 +11,8 @@ use fastrender::text::line_break::has_break_at;
 use fastrender::text::line_break::BreakIterator;
 use fastrender::text::line_break::BreakOpportunity;
 use fastrender::text::line_break::BreakType;
+use icu_segmenter::options::WordBreakOptions;
+use icu_segmenter::WordSegmenter;
 use unicode_linebreak::linebreaks;
 use unicode_linebreak::BreakOpportunity as UnicodeBreakOpportunity;
 
@@ -179,6 +181,77 @@ fn test_mixed_english_chinese() {
 
   // Should have breaks around CJK portion
   assert!(breaks.len() >= 3, "Mixed text should have multiple breaks");
+}
+
+// =============================================================================
+// Complex context scripts (Thai/Lao/Khmer/Myanmar) dictionary line breaks
+// =============================================================================
+
+fn icu_dictionary_word_boundaries(text: &str) -> Vec<usize> {
+  thread_local! {
+    static ICU_WORD_SEGMENTER: WordSegmenter = WordSegmenter::try_new_auto(WordBreakOptions::default())
+      .expect("ICU word segmenter data should exist");
+  }
+
+  ICU_WORD_SEGMENTER.with(|segmenter| {
+    segmenter
+      .as_borrowed()
+      .segment_str(text)
+      .filter(|&byte_offset| byte_offset > 0 && byte_offset < text.len())
+      .collect()
+  })
+}
+
+fn allowed_interior_break_offsets(text: &str) -> Vec<usize> {
+  let text_len = text.len();
+  find_break_opportunities(text)
+    .into_iter()
+    .filter(|b| b.break_type == BreakType::Allowed && b.byte_offset > 0 && b.byte_offset < text_len)
+    .map(|b| b.byte_offset)
+    .collect()
+}
+
+fn assert_dictionary_breaks_for_complex_script(text: &str) {
+  let expected = icu_dictionary_word_boundaries(text);
+  assert!(
+    !expected.is_empty(),
+    "expected ICU to provide at least one interior word boundary for {text:?}"
+  );
+
+  let actual = allowed_interior_break_offsets(text);
+  assert_eq!(
+    actual, expected,
+    "expected line break opportunities to match ICU dictionary segmentation for {text:?}"
+  );
+
+  // Guard against breaking at every codepoint.
+  let char_count = text.chars().count();
+  assert!(
+    actual.len() < char_count.saturating_sub(1),
+    "expected fewer breaks than the per-codepoint maximum (chars={char_count}, breaks={}) for {text:?}",
+    actual.len()
+  );
+}
+
+#[test]
+fn test_thai_dictionary_breaks() {
+  // No spaces: should still wrap at dictionary word boundaries (like browsers do).
+  assert_dictionary_breaks_for_complex_script("ภาษาไทยทดสอบการตัดคำ");
+}
+
+#[test]
+fn test_lao_dictionary_breaks() {
+  assert_dictionary_breaks_for_complex_script("ພາສາລາວທົດສອບ");
+}
+
+#[test]
+fn test_khmer_dictionary_breaks() {
+  assert_dictionary_breaks_for_complex_script("ភាសាខ្មែរសាកល្បង");
+}
+
+#[test]
+fn test_myanmar_dictionary_breaks() {
+  assert_dictionary_breaks_for_complex_script("မြန်မာစာစမ်းသပ်");
 }
 
 // =============================================================================

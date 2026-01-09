@@ -86,6 +86,7 @@ unicode-segmentation = "1.11"
 unicode-width = "0.1.11"
 unicode-vo = "0.1"
 unicode-general-category = "0.6"
+icu_segmenter = { version = "2.1.1", features = ["compiled_data"] }
 url = "2.5"
 urlencoding = "2.1"
 publicsuffix = "2.3"

@@ -54,6 +54,9 @@
 //! - CSS Text Module Level 3: <https://www.w3.org/TR/css-text-3/>
 
 use crate::text::emoji::find_emoji_sequence_spans;
+use icu_segmenter::options::WordBreakOptions;
+use icu_segmenter::WordSegmenter;
+use std::ops::Range;
 use unicode_linebreak::linebreaks;
 use unicode_linebreak::BreakOpportunity as UnicodeBreakOpportunity;
 
@@ -308,23 +311,154 @@ impl BreakOpportunity {
 /// // Note: The break is at position 12 (end of string), not at NBSP
 /// ```
 pub fn find_break_opportunities(text: &str) -> Vec<BreakOpportunity> {
-  let mut opportunities = Vec::new();
+  let mut opportunities: Vec<BreakOpportunity> = linebreaks(text)
+    .map(|(byte_offset, opportunity)| {
+      let break_type = match opportunity {
+        UnicodeBreakOpportunity::Mandatory => BreakType::Mandatory,
+        UnicodeBreakOpportunity::Allowed => BreakType::Allowed,
+      };
+      BreakOpportunity::with_hyphen_and_kind(
+        byte_offset,
+        break_type,
+        false,
+        BreakOpportunityKind::Normal,
+      )
+    })
+    .collect();
 
-  for (byte_offset, opportunity) in linebreaks(text) {
-    let break_type = match opportunity {
-      UnicodeBreakOpportunity::Mandatory => BreakType::Mandatory,
-      UnicodeBreakOpportunity::Allowed => BreakType::Allowed,
-    };
+  // UAX#14 requires dictionary-based segmentation for some scripts whose line-break behavior is
+  // classified as "Complex Context" (e.g. Thai/Lao/Khmer/Myanmar). Many line-break implementations
+  // either never break (causing huge overflow columns) or allow breaking between every codepoint.
+  // We preserve the existing `unicode-linebreak` behavior for most text, but replace intra-span
+  // breaks in these scripts with ICU4X dictionary word boundaries.
+  let complex_spans = find_complex_context_spans(text);
+  if !complex_spans.is_empty() {
+    opportunities = remove_allowed_breaks_inside_spans(opportunities, &complex_spans);
 
-    opportunities.push(BreakOpportunity::with_hyphen_and_kind(
-      byte_offset,
-      break_type,
-      false,
-      BreakOpportunityKind::Normal,
-    ));
+    with_icu_word_segmenter(|segmenter| {
+      for span in &complex_spans {
+        let slice = &text[span.clone()];
+        for boundary in segmenter.as_borrowed().segment_str(slice) {
+          if boundary == 0 || boundary == slice.len() {
+            continue;
+          }
+          let byte_offset = span.start + boundary;
+          debug_assert!(text.is_char_boundary(byte_offset));
+          opportunities.push(BreakOpportunity::allowed(byte_offset));
+        }
+      }
+    });
+
+    opportunities = sort_and_dedup_break_opportunities(opportunities);
   }
 
   filter_breaks_inside_emoji_sequences(text, opportunities)
+}
+
+thread_local! {
+  // ICU segmenters are relatively expensive to construct and are not `Sync` by default (they store
+  // provider payloads in `Rc`). Cache one instance per thread to keep per-call overhead low without
+  // requiring a global mutex.
+  static ICU_WORD_SEGMENTER: WordSegmenter = WordSegmenter::try_new_auto(WordBreakOptions::default())
+    .expect("ICU word segmenter data should be available");
+}
+
+fn with_icu_word_segmenter<R>(f: impl FnOnce(&WordSegmenter) -> R) -> R {
+  ICU_WORD_SEGMENTER.with(|segmenter| f(segmenter))
+}
+
+fn sort_and_dedup_break_opportunities(mut opportunities: Vec<BreakOpportunity>) -> Vec<BreakOpportunity> {
+  opportunities.sort_by(|a, b| a.byte_offset.cmp(&b.byte_offset));
+
+  let mut deduped: Vec<BreakOpportunity> = Vec::with_capacity(opportunities.len());
+  for opportunity in opportunities {
+    if let Some(last) = deduped.last_mut() {
+      if last.byte_offset == opportunity.byte_offset {
+        if opportunity.break_type == BreakType::Mandatory && last.break_type != BreakType::Mandatory {
+          last.break_type = BreakType::Mandatory;
+          last.kind = BreakOpportunityKind::Normal;
+        }
+        last.adds_hyphen |= opportunity.adds_hyphen;
+        if opportunity.kind == BreakOpportunityKind::Normal {
+          last.kind = BreakOpportunityKind::Normal;
+        }
+        continue;
+      }
+    }
+    deduped.push(opportunity);
+  }
+
+  deduped
+}
+
+fn remove_allowed_breaks_inside_spans(
+  opportunities: Vec<BreakOpportunity>,
+  spans: &[Range<usize>],
+) -> Vec<BreakOpportunity> {
+  if spans.is_empty() {
+    return opportunities;
+  }
+
+  let mut filtered = Vec::with_capacity(opportunities.len());
+  let mut span_iter = spans.iter().peekable();
+
+  'opportunities: for opportunity in opportunities {
+    while let Some(span) = span_iter.peek() {
+      if opportunity.byte_offset >= span.end {
+        span_iter.next();
+      } else {
+        break;
+      }
+    }
+
+    if opportunity.break_type == BreakType::Allowed {
+      if let Some(span) = span_iter.peek() {
+        if opportunity.byte_offset > span.start && opportunity.byte_offset < span.end {
+          continue 'opportunities;
+        }
+      }
+    }
+
+    filtered.push(opportunity);
+  }
+
+  filtered
+}
+
+fn find_complex_context_spans(text: &str) -> Vec<Range<usize>> {
+  let mut spans = Vec::new();
+  let mut start: Option<usize> = None;
+
+  for (idx, ch) in text.char_indices() {
+    if is_complex_context_script_char(ch) {
+      if start.is_none() {
+        start = Some(idx);
+      }
+    } else if let Some(span_start) = start.take() {
+      spans.push(span_start..idx);
+    }
+  }
+
+  if let Some(span_start) = start {
+    spans.push(span_start..text.len());
+  }
+
+  spans
+}
+
+fn is_complex_context_script_char(ch: char) -> bool {
+  // These ranges correspond to scripts that are typically assigned `SA` (Complex Context) line break
+  // property and therefore require dictionary-based segmentation per UAX#14.
+  matches!(
+    ch,
+    '\u{0E00}'..='\u{0E7F}' // Thai
+      | '\u{0E80}'..='\u{0EFF}' // Lao
+      | '\u{1780}'..='\u{17FF}' // Khmer
+      | '\u{19E0}'..='\u{19FF}' // Khmer Symbols
+      | '\u{1000}'..='\u{109F}' // Myanmar
+      | '\u{AA60}'..='\u{AA7F}' // Myanmar Extended-A
+      | '\u{A9E0}'..='\u{A9FF}' // Myanmar Extended-B
+  )
 }
 
 fn filter_breaks_inside_emoji_sequences(
