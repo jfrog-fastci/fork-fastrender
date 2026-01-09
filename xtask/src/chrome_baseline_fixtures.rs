@@ -18,14 +18,15 @@ use fastrender::cli_utils::fixture_html_patch;
 /// environments.
 ///
 /// `scripts/cargo_agent.sh` enforces a 64GiB address-space cap via `scripts/run_limited.sh` by
-/// default. Unfortunately, recent Chrome builds reserve >64GiB of virtual address space at startup
+/// default (96GiB for `cargo run -p xtask`). Unfortunately, recent Chrome builds reserve >64GiB of
+/// virtual address space at startup
 /// (even for trivial pages), which trips Oilpan's OOM guard and causes headless Chrome to hang.
 ///
 /// To keep `cargo_agent`'s default safety guardrails while still allowing Chrome baselines, we
 /// temporarily raise `RLIMIT_AS` for the duration of the `chrome` spawn (then immediately restore
 /// the original limits in the parent process).
 #[cfg(target_os = "linux")]
-const CHROME_MIN_RLIMIT_AS_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+const CHROME_MIN_RLIMIT_AS_BYTES: u64 = 96 * 1024 * 1024 * 1024;
 
 #[cfg(target_os = "linux")]
 struct ChromeRlimitAsGuard {
@@ -1334,11 +1335,11 @@ fn run_chrome_with_timeout(
 
   #[cfg(target_os = "linux")]
   let rlimit_guard = {
+    let min_gib = CHROME_MIN_RLIMIT_AS_BYTES / (1024 * 1024 * 1024);
     let guard = ChromeRlimitAsGuard::ensure_min_bytes(CHROME_MIN_RLIMIT_AS_BYTES).with_context(
       || {
         format!(
-          "failed to raise RLIMIT_AS for Chrome (required >= {} GiB); try setting FASTR_CARGO_LIMIT_AS=128G or 'unlimited'",
-          CHROME_MIN_RLIMIT_AS_BYTES / (1024 * 1024 * 1024)
+          "failed to raise RLIMIT_AS for Chrome (required >= {min_gib} GiB); try setting FASTR_XTASK_LIMIT_AS={min_gib}G or LIMIT_AS={min_gib}G (or 'unlimited')",
         )
       },
     )?;

@@ -684,13 +684,29 @@ mod box_shadow_tests {
     let radii = BorderRadii::zero();
     let shadow = BoxShadow::new(-2.0, 0.0, 0.0, 0.0, Rgba::rgb(255, 0, 0));
 
-    let result = render_box_shadow(&mut pixmap, 20.0, 20.0, 40.0, 40.0, &radii, &shadow).unwrap();
+    let result =
+      render_box_shadow(&mut pixmap, 20.0, 20.0, 40.0, 40.0, &radii, &shadow).unwrap();
     assert!(result);
 
     // Shadow should appear just outside the left edge.
     assert!(pixel_is_colored(&pixmap, 19, 40));
     // But not inside the border box.
     assert!(!pixel_is_colored(&pixmap, 21, 40));
+  }
+
+  #[test]
+  fn test_outset_shadow_does_not_fill_box_interior() {
+    let mut pixmap = create_pixmap(50, 50);
+    let radii = BorderRadii::zero();
+    let shadow = BoxShadow::new(0.0, 0.0, 6.0, 0.0, Rgba::from_rgba8(0, 0, 0, 128));
+    let result =
+      render_box_shadow(&mut pixmap, 10.0, 10.0, 30.0, 30.0, &radii, &shadow).unwrap();
+    assert!(result);
+
+    // Outset shadows are clipped to the outside of the box (so transparent-background boxes don't
+    // get a translucent fill).
+    assert!(!pixel_is_colored(&pixmap, 25, 25));
+    assert!(pixel_is_colored(&pixmap, 25, 9));
   }
 }
 

@@ -1,6 +1,7 @@
 //! Tree module tests
 
 mod box_generation_ad_placeholders;
+mod box_generation_blockification;
 mod box_generation_onenav;
 mod box_generation_whitespace_items;
 mod container_query_box_generation_options;

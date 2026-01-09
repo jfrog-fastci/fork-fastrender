@@ -1360,14 +1360,23 @@ impl BlockFormattingContext {
           } else {
             (used_border_box_block, Some(used_border_box_inline))
           };
+          // When delegating to a non-block formatting context (flex/grid/table), keep the
+          // *available size* in the block axis consistent with what block layout would pass to a
+          // normal child: only constrain it when the element has a definite block-size
+          // (`height`/`width` in the logical block axis, or a used-size override).
+          //
+          // Passing the parent's available height here (e.g. the viewport height for the root
+          // element) incorrectly forces auto-sized flex/grid containers to fill the viewport,
+          // pulling later siblings upward (notably visible on `walmart.com` where the footer would
+          // appear in the initial viewport).
           let fc_constraints = if inline_is_horizontal {
             LayoutConstraints::new(
               AvailableSpace::Definite(containing_width),
-              constraints.available_height,
+              child_height_space,
             )
           } else {
             LayoutConstraints::new(
-              constraints.available_width,
+              child_height_space,
               AvailableSpace::Definite(containing_width),
             )
           }

@@ -2736,7 +2736,12 @@ impl FormattingContext for FlexFormattingContext {
                             h
                           }
                         }
-                        _ => this.viewport_size.height,
+                        // Unlike the inline axis, max-content/min-content measurements routinely
+                        // need to return heights far exceeding the viewport (long pages, columns,
+                        // multi-module layouts). Clamping these to the viewport height breaks
+                        // auto-sized flex containers by under-measuring their items and pulling
+                        // later siblings upward.
+                        _ => f32::INFINITY,
                     });
                     let min_h_bound = resolved_min_h.unwrap_or(0.0);
                     if max_h_bound < min_h_bound {
@@ -7154,7 +7159,13 @@ impl FlexFormattingContext {
                 item_fc.as_ref(),
                 box_node,
                 PhysicalAxis::Y,
-                IntrinsicSizingMode::MinContent,
+                // Flexbox's content-based automatic minimum size uses the *content size suggestion*.
+                // For a vertical main axis, measuring the min-content block-size at the min-content
+                // inline size can hugely overestimate the true minimum (because it models wrapping
+                // at an artificially narrow width). Browsers instead use the max-content inline
+                // size for this probe, producing the single-line block size when the item is
+                // allowed to shrink-to-fit in the cross axis.
+                IntrinsicSizingMode::MaxContent,
               )
             },
           )
@@ -7165,7 +7176,7 @@ impl FlexFormattingContext {
             item_fc.as_ref(),
             &cloned,
             PhysicalAxis::Y,
-            IntrinsicSizingMode::MinContent,
+            IntrinsicSizingMode::MaxContent,
           )
         }
       } else {
@@ -7173,7 +7184,7 @@ impl FlexFormattingContext {
           item_fc.as_ref(),
           box_node,
           PhysicalAxis::Y,
-          IntrinsicSizingMode::MinContent,
+          IntrinsicSizingMode::MaxContent,
         )
       };
 
