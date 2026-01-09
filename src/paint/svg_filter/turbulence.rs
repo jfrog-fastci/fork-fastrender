@@ -610,7 +610,6 @@ fn lerp(t: f64, a: f64, b: f64) -> f64 {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use rayon::prelude::*;
   use rayon::ThreadPoolBuilder;
 
   fn render_bytes(

@@ -14,7 +14,7 @@ use crate::js::window_realm::WindowRealmHost;
 use crate::render_control;
 use std::time::{Duration, Instant};
 use vm_js::{
-  Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError,
+  Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError, VmHostHooks,
 };
 
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
@@ -25,7 +25,8 @@ pub(crate) const SET_INTERVAL_STRING_HANDLER_ERROR: &str =
 pub(crate) const SET_INTERVAL_NOT_CALLABLE_ERROR: &str = "setInterval callback is not callable";
 pub(crate) const QUEUE_MICROTASK_STRING_HANDLER_ERROR: &str =
   "queueMicrotask does not currently support string callbacks";
-pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str = "queueMicrotask callback is not callable";
+pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str =
+  "queueMicrotask callback is not callable";
 
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
@@ -188,7 +189,7 @@ fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Erro
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -277,7 +278,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
 fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -304,7 +305,7 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
 fn set_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -391,7 +392,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
 fn clear_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -417,7 +418,7 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
 fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -708,7 +709,7 @@ mod tests {
   fn cb_push_t(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -723,7 +724,7 @@ mod tests {
   fn cb_push_m(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     this: Value,
     _args: &[Value],
@@ -744,7 +745,7 @@ mod tests {
   fn cb_capture_args(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     args: &[Value],
@@ -764,7 +765,7 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    host: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1266,7 +1267,7 @@ mod tests {
     fn cb_record_this_is_undefined(
       _vm: &mut Vm,
       scope: &mut Scope<'_>,
-      _host: &mut dyn vm_js::VmHostHooks,
+      _host: &mut dyn VmHostHooks,
       callee: vm_js::GcObject,
       this: Value,
       _args: &[Value],
