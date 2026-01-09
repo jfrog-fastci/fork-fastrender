@@ -1034,6 +1034,81 @@ fn submit_click_marks_form_user_validity() {
 }
 
 #[test]
+fn select_listbox_click_marks_user_validity() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel"), ("size", "2")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-user-validity"),
+    "select should not be marked initially"
+  );
+
+  let select_dom_id = node_id(&dom, "sel");
+  let mut select_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  select_box.styled_node_id = Some(select_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 40.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (changed, _action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 25.0),
+    "https://x/",
+  );
+  assert!(changed);
+
+  assert!(
+    has_attr(&dom, "o2", "selected"),
+    "option in second row should be selected"
+  );
+  assert!(
+    !has_attr(&dom, "o1", "selected"),
+    "previously selected option should be cleared"
+  );
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
 fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
   let mut dom = doc(vec![el(
     "html",
@@ -1191,6 +1266,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: true,
         disabled: false,
         in_optgroup: false,
+        option_node_id: option_a_dom_id,
       },
       SelectItem::Option {
         node_id: option_b_dom_id,
@@ -1199,6 +1275,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: false,
         disabled: true,
         in_optgroup: false,
+        option_node_id: option_b_dom_id,
       },
       SelectItem::Option {
         node_id: option_c_dom_id,
@@ -1207,6 +1284,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: false,
         disabled: false,
         in_optgroup: false,
+        option_node_id: option_c_dom_id,
       },
     ]),
     selected: vec![0],
@@ -1608,6 +1686,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: true,
         disabled: false,
         in_optgroup: false,
+        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -1616,6 +1695,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: false,
         disabled: false,
         in_optgroup: false,
+        option_node_id: o2_dom_id,
       },
       SelectItem::Option {
         node_id: o3_dom_id,
@@ -1624,6 +1704,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: false,
         disabled: true,
         in_optgroup: false,
+        option_node_id: o3_dom_id,
       },
     ]),
     selected: vec![0],
@@ -1754,6 +1835,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
         selected: idx == 0,
         disabled: false,
         in_optgroup: false,
+        option_node_id: node_id(&dom, id),
       })
       .collect::<Vec<_>>(),
   );
@@ -2025,23 +2107,34 @@ fn enter_on_text_input_submits_get_form() {
     )],
   )]);
 
+  assert!(
+    !has_attr(&dom, "form", "data-fastr-user-validity"),
+    "form should not be marked initially"
+  );
+
   let input_id = node_id(&dom, "q");
 
   let mut engine = InteractionEngine::new();
   engine.focus_node_id(&mut dom, Some(input_id), false);
 
-  let (_, action) = engine.key_activate(
+  let (changed, action) = engine.key_activate(
     &mut dom,
     KeyAction::Enter,
     "https://example.com/doc",
     "https://example.com/base/",
   );
 
+  assert!(changed);
   assert_eq!(
     action,
     InteractionAction::Navigate {
       href: "https://example.com/search?q=abc".to_string()
     }
+  );
+  assert_eq!(
+    attr_value(&dom, "form", "data-fastr-user-validity").as_deref(),
+    Some("true"),
+    "Enter submission should mark form user validity"
   );
 }
 

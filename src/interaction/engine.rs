@@ -1415,11 +1415,11 @@ impl InteractionEngine {
             if !node_is_disabled(&index, target_id) {
               dom_changed |= dom_mutation::activate_radio(dom, target_id);
             }
-          } else if index.node(target_id).is_some_and(|node| {
-            is_submit_input(node) || is_submit_button(node)
-          }) {
+          } else if index.node(target_id).is_some_and(is_submit_control) {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-            dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
+            if !node_is_disabled(&index, target_id) {
+              dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
+            }
           }
         }
       }
@@ -1789,10 +1789,10 @@ impl InteractionEngine {
           } else {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-          }
-          if let Some(form_id) = find_ancestor_form(&index, focused) {
-            if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
-              action = InteractionAction::Navigate { href: url };
+            if let Some(form_id) = find_ancestor_form(&index, focused) {
+              if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+                action = InteractionAction::Navigate { href: url };
+              }
             }
           }
         } else if index.node(focused).is_some_and(is_text_input) {
@@ -1801,10 +1801,10 @@ impl InteractionEngine {
           } else {
             // Pressing Enter in a text field can submit the form; flip user validity as well.
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-          }
-          if let Some(form_id) = find_ancestor_form(&index, focused) {
-            if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
-              action = InteractionAction::Navigate { href: url };
+            if let Some(form_id) = find_ancestor_form(&index, focused) {
+              if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+                action = InteractionAction::Navigate { href: url };
+              }
             }
           }
         }
