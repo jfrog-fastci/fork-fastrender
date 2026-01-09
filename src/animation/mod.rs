@@ -8675,8 +8675,10 @@ mod tests {
   use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
   use crate::image_output::{encode_image, OutputFormat};
   use crate::style::cascade::apply_styles;
+  use crate::style::display::FormattingContextType;
   use crate::style::media::MediaContext;
   use crate::text::font_db::FontConfig;
+  use crate::tree::box_tree::{BoxNode, BoxTree};
   use crate::{FastRender, RenderOptions, ResourcePolicy};
   use image::ImageFormat;
   use std::fs;
@@ -10884,12 +10886,11 @@ mod tests {
 
   #[test]
   fn transition_state_interruption_sampling_expands_border_radius_shorthand() {
-    let prev_box_id = 1usize;
-    let prev_state = TransitionState {
-      entries: HashMap::new(),
-      viewport: Size::new(800.0, 600.0),
-      box_sizes: HashMap::from([(prev_box_id, Size::new(100.0, 100.0))]),
-    };
+    fn tree(style: ComputedStyle) -> BoxTree {
+      let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+      node.styled_node_id = Some(1);
+      BoxTree::new(node)
+    }
 
     let mut start_style = ComputedStyle::default();
     start_style.border_top_left_radius = BorderCornerRadius {
@@ -10897,74 +10898,103 @@ mod tests {
       y: Length::px(0.0),
     };
 
-    let mut end_style = ComputedStyle::default();
-    end_style.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
-    end_style.transition_durations = vec![1000.0].into();
-    end_style.transition_delays = vec![0.0].into();
-    end_style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
-    end_style.border_top_left_radius = BorderCornerRadius {
+    let mut style_a = ComputedStyle::default();
+    style_a.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
+    style_a.transition_durations = vec![1000.0].into();
+    style_a.transition_delays = vec![0.0].into();
+    style_a.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    style_a.border_top_left_radius = BorderCornerRadius {
       x: Length::px(10.0),
       y: Length::px(10.0),
     };
 
-    let prev_entry = TransitionEntry {
-      stable_key: TransitionStableKey {
-        styled_node_id: 0,
-        generated_pseudo: None,
-      },
-      start_time_ms: 0.0,
-      start_style: Arc::new(start_style),
+    let mut style_b = style_a.clone();
+    style_b.border_top_left_radius = BorderCornerRadius {
+      x: Length::px(20.0),
+      y: Length::px(20.0),
     };
 
-    let sampled = TransitionState::sample_style_for_interruption(
-      &prev_state,
-      prev_box_id,
-      &prev_entry,
-      &end_style,
-      500.0,
+    let before_tree = tree(start_style);
+    let tree_a = tree(style_a);
+    let tree_b = tree(style_b);
+
+    let state_a = TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
+    let key = super::transitions::ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    assert!(
+      state_a
+        .elements
+        .get(&key)
+        .is_some_and(|el| el.running.contains_key("border-top-left-radius")),
+      "expected border-radius shorthand to expand into a running corner longhand transition"
     );
-    assert!((sampled.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
-    assert!((sampled.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
+
+    let state_b =
+      TransitionState::update_for_style_change(Some(&state_a), Some(&tree_a), &tree_b, 500.0);
+    let record = state_b
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("border-top-left-radius"))
+      .expect("interrupted corner transition record");
+    assert!((record.from_style.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
+    assert!((record.from_style.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
   }
 
   #[test]
   fn transition_state_interruption_sampling_longhand_all_only() {
-    let prev_box_id = 1usize;
-    let prev_state = TransitionState {
-      entries: HashMap::new(),
-      viewport: Size::new(800.0, 600.0),
-      box_sizes: HashMap::from([(prev_box_id, Size::new(100.0, 100.0))]),
-    };
+    fn tree(style: ComputedStyle) -> BoxTree {
+      let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+      node.styled_node_id = Some(1);
+      BoxTree::new(node)
+    }
 
     let mut start_style = ComputedStyle::default();
     start_style.border_top_color = Rgba::BLACK;
     start_style.border_right_color = Rgba::BLACK;
 
-    let mut end_style = ComputedStyle::default();
-    end_style.transition_properties = vec![TransitionProperty::All].into();
-    end_style.transition_durations = vec![1000.0].into();
-    end_style.transition_delays = vec![0.0].into();
-    end_style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
-    end_style.border_top_color = Rgba::RED;
-    end_style.border_right_color = Rgba::GREEN;
+    let mut style_a = ComputedStyle::default();
+    style_a.transition_properties = vec![TransitionProperty::All].into();
+    style_a.transition_durations = vec![1000.0].into();
+    style_a.transition_delays = vec![0.0].into();
+    style_a.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    style_a.border_top_color = Rgba::RED;
+    style_a.border_right_color = Rgba::GREEN;
 
-    let prev_entry = TransitionEntry {
-      stable_key: TransitionStableKey {
-        styled_node_id: 0,
-        generated_pseudo: None,
-      },
-      start_time_ms: 0.0,
-      start_style: Arc::new(start_style),
+    let mut style_b = style_a.clone();
+    style_b.border_top_color = Rgba::BLUE;
+    style_b.border_right_color = Rgba::rgb(255, 255, 0);
+
+    let before_tree = tree(start_style);
+    let tree_a = tree(style_a);
+    let tree_b = tree(style_b);
+
+    let state_a = TransitionState::update_for_style_change(None, Some(&before_tree), &tree_a, 0.0);
+    let key = super::transitions::ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
     };
-
-    let sampled = TransitionState::sample_style_for_interruption(
-      &prev_state,
-      prev_box_id,
-      &prev_entry,
-      &end_style,
-      500.0,
+    assert!(
+      state_a
+        .elements
+        .get(&key)
+        .is_some_and(|el| el.running.contains_key("border-top-color") && el.running.contains_key("border-right-color")),
+      "expected both border colors to be running transitions when transition-property: all"
     );
-    assert_eq!(sampled.border_top_color, Rgba::rgb(128, 0, 0));
-    assert_eq!(sampled.border_right_color, Rgba::rgb(0, 128, 0));
+
+    let state_b =
+      TransitionState::update_for_style_change(Some(&state_a), Some(&tree_a), &tree_b, 500.0);
+    let element = state_b.elements.get(&key).expect("element state");
+    let top = element
+      .running
+      .get("border-top-color")
+      .expect("border-top-color record");
+    let right = element
+      .running
+      .get("border-right-color")
+      .expect("border-right-color record");
+    assert_eq!(top.from_style.border_top_color, Rgba::rgb(128, 0, 0));
+    assert_eq!(right.from_style.border_right_color, Rgba::rgb(0, 128, 0));
   }
 }
