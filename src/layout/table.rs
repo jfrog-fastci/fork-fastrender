@@ -3027,7 +3027,7 @@ fn compute_collapsed_borders(
     //
     // Rule 1: `hidden` suppresses all other borders at that edge.
     // Rule 2: `none` is lowest priority.
-    // Rule 3: after `hidden`/`none`, wider borders win; styles break width ties.
+    // Rule 3: wider borders win; styles break width ties.
     // Rule 4: if only color differs, prefer origin; then left/right (LTR/RTL) and top.
 
     match (a.style, b.style) {

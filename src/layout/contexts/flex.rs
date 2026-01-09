@@ -8703,21 +8703,21 @@ impl FlexFormattingContext {
       };
       if toggles.truthy("FASTR_DEBUG_FLEX_CHILD") {
         eprintln!(
-                    "[flex-child-layout] id={} selector={} layout=({:.2},{:.2}) loc=({:.2},{:.2}) grow={} shrink={} basis={:?}",
-                    child_box.id,
-                    child_box
-                        .debug_info
-                        .as_ref()
-                        .map(|d| d.to_selector())
-                        .unwrap_or_else(|| "<anon>".to_string()),
-                    layout_width,
-                    layout_height,
-                    child_loc_x,
-                    child_loc_y,
-                    child_box.style.flex_grow,
-                    child_box.style.flex_shrink,
-                    child_box.style.flex_basis
-                );
+          "[flex-child-layout] id={} selector={} layout=({:.2},{:.2}) loc=({:.2},{:.2}) grow={} shrink={} basis={:?}",
+          child_box.id,
+          child_box
+            .debug_info
+            .as_ref()
+            .map(|d| d.to_selector())
+            .unwrap_or_else(|| "<anon>".to_string()),
+          layout_width,
+          layout_height,
+          child_loc_x,
+          child_loc_y,
+          child_box.style.flex_grow,
+          child_box.style.flex_shrink,
+          child_box.style.flex_basis
+        );
       }
 
       // Guard against zero-sized cross axes coming from overly tight flex constraints

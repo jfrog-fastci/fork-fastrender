@@ -8163,9 +8163,12 @@ impl FormattingContext for BlockFormattingContext {
     let mut float_line_width = 0.0f32;
     let mut float_line_has_left = false;
     let mut float_line_has_right = false;
-    // Floats only contribute to intrinsic widths for shrink-to-fit containers (e.g. inline-block).
-    // For normal block containers, floats are out-of-flow and should not affect min/max-content.
-    let include_floats = style.shrink_to_fit_inline_size
+    // Floats are out-of-flow, so they do not contribute to intrinsic inline sizes for normal block
+    // containers. They *do* contribute when the container itself is shrink-to-fit (e.g.
+    // `display:inline-block` or a floating box), because shrink-to-fit width must account for float
+    // line packing.
+    let floats_contribute_to_intrinsic_width = style.float.is_floating()
+      || style.shrink_to_fit_inline_size
       || matches!(
         &box_node.box_type,
         BoxType::Inline(inline) if inline.formatting_context.is_some()
@@ -8208,7 +8211,7 @@ impl FormattingContext for BlockFormattingContext {
       }
 
       if child.style.float.is_floating() {
-        if !include_floats {
+        if !floats_contribute_to_intrinsic_width {
           continue;
         }
         // Floats still affect the shrink-to-fit width of block containers (including inline-block)

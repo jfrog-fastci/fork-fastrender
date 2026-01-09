@@ -428,6 +428,30 @@ pub(crate) fn current_layout_parallel_debug_collector(
   LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| cell.borrow().clone())
 }
 
+pub(crate) struct LayoutParallelDebugCollectorThreadGuard {
+  prev: Option<Arc<LayoutParallelDebugCollector>>,
+}
+
+impl LayoutParallelDebugCollectorThreadGuard {
+  pub(crate) fn install(collector: Option<Arc<LayoutParallelDebugCollector>>) -> Self {
+    let prev = LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+      let prev = cell.borrow().clone();
+      *cell.borrow_mut() = collector;
+      prev
+    });
+    Self { prev }
+  }
+}
+
+impl Drop for LayoutParallelDebugCollectorThreadGuard {
+  fn drop(&mut self) {
+    let prev = self.prev.take();
+    LAYOUT_PARALLEL_DEBUG_COLLECTOR.with(|cell| {
+      *cell.borrow_mut() = prev;
+    });
+  }
+}
+
 /// Enable or disable debug counters for layout parallelism.
 ///
 /// Counters are reset whenever this is called.

@@ -1495,13 +1495,15 @@ pub fn paginate_fragment_tree(
         &mut containing_line,
       );
       if let Some(line_start) = containing_line {
-        // When the page boundary lands inside an oversized line box (one that is taller than the
-        // fragmentainer), snapping the continuation token back to the line start can prevent
-        // pagination from making forward progress (the next page would start at the same position).
+        // If the page boundary falls inside a line box, prefer moving the entire line to the next
+        // page rather than splitting it.
         //
-        // Only snap to the line start when it advances beyond the current page start.
+        // However, when the line itself starts at (or before) the current page start (e.g. an
+        // oversized line that overflows the fragmentainer), snapping back to the line start would
+        // produce an empty page and stall pagination. Only snap when it advances beyond the
+        // current page start.
         if line_start > start + EPSILON {
-        token_pos = line_start;
+          token_pos = line_start;
         }
       }
 

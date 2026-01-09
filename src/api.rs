@@ -10517,6 +10517,8 @@ impl FastRender {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
       let stage = crate::render_control::active_stage();
+      let parallel_debug_collector =
+        crate::layout::engine::current_layout_parallel_debug_collector();
       return std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
           .name("fastr-layout".to_string())
@@ -10528,6 +10530,10 @@ impl FastRender {
               crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
             let _stage_guard = StageGuard::install(stage);
             let _stack_guard = LayoutStackThreadGuard::install();
+            let _parallel_debug_guard =
+              crate::layout::engine::LayoutParallelDebugCollectorThreadGuard::install(
+                parallel_debug_collector.clone(),
+              );
             self.layout_document_for_media_with_artifacts_inner(
               dom,
               width,
