@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use webidl_js_runtime::runtime::JsRuntime as _;
 use vm_js::{PropertyKey, Value, VmError};
-use webidl_js_runtime::JsRuntime as _;
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {
   let v = rt.alloc_string_value(s).expect("alloc string");
@@ -32,7 +31,7 @@ fn query_selector_invalid_selector_throws_domexception_syntaxerror() {
 
   let expected_message = match doc.query_selector("[", None).unwrap_err() {
     DomException::SyntaxError { message } => message,
-    other => panic!("expected SyntaxError, got {other:?}"),
+    other => panic!("expected SyntaxError DomException, got {other:?}"),
   };
 
   let doc = Rc::new(RefCell::new(doc));

@@ -110,7 +110,7 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
     let mut host = TestHost {
       call_result: Ok(Value::Undefined),
     };
-    job = create_promise_resolve_thenable_job(
+    let (created, _) = create_promise_resolve_thenable_job(
       &mut host,
       scope.heap_mut(),
       Value::Object(thenable),
@@ -118,8 +118,8 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
       Value::Object(resolve),
       Value::Object(reject),
     )?
-    .expect("then_action is callable")
-    .0;
+    .expect("then_action is callable");
+    job = created;
   }
 
   let weak_then_action = WeakGcObject::from(then_action);
@@ -135,7 +135,7 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
   assert!(weak_reject.upgrade(&heap).is_some());
 
   let mut ctx = RootingContext { heap: &mut heap };
-  job.0.discard(&mut ctx);
+  job.discard(&mut ctx);
 
   ctx.heap.collect_garbage();
   assert!(weak_then_action.upgrade(&*ctx.heap).is_none());
@@ -171,7 +171,7 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
     resolve = scope.alloc_object()?;
     reject = scope.alloc_object()?;
 
-    job = create_promise_resolve_thenable_job(
+    let (created, _) = create_promise_resolve_thenable_job(
       &mut host,
       scope.heap_mut(),
       Value::Object(thenable),
@@ -179,8 +179,8 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
       Value::Object(resolve),
       Value::Object(reject),
     )?
-    .expect("then_action is callable")
-    .0;
+    .expect("then_action is callable");
+    job = created;
   }
 
   let weak_then_action = WeakGcObject::from(then_action);
@@ -196,10 +196,7 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
 
   let mut ctx = RootingContext { heap: &mut heap };
 
-  let err = job
-    .0
-    .run(&mut ctx, &mut host)
-    .expect_err("host should return error");
+  let err = job.run(&mut ctx, &mut host).expect_err("host should return error");
   assert!(matches!(
     err,
     VmError::Unimplemented("host_call_job_callback failed")

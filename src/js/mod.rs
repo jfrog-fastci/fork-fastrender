@@ -59,6 +59,7 @@ pub mod window_realm;
 pub mod dom_bindings;
 pub mod events_bindings;
 pub mod window;
+pub mod quickjs_dom;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
