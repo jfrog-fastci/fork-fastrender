@@ -615,6 +615,25 @@ mod tests {
   }
 
   #[test]
+  fn resolves_transform_translate_percentages() {
+    let mut style = ComputedStyle::default();
+    style
+      .transform
+      .push(Transform::TranslateX(Length::percent(-100.0)));
+    style
+      .transform
+      .push(Transform::TranslateY(Length::percent(25.0)));
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 200.0, 100.0);
+    let matrix = resolve_transform3d(&style, bounds, None)
+      .expect("transform translate")
+      .to_2d()
+      .expect("affine transform");
+    assert!((matrix.e + 200.0).abs() < 1e-4);
+    assert!((matrix.f - 25.0).abs() < 1e-4);
+  }
+
+  #[test]
   fn resolves_viewport_relative_translate_when_viewport_provided() {
     let mut style = ComputedStyle::default();
     style.translate = TranslateValue::Values {

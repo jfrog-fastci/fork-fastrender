@@ -263,6 +263,55 @@ impl FormattingContextFactory {
     self
   }
 
+  /// Returns a copy of this factory translated into a child's coordinate space.
+  ///
+  /// Formatting contexts treat `(0, 0)` as the border-box origin of the root box they are laying
+  /// out. When a parent formatting context places a child at a non-zero origin (e.g. flex/grid item
+  /// placement), it must translate viewport-relative state into the child's coordinate space:
+  ///
+  /// - `viewport_scroll`, used by layout features like `content-visibility:auto`
+  /// - the nearest positioned/fixed containing blocks, used by absolute/fixed positioning
+  ///
+  /// If this translation isn't applied, absolute/fixed positioned descendants can incorrectly
+  /// double-apply the parent placement offset (because their containing block origin is expressed
+  /// in the parent's coordinate space while fragment bounds are relative to the child).
+  pub fn translated_for_child(&self, child_origin: Point) -> Self {
+    let child_origin = if child_origin.x.is_finite() && child_origin.y.is_finite() {
+      child_origin
+    } else {
+      Point::ZERO
+    };
+
+    let parent_scroll = self.viewport_scroll();
+    let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+      parent_scroll
+    } else {
+      Point::ZERO
+    };
+    let translated_scroll = Point::new(
+      parent_scroll.x - child_origin.x,
+      parent_scroll.y - child_origin.y,
+    );
+
+    let delta = Point::new(-child_origin.x, -child_origin.y);
+    let translated_positioned_cb = self.nearest_positioned_cb().translate(delta);
+    let translated_fixed_cb = self.nearest_fixed_cb().translate(delta);
+
+    if translated_scroll == self.viewport_scroll
+      && translated_positioned_cb == self.nearest_positioned_cb
+      && translated_fixed_cb == self.nearest_fixed_cb
+    {
+      return self.clone();
+    }
+
+    let mut clone = self.clone();
+    clone.viewport_scroll = translated_scroll;
+    clone.nearest_positioned_cb = translated_positioned_cb;
+    clone.nearest_fixed_cb = translated_fixed_cb;
+    clone.reset_cached_contexts();
+    clone
+  }
+
   /// Returns a copy of this factory with an updated nearest positioned containing block.
   pub fn with_positioned_cb(&self, cb: ContainingBlock) -> Self {
     if cb == self.nearest_positioned_cb {

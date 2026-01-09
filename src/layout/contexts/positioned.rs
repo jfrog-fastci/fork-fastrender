@@ -171,6 +171,20 @@ impl ContainingBlock {
   pub fn block_percentage_base(&self) -> Option<f32> {
     self.block_percentage_base
   }
+
+  /// Translates this containing block by the given offset.
+  ///
+  /// The containing block rectangle origin is stored in the coordinate space of the formatting
+  /// context that uses it. When a parent formatting context lays out a child at a non-zero origin
+  /// (e.g. a flex/grid item), nested formatting contexts interpret their own (0, 0) as the child's
+  /// border box. To keep absolute/fixed positioning correct inside that subtree, callers must
+  /// translate the inherited containing blocks into the child's coordinate space.
+  pub fn translate(self, offset: Point) -> Self {
+    Self {
+      rect: self.rect.translate(offset),
+      ..self
+    }
+  }
 }
 
 /// Sticky positioning constraints

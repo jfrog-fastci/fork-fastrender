@@ -4015,9 +4015,8 @@ impl GridFormattingContext {
           let fc_type = child
             .formatting_context()
             .unwrap_or(FormattingContextType::Block);
-          let parent_scroll = factory.viewport_scroll();
-          let child_scroll = Point::new(parent_scroll.x - bounds.x(), parent_scroll.y - bounds.y());
-          let child_factory = (*factory).clone().with_viewport_scroll(child_scroll);
+          let child_factory =
+            factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
           let fc = child_factory.get(fc_type);
 
           let available_height = continuation_available.unwrap_or(bounds.height());
@@ -4459,9 +4458,9 @@ impl GridFormattingContext {
         }
       }
 
-      let parent_scroll = self.factory.viewport_scroll();
-      let child_scroll = Point::new(parent_scroll.x - bounds.x(), parent_scroll.y - bounds.y());
-      let child_factory = self.factory.clone().with_viewport_scroll(child_scroll);
+      let child_factory = self
+        .factory
+        .translated_for_child(Point::new(bounds.x(), bounds.y()));
       let fc = child_factory.get(fc_type);
 
       let available_height = continuation_available.unwrap_or(bounds.height());
@@ -8719,12 +8718,14 @@ impl FormattingContext for GridFormattingContext {
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
 
-    // Grid containers that establish a fixed containing block (`transform`, `perspective`, filters,
-    // or `contain: paint/layout`) need to thread that containing block into the factories used for
-    // laying out descendants. Otherwise `position: fixed` descendants inside in-flow grid items can
-    // incorrectly fall back to the viewport.
+    // Grid containers that establish positioned containing blocks need to thread that containing
+    // block into the factories used for laying out descendants. Otherwise positioned descendants
+    // (especially those nested inside in-flow grid items) can incorrectly double-apply the grid
+    // item placement offset or fall back to an ancestor containing block.
     let mut ctx = self.clone();
-    if style.establishes_fixed_containing_block() {
+    let establishes_abs_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    if establishes_abs_cb || establishes_fixed_cb {
       let percentage_base = constraints
         .inline_percentage_base
         .or_else(|| constraints.width())
@@ -8753,8 +8754,14 @@ impl FormattingContext for GridFormattingContext {
           Some(padding_rect.size.width),
           constraints.height().map(|_| padding_rect.size.height),
         );
-      ctx.nearest_fixed_cb = padding_cb;
-      ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
+      if establishes_abs_cb {
+        ctx.nearest_positioned_cb = padding_cb;
+        ctx.factory = ctx.factory.with_positioned_cb(padding_cb);
+      }
+      if establishes_fixed_cb {
+        ctx.nearest_fixed_cb = padding_cb;
+        ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
+      }
     }
     let ctx = &ctx;
 
@@ -12187,9 +12194,8 @@ mod tests {
     let normal_fp = super::grid_child_fingerprint(&children_normal, false, &mut deadline_counter)
       .expect("fingerprint");
     let mut deadline_counter = 0usize;
-    let replaced_fp =
-      super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
-        .expect("fingerprint");
+    let replaced_fp = super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
+      .expect("fingerprint");
 
     assert_ne!(
       normal_fp, replaced_fp,

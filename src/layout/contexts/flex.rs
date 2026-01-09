@@ -7932,22 +7932,15 @@ impl FlexFormattingContext {
       let run_layout = |deadline_counter: &mut usize,
                         work: &ChildLayoutWorkItem<'_>|
        -> Result<(usize, ChildLayoutWorkOutput), LayoutError> {
-        // Translate the viewport scroll into the child's coordinate system so nested formatting
+        // Translate viewport-relative state into the child's coordinate system so nested formatting
         // contexts can correctly decide which `content-visibility:auto` descendants intersect the
-        // viewport. The flex container receives a scroll offset already translated into its own
-        // coordinate space by its parent (block/grid/flex); do the same for each child formatting
-        // context using the Taffy placement origin.
-        let parent_scroll = factory.viewport_scroll();
-        let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
-          parent_scroll
-        } else {
-          Point::ZERO
-        };
-        let child_scroll = Point::new(
-          parent_scroll.x - work.origin.x,
-          parent_scroll.y - work.origin.y,
-        );
-        let child_factory = factory.clone().with_viewport_scroll(child_scroll);
+        // viewport and so absolute/fixed positioning resolves against the correct containing
+        // blocks.
+        //
+        // The flex container receives state already translated into its own coordinate space by its
+        // parent (block/grid/flex); do the same for each child formatting context using the Taffy
+        // placement origin.
+        let child_factory = factory.translated_for_child(work.origin);
         // Flex items establish an independent formatting context. Block flex items need the
         // flex-item block formatting context so:
         // - auto margins resolve per flexbox rules, and

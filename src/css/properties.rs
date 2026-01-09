@@ -5564,6 +5564,16 @@ mod tests {
   }
 
   #[test]
+  fn parses_transform_translate_percentages() {
+    let transforms = parse_transform_list("translateX(-100%) translateY(50%)").expect("parsed");
+    assert_eq!(transforms.len(), 2);
+    assert!(
+      matches!(&transforms[0], Transform::TranslateX(x) if *x == Length::percent(-100.0))
+    );
+    assert!(matches!(&transforms[1], Transform::TranslateY(y) if *y == Length::percent(50.0)));
+  }
+
+  #[test]
   fn parses_transform_calc_lengths_and_angles() {
     let transforms = parse_transform_list(
       "translate(calc(10px + 5%), calc(20% - 4px)) rotate(calc(45deg + 15deg))",
