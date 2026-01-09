@@ -1336,6 +1336,28 @@ impl App {
             return;
           }
 
+          if matches!(
+            key,
+            VirtualKeyCode::Return | VirtualKeyCode::NumpadEnter | VirtualKeyCode::Space
+          ) {
+            let choice = self.open_select_dropdown.as_ref().and_then(|dropdown| {
+              fastrender::select_dropdown::selected_choice(dropdown.select_node_id, &dropdown.control)
+                .map(|choice| (dropdown.tab_id, choice.select_node_id, choice.option_node_id))
+            });
+
+            if let Some((tab_id, select_node_id, option_node_id)) = choice {
+              self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_choose(
+                tab_id,
+                select_node_id,
+                option_node_id,
+              ));
+            }
+
+            self.close_select_dropdown();
+            self.window.request_redraw();
+            return;
+          }
+
           let dropdown_nav_key = match key {
             VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
             VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),

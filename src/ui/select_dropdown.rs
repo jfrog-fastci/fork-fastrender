@@ -92,6 +92,34 @@ pub fn next_enabled_option_item_index(control: &SelectControl, key: KeyAction) -
   Some(options[next].0)
 }
 
+/// Returns the currently-selected `<option>` as a [`SelectDropdownChoice`].
+///
+/// This is primarily intended for keyboard UX: when a dropdown popup is open and the user presses
+/// Enter/Space, the UI typically "accepts" the current selection and closes the popup.
+///
+/// If the selected item refers to a disabled option, this returns `None` (a disabled option is not
+/// user-selectable).
+pub fn selected_choice(select_node_id: usize, control: &SelectControl) -> Option<SelectDropdownChoice> {
+  for &item_index in control.selected.iter().rev() {
+    let Some(item) = control.items.get(item_index) else {
+      continue;
+    };
+    match item {
+      SelectItem::OptGroupLabel { .. } => {}
+      SelectItem::Option {
+        disabled,
+        node_id,
+        ..
+      } => {
+        if !*disabled {
+          return Some(SelectDropdownChoice::new(select_node_id, *node_id));
+        }
+      }
+    }
+  }
+  None
+}
+
 #[derive(Debug, Clone)]
 struct OpenSelectDropdown {
   select_node_id: usize,
@@ -159,6 +187,12 @@ impl SelectDropdown {
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
       self.close();
       return None;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space)) {
+      let choice = selected_choice(open.select_node_id, &open.control);
+      self.close();
+      return choice;
     }
 
     let pos = if let Some(anchor) = open.anchor {
@@ -325,6 +359,23 @@ mod tests {
   }
 
   #[test]
+  fn selected_choice_returns_none_for_disabled_selected_option() {
+    let control = sample_control();
+    assert_eq!(selected_choice(10, &control), None);
+  }
+
+  #[test]
+  fn selected_choice_skips_disabled_selected_options() {
+    let mut control = sample_control();
+    // Make the disabled option the "active" selected item, but keep a prior enabled selection.
+    control.selected = vec![1, 2];
+    assert_eq!(
+      selected_choice(10, &control),
+      Some(SelectDropdownChoice::new(10, 101))
+    );
+  }
+
+  #[test]
   fn open_close_transitions() {
     let mut dropdown = SelectDropdown::default();
     assert!(!dropdown.is_open());
@@ -340,10 +391,7 @@ mod tests {
     dropdown.open(10, sample_control(), None);
 
     let choice = dropdown.choose_item(1).expect("expected selectable option");
-    assert_eq!(
-      choice,
-      SelectDropdownChoice::new(10, 101)
-    );
+    assert_eq!(choice, SelectDropdownChoice::new(10, 101));
   }
 
   #[test]
