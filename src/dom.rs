@@ -4372,7 +4372,8 @@ fn trim_ascii_whitespace_html(value: &str) -> &str {
 
 /// Parse an `exportparts` attribute value into (internal, exported) name pairs.
 ///
-/// Entries are comma-separated. A missing alias is treated as an identity mapping.
+/// Entries are comma-separated. A missing alias (i.e. `ident` without a `:`) is treated as an
+/// identity mapping. Invalid mappings like `ident:` (missing the outer ident) are ignored.
 pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
   let mut mappings = Vec::new();
   for entry in value.split(',') {
@@ -4411,7 +4412,9 @@ pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
       Some(alias) if !alias.is_empty() => {
         mappings.push((internal.to_string(), alias.to_string()));
       }
-      _ => {
+      // Per CSS Shadow Parts, `ident:` is invalid and ignored (rather than treated as `ident`).
+      Some(_) => {}
+      None => {
         mappings.push((internal.to_string(), internal.to_string()));
       }
     }
@@ -10743,6 +10746,15 @@ mod tests {
         ("::before".to_string(), "preceding-text".to_string()),
         ("::after".to_string(), "following-text".to_string()),
       ]
+    );
+  }
+
+  #[test]
+  fn parse_exportparts_ignores_missing_outer_ident_after_colon() {
+    assert_eq!(parse_exportparts("label:"), Vec::<(String, String)>::new());
+    assert_eq!(
+      parse_exportparts("label:outer, other:"),
+      vec![("label".to_string(), "outer".to_string())],
     );
   }
 
