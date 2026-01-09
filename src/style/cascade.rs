@@ -10246,6 +10246,35 @@ impl ContainerQueryContext {
   }
 }
 
+/// Configuration knobs for the legacy `apply_styles*` cascade entry points.
+///
+/// By default, FastRender follows Shadow DOM scoping rules: document-scoped author rules do **not**
+/// apply inside shadow trees.
+#[derive(Clone, Copy, Debug)]
+pub struct CascadeOptions {
+  /// When `true`, document-scoped author rules are used inside shadow trees as a compatibility
+  /// fallback. This is a spec deviation: per Shadow DOM + CSS scoping rules, document author rules
+  /// never apply within a shadow tree (regardless of whether the shadow root has stylesheets).
+  pub fallback_document_rules_in_shadow_scopes: bool,
+}
+
+impl Default for CascadeOptions {
+  fn default() -> Self {
+    Self {
+      fallback_document_rules_in_shadow_scopes: false,
+    }
+  }
+}
+
+impl CascadeOptions {
+  /// Enable legacy compatibility where document author rules apply inside shadow trees.
+  pub fn legacy_shadow_document_fallback() -> Self {
+    Self {
+      fallback_document_rules_in_shadow_scopes: true,
+    }
+  }
+}
+
 /// Apply styles to a DOM tree with default viewport (desktop)
 ///
 /// This is the main entry point for CSS cascade. It uses a default
@@ -10343,15 +10372,16 @@ pub fn explain_property_for_node_with_imports(
   let mut style_set = StyleSet::from_document(stylesheet.clone());
   style_set.shadows = shadow_sheets;
 
-  let mut prepared = PreparedCascade::new_for_style_set(
-    dom,
-    &style_set,
-    media_ctx,
-    import_loader,
-    base_url,
-    None,
-    false,
-  )?;
+    let mut prepared = PreparedCascade::new_for_style_set(
+      dom,
+      &style_set,
+      media_ctx,
+      import_loader,
+      base_url,
+      None,
+      false,
+      CascadeOptions::default(),
+    )?;
 
   with_target_fragment(target_fragment, || {
     with_image_set_dpr(media_ctx.device_pixel_ratio, || {
@@ -10784,6 +10814,29 @@ fn explain_property_for_node_with_prepared(
   })
 }
 
+/// Apply styles with a specific media context and explicit cascade options.
+///
+/// This mirrors [`apply_styles_with_media`], but allows opting into legacy compatibility behaviors.
+pub fn apply_styles_with_media_and_options(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  media_ctx: &MediaContext,
+  options: CascadeOptions,
+) -> StyledNode {
+  apply_styles_with_media_target_and_imports_with_options(
+    dom,
+    stylesheet,
+    media_ctx,
+    None,
+    None,
+    None::<&str>,
+    None,
+    None,
+    None,
+    options,
+  )
+}
+
 /// Apply styles with media context, optional :target, and optional import loader/base URL.
 // These entry points intentionally use default hashers for style caches and run infrequently.
 // Allow pedantic implicit_hasher here instead of plumbing custom hashers through the API surface.
@@ -10811,6 +10864,39 @@ pub fn apply_styles_with_media_target_and_imports(
     reuse_map,
     None,
   )
+}
+
+/// Apply styles with media context, optional :target, optional import loader/base URL, and
+/// explicit cascade options.
+#[allow(clippy::implicit_hasher)]
+pub fn apply_styles_with_media_target_and_imports_with_options(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  media_ctx: &MediaContext,
+  target_fragment: Option<&str>,
+  import_loader: Option<&dyn CssImportLoader>,
+  base_url: Option<&str>,
+  container_ctx: Option<&ContainerQueryContext>,
+  container_scope: Option<&HashSet<usize>>,
+  reuse_map: Option<&HashMap<usize, *const StyledNode>>,
+  options: CascadeOptions,
+) -> StyledNode {
+  apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
+    dom,
+    stylesheet,
+    media_ctx,
+    target_fragment,
+    import_loader,
+    base_url,
+    container_ctx,
+    container_scope,
+    reuse_map,
+    None,
+    None,
+    false,
+    options,
+  )
+  .unwrap_or_else(|_| fallback_styled_tree(dom))
 }
 
 /// Apply styles with optional media-query caching to share media evaluation across passes.
@@ -10901,6 +10987,7 @@ pub fn apply_styles_with_media_target_and_imports_cached_with_deadline(
     media_cache.as_deref_mut(),
     deadline,
     false,
+    CascadeOptions::default(),
   )
 }
 
@@ -10918,6 +11005,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   mut media_cache: Option<&mut MediaQueryCache>,
   deadline: Option<&RenderDeadline>,
   include_starting_style: bool,
+  cascade_options: CascadeOptions,
 ) -> Result<StyledNode, RenderError> {
   // This cache is keyed by selector addresses, so clear it for each cascade run to avoid potential
   // ABA issues if caller-created stylesheets are dropped and later allocations reuse addresses.
@@ -11120,10 +11208,13 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     }
   }
 
+  let fallback_document_rules_in_shadow_scopes =
+    cascade_options.fallback_document_rules_in_shadow_scopes;
+
   // Legacy cascade entrypoints apply document styles inside shadow roots. When a document
   // stylesheet contains :host / :host-context selectors and a shadow tree has no shadow
   // stylesheet, treat those selectors as shadow-host rules so they can style the host element.
-  if dom_maps.has_shadow_roots() {
+  if fallback_document_rules_in_shadow_scopes && dom_maps.has_shadow_roots() {
     let mut fallback_host_rule_templates: Vec<CascadeRule<'_>> = Vec::new();
     for (idx, rule) in author_rules.iter().enumerate() {
       if !rule_targets_shadow_host(rule.rule) {
@@ -11171,8 +11262,6 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       }
     }
   }
-
-  let fallback_document_rules_in_shadow_scopes = true;
 
   let (
     custom_property_registry_ua,
@@ -11511,6 +11600,7 @@ impl<'a> PreparedCascade<'a> {
     media_ctx: &MediaContext,
     mut media_cache: Option<&mut MediaQueryCache>,
     include_starting_style: bool,
+    cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
     let ua_stylesheet = user_agent_stylesheet();
     // Safety: `document_sheet` is kept alive inside `PreparedCascade`. References derived from the
@@ -11672,7 +11762,9 @@ impl<'a> PreparedCascade<'a> {
       }
     }
 
-    let fallback_document_rules_in_shadow_scopes = false;
+    let fallback_document_rules_in_shadow_scopes =
+      cascade_options.fallback_document_rules_in_shadow_scopes;
+
     let (
       custom_property_registry_ua,
       custom_property_registry_document,
@@ -11940,6 +12032,7 @@ impl<'a> PreparedCascade<'a> {
     base_url: Option<&str>,
     mut media_cache: Option<&mut MediaQueryCache>,
     include_starting_style: bool,
+    cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
     let resolve_imports = |sheet: &StyleSheet,
                            loader: Option<&dyn CssImportLoader>,
@@ -11980,6 +12073,7 @@ impl<'a> PreparedCascade<'a> {
       media_ctx,
       media_cache.as_deref_mut(),
       include_starting_style,
+      cascade_options,
     )
   }
 
@@ -11996,6 +12090,7 @@ impl<'a> PreparedCascade<'a> {
     base_url: Option<&str>,
     mut media_cache: Option<&mut MediaQueryCache>,
     include_starting_style: bool,
+    cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
     let resolve_imports = |sheet: StyleSheet,
                            loader: Option<&dyn CssImportLoader>,
@@ -12036,6 +12131,7 @@ impl<'a> PreparedCascade<'a> {
       media_ctx,
       media_cache.as_deref_mut(),
       include_starting_style,
+      cascade_options,
     )
   }
 
@@ -12323,6 +12419,7 @@ fn apply_style_set_with_media_target_and_imports_cached_with_deadline_impl(
     base_url,
     media_cache.as_deref_mut(),
     include_starting_style,
+    CascadeOptions::default(),
   )?;
 
   prepared.apply(
@@ -18222,9 +18319,17 @@ mod tests {
     )
     .expect("legacy second cascade");
 
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let prepared_first = prepared
       .apply(None, None, None, None, None)
       .expect("prepared first cascade");
@@ -18495,9 +18600,17 @@ mod tests {
     style_set.shadows.insert(1, shadow_stylesheet);
 
     let media_ctx = MediaContext::screen(800.0, 600.0);
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let first = prepared
       .apply(None, None, None, None, None)
       .expect("first cascade");
@@ -18627,9 +18740,17 @@ mod tests {
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let first = prepared
       .apply(None, None, None, None, None)
       .expect("first cascade");
@@ -19110,9 +19231,17 @@ mod tests {
 
     reset_inline_style_declaration_parse_count();
 
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, true)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      true,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let prepared_first = prepared
       .apply(None, None, None, None, None)
       .expect("prepared first cascade");
@@ -19167,9 +19296,17 @@ mod tests {
       )
       .expect("starting style cascade");
 
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let mut styled = prepared
       .apply(None, None, None, None, None)
       .expect("base cascade");
@@ -23227,9 +23364,17 @@ mod tests {
     let stylesheet = parse_stylesheet("#a:has(+ .x) { color: rgb(1, 2, 3); }").unwrap();
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let styled = prepared
       .apply(None, None, None, None, None)
       .expect("apply cascade");
@@ -23300,9 +23445,17 @@ mod tests {
       parse_stylesheet("div:is(:has([data-x]), .noop) { display: inline; }").unwrap();
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let styled = prepared
       .apply(None, None, None, None, None)
       .expect("apply cascade");
@@ -23399,9 +23552,17 @@ mod tests {
     let stylesheet = parse_stylesheet("div:is(:has(.foo), .noop) { display: inline; }").unwrap();
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
-    let mut prepared =
-      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
-        .expect("build prepared cascade");
+    let mut prepared = PreparedCascade::new_for_style_set(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      false,
+      CascadeOptions::default(),
+    )
+    .expect("build prepared cascade");
     let styled = prepared
       .apply(None, None, None, None, None)
       .expect("apply cascade");

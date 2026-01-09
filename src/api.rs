@@ -9989,6 +9989,7 @@ impl FastRender {
         None,
         Some(&mut media_query_cache),
         false,
+        crate::style::cascade::CascadeOptions::default(),
       )?;
       let styled_tree = prepared.apply(target_fragment.as_deref(), None, None, None, deadline)?;
       (prepared, styled_tree)

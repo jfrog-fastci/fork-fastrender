@@ -63,6 +63,7 @@ mod running_position_test;
 mod scope_pseudo_root_test;
 mod scope_rule_test;
 mod selector_indexing_test;
+mod shadow_document_rule_leak_test;
 mod shadow_dom_scoping_test;
 mod shadow_dom_container_query_slotted_test;
 mod shadow_dom_container_query_part_test;
