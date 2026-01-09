@@ -72,6 +72,11 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
             const none = a.querySelector(".x");
             if (none !== null) return "bad_descend";
 
+            const scope = parent.querySelector(":scope");
+            if (scope !== parent) return "bad_scope_qs";
+            const scopes = parent.querySelectorAll(":scope");
+            if (scopes.length !== 1 || scopes[0] !== parent) return "bad_scope_qsa";
+
             // Invalid selector should throw SyntaxError.
             try {
               parent.querySelectorAll("[");

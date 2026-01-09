@@ -1088,12 +1088,15 @@ const DOM_BINDINGS_SHIM: &str = r##"
   };
 
   Element.prototype.querySelector = function (selectors) {
-    var id = g.__fastrender_dom_query_selector(String(selectors), this.__node_id);
+    selectors = String(selectors);
+    var id = g.__fastrender_dom_query_selector(selectors, this.__node_id);
     if (id == null) return null;
     // dom2's selector engine currently includes the scope element itself; `Element#querySelector`
-    // must only consider descendants.
-    if (id === this.__node_id) {
-      var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+    // must only consider descendants for non-`:scope` selectors.
+    //
+    // `:scope` is specified to match the scoping root itself, so do not filter in that case.
+    if (id === this.__node_id && selectors.toLowerCase().indexOf(":scope") === -1) {
+      var ids = g.__fastrender_dom_query_selector_all(selectors, this.__node_id);
       for (var i = 0; i < ids.length; i++) {
         if (ids[i] === this.__node_id) continue;
         return g.__fastrender_wrap_node_id(ids[i], "element");
@@ -1104,10 +1107,12 @@ const DOM_BINDINGS_SHIM: &str = r##"
   };
 
   Element.prototype.querySelectorAll = function (selectors) {
-    var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+    selectors = String(selectors);
+    var allowScope = selectors.toLowerCase().indexOf(":scope") !== -1;
+    var ids = g.__fastrender_dom_query_selector_all(selectors, this.__node_id);
     var out = [];
     for (var i = 0; i < ids.length; i++) {
-      if (ids[i] === this.__node_id) continue;
+      if (!allowScope && ids[i] === this.__node_id) continue;
       out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
     }
     return out;
@@ -2185,6 +2190,11 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
               if (parent.querySelector("#a") !== a) return "fail: element.querySelector mismatch";
               if (a.querySelector("span") !== null) return "fail: element.querySelector should be null";
+
+              var scope = parent.querySelector(":scope");
+              if (scope !== parent) return "fail: element.querySelector(:scope) mismatch";
+              var scopes = parent.querySelectorAll(":scope");
+              if (!scopes || scopes.length !== 1 || scopes[0] !== parent) return "fail: element.querySelectorAll(:scope) mismatch";
 
               if (!a.matches("span.x")) return "fail: matches should be true";
               if (a.matches("div")) return "fail: matches should be false";

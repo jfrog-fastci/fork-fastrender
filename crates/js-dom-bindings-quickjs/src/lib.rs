@@ -110,6 +110,13 @@ const DOM_NULLABLE_SHIM: &str = r#"
 })();
 "#;
 
+fn selector_mentions_scope(selectors: &str) -> bool {
+  selectors
+    .as_bytes()
+    .windows(6)
+    .any(|w| w.eq_ignore_ascii_case(b":scope"))
+}
+
 // Best-effort node wrapper cache cleanup: avoid leaving unbounded dead keys in the cache after
 // wrapper objects are garbage collected.
 //
@@ -494,18 +501,19 @@ impl Node {
     ctx: Ctx<'js>,
     selectors: String,
   ) -> JsResult<Option<Object<'js>>> {
+    let allow_scope = selector_mentions_scope(&selectors);
     let (scope, filter_self) = {
       let dom = self.state.dom.borrow();
       match &dom.node(self.node_id).kind {
         NodeKind::Document { .. } => (None, false),
-        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), true),
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), !allow_scope),
         _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
       }
     };
 
     // `dom2` selector engines treat the scope element itself as a candidate; `Element#querySelector`
-    // must only consider descendants. Filter `self.node_id` out of results when scoping to an
-    // element-like node.
+    // must only consider descendants for non-`:scope` selectors. Filter `self.node_id` out of
+    // results when scoping to an element-like node unless the selector references `:scope`.
     if filter_self {
       let ids = {
         let mut dom = self.state.dom.borrow_mut();
@@ -532,11 +540,12 @@ impl Node {
     ctx: Ctx<'js>,
     selectors: String,
   ) -> JsResult<Vec<Object<'js>>> {
+    let allow_scope = selector_mentions_scope(&selectors);
     let (scope, filter_self) = {
       let dom = self.state.dom.borrow();
       match &dom.node(self.node_id).kind {
         NodeKind::Document { .. } => (None, false),
-        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), true),
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), !allow_scope),
         _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
       }
     };
