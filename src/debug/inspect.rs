@@ -403,7 +403,7 @@ fn node_snapshot(node_id: usize, dom: &DomNode, ancestors: &[&DomNode]) -> NodeS
     .get_attribute_ref("class")
     .map(|value| {
       value
-        .split_whitespace()
+        .split_ascii_whitespace()
         .map(|c| c.to_string())
         .collect::<Vec<_>>()
     })
@@ -435,12 +435,35 @@ fn dom_selector(node: &DomNode) -> String {
     selector.push_str(id);
   }
   if let Some(class_attr) = node.get_attribute_ref("class") {
-    for class in class_attr.split_whitespace() {
+    for class in class_attr.split_ascii_whitespace() {
       selector.push('.');
       selector.push_str(class);
     }
   }
   selector
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::dom::DomNodeType;
+
+  #[test]
+  fn non_ascii_whitespace_inspect_node_snapshot_does_not_split_nbsp_class() {
+    let nbsp = "\u{00A0}";
+    let node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: crate::dom::HTML_NAMESPACE.to_string(),
+        attributes: vec![("class".to_string(), format!("foo{nbsp}bar"))],
+      },
+      children: Vec::new(),
+    };
+
+    let snap = node_snapshot(1, &node, &[]);
+    assert_eq!(snap.classes, vec![format!("foo{nbsp}bar")]);
+    assert_eq!(dom_selector(&node), format!("div.foo{nbsp}bar"));
+  }
 }
 
 fn style_snapshot(style: &ComputedStyle) -> ComputedStyleSnapshot {

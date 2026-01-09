@@ -471,8 +471,7 @@ fn summarize_dom_node(node: &DomNode) -> DomNodeSummary {
       let classes = node
         .get_attribute_ref("class")
         .map(|c| {
-          c.split_whitespace()
-            .filter(|s| !s.is_empty())
+          c.split_ascii_whitespace()
             .map(ToString::to_string)
             .collect()
         })
