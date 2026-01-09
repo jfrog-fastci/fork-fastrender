@@ -7,8 +7,8 @@
 //!
 //! # Live `searchParams`
 //!
-//! `Url::search_params()` returns a [`UrlSearchParams`] view that stays in sync with the URL's
-//! query string:
+//! `Url::search_params()` returns the cached [`UrlSearchParams`] object (equivalent to WHATWG
+//! `URL.searchParams` with `[SameObject]`) that stays in sync with the URL's query string:
 //! - Mutating the `UrlSearchParams` updates the parent URL's query string.
 //! - Setting `Url::search` updates what the associated `UrlSearchParams` sees.
 //!
@@ -53,6 +53,11 @@ struct UrlInner {
 #[derive(Debug, Clone)]
 pub struct Url {
   inner: Rc<RefCell<UrlInner>>,
+  /// Cached `URL.searchParams` object.
+  ///
+  /// In the WHATWG URL IDL this attribute is marked `[SameObject]`, meaning repeated reads return
+  /// the same object identity.
+  search_params: Rc<UrlSearchParams>,
 }
 
 impl Url {
@@ -62,7 +67,7 @@ impl Url {
   /// `UrlError::InvalidBase`. Otherwise `input` is parsed using the WHATWG URL rules with the parsed
   /// base.
   pub fn parse(input: &str, base: Option<&str>) -> Result<Self, UrlError> {
-    let inner = match base {
+    let url = match base {
       Some(base) => {
         let base_url = ::url::Url::parse(base).map_err(|source| UrlError::InvalidBase {
           base: base.to_string(),
@@ -82,9 +87,10 @@ impl Url {
       })?,
     };
 
-    Ok(Self {
-      inner: Rc::new(RefCell::new(UrlInner { url: inner })),
-    })
+    let inner = Rc::new(RefCell::new(UrlInner { url }));
+    let search_params = Rc::new(UrlSearchParams::associated(inner.clone()));
+
+    Ok(Self { inner, search_params })
   }
 
   /// Equivalent to the WHATWG `URL.parse(url, base)` static method.
@@ -392,8 +398,8 @@ impl Url {
   }
 
   /// Return a live `URLSearchParams` view over this URL's query string.
-  pub fn search_params(&self) -> UrlSearchParams {
-    UrlSearchParams::associated(self.inner.clone())
+  pub fn search_params(&self) -> Rc<UrlSearchParams> {
+    self.search_params.clone()
   }
 
   /// Replace this URL's query with the serialization of `params`.
@@ -692,6 +698,7 @@ fn set_host_impl(
 #[cfg(test)]
 mod tests {
   use super::{Url, UrlError, UrlSearchParams};
+  use std::rc::Rc;
 
   #[test]
   fn resolves_relative_url_with_base() {
@@ -766,6 +773,14 @@ mod tests {
     url.set_search("");
     assert_eq!(url.search(), "");
     assert!(!params.has("q", None));
+  }
+
+  #[test]
+  fn url_searchparams_is_same_object() {
+    let url = Url::parse("https://example.com/?a=b", None).unwrap();
+    let a = url.search_params();
+    let b = url.search_params();
+    assert!(Rc::ptr_eq(&a, &b));
   }
 
   #[test]
