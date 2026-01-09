@@ -35,6 +35,7 @@ mod custom_property_wide_keywords_test;
 mod defaults_test;
 mod dynamic_range_limit_test;
 mod extract_print;
+mod explicit_no_namespace_selector_test;
 mod flex_keywords_case_insensitive_test;
 mod flex_property_test;
 mod field_sizing_property_test;

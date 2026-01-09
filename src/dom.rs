@@ -6543,15 +6543,19 @@ impl<'a> Element for ElementRef<'a> {
     match &self.node.node_type {
       DomNodeType::Element { namespace, .. } | DomNodeType::Slot { namespace, .. } => {
         // The selectors crate uses an empty namespace URL to represent the explicit "no namespace"
-        // selector form (`|E`). FastRender stores HTML elements with an empty string namespace to
-        // save memory, so treat an empty selector namespace as "no namespace" (which never matches
-        // HTML).
+        // selector form (`|E`).
+        //
+        // FastRender represents the HTML namespace using an empty string (see `convert_handle_to_node`)
+        // and some constructed DOMs may use the literal HTML namespace URL. Treat an empty selector
+        // namespace as matching only the empty/HTML namespaces, not as a wildcard across SVG/MathML/etc.
         if ns.is_empty() {
-          return false;
+          return namespace.is_empty() || namespace == HTML_NAMESPACE;
         }
         if namespace == ns {
           return true;
         }
+        // FastRender internal convention: treat the empty namespace as equivalent to the HTML
+        // namespace for selector matching.
         namespace.is_empty() && ns == HTML_NAMESPACE
       }
       _ => false,
