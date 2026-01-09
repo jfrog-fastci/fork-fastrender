@@ -8363,6 +8363,7 @@ fn apply_transitions_to_fragment(
       }
 
       if !updates.is_empty() || !custom_updates.is_empty() {
+        let color_changed = updates.iter().any(|(name, _)| name == "color");
         let mut updated_style = (*style_arc).clone();
         apply_animated_properties_ordered(&mut updated_style, &updates);
         let mut custom_properties_changed = false;
@@ -8378,7 +8379,10 @@ fn apply_transitions_to_fragment(
           }
         }
 
-        if custom_properties_changed {
+        // Some computed values depend on `currentColor` (and are recorded in
+        // `var_dependent_declarations`). When animating `color`, those dependent values must be
+        // re-resolved so `currentColor` tracks the animated value.
+        if custom_properties_changed || color_changed {
           let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
           updated_style.recompute_var_dependent_properties(parent_styles, viewport);
           apply_animated_properties_ordered(&mut updated_style, &updates);
@@ -8543,6 +8547,7 @@ fn apply_transition_state_to_fragment(
         }
 
         if !updates.is_empty() || !custom_updates.is_empty() {
+          let color_changed = updates.contains_key("color");
           let mut updated_style = (*style_arc).clone();
           apply_animated_properties(&mut updated_style, &updates);
           let mut custom_properties_changed = false;
@@ -8558,7 +8563,9 @@ fn apply_transition_state_to_fragment(
             }
           }
 
-          if custom_properties_changed {
+          // Like `@starting-style` sampling, ensure `currentColor`-dependent declarations are
+          // re-resolved when `color` animates via the persistent TransitionState engine.
+          if custom_properties_changed || color_changed {
             let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
             updated_style.recompute_var_dependent_properties(parent_styles, viewport);
             apply_animated_properties(&mut updated_style, &updates);

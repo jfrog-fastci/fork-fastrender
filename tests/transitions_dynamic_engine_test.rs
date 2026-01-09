@@ -106,6 +106,15 @@ fn fragment_border_top_style(tree: &FragmentTree, box_id: usize) -> BorderStyle 
   style.border_top_style
 }
 
+fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> Rgba {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  frag
+    .style
+    .as_ref()
+    .map(|s| s.border_top_color)
+    .expect("style present")
+}
+
 fn box_id_by_element_id(prepared: &PreparedDocument, element_id: &str) -> usize {
   let styled_id = styled_node_id_by_id(prepared.styled_tree(), element_id).expect("styled id");
   box_id_for_styled(&prepared.box_tree().root, styled_id).expect("box id")
@@ -915,6 +924,56 @@ fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Res
     fragment_color(&sampled, child_id),
     expected,
     "child should inherit parent's animated color"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box {
+        width: 20px;
+        height: 20px;
+        color: rgb(0, 0, 0);
+        border-top-style: solid;
+        border-top-width: 1px;
+        border-top-color: currentColor;
+        transition: color 1000ms linear;
+      }
+      #box.b { color: rgb(255, 255, 255); }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 50)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let expected = Rgba::new(128, 128, 128, 1.0);
+  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_border_top_color(&sampled, box_id),
+    expected,
+    "border-top-color: currentColor should track animated color"
   );
 
   Ok(())
