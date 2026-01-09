@@ -16,8 +16,11 @@ use crate::layout::formatting_context::LayoutError;
 use crate::render_control::check_active;
 use crate::style::display::Display;
 use crate::style::page::PageSide;
-use crate::style::types::{BreakBetween, BreakInside, Direction, WritingMode};
-use crate::style::{block_axis_is_horizontal, block_axis_positive, ComputedStyle};
+use crate::style::position::Position;
+use crate::style::types::{BreakBetween, BreakInside, Direction, FlexDirection, WritingMode};
+use crate::style::{
+  block_axis_is_horizontal, block_axis_positive, inline_axis_positive, ComputedStyle,
+};
 use crate::tree::fragment_tree::{
   FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo, GridItemFragmentationData,
   GridTrackRanges,
@@ -774,6 +777,134 @@ fn grid_item_spans_single_track(
 ) -> bool {
   let (start, end) = grid_item_lines_in_fragmentation_axis(placement, axis);
   end.saturating_sub(start) == 1
+}
+
+#[derive(Debug, Clone)]
+struct FlexLineRange {
+  start: f32,
+  end: f32,
+}
+
+#[derive(Debug, Clone)]
+struct FlexRowLineData {
+  lines: Vec<FlexLineRange>,
+  line_for_child: Vec<Option<usize>>,
+}
+
+fn is_row_flex_container(style: &ComputedStyle) -> bool {
+  matches!(style.display, Display::Flex | Display::InlineFlex)
+    && matches!(
+      style.flex_direction,
+      FlexDirection::Row | FlexDirection::RowReverse
+    )
+}
+
+fn is_in_flow_flex_child(content: &FragmentContent, style: &ComputedStyle) -> bool {
+  if matches!(
+    content,
+    FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+  ) {
+    return false;
+  }
+  !matches!(style.position, Position::Absolute | Position::Fixed)
+}
+
+fn collect_row_flex_lines(
+  node: &FragmentNode,
+  abs_start: f32,
+  axis: &FragmentAxis,
+  node_block_size: f32,
+  style: &ComputedStyle,
+  node_writing_mode: WritingMode,
+  default_style: &ComputedStyle,
+) -> Option<FlexRowLineData> {
+  if !is_row_flex_container(style) {
+    return None;
+  }
+
+  // Flex layout emits in-flow children in order-modified document order (`order`, then DOM index),
+  // so the fragment tree child order matches the spec's flex item ordering requirements.
+  let inline_positive = inline_axis_positive(node_writing_mode, style.direction);
+  let main_positive = match style.flex_direction {
+    FlexDirection::Row => inline_positive,
+    FlexDirection::RowReverse => !inline_positive,
+    _ => inline_positive,
+  };
+  let container_inline_size = axis.inline_size(&node.bounds);
+
+  let mut in_flow_indices: Vec<usize> = Vec::new();
+  for (idx, child) in node.children.iter().enumerate() {
+    let child_style = child
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    if is_in_flow_flex_child(&child.content, child_style) {
+      in_flow_indices.push(idx);
+    }
+  }
+  if in_flow_indices.is_empty() {
+    return None;
+  }
+
+  const FLEX_LINE_WRAP_EPSILON: f32 = 0.5;
+  let mut lines: Vec<FlexLineRange> = Vec::new();
+  let mut line_for_child: Vec<Option<usize>> = vec![None; node.children.len()];
+
+  let mut prev_main_start: Option<f32> = None;
+  let mut current_line_index = 0usize;
+  let mut current_start: f32 = f32::INFINITY;
+  let mut current_end: f32 = f32::NEG_INFINITY;
+
+  for child_idx in in_flow_indices {
+    let child = &node.children[child_idx];
+    let child_inline_size = axis.inline_size(&child.bounds);
+    let child_inline_start = axis.inline_start(&child.bounds);
+    let mut main_start = if main_positive {
+      child_inline_start
+    } else {
+      container_inline_size - child_inline_start - child_inline_size
+    };
+    if !main_start.is_finite() {
+      main_start = 0.0;
+    }
+
+    if let Some(prev) = prev_main_start {
+      if main_start + FLEX_LINE_WRAP_EPSILON < prev {
+        if current_end > current_start + BREAK_EPSILON {
+          lines.push(FlexLineRange {
+            start: current_start,
+            end: current_end,
+          });
+        }
+        current_line_index = current_line_index.saturating_add(1);
+        current_start = f32::INFINITY;
+        current_end = f32::NEG_INFINITY;
+      }
+    }
+    prev_main_start = Some(main_start);
+
+    let (child_abs_start, child_abs_end) =
+      axis.flow_range(abs_start, node_block_size, &child.bounds);
+    current_start = current_start.min(child_abs_start);
+    current_end = current_end.max(child_abs_end);
+    line_for_child[child_idx] = Some(current_line_index);
+  }
+
+  if current_end > current_start + BREAK_EPSILON {
+    lines.push(FlexLineRange {
+      start: current_start,
+      end: current_end,
+    });
+  }
+  if lines.is_empty() {
+    return None;
+  }
+
+  Some(FlexRowLineData {
+    lines,
+    line_for_child,
+  })
 }
 
 impl FragmentationAnalyzer {
@@ -1885,7 +2016,8 @@ fn inject_table_headers_and_footers(
   // injected fragments aligned with the clipped slice.
   let base_offset = original.slice_info.slice_offset.max(0.0);
   let slice_start = (clipped.slice_info.slice_offset - base_offset).max(0.0);
-  let clip_origin_phys = axis.flow_box_start_to_physical(slice_start, clipped_block_size, original_block_size);
+  let clip_origin_phys =
+    axis.flow_box_start_to_physical(slice_start, clipped_block_size, original_block_size);
   let rebase_translation = if axis.block_is_horizontal {
     Point::new(-clip_origin_phys, 0.0)
   } else {
@@ -2276,6 +2408,121 @@ fn collect_break_opportunities(
     }
   }
 
+  // CSS Flexbox 1 §Fragmenting Flex Layout: in row flex containers, break opportunities occur
+  // between flex lines (not between flex items). Break hints on items apply to the flex line
+  // boundary, and forced breaks on the first/last line propagate to the container edges to avoid
+  // gap-only pages.
+  if is_row_flex_container(style) {
+    if let Some(flex_lines) = collect_row_flex_lines(
+      node,
+      abs_start,
+      axis,
+      node_block_size,
+      style,
+      node_writing_mode,
+      default_style,
+    ) {
+      let line_count = flex_lines.lines.len();
+      let mut boundary_strengths = vec![BreakStrength::Auto; line_count + 1];
+
+      for (child_idx, line_idx) in flex_lines.line_for_child.iter().enumerate() {
+        let Some(line_idx) = *line_idx else {
+          continue;
+        };
+        let child = &node.children[child_idx];
+        let child_style = child
+          .style
+          .as_ref()
+          .map(|s| s.as_ref())
+          .unwrap_or(default_style);
+
+        let before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+        if !matches!(before_strength, BreakStrength::Auto) {
+          if let Some(slot) = boundary_strengths.get_mut(line_idx) {
+            *slot = max_break_strength(*slot, before_strength);
+          }
+        }
+
+        let after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+        if !matches!(after_strength, BreakStrength::Auto) {
+          if let Some(slot) = boundary_strengths.get_mut(line_idx + 1) {
+            *slot = max_break_strength(*slot, after_strength);
+          }
+        }
+      }
+
+      let base_strength = apply_avoid_penalty(BreakStrength::Auto, inside_avoid > 0);
+      let first_line_start = flex_lines.lines[0].start;
+      collection.opportunities.push(BreakOpportunity {
+        pos: first_line_start,
+        strength: base_strength,
+        kind: BreakKind::BetweenSiblings,
+      });
+
+      for (idx, line) in flex_lines.lines.iter().enumerate() {
+        let boundary_idx = idx + 1;
+        // Break-after on the last line propagates to the flex container; keep the line boundary as
+        // a normal (auto) break opportunity so forced breaks don't create gap-only fragmentainers
+        // containing just trailing padding/align-content spacing.
+        let mut strength = if boundary_idx == line_count {
+          BreakStrength::Auto
+        } else {
+          boundary_strengths[boundary_idx]
+        };
+        strength = apply_avoid_penalty(strength, inside_avoid > 0);
+        collection.opportunities.push(BreakOpportunity {
+          pos: line.end,
+          strength,
+          kind: BreakKind::BetweenSiblings,
+        });
+      }
+
+      let start_strength = boundary_strengths[0];
+      if !matches!(start_strength, BreakStrength::Auto) {
+        let strength = apply_avoid_penalty(start_strength, inside_avoid > 0);
+        collection.opportunities.push(BreakOpportunity {
+          pos: abs_start,
+          strength,
+          kind: BreakKind::BetweenSiblings,
+        });
+      }
+      let end_strength = boundary_strengths[line_count];
+      if !matches!(end_strength, BreakStrength::Auto) {
+        let strength = apply_avoid_penalty(end_strength, inside_avoid > 0);
+        collection.opportunities.push(BreakOpportunity {
+          pos: abs_end,
+          strength,
+          kind: BreakKind::BetweenSiblings,
+        });
+      }
+
+      for child in node.children.iter() {
+        let child_writing_mode = child
+          .style
+          .as_ref()
+          .map(|s| s.writing_mode)
+          .unwrap_or(node_writing_mode);
+        let child_axis =
+          axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
+        let child_abs_start = child_axis
+          .flow_range(node_flow_start, node_block_size, &child.bounds)
+          .0;
+        collect_break_opportunities(
+          child,
+          child_abs_start,
+          collection,
+          inside_avoid,
+          inside_inline,
+          context,
+          &child_axis,
+          child_writing_mode,
+          suppress_float_descendants,
+        );
+      }
+      return;
+    }
+  }
+
   let mut line_positions: Vec<Option<(usize, f32)>> = vec![None; node.children.len()];
   let mut line_ends = Vec::new();
   for (idx, child) in node.children.iter().enumerate() {
@@ -2335,7 +2582,9 @@ fn collect_break_opportunities(
         .unwrap_or(node_writing_mode);
       let next_axis =
         axis_for_child_in_context(axis, context, node_writing_mode, next_writing_mode);
-      next_axis.flow_range(node_flow_start, node_block_size, &next.bounds).0
+      next_axis
+        .flow_range(node_flow_start, node_block_size, &next.bounds)
+        .0
     });
 
     if let (Some(container_id), Some((line_index_end, line_end))) =
@@ -2596,8 +2845,8 @@ fn collect_forced_boundaries_with_axes_internal(
             let child_style = child
               .style
               .as_ref()
-             .map(|s| s.as_ref())
-             .unwrap_or(default_style);
+              .map(|s| s.as_ref())
+              .unwrap_or(default_style);
             let placement = &grid_items.items[idx];
             let (start_line, end_line) = grid_item_lines_in_fragmentation_axis(placement, axis);
 
@@ -2676,6 +2925,87 @@ fn collect_forced_boundaries_with_axes_internal(
       }
     }
 
+    let mut flex_line_map: Option<Vec<Option<usize>>> = None;
+    if is_row_flex_container(node_style) {
+      let node_block_size = parent_block_size;
+      if let Some(flex_lines) = collect_row_flex_lines(
+        node,
+        abs_start,
+        axis,
+        node_block_size,
+        node_style,
+        node_style.writing_mode,
+        default_style,
+      ) {
+        let line_count = flex_lines.lines.len();
+        let mut boundary_reqs = vec![BoundaryRequirement::default(); line_count + 1];
+
+        for (child_idx, line_idx) in flex_lines.line_for_child.iter().enumerate() {
+          let Some(line_idx) = *line_idx else {
+            continue;
+          };
+          let child = &node.children[child_idx];
+          let child_style = child
+            .style
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or(default_style);
+
+          if is_forced_page_break(child_style.break_before) {
+            if let Some(req) = boundary_reqs.get_mut(line_idx) {
+              record_boundary(
+                req,
+                break_side_hint(child_style.break_before, page_progression_is_ltr),
+              );
+            }
+          }
+
+          if is_forced_page_break(child_style.break_after) {
+            if let Some(req) = boundary_reqs.get_mut(line_idx + 1) {
+              record_boundary(
+                req,
+                break_side_hint(child_style.break_after, page_progression_is_ltr),
+              );
+            }
+          }
+        }
+
+        if boundary_reqs.iter().any(|req| req.forced) {
+          let line_ends: Vec<f32> = flex_lines.lines.iter().map(|line| line.end).collect();
+
+          if boundary_reqs[0].forced {
+            forced.push(ForcedBoundary {
+              position: abs_start,
+              page_side: boundary_reqs[0].side,
+            });
+          }
+
+          for idx in 1..line_count {
+            let req = boundary_reqs[idx];
+            if !req.forced {
+              continue;
+            }
+            if let Some(&position) = line_ends.get(idx.saturating_sub(1)) {
+              forced.push(ForcedBoundary {
+                position,
+                page_side: req.side,
+              });
+            }
+          }
+
+          let end_req = boundary_reqs[line_count];
+          if end_req.forced {
+            forced.push(ForcedBoundary {
+              position: abs_start + parent_block_size,
+              page_side: end_req.side,
+            });
+          }
+
+          flex_line_map = Some(flex_lines.line_for_child);
+        }
+      }
+    }
+
     for (idx, child) in node.children.iter().enumerate() {
       let child_block_size = axis.block_size(&child.bounds);
       let (child_abs_start, child_abs_end) =
@@ -2693,7 +3023,11 @@ fn collect_forced_boundaries_with_axes_internal(
         .unwrap_or(default_style);
 
       if idx == 0 && is_forced_page_break(child_style.break_before) {
-        if idx >= grid_item_count {
+        let break_from_flex = flex_line_map
+          .as_ref()
+          .and_then(|map| map.get(idx))
+          .is_some_and(|slot| slot.is_some());
+        if idx >= grid_item_count && !break_from_flex {
           forced.push(ForcedBoundary {
             // Forced breaks before the first in-flow child are treated as applying at the start of
             // the containing block. This matches the CSS Break requirement to suppress leading
@@ -2711,7 +3045,12 @@ fn collect_forced_boundaries_with_axes_internal(
       if break_after || break_before {
         let break_from_grid =
           (break_after && idx < grid_item_count) || (break_before && idx + 1 < grid_item_count);
-        if !break_from_grid {
+        let break_from_flex = flex_line_map.as_ref().is_some_and(|map| {
+          let current_is_flex = break_after && map.get(idx).is_some_and(|slot| slot.is_some());
+          let next_is_flex = break_before && map.get(idx + 1).is_some_and(|slot| slot.is_some());
+          current_is_flex || next_is_flex
+        });
+        if !break_from_grid && !break_from_flex {
           let mut boundary = child_abs_end;
           if let Some(meta) = child.block_metadata.as_ref() {
             let mut candidate = child_abs_end + meta.margin_bottom;
@@ -2728,8 +3067,9 @@ fn collect_forced_boundaries_with_axes_internal(
           }
           forced.push(ForcedBoundary {
             position: boundary,
-            page_side: break_side_hint(next_style.break_before, page_progression_is_ltr)
-              .or(break_side_hint(child_style.break_after, page_progression_is_ltr)),
+            page_side: break_side_hint(next_style.break_before, page_progression_is_ltr).or(
+              break_side_hint(child_style.break_after, page_progression_is_ltr),
+            ),
           });
         }
       }
@@ -2933,6 +3273,52 @@ fn collect_atomic_range_for_node(
       }
     }
   }
+
+  if is_row_flex_container(style) {
+    let node_writing_mode = style.writing_mode;
+    if let Some(flex_lines) = collect_row_flex_lines(
+      node,
+      abs_start,
+      axis,
+      node_block_size,
+      style,
+      node_writing_mode,
+      default_style(),
+    ) {
+      // Treat each flex line as indivisible in the fragmentation axis. Like grid track atomic
+      // ranges, assign any inter-line gutter to the following line so we never produce a
+      // fragmentainer that contains only the gap.
+      let mut prev_flow_end: Option<f32> = None;
+      for line in flex_lines.lines.into_iter() {
+        let line_size = (line.end - line.start).max(0.0);
+        let mut start = line.start;
+        let end = line.end;
+
+        if let Some(prev_end) = prev_flow_end {
+          if start > prev_end + BREAK_EPSILON {
+            start = prev_end;
+          }
+        }
+        prev_flow_end = Some(end);
+
+        if line_size <= BREAK_EPSILON {
+          continue;
+        }
+
+        if matches!(context, FragmentationContext::Page) {
+          if let Some(fragmentainer_size) = fragmentainer_size {
+            if line_size > fragmentainer_size + BREAK_EPSILON {
+              continue;
+            }
+          }
+        }
+
+        if end > start + BREAK_EPSILON {
+          ranges.push(AtomicRange { start, end });
+        }
+      }
+    }
+  }
 }
 
 pub(crate) fn collect_atomic_ranges(
@@ -3019,7 +3405,9 @@ fn collect_atomic_ranges_with_axis(
       .unwrap_or(node_writing_mode);
     let child_axis =
       axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
-    let child_abs_start = child_axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+    let child_abs_start = child_axis
+      .flow_range(abs_start, node_block_size, &child.bounds)
+      .0;
     collect_atomic_ranges_with_axis(
       child,
       child_abs_start,
