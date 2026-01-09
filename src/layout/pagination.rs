@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 #[cfg(test)]
 use std::collections::BTreeMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::css::types::{CollectedPageRule, PageMarginArea};
@@ -15,8 +15,8 @@ use crate::layout::formatting_context::{
 };
 use crate::layout::fragmentation::{
   apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
-  apply_grid_parallel_flow_forced_break_shifts,
-  clip_node, collect_forced_boundaries_for_pagination_with_axes, normalize_fragment_margins,
+  apply_grid_parallel_flow_forced_break_shifts, clip_node,
+  collect_forced_boundaries_for_pagination_with_axes, normalize_fragment_margins,
   parallel_flow_content_extent, propagate_fragment_metadata, ForcedBoundary, FragmentAxis,
   FragmentationAnalyzer, FragmentationContext,
 };
@@ -678,6 +678,7 @@ pub fn paginate_fragment_tree(
   )> = Vec::new();
   let mut consumed_base = 0.0f32;
   let mut page_index = 0usize;
+  let mut pending_footnotes: VecDeque<PendingFootnote> = VecDeque::new();
 
   loop {
     let start_in_base = consumed_base;
@@ -735,17 +736,101 @@ pub fn paginate_fragment_tree(
     let mut string_slice_end = 0.0f32;
 
     if !is_blank_page {
-      let mut start = {
-        let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
-          BlockAxisMapping::new(
-            base_total_height,
-            total_height,
-            &base_box_axis_ranges,
-            &layout.box_axis_ranges,
-          )
-        });
-        mapping.map_base_to_target(consumed_base).min(total_height)
-      };
+      if !pending_footnotes.is_empty() {
+        // When a footnote body overflows the page, render continuation pages that contain only the
+        // remaining footnote content. This ensures pagination makes forward progress instead of
+        // endlessly deferring the overflowing footnote call.
+        let content_bounds = Rect::from_xywh(
+          page_style.content_origin.x,
+          page_style.content_origin.y,
+          page_style.content_size.width,
+          page_style.content_size.height,
+        );
+        page_root
+          .children_mut()
+          .push(FragmentNode::new_block(content_bounds, Vec::new()));
+
+        let page_block = if axis.block_is_horizontal {
+          page_style.content_size.width
+        } else {
+          page_style.content_size.height
+        }
+        .max(1.0);
+
+        // Simple, fixed separator rule: 1px solid currentColor.
+        let separator_block = 1.0;
+        let mut remaining = (page_block - separator_block).max(0.0);
+        let mut slices: Vec<FragmentNode> = Vec::new();
+
+        while remaining > EPSILON {
+          let Some(pending) = pending_footnotes.front_mut() else {
+            break;
+          };
+          if pending.offset >= pending.total_extent - EPSILON {
+            pending_footnotes.pop_front();
+            continue;
+          }
+
+          let next = pending.analyzer.next_boundary_with_cursor(
+            pending.offset,
+            remaining,
+            pending.total_extent,
+            &mut pending.opportunity_cursor,
+          )?;
+          if next <= pending.offset + EPSILON {
+            break;
+          }
+
+          let root_block_size = axis.block_size(&pending.root.bounds);
+          if let Some(mut slice) = clip_node(
+            &pending.root,
+            &axis,
+            pending.offset,
+            next,
+            0.0,
+            pending.offset,
+            next,
+            root_block_size,
+            page_index,
+            0,
+            FragmentationContext::Page,
+            remaining,
+            root_axes,
+          )? {
+            normalize_fragment_margins(
+              &mut slice,
+              pending.offset <= EPSILON,
+              next >= pending.total_extent - EPSILON,
+              &axis,
+            );
+            let slice_block = axis.block_size(&slice.bounds).max(0.0);
+            if slice_block > EPSILON {
+              remaining -= slice_block;
+              slices.push(slice);
+            }
+          }
+
+          pending.offset = next;
+          if pending.offset >= pending.total_extent - EPSILON {
+            pending_footnotes.pop_front();
+          }
+        }
+
+        if let Some(footnote_area) = build_footnote_area_fragment(&page_style, &axis, &slices) {
+          page_root.children_mut().push(footnote_area);
+        }
+      } else {
+        let mut start = {
+          let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
+            BlockAxisMapping::new(
+              base_total_height,
+              total_height,
+              &base_box_axis_ranges,
+              &layout.box_axis_ranges,
+            )
+          });
+          mapping.map_base_to_target(consumed_base).min(total_height)
+        };
       let actual_page_name =
         page_name_for_position(&layout.page_name_transitions, start, fallback_page_name);
       if actual_page_name != page_name {
@@ -899,7 +984,83 @@ pub fn paginate_fragment_tree(
         if page_footnotes.is_empty() {
           page_footnotes = collect_footnotes_for_page(&content, &axis);
         }
-        let footnote_area = build_footnote_area_fragment(&page_style, &axis, &page_footnotes);
+        // Generate footnote body slices. Oversized footnotes are fragmented and continued on
+        // subsequent pages.
+        let separator_block = 1.0;
+        let main_block = (end - start).max(0.0);
+        let mut available_for_oversize = (page_block - main_block - separator_block).max(0.0);
+        let mut footnote_slices: Vec<FragmentNode> = Vec::new();
+        for occ in page_footnotes.iter() {
+          let mut snapshot = occ.snapshot.clone();
+          let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
+          snapshot.translate_root_in_place(offset);
+
+          let body_block = axis.block_size(&snapshot.bounds).max(0.0);
+          let is_oversize = body_block + separator_block > page_block + EPSILON;
+          if !is_oversize {
+            footnote_slices.push(snapshot);
+            continue;
+          }
+
+          if available_for_oversize <= EPSILON {
+            available_for_oversize = (page_block - separator_block).max(0.0);
+          }
+
+          let analyzer = FragmentationAnalyzer::new(
+            &snapshot,
+            FragmentationContext::Page,
+            root_axes,
+            true,
+            Some(page_block),
+          );
+          let total_extent = analyzer.content_extent().max(EPSILON);
+          let mut pending = PendingFootnote {
+            root: snapshot,
+            analyzer,
+            opportunity_cursor: 0,
+            offset: 0.0,
+            total_extent,
+          };
+
+          let next = pending.analyzer.next_boundary_with_cursor(
+            pending.offset,
+            available_for_oversize,
+            pending.total_extent,
+            &mut pending.opportunity_cursor,
+          )?;
+
+          let root_block_size = axis.block_size(&pending.root.bounds);
+          if let Some(mut slice) = clip_node(
+            &pending.root,
+            &axis,
+            pending.offset,
+            next,
+            0.0,
+            pending.offset,
+            next,
+            root_block_size,
+            page_index,
+            0,
+            FragmentationContext::Page,
+            available_for_oversize,
+            root_axes,
+          )? {
+            normalize_fragment_margins(
+              &mut slice,
+              pending.offset <= EPSILON,
+              next >= pending.total_extent - EPSILON,
+              &axis,
+            );
+            footnote_slices.push(slice);
+          }
+
+          pending.offset = next;
+          if pending.offset < pending.total_extent - EPSILON {
+            pending_footnotes.push_back(pending);
+          }
+        }
+
+        let footnote_area = build_footnote_area_fragment(&page_style, &axis, &footnote_slices);
 
         let clipped_block_size = axis.block_size(&content.bounds);
         let page_block_size = if axis.block_is_horizontal {
@@ -1013,6 +1174,7 @@ pub fn paginate_fragment_tree(
 
       end_in_base = mapped_end_in_base;
     }
+    }
 
     for mut fixed in fixed_fragments {
       translate_fragment(
@@ -1062,7 +1224,7 @@ pub fn paginate_fragment_tree(
     }
     page_index += 1;
 
-    if consumed_base >= base_total_height - EPSILON {
+    if consumed_base >= base_total_height - EPSILON && pending_footnotes.is_empty() {
       break;
     }
   }
@@ -1482,38 +1644,54 @@ struct FootnoteOccurrence {
   snapshot: FragmentNode,
 }
 
+#[derive(Debug)]
+struct PendingFootnote {
+  root: FragmentNode,
+  analyzer: FragmentationAnalyzer,
+  opportunity_cursor: usize,
+  offset: f32,
+  total_extent: f32,
+}
+
 fn collect_footnotes_for_page(
   root: &FragmentNode,
   axis: &crate::layout::fragmentation::FragmentAxis,
 ) -> Vec<FootnoteOccurrence> {
   let mut occurrences: Vec<FootnoteOccurrence> = Vec::new();
-  collect_footnote_occurrences(root, Point::ZERO, axis, &mut occurrences);
+  let root_block_size = axis.block_size(&root.bounds);
+  collect_footnote_occurrences(root, 0.0, root_block_size, axis, None, &mut occurrences);
   occurrences.sort_by(|a, b| a.pos.partial_cmp(&b.pos).unwrap_or(Ordering::Equal));
   occurrences
 }
 
 fn collect_footnote_occurrences(
   node: &FragmentNode,
-  origin: Point,
+  abs_flow_start: f32,
+  parent_block_size: f32,
   axis: &crate::layout::fragmentation::FragmentAxis,
+  current_line_start: Option<f32>,
   out: &mut Vec<FootnoteOccurrence>,
 ) {
-  let abs_origin = Point::new(origin.x + node.bounds.x(), origin.y + node.bounds.y());
-  let abs_block = if axis.block_is_horizontal {
-    abs_origin.x
+  let node_block_size = axis.block_size(&node.bounds);
+  let abs_block = axis.flow_range(abs_flow_start, parent_block_size, &node.bounds).0;
+  let current_line_start = if matches!(node.content, FragmentContent::Line { .. }) {
+    Some(abs_block)
   } else {
-    abs_origin.y
+    current_line_start
   };
 
   if let FragmentContent::FootnoteAnchor { snapshot } = &node.content {
     out.push(FootnoteOccurrence {
-      pos: abs_block,
+      // Footnote calls are typically inside line boxes (which are indivisible during pagination).
+      // Use the line's flow-start as the call position so deferring a footnote moves the whole
+      // line, not just part of it.
+      pos: current_line_start.unwrap_or(abs_block),
       snapshot: (**snapshot).clone(),
     });
   }
 
   for child in node.children.iter() {
-    collect_footnote_occurrences(child, abs_origin, axis, out);
+    collect_footnote_occurrences(child, abs_block, node_block_size, axis, current_line_start, out);
   }
 }
 
@@ -1528,20 +1706,13 @@ fn adjust_end_for_footnotes(
     return end_candidate;
   }
 
-  let block_size = |rect: &Rect| {
-    if axis.block_is_horizontal {
-      rect.width()
-    } else {
-      rect.height()
-    }
-  };
   // Simple, fixed separator rule: 1px solid currentColor.
   let separator_block = 1.0;
 
   let mut included = 0usize;
   let mut total_footnote_block = 0.0f32;
   for occ in footnotes {
-    let body_block = block_size(&occ.snapshot.bounds).max(0.0);
+    let body_block = axis.block_size(&occ.snapshot.bounds).max(0.0);
     let next_total = total_footnote_block + body_block;
     let next_with_separator = next_total + separator_block;
     let main_block = page_block - next_with_separator;
@@ -1554,8 +1725,28 @@ fn adjust_end_for_footnotes(
   }
 
   let end = if included == 0 {
-    // No footnote calls fit alongside their bodies; defer the first call to the next page.
-    start + footnotes[0].pos
+    let body_block = axis.block_size(&footnotes[0].snapshot.bounds).max(0.0);
+    let footnote_overflows_page = body_block + separator_block > page_block + EPSILON;
+    let footnote_consumes_page = body_block + separator_block >= page_block - EPSILON;
+    if (footnote_overflows_page || footnote_consumes_page) && footnotes[0].pos <= EPSILON {
+      // If the call is already at the start of the page and the footnote would otherwise consume
+      // the entire page, reserve some space so the footnote body can start and continue on
+      // subsequent pages.
+      let min_footnote_content = 1.0;
+      let max_main_block = (page_block - separator_block - min_footnote_content).max(0.0);
+      let desired_main_block = (page_block * 0.5).min(max_main_block);
+      let mut end = start + desired_main_block;
+      // If there are additional footnote calls in this clipped slice, stop before the next call so
+      // later footnotes are deferred until this overflowing footnote finishes. (When calls share
+      // the same line box, we can't split them here.)
+      if footnotes.len() > 1 && footnotes[1].pos > EPSILON {
+        end = end.min(start + footnotes[1].pos);
+      }
+      end
+    } else {
+      // No footnote calls fit alongside their bodies; defer the first call to the next page.
+      start + footnotes[0].pos
+    }
   } else {
     let footnote_block = separator_block + total_footnote_block;
     let main_block = (page_block - footnote_block).max(0.0);
@@ -1573,9 +1764,9 @@ fn adjust_end_for_footnotes(
 fn build_footnote_area_fragment(
   page_style: &ResolvedPageStyle,
   axis: &crate::layout::fragmentation::FragmentAxis,
-  footnotes: &[FootnoteOccurrence],
+  slices: &[FragmentNode],
 ) -> Option<FragmentNode> {
-  if footnotes.is_empty() {
+  if slices.is_empty() {
     return None;
   }
 
@@ -1592,14 +1783,6 @@ fn build_footnote_area_fragment(
   }
   .max(0.0);
 
-  let block_size = |rect: &Rect| {
-    if axis.block_is_horizontal {
-      rect.width()
-    } else {
-      rect.height()
-    }
-  };
-
   // Simple, fixed separator rule: 1px solid currentColor.
   let separator_block = 1.0;
   let flow_box_start_to_physical = |flow_offset: f32, block_size: f32, parent_block_size: f32| {
@@ -1610,13 +1793,13 @@ fn build_footnote_area_fragment(
     }
   };
 
-  let mut snapshots: Vec<FragmentNode> = Vec::with_capacity(footnotes.len());
+  let mut snapshots: Vec<FragmentNode> = Vec::with_capacity(slices.len());
   let mut total_footnote_block = 0.0f32;
-  for occ in footnotes {
-    let mut snapshot = occ.snapshot.clone();
+  for occ in slices {
+    let mut snapshot = occ.clone();
     let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
     snapshot.translate_root_in_place(offset);
-    total_footnote_block += block_size(&snapshot.bounds).max(0.0);
+    total_footnote_block += axis.block_size(&snapshot.bounds).max(0.0);
     snapshots.push(snapshot);
   }
 
@@ -1677,7 +1860,7 @@ fn build_footnote_area_fragment(
   // Stack footnote body snapshots along the block axis in insertion order.
   let mut flow_offset = separator_block;
   for mut snapshot in snapshots {
-    let body_block = block_size(&snapshot.bounds).max(0.0);
+    let body_block = axis.block_size(&snapshot.bounds).max(0.0);
     let body_block_start = flow_box_start_to_physical(flow_offset, body_block, footnote_block);
     let translate = if axis.block_is_horizontal {
       Point::new(body_block_start, 0.0)

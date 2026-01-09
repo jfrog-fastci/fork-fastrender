@@ -4325,3 +4325,134 @@ fn footnote_overflow_defers_later_calls_to_next_page() {
   assert!(find_text(footnote_area2, "2").is_some());
   assert!(find_text(footnote_area2, "1").is_none());
 }
+
+#[test]
+fn huge_footnote_body_continues_across_pages() {
+  let mut lines = String::new();
+  for idx in 1..=40 {
+    lines.push_str(&format!(r#"<span class="line">Footnote line {idx}</span>"#));
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 100px; margin: 0; }}
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          p {{ margin: 0; }}
+          .note {{ float: footnote; }}
+          .line {{ display: block; height: 10px; }}
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">{lines}</span></p>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected huge footnote to create multiple pages, got {}",
+    page_roots.len()
+  );
+
+  for (idx, page) in page_roots.iter().enumerate() {
+    assert_eq!(
+      page.children.len(),
+      2,
+      "page {} should include content + footnote area",
+      idx + 1
+    );
+  }
+
+  let page1 = page_roots[0];
+  let content1 = page1.children.first().expect("page 1 content");
+  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+  assert!(find_text(content1, "Main").is_some());
+  assert!(find_text(footnote_area1, "Footnote line 1").is_some());
+  assert!(
+    find_text(footnote_area1, "Footnote line 40").is_none(),
+    "expected footnote to be fragmented (line 40 should not fit on page 1)"
+  );
+
+  let last = *page_roots.last().expect("last page");
+  let last_footnote_area = last.children.get(1).expect("last page footnote area");
+  assert!(
+    find_text(last_footnote_area, "Footnote line 40").is_some(),
+    "expected last footnote line to appear on a later page"
+  );
+}
+
+#[test]
+fn mixed_footnotes_preserve_order_when_one_is_huge() {
+  let mut lines = String::new();
+  for idx in 1..=40 {
+    lines.push_str(&format!(r#"<span class="line">Footnote two line {idx}</span>"#));
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 100px; margin: 0; }}
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          p {{ margin: 0; }}
+          .note1 {{ float: footnote; display: inline-block; height: 10px; }}
+          .note2 {{ float: footnote; }}
+          .line {{ display: block; height: 10px; }}
+        </style>
+      </head>
+      <body>
+        <p>Alpha<span class="note1">Footnote one</span></p>
+        <p>Beta<span class="note2">{lines}</span></p>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 3,
+    "expected mixed footnotes to require multiple pages, got {}",
+    page_roots.len()
+  );
+
+  let page1 = page_roots[0];
+  assert_eq!(page1.children.len(), 2);
+  let content1 = page1.children.first().expect("page 1 content");
+  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+  assert!(find_text(content1, "Alpha").is_some());
+  assert!(find_text(content1, "Beta").is_none());
+  assert!(find_text(footnote_area1, "Footnote one").is_some());
+  assert!(find_text(footnote_area1, "Footnote two").is_none());
+
+  let page2 = page_roots[1];
+  assert_eq!(page2.children.len(), 2);
+  let content2 = page2.children.first().expect("page 2 content");
+  let footnote_area2 = page2.children.get(1).expect("page 2 footnote area");
+  assert!(find_text(content2, "Beta").is_some());
+  assert!(find_text(content2, "Alpha").is_none());
+  assert!(find_text(footnote_area2, "Footnote two line 1").is_some());
+  assert!(find_text(footnote_area2, "Footnote one").is_none());
+
+  let last = *page_roots.last().expect("last page");
+  let last_footnote_area = last.children.get(1).expect("last page footnote area");
+  assert!(find_text(last_footnote_area, "Footnote two line 40").is_some());
+  assert!(find_text(last_footnote_area, "Footnote one").is_none());
+}

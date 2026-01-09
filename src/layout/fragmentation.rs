@@ -1287,6 +1287,38 @@ impl FragmentationAnalyzer {
     Ok(boundaries)
   }
 
+  /// Selects the next fragmentation boundary after `start`, using `fragmentainer_size` as the
+  /// current fragmentainer limit.
+  ///
+  /// This is a lower-level API than [`Self::boundaries`] intended for callers that need to
+  /// incrementally fragment content while varying fragmentainer sizes (e.g. footnote areas whose
+  /// available block-size can change page-to-page).
+  ///
+  /// Callers must maintain `opportunity_cursor` and feed back the returned boundary as the next
+  /// `start` to ensure widows/orphans bookkeeping remains consistent.
+  pub fn next_boundary_with_cursor(
+    &mut self,
+    start: f32,
+    fragmentainer_size: f32,
+    total_extent: f32,
+    opportunity_cursor: &mut usize,
+  ) -> Result<f32, LayoutError> {
+    if self.deadline_counter % 8 == 0 {
+      check_layout_deadline()?;
+    }
+    self.deadline_counter = self.deadline_counter.wrapping_add(1);
+
+    let effective_total = total_extent.max(self.content_extent);
+    let atomic = self.atomic_ranges_for(fragmentainer_size);
+    Ok(self.select_next_boundary(
+      start,
+      fragmentainer_size,
+      effective_total,
+      opportunity_cursor,
+      &atomic,
+    ))
+  }
+
   /// Computes balanced fragmentation boundaries for a fixed number of fragmentainers.
   ///
   /// This is primarily used for `column-fill: balance`, where we want content to be distributed

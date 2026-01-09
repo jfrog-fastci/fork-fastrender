@@ -245,6 +245,12 @@ pub enum StackingContextReason {
   /// Root element of the document
   Root,
 
+  /// Synthetic context used to track `backface-visibility` isolation in 3D rendering.
+  ///
+  /// This is not a CSS stacking context trigger; it exists to keep display-list backface handling
+  /// scoped to the appropriate subtree.
+  BackfaceVisibility,
+
   /// Positioned element (relative/absolute/fixed/sticky) with z-index != auto
   PositionedWithZIndex,
 
@@ -280,9 +286,6 @@ pub enum StackingContextReason {
 
   /// Has backdrop-filter
   BackdropFilter,
-
-  /// Backface-visibility: hidden.
-  BackfaceVisibility,
 
   /// CSS containment (layout, paint, etc.)
   Containment,
