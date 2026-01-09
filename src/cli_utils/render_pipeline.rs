@@ -1056,15 +1056,22 @@ pub fn build_renderer_with_fetcher(
 }
 
 /// Compute a cooperative timeout for the renderer given a hard timeout budget.
+///
+/// This timeout is used for *cooperative* cancellation inside the renderer, and is intended to
+/// trigger slightly before the parent process enforces a hard kill (e.g. `recv_timeout` in
+/// `render_fixtures` / `render_pages`).
+///
+/// The slack is scaled with the overall budget: 5% of the hard timeout, clamped to 250ms..10s.
 pub fn compute_soft_timeout_ms(hard_timeout: Duration, override_ms: Option<u64>) -> Option<u64> {
   if let Some(ms) = override_ms {
     return Some(ms);
   }
-  let ms = hard_timeout.as_millis();
-  if ms <= 250 {
+  let hard_ms = hard_timeout.as_millis();
+  let margin_ms = (hard_ms / 20).clamp(250, 10_000);
+  if hard_ms <= margin_ms {
     None
   } else {
-    Some((ms - 250) as u64)
+    Some((hard_ms - margin_ms) as u64)
   }
 }
 

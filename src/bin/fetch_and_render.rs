@@ -268,7 +268,8 @@ struct Args {
 
   /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
   ///
-  /// When unset, defaults to (timeout - 250ms) to allow a graceful timeout before the hard kill.
+  /// When unset, defaults to (timeout - buffer) to allow a graceful timeout before the hard kill.
+  /// The buffer is 5% of the hard timeout, clamped to 250ms..10s.
   /// Ignored if --timeout is not set (or is 0).
   #[arg(long, value_name = "MS")]
   soft_timeout_ms: Option<u64>,

@@ -21,7 +21,7 @@ use common::args::{
   DEFAULT_DISK_CACHE_MAX_AGE_SECS, DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
-  build_http_fetcher, build_render_configs, decode_html_resource,
+  build_http_fetcher, build_render_configs, compute_soft_timeout_ms, decode_html_resource,
   follow_client_redirects_resource_with_deadline, format_error_with_chain, log_layout_parallelism,
   read_cached_document, render_fetched_document, render_fetched_document_with_artifacts,
   CachedDocument, RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
@@ -393,7 +393,8 @@ struct RunArgs {
 
   /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
   ///
-  /// When unset, defaults to (timeout - 250ms) to allow a graceful timeout before the hard kill.
+  /// When unset, defaults to (timeout - buffer) to allow a graceful timeout before the hard kill.
+  /// The buffer is 5% of the hard timeout, clamped to 250ms..10s.
   #[arg(long)]
   soft_timeout_ms: Option<u64>,
 
@@ -1045,18 +1046,6 @@ pub(crate) fn current_git_sha() -> Option<String> {
       None
     })
     .clone()
-}
-
-fn compute_soft_timeout_ms(hard_timeout: Duration, override_ms: Option<u64>) -> Option<u64> {
-  if let Some(ms) = override_ms {
-    return Some(ms);
-  }
-  let ms = hard_timeout.as_millis();
-  if ms <= 250 {
-    None
-  } else {
-    Some((ms - 250) as u64)
-  }
 }
 
 fn compute_trace_hard_timeout(
@@ -11262,6 +11251,12 @@ mod tests {
   fn soft_timeout_defaults_leave_buffer_before_hard_kill() {
     let hard = Duration::from_secs(5);
     assert_eq!(compute_soft_timeout_ms(hard, None), Some(4750));
+  }
+
+  #[test]
+  fn soft_timeout_default_scales_up_for_large_budgets() {
+    let hard = Duration::from_secs(60);
+    assert_eq!(compute_soft_timeout_ms(hard, None), Some(57_000));
   }
 
   #[test]
