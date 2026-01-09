@@ -100,7 +100,6 @@ use crate::style::ComputedStyle;
 use crate::style::Direction;
 use crate::style::TopLayerKind;
 use crate::{error::RenderError, error::RenderStage};
-#[cfg(test)]
 use cssparser::ToCss;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use selectors::context::IncludeStartingStyle;
@@ -4462,7 +4461,7 @@ fn record_rightmost_fast_reject_prune() {
 
 /// The origin of a style rule for cascade ordering.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum StyleOrigin {
+pub enum StyleOrigin {
   UserAgent,
   Author,
   Inline,
@@ -4481,6 +4480,38 @@ impl StyleOrigin {
       StyleOrigin::Author | StyleOrigin::Inline => 1,
     }
   }
+}
+
+/// One declaration that was eligible to participate in the cascade for a single property.
+///
+/// This is primarily intended for debugging incorrect cascade outcomes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CascadeCandidateDecl {
+  /// Canonical selector text for the matched rule (via `to_css_string()`).
+  pub selector: String,
+  pub origin: StyleOrigin,
+  /// Serialized cascade layer ordering path.
+  ///
+  /// This uses the engine's internal ordering representation (currently a vector of integers)
+  /// rather than attempting to recover authored layer names.
+  pub layer: Vec<String>,
+  pub important: bool,
+  pub specificity: u32,
+  pub source_order: u32,
+  pub value: String,
+  pub matched: bool,
+}
+
+/// Explanation of the cascade for one node + property.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CascadeExplanation {
+  pub property: String,
+  /// Candidate declarations sorted in *cascade application order* (lowest precedence first).
+  ///
+  /// If the list is non-empty, the winner is always the last entry.
+  pub candidates_in_cascade_order: Vec<CascadeCandidateDecl>,
+  /// Index into `candidates_in_cascade_order`.
+  pub winner: Option<usize>,
 }
 
 /// A style rule annotated with its origin and document order.
@@ -10025,6 +10056,493 @@ pub fn apply_styles_with_media_and_target(
     None,
     None,
   )
+}
+
+/// Explain why a given property won the cascade for a single node.
+///
+/// This API is opt-in and intended for debugging incorrect cascade outcomes. It may be slower than
+/// the normal cascade path, but must not affect normal rendering performance unless invoked.
+pub fn explain_property_for_node(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  media_ctx: &MediaContext,
+  target_fragment: Option<&str>,
+  node_id: usize,
+  property: &str,
+) -> Result<CascadeExplanation, RenderError> {
+  explain_property_for_node_with_imports(
+    dom,
+    stylesheet,
+    media_ctx,
+    target_fragment,
+    None,
+    None,
+    node_id,
+    property,
+  )
+}
+
+/// Explain why a given property won the cascade, resolving `@import` rules when a loader is
+/// provided.
+#[allow(clippy::implicit_hasher)]
+pub fn explain_property_for_node_with_imports(
+  dom: &DomNode,
+  stylesheet: &StyleSheet,
+  media_ctx: &MediaContext,
+  target_fragment: Option<&str>,
+  import_loader: Option<&dyn CssImportLoader>,
+  base_url: Option<&str>,
+  node_id: usize,
+  property: &str,
+) -> Result<CascadeExplanation, RenderError> {
+  // This cache is keyed by selector addresses; clear it to avoid potential ABA issues if callers
+  // create and drop stylesheets across repeated invocations.
+  SCOPE_SELF_MATCH_SELECTOR_CACHE.with(|cache| cache.borrow_mut().clear());
+
+  let ids = enumerate_dom_ids(dom);
+  let shadow_sheets = collect_shadow_stylesheets_by_host_id(dom, &ids)?;
+  let mut style_set = StyleSet::from_document(stylesheet.clone());
+  style_set.shadows = shadow_sheets;
+
+  let mut prepared = PreparedCascade::new_for_style_set(
+    dom,
+    &style_set,
+    media_ctx,
+    import_loader,
+    base_url,
+    None,
+    false,
+  )?;
+
+  with_target_fragment(target_fragment, || {
+    with_image_set_dpr(media_ctx.device_pixel_ratio, || {
+      explain_property_for_node_with_prepared(&mut prepared, node_id, property)
+    })
+  })
+}
+
+fn collect_shadow_stylesheets_by_host_id(
+  root: &DomNode,
+  ids: &HashMap<*const DomNode, usize>,
+) -> Result<HashMap<usize, StyleSheet>, RenderError> {
+  fn gather_styles(node: &DomNode, root_ptr: *const DomNode, out: &mut String) {
+    let mut stack: Vec<&DomNode> = Vec::new();
+    stack.push(node);
+
+    while let Some(current) = stack.pop() {
+      if matches!(current.node_type, DomNodeType::ShadowRoot { .. })
+        && (current as *const DomNode) != root_ptr
+      {
+        continue;
+      }
+
+      if let Some(tag) = current.tag_name() {
+        if tag.eq_ignore_ascii_case("style") {
+          for child in current.children.iter() {
+            if let Some(text) = child.text_content() {
+              out.push_str(text);
+              out.push('\n');
+            }
+          }
+        }
+      }
+
+      for child in current.traversal_children().iter().rev() {
+        stack.push(child);
+      }
+    }
+  }
+
+  let mut out: HashMap<usize, StyleSheet> = HashMap::new();
+  let mut stack: Vec<(&DomNode, Option<&DomNode>)> = Vec::with_capacity(ids.len().min(1024));
+  stack.push((root, None));
+
+  while let Some((node, parent)) = stack.pop() {
+    if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+      let mut css = String::new();
+      gather_styles(node, node as *const DomNode, &mut css);
+      if !css.is_empty() {
+        let sheet = match parse_stylesheet(&css) {
+          Ok(sheet) => sheet,
+          Err(Error::Render(err)) => return Err(err),
+          Err(_) => StyleSheet::new(),
+        };
+        if let Some(host) = parent {
+          if let Some(host_id) = ids.get(&(host as *const DomNode)).copied() {
+            out.insert(host_id, sheet);
+          }
+        }
+      }
+    }
+
+    for child in node.traversal_children().iter().rev() {
+      stack.push((child, Some(node)));
+    }
+  }
+
+  Ok(out)
+}
+
+fn explain_property_for_node_with_prepared(
+  prepared: &mut PreparedCascade<'_>,
+  node_id: usize,
+  property: &str,
+) -> Result<CascadeExplanation, RenderError> {
+  let property_trimmed = property.trim();
+  let property_key = if property_trimmed.starts_with("--") {
+    property_trimmed.to_string()
+  } else {
+    property_trimmed.to_ascii_lowercase()
+  };
+
+  let Some(node_ptr) = prepared
+    .dom_maps
+    .id_to_node
+    .get(node_id)
+    .copied()
+    .filter(|ptr| !ptr.is_null())
+  else {
+    return Err(RenderError::PaintFailed {
+      operation: format!("cascade explain: invalid node id {node_id}"),
+    });
+  };
+  // Safety: `id_to_node` stores pointers into the live DOM tree passed to `PreparedCascade`.
+  let node: &DomNode = unsafe { &*node_ptr };
+
+  // Compute the ancestor chain (root -> ... -> parent) so we can match selectors in the same
+  // context as the normal cascade and compute parent-direction dependent presentational hints.
+  let mut chain: Vec<usize> = Vec::new();
+  let mut current = node_id;
+  while current != 0 {
+    chain.push(current);
+    current = *prepared.dom_maps.parent_map.get(current).unwrap_or(&0);
+  }
+  chain.reverse();
+
+  let mut ancestors: Vec<&DomNode> = Vec::new();
+  let mut ancestor_ids: Vec<usize> = Vec::new();
+  let mut parent_styles = prepared.base_styles.clone();
+  let mut parent_ua_styles = prepared.base_ua_styles.clone();
+  let mut root_font_size = 16.0;
+  let mut ua_root_font_size = 16.0;
+  let viewport = prepared.viewport;
+  let color_scheme_pref = prepared.color_scheme_pref;
+
+  if chain.len() > 1 {
+    for &ancestor_id in chain[..chain.len() - 1].iter() {
+      let Some(ptr) = prepared
+        .dom_maps
+        .id_to_node
+        .get(ancestor_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+      else {
+        return Err(RenderError::PaintFailed {
+          operation: format!("cascade explain: missing ancestor node id {ancestor_id}"),
+        });
+      };
+      // Safety: `id_to_node` stores pointers into the live DOM tree passed to `PreparedCascade`.
+      let ancestor_node: &DomNode = unsafe { &*ptr };
+      let scope_host = prepared
+        .dom_maps
+        .containing_shadow_root(ancestor_id)
+        .and_then(|shadow_root_id| prepared.dom_maps.shadow_host_for_root(shadow_root_id));
+
+      let NodeBaseStyles {
+        styles,
+        ua_styles,
+        current_root_font_size,
+        current_ua_root_font_size,
+      } = compute_base_styles(
+        ancestor_node,
+        &prepared.rule_scopes,
+        scope_host,
+        &mut prepared.selector_caches,
+        &mut prepared.scratch,
+        &mut prepared.inline_style_decls,
+        &parent_styles,
+        &parent_ua_styles,
+        root_font_size,
+        ua_root_font_size,
+        viewport,
+        color_scheme_pref,
+        &ancestors,
+        None,
+        &ancestor_ids,
+        ancestor_id,
+        None,
+        &prepared.dom_maps,
+        &prepared.slot_assignment,
+        &prepared.sibling_cache,
+        &prepared.element_attr_cache,
+        false,
+      )?;
+
+      parent_styles = styles;
+      parent_ua_styles = ua_styles;
+      root_font_size = current_root_font_size;
+      ua_root_font_size = current_ua_root_font_size;
+      ancestors.push(ancestor_node);
+      ancestor_ids.push(ancestor_id);
+    }
+  }
+
+  let scope_host = prepared
+    .dom_maps
+    .containing_shadow_root(node_id)
+    .and_then(|shadow_root_id| prepared.dom_maps.shadow_host_for_root(shadow_root_id));
+  let mut matching_rules = collect_matching_rules(
+    node,
+    &prepared.rule_scopes,
+    scope_host,
+    &mut prepared.selector_caches,
+    &mut prepared.scratch,
+    &ancestors,
+    None,
+    &ancestor_ids,
+    node_id,
+    None,
+    &prepared.dom_maps,
+    &prepared.slot_assignment,
+    &prepared.sibling_cache,
+    &prepared.element_attr_cache,
+  )?;
+
+  let inline_tree_scope = tree_scope_prefix_for_node(&prepared.dom_maps, node_id);
+  matching_rules.extend(ua_default_rules(
+    node,
+    parent_styles.direction,
+    &prepared.scratch.unlayered_layer_order(inline_tree_scope),
+  ));
+  matching_rules.retain(|r| !r.starting_style);
+
+  append_presentational_hints(
+    node,
+    &ancestors,
+    parent_styles.direction,
+    inline_tree_scope,
+    &mut prepared.scratch,
+    &mut matching_rules,
+  );
+
+  let inline_decls =
+    cached_inline_style_declarations(&mut prepared.inline_style_decls, node, node_id);
+  if let Some(inline_decls) = inline_decls {
+    let inline_layer_order = prepared.scratch.unlayered_layer_order(inline_tree_scope);
+    matching_rules.push(MatchedRule {
+      origin: StyleOrigin::Inline,
+      specificity: INLINE_SPECIFICITY,
+      order: INLINE_RULE_ORDER,
+      layer_order: inline_layer_order,
+      declarations: Cow::Borrowed(inline_decls),
+      starting_style: false,
+    });
+  }
+
+  fn cmp_layer_order_normal(a: &[u32], b: &[u32]) -> std::cmp::Ordering {
+    for (ai, bi) in a.iter().zip(b.iter()) {
+      if ai != bi {
+        return ai.cmp(bi);
+      }
+    }
+    a.len().cmp(&b.len())
+  }
+
+  #[inline]
+  fn layer_order_eq(a: &Arc<[u32]>, b: &Arc<[u32]>) -> bool {
+    Arc::ptr_eq(a, b) || a.as_ref() == b.as_ref()
+  }
+
+  let mut rule_order: Vec<usize> = (0..matching_rules.len()).collect();
+  if rule_order.len() > 1 {
+    rule_order.sort_unstable_by(|&a_idx, &b_idx| {
+      let a = &matching_rules[a_idx];
+      let b = &matching_rules[b_idx];
+      a.origin
+        .rank()
+        .cmp(&b.origin.rank())
+        .then_with(|| {
+          if Arc::ptr_eq(&a.layer_order, &b.layer_order) {
+            return CmpOrdering::Equal;
+          }
+          cmp_layer_order_normal(a.layer_order.as_ref(), b.layer_order.as_ref())
+        })
+        .then(a.specificity.cmp(&b.specificity))
+        .then(a.order.cmp(&b.order))
+    });
+  }
+
+  let need_important_order = matching_rules
+    .iter()
+    .any(|rule| rule.declarations.iter().any(|decl| decl.important));
+  let important_rule_order: Vec<usize> = if need_important_order {
+    let mut out = Vec::with_capacity(rule_order.len());
+    let mut origin_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < rule_order.len() {
+      let origin_rank = matching_rules[rule_order[i]].origin.rank();
+      let origin_start = i;
+      i += 1;
+      while i < rule_order.len() && matching_rules[rule_order[i]].origin.rank() == origin_rank {
+        i += 1;
+      }
+      origin_ranges.push((origin_start, i));
+    }
+
+    for (origin_start, origin_end) in origin_ranges.into_iter().rev() {
+      let origin_slice = &rule_order[origin_start..origin_end];
+      let mut end = origin_slice.len();
+      while end > 0 {
+        let mut start = end - 1;
+        let layer_order = &matching_rules[origin_slice[start]].layer_order;
+        while start > 0 {
+          let prev_layer = &matching_rules[origin_slice[start - 1]].layer_order;
+          if layer_order_eq(prev_layer, layer_order) {
+            start -= 1;
+          } else {
+            break;
+          }
+        }
+        out.extend_from_slice(&origin_slice[start..end]);
+        end = start;
+      }
+    }
+    out
+  } else {
+    Vec::new()
+  };
+
+  fn serialize_layer_order(layer_order: &[u32]) -> Vec<String> {
+    layer_order.iter().map(|v| v.to_string()).collect()
+  }
+
+  fn property_value_to_css_text(value: &PropertyValue) -> String {
+    match value {
+      PropertyValue::Color(color) => color.to_string(),
+      PropertyValue::Length(len) => len.to_string(),
+      PropertyValue::Percentage(pct) => format!("{pct}%"),
+      PropertyValue::Number(num) => num.to_string(),
+      PropertyValue::Keyword(text) | PropertyValue::String(text) | PropertyValue::Url(text) => text.clone(),
+      PropertyValue::Custom(text) => text.clone(),
+      PropertyValue::FontFamily(list) => list.join(", "),
+      PropertyValue::Multiple(values) => values
+        .iter()
+        .map(property_value_to_css_text)
+        .collect::<Vec<_>>()
+        .join(" "),
+      other => format!("{other:?}"),
+    }
+  }
+
+  fn declaration_value_to_css_text(decl: &Declaration) -> String {
+    if !decl.raw_value.is_empty() {
+      return decl.raw_value.clone();
+    }
+    property_value_to_css_text(&decl.value)
+  }
+
+  fn selector_text_for_rule(rule: &MatchedRule<'_>, scopes: &RuleScopes<'_>) -> String {
+    if matches!(rule.origin, StyleOrigin::Inline) {
+      return "<inline style>".to_string();
+    }
+    let decls = rule.declarations.as_ref();
+    let decl_ptr = decls.as_ptr();
+    let decl_len = decls.len();
+
+    let search = |index: &RuleIndex<'_>| {
+      index.rules.iter().find_map(|candidate| {
+        if candidate.origin != rule.origin || candidate.order != rule.order {
+          return None;
+        }
+        if !layer_order_eq(&candidate.layer_order, &rule.layer_order) {
+          return None;
+        }
+        if candidate.rule.declarations.as_ptr() != decl_ptr
+          || candidate.rule.declarations.len() != decl_len
+        {
+          return None;
+        }
+        Some(candidate.rule.selectors.to_css_string())
+      })
+    };
+
+    if let Some(sel) = search(&scopes.ua) {
+      return sel;
+    }
+    if let Some(sel) = search(&scopes.document) {
+      return sel;
+    }
+    for index in scopes.shadows.values() {
+      if let Some(sel) = search(index) {
+        return sel;
+      }
+    }
+    for index in scopes.host_rules.values() {
+      if let Some(sel) = search(index) {
+        return sel;
+      }
+    }
+
+    match rule.origin {
+      StyleOrigin::UserAgent => "<ua-default>".to_string(),
+      StyleOrigin::Author => "<presentational-hint>".to_string(),
+      StyleOrigin::Inline => "<inline style>".to_string(),
+    }
+  }
+
+  let mut candidates_in_cascade_order: Vec<CascadeCandidateDecl> = Vec::new();
+  let mut push_candidate = |rule: &MatchedRule<'_>, decl: &Declaration| {
+    let selector = selector_text_for_rule(rule, &prepared.rule_scopes);
+    let source_order = rule.order.min(u32::MAX as usize) as u32;
+    candidates_in_cascade_order.push(CascadeCandidateDecl {
+      selector,
+      origin: rule.origin,
+      layer: serialize_layer_order(rule.layer_order.as_ref()),
+      important: decl.important,
+      specificity: rule.specificity,
+      source_order,
+      value: declaration_value_to_css_text(decl),
+      matched: true,
+    });
+  };
+
+  for &rule_idx in rule_order.iter() {
+    let rule = &matching_rules[rule_idx];
+    for decl in rule.declarations.iter() {
+      if decl.important {
+        continue;
+      }
+      if decl.property.as_str() != property_key {
+        continue;
+      }
+      push_candidate(rule, decl);
+    }
+  }
+
+  for &rule_idx in important_rule_order.iter() {
+    let rule = &matching_rules[rule_idx];
+    for decl in rule.declarations.iter() {
+      if !decl.important {
+        continue;
+      }
+      if decl.property.as_str() != property_key {
+        continue;
+      }
+      push_candidate(rule, decl);
+    }
+  }
+
+  let winner = if candidates_in_cascade_order.is_empty() {
+    None
+  } else {
+    Some(candidates_in_cascade_order.len() - 1)
+  };
+
+  Ok(CascadeExplanation {
+    property: property_key,
+    candidates_in_cascade_order,
+    winner,
+  })
 }
 
 /// Apply styles with media context, optional :target, and optional import loader/base URL.
