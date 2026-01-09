@@ -1,5 +1,7 @@
 use crate::dom2::{self, NodeId};
 use crate::js::CurrentScriptStateHandle;
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -441,6 +443,264 @@ fn console_log_native(
   }
 
   Ok(Value::Undefined)
+}
+
+const MAX_BASE64_INPUT_LEN: usize = 32 * 1024 * 1024;
+const MAX_BASE64_OUTPUT_LEN: usize = 32 * 1024 * 1024;
+
+fn window_report_error_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  // `reportError` must not throw. Avoid calling JS `ToString` since `Symbol` throws.
+  let formatted = (|| -> Result<String, VmError> {
+    Ok(match value {
+      Value::Undefined => "undefined".to_string(),
+      Value::Null => "null".to_string(),
+      Value::Bool(b) => b.to_string(),
+      Value::Number(n) => n.to_string(),
+      Value::BigInt(b) => b.to_decimal_string(),
+      Value::String(s) => scope.heap().get_string(s)?.to_utf8_lossy(),
+      Value::Symbol(_) => "[symbol]".to_string(),
+      Value::Object(obj) => {
+        // Best-effort: try to format `{name,message}` error-like shapes without invoking user code.
+        let name_key = alloc_key(scope, "name")?;
+        let message_key = alloc_key(scope, "message")?;
+
+        let name = match scope.heap().object_get_own_data_property_value(obj, &name_key)? {
+          Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
+          _ => String::new(),
+        };
+        let message = match scope.heap().object_get_own_data_property_value(obj, &message_key)? {
+          Some(Value::String(s)) => scope.heap().get_string(s)?.to_utf8_lossy(),
+          _ => String::new(),
+        };
+
+        if !name.is_empty() && !message.is_empty() {
+          format!("{name}: {message}")
+        } else if !name.is_empty() {
+          name
+        } else if !message.is_empty() {
+          message
+        } else {
+          "[object]".to_string()
+        }
+      }
+    })
+  })()
+  .unwrap_or_else(|_| "[reportError]".to_string());
+
+  eprintln!("[js][reportError] {formatted}");
+  Ok(Value::Undefined)
+}
+
+fn window_btoa_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = match input {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  let code_units = scope.heap().get_string(s)?.as_code_units();
+
+  if code_units.len() > MAX_BASE64_INPUT_LEN {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be encoded is too large.",
+    )?));
+  }
+
+  let mut bytes: Vec<u8> = Vec::new();
+  bytes
+    .try_reserve_exact(code_units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  for &u in code_units {
+    if u > 0xFF {
+      return Err(VmError::Throw(make_dom_exception(
+        scope,
+        "InvalidCharacterError",
+        "The string to be encoded contains characters outside of the Latin1 range.",
+      )?));
+    }
+    bytes.push(u as u8);
+  }
+
+  // HTML's "forgiving-base64 encode" uses the standard alphabet with padding and no line breaks.
+  let encoded = general_purpose::STANDARD.encode(bytes);
+  if encoded.len() > MAX_BASE64_OUTPUT_LEN {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be encoded is too large.",
+    )?));
+  }
+  let out = scope.alloc_string(&encoded)?;
+  Ok(Value::String(out))
+}
+
+fn window_atob_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
+  let s = match input {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+  let input_str = scope.heap().get_string(s)?.to_utf8_lossy();
+
+  let decoded = match forgiving_base64_decode(&input_str) {
+    Ok(bytes) => bytes,
+    Err(_) => {
+      return Err(VmError::Throw(make_dom_exception(
+        scope,
+        "InvalidCharacterError",
+        "The string to be decoded is not correctly encoded.",
+      )?));
+    }
+  };
+  if decoded.len() > MAX_BASE64_OUTPUT_LEN {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be decoded is too large.",
+    )?));
+  }
+
+  let mut units: Vec<u16> = Vec::new();
+  units
+    .try_reserve_exact(decoded.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+  units.extend(decoded.iter().map(|&b| b as u16));
+  let out = scope.alloc_string_from_u16_vec(units)?;
+  Ok(Value::String(out))
+}
+
+fn make_dom_exception(scope: &mut Scope<'_>, name: &str, message: &str) -> Result<Value, VmError> {
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj))?;
+
+  let name_s = scope.alloc_string(name)?;
+  scope.push_root(Value::String(name_s))?;
+  let message_s = scope.alloc_string(message)?;
+  scope.push_root(Value::String(message_s))?;
+
+  let name_key = alloc_key(scope, "name")?;
+  let message_key = alloc_key(scope, "message")?;
+
+  scope.define_property(
+    obj,
+    name_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(name_s),
+        writable: false,
+      },
+    },
+  )?;
+  scope.define_property(
+    obj,
+    message_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: Value::String(message_s),
+        writable: false,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(obj))
+}
+
+fn serialized_origin_for_document_url(url: &str) -> String {
+  let Ok(url) = Url::parse(url) else {
+    return "null".to_string();
+  };
+  match url.scheme() {
+    "http" | "https" => url.origin().ascii_serialization(),
+    _ => "null".to_string(),
+  }
+}
+
+fn is_secure_context_for_document_url(url: &str) -> bool {
+  let Ok(url) = Url::parse(url) else {
+    return false;
+  };
+  match url.scheme() {
+    "https" => true,
+    "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1")),
+    _ => false,
+  }
+}
+
+fn forgiving_base64_decode(input: &str) -> Result<Vec<u8>, ()> {
+  if input.len() > MAX_BASE64_INPUT_LEN {
+    return Err(());
+  }
+
+  // 1. Remove all ASCII whitespace.
+  let mut stripped = String::with_capacity(input.len());
+  for ch in input.chars() {
+    if matches!(ch, '\t' | '\n' | '\u{000C}' | '\r' | ' ') {
+      continue;
+    }
+    stripped.push(ch);
+  }
+
+  // 2. If length mod 4 is 0, remove up to two `=` from the end.
+  if stripped.len() % 4 == 0 {
+    let mut removed = 0usize;
+    while removed < 2 && stripped.ends_with('=') {
+      stripped.pop();
+      removed += 1;
+    }
+  }
+
+  // 3. If length mod 4 is 1, fail.
+  if stripped.len() % 4 == 1 {
+    return Err(());
+  }
+
+  // 4. If it contains a non-base64 character, fail.
+  if stripped.bytes().any(|b| !is_base64_alphabet_byte(b)) {
+    return Err(());
+  }
+
+  // 5. Pad with `=` until length mod 4 is 0.
+  while stripped.len() % 4 != 0 {
+    stripped.push('=');
+  }
+
+  // 6. Decode.
+  general_purpose::STANDARD.decode(stripped.as_bytes()).map_err(|_| ())
+}
+
+fn is_base64_alphabet_byte(b: u8) -> bool {
+  matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/')
 }
 
 fn location_href_get_native(
@@ -1149,12 +1409,14 @@ fn init_window_globals(
   scope.push_root(Value::String(url_s))?;
   let url_v = Value::String(url_s);
 
-  let origin_str = Url::parse(&config.document_url)
-    .map(|url| url.origin().ascii_serialization())
-    .unwrap_or_else(|_| "null".to_string());
+  // HTML's serialized origin is "null" for non-HTTP(S) URLs or opaque origins.
+  let origin_str = serialized_origin_for_document_url(&config.document_url);
   let origin_s = scope.alloc_string(&origin_str)?;
   scope.push_root(Value::String(origin_s))?;
   let origin_v = Value::String(origin_s);
+
+  let is_secure_context_v = Value::Bool(is_secure_context_for_document_url(&config.document_url));
+  let cross_origin_isolated_v = Value::Bool(false);
 
   let location_obj = scope.alloc_object()?;
   scope.push_root(Value::Object(location_obj))?;
@@ -1610,6 +1872,89 @@ fn init_window_globals(
   scope.define_property(global, document_key, data_desc(Value::Object(document_obj)))?;
   scope.define_property(global, console_key, data_desc(Value::Object(console_obj)))?;
 
+  // --- WindowOrWorkerGlobalScope primitives ---------------------------------
+  //
+  // These are frequently used by real-world scripts (`atob`/`btoa` especially) and should be
+  // installed early to avoid brittle failures.
+  let window_origin_key = alloc_key(&mut scope, "origin")?;
+  scope.define_property(
+    global,
+    window_origin_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: origin_v,
+        writable: false,
+      },
+    },
+  )?;
+
+  let is_secure_context_key = alloc_key(&mut scope, "isSecureContext")?;
+  scope.define_property(
+    global,
+    is_secure_context_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: is_secure_context_v,
+        writable: false,
+      },
+    },
+  )?;
+
+  let cross_origin_isolated_key = alloc_key(&mut scope, "crossOriginIsolated")?;
+  scope.define_property(
+    global,
+    cross_origin_isolated_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value: cross_origin_isolated_v,
+        writable: false,
+      },
+    },
+  )?;
+
+  // atob(data)
+  let atob_call_id = vm.register_native_call(window_atob_native)?;
+  let atob_name = scope.alloc_string("atob")?;
+  scope.push_root(Value::String(atob_name))?;
+  let atob_func = scope.alloc_native_function(atob_call_id, None, atob_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(atob_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(atob_func))?;
+  let atob_key = alloc_key(&mut scope, "atob")?;
+  scope.define_property(global, atob_key, data_desc(Value::Object(atob_func)))?;
+
+  // btoa(data)
+  let btoa_call_id = vm.register_native_call(window_btoa_native)?;
+  let btoa_name = scope.alloc_string("btoa")?;
+  scope.push_root(Value::String(btoa_name))?;
+  let btoa_func = scope.alloc_native_function(btoa_call_id, None, btoa_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(btoa_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(btoa_func))?;
+  let btoa_key = alloc_key(&mut scope, "btoa")?;
+  scope.define_property(global, btoa_key, data_desc(Value::Object(btoa_func)))?;
+
+  // reportError(e)
+  let report_error_call_id = vm.register_native_call(window_report_error_native)?;
+  let report_error_name = scope.alloc_string("reportError")?;
+  scope.push_root(Value::String(report_error_name))?;
+  let report_error_func =
+    scope.alloc_native_function(report_error_call_id, None, report_error_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(report_error_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(report_error_func))?;
+  let report_error_key = alloc_key(&mut scope, "reportError")?;
+  scope.define_property(global, report_error_key, data_desc(Value::Object(report_error_func)))?;
+
   Ok((
     console_sink_guard.map(ConsoleSinkGuard::disarm),
     current_script_guard.map(CurrentScriptSourceGuard::disarm),
@@ -1755,6 +2100,45 @@ mod tests {
       &[Value::Object(console_obj), Value::Number(1.0), Value::Null],
     )?;
     assert_eq!(call_result, Value::Undefined);
+
+    Ok(())
+  }
+
+  #[test]
+  fn window_or_worker_global_scope_primitives_exist_and_behave() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/path"))?;
+    let window_origin = realm.exec_script("window.origin")?;
+    assert_eq!(get_string(realm.heap(), window_origin), "https://example.com");
+    let origin = realm.exec_script("origin")?;
+    assert_eq!(get_string(realm.heap(), origin), "https://example.com");
+    assert_eq!(realm.exec_script("isSecureContext")?, Value::Bool(true));
+    assert_eq!(realm.exec_script("crossOriginIsolated")?, Value::Bool(false));
+
+    let btoa_a = realm.exec_script("btoa('a')")?;
+    assert_eq!(get_string(realm.heap(), btoa_a), "YQ==");
+    let atob_a = realm.exec_script("atob('YQ==')")?;
+    assert_eq!(get_string(realm.heap(), atob_a), "a");
+    let atob_ws = realm.exec_script("atob(' Y Q = =\\n')")?;
+    assert_eq!(get_string(realm.heap(), atob_ws), "a");
+    let atob_no_pad = realm.exec_script("atob('YQ')")?;
+    assert_eq!(get_string(realm.heap(), atob_no_pad), "a");
+
+    let invalid_atob = realm.exec_script("try { atob('!!!'); 'no' } catch (e) { e.name }")?;
+    assert_eq!(get_string(realm.heap(), invalid_atob), "InvalidCharacterError");
+    let invalid_btoa = realm.exec_script("try { btoa('\\u0100'); 'no' } catch (e) { e.name }")?;
+    assert_eq!(get_string(realm.heap(), invalid_btoa), "InvalidCharacterError");
+
+    // `reportError` must never throw (even for Symbols).
+    let report_ok = realm.exec_script("try { reportError(Symbol('x')); true } catch (e) { false }")?;
+    assert_eq!(report_ok, Value::Bool(true));
+
+    // atob result is a ByteString-like DOMString where each code unit is 0..255.
+    let bytes = realm.exec_script("atob('AAECAw==')")?;
+    let Value::String(handle) = bytes else {
+      panic!("expected atob to return a string");
+    };
+    let units = realm.heap().get_string(handle)?.as_code_units().to_vec();
+    assert_eq!(units, vec![0u16, 1, 2, 3]);
 
     Ok(())
   }
