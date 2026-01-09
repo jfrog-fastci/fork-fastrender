@@ -62,6 +62,15 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
+You can optionally provide a start URL (like the address bar). Supported schemes are:
+`http`, `https`, `file`, and `about` (default is `about:newtab`):
+
+```bash
+bash scripts/run_limited.sh --as 64G -- \
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser -- \
+  https://example.com/
+```
+
 ### 2) UI framework choice
 
 Prefer a UI stack that is:
