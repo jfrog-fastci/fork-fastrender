@@ -10,6 +10,7 @@ use markup5ever::LocalName;
 use markup5ever::Namespace;
 use markup5ever::QualName;
 use markup5ever_rcdom::Handle;
+use markup5ever_rcdom::NodeData;
 use markup5ever_rcdom::RcDom;
 use std::io;
 
@@ -84,7 +85,7 @@ pub fn parse_html_fragment(
   let mut deadline_counter = 0usize;
   let mut converted: Vec<DomNode> = Vec::new();
   // Clone handles out so we don't hold a RefCell borrow over conversion.
-  let handles: Vec<Handle> = dom.document.children.borrow().iter().cloned().collect();
+  let handles: Vec<Handle> = fragment_children_from_rcdom(&dom);
   converted.reserve(handles.len());
   for handle in handles {
     if let Some(node) =
@@ -141,6 +142,33 @@ pub fn parse_html_fragment(
   }
 
   Ok(std::mem::take(&mut container.children))
+}
+
+fn handle_children(handle: &Handle) -> Vec<Handle> {
+  handle.children.borrow().iter().cloned().collect()
+}
+
+fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
+  let children = handle_children(&rcdom.document);
+
+  // `html5ever`'s RcDom fragment parsing can return a synthetic `<html>` element as the sole
+  // significant child of the document, with the actual fragment nodes as its children. Strip that
+  // wrapper so callers can insert the returned nodes directly (innerHTML/outerHTML semantics).
+  let significant: Vec<Handle> = children
+    .iter()
+    .filter(|handle| !matches!(handle.data, NodeData::Doctype { .. } | NodeData::Comment { .. }))
+    .cloned()
+    .collect();
+
+  if significant.len() == 1 {
+    if let NodeData::Element { name, .. } = &significant[0].data {
+      if name.ns.as_ref() == HTML_NAMESPACE && name.local.as_ref().eq_ignore_ascii_case("html") {
+        return handle_children(&significant[0]);
+      }
+    }
+  }
+
+  significant
 }
 
 fn normalize_parse_namespace(namespace: &str) -> &str {
