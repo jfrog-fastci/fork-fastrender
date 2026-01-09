@@ -287,6 +287,29 @@ fn collect_element_data(box_tree: &BoxTree) -> (HashMap<ElementKey, Arc<Computed
   (styles, map)
 }
 
+fn collect_starting_styles(box_tree: &BoxTree) -> HashMap<ElementKey, Arc<ComputedStyle>> {
+  let mut styles: HashMap<ElementKey, Arc<ComputedStyle>> = HashMap::new();
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if let (Some(styled_node_id), Some(starting_style)) =
+      (node.styled_node_id, node.starting_style.as_ref())
+    {
+      let key = ElementKey {
+        styled_node_id,
+        pseudo: node.generated_pseudo,
+      };
+      styles.entry(key).or_insert_with(|| starting_style.clone());
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  styles
+}
+
 fn default_update_context() -> AnimationResolveContext {
   // `TransitionState::update_for_style_change` only sees computed styles, not layout results. Use a
   // non-zero fallback size so percentage-based values don't collapse to 0 and incorrectly suppress
@@ -306,6 +329,16 @@ fn is_discrete_property(name: &str) -> bool {
       | "border-left-style"
       | "outline-style"
   )
+}
+
+fn transition_value_distance(a: &TransitionValue, b: &TransitionValue) -> Option<f32> {
+  match (a, b) {
+    (
+      TransitionValue::Builtin(AnimatedValue::Opacity(x)),
+      TransitionValue::Builtin(AnimatedValue::Opacity(y)),
+    ) => Some((*y - *x).abs()),
+    _ => None,
+  }
 }
 
 fn can_interpolate_custom_property(from: &ComputedStyle, to: &ComputedStyle, name: &str) -> bool {
@@ -395,18 +428,22 @@ impl TransitionState {
     now_ms: f32,
   ) -> TransitionState {
     let (new_styles, box_to_element) = collect_element_data(new_box_tree);
+    let starting_styles =
+      prev_box_tree.is_none().then(|| collect_starting_styles(new_box_tree));
 
     let mut next = TransitionState::default();
     next.box_to_element = box_to_element;
 
-    let Some(prev_box_tree) = prev_box_tree else {
-      return next;
-    };
-    let (prev_styles, _) = collect_element_data(prev_box_tree);
     let cmp_ctx = default_update_context();
+    let prev_styles = prev_box_tree.map(|tree| collect_element_data(tree).0);
+    let event_time_ms = if prev_styles.is_some() { now_ms } else { 0.0 };
 
     for (key, after_style_arc) in new_styles {
-      let Some(before_style_arc) = prev_styles.get(&key) else {
+      let before_style_arc = prev_styles
+        .as_ref()
+        .and_then(|styles| styles.get(&key))
+        .or_else(|| starting_styles.as_ref().and_then(|styles| styles.get(&key)));
+      let Some(before_style_arc) = before_style_arc else {
         continue;
       };
 
@@ -549,6 +586,21 @@ impl TransitionState {
             continue;
           }
 
+          let adjusted_duration = if reversing {
+            duration
+          } else {
+            let old_distance = TransitionRecord::extract_value(&existing.from_style, name, &cmp_ctx)
+              .and_then(|from| {
+                TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
+                  .and_then(|to| transition_value_distance(&from, &to))
+              });
+            let new_distance = transition_value_distance(&before_value, &after_value);
+            match (old_distance, new_distance) {
+              (Some(old), Some(new)) if old > 0.0 => duration * (new / old),
+              _ => duration,
+            }
+          };
+
           let record = if reversing {
             let old_progress = existing.raw_progress(now_ms);
             let start_time_ms = now_ms - delay - (1.0 - old_progress) * duration;
@@ -573,7 +625,7 @@ impl TransitionState {
               &after_value,
               now_ms,
               delay,
-              duration,
+              adjusted_duration,
               timing,
               behavior,
               allow_discrete,
@@ -645,7 +697,7 @@ impl TransitionState {
 
         let record = TransitionRecord {
           property: name_arc.clone(),
-          start_time_ms: now_ms,
+          start_time_ms: event_time_ms,
           delay_ms: delay,
           duration_ms: duration,
           timing_function: timing,

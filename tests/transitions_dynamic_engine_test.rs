@@ -392,6 +392,54 @@ fn transition_reverses_with_shortened_duration() -> Result<()> {
 }
 
 #[test]
+fn starting_style_transition_can_be_interrupted() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      @starting-style { #box { opacity: 0; } }
+      #box { width: 100px; height: 100px; opacity: 1; transition: opacity 1000ms linear; }
+      #box.b { opacity: 0.5; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  // First frame seeds the `@starting-style` transition (0 -> 1) at t=0.
+  doc.render_frame()?;
+
+  // Interrupt the starting-style transition at t=200ms.
+  doc.set_animation_time_ms(200.0);
+  assert!(set_class(&mut doc, "box", "b"));
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let eps = 1e-3;
+  let cases = [(200.0, 0.2), (700.0, 0.5)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
 fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()> {
   ensure_test_env();
 
