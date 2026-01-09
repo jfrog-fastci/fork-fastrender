@@ -921,13 +921,13 @@ impl App {
           let close_result = self.browser_state.remove_tab(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::CloseTab { tab_id });
 
-           if let Some(created_tab) = close_result.created_tab {
-             let initial_url = "about:newtab".to_string();
-             let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
-               tab_id: created_tab,
-               initial_url: Some(initial_url),
-               cancel: fastrender::ui::cancel::CancelGens::new(),
-             });
+          if let Some(created_tab) = close_result.created_tab {
+            let initial_url = "about:newtab".to_string();
+            let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
+              tab_id: created_tab,
+              initial_url: Some(initial_url),
+              cancel: fastrender::ui::cancel::CancelGens::new(),
+            });
             let _ = self
               .ui_to_worker_tx
               .send(UiToWorker::SetActiveTab { tab_id: created_tab });
