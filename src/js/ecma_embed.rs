@@ -216,12 +216,14 @@ pub struct VmJsScriptRealm {
   heap: Heap,
   env: Env,
   host_functions: HashMap<GcObject, HostFunctionEntry>,
-  interrupt_handle: InterruptHandle,
   interrupt_flag: Arc<AtomicBool>,
+  interrupt_handle: InterruptHandle,
 }
 
 impl VmJsScriptRealm {
   pub fn new(options: ScriptRealmOptions) -> Result<Self, ScriptError> {
+    // Use a shared interrupt flag so this realm can be reused across multiple evaluations, while
+    // still allowing the active render deadline to interrupt long-running scripts.
     let interrupt_flag = Arc::new(AtomicBool::new(false));
     let vm = Vm::new(VmOptions {
       max_stack_depth: options.max_stack_depth,
@@ -238,8 +240,8 @@ impl VmJsScriptRealm {
       heap,
       env: Env::default(),
       host_functions: HashMap::new(),
-      interrupt_handle,
       interrupt_flag,
+      interrupt_handle,
     })
   }
 
@@ -299,7 +301,7 @@ impl ScriptRealm for VmJsScriptRealm {
     budget: ScriptBudgetOverride,
   ) -> Result<ScriptValue, ScriptError> {
     // If a previous evaluation was interrupted, the VM interrupt flag stays set until the host
-    // resets it. Without this, all subsequent evaluations would immediately terminate.
+    // resets it. Clear it here so subsequent evaluations can proceed.
     self.interrupt_flag.store(false, Ordering::Relaxed);
 
     let render_deadline =

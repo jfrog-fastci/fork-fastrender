@@ -1266,7 +1266,6 @@ fn render_outset_shadow(
           None,
         );
       }
-    } else if let Some(path) = build_rounded_rect_path(
     } else if let Some(path) =
       build_rounded_rect_path(cutout_x, cutout_y, cutout_w, cutout_h, &cutout_radii)
     {
