@@ -183,6 +183,11 @@ impl ResolvedWebIdlWorld {
 pub struct ResolvedInterface {
   pub name: String,
   pub inherits: Option<String>,
+  /// Whether this interface was declared as a WebIDL `callback interface`.
+  ///
+  /// Callback interfaces have special conversion rules (e.g. JS functions/objects with a
+  /// `handleEvent` operation can be converted to the interface type).
+  pub callback: bool,
   pub ext_attrs: Vec<ExtendedAttribute>,
   pub exposure: Exposure,
   pub members: Vec<ResolvedInterfaceMember>,
@@ -417,11 +422,13 @@ fn resolve_interfaces(
 
   for name in all_names {
     let mut inherits = None;
+    let mut callback = false;
     let mut ext_attrs = Vec::new();
     let mut members = Vec::new();
 
     if let Some(base) = primary.get(&name) {
       inherits = base.inherits.clone();
+      callback = base.callback;
       ext_attrs.extend(base.ext_attrs.clone());
       members.extend(base.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
     }
@@ -431,6 +438,7 @@ fn resolve_interfaces(
         if inherits.is_none() {
           inherits = p.inherits;
         }
+        callback |= p.callback;
         ext_attrs.extend(p.ext_attrs);
         members.extend(p.members.iter().map(|m| to_resolved_iface_member(m, &Exposure::Unknown)));
       }
@@ -447,6 +455,7 @@ fn resolve_interfaces(
       ResolvedInterface {
         name,
         inherits,
+        callback,
         ext_attrs,
         exposure,
         members,

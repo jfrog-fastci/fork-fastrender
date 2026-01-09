@@ -160,3 +160,31 @@ fn typedef_resolution_expands_chains_and_detects_cycles() {
   assert!(resolved.resolve_typedef("CycleA").is_err());
 }
 
+#[test]
+fn preserves_callback_interface_flag() {
+  let idl = r#"
+    callback interface EventListener {
+      undefined handleEvent(Event event);
+    };
+
+    interface Foo {
+      undefined bar();
+    };
+  "#;
+
+  let parsed = parse_webidl(idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed);
+
+  assert!(
+    resolved
+      .interfaces
+      .get("EventListener")
+      .expect("EventListener resolved")
+      .callback,
+    "expected callback interface flag to be preserved"
+  );
+  assert!(
+    !resolved.interfaces.get("Foo").expect("Foo resolved").callback,
+    "expected non-callback interface to default to false"
+  );
+}
