@@ -1086,7 +1086,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
-      Value::BigInt(bi) => !bi.is_zero(),
+      Value::BigInt(n) => !n.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })
@@ -1122,10 +1122,10 @@ impl JsRuntime for VmJsRuntime {
           }
         } else if let Some(number_data) = self.number_object_data(obj)? {
           number_data
-        } else if self.bigint_object_data(obj)?.is_some() {
-          return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
         } else if let Some(symbol_data) = self.symbol_object_data(obj)? {
           return Err(self.throw_symbol_to_number(symbol_data));
+        } else if self.bigint_object_data(obj)?.is_some() {
+          return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
         } else {
           f64::NAN
         }
@@ -1144,7 +1144,7 @@ impl JsRuntime for VmJsRuntime {
         Value::Bool(true) => rt.alloc_string_handle("true")?,
         Value::Bool(false) => rt.alloc_string_handle("false")?,
         Value::Number(n) => rt.to_string_from_number(n)?,
-        Value::BigInt(b) => rt.alloc_string_handle(&b.to_decimal_string())?,
+        Value::BigInt(n) => rt.alloc_string_handle(&n.to_decimal_string())?,
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
         }

@@ -624,7 +624,10 @@ impl BrowserTab {
 
     // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
     // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
-    let document = BrowserDocumentDom2::from_html("", options.clone())?;
+    let renderer = super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .build()?;
+    let document = BrowserDocumentDom2::new(renderer, "", options.clone())?;
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -660,7 +663,10 @@ impl BrowserTab {
     let trace_handle = trace_session.handle.clone();
     let trace_output = trace_session.output.clone();
 
-    let document = BrowserDocumentDom2::from_html(html, options)?;
+    let renderer = super::FastRender::builder()
+      .dom_scripting_enabled(true)
+      .build()?;
+    let document = BrowserDocumentDom2::new(renderer, html, options)?;
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),

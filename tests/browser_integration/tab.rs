@@ -4,6 +4,8 @@ use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, Render
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::support::rgba_at;
+
 fn find_element_by_id(dom: &Document, target: &str) -> Option<NodeId> {
   let mut stack = vec![dom.root()];
   while let Some(id) = stack.pop() {
@@ -59,6 +61,51 @@ impl BrowserTabJsExecutor for QueuedMutationExecutor {
 
     Ok(())
   }
+}
+
+#[derive(Default)]
+struct NoopExecutor;
+
+impl BrowserTabJsExecutor for NoopExecutor {
+  fn execute_classic_script(
+    &mut self,
+    _script_text: &str,
+    _spec: &fastrender::js::ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    _document: &mut fastrender::BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    Ok(())
+  }
+}
+
+#[test]
+fn browser_tab_parses_with_scripting_enabled_semantics() -> Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          .red { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+          .blue { width: 64px; height: 64px; background: rgb(0, 0, 255); }
+        </style>
+      </head>
+      <body>
+        <noscript><div class="red"></div></noscript>
+        <div class="blue"></div>
+       </body>
+     </html>"#;
+
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let mut tab = BrowserTab::from_html(html, options, NoopExecutor::default())?;
+  let pixmap = tab.render_frame()?;
+
+  assert_eq!(
+    rgba_at(&pixmap, 32, 32),
+    [0, 0, 255, 255],
+    "expected `<noscript>` content to be suppressed when scripting is enabled"
+  );
+  Ok(())
 }
 
 #[test]
