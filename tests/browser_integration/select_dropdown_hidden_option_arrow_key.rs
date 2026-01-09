@@ -92,6 +92,7 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
       &scroll_state,
       click_viewport_point,
       "",
+      "",
     );
     changed |= up_changed;
 
@@ -117,4 +118,3 @@ fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -
 
   Ok(())
 }
-
