@@ -1,5 +1,6 @@
-use fastrender::{BrowserDocument, Error, FastRender, FastRenderConfig, RenderOptions, Result};
+use fastrender::{BrowserDocument, BrowserDocument2, Error, FastRender, FastRenderConfig, RenderOptions, Result};
 use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::error::{RenderError, RenderStage};
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
@@ -205,5 +206,79 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
   assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  Ok(())
+}
+
+#[test]
+fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>"#;
+
+  let mut renderer = FastRender::new()?;
+  let base_options = RenderOptions::new().with_viewport(64, 64);
+  let prepared = renderer.prepare_html(html, base_options.clone())?;
+
+  let cancel_callback: Arc<fastrender::CancelCallback> = Arc::new(|| true);
+  let options = base_options.with_cancel_callback(Some(cancel_callback));
+  let mut doc = BrowserDocument::from_prepared(renderer, prepared, options)?;
+
+  let err = doc
+    .render_if_needed()
+    .expect_err("cached paint should respect cancel callback");
+  match err {
+    Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Paint),
+    other => panic!("unexpected error: {other:?}"),
+  }
+  Ok(())
+}
+
+#[test]
+fn browser_document2_cached_paint_respects_cancel_callback() -> Result<()> {
+  use std::sync::atomic::{AtomicBool, Ordering};
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #box { width: 64px; height: 64px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body>
+        <div id="box"></div>
+      </body>
+    </html>"#;
+
+  let cancelled = Arc::new(AtomicBool::new(false));
+  let cancelled_for_cb = Arc::clone(&cancelled);
+  let cancel_callback: Arc<fastrender::CancelCallback> =
+    Arc::new(move || cancelled_for_cb.load(Ordering::SeqCst));
+
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_cancel_callback(Some(cancel_callback));
+  let mut doc = BrowserDocument2::from_html(html, options)?;
+
+  // First frame should complete so we can exercise cached paint on the next frame.
+  doc.render_frame()?;
+  cancelled.store(true, Ordering::SeqCst);
+
+  let err = doc
+    .render_frame()
+    .expect_err("cached paint should respect cancel callback");
+  match err {
+    Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Paint),
+    other => panic!("unexpected error: {other:?}"),
+  }
   Ok(())
 }

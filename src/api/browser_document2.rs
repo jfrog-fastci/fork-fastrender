@@ -122,6 +122,15 @@ impl BrowserDocument2 {
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
     );
+    let deadline_enabled =
+      self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+    let _deadline_guard = deadline_enabled.then(|| {
+      let deadline = crate::render_control::RenderDeadline::new(
+        self.options.timeout,
+        self.options.cancel_callback.clone(),
+      );
+      crate::render_control::DeadlineGuard::install(Some(&deadline))
+    });
     prepared.paint_with_options(PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,

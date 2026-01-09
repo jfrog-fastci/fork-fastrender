@@ -272,6 +272,15 @@ impl BrowserDocument {
     };
 
     let scroll_state = self.scroll_state();
+    let deadline_enabled =
+      self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+    let _deadline_guard = deadline_enabled.then(|| {
+      let deadline = crate::render_control::RenderDeadline::new(
+        self.options.timeout,
+        self.options.cancel_callback.clone(),
+      );
+      crate::render_control::DeadlineGuard::install(Some(&deadline))
+    });
     prepared.paint_with_options_frame(PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,
