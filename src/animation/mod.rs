@@ -9544,4 +9544,33 @@ mod tests {
     assert!((animated.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
     assert!((animated.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
   }
+
+  #[test]
+  fn transition_longhand_names_matches_supported_interpolator_longhands() {
+    let shorthands = [
+      "border",
+      "border-top",
+      "border-right",
+      "border-bottom",
+      "border-left",
+      "border-color",
+      "border-width",
+      "border-style",
+      "border-radius",
+      "outline",
+    ];
+
+    let mut expected: Vec<&'static str> = property_interpolators()
+      .iter()
+      .map(|p| p.name)
+      .filter(|name| !shorthands.contains(name))
+      .collect();
+    expected.sort_unstable();
+
+    let mut actual: Vec<&'static str> = transition_longhand_names().iter().copied().collect();
+    actual.sort_unstable();
+    actual.dedup();
+
+    assert_eq!(actual, expected);
+  }
 }
