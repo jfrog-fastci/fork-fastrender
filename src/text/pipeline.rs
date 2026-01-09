@@ -7882,6 +7882,22 @@ mod tests {
   }
 
   #[test]
+  fn shaping_style_hash_includes_used_color_scheme() {
+    let mut light = ComputedStyle::default();
+    light.used_dark_color_scheme = false;
+    let light_hash = shaping_style_hash(&light);
+
+    let mut dark = light.clone();
+    dark.used_dark_color_scheme = true;
+
+    assert_ne!(
+      light_hash,
+      shaping_style_hash(&dark),
+      "used_dark_color_scheme should affect shaping cache key (palette overrides can depend on light-dark())"
+    );
+  }
+
+  #[test]
   fn shaping_style_hash_includes_font_variant_alternates_fields() {
     let base = ComputedStyle::default();
     let base_hash = shaping_style_hash(&base);
