@@ -623,6 +623,14 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return child;
   };
 
+  // DOM `ChildNode.remove()` is widely used by real sites (and is trivial to model on top of our
+  // existing `removeChild` binding).
+  Node.prototype.remove = function () {
+    if (this.parentNode && typeof this.parentNode.removeChild === "function") {
+      this.parentNode.removeChild(this);
+    }
+  };
+
   try {
     Object.defineProperty(Node.prototype, "textContent", {
       get: function () {
@@ -1469,6 +1477,42 @@ const DOM_BINDINGS_SHIM: &str = r##"
       .map_err(|e| Error::Other(e.to_string()))?;
 
     assert!(ok, "expected head/body bindings to behave");
+    Ok(())
+  }
+
+  #[test]
+  fn node_remove_detaches_from_parent() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var el = document.createElement("div");
+            el.id = "gone";
+            document.body.appendChild(el);
+            if (document.getElementById("gone") !== el) return false;
+            if (!document.body.childNodes || document.body.childNodes.length !== 1) return false;
+            el.remove();
+            if (el.parentNode !== null) return false;
+            if (document.body.childNodes.length !== 0) return false;
+            if (document.getElementById("gone") !== null) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected Node.remove() to detach from DOM");
+    assert!(
+      dom.borrow().dom.get_element_by_id("gone").is_none(),
+      "expected removed element to be detached in dom2"
+    );
     Ok(())
   }
 
