@@ -115,7 +115,7 @@ if have_browser; then
   echo
   echo "Done."
   echo "Next:"
-  echo "  cargo run --release --bin fetch_pages"
+  echo "  scripts/cargo_agent.sh run --release --bin fetch_pages"
   echo "  scripts/chrome_baseline.sh"
 else
   echo "error: failed to install Chrome/Chromium automatically." >&2

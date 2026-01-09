@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Convenience wrapper around `cargo xtask pageset`.
+# Convenience wrapper around the pageset xtask (`scripts/cargo_agent.sh run -p xtask -- pageset`).
 #
 # This script exists mainly for backwards-compatible env vars/flags and muscle memory.
 # Keep orchestration logic in the Rust `xtask` implementation so the behavior is validated and
@@ -15,10 +15,10 @@ usage() {
 usage: scripts/pageset.sh [wrapper flags] [--] [pageset_progress flags...]
 
 This is a thin wrapper over:
-  cargo xtask pageset [flags] [-- <extra pageset_progress flags...>]
+  scripts/cargo_agent.sh run -p xtask -- pageset [flags] [-- <extra pageset_progress flags...>]
 
 Wrapper-only flags:
-  --dry-run    Print the `cargo xtask pageset ...` command that would run and exit 0.
+  --dry-run    Print the `scripts/cargo_agent.sh run -p xtask -- pageset ...` command that would run and exit 0.
 USAGE
 }
 
@@ -344,7 +344,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-cmd=(cargo xtask pageset)
+cmd=(bash scripts/cargo_agent.sh run -p xtask -- pageset)
 
 if [[ -n "${jobs}" ]]; then
   cmd+=(--jobs "${jobs}")

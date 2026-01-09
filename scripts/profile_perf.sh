@@ -32,9 +32,18 @@ export CARGO_PROFILE_RELEASE_DEBUG=1
 export CARGO_PROFILE_RELEASE_STRIP=none
 
 FEATURE_ARGS=(--features disk_cache)
-cargo build --release "${FEATURE_ARGS[@]}" --bin pageset_progress
+bash scripts/cargo_agent.sh build --release "${FEATURE_ARGS[@]}" --bin pageset_progress
 
-perf record -F 99 --call-graph dwarf -- \
-  target/release/pageset_progress run --jobs 1 "${PAGE_ARGS[@]}"
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+if [[ "${TARGET_DIR}" != /* ]]; then
+  TARGET_DIR="${REPO_ROOT}/${TARGET_DIR}"
+fi
+BIN_PATH="${TARGET_DIR}/release/pageset_progress"
+if [[ -f "${BIN_PATH}.exe" ]]; then
+  BIN_PATH="${BIN_PATH}.exe"
+fi
+
+bash scripts/run_limited.sh --as 64G -- perf record -F 99 --call-graph dwarf -- \
+  "${BIN_PATH}" run --jobs 1 "${PAGE_ARGS[@]}"
 
 echo "Run: perf report"

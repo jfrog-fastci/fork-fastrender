@@ -308,7 +308,7 @@ fi
 
 if [[ ! -d "${HTML_DIR}" ]]; then
   echo "HTML dir not found: ${HTML_DIR}" >&2
-  echo "Run: cargo run --release --bin fetch_pages" >&2
+  echo "Run: scripts/cargo_agent.sh run --release --bin fetch_pages" >&2
   exit 1
 fi
 
@@ -351,7 +351,7 @@ shopt -s nullglob
 HTML_FILES=("${HTML_DIR}"/*.html)
 if [[ "${#HTML_FILES[@]}" -eq 0 ]]; then
   echo "No cached HTML found under ${HTML_DIR}/*.html" >&2
-  echo "Run: cargo run --release --bin fetch_pages" >&2
+  echo "Run: scripts/cargo_agent.sh run --release --bin fetch_pages" >&2
   exit 1
 fi
 

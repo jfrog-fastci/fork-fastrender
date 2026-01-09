@@ -39,8 +39,8 @@ Compatibility / extras:
   --ignore-alpha       Forwarded to diff_renders (ignore alpha differences)
   --sort-by <mode>     Forwarded to diff_renders (pixel|percent|perceptual)
   --fail-on-differences
-                        Exit non-zero when diff_renders reports differences (default: keep report and exit 0)
-  --no-build           Skip `cargo build --release --bin diff_renders` (reuse an existing binary)
+                         Exit non-zero when diff_renders reports differences (default: keep report and exit 0)
+  --no-build           Skip building diff_renders (reuse an existing binary)
 
 Output layout:
   <out>/chrome/        Chrome PNGs/logs
@@ -259,7 +259,7 @@ fi
 
 if [[ ! -d fetches/html ]]; then
   echo "Cached HTML not found: fetches/html" >&2
-  echo "Run: cargo run --release --bin fetch_pages" >&2
+  echo "Run: scripts/cargo_agent.sh run --release --bin fetch_pages" >&2
   exit 1
 fi
 
@@ -267,7 +267,7 @@ shopt -s nullglob
 HTML_FILES=(fetches/html/*.html)
 if [[ "${#HTML_FILES[@]}" -eq 0 ]]; then
   echo "No cached HTML found under fetches/html/*.html" >&2
-  echo "Run: cargo run --release --bin fetch_pages" >&2
+  echo "Run: scripts/cargo_agent.sh run --release --bin fetch_pages" >&2
   exit 1
 fi
 
@@ -290,7 +290,7 @@ if [[ "${#FILTERS[@]}" -gt 0 ]]; then
   done
   if [[ "${#missing[@]}" -gt 0 ]]; then
     echo "No cached HTML found for requested page stem(s): ${missing[*]}" >&2
-    echo "Run: cargo run --release --bin fetch_pages (or pass --refresh/--pages to fetch_pages) to populate fetches/html." >&2
+    echo "Run: scripts/cargo_agent.sh run --release --bin fetch_pages (or pass --refresh/--pages to fetch_pages) to populate fetches/html." >&2
     exit 1
   fi
 fi
@@ -437,9 +437,9 @@ if [[ "${NO_FASTRENDER}" -eq 1 ]]; then
 else
   set +e
   if [[ "${#FILTERS[@]}" -gt 0 ]]; then
-    cargo run --release --bin render_pages -- "${render_args[@]}" -- "${FILTERS[@]}"
+    bash scripts/cargo_agent.sh run --release --bin render_pages -- "${render_args[@]}" -- "${FILTERS[@]}"
   else
-    cargo run --release --bin render_pages -- "${render_args[@]}"
+    bash scripts/cargo_agent.sh run --release --bin render_pages -- "${render_args[@]}"
   fi
   fastrender_status=$?
   set -e
@@ -465,9 +465,9 @@ if [[ "${NO_BUILD}" -eq 1 && ! -f "${DIFF_BIN}" ]]; then
   exit 1
 fi
 if [[ "${NO_BUILD}" -eq 0 ]]; then
-  cargo build --release --bin diff_renders
+  bash scripts/cargo_agent.sh build --release --bin diff_renders
 fi
-"${DIFF_BIN}" "${diff_args[@]}"
+bash scripts/run_limited.sh --as 64G -- "${DIFF_BIN}" "${diff_args[@]}"
 diff_status=$?
 set -e
 

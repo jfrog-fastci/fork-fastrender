@@ -25,7 +25,7 @@ else
 fi
 
 if ! command -v samply >/dev/null 2>&1; then
-  echo "missing 'samply' (install with: cargo install --locked samply)"
+  echo "missing 'samply' (install with: scripts/cargo_agent.sh install --locked samply)"
   exit 1
 fi
 
@@ -40,9 +40,16 @@ export CARGO_PROFILE_RELEASE_STRIP=none
 export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes}"
 
 FEATURE_ARGS=(--features disk_cache)
-cargo build --release "${FEATURE_ARGS[@]}" --bin pageset_progress
+bash scripts/cargo_agent.sh build --release "${FEATURE_ARGS[@]}" --bin pageset_progress
 
-BIN_PATH="target/release/pageset_progress"
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+if [[ "${TARGET_DIR}" != /* ]]; then
+  TARGET_DIR="${REPO_ROOT}/${TARGET_DIR}"
+fi
+BIN_PATH="${TARGET_DIR}/release/pageset_progress"
+if [[ -f "${BIN_PATH}.exe" ]]; then
+  BIN_PATH="${BIN_PATH}.exe"
+fi
 # For reliable post-hoc symbolication, keep the exact binary that produced the sampled addresses.
 # We prefer a hardlink (cheap; preserves the old inode if `cargo build` replaces the binary later).
 # If hardlinking fails (e.g. cross-filesystem), set `PROFILE_COPY_BINARY=1` to force a full copy.
@@ -59,7 +66,7 @@ if [[ "${PROFILE_SAVE_BINARY:-1}" != "0" ]]; then
 fi
 
 set +e
-samply record --save-only --no-open -o "${OUT_FILE}" -- \
+bash scripts/run_limited.sh --as 64G -- samply record --save-only --no-open -o "${OUT_FILE}" -- \
   "${BIN_PATH}" run --jobs 1 "${PAGE_ARGS[@]}"
 SAMP_STATUS=$?
 set -e

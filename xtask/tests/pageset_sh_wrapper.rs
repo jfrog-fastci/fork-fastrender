@@ -40,8 +40,8 @@ fn pageset_sh_wrapper_dry_run_prints_xtask_command_with_forwarded_args() {
   let stdout = String::from_utf8(output.stdout).expect("stdout should be valid UTF-8");
 
   assert!(
-    stdout.contains("cargo xtask pageset"),
-    "stdout should contain `cargo xtask pageset` (got {stdout:?})"
+    stdout.contains("scripts/cargo_agent.sh") && stdout.contains("run -p xtask -- pageset"),
+    "stdout should contain the cargo_agent wrapper command (got {stdout:?})"
   );
   assert!(
     stdout.contains("--jobs 3"),
@@ -72,4 +72,3 @@ fn pageset_sh_wrapper_dry_run_prints_xtask_command_with_forwarded_args() {
     "stdout should forward extra args after `--` (got {stdout:?})"
   );
 }
-

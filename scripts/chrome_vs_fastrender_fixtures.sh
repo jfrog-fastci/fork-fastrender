@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Convenience wrapper around `cargo xtask fixture-chrome-diff`.
+# Convenience wrapper around the fixture Chrome diff xtask.
 #
 # This script exists mainly for backwards-compatible flags and muscle memory. The canonical
 # implementation of the offline fixture evidence loop lives in the `xtask` subcommand; keep this
@@ -21,14 +21,14 @@ Options:
   --fastr-out-dir <dir>     (legacy) Must be <out-dir>/fastrender
   --report-html <path>      (legacy) Must be <out-dir>/report.html
   --report-json <path>      (legacy) Must be <out-dir>/report.json
-  --viewport <WxH>          Viewport size (default: inherited from `cargo xtask fixture-chrome-diff`)
-  --dpr <float>             Device pixel ratio (default: inherited from `cargo xtask fixture-chrome-diff`)
-  --media <screen|print>    Media type for both Chrome + FastRender (default: inherited from `cargo xtask fixture-chrome-diff`)
+  --viewport <WxH>          Viewport size (default: inherited from `fixture-chrome-diff`)
+  --dpr <float>             Device pixel ratio (default: inherited from `fixture-chrome-diff`)
+  --media <screen|print>    Media type for both Chrome + FastRender (default: inherited from `fixture-chrome-diff`)
   --jobs <n>, -j <n>        Parallelism forwarded to render_fixtures
   --write-snapshot          Also write render_fixtures snapshots/diagnostics (for diff_snapshots)
-  --timeout <secs>          Per-fixture timeout (Chrome + FastRender) (default: inherited from `cargo xtask fixture-chrome-diff`)
+  --timeout <secs>          Per-fixture timeout (Chrome + FastRender) (default: inherited from `fixture-chrome-diff`)
   --chrome <path>           Chrome/Chromium binary (default: auto-detect)
-  --js <on|off>             Enable JavaScript in Chrome (default: inherited from `cargo xtask fixture-chrome-diff`)
+  --js <on|off>             Enable JavaScript in Chrome (default: inherited from `fixture-chrome-diff`)
   --shard <index>/<total>   Only process a deterministic shard of fixtures (0-based)
   --tolerance <0-255>       Pixel diff tolerance (passed to diff_renders)
   --max-diff-percent <f64>  Allowed diff percent (passed to diff_renders)
@@ -40,18 +40,18 @@ Options:
   --no-fastrender           Skip generating FastRender renders (reuse existing --fastr-out-dir)
   --diff-only               Alias for --no-chrome --no-fastrender
   --fail-on-differences     Exit non-zero when diff_renders reports differences (default: keep report and exit 0)
-  --no-build                Skip `cargo build --release --bin diff_renders` (reuse an existing binary)
-  --no-clean                (deprecated; ignored) Output dirs are managed by `cargo xtask fixture-chrome-diff`.
+  --no-build                Skip building diff_renders (reuse an existing binary)
+  --no-clean                (deprecated; ignored) Output dirs are managed by the xtask implementation.
   -h, --help                Show help
 
 Filtering:
   Positional args are treated as fixture directory globs (matched against
-  <fixtures-dir>/<glob>/index.html), then forwarded to `cargo xtask fixture-chrome-diff --fixtures <csv>`.
+   <fixtures-dir>/<glob>/index.html), then forwarded to `scripts/cargo_agent.sh run -p xtask -- fixture-chrome-diff --fixtures <csv>`.
   If omitted, fixture selection defaults to the xtask implementation.
   Some additional `fixture-chrome-diff` selection/validation flags (e.g. `--all-fixtures`, `--from-progress`)
-  are also accepted and forwarded. For everything else, run `cargo xtask fixture-chrome-diff --help`.
+   are also accepted and forwarded. For everything else, run `scripts/cargo_agent.sh run -p xtask -- fixture-chrome-diff --help`.
 
-Output layout (matches `cargo xtask fixture-chrome-diff`):
+Output layout (matches the xtask output layout):
   <out>/chrome/        Chrome PNGs/logs/metadata
   <out>/fastrender/    FastRender PNGs/logs/diagnostics
   <out>/report.html    diff_renders HTML report
@@ -255,7 +255,7 @@ while [[ $# -gt 0 ]]; do
         EXTRA_XTASK_ARGS+=(--dry-run); shift; continue ;;
       -*)
         echo "unknown option: $1" >&2
-        echo "Run \`cargo xtask fixture-chrome-diff --help\` for the canonical flag set." >&2
+        echo "Run \`scripts/cargo_agent.sh run -p xtask -- fixture-chrome-diff --help\` for the canonical flag set." >&2
         echo "If you meant to pass a fixture glob that begins with '-', put it after '--'." >&2
         exit 2
         ;;
@@ -462,7 +462,7 @@ if [[ "${#EXTRA_XTASK_ARGS[@]}" -gt 0 ]]; then
   xtask_args+=("${EXTRA_XTASK_ARGS[@]}")
 fi
 
-cmd=(cargo xtask "${xtask_args[@]}")
+cmd=(bash scripts/cargo_agent.sh run -p xtask -- "${xtask_args[@]}")
 
 printf '$'
 printf ' %q' "${cmd[@]}"

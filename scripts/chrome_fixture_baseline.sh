@@ -243,4 +243,4 @@ if [[ -n "${CHROME_BIN}" ]]; then
 fi
 xtask_args+=(-- "${FIXTURES[@]}")
 
-cargo xtask "${xtask_args[@]}"
+bash scripts/cargo_agent.sh run -p xtask -- "${xtask_args[@]}"
