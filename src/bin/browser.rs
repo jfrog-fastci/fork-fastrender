@@ -876,6 +876,7 @@ impl App {
         let (can_back, can_forward, loading) = active
           .map(|t| (t.can_go_back, t.can_go_forward, t.loading))
           .unwrap_or((false, false, false));
+        let stage = active.and_then(|t| t.stage);
 
         if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
           actions.push(ChromeAction::Back);
@@ -933,7 +934,12 @@ impl App {
         }
 
         if loading {
-          ui.label("Loading…");
+          let stage =
+            stage.filter(|s| *s != fastrender::render_control::StageHeartbeat::Done);
+          match stage {
+            Some(stage) => ui.label(egui::RichText::new(format!("Stage: {stage:?}")).small()),
+            None => ui.label(egui::RichText::new("Loading…").small()),
+          };
         }
       });
 
