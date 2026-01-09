@@ -12,6 +12,7 @@ mod ui_worker_history;
 mod ui_worker_interaction;
 mod ui_worker_hover_active;
 mod ui_worker_scroll;
+mod ui_worker_scroll_hit_test;
 mod ui_worker_tabs;
 mod ui_worker_shutdown;
 
