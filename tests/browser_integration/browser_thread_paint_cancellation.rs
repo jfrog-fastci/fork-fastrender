@@ -93,7 +93,12 @@ fn paint_cancellation_during_navigation_does_not_surface_error_page() {
             assert_eq!(url, "about:test-heavy");
             saw_nav_committed = true;
           }
-          WorkerToUi::NavigationFailed { tab_id: got, url, error } if *got == tab_id => {
+          WorkerToUi::NavigationFailed {
+            tab_id: got,
+            url,
+            error,
+            ..
+          } if *got == tab_id => {
             panic!("navigation failed unexpectedly for {url}: {error}");
           }
           WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id => {
