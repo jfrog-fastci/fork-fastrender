@@ -848,6 +848,9 @@ impl App {
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
           VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
           VirtualKeyCode::Tab => Some(fastrender::interaction::KeyAction::Tab),
+          VirtualKeyCode::Space => Some(fastrender::interaction::KeyAction::Space),
+          VirtualKeyCode::Up => Some(fastrender::interaction::KeyAction::ArrowUp),
+          VirtualKeyCode::Down => Some(fastrender::interaction::KeyAction::ArrowDown),
           _ => None,
         };
         let Some(key_action) = key_action else {

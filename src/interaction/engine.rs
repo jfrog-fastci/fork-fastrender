@@ -39,8 +39,10 @@ pub enum InteractionAction {
 pub enum KeyAction {
   Backspace,
   Enter,
-  Space,
   Tab,
+  Space,
+  ArrowUp,
+  ArrowDown,
 }
 
 #[derive(Debug, Clone)]
@@ -214,17 +216,18 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn is_anchor_with_href(node: &DomNode) -> bool {
-  node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("a"))
-    && node.get_attribute_ref("href").is_some_and(|href| {
-      let href = trim_ascii_whitespace(href);
-      !href.is_empty()
-        && !href
-          .as_bytes()
-          .get(.."javascript:".len())
-          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
-    })
+  // MVP: treat <a href> and <area href> as focusable/navigable "links".
+  node.tag_name().is_some_and(|tag| {
+    (tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
+      && node.get_attribute_ref("href").is_some_and(|href| {
+        let href = trim_ascii_whitespace(href);
+        !href.is_empty()
+          && !href
+            .as_bytes()
+            .get(.."javascript:".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+      })
+  })
 }
 
 fn is_focusable_anchor(node: &DomNode) -> bool {
@@ -1556,13 +1559,14 @@ impl InteractionEngine {
     changed
   }
 
-  /// Handle special keys that mutate focused text controls:
-  /// - Backspace
-  /// - Enter (textarea newline only)
-  /// - Tab (optional focus traversal stub)
+  /// Handle keyboard actions that mutate the DOM without performing navigation.
+  ///
+  /// Element activation (links, form submission, etc.) is handled by [`InteractionEngine::key_activate`].
   pub fn key_action(&mut self, dom: &mut DomNode, key: KeyAction) -> bool {
     self.modality = InputModality::Keyboard;
+
     if key == KeyAction::Tab {
+      // Forward-only focus traversal (wraps at end).
       let mut index = DomIndexMut::new(dom);
       let focusables = collect_tab_focusables(&index);
       let Some(next_focus) = next_tab_focus(self.focused, &focusables) else {
@@ -1577,6 +1581,8 @@ impl InteractionEngine {
 
     let mut index = DomIndexMut::new(dom);
     let mut changed = false;
+
+    // Ensure focus-visible when the keyboard is used.
     changed |= self.set_focus(&mut index, Some(focused), true);
 
     match key {
@@ -1664,9 +1670,58 @@ impl InteractionEngine {
           }
         }
       }
+      KeyAction::ArrowUp | KeyAction::ArrowDown => {
+        if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+          let rows = collect_select_rows(&index, focused);
+          let mut options = Vec::new();
+          for row in rows {
+            let SelectRow::Option { node_id, disabled } = row else {
+              continue;
+            };
+            options.push((node_id, disabled));
+          }
+
+          let mut current_idx = options.iter().position(|(id, _)| {
+            index
+              .node(*id)
+              .and_then(|node| node.get_attribute_ref("selected"))
+              .is_some()
+          });
+
+          if current_idx.is_none() {
+            current_idx = options.iter().position(|(_, disabled)| !*disabled);
+          }
+
+          if let Some(current_idx) = current_idx {
+            let mut next_opt: Option<usize> = None;
+            match key {
+              KeyAction::ArrowDown => {
+                for (id, disabled) in options.iter().skip(current_idx + 1) {
+                  if !*disabled {
+                    next_opt = Some(*id);
+                    break;
+                  }
+                }
+              }
+              KeyAction::ArrowUp => {
+                for (id, disabled) in options.iter().take(current_idx).rev() {
+                  if !*disabled {
+                    next_opt = Some(*id);
+                    break;
+                  }
+                }
+              }
+              _ => {}
+            }
+
+            if let Some(next_id) = next_opt {
+              changed |= dom_mutation::activate_select_option(dom, focused, next_id, false);
+            }
+          }
+        }
+      }
       KeyAction::Space => {
-        // Keyboard activation (Space/Enter) can trigger navigation, so it's handled by
-        // `InteractionEngine::key_activate`.
+        // Handled by `key_activate` (may trigger navigation).
       }
       KeyAction::Tab => {
         unreachable!("handled above")
@@ -1693,9 +1748,6 @@ impl InteractionEngine {
     let prev_focus = self.focused;
 
     self.modality = InputModality::Keyboard;
-    let Some(focused) = self.focused else {
-      return (false, InteractionAction::None);
-    };
 
     // Delegate text-editing keys to `key_action` so behaviour stays consistent.
     match key {
@@ -1713,7 +1765,13 @@ impl InteractionEngine {
         };
         return (dom_changed, action);
       }
+      KeyAction::ArrowUp | KeyAction::ArrowDown => {
+        return (self.key_action(dom, key), InteractionAction::None);
+      }
       KeyAction::Enter => {
+        let Some(focused) = self.focused else {
+          return (false, InteractionAction::None);
+        };
         let index = DomIndexMut::new(dom);
         if index.node(focused).is_some_and(is_textarea) {
           return (self.key_action(dom, KeyAction::Enter), InteractionAction::None);
@@ -1721,6 +1779,10 @@ impl InteractionEngine {
       }
       KeyAction::Space => {}
     }
+
+    let Some(focused) = self.focused else {
+      return (false, InteractionAction::None);
+    };
 
     // Ensure focus-visible when activation is driven by the keyboard.
     let mut index = DomIndexMut::new(dom);
@@ -1742,10 +1804,24 @@ impl InteractionEngine {
             changed |= set_data_flag(&mut index, focused, "data-fastr-visited", true);
             action = InteractionAction::Navigate { href: resolved };
           }
+        } else if index.node(focused).is_some_and(is_checkbox_input) {
+          if !node_is_disabled(&index, focused) {
+            if let Some(node_mut) = index.node_mut(focused) {
+              changed |= dom_mutation::toggle_checkbox(node_mut);
+            }
+          }
+        } else if index.node(focused).is_some_and(is_radio_input) {
+          if !node_is_disabled(&index, focused) {
+            changed |= dom_mutation::activate_radio(dom, focused);
+          }
         } else if index.node(focused).is_some_and(is_submit_control) {
           if node_is_disabled(&index, focused) {
             // Disabled submit controls do not submit.
-          } else if let Some(form_id) = find_ancestor_form(&index, focused) {
+          } else {
+            // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+          }
+          if let Some(form_id) = find_ancestor_form(&index, focused) {
             if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
               action = InteractionAction::Navigate { href: url };
             }
@@ -1753,7 +1829,11 @@ impl InteractionEngine {
         } else if index.node(focused).is_some_and(is_text_input) {
           if node_is_disabled(&index, focused) {
             // Disabled controls do not submit.
-          } else if let Some(form_id) = find_ancestor_form(&index, focused) {
+          } else {
+            // Pressing Enter in a text field can submit the form; flip user validity as well.
+            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+          }
+          if let Some(form_id) = find_ancestor_form(&index, focused) {
             if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
               action = InteractionAction::Navigate { href: url };
             }
@@ -1772,6 +1852,19 @@ impl InteractionEngine {
         } else if index.node(focused).is_some_and(is_radio_input) {
           if !node_is_disabled(&index, focused) {
             changed |= dom_mutation::activate_radio(dom, focused);
+          }
+        } else if index.node(focused).is_some_and(is_submit_control) {
+          if node_is_disabled(&index, focused) {
+            // Disabled submit controls do not submit.
+          } else {
+            changed |= dom_mutation::mark_form_user_validity(dom, focused);
+            if let Some(form_id) = find_ancestor_form(&index, focused) {
+              if let Some(url) =
+                build_get_form_submission_url(&index, form_id, document_url, base_url)
+              {
+                action = InteractionAction::Navigate { href: url };
+              }
+            }
           }
         } else if index.node(focused).is_some_and(is_button) {
           // MVP: no-op for non-submit buttons (no JS event dispatch yet).

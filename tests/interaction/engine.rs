@@ -1607,6 +1607,74 @@ fn focused_link_enter_activates_navigation_and_marks_visited() {
 }
 
 #[test]
+fn tab_cycles_focus_between_link_and_input_and_sets_focus_visible() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("a", vec![("id", "link"), ("href", "foo")], vec![]),
+        el("input", vec![("id", "txt")], vec![]),
+      ],
+    )],
+  )]);
+
+  let link_id = node_id(&dom, "link");
+  let input_id = node_id(&dom, "txt");
+
+  let mut engine = InteractionEngine::new();
+
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  assert!(changed, "Tab should focus the first focusable element");
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(link_id)
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+  assert!(!has_attr(&dom, "txt", "data-fastr-focus"));
+
+  let (_, action) =
+    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(input_id)
+    }
+  );
+  assert!(!has_attr(&dom, "link", "data-fastr-focus"));
+  assert_eq!(
+    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "txt", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  // Wrap at the end.
+  let (_, action) =
+    engine.key_activate(&mut dom, KeyAction::Tab, "https://x/", "https://example.com/base/");
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(link_id)
+    }
+  );
+}
+
+#[test]
 fn focused_checkbox_space_toggles_checked() {
   let mut dom = doc(vec![el(
     "html",
@@ -1633,7 +1701,50 @@ fn focused_checkbox_space_toggles_checked() {
   assert_eq!(action, InteractionAction::None);
   assert!(has_attr(&dom, "cb", "checked"));
   assert_eq!(
+    attr_value(&dom, "cb", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
     attr_value(&dom, "cb", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn arrow_down_changes_focused_dropdown_select_selection() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2"), ("disabled", "")], vec![]),
+          el("option", vec![("id", "o3")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_id = node_id(&dom, "sel");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(select_id), false);
+
+  let (changed, action) =
+    engine.key_activate(&mut dom, KeyAction::ArrowDown, "https://x/", "https://x/");
+  assert!(changed, "expected ArrowDown to change selection");
+  assert_eq!(action, InteractionAction::None);
+
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(has_attr(&dom, "o3", "selected"));
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-user-validity").as_deref(),
     Some("true")
   );
 }

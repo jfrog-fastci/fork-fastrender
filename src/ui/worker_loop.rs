@@ -537,7 +537,6 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           action = a;
           changed
         });
-
         match action {
           InteractionAction::Navigate { href } => {
             navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
