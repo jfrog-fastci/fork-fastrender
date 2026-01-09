@@ -1,7 +1,7 @@
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::dom::HTML_NAMESPACE;
-use crate::dom::{format_number, input_range_bounds};
+use crate::dom::{format_number, input_range_bounds, input_range_value};
 
 use super::dom_index::DomIndex;
 
@@ -276,6 +276,65 @@ fn parse_finite_number(value: &str) -> Option<f64> {
     .filter(|v| v.is_finite())
 }
 
+fn sanitize_range_value(node: &DomNode, value: f64) -> Option<f64> {
+  let (min, max) = input_range_bounds(node)?;
+  if !value.is_finite() {
+    return None;
+  }
+
+  let clamped = value.clamp(min, max);
+
+  let step_attr = node.get_attribute_ref("step");
+  if matches!(
+    step_attr,
+    Some(step) if trim_ascii_whitespace(step).eq_ignore_ascii_case("any")
+  ) {
+    return Some(clamped);
+  }
+
+  let step = step_attr
+    .and_then(parse_finite_number)
+    .filter(|step| *step > 0.0)
+    .unwrap_or(1.0);
+
+  // The allowed value step base for range inputs is the minimum value (defaulting to zero).
+  let step_base = min;
+  let steps_to_value = ((clamped - step_base) / step).round();
+  let mut aligned = step_base + steps_to_value * step;
+
+  let max_aligned = step_base + ((max - step_base) / step).floor() * step;
+  if aligned > max_aligned {
+    aligned = max_aligned;
+  }
+  if aligned < step_base {
+    aligned = step_base;
+  }
+
+  Some(aligned.clamp(min, max))
+}
+
+pub fn set_range_value(node: &mut DomNode, value: f64) -> bool {
+  if !is_input_of_type(node, "range") {
+    return false;
+  }
+
+  if is_disabled_or_inert(node) || node.get_attribute_ref("readonly").is_some() {
+    return false;
+  }
+
+  let Some(sanitized) = sanitize_range_value(node, value) else {
+    return false;
+  };
+
+  let value_attr = format_number(sanitized);
+  let changed_value = set_attr(node, "value", &value_attr);
+  let mut changed = changed_value;
+  if changed_value {
+    changed |= mark_user_validity(node);
+  }
+  changed
+}
+
 pub fn set_range_value_from_ratio(node: &mut DomNode, ratio: f32) -> bool {
   if !is_input_of_type(node, "range") {
     return false;
@@ -294,44 +353,41 @@ pub fn set_range_value_from_ratio(node: &mut DomNode, ratio: f32) -> bool {
   };
 
   let ratio = (ratio as f64).clamp(0.0, 1.0);
-  let resolved = min + (max - min) * ratio;
-  let clamped = resolved.clamp(min, max);
+  let value = min + (max - min) * ratio;
+  set_range_value(node, value)
+}
+
+pub fn step_range_value(node: &mut DomNode, delta_steps: i32) -> bool {
+  if delta_steps == 0 {
+    return false;
+  }
+  if !is_input_of_type(node, "range") {
+    return false;
+  }
+
+  if is_disabled_or_inert(node) || node.get_attribute_ref("readonly").is_some() {
+    return false;
+  }
+
+  let Some(current) = input_range_value(node) else {
+    return false;
+  };
 
   let step_attr = node.get_attribute_ref("step");
-  let value = if matches!(
+  let step = if matches!(
     step_attr,
     Some(step) if trim_ascii_whitespace(step).eq_ignore_ascii_case("any")
   ) {
-    clamped
+    1.0
   } else {
-    let step = step_attr
+    step_attr
       .and_then(parse_finite_number)
       .filter(|step| *step > 0.0)
-      .unwrap_or(1.0);
-
-    // The allowed value step base for range inputs is the minimum value (defaulting to zero).
-    let step_base = min;
-    let steps_to_value = ((clamped - step_base) / step).round();
-    let mut aligned = step_base + steps_to_value * step;
-
-    let max_aligned = step_base + ((max - step_base) / step).floor() * step;
-    if aligned > max_aligned {
-      aligned = max_aligned;
-    }
-    if aligned < step_base {
-      aligned = step_base;
-    }
-
-    aligned.clamp(min, max)
+      .unwrap_or(1.0)
   };
 
-  let value_attr = format_number(value);
-  let changed_value = set_attr(node, "value", &value_attr);
-  let mut changed = changed_value;
-  if changed_value {
-    changed |= mark_user_validity(node);
-  }
-  changed
+  let next = current + step * delta_steps as f64;
+  set_range_value(node, next)
 }
 
 struct PreorderFrame {

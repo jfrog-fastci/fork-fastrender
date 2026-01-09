@@ -2182,6 +2182,51 @@ fn range_click_sets_min_max_and_snaps_to_step() {
 }
 
 #[test]
+fn range_arrow_keys_step_value() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![
+          ("id", "r"),
+          ("type", "range"),
+          ("min", "0"),
+          ("max", "10"),
+          ("step", "2"),
+          ("value", "4"),
+        ],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let range_dom_id = node_id(&dom, "r");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(range_dom_id), true);
+
+  engine.key_action(&mut dom, KeyAction::ArrowUp);
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("6"));
+  assert!(
+    has_attr(&dom, "r", "data-fastr-user-validity"),
+    "arrow key range changes should mark user validity"
+  );
+
+  engine.key_action(&mut dom, KeyAction::ArrowDown);
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("4"));
+
+  // Clamp at min.
+  engine.key_action(&mut dom, KeyAction::ArrowDown);
+  engine.key_action(&mut dom, KeyAction::ArrowDown);
+  engine.key_action(&mut dom, KeyAction::ArrowDown);
+  assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("0"));
+}
+
+#[test]
 fn disabled_and_readonly_range_inputs_do_not_update_value() {
   let mut dom = doc(vec![el(
     "html",

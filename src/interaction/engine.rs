@@ -1625,7 +1625,22 @@ impl InteractionEngine {
         }
       }
       KeyAction::ArrowUp | KeyAction::ArrowDown => {
-        if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+        if index.node(focused).is_some_and(is_range_input) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
+          if let Some(node_mut) = index.node_mut(focused) {
+            let delta = match key {
+              KeyAction::ArrowUp => 1,
+              KeyAction::ArrowDown => -1,
+              _ => 0,
+            };
+            changed |= dom_mutation::step_range_value(node_mut, delta);
+          }
+        } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
           let rows = collect_select_rows(&index, focused);
           let mut options = Vec::new();
           for row in rows {
