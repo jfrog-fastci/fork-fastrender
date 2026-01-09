@@ -4043,6 +4043,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     artifact: CacheArtifactKind,
   ) -> Option<FetchedResource> {
     let request = FetchRequest::new(url, kind.into());
+    let default_credentials_mode = request.credentials_mode;
     let default_credentials_partition = super::CacheCredentialsPartition::for_request(&request);
     let snapshot = self
       .read_disk_artifact(
@@ -4064,6 +4065,8 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       referrer_policy: request.referrer_policy,
       credentials_mode: request.credentials_mode,
     };
+    let canonical_credentials_partition =
+      super::CacheCredentialsPartition::for_request(&canonical_request);
     let artifact_stored_at = snapshot
       .http_cache
       .as_ref()
@@ -4075,7 +4078,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
           canonical_request,
           artifact,
           None,
-          default_credentials_partition,
+          canonical_credentials_partition,
         )
       });
     let resource_stored_at = self.stored_at_for_cached_entry(
@@ -4083,14 +4086,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       &canonical,
       canonical_request,
       None,
-      default_credentials_partition,
+      canonical_credentials_partition,
     );
     if resource_stored_at.is_none()
       || artifact_stored_at.is_none()
       || resource_stored_at != artifact_stored_at
     {
       let base_key =
-        self.artifact_key_with_partition(kind, &canonical, artifact, None, default_credentials_partition);
+        self.artifact_key_with_partition(kind, &canonical, artifact, None, canonical_credentials_partition);
       self.remove_entry_family_files_best_effort(&base_key);
       return None;
     }
@@ -4133,6 +4136,8 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       referrer_policy: req.referrer_policy,
       credentials_mode: req.credentials_mode,
     };
+    let canonical_credentials_partition =
+      super::CacheCredentialsPartition::for_request(&canonical_request);
     let artifact_stored_at = snapshot
       .http_cache
       .as_ref()
@@ -4144,7 +4149,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
           canonical_request,
           artifact,
           origin_key.as_deref(),
-          credentials_partition,
+          canonical_credentials_partition,
         )
       });
     let resource_stored_at = self.stored_at_for_cached_entry(
@@ -4152,7 +4157,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       &canonical,
       canonical_request,
       origin_key.as_deref(),
-      credentials_partition,
+      canonical_credentials_partition,
     );
     if resource_stored_at.is_none()
       || artifact_stored_at.is_none()
@@ -4163,7 +4168,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
         &canonical,
         artifact,
         origin_key.as_deref(),
-        credentials_partition,
+        canonical_credentials_partition,
       );
       self.remove_entry_family_files_best_effort(&base_key);
       return None;

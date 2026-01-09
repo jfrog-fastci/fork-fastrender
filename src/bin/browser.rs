@@ -1327,52 +1327,6 @@ impl App {
           }
         }
       }
-      WindowEvent::MouseWheel { delta, .. } => {
-        let Some(pos_points) = self.last_cursor_pos_points else {
-          return;
-        };
-
-        if self.open_select_dropdown.is_some() {
-          if self
-            .open_select_dropdown_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-          {
-            return;
-          }
-          self.close_select_dropdown();
-          self.window.request_redraw();
-        }
-
-        let Some(rect) = self.page_rect_points else {
-          return;
-        };
-        let Some(_viewport_css) = self.page_viewport_css else {
-          return;
-        };
-        let Some(tab_id) = self.page_input_tab else {
-          return;
-        };
-        let Some(mapping) = self.page_input_mapping else {
-          return;
-        };
-        if !rect.contains(pos_points) {
-          return;
-        }
-
-        let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
-        let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
-          return;
-        };
-        let pointer_css = mapping.pos_points_to_pos_css_clamped(pos_points);
-
-        let _ = self
-          .ui_to_worker_tx
-          .send(fastrender::ui::UiToWorker::Scroll {
-            tab_id,
-            delta_css,
-            pointer_css,
-          });
-      }
       WindowEvent::KeyboardInput { input, .. } => {
         if input.state != ElementState::Pressed {
           return;
@@ -1615,10 +1569,18 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
-    let raw_input = {
+    let (raw_input, wheel_events) = {
       let mut raw = self.egui_state.take_egui_input(&self.window);
       raw.pixels_per_point = Some(self.pixels_per_point);
-      raw
+      let wheel_events = raw
+        .events
+        .iter()
+        .filter_map(|event| match event {
+          egui::Event::MouseWheel { unit, delta, .. } => Some((*unit, *delta)),
+          _ => None,
+        })
+        .collect::<Vec<_>>();
+      (raw, wheel_events)
     };
 
     self.egui_ctx.begin_frame(raw_input);
@@ -1649,17 +1611,61 @@ impl App {
         return;
       };
 
+      // Best-effort dropdown UX: when a native wheel scroll happens outside an open `<select>`
+      // dropdown, close it (matching typical browser behaviour).
+      let mut wheel_blocked_by_dropdown = false;
+      if !wheel_events.is_empty() && self.open_select_dropdown.is_some() {
+        if let Some(pos_points) = ctx.input(|i| i.pointer.hover_pos()) {
+          if self
+            .open_select_dropdown_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            wheel_blocked_by_dropdown = true;
+          } else {
+            self.close_select_dropdown();
+          }
+        }
+      }
+
+      let ui_to_worker_tx = self.ui_to_worker_tx.clone();
+
       if let Some(tex) = self.tab_textures.get(&active_tab) {
         let size_points = tex.size_points(self.pixels_per_point);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
         self.page_viewport_css = Some(viewport_css);
+        let mapping = fastrender::ui::InputMapping::new(response.rect, viewport_css);
         self.page_input_tab = Some(active_tab);
-        self.page_input_mapping =
-          Some(fastrender::ui::InputMapping::new(response.rect, viewport_css));
+        self.page_input_mapping = Some(mapping);
         if self.page_has_focus {
           response.request_focus();
+        }
+
+        if !wheel_events.is_empty() && !wheel_blocked_by_dropdown && response.hovered() {
+          let Some(hover_pos) = response.hover_pos() else {
+            return;
+          };
+
+          let mut delta_css = (0.0, 0.0);
+          for (unit, delta) in &wheel_events {
+            let Some((dx, dy)) =
+              mapping.wheel_delta_to_delta_css(fastrender::ui::WheelDelta::from_egui(*unit, *delta))
+            else {
+              continue;
+            };
+            delta_css.0 += dx;
+            delta_css.1 += dy;
+          }
+          if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
+            if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(hover_pos) {
+              let _ = ui_to_worker_tx.send(fastrender::ui::UiToWorker::Scroll {
+                tab_id: active_tab,
+                delta_css,
+                pointer_css: Some(pos_css),
+              });
+            }
+          }
         }
       } else {
         let loading = self

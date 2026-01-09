@@ -46,7 +46,6 @@ struct TabState {
 
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
-  wants_scroll_update: bool,
 }
 
 impl TabState {
@@ -64,7 +63,6 @@ impl TabState {
       last_base_url: None,
       pending_navigation: None,
       needs_repaint: false,
-      wants_scroll_update: false,
     }
   }
 }
@@ -349,7 +347,6 @@ impl BrowserRuntime {
             tab.scroll_state = next;
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
-            tab.wants_scroll_update = true;
           }
           return;
         };
@@ -415,7 +412,6 @@ impl BrowserRuntime {
         if changed {
           tab.cancel.bump_paint();
           tab.needs_repaint = true;
-          tab.wants_scroll_update = true;
         }
       }
       UiToWorker::PointerMove {
@@ -608,7 +604,6 @@ impl BrowserRuntime {
 
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
-            tab.wants_scroll_update = true;
             return;
           }
         }
@@ -1036,6 +1031,10 @@ impl BrowserRuntime {
             scroll_state: tab.scroll_state.clone(),
           },
         });
+        msgs.push(WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        });
 
         tab.loading = false;
         msgs.push(WorkerToUi::LoadingState {
@@ -1195,6 +1194,10 @@ impl BrowserRuntime {
             scroll_state: tab.scroll_state.clone(),
           },
         },
+        WorkerToUi::ScrollStateUpdated {
+          tab_id,
+          scroll: tab.scroll_state.clone(),
+        },
         WorkerToUi::LoadingState {
           tab_id,
           loading: false,
@@ -1214,8 +1217,6 @@ impl BrowserRuntime {
     let snapshot = tab.cancel.snapshot_paint();
     let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(cancel_callback));
-
-    let wants_scroll = std::mem::take(&mut tab.wants_scroll_update);
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
@@ -1254,9 +1255,6 @@ impl BrowserRuntime {
           scroll_state: tab.scroll_state.clone(),
         },
       });
-    }
-
-    if wants_scroll {
       msgs.push(WorkerToUi::ScrollStateUpdated {
         tab_id,
         scroll: tab.scroll_state.clone(),

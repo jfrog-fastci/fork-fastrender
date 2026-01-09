@@ -86,6 +86,8 @@ fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
 
 #[test]
 fn browser_document_rerenders_after_dom_mutation() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
   let html_a = r#"
     <html>
@@ -162,6 +164,8 @@ fn browser_document_rerenders_after_dom_mutation() -> Result<()> {
 
 #[test]
 fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -193,6 +197,8 @@ fn browser_document_render_frame_with_scroll_state_syncs_scroll_state() -> Resul
 
 #[test]
 fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_resolution() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
     <base href="https://cdn.example/">
     <link rel="stylesheet" href="style.css">
