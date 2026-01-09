@@ -42,6 +42,18 @@ impl<'a> OrdinaryGetWithHostExt for Scope<'a> {
     key: vm_js::PropertyKey,
     receiver: Value,
   ) -> std::result::Result<Value, VmError> {
+    // Root inputs across any allocation/GC triggered by accessor calls.
+    self.push_root(Value::Object(obj))?;
+    match key {
+      vm_js::PropertyKey::String(s) => {
+        self.push_root(Value::String(s))?;
+      }
+      vm_js::PropertyKey::Symbol(s) => {
+        self.push_root(Value::Symbol(s))?;
+      }
+    }
+    self.push_root(receiver)?;
+
     let Some(desc) = self.heap().get_property(obj, &key)? else {
       return Ok(Value::Undefined);
     };
@@ -55,6 +67,7 @@ impl<'a> OrdinaryGetWithHostExt for Scope<'a> {
           if !self.heap().is_callable(get)? {
             return Err(VmError::TypeError("accessor getter is not callable"));
           }
+          self.push_root(get)?;
           vm.call_with_host(self, hooks, get, receiver, &[])
         }
       }

@@ -46,6 +46,7 @@ mod fit_canvas_to_content;
 mod form_control_listbox_geometry_regression;
 mod form_control_placeholder_style_variant;
 mod form_control_text_align;
+mod form_control_rtl_affordances;
 mod form_control_overflow_clip_padding_box;
 mod form_invalid_placeholder_shown_fixture;
 mod progress_meter_paint;
