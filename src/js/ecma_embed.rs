@@ -1144,4 +1144,26 @@ mod tests {
     let value = realm.eval_script("ok.js", "1+2").unwrap();
     assert_eq!(value, ScriptValue::Number(3.0));
   }
+
+  #[test]
+  fn out_of_memory_is_reported_as_termination() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(32 * 1024, 16 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    let source = format!("\"{}\"", "a".repeat(100_000));
+    let err = realm.eval_script("oom.js", &source).unwrap_err();
+    assert!(matches!(
+      err,
+      ScriptError::Termination {
+        reason: ScriptTerminationReason::OutOfMemory,
+        ..
+      }
+    ));
+  }
 }
