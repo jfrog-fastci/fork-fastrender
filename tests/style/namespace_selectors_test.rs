@@ -166,3 +166,43 @@ fn explicit_any_namespace_universal_matches_any_namespace_under_default_namespac
   assert_eq!(display(svg_rect), "none");
   assert_eq!(svg_rect.styles.color, Rgba::rgb(1, 2, 3));
 }
+
+#[test]
+fn class_selectors_match_any_namespace_without_default_namespace() {
+  let html = r#"<div id="h" class="c"></div><svg><rect id="s" class="c"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    .c { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let html_div = find_by_id(&styled, "h").expect("html div");
+  let svg_rect = find_by_id(&styled, "s").expect("svg rect");
+  assert_eq!(display(html_div), "none");
+  assert_eq!(display(svg_rect), "none");
+}
+
+#[test]
+fn default_namespace_restricts_compound_selectors_without_type_selector() {
+  let html = r#"<div id="h" class="c"></div><svg><rect id="s" class="c"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace url("http://www.w3.org/2000/svg");
+    /* Baseline for HTML. */
+    *|div { color: rgb(9, 9, 9); }
+    /* `.c` should match only the default namespace (SVG). */
+    .c { color: rgb(1, 2, 3); }
+    /* Explicit any-namespace universal should still match both HTML and SVG. */
+    *|*.c { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let html_div = find_by_id(&styled, "h").expect("html div");
+  let svg_rect = find_by_id(&styled, "s").expect("svg rect");
+  assert_eq!(display(html_div), "none");
+  assert_eq!(display(svg_rect), "none");
+  assert_eq!(html_div.styles.color, Rgba::rgb(9, 9, 9));
+  assert_eq!(svg_rect.styles.color, Rgba::rgb(1, 2, 3));
+}
