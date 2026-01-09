@@ -359,7 +359,6 @@ fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlType> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::webidl::overload;
 
   fn test_world() -> ResolvedWebIdlWorld {
     let idl = r#"
@@ -461,17 +460,19 @@ mod tests {
 
     // Typedef expansion.
     let ty = parse_type_with_world_and_typedefs(&world, &ctx, "Bar", &[], true).unwrap();
-    let overload_ty = overload::IdlType::try_from(&ty).unwrap();
-    assert_eq!(overload_ty, overload::IdlType::String(overload::StringType::DOMString));
+    assert_eq!(ty, IdlType::String(webidl_ir::StringType::DomString));
 
     // Callback function + annotation.
     let cb_ty = parse_type_with_world(&world, "[LegacyTreatNonObjectAsNull] Cb", &[]).unwrap();
-    let overload_cb = overload::IdlType::try_from(&cb_ty).unwrap();
     assert_eq!(
-      overload_cb,
-      overload::IdlType::Annotated(Box::new(overload::IdlType::CallbackFunction {
-        legacy_treat_non_object_as_null: true
-      }))
+      cb_ty,
+      IdlType::Annotated {
+        annotations: vec![TypeAnnotation::LegacyTreatNonObjectAsNull],
+        inner: Box::new(IdlType::Named(NamedType {
+          name: "Cb".to_string(),
+          kind: NamedTypeKind::CallbackFunction,
+        })),
+      }
     );
   }
 }

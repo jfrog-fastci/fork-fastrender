@@ -58,11 +58,11 @@ impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     // `Heap::add_root`. FastRender has not yet plumbed the VM/heap into the HTML event-loop
     // microtask runner, so for now this is a hard failure to avoid silently leaking/storing invalid
     // root IDs.
-    panic!("VmJsJobContext::add_root is unimplemented (no Heap available)")
+    panic!("VmJsJobContext::add_root is unimplemented (no Heap available)"); // fastrender-allow-panic
   }
 
   fn remove_root(&mut self, _id: vm_js::RootId) {
-    panic!("VmJsJobContext::remove_root is unimplemented (no Heap available)")
+    panic!("VmJsJobContext::remove_root is unimplemented (no Heap available)"); // fastrender-allow-panic
   }
 }
 
