@@ -200,6 +200,68 @@ fn build_block_stack(children: usize) -> BoxTree {
   BoxTree::new(root)
 }
 
+fn find_box_id_by_position(node: &BoxNode, position: Position) -> Option<usize> {
+  if node.style.position == position {
+    return Some(node.id);
+  }
+  for child in &node.children {
+    if let Some(found) = find_box_id_by_position(child, position) {
+      return Some(found);
+    }
+  }
+  if let Some(body) = node.footnote_body.as_deref() {
+    if let Some(found) = find_box_id_by_position(body, position) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn build_block_stack_with_viewport_fixed() -> (BoxTree, usize) {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut spacer_style = ComputedStyle::default();
+  spacer_style.display = Display::Block;
+  spacer_style.height = Some(Length::px(64.0));
+  let spacer_style = Arc::new(spacer_style);
+
+  let spacer = |label: &str, style: &Arc<ComputedStyle>| {
+    let text = BoxNode::new_text(style.clone(), label.to_string());
+    BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![text])
+  };
+
+  let mut fixed_style = ComputedStyle::default();
+  fixed_style.display = Display::Block;
+  fixed_style.position = Position::Fixed;
+  fixed_style.top = InsetValue::Length(Length::px(5.0));
+  fixed_style.left = InsetValue::Length(Length::px(10.0));
+  fixed_style.width = Some(Length::px(25.0));
+  fixed_style.height = Some(Length::px(15.0));
+  let fixed_style = Arc::new(fixed_style);
+  let fixed = BoxNode::new_block(fixed_style, FormattingContextType::Block, vec![]);
+
+  let mut host_style = ComputedStyle::default();
+  host_style.display = Display::Block;
+  let host_style = Arc::new(host_style);
+  let host_text = BoxNode::new_text(host_style.clone(), "host".to_string());
+  let host = BoxNode::new_block(
+    host_style,
+    FormattingContextType::Block,
+    vec![host_text, fixed],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![spacer("spacer-0", &spacer_style), spacer("spacer-1", &spacer_style), host],
+  );
+  let tree = BoxTree::new(root);
+  let fixed_id =
+    find_box_id_by_position(&tree.root, Position::Fixed).expect("fixed box id should be assigned");
+  (tree, fixed_id)
+}
+
 fn build_flex_container(children: usize) -> BoxNode {
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
@@ -353,6 +415,43 @@ fn diff_trees(a: &FragmentTreeSnapshot, b: &FragmentTreeSnapshot) -> Option<Stri
   None
 }
 
+fn find_fragment_by_box_id<'a>(
+  node: &'a FragmentNodeSnapshot,
+  box_id: usize,
+) -> Option<&'a FragmentNodeSnapshot> {
+  use fastrender::debug::snapshot::FragmentContentSnapshot;
+  let matches = match &node.content {
+    FragmentContentSnapshot::Block { box_id: Some(id) }
+    | FragmentContentSnapshot::Inline {
+      box_id: Some(id), ..
+    }
+    | FragmentContentSnapshot::Text { box_id: Some(id), .. }
+    | FragmentContentSnapshot::Replaced { box_id: Some(id), .. } => *id == box_id,
+    _ => false,
+  };
+  if matches {
+    return Some(node);
+  }
+  for child in &node.children {
+    if let Some(found) = find_fragment_by_box_id(child, box_id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_tree_fragment_by_box_id<'a>(
+  tree: &'a FragmentTreeSnapshot,
+  box_id: usize,
+) -> Option<&'a FragmentNodeSnapshot> {
+  for root in &tree.roots {
+    if let Some(found) = find_fragment_by_box_id(root, box_id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
 #[test]
 fn parallel_layout_matches_serial_fragments() {
   let _guard = super::layout_parallel_debug_lock();
@@ -471,6 +570,49 @@ fn parallel_snapshots_match_serial_snapshots() {
     }
     panic!("snapshot mismatch: {diff}");
   }
+}
+
+#[test]
+fn parallel_block_children_preserve_viewport_fixed_fragments() {
+  let _guard = super::layout_parallel_debug_lock();
+  let (box_tree, fixed_box_id) = build_block_stack_with_viewport_fixed();
+  let viewport = Size::new(800.0, 600.0);
+
+  let serial_engine =
+    LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
+  let parallel_engine = LayoutEngine::with_font_context(
+    LayoutConfig::for_viewport(viewport).with_parallelism(
+      LayoutParallelism::enabled(2).with_max_threads(Some(available_threads())),
+    ),
+    FontContext::new(),
+  );
+
+  let serial_snapshot =
+    snapshot_fragment_tree(&serial_engine.layout_tree(&box_tree).expect("serial layout"));
+  let parallel_snapshot =
+    snapshot_fragment_tree(&parallel_engine.layout_tree(&box_tree).expect("parallel layout"));
+
+  if let Some(diff) = diff_trees(&serial_snapshot, &parallel_snapshot) {
+    panic!("serial vs parallel diff: {diff}");
+  }
+
+  let serial_fixed = find_tree_fragment_by_box_id(&serial_snapshot, fixed_box_id)
+    .expect("serial snapshot missing fixed fragment");
+  let parallel_fixed = find_tree_fragment_by_box_id(&parallel_snapshot, fixed_box_id)
+    .expect("parallel snapshot missing fixed fragment");
+
+  assert_eq!(
+    serial_fixed.style.as_ref().map(|s| s.position.as_str()),
+    Some("fixed")
+  );
+  assert_eq!(
+    parallel_fixed.style.as_ref().map(|s| s.position.as_str()),
+    Some("fixed")
+  );
+  assert!(approx(serial_fixed.bounds.x, 10.0));
+  assert!(approx(serial_fixed.bounds.y, 5.0));
+  assert!(approx(parallel_fixed.bounds.x, 10.0));
+  assert!(approx(parallel_fixed.bounds.y, 5.0));
 }
 
 #[test]

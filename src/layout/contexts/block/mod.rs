@@ -2511,9 +2511,13 @@ impl BlockFormattingContext {
   /// expressed in the parent's local coordinate space.
   ///
   /// Out-of-flow positioned descendants (e.g. `position:absolute` whose containing block is an
-  /// ancestor of this child, or `position:fixed` relative to the viewport) *must not* inherit this
-  /// translation: their bounds are resolved against an external containing block, so moving the
-  /// subtree root would incorrectly offset them.
+  /// ancestor of this child, or `position:fixed` relative to a non-viewport fixed containing block)
+  /// *must not* inherit this translation: their bounds are resolved against an external containing
+  /// block, so moving the subtree root would incorrectly offset them.
+  ///
+  /// Viewport-fixed fragments are stored in absolute viewport coordinates, so they already ignore
+  /// the fragment-root translation; cancellation is only needed when fixed positioning resolves
+  /// against an external (non-viewport) fixed containing block.
   ///
   /// Serial block layout avoids this by translating viewport-relative state into the child's
   /// coordinate space before running layout (see `FormattingContextFactory::translated_for_child`).
@@ -2522,6 +2526,7 @@ impl BlockFormattingContext {
   fn cancel_translation_for_out_of_flow_positioned_descendants(
     fragment: &mut FragmentNode,
     delta: Point,
+    external_fixed_cb: bool,
   ) {
     if delta.x == 0.0 && delta.y == 0.0 {
       return;
@@ -2532,6 +2537,7 @@ impl BlockFormattingContext {
       cancel: Point,
       has_abs_cb: bool,
       has_fixed_cb: bool,
+      external_fixed_cb: bool,
     ) {
       let (has_abs_cb_here, has_fixed_cb_here) = node
         .style
@@ -2552,7 +2558,8 @@ impl BlockFormattingContext {
           .style
           .as_deref()
           .is_some_and(|style| matches!(style.position, Position::Fixed));
-        let needs_cancel = (is_abs && !has_abs_cb_here) || (is_fixed && !has_fixed_cb_here);
+        let needs_cancel = (is_abs && !has_abs_cb_here)
+          || (is_fixed && external_fixed_cb && !has_fixed_cb_here);
         if needs_cancel {
           child.bounds = child.bounds.translate(cancel);
           child.logical_override = child.logical_override.map(|logical| logical.translate(cancel));
@@ -2560,7 +2567,13 @@ impl BlockFormattingContext {
           // so avoid double-applying it to descendants.
           continue;
         }
-        walk(child, cancel, has_abs_cb_here, has_fixed_cb_here);
+        walk(
+          child,
+          cancel,
+          has_abs_cb_here,
+          has_fixed_cb_here,
+          external_fixed_cb,
+        );
       }
     }
     let has_abs_cb_root = fragment
@@ -2571,7 +2584,13 @@ impl BlockFormattingContext {
       .style
       .as_deref()
       .is_some_and(|style| style.establishes_fixed_containing_block());
-    walk(fragment, cancel, has_abs_cb_root, has_fixed_cb_root);
+    walk(
+      fragment,
+      cancel,
+      has_abs_cb_root,
+      has_fixed_cb_root,
+      external_fixed_cb,
+    );
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -2694,7 +2713,13 @@ impl BlockFormattingContext {
       let delta = box_y - fragment.bounds.y();
       let delta = Point::new(0.0, delta);
       Self::translate_fragment_tree(&mut fragment, delta);
-      Self::cancel_translation_for_out_of_flow_positioned_descendants(&mut fragment, delta);
+      let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size);
+      let external_fixed_cb = *nearest_fixed_cb != viewport_fixed_cb;
+      Self::cancel_translation_for_out_of_flow_positioned_descendants(
+        &mut fragment,
+        delta,
+        external_fixed_cb,
+      );
 
       let block_extent = fragment.bounds.height();
       let next_y = box_y + block_extent;
