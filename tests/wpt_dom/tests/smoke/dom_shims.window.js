@@ -7,9 +7,20 @@ test(() => {
   assert_true(el instanceof Element, "createElement should return an Element");
   assert_true(el instanceof Node, "Element should inherit from Node");
 
+  el.id = "root";
+  el.className = "a b";
+  assert_equals(el.getAttribute("id"), "root");
+  assert_equals(el.getAttribute("class"), "a b");
+
   el.innerHTML = '<span id="x" class="y">hi</span>';
   assert_equals(el.innerHTML, '<span id="x" class="y">hi</span>');
-  assert_equals(el.outerHTML, '<div><span id="x" class="y">hi</span></div>');
+  assert_equals(
+    el.outerHTML,
+    '<div id="root" class="a b"><span id="x" class="y">hi</span></div>'
+  );
+
+  el.removeAttribute("id");
+  assert_equals(el.id, "");
 }, "createElement + Element.innerHTML/outerHTML");
 
 test(() => {

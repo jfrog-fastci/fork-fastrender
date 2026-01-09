@@ -100,6 +100,41 @@ const DOM_SHIM: &str = r#"
     configurable: true,
   });
 
+  Element.prototype.getAttribute = function (name) {
+    var v = g.__fastrender_dom_get_attribute(nodeIdFromThis(this), String(name));
+    return v === undefined ? null : v;
+  };
+
+  Element.prototype.setAttribute = function (name, value) {
+    g.__fastrender_dom_set_attribute(nodeIdFromThis(this), String(name), String(value));
+  };
+
+  Element.prototype.removeAttribute = function (name) {
+    g.__fastrender_dom_remove_attribute(nodeIdFromThis(this), String(name));
+  };
+
+  Object.defineProperty(Element.prototype, "id", {
+    get: function () {
+      var v = this.getAttribute("id");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      this.setAttribute("id", value);
+    },
+    configurable: true,
+  });
+
+  Object.defineProperty(Element.prototype, "className", {
+    get: function () {
+      var v = this.getAttribute("class");
+      return v === null ? "" : v;
+    },
+    set: function (value) {
+      this.setAttribute("class", value);
+    },
+    configurable: true,
+  });
+
   Object.defineProperty(Element.prototype, "outerHTML", {
     get: function () {
       return g.__fastrender_dom_get_outer_html(nodeIdFromThis(this));
@@ -267,6 +302,10 @@ struct Dom {
 }
 
 impl Dom {
+  fn normalize_attr_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+  }
+
   fn new() -> Self {
     let mut dom = Self {
       nodes: Vec::new(),
@@ -504,6 +543,48 @@ impl Dom {
       self.node_checked_mut(node_id)?.parent = Some(parent);
     }
 
+    Ok(())
+  }
+
+  fn get_attribute(&self, element: NodeId, name: &str) -> Result<Option<String>, DomShimError> {
+    let name = Self::normalize_attr_name(name);
+    let node = self.node_checked(element)?;
+    let NodeKind::Element { attributes, .. } = &node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+    Ok(
+      attributes
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(&name))
+        .map(|(_, v)| v.clone()),
+    )
+  }
+
+  fn set_attribute(&mut self, element: NodeId, name: &str, value: &str) -> Result<(), DomShimError> {
+    let name = Self::normalize_attr_name(name);
+    let node = self.node_checked_mut(element)?;
+    let NodeKind::Element { attributes, .. } = &mut node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+
+    if let Some((_n, v)) = attributes.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+      v.clear();
+      v.push_str(value);
+    } else {
+      attributes.push((name, value.to_string()));
+    }
+    Ok(())
+  }
+
+  fn remove_attribute(&mut self, element: NodeId, name: &str) -> Result<(), DomShimError> {
+    let name = Self::normalize_attr_name(name);
+    let node = self.node_checked_mut(element)?;
+    let NodeKind::Element { attributes, .. } = &mut node.kind else {
+      return Err(DomShimError::InvalidNodeType);
+    };
+    if let Some(idx) = attributes.iter().position(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+      attributes.remove(idx);
+    }
     Ok(())
   }
 
@@ -780,6 +861,47 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let get_attribute = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32, name: String| -> JsResult<Option<String>> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_attribute(NodeId(node_id as usize), &name)
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let set_attribute = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32, name: String, value: String| -> JsResult<()> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow_mut()
+        .set_attribute(NodeId(node_id as usize), &name, &value)
+        .map_err(dom_error_to_js_error)?;
+      Ok(())
+    }
+  })?;
+
+  let remove_attribute = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32, name: String| -> JsResult<()> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow_mut()
+        .remove_attribute(NodeId(node_id as usize), &name)
+        .map_err(dom_error_to_js_error)?;
+      Ok(())
+    }
+  })?;
+
   let set_inner_html = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32, html: String| -> JsResult<()> {
@@ -856,6 +978,9 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   )?;
   globals.set("__fastrender_dom_get_inner_html", get_inner_html)?;
   globals.set("__fastrender_dom_set_inner_html", set_inner_html)?;
+  globals.set("__fastrender_dom_get_attribute", get_attribute)?;
+  globals.set("__fastrender_dom_set_attribute", set_attribute)?;
+  globals.set("__fastrender_dom_remove_attribute", remove_attribute)?;
   globals.set("__fastrender_dom_get_outer_html", get_outer_html)?;
   globals.set("__fastrender_dom_set_outer_html", set_outer_html)?;
   globals.set("__fastrender_dom_append_child", append_child)?;
