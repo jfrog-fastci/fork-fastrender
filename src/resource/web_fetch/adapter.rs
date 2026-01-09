@@ -6,7 +6,7 @@ use crate::resource::{
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
-use http::header::HeaderName;
+use http::{header::HeaderName, Method};
 use std::collections::HashSet;
 use url::Url;
 
@@ -162,10 +162,47 @@ pub fn execute_web_fetch<'a>(
   request: &'a Request,
   ctx: WebFetchExecutionContext<'a>,
 ) -> Result<Response> {
-  let method = request.method.as_str();
-  let method_is_get = method.eq_ignore_ascii_case("GET");
-  let method_is_head = method.eq_ignore_ascii_case("HEAD");
-  let method_is_post = method.eq_ignore_ascii_case("POST");
+  let raw_method = request.method.as_str();
+  if Method::from_bytes(raw_method.as_bytes()).is_err() {
+    return Err(Error::Other(format!(
+      "web fetch request method is not a valid HTTP method token (got {:?})",
+      request.method
+    )));
+  }
+
+  // Fetch rejects forbidden methods (CONNECT/TRACE/TRACK).
+  // https://fetch.spec.whatwg.org/#forbidden-method
+  if raw_method.eq_ignore_ascii_case("CONNECT")
+    || raw_method.eq_ignore_ascii_case("TRACE")
+    || raw_method.eq_ignore_ascii_case("TRACK")
+  {
+    return Err(Error::Other(format!(
+      "web fetch request method is forbidden (got {:?})",
+      request.method
+    )));
+  }
+
+  // Fetch normalizes a subset of method names to uppercase.
+  // https://fetch.spec.whatwg.org/#concept-method-normalize
+  let method = if raw_method.eq_ignore_ascii_case("DELETE") {
+    "DELETE"
+  } else if raw_method.eq_ignore_ascii_case("GET") {
+    "GET"
+  } else if raw_method.eq_ignore_ascii_case("HEAD") {
+    "HEAD"
+  } else if raw_method.eq_ignore_ascii_case("OPTIONS") {
+    "OPTIONS"
+  } else if raw_method.eq_ignore_ascii_case("POST") {
+    "POST"
+  } else if raw_method.eq_ignore_ascii_case("PUT") {
+    "PUT"
+  } else {
+    raw_method
+  };
+
+  let method_is_get = method == "GET";
+  let method_is_head = method == "HEAD";
+  let method_is_post = method == "POST";
 
   // Fetch rejects `no-cors` requests whose redirect mode is not `follow`.
   // https://fetch.spec.whatwg.org/#scheme-fetch
@@ -949,6 +986,49 @@ mod tests {
       .expect_err("expected error");
     assert!(matches!(err, Error::Resource(_)));
     assert!(err.to_string().contains("does not support arbitrary HTTP requests"));
+  }
+
+  #[test]
+  fn forbidden_method_errors_before_fetching() {
+    let fetcher = PanicFetcher;
+    let request = Request::new("TRACE", "https://example.com/a");
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("forbidden"));
+  }
+
+  #[test]
+  fn invalid_method_token_errors_before_fetching() {
+    let fetcher = PanicFetcher;
+    let request = Request::new("GET /", "https://example.com/a");
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("method token"));
+  }
+
+  #[test]
+  fn standard_methods_are_normalized_to_uppercase() {
+    struct AssertingFetcher;
+
+    impl ResourceFetcher for AssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.method, "GET");
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+    }
+
+    let fetcher = AssertingFetcher;
+    let mut request = Request::new("get", "https://example.com/a");
+    // Avoid the cacheable GET fast path (which calls `fetch_with_request`).
+    request.headers.append("X-Test", "a").unwrap();
+    execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
   }
 
   #[test]
