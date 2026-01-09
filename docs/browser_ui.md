@@ -60,9 +60,10 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
-  - Spawns the main message-driven UI worker thread via
-    [`spawn_ui_worker`](../src/ui/worker.rs) (large stack), which handles navigation/history,
-    scrolling, and DOM interaction and produces `WorkerToUi` updates.
+  - Spawns the production browser UI worker thread via
+    [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs) (large stack; wrapper around
+    `spawn_browser_worker`), which handles navigation/history, scrolling, and DOM interaction and
+    produces `WorkerToUi` updates.
   - Renders a small egui popup for `<select>` dropdowns driven by `WorkerToUi::OpenSelectDropdown`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
@@ -70,19 +71,21 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   [`src/ui/`](../src/ui/)
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
   - Chrome action types + a reusable egui chrome UI helper: [`src/ui/chrome.rs`](../src/ui/chrome.rs)
-  - The windowed `browser` app currently renders its chrome widgets inline in
+    - The windowed `browser` app currently renders its chrome widgets inline in
       [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
       `ChromeAction` type.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the windowed UI worker ([`src/ui/worker.rs`](../src/ui/worker.rs)), the headless worker
-      loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the synchronous
-      `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
+    - Used by the browser worker thread ([`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)),
+      the headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the
+      synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Message-driven UI worker loop used by the windowed app (and some integration tests):
-    [`src/ui/worker.rs`](../src/ui/worker.rs)
+  - Browser worker thread (navigation/history + interaction + cancellation): [`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)
+    - `spawn_browser_worker` is the main worker used by the windowed `browser` app (via
+      `spawn_browser_ui_worker`).
+  - Message-driven UI worker loop used by some integration tests: [`src/ui/worker.rs`](../src/ui/worker.rs)
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
       `tests/browser_integration/ui_worker_navigation_messages.rs`, etc.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
@@ -128,8 +131,10 @@ The browser UI should run rendering on a dedicated large-stack thread:
 
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
-- The windowed `browser` app spawns its worker via [`spawn_ui_worker`](../src/ui/worker.rs), which
-  uses `std::thread::Builder` and configures the stack size.
+- The windowed `browser` app spawns its worker via
+  [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs), which ultimately uses
+  `std::thread::Builder`/`DEFAULT_RENDER_STACK_SIZE` (via `spawn_render_worker_thread`) to configure
+  the stack size.
 - Headless UI worker loops used by integration tests also use dedicated large-stack threads (see
   [`spawn_render_worker_thread`](../src/ui/worker.rs) and the `DEFAULT_RENDER_STACK_SIZE` usage in
   [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)).
