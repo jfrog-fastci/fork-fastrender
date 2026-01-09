@@ -283,15 +283,15 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
       html, body { margin: 0; padding: 0; }
       #sel { position: absolute; left: 0; top: 0; width: 120px; height: 24px; }
       #box { position: absolute; left: 0; top: 40px; width: 64px; height: 64px; background: rgb(255,0,0); }
-      select:has(option[selected][value=\"b\"]) + #box { background: rgb(0,255,0); }
+      select:has(option[selected][value="b"]) + #box { background: rgb(0,255,0); }
     </style>
   </head>
   <body>
-    <select id=\"sel\">
-      <option value=\"a\" selected>Red</option>
-      <option value=\"b\">Green</option>
+    <select id="sel">
+      <option value="a" selected>Red</option>
+      <option value="b">Green</option>
     </select>
-    <div id=\"box\"></div>
+    <div id="box"></div>
   </body>
 </html>
 "#,
