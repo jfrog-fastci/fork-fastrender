@@ -10694,6 +10694,37 @@ mod tests {
   }
 
   #[test]
+  fn inline_svg_external_fe_image_href_is_inlined() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><defs><filter id="f"><feImage href="/img.png" x="0" y="0" width="1" height="1"/></filter></defs><rect width="1" height="1" filter="url(#f)"/></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let inlined = inline_svg_image_references(svg, main_url, &fetcher, None).expect("inlined svg");
+    assert!(
+      inlined.as_ref().contains("data:image/png;base64,"),
+      "expected data URL rewrite, got: {}",
+      inlined.as_ref()
+    );
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
+      "expected fetch for feImage href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
   fn svg_policy_blocks_external_image_during_render() {
     let doc_url = "https://doc.test/";
     let blocked_url = "https://cross.test/a.png";
