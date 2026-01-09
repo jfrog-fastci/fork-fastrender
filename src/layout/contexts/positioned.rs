@@ -429,11 +429,11 @@ impl PositionedLayout {
         // Use nearest block container ancestor, or viewport if none
         block_ancestor_rect
           .map(|rect| {
-            let block_base = if rect.size.height > 0.0 {
-              Some(rect.size.height)
-            } else {
-              None
-            };
+            // A 0px block size is still a *definite* size (percentages resolve to 0), so only treat
+            // the base as indefinite when it is non-finite. Callers that need to model an
+            // "auto/indefinite" containing block should use `ContainingBlock::with_viewport_and_bases`
+            // with an explicit `None` base instead of encoding it as `0`.
+            let block_base = rect.size.height.is_finite().then_some(rect.size.height);
             ContainingBlock::with_viewport_and_bases(
               rect,
               viewport_size,
@@ -447,11 +447,11 @@ impl PositionedLayout {
         // Use nearest positioned ancestor, or viewport if none (initial containing block)
         positioned_ancestor_rect
           .map(|rect| {
-            let block_base = if rect.size.height > 0.0 {
-              Some(rect.size.height)
-            } else {
-              None
-            };
+            // A 0px block size is still a *definite* size (percentages resolve to 0), so only treat
+            // the base as indefinite when it is non-finite. Callers that need to model an
+            // "auto/indefinite" containing block should use `ContainingBlock::with_viewport_and_bases`
+            // with an explicit `None` base instead of encoding it as `0`.
+            let block_base = rect.size.height.is_finite().then_some(rect.size.height);
             ContainingBlock::with_viewport_and_bases(
               rect,
               viewport_size,

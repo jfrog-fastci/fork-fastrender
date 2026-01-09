@@ -2,6 +2,7 @@
 
 mod absolute_position_body;
 mod abspos_intrinsic_sizing_keywords;
+mod abspos_percent_bases;
 mod abspos_static_position;
 mod abspos_static_position_subgrid;
 mod anchor_positioning;

@@ -3015,9 +3015,46 @@ impl BlockFormattingContext {
                                content_height: &mut f32,
                                margin_ctx: &mut MarginCollapseContext,
                                float_ctx_ref: &mut FloatContext,
-                               deadline_counter: &mut usize|
+                               deadline_counter: &mut usize,
+                               positioned_children: &mut Vec<PositionedCandidate>|
      -> Result<(), LayoutError> {
       if buffer.is_empty() {
+        return Ok(());
+      }
+
+      // A run of inline-level siblings can contain only out-of-flow positioned boxes (e.g.
+      // `<div><span style="position:absolute"></span></div>`). These must not generate line boxes
+      // or consume pending collapsible margins, but still need a float-aware static position.
+      if buffer.iter().all(is_out_of_flow) {
+        let pending_margin = margin_ctx.pending_collapsible_margin().resolve();
+        let static_y = *current_y + pending_margin;
+        let (left_offset, _) = float_ctx_ref.available_width_at_y(float_base_y + static_y);
+        for child in buffer.drain(..) {
+          let static_position = Some(Point::new(left_offset, static_y));
+          let source = match child.style.position {
+            Position::Fixed => {
+              if establishes_fixed_cb {
+                ContainingBlockSource::ParentPadding
+              } else {
+                ContainingBlockSource::Explicit(*nearest_fixed_cb)
+              }
+            }
+            Position::Absolute => {
+              if establishes_absolute_cb {
+                ContainingBlockSource::ParentPadding
+              } else {
+                ContainingBlockSource::Explicit(*nearest_positioned_cb)
+              }
+            }
+            _ => ContainingBlockSource::Explicit(*nearest_positioned_cb),
+          };
+          positioned_children.push(PositionedCandidate {
+            node: child,
+            source,
+            static_position,
+            query_parent_id: parent.id,
+          });
+        }
         return Ok(());
       }
 
@@ -3489,6 +3526,15 @@ impl BlockFormattingContext {
 
       // Skip out-of-flow positioned boxes (absolute/fixed)
       if is_out_of_flow(child) {
+        // Inline-level positioned children still participate in the inline stream for the purposes
+        // of static-position computation (e.g. they should start after floats and preceding text).
+        //
+        // Defer these to the inline formatting context, which will insert a zero-sized
+        // `StaticPositionAnchor` at the correct inline cursor.
+        if child.style.display.is_inline_level() {
+          inline_buffer.push(child.clone());
+          continue;
+        }
         if trace_positioned.contains(&child.id) {
           eprintln!(
             "[block-positioned] parent_id={} child_id={} selector={} pos={:?}",
@@ -3565,6 +3611,7 @@ impl BlockFormattingContext {
           &mut margin_ctx,
           float_ctx,
           &mut deadline_counter,
+          &mut positioned_children,
         )?;
 
         // Floats are out-of-flow: their own margins never collapse, but they also must not break
@@ -3890,6 +3937,7 @@ impl BlockFormattingContext {
           &mut margin_ctx,
           float_ctx,
           &mut deadline_counter,
+          &mut positioned_children,
         )?;
 
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
@@ -3974,6 +4022,7 @@ impl BlockFormattingContext {
             &mut margin_ctx,
             float_ctx,
             &mut deadline_counter,
+            &mut positioned_children,
           )?;
            let (fragment, next_y) =
              layout_in_flow_block_child(child, &mut margin_ctx, current_y, float_ctx)?;
@@ -4005,6 +4054,7 @@ impl BlockFormattingContext {
       &mut margin_ctx,
       float_ctx,
       &mut deadline_counter,
+      &mut positioned_children,
     )?;
 
     // Resolve any trailing margins
