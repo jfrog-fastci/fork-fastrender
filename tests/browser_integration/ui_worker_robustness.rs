@@ -1,0 +1,194 @@
+#![cfg(feature = "browser_ui")]
+
+use fastrender::ui::messages::{
+  KeyAction, NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
+use fastrender::ui::worker_loop::spawn_ui_worker;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, Instant};
+
+const NO_FRAME_TIMEOUT: Duration = Duration::from_millis(200);
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn send_noise_messages(tx: &Sender<UiToWorker>, tab_id: TabId) {
+  tx.send(UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css: (64, 64),
+    dpr: 1.0,
+  })
+  .expect("send ViewportChanged");
+  tx.send(UiToWorker::Scroll {
+    tab_id,
+    delta_css: (0.0, 10.0),
+    pointer_css: Some((5.0, 6.0)),
+  })
+  .expect("send Scroll");
+  tx.send(UiToWorker::PointerMove {
+    tab_id,
+    pos_css: (5.0, 6.0),
+    button: PointerButton::Primary,
+  })
+  .expect("send PointerMove");
+  tx.send(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: (5.0, 6.0),
+    button: PointerButton::Primary,
+  })
+  .expect("send PointerDown");
+  tx.send(UiToWorker::PointerUp {
+    tab_id,
+    pos_css: (5.0, 6.0),
+    button: PointerButton::Primary,
+  })
+  .expect("send PointerUp");
+  tx.send(UiToWorker::TextInput {
+    tab_id,
+    text: "hello".to_string(),
+  })
+  .expect("send TextInput");
+  tx.send(UiToWorker::KeyAction {
+    tab_id,
+    key: KeyAction::Enter,
+  })
+  .expect("send KeyAction");
+  tx.send(UiToWorker::RequestRepaint {
+    tab_id,
+    reason: RepaintReason::Explicit,
+  })
+  .expect("send RequestRepaint");
+}
+
+fn assert_no_frame_ready_for(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let now = Instant::now();
+    if now >= deadline {
+      return;
+    }
+    let remaining = deadline - now;
+    match rx.recv_timeout(remaining) {
+      Ok(msg) => {
+        if let WorkerToUi::FrameReady { tab_id: msg_tab, .. } = msg {
+          assert_ne!(
+            msg_tab, tab_id,
+            "unexpected FrameReady for tab_id={tab_id:?}"
+          );
+        }
+        // Accept (but do not require) DebugLog messages for ignored tab events.
+      }
+      Err(RecvTimeoutError::Timeout) => return,
+      Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected unexpectedly"),
+    }
+  }
+}
+
+fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let now = Instant::now();
+    if now >= deadline {
+      panic!("timed out waiting for FrameReady for tab_id={tab_id:?}");
+    }
+    let remaining = deadline - now;
+    match rx.recv_timeout(remaining) {
+      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, .. }) if msg_tab == tab_id => return,
+      Ok(_) => {}
+      Err(RecvTimeoutError::Timeout) => {}
+      Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected unexpectedly"),
+    }
+  }
+}
+
+#[test]
+fn messages_for_unknown_tab_are_ignored_without_panic() {
+  let _lock = super::stage_listener_test_lock();
+  let handle = spawn_ui_worker("fastr-ui-worker-robustness-unknown").expect("spawn ui worker");
+  let (tx, rx, join) = handle.split();
+
+  let unknown_tab = TabId(9999);
+  send_noise_messages(&tx, unknown_tab);
+  assert_no_frame_ready_for(&rx, unknown_tab, NO_FRAME_TIMEOUT);
+
+  // Ensure the worker thread is still alive by creating a real tab and navigating it.
+  let tab1 = TabId(1);
+  tx.send(UiToWorker::CreateTab {
+    tab_id: tab1,
+    initial_url: None,
+    cancel: Default::default(),
+  })
+  .expect("send CreateTab");
+  tx.send(UiToWorker::ViewportChanged {
+    tab_id: tab1,
+    viewport_css: (200, 120),
+    dpr: 1.0,
+  })
+  .expect("send ViewportChanged(tab1)");
+  tx.send(UiToWorker::Navigate {
+    tab_id: tab1,
+    url: "about:newtab".to_string(),
+    reason: NavigationReason::TypedUrl,
+  })
+  .expect("send Navigate");
+  wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
+
+  drop(tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn messages_after_close_tab_are_noops() {
+  let _lock = super::stage_listener_test_lock();
+  let handle = spawn_ui_worker("fastr-ui-worker-robustness-close").expect("spawn ui worker");
+  let (tx, rx, join) = handle.split();
+
+  let tab1 = TabId(1);
+  tx.send(UiToWorker::CreateTab {
+    tab_id: tab1,
+    initial_url: None,
+    cancel: Default::default(),
+  })
+  .expect("send CreateTab(tab1)");
+  tx.send(UiToWorker::ViewportChanged {
+    tab_id: tab1,
+    viewport_css: (200, 120),
+    dpr: 1.0,
+  })
+  .expect("send ViewportChanged(tab1)");
+  tx.send(UiToWorker::Navigate {
+    tab_id: tab1,
+    url: "about:newtab".to_string(),
+    reason: NavigationReason::TypedUrl,
+  })
+  .expect("send Navigate(tab1)");
+  wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
+
+  tx.send(UiToWorker::CloseTab { tab_id: tab1 })
+    .expect("send CloseTab(tab1)");
+  send_noise_messages(&tx, tab1);
+  assert_no_frame_ready_for(&rx, tab1, NO_FRAME_TIMEOUT);
+
+  // Ensure the worker thread is still alive by creating a second tab.
+  let tab2 = TabId(2);
+  tx.send(UiToWorker::CreateTab {
+    tab_id: tab2,
+    initial_url: None,
+    cancel: Default::default(),
+  })
+  .expect("send CreateTab(tab2)");
+  tx.send(UiToWorker::ViewportChanged {
+    tab_id: tab2,
+    viewport_css: (200, 120),
+    dpr: 1.0,
+  })
+  .expect("send ViewportChanged(tab2)");
+  tx.send(UiToWorker::Navigate {
+    tab_id: tab2,
+    url: "about:newtab".to_string(),
+    reason: NavigationReason::TypedUrl,
+  })
+  .expect("send Navigate(tab2)");
+  wait_for_frame_ready(&rx, tab2, FRAME_TIMEOUT);
+
+  drop(tx);
+  join.join().expect("join ui worker");
+}
