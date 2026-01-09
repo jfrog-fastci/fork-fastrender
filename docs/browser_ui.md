@@ -158,8 +158,8 @@ The typical pattern is:
      and does not carry cancellation fields)
 4. When results arrive, drop them if the snapshot no longer matches the current generations.
 
-This prevents “old” frames from showing up after the user has moved on, and saves CPU by stopping
-stale work early.
+When wired in, this prevents “old” frames from showing up after the user has moved on, and saves
+CPU by stopping stale work early.
 
 ## Known limitations (as of now)
 
