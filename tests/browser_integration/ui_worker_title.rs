@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, navigate_msg};
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use url::Url;
 
 // Worker startup + the first navigation can take a few seconds under load when integration tests
 // run in parallel on CI.
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn wait_for_navigation_committed(
   rx: &Receiver<WorkerToUi>,

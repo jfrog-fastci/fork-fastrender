@@ -9,13 +9,13 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 // These tests spin up real UI worker threads that create renderers and rasterize frames.
 // When the test binary runs with many threads (default), CPU contention can make the first render
 // take longer than a couple seconds on busy CI hosts. Keep the timeout generous to avoid flakiness
 // while still failing quickly on genuine deadlocks.
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;

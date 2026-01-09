@@ -129,11 +129,7 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events);
   assert_eq!(
@@ -145,11 +141,7 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
   // Scroll the listbox down by ~2 rows.
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 40.0),
-      pointer_css: Some((10.0, 10.0)),
-    },
+    scroll_msg(tab_id, (0.0, 40.0), Some((10.0, 10.0))),
   );
   let _ = drain_after_frame(&h, events);
   assert!(

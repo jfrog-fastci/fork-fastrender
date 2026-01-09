@@ -6,7 +6,7 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
   support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
@@ -293,27 +293,19 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   let tab_id = TabId(1);
   worker
     .ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
   worker
     .ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: page_url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      page_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   // Wait for the initial frame so the worker has cached layout artifacts.

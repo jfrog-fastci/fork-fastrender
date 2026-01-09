@@ -5,7 +5,7 @@ use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{PointerButton, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
 
-const TIMEOUT: Duration = Duration::from_secs(10);
+const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
 
 fn next_navigation_committed(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
@@ -66,19 +66,15 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
   let tab_id = TabId::new();
   worker
     .tx
-    .send(UiToWorker::CreateTab {
+    .send(support::create_tab_msg_with_cancel(
       tab_id,
-      initial_url: Some(url),
-      cancel: CancelGens::new(),
-    })
+      Some(url),
+      CancelGens::new(),
+    ))
     .expect("create tab");
   worker
     .tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("viewport");
 
   let msg = next_navigation_committed(&worker.rx, tab_id);
@@ -141,19 +137,15 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let tab_id = TabId::new();
   worker
     .tx
-    .send(UiToWorker::CreateTab {
+    .send(support::create_tab_msg_with_cancel(
       tab_id,
-      initial_url: Some(url.clone()),
-      cancel: CancelGens::new(),
-    })
+      Some(url.clone()),
+      CancelGens::new(),
+    ))
     .expect("create tab");
   worker
     .tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("viewport");
 
   // Wait for an initial frame so hit-testing has a layout cache.

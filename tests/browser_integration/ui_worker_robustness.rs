@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support;
 use fastrender::ui::messages::{
   KeyAction, NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
@@ -111,23 +112,15 @@ fn messages_for_unknown_tab_are_ignored_without_panic() {
 
   // Ensure the worker thread is still alive by creating a real tab and navigating it.
   let tab1 = TabId(1);
-  tx.send(UiToWorker::CreateTab {
-    tab_id: tab1,
-    initial_url: None,
-    cancel: Default::default(),
-  })
-  .expect("send CreateTab");
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id: tab1,
-    viewport_css: (200, 120),
-    dpr: 1.0,
-  })
-  .expect("send ViewportChanged(tab1)");
-  tx.send(UiToWorker::Navigate {
-    tab_id: tab1,
-    url: "about:newtab".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(support::create_tab_msg(tab1, None))
+    .expect("send CreateTab");
+  tx.send(support::viewport_changed_msg(tab1, (200, 120), 1.0))
+    .expect("send ViewportChanged(tab1)");
+  tx.send(support::navigate_msg(
+    tab1,
+    "about:newtab".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .expect("send Navigate");
   wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
 
@@ -142,23 +135,15 @@ fn messages_after_close_tab_are_noops() {
   let (tx, rx, join) = handle.split();
 
   let tab1 = TabId(1);
-  tx.send(UiToWorker::CreateTab {
-    tab_id: tab1,
-    initial_url: None,
-    cancel: Default::default(),
-  })
-  .expect("send CreateTab(tab1)");
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id: tab1,
-    viewport_css: (200, 120),
-    dpr: 1.0,
-  })
-  .expect("send ViewportChanged(tab1)");
-  tx.send(UiToWorker::Navigate {
-    tab_id: tab1,
-    url: "about:newtab".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(support::create_tab_msg(tab1, None))
+    .expect("send CreateTab(tab1)");
+  tx.send(support::viewport_changed_msg(tab1, (200, 120), 1.0))
+    .expect("send ViewportChanged(tab1)");
+  tx.send(support::navigate_msg(
+    tab1,
+    "about:newtab".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .expect("send Navigate(tab1)");
   wait_for_frame_ready(&rx, tab1, FRAME_TIMEOUT);
 
@@ -169,23 +154,15 @@ fn messages_after_close_tab_are_noops() {
 
   // Ensure the worker thread is still alive by creating a second tab.
   let tab2 = TabId(2);
-  tx.send(UiToWorker::CreateTab {
-    tab_id: tab2,
-    initial_url: None,
-    cancel: Default::default(),
-  })
-  .expect("send CreateTab(tab2)");
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id: tab2,
-    viewport_css: (200, 120),
-    dpr: 1.0,
-  })
-  .expect("send ViewportChanged(tab2)");
-  tx.send(UiToWorker::Navigate {
-    tab_id: tab2,
-    url: "about:newtab".to_string(),
-    reason: NavigationReason::TypedUrl,
-  })
+  tx.send(support::create_tab_msg(tab2, None))
+    .expect("send CreateTab(tab2)");
+  tx.send(support::viewport_changed_msg(tab2, (200, 120), 1.0))
+    .expect("send ViewportChanged(tab2)");
+  tx.send(support::navigate_msg(
+    tab2,
+    "about:newtab".to_string(),
+    NavigationReason::TypedUrl,
+  ))
   .expect("send Navigate(tab2)");
   wait_for_frame_ready(&rx, tab2, FRAME_TIMEOUT);
 

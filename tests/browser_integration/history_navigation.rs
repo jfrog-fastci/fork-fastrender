@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use fastrender::ui::browser_worker::spawn_browser_ui_worker_thread;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
@@ -66,7 +67,7 @@ fn recv_nav_committed(
   // Navigations can be CPU-heavy (font loading/layout/paint) and this integration test binary runs
   // many of them in parallel by default. Use a slightly more generous timeout to avoid flakes on
   // contended CI runners.
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
   while Instant::now() < deadline {
     match rx.recv_timeout(Duration::from_millis(50)) {
       Ok(WorkerToUi::NavigationCommitted {
@@ -116,18 +117,14 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
 
   let tab_id = TabId(1);
   worker_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
   worker_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "https://example.test/a".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "https://example.test/a".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate a");
   let (committed_a, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(committed_a, "https://example.test/a");
@@ -135,11 +132,11 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
   assert!(!can_forward);
 
   worker_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "https://example.test/b".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "https://example.test/b".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate b");
   let (committed_b, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(committed_b, "https://example.test/b");
@@ -199,27 +196,23 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
 
   let tab_id = TabId(1);
   worker_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
   worker_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "https://example.test/a".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "https://example.test/a".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate a");
   let _ = recv_nav_committed(&worker_rx, tab_id);
 
   worker_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: "https://example.test/redirect".to_string(),
-      reason: NavigationReason::TypedUrl,
-    })
+      "https://example.test/redirect".to_string(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send Navigate redirect");
   let (committed, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(committed, "https://example.test/final");
