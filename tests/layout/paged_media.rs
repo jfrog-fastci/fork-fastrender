@@ -4189,6 +4189,42 @@ fn page_background_paints_page_box() {
 }
 
 #[test]
+fn document_canvas_background_paints_above_page_background() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 0;
+            background: rgb(255, 0, 0);
+          }
+          html { margin: 0; background: transparent; }
+          body {
+            margin: 0;
+            height: 50px;
+            background: rgb(0, 0, 255);
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let pixmap = renderer
+    .render_html_with_options(
+      html,
+      RenderOptions::new()
+        .with_viewport(200, 200)
+        .with_media_type(MediaType::Print),
+    )
+    .expect("render paged media canvas background");
+
+  assert_eq!(pixel(&pixmap, 100, 150), [0, 0, 255, 255]);
+}
+
+#[test]
 fn page_border_is_painted() {
   let html = r#"
     <html>

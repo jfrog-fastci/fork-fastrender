@@ -2765,6 +2765,14 @@ impl DisplayListBuilder {
       root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
     let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
     let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
+    let is_paged_media_page_root = is_root
+      && root_fragment.is_some_and(|fragment| {
+        Self::get_box_id(fragment).is_none()
+          && fragment
+            .children
+            .iter()
+            .any(|child| child.stacking_context.forced_z_index() == Some(0))
+      });
     let root_background = if is_root {
       root_fragment.and_then(|fragment| {
         // The layout viewport can differ from the actual paint surface size when the renderer
@@ -2787,13 +2795,17 @@ impl DisplayListBuilder {
         if !Self::has_paintable_background(&style) {
           return None;
         }
-        // We only need to propagate the canvas background when the source element's border box
-        // does not fully cover the paint target.
+        // We normally only need to propagate the canvas background when the source element's
+        // border box does not fully cover the paint target.
+        //
+        // In paged media, the document canvas background is a distinct layer above the page
+        // background and below the page border/content group (CSS Page 3 §3.1). It must be painted
+        // before page borders even when the `<html>`/`<body>` element covers the page.
         let source_covers_target = source_rect.min_x() <= target_rect.min_x()
           && source_rect.min_y() <= target_rect.min_y()
           && source_rect.max_x() >= target_rect.max_x()
           && source_rect.max_y() >= target_rect.max_y();
-        if source_covers_target {
+        if source_covers_target && !is_paged_media_page_root {
           return None;
         }
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
@@ -3067,8 +3079,10 @@ impl DisplayListBuilder {
     let mut has_backdrop_sensitive_descendants = false;
 
     if is_root && !has_effects {
-      if let Some(root_background) = root_background.as_ref() {
-        self.emit_root_background(root_background);
+      if !is_paged_media_page_root {
+        if let Some(root_background) = root_background.as_ref() {
+          self.emit_root_background(root_background);
+        }
       }
       self.emit_fragment_list_shallow(
         &context.fragments,
@@ -3077,6 +3091,11 @@ impl DisplayListBuilder {
         local_child_visibility,
       );
       if skip_contents {
+        if is_paged_media_page_root {
+          if let Some(root_background) = root_background.as_ref() {
+            self.emit_root_background(root_background);
+          }
+        }
         self.pop_clips(ancestor_clips_pushed);
         self.pop_backface_visibility_chain(ancestor_backface_pushed);
         return self_is_backdrop_sensitive || has_backdrop_sensitive_descendants;
@@ -3095,6 +3114,11 @@ impl DisplayListBuilder {
         );
       }
 
+      if is_paged_media_page_root {
+        if let Some(root_background) = root_background.as_ref() {
+          self.emit_root_background(root_background);
+        }
+      }
       self.emit_fragment_list(
         &context.layer3_blocks,
         descendant_content_offset,
@@ -3204,8 +3228,10 @@ impl DisplayListBuilder {
       pushed_clips += 1;
     }
 
-    if let Some(root_background) = root_background.as_ref() {
-      self.emit_root_background(root_background);
+    if !is_paged_media_page_root {
+      if let Some(root_background) = root_background.as_ref() {
+        self.emit_root_background(root_background);
+      }
     }
     // Paint the stacking context root (backgrounds, borders, shadows) before applying overflow
     // clipping so outer effects remain visible.
@@ -3216,6 +3242,11 @@ impl DisplayListBuilder {
       local_child_visibility,
     );
     if skip_contents {
+      if is_paged_media_page_root {
+        if let Some(root_background) = root_background.as_ref() {
+          self.emit_root_background(root_background);
+        }
+      }
       for _ in 0..pushed_clips {
         self.list.push(DisplayItem::PopClip);
       }
@@ -3257,6 +3288,11 @@ impl DisplayListBuilder {
         svg_filters,
         local_child_visibility,
       );
+    }
+    if is_paged_media_page_root {
+      if let Some(root_background) = root_background.as_ref() {
+        self.emit_root_background(root_background);
+      }
     }
     self.emit_fragment_list(
       &context.layer3_blocks,
@@ -6150,8 +6186,35 @@ impl DisplayListBuilder {
         // the fragment tree root (even when it only has one child), so only treat a single-child
         // root as a wrapper when there is no originating box.
         let child = fragment.children.first().unwrap_or(fragment);
-        html = child;
-        html_origin = origin.translate(child.bounds.origin);
+        // Pagination can also create a single-child synthetic page root, where the lone child is a
+        // "document wrapper" fragment (no `box_id`) that contains the real `<html>` element. In
+        // that case, still apply normal HTML canvas background propagation by finding the first
+        // non-fixed DOM-backed fragment inside the wrapper.
+        if Self::get_box_id(child).is_none() && child.stacking_context.forced_z_index().is_some() {
+          let child_origin = origin.translate(child.bounds.origin);
+          let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
+          stack.push((child, child_origin));
+          while let Some((node, node_origin)) = stack.pop() {
+            let is_fixed = node
+              .style
+              .as_deref()
+              .is_some_and(|style| style.position == Position::Fixed);
+            if !is_fixed && Self::get_box_id(node).is_some() {
+              html = node;
+              html_origin = node_origin;
+              break;
+            }
+            for child in node.children.iter().rev() {
+              stack.push((child, node_origin.translate(child.bounds.origin)));
+            }
+          }
+          if Self::get_box_id(html).is_none() {
+            return None;
+          }
+        } else {
+          html = child;
+          html_origin = origin.translate(child.bounds.origin);
+        }
       } else if !fragment.children.is_empty() {
         let doc_root = fragment
           .children
