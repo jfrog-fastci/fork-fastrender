@@ -14227,7 +14227,7 @@ mod tests {
   #[test]
   fn parse_html_keeps_noscript_content_without_scripting() {
     let html = "<!doctype html><html><head><noscript><style>.fallback{color:red;}</style></noscript></head><body><noscript><div id='fallback'>hello</div></noscript></body></html>";
-    let dom = parse_html(html).expect("parse");
+    let dom = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
 
     let fallback = find_element_by_id(&dom, "fallback").expect("noscript content parsed into DOM");
     let has_text_child = fallback.children.iter().any(|child| {
@@ -14246,7 +14246,7 @@ mod tests {
   #[test]
   fn parse_html_preserves_head_noscript_children() {
     let html = "<!doctype html><html><head><noscript><style id='fallback-style'>body{color:green;}</style></noscript></head><body></body></html>";
-    let dom = parse_html(html).expect("parse");
+    let dom = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
 
     let style = find_element_by_id(&dom, "fallback-style");
     assert!(

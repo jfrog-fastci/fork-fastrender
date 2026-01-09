@@ -256,7 +256,7 @@ fn script_token_from_handle(handle: &Handle) -> ScriptToken {
 #[cfg(test)]
 mod tests {
   use super::parse_html_with_scripting;
-  use crate::dom::{parse_html, DomNode, DomNodeType};
+  use crate::dom::{parse_html_with_options, DomNode, DomNodeType, DomParseOptions};
 
   fn dom_contains_id(root: &DomNode, id: &str) -> bool {
     let mut stack: Vec<&DomNode> = vec![root];
@@ -313,8 +313,9 @@ mod tests {
     // Place `<noscript>` in the document body so we exercise the InBody rules.
     let html = "<!doctype html><html><body><noscript><p>hi</p></noscript></body></html>";
 
-    // With scripting disabled (existing `parse_html`): `<noscript>` contents are parsed as markup.
-    let dom_disabled = parse_html(html).unwrap();
+    // With scripting disabled: `<noscript>` contents are parsed as markup.
+    let dom_disabled =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).unwrap();
     let noscript_disabled = find_first_tag(&dom_disabled, "noscript").expect("noscript missing");
     assert!(
       find_first_tag(noscript_disabled, "p").is_some(),

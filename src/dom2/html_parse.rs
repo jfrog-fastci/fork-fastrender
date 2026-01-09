@@ -80,6 +80,40 @@ mod tests {
   }
 
   #[test]
+  fn parse_html_dom2_roundtrips_to_renderer_snapshot_with_noscript_scripting_disabled() {
+    let html = concat!(
+      "<!doctype html>",
+      "<html><head>",
+      "<noscript><style id='fallback-style'>body{color:green;}</style></noscript>",
+      "</head><body>",
+      "<noscript><div id='fallback'>hello</div></noscript>",
+      "</body></html>",
+    );
+    let options = DomParseOptions::with_scripting_enabled(false);
+    let dom = crate::dom::parse_html_with_options(html, options).unwrap();
+    let doc2 = parse_html_with_options(html, options).unwrap();
+    let dom2_snapshot = doc2.to_renderer_dom();
+    assert_eq!(snapshot_dom(&dom), snapshot_dom(&dom2_snapshot));
+  }
+
+  #[test]
+  fn parse_html_dom2_roundtrips_to_renderer_snapshot_with_noscript_scripting_enabled() {
+    let html = concat!(
+      "<!doctype html>",
+      "<html><head>",
+      "<noscript><style id='fallback-style'>body{color:green;}</style></noscript>",
+      "</head><body>",
+      "<noscript><div id='fallback'>hello</div></noscript>",
+      "</body></html>",
+    );
+    let options = DomParseOptions::with_scripting_enabled(true);
+    let dom = crate::dom::parse_html_with_options(html, options).unwrap();
+    let doc2 = parse_html_with_options(html, options).unwrap();
+    let dom2_snapshot = doc2.to_renderer_dom();
+    assert_eq!(snapshot_dom(&dom), snapshot_dom(&dom2_snapshot));
+  }
+
+  #[test]
   fn parse_html_dom2_preserves_scripting_enabled_flag() {
     let html = "<!doctype html><html><body><div>ok</div></body></html>";
     let doc2 = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).unwrap();
