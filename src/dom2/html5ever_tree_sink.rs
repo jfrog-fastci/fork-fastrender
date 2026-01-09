@@ -6,12 +6,20 @@ use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode as HtmlQuirks
 use markup5ever::interface::tree_builder::ElemName;
 use markup5ever::interface::Attribute;
 use markup5ever::{LocalName, Namespace, QualName};
+use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 use super::{Document, NodeId, NodeKind};
+
+/// Sentinel handle returned by TreeSink hooks for node types that are intentionally ignored during
+/// parsing (comments, doctypes, processing instructions).
+///
+/// This handle is never inserted into the document tree. TreeSink insertion methods detect it via
+/// `id.index() >= doc.nodes_len()` and treat it as a no-op.
+const IGNORED_HANDLE: NodeId = NodeId(usize::MAX);
 
 #[derive(Debug, Clone)]
 pub struct Dom2ElemName {
@@ -32,14 +40,21 @@ impl ElemName for Dom2ElemName {
 /// html5ever [`TreeSink`] that incrementally builds a live [`dom2::Document`].
 ///
 /// Notes:
-/// - Comments / processing instructions / doctypes are stored in the `dom2` arena but are currently
-///   ignored when snapshotting back into the renderer's immutable DOM representation (to match
-///   `crate::dom::parse_html`).
+/// - Comments, processing instructions, and doctypes are intentionally **not** materialized as
+///   `dom2` nodes during HTML parsing. This matches the renderer DOM (`crate::dom::parse_html`),
+///   which drops these nodes entirely and only exposes the document quirks mode.
+///   - Doctype tokens are handled exclusively via [`TreeSink::set_quirks_mode`].
 /// - HTML namespace elements store `namespace=""` for compatibility with existing selector logic.
 /// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
   base_url_tracker: Rc<RefCell<BaseUrlTracker>>,
+  /// Insertion points where an ignored node (comment/doctype/PI) occurred.
+  ///
+  /// Even though these node types are not materialized, they must still act as boundaries for text
+  /// node merging. The legacy parser (html5ever → RcDom → conversion) dropped comment/doctype nodes
+  /// but preserved the resulting text node splits.
+  ignored_insertion_points: RefCell<FxHashSet<(NodeId, Option<NodeId>)>>,
 }
 
 impl Dom2TreeSink {
@@ -47,6 +62,7 @@ impl Dom2TreeSink {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
+      ignored_insertion_points: RefCell::new(FxHashSet::default()),
     }
   }
 
@@ -204,16 +220,19 @@ impl Dom2TreeSink {
     parent: NodeId,
     reference: Option<NodeId>,
     text: &str,
+    break_text_merge: bool,
   ) {
     if text.is_empty() {
       return;
     }
 
     if reference.is_none() {
-      if let Some(last_child) = doc.node(parent).children.last().copied() {
-        if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
-          content.push_str(text);
-          return;
+      if !break_text_merge {
+        if let Some(last_child) = doc.node(parent).children.last().copied() {
+          if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
+            content.push_str(text);
+            return;
+          }
         }
       }
 
@@ -237,8 +256,9 @@ impl Dom2TreeSink {
       doc.node(parent).children.get(insert_pos - 1).copied()
     };
 
-    let can_merge_prev = prev.is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }));
-    let can_merge_next = matches!(&doc.node(reference).kind, NodeKind::Text { .. });
+    let can_merge_prev = !break_text_merge
+      && prev.is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }));
+    let can_merge_next = !break_text_merge && matches!(&doc.node(reference).kind, NodeKind::Text { .. });
 
     if can_merge_prev {
       let prev_id = prev.unwrap();
@@ -277,6 +297,56 @@ impl Dom2TreeSink {
     );
     doc.node_mut(text_id).parent = Some(parent);
     doc.node_mut(parent).children.insert(insert_pos, text_id);
+  }
+
+  fn record_ignored_insertion_point(&self, doc: &Document, parent: NodeId, reference: Option<NodeId>) {
+    let mut should_record = false;
+
+    match reference {
+      None => {
+        // Only needed when the ignored node would have prevented merging with the last text child.
+        if doc
+          .node(parent)
+          .children
+          .last()
+          .copied()
+          .is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }))
+        {
+          should_record = true;
+        }
+      }
+      Some(reference) => {
+        // Insertion is before `reference`; prevent merging with adjacent text siblings at this boundary.
+        let Some(insert_pos) = doc.node(parent).children.iter().position(|&c| c == reference) else {
+          return;
+        };
+
+        if insert_pos > 0 {
+          let prev = doc.node(parent).children[insert_pos - 1];
+          if matches!(&doc.node(prev).kind, NodeKind::Text { .. }) {
+            should_record = true;
+          }
+        }
+
+        if matches!(&doc.node(reference).kind, NodeKind::Text { .. }) {
+          should_record = true;
+        }
+      }
+    }
+
+    if should_record {
+      self
+        .ignored_insertion_points
+        .borrow_mut()
+        .insert((parent, reference));
+    }
+  }
+
+  fn take_ignored_insertion_point(&self, parent: NodeId, reference: Option<NodeId>) -> bool {
+    self
+      .ignored_insertion_points
+      .borrow_mut()
+      .remove(&(parent, reference))
   }
 
   fn note_element_inserted(&self, doc: &Document, parent: NodeId, child: NodeId) {
@@ -345,6 +415,12 @@ impl TreeSink for Dom2TreeSink {
 
   fn elem_name(&self, target: &NodeId) -> Dom2ElemName {
     let doc = self.document.borrow();
+    if target.index() >= doc.nodes_len() {
+      return Dom2ElemName {
+        ns: Namespace::from(HTML_NAMESPACE),
+        local: LocalName::from(""),
+      };
+    }
     match &doc.node(*target).kind {
       NodeKind::Element {
         tag_name,
@@ -412,34 +488,30 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn create_comment(&self, text: StrTendril) -> NodeId {
-    self.document.borrow_mut().push_node(
-      NodeKind::Comment {
-        content: text.to_string(),
-      },
-      None,
-      /* inert_subtree */ false,
-    )
+    let _ = text;
+    IGNORED_HANDLE
   }
 
   fn create_pi(&self, target: StrTendril, data: StrTendril) -> NodeId {
-    self.document.borrow_mut().push_node(
-      NodeKind::ProcessingInstruction {
-        target: target.to_string(),
-        data: data.to_string(),
-      },
-      None,
-      /* inert_subtree */ false,
-    )
+    let _ = (target, data);
+    IGNORED_HANDLE
   }
 
   fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
     match child {
       NodeOrText::AppendText(text) => {
         let mut doc = self.document.borrow_mut();
-        Self::append_text_at(&mut doc, *parent, None, text.as_ref());
+        let break_text_merge = self.take_ignored_insertion_point(*parent, None);
+        Self::append_text_at(&mut doc, *parent, None, text.as_ref(), break_text_merge);
       }
       NodeOrText::AppendNode(node) => {
         let mut doc = self.document.borrow_mut();
+        if node.index() >= doc.nodes_len() {
+          self.record_ignored_insertion_point(&doc, *parent, None);
+          return;
+        }
+        // Any ignored insertion boundary at this insertion point is now superseded by a real node.
+        let _ = self.take_ignored_insertion_point(*parent, None);
         if Self::insert_node_before(&mut doc, *parent, None, node) {
           self.note_element_inserted(&doc, *parent, node);
         }
@@ -450,6 +522,9 @@ impl TreeSink for Dom2TreeSink {
   fn append_before_sibling(&self, sibling: &NodeId, child: NodeOrText<NodeId>) {
     let parent = {
       let doc = self.document.borrow();
+      if sibling.index() >= doc.nodes_len() {
+        return;
+      }
       doc.node(*sibling).parent
     };
     let Some(parent) = parent else {
@@ -459,10 +534,16 @@ impl TreeSink for Dom2TreeSink {
     match child {
       NodeOrText::AppendText(text) => {
         let mut doc = self.document.borrow_mut();
-        Self::append_text_at(&mut doc, parent, Some(*sibling), text.as_ref());
+        let break_text_merge = self.take_ignored_insertion_point(parent, Some(*sibling));
+        Self::append_text_at(&mut doc, parent, Some(*sibling), text.as_ref(), break_text_merge);
       }
       NodeOrText::AppendNode(node) => {
         let mut doc = self.document.borrow_mut();
+        if node.index() >= doc.nodes_len() {
+          self.record_ignored_insertion_point(&doc, parent, Some(*sibling));
+          return;
+        }
+        let _ = self.take_ignored_insertion_point(parent, Some(*sibling));
         if Self::insert_node_before(&mut doc, parent, Some(*sibling), node) {
           self.note_element_inserted(&doc, parent, node);
         }
@@ -473,7 +554,11 @@ impl TreeSink for Dom2TreeSink {
   fn append_based_on_parent_node(&self, element: &NodeId, prev_element: &NodeId, child: NodeOrText<NodeId>) {
     let parent = {
       let doc = self.document.borrow();
-      doc.node(*element).parent
+      if element.index() >= doc.nodes_len() {
+        None
+      } else {
+        doc.node(*element).parent
+      }
     };
     if parent.is_some() {
       self.append_before_sibling(element, child);
@@ -483,17 +568,11 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn append_doctype_to_document(&self, name: StrTendril, public_id: StrTendril, system_id: StrTendril) {
-    let mut doc = self.document.borrow_mut();
+    let _ = (name, public_id, system_id);
+    // Do not materialize doctype nodes in dom2 for now; rely on `set_quirks_mode` instead.
+    let doc = self.document.borrow();
     let root = doc.root();
-    doc.push_node(
-      NodeKind::Doctype {
-        name: name.to_string(),
-        public_id: public_id.to_string(),
-        system_id: system_id.to_string(),
-      },
-      Some(root),
-      /* inert_subtree */ false,
-    );
+    self.record_ignored_insertion_point(&doc, root, None);
   }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {
@@ -503,11 +582,17 @@ impl TreeSink for Dom2TreeSink {
 
   fn remove_from_parent(&self, target: &NodeId) {
     let mut doc = self.document.borrow_mut();
+    if target.index() >= doc.nodes_len() {
+      return;
+    }
     Self::detach_from_parent(&mut doc, *target);
   }
 
   fn reparent_children(&self, node: &NodeId, new_parent: &NodeId) {
     let mut doc = self.document.borrow_mut();
+    if node.index() >= doc.nodes_len() || new_parent.index() >= doc.nodes_len() {
+      return;
+    }
     let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
 
     if moved_children.is_empty() {
@@ -550,6 +635,9 @@ impl TreeSink for Dom2TreeSink {
 
   fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<Attribute>) {
     let mut doc = self.document.borrow_mut();
+    if target.index() >= doc.nodes_len() {
+      return;
+    }
     let kind = &mut doc.node_mut(*target).kind;
     let (existing, is_html) = match kind {
       NodeKind::Element {
@@ -582,15 +670,19 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn mark_script_already_started(&self, node: &NodeId) {
-    self.document.borrow_mut().node_mut(*node).script_already_started = true;
+    let mut doc = self.document.borrow_mut();
+    if node.index() >= doc.nodes_len() {
+      return;
+    }
+    doc.node_mut(*node).script_already_started = true;
   }
 
   fn is_mathml_annotation_xml_integration_point(&self, node: &NodeId) -> bool {
-    self
-      .document
-      .borrow()
-      .node(*node)
-      .mathml_annotation_xml_integration_point
+    let doc = self.document.borrow();
+    if node.index() >= doc.nodes_len() {
+      return false;
+    }
+    doc.node(*node).mathml_annotation_xml_integration_point
   }
 
   fn pop(&self, _node: &NodeId) {}
@@ -655,6 +747,19 @@ mod tests {
   }
 
   #[test]
+  fn ignores_leading_comments_and_matches_legacy_parse_html() {
+    let html = "<!--x--><div id=a></div>";
+    let expected = crate::dom::parse_html(html).unwrap();
+    let doc = parse_with_sink(html);
+    let snapshot = doc.to_renderer_dom();
+    assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
+    assert!(
+      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Comment { .. })),
+      "comments should not be materialized in dom2 HTML parsing"
+    );
+  }
+
+  #[test]
   fn template_contents_preserved_and_inert_subtree_set() {
     let html = concat!(
       "<!doctype html>",
@@ -695,17 +800,24 @@ mod tests {
   #[test]
   fn sets_document_quirks_mode() {
     let html_no_quirks = "<!doctype html><p>x</p>";
+    let html_missing_doctype = "<p>x</p>";
     let html_quirks = "<!doctype html public \"-//W3C//DTD HTML 3.2 Final//EN\"><p>x</p>";
 
     let expected_no_quirks = crate::dom::parse_html(html_no_quirks).unwrap();
+    let expected_missing_doctype = crate::dom::parse_html(html_missing_doctype).unwrap();
     let expected_quirks = crate::dom::parse_html(html_quirks).unwrap();
 
     let doc_no_quirks = parse_with_sink(html_no_quirks);
+    let doc_missing_doctype = parse_with_sink(html_missing_doctype);
     let doc_quirks = parse_with_sink(html_quirks);
 
     assert_eq!(
       expected_no_quirks.document_quirks_mode(),
       doc_no_quirks.to_renderer_dom().document_quirks_mode()
+    );
+    assert_eq!(
+      expected_missing_doctype.document_quirks_mode(),
+      doc_missing_doctype.to_renderer_dom().document_quirks_mode()
     );
     assert_eq!(
       expected_quirks.document_quirks_mode(),
@@ -722,6 +834,12 @@ mod tests {
       doc_quirks.node(doc_quirks.root()).kind.clone(),
       NodeKind::Document {
         quirks_mode: QuirksMode::Quirks
+      }
+    );
+    assert_eq!(
+      doc_missing_doctype.node(doc_missing_doctype.root()).kind.clone(),
+      NodeKind::Document {
+        quirks_mode: expected_missing_doctype.document_quirks_mode()
       }
     );
   }
@@ -861,57 +979,42 @@ mod tests {
   }
 
   #[test]
-  fn stores_doctype_and_comment_nodes_in_dom2() {
-    let html = "<!doctype html><div><!--c--></div>";
+  fn ignores_doctype_and_comment_nodes_in_dom2() {
+    let html = "<!doctype html><!--x--><div id=a><!--c--></div>";
     let expected = crate::dom::parse_html(html).unwrap();
 
     let doc = parse_with_sink(html);
     let snapshot = doc.to_renderer_dom();
     assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
 
-    let doctype_id = doc
-      .nodes()
-      .iter()
-      .enumerate()
-      .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Doctype { .. } => Some(NodeId(idx)),
-        _ => None,
-      })
-      .expect("doctype node not found");
-    let NodeKind::Doctype { name, .. } = &doc.node(doctype_id).kind else {
-      unreachable!("doctype_id must point at Doctype");
-    };
-    assert_eq!(name.to_ascii_lowercase(), "html");
-    assert_eq!(doc.node(doctype_id).parent, Some(doc.root()));
-
-    let div_id = doc
-      .nodes()
-      .iter()
-      .enumerate()
-      .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
-        _ => None,
-      })
-      .expect("<div> not found");
-
-    let comment_id = doc
-      .nodes()
-      .iter()
-      .enumerate()
-      .find_map(|(idx, node)| match &node.kind {
-        NodeKind::Comment { .. } => Some(NodeId(idx)),
-        _ => None,
-      })
-      .expect("comment node not found");
-    let NodeKind::Comment { content } = &doc.node(comment_id).kind else {
-      unreachable!("comment_id must point at Comment");
-    };
-    assert_eq!(content, "c");
-    assert_eq!(doc.node(comment_id).parent, Some(div_id));
     assert!(
-      doc.node(div_id).children.contains(&comment_id),
-      "div should contain comment node"
+      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Doctype { .. })),
+      "doctype nodes should not be materialized in dom2 HTML parsing"
     );
+    assert!(
+      !doc.nodes().iter().any(|node| matches!(node.kind, NodeKind::Comment { .. })),
+      "comment nodes should not be materialized in dom2 HTML parsing"
+    );
+    assert!(
+      !doc
+        .nodes()
+        .iter()
+        .any(|node| matches!(node.kind, NodeKind::ProcessingInstruction { .. })),
+      "processing instructions should not be materialized in dom2 HTML parsing"
+    );
+  }
+
+  #[test]
+  fn ignores_processing_instructions() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+    let before_len = sink.document().nodes_len();
+    let pi = sink.create_pi("xml".into(), "version=\"1.0\"".into());
+    // Creating a PI should not allocate a node.
+    assert_eq!(sink.document().nodes_len(), before_len);
+    sink.append(&root, NodeOrText::AppendNode(pi));
+    // Appending a PI should be a no-op and should not allocate nodes.
+    assert_eq!(sink.document().nodes_len(), before_len);
   }
 
   fn html_name(local: &str) -> QualName {
