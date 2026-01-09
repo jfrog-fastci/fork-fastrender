@@ -35,8 +35,6 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
     }
   };
 
-  document.attach_shadow_roots();
-
   if matches!(options.compatibility_mode, DomCompatibilityMode::Compatibility) {
     // Reuse the existing compatibility mutation logic (implemented for the renderer's immutable
     // `DomNode` tree) by snapshotting to a renderer DOM, applying mutations, and importing back.
@@ -79,4 +77,3 @@ mod tests {
     assert_eq!(snapshot_dom(&dom), snapshot_dom(&dom2_snapshot));
   }
 }
-

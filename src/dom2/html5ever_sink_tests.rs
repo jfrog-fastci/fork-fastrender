@@ -35,6 +35,35 @@ fn dom2_html5ever_sink_snapshot_matches_legacy_parser() {
 }
 
 #[test]
+fn dom2_html5ever_sink_snapshot_matches_legacy_parser_with_declarative_shadow_dom() {
+  let html = concat!(
+    "<!doctype html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowroot=open>",
+    "<slot name=s></slot><span id=shadow>shadow</span>",
+    "</template>",
+    "<span id=light>light</span>",
+    "</div>",
+    "</body></html>",
+  );
+
+  let legacy = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).unwrap();
+  let doc2 = parse_with_dom2_sink(html);
+  let snapshot = doc2.to_renderer_dom();
+
+  assert_eq!(snapshot_dom(&legacy), snapshot_dom(&snapshot));
+
+  assert!(
+    doc2
+      .nodes()
+      .iter()
+      .any(|node| matches!(node.kind, NodeKind::ShadowRoot { .. })),
+    "expected dom2 html5ever sink to attach declarative shadow roots"
+  );
+}
+
+#[test]
 fn template_contents_are_present_but_inert_for_scripting() {
   let html = concat!(
     "<!doctype html>",

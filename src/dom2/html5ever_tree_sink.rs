@@ -304,7 +304,17 @@ impl TreeSink for Dom2TreeSink {
     Self: 'a;
 
   fn finish(self) -> Document {
-    self.document.into_inner()
+    // `dom::parse_html` post-processes the parsed DOM to attach declarative shadow roots declared via
+    // `<template shadowrootmode=...>` (or `shadowroot=...`). Mirror that behaviour here so all
+    // html5ever-driven `dom2` parses (including streaming/script-aware parsing) produce the same
+    // final tree shape as the legacy parser.
+    //
+    // Note: this only runs once parsing has finished. Mid-parse DOM snapshots (e.g. at `<script>`
+    // pause points) will still contain the original `<template>` nodes, which matches how other
+    // parts of the engine currently treat declarative shadow DOM.
+    let mut doc = self.document.into_inner();
+    doc.attach_shadow_roots();
+    doc
   }
 
   fn parse_error(&self, _msg: Cow<'static, str>) {}
