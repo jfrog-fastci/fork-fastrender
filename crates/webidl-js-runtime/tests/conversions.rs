@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use vm_js::{PropertyKey, Value, VmError};
@@ -510,6 +510,88 @@ fn callback_interface_accepts_callable_or_handle_event_object() {
   let bad = rt.alloc_object_value().unwrap();
   let err = convert_to_idl(&mut rt, bad, &ty, &ctx).unwrap_err();
   assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
+}
+
+#[test]
+fn dictionary_member_access_order_is_lexicographic_and_inheritance_based() {
+  let mut rt = VmJsRuntime::new();
+
+  let mut ctx = TypeContext::default();
+  // Declare members out of order; the conversion algorithm must access them in lexicographical
+  // order within each dictionary.
+  ctx.add_dictionary(DictionarySchema {
+    name: "Base".to_string(),
+    inherits: None,
+    members: vec![
+      DictionaryMemberSchema {
+        name: "b".to_string(),
+        required: false,
+        ty: IdlType::Numeric(NumericType::Long),
+        default: None,
+      },
+      DictionaryMemberSchema {
+        name: "a".to_string(),
+        required: false,
+        ty: IdlType::Numeric(NumericType::Long),
+        default: None,
+      },
+    ],
+  });
+  ctx.add_dictionary(DictionarySchema {
+    name: "Derived".to_string(),
+    inherits: Some("Base".to_string()),
+    members: vec![
+      DictionaryMemberSchema {
+        name: "d".to_string(),
+        required: false,
+        ty: IdlType::Numeric(NumericType::Long),
+        default: None,
+      },
+      DictionaryMemberSchema {
+        name: "c".to_string(),
+        required: false,
+        ty: IdlType::Numeric(NumericType::Long),
+        default: None,
+      },
+    ],
+  });
+
+  let calls: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+  let obj = rt.alloc_object_value().unwrap();
+  for (name, n) in [("a", 1.0), ("b", 2.0), ("c", 3.0), ("d", 4.0)] {
+    let calls_for_get = calls.clone();
+    let name_owned = name.to_string();
+    let getter = rt
+      .alloc_function_value(move |_rt, _this, _args| {
+        calls_for_get.borrow_mut().push(name_owned.clone());
+        Ok(Value::Number(n))
+      })
+      .unwrap();
+    let key = rt.property_key_from_str(name).unwrap();
+    rt.define_accessor_property(obj, key, getter, Value::Undefined, true)
+      .unwrap();
+  }
+
+  let ty = IdlType::Named(NamedType {
+    name: "Derived".to_string(),
+    kind: NamedTypeKind::Unresolved,
+  });
+
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::Dictionary { name, members } = converted else {
+    panic!("expected dictionary, got {converted:?}");
+  };
+  assert_eq!(name, "Derived");
+  assert_eq!(
+    calls.borrow().as_slice(),
+    &["a", "b", "c", "d"],
+    "dictionary conversion should access members in WebIDL order",
+  );
+
+  // Spot-check that values converted as expected.
+  assert_eq!(members.get("a"), Some(&ConvertedValue::Long(1)));
+  assert_eq!(members.get("d"), Some(&ConvertedValue::Long(4)));
 }
 
 #[test]
