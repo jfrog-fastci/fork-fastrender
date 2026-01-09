@@ -218,6 +218,16 @@ pub enum UiToWorker {
   },
 }
 
+impl UiToWorker {
+  pub fn select_dropdown_choose(tab_id: TabId, select_node_id: usize, option_node_id: usize) -> Self {
+    UiToWorker::SelectDropdownChoose {
+      tab_id,
+      select_node_id,
+      option_node_id,
+    }
+  }
+}
+
 /// Messages sent from the render worker to the UI thread.
 #[derive(Debug)]
 pub enum WorkerToUi {

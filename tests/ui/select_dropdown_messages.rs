@@ -140,11 +140,11 @@ fn select_dropdown_open_and_choose_roundtrip() {
 
   // Choose an enabled option.
   let _ = controller
-    .handle_message(UiToWorker::SelectDropdownChoose {
+    .handle_message(UiToWorker::select_dropdown_choose(
       tab_id,
       select_node_id,
-      option_node_id: option_one_id,
-    })
+      option_one_id,
+    ))
     .expect("select dropdown choose");
 
   let dom = controller.document().dom();

@@ -1,11 +1,10 @@
 use crate::geometry::Rect;
 use crate::tree::box_tree::{SelectControl, SelectItem};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SelectDropdownChoice {
-  pub select_node_id: usize,
-  pub option_node_id: usize,
-}
+#[path = "select_dropdown/choice.rs"]
+mod choice;
+
+pub use choice::SelectDropdownChoice;
 
 #[derive(Debug, Clone)]
 struct OpenSelectDropdown {
@@ -49,10 +48,7 @@ impl SelectDropdown {
         if *disabled {
           return None;
         }
-        Some(SelectDropdownChoice {
-          select_node_id: open.select_node_id,
-          option_node_id: *node_id,
-        })
+        Some(SelectDropdownChoice::new(open.select_node_id, *node_id))
       }
     }
   }
@@ -195,10 +191,7 @@ mod tests {
     let choice = dropdown.choose_item(1).expect("expected selectable option");
     assert_eq!(
       choice,
-      SelectDropdownChoice {
-        select_node_id: 10,
-        option_node_id: 101,
-      }
+      SelectDropdownChoice::new(10, 101)
     );
   }
 

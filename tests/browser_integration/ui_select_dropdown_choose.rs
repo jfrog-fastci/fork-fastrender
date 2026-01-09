@@ -82,7 +82,7 @@ fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> R
     })
     .expect("expected WorkerToUi::OpenSelectDropdown after clicking select");
 
-  let option_node_id = control
+  let option_dom_id = control
     .items
     .iter()
     .find_map(|item| match item {
@@ -93,11 +93,8 @@ fn browser_tab_controller_select_dropdown_choose_updates_dom_and_repaints() -> R
     })
     .expect("expected to find option with label \"Two\"");
 
-  let choose_msgs = controller.handle_message(UiToWorker::SelectDropdownChoose {
-    tab_id,
-    select_node_id,
-    option_node_id,
-  })?;
+  let choose_msgs =
+    controller.handle_message(UiToWorker::select_dropdown_choose(tab_id, select_node_id, option_dom_id))?;
 
   assert!(
     choose_msgs

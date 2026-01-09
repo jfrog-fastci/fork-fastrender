@@ -42,7 +42,7 @@ fn find_node_by_id<'a>(root: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   None
 }
 
-fn collect_option_node_ids(select: &DomNode, ids: &HashMap<*const DomNode, usize>) -> Vec<usize> {
+fn collect_option_dom_ids(select: &DomNode, ids: &HashMap<*const DomNode, usize>) -> Vec<usize> {
   let mut out = Vec::new();
   let mut stack: Vec<&DomNode> = Vec::new();
   stack.push(select);
@@ -84,7 +84,7 @@ fn select_control_option_items_track_dom_node_ids() {
   let dom = dom::parse_html(html).expect("parse html");
   let dom_ids = dom::enumerate_dom_ids(&dom);
   let select_node = find_node_by_id(&dom, "s").expect("expected <select id=s>");
-  let expected_option_ids = collect_option_node_ids(select_node, &dom_ids);
+  let expected_option_ids = collect_option_dom_ids(select_node, &dom_ids);
 
   let styled = apply_styles(&dom, &StyleSheet::new());
   let box_tree = generate_box_tree(&styled).expect("box tree");
