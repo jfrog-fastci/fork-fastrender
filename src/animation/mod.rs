@@ -8690,9 +8690,6 @@ fn apply_transition_state_to_fragment(
     for child in fragment.children_mut() {
       if let Some(child_style_arc) = child.style.as_mut() {
         let child_style = Arc::make_mut(child_style_arc);
-        if child_style.color_is_inherited && child_style.color != parent_for_children.color {
-          child_style.color = parent_for_children.color;
-        }
         if child_style.visibility_is_inherited
           && child_style.visibility != parent_for_children.visibility
         {
@@ -8720,9 +8717,6 @@ fn apply_transition_state_to_fragment(
       let snapshot_node = Arc::make_mut(snapshot);
       if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
         let snapshot_style = Arc::make_mut(snapshot_style_arc);
-        if snapshot_style.color_is_inherited && snapshot_style.color != parent_for_children.color {
-          snapshot_style.color = parent_for_children.color;
-        }
         if snapshot_style.visibility_is_inherited
           && snapshot_style.visibility != parent_for_children.visibility
         {
@@ -8801,6 +8795,7 @@ fn apply_transition_state_to_fragment(
           let color_changed = updates
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("color"));
+          let original_color = style_arc.color;
           let mut updated_style = (*style_arc).clone();
           apply_animated_properties_ordered(&mut updated_style, &updates);
           let mut custom_properties_changed = false;
@@ -8852,9 +8847,6 @@ fn apply_transition_state_to_fragment(
   for child in fragment.children_mut() {
     if let Some(child_style_arc) = child.style.as_mut() {
       let child_style = Arc::make_mut(child_style_arc);
-      if child_style.color_is_inherited && child_style.color != parent_for_children.color {
-        child_style.color = parent_for_children.color;
-      }
       if child_style.visibility_is_inherited
         && child_style.visibility != parent_for_children.visibility
       {
@@ -8882,9 +8874,6 @@ fn apply_transition_state_to_fragment(
     let snapshot_node = Arc::make_mut(snapshot);
     if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
       let snapshot_style = Arc::make_mut(snapshot_style_arc);
-      if snapshot_style.color_is_inherited && snapshot_style.color != parent_for_children.color {
-        snapshot_style.color = parent_for_children.color;
-      }
       if snapshot_style.visibility_is_inherited
         && snapshot_style.visibility != parent_for_children.visibility
       {
