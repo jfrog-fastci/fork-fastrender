@@ -18,6 +18,7 @@ mod generate_emoji_tables;
 mod import_page_fixture;
 mod js;
 mod lint_no_panics;
+mod lint_no_openssl;
 mod page_loop;
 mod pageset_triage;
 mod recapture_page_fixtures;
@@ -72,6 +73,10 @@ fn main() -> Result<()> {
     Commands::LintNoPanics(args) => {
       let repo_root = repo_root();
       lint_no_panics::run_lint_no_panics(&repo_root, args)
+    }
+    Commands::LintNoOpenssl(args) => {
+      let repo_root = repo_root();
+      lint_no_openssl::run_lint_no_openssl(&repo_root, args)
     }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
     Commands::WebIdlCodegen(args) => webidl_codegen::run_webidl_codegen(args),
@@ -152,6 +157,8 @@ enum Commands {
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
+  /// Fail CI if the default `fastrender` dependency graph includes `openssl-sys`.
+  LintNoOpenssl(lint_no_openssl::LintNoOpenSslArgs),
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
   WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),

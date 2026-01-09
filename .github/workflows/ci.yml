@@ -175,6 +175,9 @@ jobs:
       - name: "Lint: no panics in production code"
         run: cargo xtask lint-no-panics
 
+      - name: "Lint: no OpenSSL dependency"
+        run: cargo xtask lint-no-openssl
+
       - name: Build browser binary
         run: cargo build --all-features --bin browser
 
