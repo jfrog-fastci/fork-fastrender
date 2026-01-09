@@ -27,15 +27,21 @@ thread_local! {
   static INTERRUPT_FLAG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 thread_local! {
   static TEST_RENDER_DELAY_MS: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
-#[cfg(any(test, feature = "browser_ui"))]
+#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 pub fn set_test_render_delay_ms(ms: Option<u64>) {
   TEST_RENDER_DELAY_MS.with(|cell| cell.set(ms));
 }
+
+// Keep `set_test_render_delay_ms` callable in release builds without the optional UI/test hooks
+// enabled. This is primarily used by the headless UI worker loop; in optimized non-UI release
+// builds we intentionally ignore the request.
+#[cfg(not(any(debug_assertions, test, feature = "browser_ui")))]
+pub fn set_test_render_delay_ms(_ms: Option<u64>) {}
 
 /// Returns a per-thread shared interrupt flag suitable for VM embeddings.
 pub fn interrupt_flag() -> Arc<AtomicBool> {
@@ -320,22 +326,11 @@ impl RenderDeadline {
     // Enable `FASTR_TEST_RENDER_DELAY_MS` for integration tests too (they compile the library
     // without `cfg(test)`), while keeping it out of non-browser_ui optimized release builds.
     #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
-    if let Some(delay) = {
-      #[cfg(any(test, feature = "browser_ui"))]
-      {
-        TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
-          std::env::var("FASTR_TEST_RENDER_DELAY_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-        })
-      }
-      #[cfg(not(any(test, feature = "browser_ui")))]
-      {
-        std::env::var("FASTR_TEST_RENDER_DELAY_MS")
-          .ok()
-          .and_then(|v| v.parse::<u64>().ok())
-      }
-    } {
+    if let Some(delay) = TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
+      std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    }) {
       std::thread::sleep(Duration::from_millis(delay));
     }
     if let Some(cb) = &self.cancel {
