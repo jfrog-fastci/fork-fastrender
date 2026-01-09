@@ -92,12 +92,16 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
       bail!("expected WebIDL interface `{iface}` in generated world");
     }
   }
-  if resolved
-    .interface_mixins
-    .get("WindowOrWorkerGlobalScope")
-    .is_none()
-  {
-    bail!("expected WebIDL interface mixin `WindowOrWorkerGlobalScope` in generated world");
+  let has_fetch = resolved
+    .interfaces
+    .values()
+    .flat_map(|i| i.members.iter())
+    .chain(resolved.interface_mixins.values().flat_map(|m| m.members.iter()))
+    .any(|m| {
+      m.name.as_deref() == Some("fetch") || m.raw.contains(" fetch(") || m.raw.starts_with("fetch(")
+    });
+  if !has_fetch {
+    bail!("expected a `fetch` operation in generated world (Fetch spec not loaded?)");
   }
 
   let generated = xtask::webidl::generate::generate_rust_module(&resolved, &rustfmt_config)

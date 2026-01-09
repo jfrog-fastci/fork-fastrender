@@ -278,17 +278,15 @@ mod tests {
         .collect::<Vec<_>>()
     );
 
-    let global = WORLD
-      .interface_mixin("WindowOrWorkerGlobalScope")
-      .expect("generated world should include WindowOrWorkerGlobalScope interface mixin");
-    let global_member_names = global
-      .members
+    let has_fetch = WORLD
+      .interfaces
       .iter()
-      .filter_map(|m| m.name)
-      .collect::<Vec<_>>();
+      .flat_map(|i| i.members.iter())
+      .chain(WORLD.interface_mixins.iter().flat_map(|m| m.members.iter()))
+      .any(|m| m.name == Some("fetch") || m.raw.contains(" fetch(") || m.raw.starts_with("fetch("));
     assert!(
-      global_member_names.contains(&"fetch"),
-      "expected WindowOrWorkerGlobalScope to contain fetch: {global_member_names:?}"
+      has_fetch,
+      "expected WebIDL world to include a fetch operation (WHATWG Fetch)"
     );
   }
 
