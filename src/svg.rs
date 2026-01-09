@@ -111,10 +111,7 @@ pub(crate) fn svg_intrinsic_dimensions_from_attributes(
     .and_then(SvgLength::to_px)
     .filter(|v| v.is_finite());
 
-  let aspect_ratio_none = preserve_aspect_ratio
-    .and_then(|par| split_svg_whitespace(par).next())
-    .map(|v| v.eq_ignore_ascii_case("none"))
-    .unwrap_or(false);
+  let aspect_ratio_none = SvgPreserveAspectRatio::parse(preserve_aspect_ratio).none;
 
   let view_box_ratio = if aspect_ratio_none {
     None
@@ -362,8 +359,8 @@ pub(crate) fn svg_view_box_root_transform(
 #[cfg(test)]
 mod tests {
   use super::{
-    parse_svg_length, parse_svg_view_box, svg_root_view_box, svg_view_box_root_transform,
-    SvgAlign, SvgMeetOrSlice, SvgPreserveAspectRatio,
+    parse_svg_length, parse_svg_view_box, svg_intrinsic_dimensions_from_attributes, svg_root_view_box,
+    svg_view_box_root_transform, SvgAlign, SvgMeetOrSlice, SvgPreserveAspectRatio,
   };
 
   #[test]
@@ -404,6 +401,18 @@ mod tests {
     assert!(!parsed.none);
     assert!(matches!(parsed.align, SvgAlign::XMinYMin));
     assert!(matches!(parsed.meet_or_slice, SvgMeetOrSlice::Slice));
+  }
+
+  #[test]
+  fn svg_intrinsic_dimensions_support_defer_none() {
+    let intrinsic = svg_intrinsic_dimensions_from_attributes(
+      None,
+      None,
+      Some("0 0 10 20"),
+      Some("defer none"),
+    );
+    assert!(intrinsic.aspect_ratio_none);
+    assert!(intrinsic.aspect_ratio.is_none());
   }
 
   #[test]
