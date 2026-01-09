@@ -5286,12 +5286,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         .get_attribute_ref("placeholder")
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string());
-      let value = styled
-        .node
-        .get_attribute_ref("value")
-        .filter(|v| !v.is_empty())
-        .map(|v| v.to_string())
-        .unwrap_or_default();
+      let value = element_ref.accessibility_value().unwrap_or_default();
 
       let kind = if input_type.eq_ignore_ascii_case("password") {
         TextControlKind::Password
@@ -7554,6 +7549,8 @@ mod tests {
     let html = "<html><body>
       <input type=\"password\" value=\"abc\">
       <input type=\"number\" value=\"5\" data-fastr-focus=\"true\" data-fastr-focus-visible=\"true\">
+      <input type=\"number\" value=\"abc\" placeholder=\"invalid number\">
+      <input type=\"number\" value=\"abc\" required placeholder=\"required invalid number\">
       <input type=\"color\" value=\"#00ff00\">
       <input type=\"color\" value=\"not-a-color\">
       <input type=\"color\" value=\"not-a-color-disabled\" disabled>
@@ -7607,6 +7604,36 @@ mod tests {
         } if value == "5"
       ) && c.focus_visible),
       "number input should be recognized and keep focus-visible hint"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Number,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid number")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid number input values should sanitize to empty and remain valid when not required"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Number,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("required invalid number")
+        ) && c.required
+          && c.invalid
+      }),
+      "required number input with invalid value should be marked invalid"
     );
     assert!(
       controls

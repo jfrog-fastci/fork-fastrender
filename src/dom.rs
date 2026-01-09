@@ -4581,6 +4581,30 @@ pub(crate) fn input_color_value_string(node: &DomNode) -> Option<String> {
   Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
+pub(crate) fn input_number_value_string(node: &DomNode) -> Option<String> {
+  if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
+    return None;
+  }
+
+  let input_type = node.get_attribute_ref("type");
+  if !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
+    return None;
+  }
+
+  let raw = node.get_attribute_ref("value").unwrap_or("");
+  let trimmed = trim_ascii_whitespace_html(raw);
+  if trimmed.is_empty() {
+    return Some(String::new());
+  }
+
+  // HTML number inputs sanitize invalid values to the empty string.
+  if parse_finite_number(raw).is_some() {
+    Some(trimmed.to_string())
+  } else {
+    Some(String::new())
+  }
+}
+
 /// Wrapper for DomNode that implements Element trait for selector matching
 /// This wrapper carries context needed for matching (parent, siblings)
 #[derive(Debug, Clone, Copy)]
@@ -5420,6 +5444,9 @@ impl<'a> ElementRef<'a> {
         return Some(format_number(value));
       }
       if let Some(value) = input_color_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_number_value_string(self.node) {
         return Some(value);
       }
       return Some(
@@ -9403,13 +9430,36 @@ mod tests {
   }
 
   #[test]
-  fn bad_input_flags_invalid_numeric_and_date_time_values() {
+  fn number_value_attribute_invalid_sanitizes_to_empty_and_does_not_set_bad_input() {
     let number = element_with_attrs("input", vec![("type", "number"), ("value", "abc")], vec![]);
+    assert_eq!(input_number_value_string(&number), Some(String::new()));
+    assert_eq!(ElementRef::new(&number).control_value(), Some(String::new()));
+
     let state =
       forms_validation::validity_state(&ElementRef::new(&number)).expect("validity state");
-    assert!(state.bad_input);
-    assert!(!state.valid);
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
 
+    let whitespace =
+      element_with_attrs("input", vec![("type", "number"), ("value", "  5\t")], vec![]);
+    assert_eq!(
+      input_number_value_string(&whitespace).as_deref(),
+      Some("5"),
+      "number inputs should trim ASCII whitespace"
+    );
+
+    let required =
+      element_with_attrs("input", vec![("type", "number"), ("value", "abc"), ("required", "")], vec![]);
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&required)).expect("validity state");
+    assert!(!state.bad_input);
+    assert!(!state.valid);
+    assert!(state.value_missing);
+  }
+
+  #[test]
+  fn bad_input_flags_invalid_date_time_values() {
     let date = element_with_attrs("input", vec![("type", "date"), ("value", "2020-13-01")], vec![]);
     let state = forms_validation::validity_state(&ElementRef::new(&date)).expect("validity state");
     assert!(state.bad_input);
@@ -13017,10 +13067,13 @@ mod tests {
       },
       children: vec![],
     };
-    assert!(matches(&number_nan, &[], &PseudoClass::Invalid));
+    assert!(matches(&number_nan, &[], &PseudoClass::Valid));
+    assert!(
+      !matches(&number_nan, &[], &PseudoClass::UserValid),
+      "user-validity is initially false"
+    );
+    assert!(!matches(&number_nan, &[], &PseudoClass::Invalid));
     assert!(!matches(&number_nan, &[], &PseudoClass::UserInvalid));
-    assert!(!matches(&number_nan, &[], &PseudoClass::Valid));
-    assert!(!matches(&number_nan, &[], &PseudoClass::UserValid));
 
     let disabled_input = DomNode {
       node_type: DomNodeType::Element {

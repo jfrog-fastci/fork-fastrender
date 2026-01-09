@@ -423,8 +423,11 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
   }
 
   if input_type.eq_ignore_ascii_case("number") {
-    let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-    if numeric_value_missing(raw) {
+    // Number input values are sanitized to either a finite number string or the empty string. Invalid
+    // value attributes should behave like missing values rather than surfacing `badInput` (which is
+    // intended for user-driven input errors).
+    let sanitized = super::input_number_value_string(element.node).unwrap_or_default();
+    if numeric_value_missing(&sanitized) {
       if required {
         state.value_missing = true;
       }
@@ -432,13 +435,10 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
       return state;
     }
 
-    let trimmed = super::trim_ascii_whitespace_html(raw);
-    let parsed = trimmed
-      .parse::<f64>()
-      .ok()
-      .filter(|v| v.is_finite());
-    let Some(value) = parsed else {
-      state.bad_input = true;
+    let Some(value) = super::parse_finite_number(&sanitized) else {
+      if required {
+        state.value_missing = true;
+      }
       state.compute_validity();
       return state;
     };
