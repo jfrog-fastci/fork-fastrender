@@ -112,11 +112,11 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
     // Route through `vm_js_heap_mut` so hosts can override which heap stores persistent roots
     // without forcing a `vm_js_vm_and_heap_mut` borrow.
-    self.host.vm_js_heap_mut().add_root(value)
+    self.heap_mut().add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    self.host.vm_js_heap_mut().remove_root(id);
+    self.heap_mut().remove_root(id);
   }
 }
 
