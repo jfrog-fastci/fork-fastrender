@@ -152,6 +152,9 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
             const scopes = parent.querySelectorAll(":scope");
             if (scopes.length !== 1 || scopes[0] !== parent) return "bad_scope_qsa";
 
+            if (!a.matches(".x")) return "bad_matches_true";
+            if (a.matches("section")) return "bad_matches_false";
+
             if (a.closest(".x") !== a) return "bad_closest_inclusive";
             if (a.closest("#p") !== parent) return "bad_closest_ancestor";
             if (a.closest("body") !== document.body) return "bad_closest_body";
@@ -160,9 +163,17 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
             // Invalid selector should throw SyntaxError.
             try {
               parent.querySelectorAll("[");
-              return "no_throw";
+              return "no_throw_qsa";
             } catch (e) {
-              if (String(e && e.name) !== "SyntaxError") return String(e && e.name);
+              if (String(e && e.name) !== "SyntaxError") return "bad_qsa_throw:" + String(e && e.name);
+            }
+
+            // Invalid selector should throw SyntaxError for matches() as well.
+            try {
+              a.matches("[");
+              return "no_throw_matches";
+            } catch (e) {
+              if (String(e && e.name) !== "SyntaxError") return "bad_matches_throw:" + String(e && e.name);
             }
 
             // Invalid selector should throw SyntaxError for closest() as well.
@@ -170,8 +181,10 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
               a.closest("[");
               return "no_throw_closest";
             } catch (e) {
-              return String(e && e.name);
+              if (String(e && e.name) !== "SyntaxError") return "bad_closest_throw:" + String(e && e.name);
             }
+
+            return "ok";
           } catch (e) {
             if (!e) return "unknown";
             return String(e) + "\n" + String(e.stack || "");
@@ -180,7 +193,7 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
       "##,
       )
       .unwrap();
-    assert_eq!(outcome, "SyntaxError", "element querySelector(All) failed: {outcome}");
+    assert_eq!(outcome, "ok", "element selectors failed: {outcome}");
   });
 }
 

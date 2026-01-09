@@ -457,6 +457,9 @@ where
           Err(DomException::SyntaxError { message }) => {
             throw_dom_exception(ctx, "SyntaxError", &message)
           }
+          Err(DomException::NoModificationAllowedError { message }) => {
+            throw_dom_exception(ctx, "NoModificationAllowedError", &message)
+          }
         }
       }
     })?,
@@ -482,6 +485,9 @@ where
           Err(DomException::SyntaxError { message }) => {
             throw_dom_exception(ctx, "SyntaxError", &message)
           }
+          Err(DomException::NoModificationAllowedError { message }) => {
+            throw_dom_exception(ctx, "NoModificationAllowedError", &message)
+          }
         }
       }
     })?,
@@ -504,6 +510,9 @@ where
           Err(DomException::SyntaxError { message }) => {
             throw_dom_exception(ctx, "SyntaxError", &message)
           }
+          Err(DomException::NoModificationAllowedError { message }) => {
+            throw_dom_exception(ctx, "NoModificationAllowedError", &message)
+          }
         }
       }
     })?,
@@ -524,6 +533,9 @@ where
           Ok(found) => Ok(found.map(|id| id.index() as u32)),
           Err(DomException::SyntaxError { message }) => {
             throw_dom_exception(ctx, "SyntaxError", &message)
+          }
+          Err(DomException::NoModificationAllowedError { message }) => {
+            throw_dom_exception(ctx, "NoModificationAllowedError", &message)
           }
         }
       }
@@ -1483,12 +1495,6 @@ const DOM_BINDINGS_SHIM: &str = r##"
   Element.prototype.matches = function (selectors) {
     return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
   };
-  Element.prototype.closest = function (selectors) {
-    var id = g.__fastrender_dom_closest(this.__node_id, String(selectors));
-    if (id == null) return null;
-    return g.__fastrender_wrap_node_id(id, "element");
-  };
-
   Element.prototype.closest = function (selectors) {
     var id = g.__fastrender_dom_closest(this.__node_id, String(selectors));
     if (id == null) return null;
