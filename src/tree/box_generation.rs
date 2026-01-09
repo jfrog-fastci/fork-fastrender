@@ -2567,6 +2567,17 @@ fn serialize_svg_subtree(
               let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
               merge_style_attribute(attrs_mut, &extra);
             }
+            let has_transform_attr = owned_attrs
+              .as_deref()
+              .unwrap_or(attributes)
+              .iter()
+              .any(|(name, _)| name.eq_ignore_ascii_case("transform"));
+            if !has_transform_attr {
+              if let Some(transform) = svg_transform_attribute(&styled.styles) {
+                let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+                attrs_mut.push(("transform".to_string(), transform));
+              }
+            }
           }
         }
 
