@@ -5,6 +5,7 @@ mod background_mask_case_insensitive_test;
 mod background_position_logical_test;
 mod background_size_strict_test;
 mod border_image_properties_test;
+mod cascade_keywords_layers_scope;
 mod cascade_marker_test;
 mod cascade_perf_test;
 mod container_query_at_rule_test;

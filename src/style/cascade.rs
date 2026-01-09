@@ -30306,8 +30306,13 @@ fn apply_cascaded_declarations<'a, F>(
   // layer boundary so `--foo: revert-layer` can roll back to the layer base.
   let track_custom_revert_layer = any_custom_revert_layer
     || (styles.custom_properties.has_revert_layer_token() && any_registered_custom_var);
-  let mut custom_layer_snapshots: FxHashMap<Arc<[u32]>, CustomPropertyStore> = FxHashMap::default();
-  let mut custom_layer_snapshot_stratum: Option<(u8, bool)> = None;
+  // `revert-layer` rolls back the cascade across both the normal and important segments.
+  // That means !important `revert-layer` must ignore normal declarations in the same layer,
+  // as well as declarations in between the layer's normal and important positions.
+  //
+  // Capture each layer's base during the normal custom-property pass and reuse it for important.
+  let mut custom_layer_snapshots: FxHashMap<(u8, Arc<[u32]>), CustomPropertyStore> =
+    FxHashMap::default();
 
   let need_important_order = any_custom_important || any_other_important;
 
@@ -30384,30 +30389,28 @@ fn apply_cascaded_declarations<'a, F>(
   };
 
   // First apply custom properties so later var() resolutions can see them
-  if any_custom_normal {
+  //
+  // When `revert-layer` is in play, record the custom-property store at the start of each layer in
+  // the normal cascade order. We then reuse that base when applying !important declarations so
+  // `--x: revert-layer !important` ignores any normal declarations in the same layer.
+  if track_custom_revert_layer {
     for &rule_idx in rule_order.iter() {
+      let rule = &matched_rules[rule_idx];
+      let origin_rank = rule.origin.rank();
+      let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
+      if !custom_layer_snapshots.contains_key(&layer_key) {
+        custom_layer_snapshots.insert(layer_key.clone(), styles.custom_properties.clone());
+      }
+
       if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
         continue;
       }
-      let rule = &matched_rules[rule_idx];
+
       let revert_base = match rule.origin {
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
-      let revert_layer_base_custom_properties = if track_custom_revert_layer {
-        let stratum = (rule.origin.rank(), false);
-        if custom_layer_snapshot_stratum != Some(stratum) {
-          custom_layer_snapshots.clear();
-          custom_layer_snapshot_stratum = Some(stratum);
-        }
-        let layer_order = &rule.layer_order;
-        if !custom_layer_snapshots.contains_key(layer_order.as_ref()) {
-          custom_layer_snapshots.insert(Arc::clone(layer_order), styles.custom_properties.clone());
-        }
-        custom_layer_snapshots.get(layer_order.as_ref())
-      } else {
-        None
-      };
+      let revert_layer_base_custom_properties = custom_layer_snapshots.get(&layer_key);
       for declaration in rule.declarations.iter() {
         if declaration.important || !declaration.property.is_custom() {
           continue;
@@ -30428,6 +30431,36 @@ fn apply_cascaded_declarations<'a, F>(
         );
       }
     }
+  } else if any_custom_normal {
+    for &rule_idx in rule_order.iter() {
+      if rule_decl_kinds[rule_idx] & HAS_CUSTOM_NORMAL == 0 {
+        continue;
+      }
+      let rule = &matched_rules[rule_idx];
+      let revert_base = match rule.origin {
+        StyleOrigin::UserAgent => defaults,
+        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+      };
+      for declaration in rule.declarations.iter() {
+        if declaration.important || !declaration.property.is_custom() {
+          continue;
+        }
+        if !filter(declaration) {
+          continue;
+        }
+        apply_declaration_with_base_and_custom_properties(
+          styles,
+          declaration,
+          parent_styles,
+          revert_base,
+          None,
+          None,
+          parent_font_size,
+          root_font_size,
+          viewport,
+        );
+      }
+    }
   }
   if any_custom_important {
     for &rule_idx in important_rule_order.iter() {
@@ -30439,20 +30472,10 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
-      let revert_layer_base_custom_properties = if track_custom_revert_layer {
-        let stratum = (rule.origin.rank(), true);
-        if custom_layer_snapshot_stratum != Some(stratum) {
-          custom_layer_snapshots.clear();
-          custom_layer_snapshot_stratum = Some(stratum);
-        }
-        let layer_order = &rule.layer_order;
-        if !custom_layer_snapshots.contains_key(layer_order.as_ref()) {
-          custom_layer_snapshots.insert(Arc::clone(layer_order), styles.custom_properties.clone());
-        }
-        custom_layer_snapshots.get(layer_order.as_ref())
-      } else {
-        None
-      };
+      let revert_layer_base_custom_properties = track_custom_revert_layer.then(|| {
+        let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
+        custom_layer_snapshots.get(&layer_key).expect("custom layer base missing")
+      });
       let (start, end) = important_custom_ranges[rule_idx];
       let decls = rule.declarations.as_ref();
       for &decl_order in important_custom_decl_orders[start..end].iter() {
@@ -30483,10 +30506,10 @@ fn apply_cascaded_declarations<'a, F>(
   let track_revert_layer =
     styles.custom_properties.has_revert_layer_token() || any_non_custom_revert_layer;
 
-  // Scope revert-layer bases to the current cascade stratum (origin + importance) so that
-  // important declarations don't reuse snapshots from the normal cascade segment.
-  let mut layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
-  let mut layer_snapshot_stratum: Option<(u8, bool)> = None;
+  // `revert-layer` rolls back the cascade across both the normal and important segments.
+  // Capture each layer base in the normal cascade and reuse it for important declarations so
+  // `revert-layer !important` ignores normal declarations in the same layer.
+  let mut layer_snapshots: FxHashMap<(u8, Arc<[u32]>), ComputedStyle> = FxHashMap::default();
 
   // Resolve `color-scheme` early so `light-dark()` can be resolved consistently based on the final
   // used scheme, not declaration order.
@@ -30612,7 +30635,51 @@ fn apply_cascaded_declarations<'a, F>(
   let is_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
 
   // Then apply all other declarations in cascade order
-  if any_other_normal {
+  if track_revert_layer {
+    // When `revert-layer` can occur (directly or via `var()` substitution), record the per-layer
+    // base before applying any declarations in that layer. The same base is then used for both
+    // normal and !important declarations.
+    for &rule_idx in rule_order.iter() {
+      let rule = &matched_rules[rule_idx];
+      let origin_rank = rule.origin.rank();
+      let layer_key = (origin_rank, Arc::clone(&rule.layer_order));
+      if !layer_snapshots.contains_key(&layer_key) {
+        layer_snapshots.insert(layer_key.clone(), styles.clone());
+      }
+
+      if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
+        continue;
+      }
+
+      let revert_base = match rule.origin {
+        StyleOrigin::UserAgent => defaults,
+        StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+      };
+      let revert_layer_base = layer_snapshots.get(&layer_key).map(|s| s as &ComputedStyle);
+      for declaration in rule.declarations.iter() {
+        if declaration.important
+          || declaration.property.is_custom()
+          || declaration.property.as_str() == "color-scheme"
+        {
+          continue;
+        }
+        if !filter(declaration) {
+          continue;
+        }
+        apply_declaration_with_base(
+          styles,
+          declaration,
+          parent_styles,
+          revert_base,
+          revert_layer_base,
+          parent_font_size,
+          root_font_size,
+          viewport,
+          is_dark_color_scheme,
+        );
+      }
+    }
+  } else if any_other_normal {
     for &rule_idx in rule_order.iter() {
       if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
         continue;
@@ -30632,32 +30699,12 @@ fn apply_cascaded_declarations<'a, F>(
         if !filter(declaration) {
           continue;
         }
-        let revert_layer_base = if track_revert_layer {
-          let stratum = (rule.origin.rank(), false);
-          if layer_snapshot_stratum != Some(stratum) {
-            layer_snapshots.clear();
-            layer_snapshot_stratum = Some(stratum);
-          }
-          let layer_order = &rule.layer_order;
-          let layer_base = match layer_snapshots.get_mut(layer_order.as_ref()) {
-            Some(existing) => existing,
-            None => {
-              layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-              layer_snapshots
-                .get_mut(layer_order.as_ref())
-                .expect("layer snapshot inserted")
-            }
-          };
-          Some(&*layer_base)
-        } else {
-          None
-        };
         apply_declaration_with_base(
           styles,
           declaration,
           parent_styles,
           revert_base,
-          revert_layer_base,
+          None,
           parent_font_size,
           root_font_size,
           viewport,
@@ -30676,6 +30723,16 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
+      let revert_layer_base = if track_revert_layer {
+        let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
+        Some(
+          layer_snapshots
+            .get(&layer_key)
+            .expect("layer snapshot missing for important declarations"),
+        )
+      } else {
+        None
+      };
       let (start, end) = important_other_ranges[rule_idx];
       let decls = rule.declarations.as_ref();
       for &decl_order in important_other_decl_orders[start..end].iter() {
@@ -30688,26 +30745,6 @@ fn apply_cascaded_declarations<'a, F>(
         if !filter(declaration) {
           continue;
         }
-        let revert_layer_base = if track_revert_layer {
-          let stratum = (rule.origin.rank(), true);
-          if layer_snapshot_stratum != Some(stratum) {
-            layer_snapshots.clear();
-            layer_snapshot_stratum = Some(stratum);
-          }
-          let layer_order = &rule.layer_order;
-          let layer_base = match layer_snapshots.get_mut(layer_order.as_ref()) {
-            Some(existing) => existing,
-            None => {
-              layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-              layer_snapshots
-                .get_mut(layer_order.as_ref())
-                .expect("layer snapshot inserted")
-            }
-          };
-          Some(&*layer_base)
-        } else {
-          None
-        };
         apply_declaration_with_base(
           styles,
           declaration,
