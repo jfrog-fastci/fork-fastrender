@@ -12,7 +12,12 @@ use crate::web::events;
 /// This is intentionally renderer/engine agnostic so that JS/WebIDL bindings can depend on it
 /// without embedding rendering pipeline details.
 pub struct HostDocumentState {
-  dom: dom2::Document,
+  // The JS embedding (WindowRealm) stores a raw pointer to the host `dom2::Document` inside a
+  // thread-local registry keyed by an integer "dom source id". That pointer must remain stable even
+  // when the owning host state is moved (e.g. returning `WindowHostState` by value).
+  //
+  // Store the DOM tree behind a `Box` so its address does not change when the host state moves.
+  dom: Box<dom2::Document>,
   events: Rc<events::EventListenerRegistry>,
   current_script: CurrentScriptStateHandle,
   script_log: Option<ScriptExecutionLog>,
@@ -35,7 +40,7 @@ impl std::fmt::Debug for HostDocumentState {
 impl HostDocumentState {
   pub fn new(dom: dom2::Document) -> Self {
     Self {
-      dom,
+      dom: Box::new(dom),
       events: Rc::new(events::EventListenerRegistry::new()),
       current_script: CurrentScriptStateHandle::default(),
       script_log: None,
@@ -47,11 +52,11 @@ impl HostDocumentState {
   }
 
   pub fn dom(&self) -> &dom2::Document {
-    &self.dom
+    self.dom.as_ref()
   }
 
   pub fn dom_mut(&mut self) -> &mut dom2::Document {
-    &mut self.dom
+    self.dom.as_mut()
   }
 
   pub fn events(&self) -> Rc<events::EventListenerRegistry> {
@@ -98,14 +103,14 @@ impl DomHost for HostDocumentState {
   where
     F: FnOnce(&dom2::Document) -> R,
   {
-    f(&self.dom)
+    f(self.dom.as_ref())
   }
 
   fn mutate_dom<R, F>(&mut self, f: F) -> R
   where
     F: FnOnce(&mut dom2::Document) -> (R, bool),
   {
-    let (result, _changed) = f(&mut self.dom);
+    let (result, _changed) = f(self.dom.as_mut());
     result
   }
 }

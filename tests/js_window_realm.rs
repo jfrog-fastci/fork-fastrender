@@ -470,6 +470,62 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
 }
 
 #[test]
+fn document_create_element_and_append_child_update_dom() -> Result<()> {
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
+  const el = document.createElement("div");
+  el.id = "x";
+  const ret = document.body.appendChild(el);
+  globalThis.__append_same = (ret === el);
+  globalThis.__found_same = (document.getElementById("x") === el);
+  "#,
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+  }
+
+  let (append_same, found_same) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    (
+      get_data_prop(&mut scope, global, "__append_same"),
+      get_data_prop(&mut scope, global, "__found_same"),
+    )
+  };
+
+  assert_eq!(append_same, Value::Bool(true));
+  assert_eq!(found_same, Value::Bool(true));
+
+  let node = host
+    .dom()
+    .get_element_by_id("x")
+    .expect("expected appended element to be reachable via get_element_by_id");
+  let body = host
+    .dom()
+    .body()
+    .expect("expected HTML document to have a body element");
+  assert_eq!(
+    host
+      .dom()
+      .parent(node)
+      .expect("expected dom2::Document::parent to succeed"),
+    Some(body)
+  );
+
+  Ok(())
+}
+
+#[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
   struct JsExecutor {

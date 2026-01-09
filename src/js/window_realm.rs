@@ -331,6 +331,7 @@ const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
+const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -986,6 +987,10 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_ID_SET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let append_child = {
+    let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let wrapper = scope.alloc_object()?;
   scope.push_root(Value::Object(wrapper))?;
@@ -1031,6 +1036,11 @@ fn get_or_create_node_wrapper(
         },
       },
     )?;
+  }
+
+  if let Some(Value::Object(func)) = append_child {
+    let key = alloc_key(scope, "appendChild")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
   scope.define_property(cache, wrapper_key, data_desc(Value::Object(wrapper)))?;
@@ -1184,6 +1194,155 @@ fn document_get_element_by_id_native(
     return Ok(Value::Null);
   };
   get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn document_create_element_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Err(VmError::TypeError(
+      "document.createElement must be called on a document object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "document.createElement requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let tag_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let tag_value = scope.heap_mut().to_string(tag_value)?;
+  let tag_name = scope
+    .heap()
+    .get_string(tag_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "document.createElement requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.create_element(&tag_name, "");
+
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
+fn node_append_child_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(parent_obj) = this else {
+    return Err(VmError::TypeError(
+      "Node.appendChild must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.appendChild requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let parent_index = match scope
+    .heap()
+    .object_get_own_data_property_value(parent_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.appendChild must be called on a node object",
+      ));
+    }
+  };
+
+  let child_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let Value::Object(child_obj) = child_value else {
+    return Err(VmError::TypeError(
+      "Node.appendChild requires a node argument",
+    ));
+  };
+
+  let child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(child_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.appendChild requires a node argument",
+      ));
+    }
+  };
+  if child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Node.appendChild cannot move nodes between documents",
+    ));
+  }
+
+  let child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(child_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Node.appendChild requires a node argument",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Node.appendChild requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let parent_node_id = dom
+    .node_id_from_index(parent_index)
+    .map_err(|_| VmError::TypeError("Node.appendChild must be called on a node object"))?;
+  let child_node_id = dom
+    .node_id_from_index(child_index)
+    .map_err(|_| VmError::TypeError("Node.appendChild requires a node argument"))?;
+
+  if let Err(err) = dom.append_child(parent_node_id, child_node_id) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(child_value)
 }
 
 fn element_class_name_get_native(
@@ -1811,6 +1970,46 @@ fn init_window_globals(
     document_obj,
     get_element_by_id_key,
     data_desc(Value::Object(get_element_by_id_func)),
+  )?;
+
+  // document.createElement
+  let create_element_key = alloc_key(&mut scope, "createElement")?;
+  let create_element_call_id = vm.register_native_call(document_create_element_native)?;
+  let create_element_name = scope.alloc_string("createElement")?;
+  scope.push_root(Value::String(create_element_name))?;
+  let create_element_func =
+    scope.alloc_native_function(create_element_call_id, None, create_element_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      create_element_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(create_element_func))?;
+  scope.define_property(
+    document_obj,
+    create_element_key,
+    data_desc(Value::Object(create_element_func)),
+  )?;
+
+  // Store shared Node.appendChild function on `document` so wrappers can reuse it.
+  let append_child_call_id = vm.register_native_call(node_append_child_native)?;
+  let append_child_name = scope.alloc_string("appendChild")?;
+  scope.push_root(Value::String(append_child_name))?;
+  let append_child_func =
+    scope.alloc_native_function(append_child_call_id, None, append_child_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      append_child_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(append_child_func))?;
+  let append_child_key = alloc_key(&mut scope, NODE_APPEND_CHILD_KEY)?;
+  scope.define_property(
+    document_obj,
+    append_child_key,
+    data_desc(Value::Object(append_child_func)),
   )?;
 
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.
