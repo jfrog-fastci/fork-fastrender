@@ -257,7 +257,7 @@ pub enum StackingContextReason {
   /// Has `backface-visibility: hidden`.
   ///
   /// WPT expects `backface-visibility: hidden` to establish a stacking context even when the
-  /// element is not participating in a 3D rendering context (i.e. no `transform-style: preserve-3d`
+  /// element is not participating in a 3D rendering context (e.g. no `transform-style: preserve-3d`
   /// ancestor).
   BackfaceVisibility,
 
@@ -2482,6 +2482,7 @@ mod tests {
   fn test_creates_stacking_context_backface_visibility_hidden() {
     let mut style = ComputedStyle::default();
     style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
+
     assert!(creates_stacking_context(&style, None, false));
     assert_eq!(
       get_stacking_context_reason(&style, None, false),
