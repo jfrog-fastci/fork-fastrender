@@ -15,6 +15,7 @@ use rquickjs::function::{Args, Constructor, Rest};
 use rquickjs::{Ctx, Function, JsLifetime, Object, Result as JsResult, Value};
 
 const NODE_CACHE_GLOBAL: &str = "__fastrender_dom_node_cache";
+const NODE_CACHE_FINALIZER_REGISTER_GLOBAL: &str = "__fastrender_dom_node_cache_register_finalizer";
 const DOM_EXCEPTION_GLOBAL: &str = "__fastrender_throw_dom_exception";
 
 // Minimal DOMException polyfill used for spec-shaped error reporting (e.g. HierarchyRequestError).
@@ -34,6 +35,51 @@ const DOM_EXCEPTION_SHIM: &str = r#"
   }
   g.__fastrender_throw_dom_exception = function (name, message) {
     throw new g.DOMException(message, name);
+  };
+})();
+"#;
+
+// Best-effort node wrapper cache cleanup: avoid leaving unbounded dead keys in the cache after
+// wrapper objects are garbage collected.
+//
+// We store `NodeId -> WeakRef(wrapper)` in `__fastrender_dom_node_cache`. Without cleanup, hostile
+// scripts could create/throw away unbounded numbers of nodes and leave behind dead cache entries.
+//
+// QuickJS supports `FinalizationRegistry` when the WeakRef intrinsic is installed; if present, we
+// register wrappers so the cache can delete keys once the WeakRef is cleared.
+//
+// Note: the finalizer callback double-checks the cache's current WeakRef for the key and only
+// deletes when it derefs to `null`/`undefined`, so it won't race with a newer wrapper for the same
+// `NodeId`.
+const NODE_CACHE_FINALIZER_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  if (typeof g.FinalizationRegistry !== "function") return;
+  if (g.__fastrender_dom_node_cache_finalizer) return;
+  var cache = g.__fastrender_dom_node_cache;
+  if (!cache) return;
+
+  g.__fastrender_dom_node_cache_finalizer = new g.FinalizationRegistry(function (key) {
+    try {
+      var wr = cache[key];
+      if (wr && typeof wr.deref === "function") {
+        if (wr.deref() == null) {
+          delete cache[key];
+        }
+      } else {
+        delete cache[key];
+      }
+    } catch (_e) {
+      // Ignore.
+    }
+  });
+
+  g.__fastrender_dom_node_cache_register_finalizer = function (obj, key) {
+    try {
+      g.__fastrender_dom_node_cache_finalizer.register(obj, key);
+    } catch (_e) {
+      // Ignore.
+    }
   };
 })();
 "#;
@@ -61,6 +107,9 @@ pub fn install_dom_bindings<'js>(
   ctx
     .globals()
     .set(NODE_CACHE_GLOBAL, Object::new(ctx.clone())?)?;
+  // Best-effort: install a `FinalizationRegistry` hook so dead cache keys can be deleted once
+  // wrappers are garbage collected.
+  ctx.eval::<(), _>(NODE_CACHE_FINALIZER_SHIM)?;
 
   // Create the `document` global.
   let document_obj = state.wrap_node(ctx.clone(), root)?;
@@ -98,6 +147,7 @@ impl DomState {
     let obj: Object<'js> = inst.into_inner();
     let weakref_obj = weakref_new(&ctx, obj.clone())?;
     cache.set(key.as_str(), weakref_obj)?;
+    register_cache_finalizer(&ctx, key.as_str(), &obj)?;
     Ok(obj)
   }
 }
@@ -745,6 +795,19 @@ fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Erro
   match err {
     DomException::SyntaxError { message } => throw_syntax_error(ctx, &message),
   }
+}
+
+fn register_cache_finalizer<'js>(ctx: &Ctx<'js>, key: &str, obj: &Object<'js>) -> JsResult<()> {
+  let globals = ctx.globals();
+  let register: Option<Function<'js>> = globals.get(NODE_CACHE_FINALIZER_REGISTER_GLOBAL)?;
+  let Some(register) = register else {
+    return Ok(());
+  };
+
+  // Best-effort: if finalization is not supported or fails, we still have WeakRef caching (identity
+  // preservation) but may retain dead keys.
+  let _ = register.call::<_, ()>((obj.clone(), key.to_string()));
+  Ok(())
 }
 
 fn ensure_node_exists<'js>(ctx: &Ctx<'js>, dom: &Document, node_id: NodeId) -> JsResult<()> {

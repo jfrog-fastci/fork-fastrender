@@ -710,6 +710,10 @@ impl VmJsRuntime {
     };
     self.throw_type_error(&message)
   }
+
+  fn throw_syntax_error(&mut self, message: &str) -> VmError {
+    VmError::Throw(self.create_error_object("SyntaxError", message))
+  }
 }
 
 impl WebIdlHooks<Value> for VmJsRuntime {
@@ -945,10 +949,10 @@ impl JsRuntime for VmJsRuntime {
       }
       Value::Null => 0.0,
       Value::Undefined => f64::NAN,
-      Value::String(s) => self.to_number_from_string(s)?,
       Value::BigInt(_) => {
         return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
       }
+      Value::String(s) => self.to_number_from_string(s)?,
       Value::Symbol(_) => {
         return Err(self.throw_type_error("Cannot convert a Symbol value to a number"));
       }
@@ -1048,14 +1052,49 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn to_bigint(&mut self, value: Value) -> Result<Value, VmError> {
-    match value {
-      Value::BigInt(_) => Ok(value),
-      Value::Object(obj) => self
-        .bigint_object_data(obj)?
-        .map(Value::BigInt)
-        .ok_or_else(|| self.throw_type_error("Cannot convert value to a BigInt")),
-      _ => Err(self.throw_type_error("Cannot convert value to a BigInt")),
-    }
+    self.sweep_dead_host_objects_if_needed();
+
+    self.with_stack_roots([value], |rt| {
+      let bigint = match value {
+        Value::BigInt(b) => b,
+        Value::Bool(b) => {
+          if b {
+            JsBigInt::from_u128(1)
+          } else {
+            JsBigInt::zero()
+          }
+        }
+        Value::Number(n) => number_to_bigint(rt, n)?,
+        Value::String(s) => string_to_bigint(rt, s)?,
+        Value::Undefined | Value::Null => {
+          return Err(rt.throw_type_error("Cannot convert null or undefined to a BigInt"));
+        }
+        Value::Symbol(_) => {
+          return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
+        }
+        Value::Object(obj) => {
+          if let Some(bigint_data) = rt.bigint_object_data(obj)? {
+            bigint_data
+          } else if let Some(string_data) = rt.string_object_data(obj)? {
+            string_to_bigint(rt, string_data)?
+          } else if let Some(boolean_data) = rt.boolean_object_data(obj)? {
+            if boolean_data {
+              JsBigInt::from_u128(1)
+            } else {
+              JsBigInt::zero()
+            }
+          } else if let Some(number_data) = rt.number_object_data(obj)? {
+            number_to_bigint(rt, number_data)?
+          } else if rt.symbol_object_data(obj)?.is_some() {
+            return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
+          } else {
+            return Err(rt.throw_type_error("Cannot convert object to BigInt"));
+          }
+        }
+      };
+
+      Ok(Value::BigInt(bigint))
+    })
   }
 
   fn to_numeric(&mut self, value: Value) -> Result<Value, VmError> {
@@ -1335,6 +1374,68 @@ impl WebIdlJsRuntime for VmJsRuntime {
   fn throw_range_error(&mut self, message: &str) -> VmError {
     VmError::Throw(self.create_error_object("RangeError", message))
   }
+}
+
+fn number_to_bigint(rt: &mut VmJsRuntime, n: f64) -> Result<JsBigInt, VmError> {
+  if !n.is_finite() {
+    return Err(rt.throw_range_error("Cannot convert a non-finite number to a BigInt"));
+  }
+  if n.fract() != 0.0 {
+    return Err(rt.throw_range_error("Cannot convert a non-integer number to a BigInt"));
+  }
+  let negative = n.is_sign_negative();
+  let abs = n.abs();
+  if abs > (u128::MAX as f64) {
+    return Err(rt.throw_range_error("BigInt conversion overflow"));
+  }
+  let mag = abs as u128;
+  let mut out = JsBigInt::from_u128(mag);
+  if negative {
+    out = out.negate();
+  }
+  Ok(out)
+}
+
+fn string_to_bigint(rt: &mut VmJsRuntime, s: GcString) -> Result<JsBigInt, VmError> {
+  let js = rt.heap.get_string(s)?;
+  let text = js.to_utf8_lossy();
+  parse_bigint(&text).ok_or_else(|| rt.throw_syntax_error("Cannot convert string to BigInt"))
+}
+
+fn parse_bigint(text: &str) -> Option<JsBigInt> {
+  let trimmed = text.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let (negative, rest) = if let Some(rest) = trimmed.strip_prefix('-') {
+    (true, rest)
+  } else if let Some(rest) = trimmed.strip_prefix('+') {
+    (false, rest)
+  } else {
+    (false, trimmed)
+  };
+
+  let (radix, digits) = if let Some(rest) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+    (16, rest)
+  } else if let Some(rest) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+    (8, rest)
+  } else if let Some(rest) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+    (2, rest)
+  } else {
+    (10, rest)
+  };
+
+  if digits.is_empty() {
+    return None;
+  }
+
+  let mag = u128::from_str_radix(digits, radix).ok()?;
+  let mut out = JsBigInt::from_u128(mag);
+  if negative {
+    out = out.negate();
+  }
+  Some(out)
 }
 
 #[cfg(test)]
