@@ -1218,6 +1218,101 @@ fn accessibility_layout_table_suppresses_table_descendant_roles() {
 }
 
 #[test]
+fn accessibility_layout_table_role_none_suppresses_table_descendant_roles() {
+  let html = r##"
+    <html>
+      <body>
+        <table id="layout" role="none">
+          <caption id="cap">Cap</caption>
+          <tr id="r">
+            <th id="h">H</th>
+            <td id="c">C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  assert!(
+    find_json_node(&tree, "layout").is_none(),
+    "layout table with role=none should be omitted from the accessibility tree"
+  );
+
+  let subset = snapshot_subset(&tree, &["cap", "r", "h", "c"]);
+  assert_eq!(
+    subset,
+    json!({
+      "cap": {
+        "role": "generic",
+        "name": "Cap",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "caption",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "r": {
+        "role": "generic",
+        "name": "H C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "tr",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "h": {
+        "role": "generic",
+        "name": "H",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "th",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "c": {
+        "role": "generic",
+        "name": "C",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "td",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_table_role_grid_maps_cells_to_gridcell() {
   let html = r##"
     <html>
@@ -1252,6 +1347,61 @@ fn accessibility_table_role_grid_maps_cells_to_gridcell() {
         }
       },
       "gc": {
+        "role": "gridcell",
+        "name": "Cell",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "td",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "selected": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
+fn accessibility_table_role_treegrid_maps_cells_to_gridcell() {
+  let html = r##"
+    <html>
+      <body>
+        <table id="tg" role="treegrid">
+          <tr id="tgr"><td id="tgc">Cell</td></tr>
+        </table>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  let subset = snapshot_subset(&tree, &["tg", "tgc"]);
+  assert_eq!(
+    subset,
+    json!({
+      "tg": {
+        "role": "treegrid",
+        "name": null,
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "table",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      },
+      "tgc": {
         "role": "gridcell",
         "name": "Cell",
         "description": null,
