@@ -59,6 +59,7 @@ These are consumed by the experimental desktop browser UI (`cargo run --features
   - Accepts `_` separators (e.g. `1_024`).
   - On Linux this attempts to apply an `RLIMIT_AS` cap at process start; on other platforms it is currently unsupported.
 - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – **test-only** hook: run a minimal end-to-end smoke test of the real `browser` entrypoint and UI↔worker messaging without opening a window or initialising winit/wgpu (for CI environments without a display/GPU).
 
 ## Compatibility toggles
 
