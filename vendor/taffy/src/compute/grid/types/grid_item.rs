@@ -543,8 +543,18 @@ impl GridItem {
     } else {
       Size::ZERO
     };
-    let size = self
-      .size
+    // CSS Grid treats percentage/calc preferred sizes as depending on the containing block size.
+    // During intrinsic track sizing, those sizes must *not* be treated as definite, otherwise
+    // items like `width: 100%` can force their tracks to expand to the full grid container width
+    // (a cyclic dependency).
+    //
+    // https://www.w3.org/TR/css-grid-1/#min-size-auto (minimum contribution definition)
+    let mut size_style = self.size;
+    if size_style.get(axis).0.uses_percentage() {
+      size_style.set(axis, Dimension::auto());
+    }
+
+    let size = size_style
       .maybe_resolve(inner_node_size, |val, basis| tree.calc(val, basis))
       .maybe_add(box_sizing_adjustment)
       .get(axis)

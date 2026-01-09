@@ -724,6 +724,41 @@ fn style_summary(style: &fastrender::style::ComputedStyle) -> String {
     style.order,
   );
 
+  if !style.grid_template_columns.is_empty()
+    || !style.grid_template_rows.is_empty()
+    || style.grid_gap.value != 0.0
+    || style.grid_row_gap.value != 0.0
+    || style.grid_column_gap.value != 0.0
+  {
+    out.push_str(&format!(
+      " grid_template=({}c,{}r) gap=({}{:?} row={} col={})",
+      style.grid_template_columns.len(),
+      style.grid_template_rows.len(),
+      style.grid_gap.to_px(),
+      style.grid_gap.unit,
+      style.grid_row_gap.to_px(),
+      style.grid_column_gap.to_px()
+    ));
+  }
+
+  if style.grid_column_start != 0
+    || style.grid_column_end != 0
+    || style.grid_column_raw.is_some()
+    || style.grid_row_start != 0
+    || style.grid_row_end != 0
+    || style.grid_row_raw.is_some()
+  {
+    out.push_str(&format!(
+      " grid_place=col({},{},{:?}) row({},{},{:?})",
+      style.grid_column_start,
+      style.grid_column_end,
+      style.grid_column_raw,
+      style.grid_row_start,
+      style.grid_row_end,
+      style.grid_row_raw
+    ));
+  }
+
   if !style.background_layers.is_empty() {
     let summaries: Vec<String> = style
       .background_layers

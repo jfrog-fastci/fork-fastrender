@@ -721,13 +721,19 @@ fn constraints_from_taffy(
   let mut constraints = LayoutConstraints::new(width, height);
   constraints.used_border_box_width = known_width;
   constraints.used_border_box_height = known_height;
+  // Percentages in grid items resolve against the available size offered by the grid area.
+  //
+  // Taffy provides that size as `AvailableSpace::Definite(width)` during layout and many
+  // measurement probes. Prefer it over the parent percentage base so percentage widths like
+  // `width: 100%` do not incorrectly resolve against the grid container's full width during track
+  // sizing (which can force columns to overflow instead of sharing available space).
   constraints.inline_percentage_base = constraints
     .inline_percentage_base
-    .or(inline_percentage_base)
     .or(match available.width {
       taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
       _ => None,
-    });
+    })
+    .or(inline_percentage_base);
   constraints
 }
 
@@ -3604,8 +3610,8 @@ impl GridFormattingContext {
         if let Some(mut reused) = Self::take_matching_measured_fragment(
           measured_fragments,
           keys,
-          bounds.width(),
-          bounds.height(),
+          taffy.unrounded_layout(child_id).size.width,
+          taffy.unrounded_layout(child_id).size.height,
         ) {
           fragment_clone_profile::record_fragment_reuse_without_clone(CloneSite::GridMeasureReuse);
           let delta = Point::new(
@@ -4068,8 +4074,8 @@ impl GridFormattingContext {
           if let Some(mut reused) = Self::take_matching_measured_fragment(
             measured_fragments,
             keys,
-            bounds.width(),
-            bounds.height(),
+            taffy.unrounded_layout(node_id).size.width,
+            taffy.unrounded_layout(node_id).size.height,
           ) {
             fragment_clone_profile::record_fragment_reuse_without_clone(
               CloneSite::GridMeasureReuse,
@@ -4990,7 +4996,18 @@ impl GridFormattingContext {
     axis: Axis,
     deadline_counter: &mut usize,
   ) -> Result<Option<f32>, LayoutError> {
-    if let Some(offset) = first_baseline_offset(fragment, deadline_counter)? {
+    let baseline = match axis {
+      Axis::Vertical => first_baseline_offset(fragment, deadline_counter)?,
+      Axis::Horizontal => {
+        let writing_mode = fragment
+          .style
+          .as_ref()
+          .map(|style| style.writing_mode)
+          .unwrap_or(WritingMode::HorizontalTb);
+        first_baseline_offset_x(fragment, writing_mode, deadline_counter)?
+      }
+    };
+    if let Some(offset) = baseline {
       return Ok(Some(offset));
     }
 
@@ -5156,6 +5173,7 @@ impl GridFormattingContext {
     }
 
     let mut row_groups: FxHashMap<u16, Vec<BaselineItem>> = FxHashMap::default();
+    let mut col_groups: FxHashMap<u16, Vec<BaselineItem>> = FxHashMap::default();
 
     for (idx, ((child_id, item_info), child_fragment)) in child_ids
       .iter()
@@ -5204,10 +5222,49 @@ impl GridFormattingContext {
             });
         }
       }
+
+      if self.alignment_for_axis(Axis::Horizontal, child_style, container_style)
+        == taffy::style::AlignItems::Baseline
+      {
+        let baseline =
+          self.baseline_offset_with_fallback(child_fragment, Axis::Horizontal, deadline_counter)?;
+        if let (Some((area_start, area_end)), Some(baseline)) = (
+          grid_area_for_item(&col_offsets, item_info.column_start, item_info.column_end),
+          baseline,
+        ) {
+          if debug_baseline {
+            eprintln!(
+              "[grid-baseline] idx={} col=({},{}) area=({:.2},{:.2}) start={:.2} size={:.2} baseline={:.2}",
+              idx,
+              item_info.column_start,
+              item_info.column_end,
+              area_start,
+              area_end,
+              child_fragment.bounds.x(),
+              child_fragment.bounds.width(),
+              baseline
+            );
+          }
+          col_groups
+            .entry(item_info.column_start)
+            .or_default()
+            .push(BaselineItem {
+              idx,
+              area_start,
+              area_end,
+              baseline,
+              start: child_fragment.bounds.x(),
+              size: child_fragment.bounds.width(),
+            });
+        }
+      }
     }
 
     for group in row_groups.values() {
       self.apply_baseline_group(Axis::Vertical, group, fragment, deadline_counter)?;
+    }
+    for group in col_groups.values() {
+      self.apply_baseline_group(Axis::Horizontal, group, fragment, deadline_counter)?;
     }
     Ok(())
   }
@@ -12934,13 +12991,14 @@ mod tests {
         let child_layout = taffy.layout(child_id).unwrap();
         let before_len = measured_fragments.len();
         assert!(before_len > 0, "expected measured fragments to be recorded");
+        let child_layout_unrounded = taffy.unrounded_layout(child_id);
         let matched_key = measured_node_keys
           .get(&child_id)
           .and_then(|keys| {
             keys.iter().copied().find(|key| {
               measured_fragments.get(key).map_or(false, |fragment| {
-                (fragment.bounds.width() - child_layout.size.width).abs() < 0.1
-                  && (fragment.bounds.height() - child_layout.size.height).abs() < 0.1
+                (fragment.bounds.width() - child_layout_unrounded.size.width).abs() < 0.1
+                  && (fragment.bounds.height() - child_layout_unrounded.size.height).abs() < 0.1
               })
             })
           })
@@ -13190,6 +13248,65 @@ mod tests {
     let fragment = fc.layout(&grid, &constraints).unwrap();
 
     assert_eq!(fragment.children.len(), 2);
+  }
+
+  #[test]
+  fn grid_item_percentage_width_does_not_expand_fr_tracks() {
+    // Regression test for cases like CNET where a grid item with `width: 100%` spans multiple
+    // `fr` tracks. The percentage depends on the grid area size and must not force track sizing to
+    // expand the spanned tracks to the full container width.
+    let fc = GridFormattingContext::new();
+
+    let gap = 2.0;
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_column_gap = Length::px(gap);
+    grid_style.grid_row_gap = Length::px(0.0);
+    grid_style.grid_template_columns = vec![GridTrack::Fr(1.0); 10];
+    let grid_style = Arc::new(grid_style);
+
+    let mut media_style = ComputedStyle::default();
+    media_style.width = Some(Length::percent(100.0));
+    media_style.height = Some(Length::px(100.0));
+    media_style.grid_column_raw = Some("auto / span 5".to_string());
+    let mut media =
+      BoxNode::new_block(Arc::new(media_style), FormattingContextType::Block, vec![]);
+    media.id = 2;
+
+    let mut meta_style = ComputedStyle::default();
+    meta_style.height = Some(Length::px(100.0));
+    meta_style.grid_column_raw = Some("auto / span 5".to_string());
+    let mut meta = BoxNode::new_block(Arc::new(meta_style), FormattingContextType::Block, vec![]);
+    meta.id = 3;
+
+    let mut grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![media, meta]);
+    grid.id = 1;
+
+    let container_width = 1000.0;
+    let constraints = LayoutConstraints::definite(container_width, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout");
+
+    let media_fragment = find_block_fragment(&fragment, 2);
+    let meta_fragment = find_block_fragment(&fragment, 3);
+
+    let track_width = (container_width - gap * 9.0) / 10.0;
+    let expected_item_width = track_width * 5.0 + gap * 4.0;
+    assert!(
+      (media_fragment.bounds.width() - expected_item_width).abs() < 0.5,
+      "expected media width≈{expected_item_width:.2}, got {:.2}",
+      media_fragment.bounds.width()
+    );
+    assert!(
+      (meta_fragment.bounds.width() - expected_item_width).abs() < 0.5,
+      "expected meta width≈{expected_item_width:.2}, got {:.2}",
+      meta_fragment.bounds.width()
+    );
+    assert!(
+      (meta_fragment.bounds.x() - (expected_item_width + gap)).abs() < 0.5,
+      "expected meta x≈{:.2}, got {:.2}",
+      expected_item_width + gap,
+      meta_fragment.bounds.x()
+    );
   }
 
   // Test 8: Grid with multiple rows
