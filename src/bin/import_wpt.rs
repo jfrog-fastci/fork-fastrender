@@ -1196,7 +1196,7 @@ fn find_reftest_link_in_html(content: &str) -> Option<(ReftestRelation, String)>
       .map(|m| m.as_str())
       .unwrap_or("");
 
-    for token in rel.split_whitespace() {
+    for token in rel.split_ascii_whitespace() {
       if token.eq_ignore_ascii_case("match") {
         return Some((ReftestRelation::Match, href.to_string()));
       }
@@ -1471,7 +1471,7 @@ fn find_network_urls(content: &str) -> Result<Vec<String>> {
 }
 
 fn link_rel_requires_fetch(rel: &str) -> bool {
-  rel.split_whitespace().any(|token| {
+  rel.split_ascii_whitespace().any(|token| {
     token.eq_ignore_ascii_case("stylesheet")
       || token.eq_ignore_ascii_case("preload")
       || token.eq_ignore_ascii_case("modulepreload")
@@ -2609,5 +2609,30 @@ mod tests {
       }
       other => panic!("unexpected error: {other:?}"),
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_import_wpt_rel_tokens_do_not_split_on_nbsp() {
+    let nbsp = "\u{00A0}";
+    let html = format!("<!doctype html><link rel=\"match{nbsp}mismatch\" href=\"ref.html\">");
+    assert!(
+      find_reftest_link_in_html(&html).is_none(),
+      "NBSP should not act as an HTML rel token delimiter"
+    );
+
+    assert!(
+      !link_rel_requires_fetch(&format!("stylesheet{nbsp}preload")),
+      "NBSP should not act as an HTML rel token delimiter"
+    );
+    assert!(
+      link_rel_requires_fetch("stylesheet preload"),
+      "ASCII whitespace should delimit rel tokens"
+    );
+
+    let html_ok = "<!doctype html><link rel=\"match\" href=\"ref.html\">";
+    assert_eq!(
+      find_reftest_link_in_html(html_ok),
+      Some((ReftestRelation::Match, "ref.html".to_string()))
+    );
   }
 }

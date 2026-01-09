@@ -38,7 +38,10 @@ impl WebTime {
 }
 
 /// Installs `Date.now()` and `performance.now()` bindings into the JS runtime.
-pub fn install_time_bindings<Host, R: JsRuntime<Host>>(runtime: &mut R, web_time: WebTime) {
+pub fn install_time_bindings<Host: 'static, R: JsRuntime<Host>>(
+  runtime: &mut R,
+  web_time: WebTime,
+) {
   runtime
     .global_object("Date")
     .define_method("now", Box::new(move |_host, event_loop| {

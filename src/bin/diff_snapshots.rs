@@ -808,8 +808,7 @@ fn describe_dom_node(node: &DomNodeSnapshot) -> String {
           classes.extend(
             attr
               .value
-              .split_whitespace()
-              .filter(|s| !s.is_empty())
+              .split_ascii_whitespace()
               .map(ToString::to_string),
           );
         }
@@ -1693,4 +1692,28 @@ fn format_rect(rect: &RectSnapshot) -> String {
 
 fn cmp_f32(a: f32, b: f32) -> Ordering {
   a.partial_cmp(&b).unwrap_or(Ordering::Equal)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::describe_dom_node;
+  use fastrender::debug::snapshot::{AttributeSnapshot, DomNodeKindSnapshot, DomNodeSnapshot};
+
+  #[test]
+  fn non_ascii_whitespace_diff_snapshots_class_tokenization_does_not_split_nbsp() {
+    let nbsp = "\u{00A0}";
+    let node = DomNodeSnapshot {
+      node_id: 1,
+      kind: DomNodeKindSnapshot::Element {
+        tag_name: "div".to_string(),
+        namespace: "http://www.w3.org/1999/xhtml".to_string(),
+        attributes: vec![AttributeSnapshot {
+          name: "class".to_string(),
+          value: format!("a{nbsp}b"),
+        }],
+      },
+      children: Vec::new(),
+    };
+    assert_eq!(describe_dom_node(&node), format!("div.a{nbsp}b"));
+  }
 }

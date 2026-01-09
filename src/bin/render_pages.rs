@@ -1973,7 +1973,7 @@ fn element_metadata(node: &DomNode) -> (Option<String>, Option<String>, Vec<Stri
       if name.eq_ignore_ascii_case("id") {
         id = Some(value.clone());
       } else if name.eq_ignore_ascii_case("class") {
-        classes.extend(value.split_whitespace().map(|c| c.to_string()));
+        classes.extend(value.split_ascii_whitespace().map(str::to_string));
       }
     }
     (Some(tag_name.clone()), id, classes)
@@ -2127,6 +2127,7 @@ mod tests {
     DiskCacheStalePolicyArg, WORKER_RAYON_THREADS_ENV,
   };
   use clap::Parser;
+  use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
   use fastrender::resource::ResourceFetcher as _;
   use std::ffi::OsStr;
   use std::path::Path;
@@ -2292,5 +2293,20 @@ mod tests {
       err.to_string().contains("offline mode"),
       "offline error should mention offline mode: {err}"
     );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_render_pages_class_tokenization_does_not_split_nbsp() {
+    let nbsp = "\u{00A0}";
+    let node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("class".to_string(), format!("a{nbsp}b"))],
+      },
+      children: Vec::new(),
+    };
+    let (_, _, classes) = super::element_metadata(&node);
+    assert_eq!(classes, vec![format!("a{nbsp}b")]);
   }
 }
