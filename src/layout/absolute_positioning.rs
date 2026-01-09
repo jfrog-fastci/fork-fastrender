@@ -3062,6 +3062,50 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
       return;
     }
 
+    fn flip_anchor_size_axis(axis: crate::style::types::AnchorSizeAxis) -> crate::style::types::AnchorSizeAxis {
+      use crate::style::types::AnchorSizeAxis::*;
+      match axis {
+        Width => Height,
+        Height => Width,
+        InlineSize => BlockSize,
+        BlockSize => InlineSize,
+      }
+    }
+
+    fn flip_start_sizing_properties(style: &mut ComputedStyle) {
+      // `flip-start` mirrors across the start-start to end-end diagonal, swapping the horizontal and
+      // vertical axes. Apply the corresponding swap to sizing properties and adjust any
+      // `anchor-size()` axes so they continue to refer to the same relative direction.
+      std::mem::swap(&mut style.width, &mut style.height);
+      std::mem::swap(&mut style.width_keyword, &mut style.height_keyword);
+      std::mem::swap(&mut style.width_anchor_size, &mut style.height_anchor_size);
+      std::mem::swap(&mut style.min_width, &mut style.min_height);
+      std::mem::swap(&mut style.min_width_keyword, &mut style.min_height_keyword);
+      std::mem::swap(&mut style.min_width_anchor_size, &mut style.min_height_anchor_size);
+      std::mem::swap(&mut style.max_width, &mut style.max_height);
+      std::mem::swap(&mut style.max_width_keyword, &mut style.max_height_keyword);
+      std::mem::swap(&mut style.max_width_anchor_size, &mut style.max_height_anchor_size);
+
+      if let Some(func) = style.width_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+      if let Some(func) = style.height_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+      if let Some(func) = style.min_width_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+      if let Some(func) = style.min_height_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+      if let Some(func) = style.max_width_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+      if let Some(func) = style.max_height_anchor_size.as_mut() {
+        func.axis = flip_anchor_size_axis(func.axis);
+      }
+    }
+
     let inline_sides = axis_physical_sides(style, crate::style::LogicalAxis::Inline);
     let block_sides = axis_physical_sides(style, crate::style::LogicalAxis::Block);
 
@@ -3069,6 +3113,8 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     swap_insets(style, inline_sides.1, block_sides.1);
     swap_margins(style, inline_sides.0, block_sides.0);
     swap_margins(style, inline_sides.1, block_sides.1);
+
+    flip_start_sizing_properties(style);
 
     flip_start_inset_value(&mut style.top, inline_sides, block_sides);
     flip_start_inset_value(&mut style.right, inline_sides, block_sides);

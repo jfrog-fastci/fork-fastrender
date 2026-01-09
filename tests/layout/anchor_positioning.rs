@@ -912,6 +912,81 @@ fn anchor_positioning_supports_builtin_flip_y_try_in_vertical_writing_mode() {
 }
 
 #[test]
+fn anchor_positioning_supports_builtin_flip_start_try_for_anchor_size() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(120.0));
+  container_style.height = Some(Length::px(220.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(200.0));
+  anchor_style.height = Some(Length::px(100.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  // Place at the containing block origin so overflow comes only from sizing.
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Width,
+    fallback: None,
+  });
+  overlay_style.height = Some(Length::px(50.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  // Base styles overflow horizontally (200px wide in a 120px CB); flip-start should swap width/height
+  // so the box can fit (50px wide, 100px tall).
+  overlay_style.position_try_fallbacks = vec!["flip-start".to_string()];
+  let mut overlay =
+    BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
+  container.id = 208;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(120.0, 220.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_fragment.bounds.width() - 50.0).abs() < 0.1,
+    "flip-start should swap width/height so width becomes 50px (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 100.0).abs() < 0.1,
+    "flip-start should swap anchor-size(width) so height becomes 100px (got h={})",
+    overlay_fragment.bounds.height()
+  );
+  assert!(
+    overlay_fragment.bounds.max_x() <= 120.0 + 0.1 && overlay_fragment.bounds.max_y() <= 220.0 + 0.1,
+    "overlay should not overflow the containing block after applying flip-start"
+  );
+}
+
+#[test]
 fn anchor_positioning_supports_multiple_builtin_try_tactics() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;
