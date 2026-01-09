@@ -4824,12 +4824,14 @@ impl BlockFormattingContext {
             FragmentationContext::Column,
             column_height,
           )?;
-          let Some(clipped_content) = clipped_content else {
+          let Some(mut clipped_content) = clipped_content else {
             for _ in 0..column_count {
               balanced_boundaries.push(set_end);
             }
             continue;
           };
+          clipped_content.slice_info =
+            crate::tree::fragment_tree::FragmentSliceInfo::single(set_content_total);
 
           let mut set_analyzer = FragmentationAnalyzer::new(
             &clipped_content,
