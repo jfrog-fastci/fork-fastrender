@@ -15,6 +15,27 @@ const DEFAULT_JOBS_CAP: usize = 4;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
+pub enum HarnessMode {
+  /// Load and execute upstream tc39/test262 harness files.
+  Upstream,
+  /// Use a minimal built-in harness prelude (no upstream harness JS).
+  Minimal,
+  /// Do not prepend any harness code (test body only).
+  None,
+}
+
+impl HarnessMode {
+  fn as_cli_value(self) -> &'static str {
+    match self {
+      Self::Upstream => "upstream",
+      Self::Minimal => "minimal",
+      Self::None => "none",
+    }
+  }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
 pub enum Test262Suite {
   /// Default curated suite (CI-friendly, deterministic subset).
   Curated,
@@ -22,37 +43,17 @@ pub enum Test262Suite {
   Smoke,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-pub enum HarnessMode {
-  /// Prepend the standard test262 harness (`assert.js`, `sta.js`) plus frontmatter `includes`.
-  Test262,
-  /// Prepend only frontmatter `includes` (no implicit `assert.js`/`sta.js`).
-  Includes,
-  /// Prepend no harness files at all.
-  None,
-}
-
-impl HarnessMode {
-  fn as_cli_value(self) -> &'static str {
-    match self {
-      Self::Test262 => "test262",
-      Self::Includes => "includes",
-      Self::None => "none",
-    }
-  }
-}
 #[derive(Args, Debug)]
 pub struct Test262Args {
   /// Select which preset suite to run.
   #[arg(long, value_enum, default_value_t = Test262Suite::Curated)]
   pub suite: Test262Suite,
 
-  /// Control how the runner assembles test sources with harness files.
+  /// Select how the test source is assembled (upstream harness files vs minimal built-in prelude).
   ///
-  /// FastRender defaults to `none` while the `vm-js` executor can't execute the upstream harness
-  /// scripts (`assert.js`/`sta.js`) yet.
-  #[arg(long, value_enum, default_value_t = HarnessMode::None)]
+  /// FastRender defaults to `minimal` so we can run curated suites without executing the upstream
+  /// tc39/test262 harness (`assert.js`/`sta.js`) during early VM bring-up.
+  #[arg(long, value_enum, default_value_t = HarnessMode::Minimal)]
   pub harness: HarnessMode,
 
   /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
@@ -196,7 +197,7 @@ fn ensure_test262_dir(
 ) -> Result<()> {
   let test_dir = test262_dir.join("test");
   let harness_dir = test262_dir.join("harness");
-  let harness_required = harness_mode != HarnessMode::None;
+  let harness_required = matches!(harness_mode, HarnessMode::Upstream);
   if test_dir.is_dir() && (!harness_required || harness_dir.is_dir()) {
     return Ok(());
   }
