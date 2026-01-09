@@ -29,9 +29,11 @@ pub(crate) const QUEUE_MICROTASK_NOT_CALLABLE_ERROR: &str =
   "queueMicrotask callback is not callable";
 
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
-const TIMER_GLOBAL_KEY: &str = "__fastrender_timer_global";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
 const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
+
+// Native slot index on timer host functions that stores the owning global object.
+const TIMER_GLOBAL_SLOT: usize = 0;
 
 const DEFAULT_CALLBACK_FUEL: u64 = 1_000_000;
 const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
@@ -139,33 +141,19 @@ fn get_timer_registry(
   }
 }
 
-fn get_timer_global(
-  scope: &mut Scope<'_>,
+fn timer_global_from_callee(
+  scope: &Scope<'_>,
   callee: vm_js::GcObject,
 ) -> Result<vm_js::GcObject, VmError> {
-  let key_s = scope.alloc_string(TIMER_GLOBAL_KEY)?;
-  scope.push_root(Value::String(key_s))?;
-  let key = PropertyKey::from_string(key_s);
-  match scope
+  let slot = scope
     .heap()
-    .object_get_own_data_property_value(callee, &key)?
-  {
-    Some(Value::Object(obj)) => Ok(obj),
+    .get_function_native_slots(callee)?
+    .get(TIMER_GLOBAL_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  match slot {
+    Value::Object(obj) => Ok(obj),
     _ => Err(VmError::Unimplemented("timer function missing global binding")),
-  }
-}
-
-fn timer_global_from_this(
-  scope: &mut Scope<'_>,
-  callee: vm_js::GcObject,
-  this: Value,
-  invalid_this_msg: &'static str,
-) -> Result<vm_js::GcObject, VmError> {
-  let global = get_timer_global(scope, callee)?;
-  match this {
-    Value::Undefined | Value::Null => Ok(global),
-    Value::Object(obj) if obj == global => Ok(global),
-    _ => Err(throw_type_error(invalid_this_msg)),
   }
 }
 
@@ -419,7 +407,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  this: Value,
+  _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -439,12 +427,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
     Vec::new()
   };
 
-  let global_obj = timer_global_from_this(
-    scope,
-    callee,
-    this,
-    "setTimeout called with invalid this value",
-  )?;
+  let global_obj = timer_global_from_callee(scope, callee)?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -527,18 +510,13 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  this: Value,
+  _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
-  let global_obj = timer_global_from_this(
-    scope,
-    callee,
-    this,
-    "clearTimeout called with invalid this value",
-  )?;
+  let global_obj = timer_global_from_callee(scope, callee)?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -559,7 +537,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  this: Value,
+  _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let handler = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -579,12 +557,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
     Vec::new()
   };
 
-  let global_obj = timer_global_from_this(
-    scope,
-    callee,
-    this,
-    "setInterval called with invalid this value",
-  )?;
+  let global_obj = timer_global_from_callee(scope, callee)?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -665,18 +638,13 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  this: Value,
+  _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
   let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
-  let global_obj = timer_global_from_this(
-    scope,
-    callee,
-    this,
-    "clearInterval called with invalid this value",
-  )?;
+  let global_obj = timer_global_from_callee(scope, callee)?;
   let registry = get_timer_registry(scope, global_obj)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
@@ -696,7 +664,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
-  this: Value,
+  _this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -707,12 +675,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
     return Err(throw_type_error(QUEUE_MICROTASK_NOT_CALLABLE_ERROR));
   }
 
-  let _global_obj = timer_global_from_this(
-    scope,
-    callee,
-    this,
-    "queueMicrotask called with invalid this value",
-  )?;
+  let _global_obj = timer_global_from_callee(scope, callee)?;
 
   let Some(event_loop) = current_event_loop_mut::<Host>() else {
     return Err(throw_type_error(
@@ -788,10 +751,18 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let registry_key = alloc_key(&mut scope, TIMER_REGISTRY_KEY)?;
   scope.define_property(global, registry_key, data_desc(Value::Object(registry)))?;
 
+  let global_slots = [Value::Object(global)];
+
   let set_timeout_id = vm.register_native_call(set_timeout_native::<Host>)?;
   let set_timeout_name = scope.alloc_string("setTimeout")?;
   scope.push_root(Value::String(set_timeout_name))?;
-  let set_timeout = scope.alloc_native_function(set_timeout_id, None, set_timeout_name, 1)?;
+  let set_timeout = scope.alloc_native_function_with_slots(
+    set_timeout_id,
+    None,
+    set_timeout_name,
+    1,
+    &global_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(set_timeout, Some(realm.intrinsics().function_prototype()))?;
@@ -800,7 +771,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let clear_timeout_id = vm.register_native_call(clear_timeout_native::<Host>)?;
   let clear_timeout_name = scope.alloc_string("clearTimeout")?;
   scope.push_root(Value::String(clear_timeout_name))?;
-  let clear_timeout = scope.alloc_native_function(clear_timeout_id, None, clear_timeout_name, 1)?;
+  let clear_timeout = scope.alloc_native_function_with_slots(
+    clear_timeout_id,
+    None,
+    clear_timeout_name,
+    1,
+    &global_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(clear_timeout, Some(realm.intrinsics().function_prototype()))?;
@@ -809,7 +786,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let set_interval_id = vm.register_native_call(set_interval_native::<Host>)?;
   let set_interval_name = scope.alloc_string("setInterval")?;
   scope.push_root(Value::String(set_interval_name))?;
-  let set_interval = scope.alloc_native_function(set_interval_id, None, set_interval_name, 1)?;
+  let set_interval = scope.alloc_native_function_with_slots(
+    set_interval_id,
+    None,
+    set_interval_name,
+    1,
+    &global_slots,
+  )?;
   scope
     .heap_mut()
     .object_set_prototype(set_interval, Some(realm.intrinsics().function_prototype()))?;
@@ -819,7 +802,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let clear_interval_name = scope.alloc_string("clearInterval")?;
   scope.push_root(Value::String(clear_interval_name))?;
   let clear_interval =
-    scope.alloc_native_function(clear_interval_id, None, clear_interval_name, 1)?;
+    scope.alloc_native_function_with_slots(
+      clear_interval_id,
+      None,
+      clear_interval_name,
+      1,
+      &global_slots,
+    )?;
   scope.heap_mut().object_set_prototype(
     clear_interval,
     Some(realm.intrinsics().function_prototype()),
@@ -830,22 +819,18 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let queue_microtask_name = scope.alloc_string("queueMicrotask")?;
   scope.push_root(Value::String(queue_microtask_name))?;
   let queue_microtask =
-    scope.alloc_native_function(queue_microtask_id, None, queue_microtask_name, 1)?;
+    scope.alloc_native_function_with_slots(
+      queue_microtask_id,
+      None,
+      queue_microtask_name,
+      1,
+      &global_slots,
+    )?;
   scope.heap_mut().object_set_prototype(
     queue_microtask,
     Some(realm.intrinsics().function_prototype()),
   )?;
   scope.push_root(Value::Object(queue_microtask))?;
-
-  // Store the owning global object on each timer function so native handlers can recover it when
-  // called as a bare identifier (`setTimeout(...)`), where the evaluator passes `this = undefined`.
-  let timer_global_key = alloc_key(&mut scope, TIMER_GLOBAL_KEY)?;
-  let timer_global = Value::Object(global);
-  scope.define_property(set_timeout, timer_global_key, data_desc(timer_global))?;
-  scope.define_property(clear_timeout, timer_global_key, data_desc(timer_global))?;
-  scope.define_property(set_interval, timer_global_key, data_desc(timer_global))?;
-  scope.define_property(clear_interval, timer_global_key, data_desc(timer_global))?;
-  scope.define_property(queue_microtask, timer_global_key, data_desc(timer_global))?;
 
   let set_timeout_key = alloc_key(&mut scope, "setTimeout")?;
   let clear_timeout_key = alloc_key(&mut scope, "clearTimeout")?;
