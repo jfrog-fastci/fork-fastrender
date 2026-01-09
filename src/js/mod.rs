@@ -30,6 +30,7 @@ pub mod url;
 pub mod window_timers;
 pub mod streaming;
 pub mod webidl;
+pub mod window_realm;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
@@ -52,6 +53,7 @@ pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
+pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig};
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 
 /// The script processing mode for a `<script>` element.
