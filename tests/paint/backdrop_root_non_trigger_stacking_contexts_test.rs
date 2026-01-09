@@ -388,6 +388,10 @@ fn backdrop_filter_crosses_backface_visibility_stacking_context() {
   let sc_context = find_context_by_bounds_and_z_index(&display_list_stacking_contexts, 60.0, 60.0, 0)
     .expect("expected display list stacking context for #sc");
   assert!(
+    !sc_context.creates_stacking_context,
+    "backface-visibility boundaries are an internal stacking-tree detail and should not report a spec stacking context; got {sc_context:?}"
+  );
+  assert!(
     !sc_context.establishes_backdrop_root,
     "backface-visibility stacking contexts must not establish Backdrop Roots (filter-effects-2); got {sc_context:?}"
   );

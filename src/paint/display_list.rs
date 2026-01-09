@@ -2337,7 +2337,11 @@ pub struct StackingContextItem {
   /// Z-index for ordering
   pub z_index: i32,
 
-  /// Whether this element creates a new stacking context
+  /// Whether this boundary corresponds to a stacking context defined by CSS rules.
+  ///
+  /// The engine may also introduce stacking-context-like boundaries for internal reasons (e.g.
+  /// `backface-visibility: hidden` plane culling). Those should set this to `false` so debug
+  /// output can distinguish them from spec stacking contexts.
   pub creates_stacking_context: bool,
 
   /// Whether this stacking context is a paint root (root of a display-list build).

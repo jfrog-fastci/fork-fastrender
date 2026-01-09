@@ -17,7 +17,9 @@ fn stacking_context(
 ) -> StackingContextItem {
   StackingContextItem {
     z_index: 0,
-    creates_stacking_context: true,
+    creates_stacking_context: transform.is_some()
+      || mix_blend_mode != BlendMode::Normal
+      || backface_visibility != BackfaceVisibility::Hidden,
     is_root: false,
     establishes_backdrop_root: mix_blend_mode != BlendMode::Normal,
     has_backdrop_sensitive_descendants: mix_blend_mode != BlendMode::Normal,
