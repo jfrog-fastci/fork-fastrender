@@ -4691,39 +4691,45 @@ impl DisplayListBuilder {
     area_h: f32,
     img_w: f32,
     img_h: f32,
-    has_intrinsic_ratio: bool,
+    intrinsic_ratio: Option<f32>,
   ) -> (f32, f32) {
     let natural_w = if img_w > 0.0 { Some(img_w) } else { None };
     let natural_h = if img_h > 0.0 { Some(img_h) } else { None };
-    let ratio = if has_intrinsic_ratio && img_w > 0.0 && img_h > 0.0 {
-      Some(img_w / img_h)
-    } else {
-      None
-    };
+    let ratio = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0);
 
     match layer.size {
       BackgroundSize::Keyword(BackgroundSizeKeyword::Cover) => {
-        if has_intrinsic_ratio {
-          if let (Some(w), Some(h)) = (natural_w, natural_h) {
-            let scale = (area_w / w).max(area_h / h);
-            (w * scale, h * scale)
+        let area_w = area_w.max(0.0);
+        let area_h = area_h.max(0.0);
+        if let Some(ratio) = ratio {
+          if area_w <= 0.0 || area_h <= 0.0 {
+            return (area_w, area_h);
+          }
+          let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+          if area_ratio > ratio {
+            (area_w, area_w / ratio)
           } else {
-            (area_w.max(0.0), area_h.max(0.0))
+            (area_h * ratio, area_h)
           }
         } else {
-          (area_w.max(0.0), area_h.max(0.0))
+          (area_w, area_h)
         }
       }
       BackgroundSize::Keyword(BackgroundSizeKeyword::Contain) => {
-        if has_intrinsic_ratio {
-          if let (Some(w), Some(h)) = (natural_w, natural_h) {
-            let scale = (area_w / w).min(area_h / h);
-            (w * scale, h * scale)
+        let area_w = area_w.max(0.0);
+        let area_h = area_h.max(0.0);
+        if let Some(ratio) = ratio {
+          if area_w <= 0.0 || area_h <= 0.0 {
+            return (area_w, area_h);
+          }
+          let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+          if area_ratio > ratio {
+            (area_h * ratio, area_h)
           } else {
-            (area_w.max(0.0), area_h.max(0.0))
+            (area_w, area_w / ratio)
           }
         } else {
-          (area_w.max(0.0), area_h.max(0.0))
+          (area_w, area_h)
         }
       }
       BackgroundSize::Explicit(x, y) => {
@@ -6739,7 +6745,7 @@ impl DisplayListBuilder {
         size_area_h,
         img_w,
         img_h,
-        false,
+        None,
       );
       if !tile_w.is_finite() || !tile_h.is_finite() || tile_w <= 0.0 || tile_h <= 0.0 {
         return None;
@@ -7428,196 +7434,298 @@ impl DisplayListBuilder {
         }
       }
       BackgroundImage::Url(src) => {
-        if let Some(image) = self.decode_image(
-          src,
-          Some(style),
-          true,
-          CrossOriginAttribute::None,
-          None,
-          false,
-        ) {
-          let img_w = image.css_width;
-          let img_h = image.css_height;
-          if img_w > 0.0 && img_h > 0.0 {
-            let (mut tile_w, mut tile_h) = Self::compute_background_size(
-              layer,
-              style.font_size,
-              style.root_font_size,
-              self.viewport,
-              origin_rect.width(),
-              origin_rect.height(),
-              img_w,
-              img_h,
-              image.has_intrinsic_ratio,
+        'paint_url: {
+          let Some(image_cache) = self.image_cache.as_ref() else {
+            break 'paint_url;
+          };
+
+          let trimmed = trim_ascii_whitespace_start(src);
+          let inline_svg = trimmed.starts_with('<');
+
+          let (resolved_src, cached) = if inline_svg {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            trimmed.hash(&mut hasher);
+            let cache_key = format!("inline-svg:{:016x}:{}", hasher.finish(), trimmed.len());
+            let image = match image_cache.render_svg(trimmed) {
+              Ok(image) => image,
+              Err(_) => break 'paint_url,
+            };
+            (cache_key, image)
+          } else {
+            let resolved_src = image_cache.resolve_url(src);
+            let image = match image_cache.load_with_crossorigin_and_referrer_policy(
+              &resolved_src,
+              CrossOriginAttribute::None,
+              None,
+            ) {
+              Ok(image) => image,
+              Err(_) => break 'paint_url,
+            };
+            (resolved_src, image)
+          };
+
+          let orientation = style.image_orientation.resolve(cached.orientation, true);
+          let Some((img_w, img_h)) = cached.css_dimensions(
+            orientation,
+            &style.image_resolution,
+            self.device_pixel_ratio,
+            None,
+          ) else {
+            break 'paint_url;
+          };
+          if img_w <= 0.0 || img_h <= 0.0 {
+            break 'paint_url;
+          }
+          let intrinsic_ratio = cached.intrinsic_ratio(orientation);
+
+          let (mut tile_w, mut tile_h) = Self::compute_background_size(
+            layer,
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+            origin_rect.width(),
+            origin_rect.height(),
+            img_w,
+            img_h,
+            intrinsic_ratio,
+          );
+
+          let mut rounded_x = false;
+          let mut rounded_y = false;
+          if layer.repeat.x == BackgroundRepeatKeyword::Round {
+            tile_w = Self::round_tile_length(origin_rect.width(), tile_w);
+            rounded_x = true;
+          }
+          if layer.repeat.y == BackgroundRepeatKeyword::Round {
+            tile_h = Self::round_tile_length(origin_rect.height(), tile_h);
+            rounded_y = true;
+          }
+          if rounded_x ^ rounded_y
+            && matches!(
+              layer.size,
+              BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
+            )
+          {
+            if let Some(aspect) = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0) {
+              if rounded_x {
+                tile_h = tile_w / aspect;
+              } else {
+                tile_w = tile_h * aspect;
+              }
+            }
+          }
+
+          if tile_w <= 0.0 || tile_h <= 0.0 {
+            break 'paint_url;
+          }
+
+          let (offset_x, offset_y) = Self::resolve_background_offset(
+            layer.position,
+            origin_rect.width(),
+            origin_rect.height(),
+            tile_w,
+            tile_h,
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+
+          let quality = Self::image_filter_quality(Some(style));
+          let repeat_both_axes = matches!(
+            layer.repeat,
+            crate::style::types::BackgroundRepeat {
+              x: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
+              y: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
+            }
+          );
+
+          let image: Arc<ImageData> = if cached.is_vector {
+            let Some(svg) = cached.svg_content.as_deref() else {
+              break 'paint_url;
+            };
+            let render_w = (tile_w * self.device_pixel_ratio).ceil().max(1.0) as u32;
+            let render_h = (tile_h * self.device_pixel_ratio).ceil().max(1.0) as u32;
+
+            let used_resolution =
+              style
+                .image_resolution
+                .used_resolution(None, cached.resolution, self.device_pixel_ratio);
+            let cache_url = format!("{resolved_src}:{render_w}x{render_h}");
+            let cache_key = ImageKey::new(
+              cache_url,
+              CrossOriginAttribute::None,
+              None,
+              orientation,
+              true,
+              used_resolution,
+              self.device_pixel_ratio,
             );
 
-            let mut rounded_x = false;
-            let mut rounded_y = false;
-            if layer.repeat.x == BackgroundRepeatKeyword::Round {
-              tile_w = Self::round_tile_length(origin_rect.width(), tile_w);
-              rounded_x = true;
+            if let Some(image) = {
+              let mut decoded_cache = self
+                .decoded_image_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+              decoded_cache.get(&cache_key)
+            } {
+              image
+            } else {
+              let pixmap = match image_cache.render_svg_pixmap_at_size(
+                svg,
+                render_w,
+                render_h,
+                &resolved_src,
+                self.device_pixel_ratio,
+              ) {
+                Ok(pixmap) => pixmap,
+                Err(_) => break 'paint_url,
+              };
+              let image_data = Arc::new(ImageData::from_pixmap(pixmap.as_ref(), tile_w, tile_h));
+              let mut decoded_cache = self
+                .decoded_image_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+              if let Some(existing) = decoded_cache.get(&cache_key) {
+                existing
+              } else {
+                decoded_cache.insert(cache_key, image_data.clone());
+                image_data
+              }
             }
-            if layer.repeat.y == BackgroundRepeatKeyword::Round {
-              tile_h = Self::round_tile_length(origin_rect.height(), tile_h);
-              rounded_y = true;
+          } else {
+            let Some(image) = self.decode_image(
+              src,
+              Some(style),
+              true,
+              CrossOriginAttribute::None,
+              None,
+              false,
+            ) else {
+              break 'paint_url;
+            };
+            image
+          };
+
+          // Fast path: for the common `repeat`/`round` in both axes case, emit a single pattern
+          // fill instead of one item per tile.
+          if repeat_both_axes {
+            if let Some(counter) = self.background_pattern_fast_paths.as_ref() {
+              counter.fetch_add(1, Ordering::Relaxed);
             }
-            if rounded_x ^ rounded_y
-              && matches!(
-                layer.size,
-                BackgroundSize::Explicit(
-                  BackgroundSizeComponent::Auto,
-                  BackgroundSizeComponent::Auto
-                )
-              )
-            {
-              if image.has_intrinsic_ratio {
-                let aspect = if img_h != 0.0 { img_w / img_h } else { 1.0 };
-                if rounded_x {
-                  tile_h = tile_w / aspect;
-                } else {
-                  tile_w = tile_h * aspect;
-                }
+            if let Some(counter) = self.background_tiles.as_ref() {
+              let positions_x = Self::tile_axis_plan(
+                layer.repeat.x,
+                origin_rect.x(),
+                origin_rect.width(),
+                tile_w,
+                offset_x,
+                visible_clip.min_x(),
+                visible_clip.max_x(),
+              );
+              let positions_y = Self::tile_axis_plan(
+                layer.repeat.y,
+                origin_rect.y(),
+                origin_rect.height(),
+                tile_h,
+                offset_y,
+                visible_clip.min_y(),
+                visible_clip.max_y(),
+              );
+              let tiles = (positions_x.count as u64).saturating_mul(positions_y.count as u64);
+              if tiles > 0 {
+                counter.fetch_add(tiles, Ordering::Relaxed);
               }
             }
 
-            if tile_w > 0.0 && tile_h > 0.0 {
-              let (offset_x, offset_y) = Self::resolve_background_offset(
-                layer.position,
-                origin_rect.width(),
-                origin_rect.height(),
-                tile_w,
-                tile_h,
-                style.font_size,
-                style.root_font_size,
-                self.viewport,
-              );
+            self.list.push(DisplayItem::ImagePattern(ImagePatternItem {
+              dest_rect: visible_clip,
+              image: image.clone(),
+              tile_size: Size::new(tile_w, tile_h),
+              origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
+              repeat: ImagePatternRepeat::Repeat,
+              filter_quality: quality,
+            }));
+          } else {
+            let positions_x = Self::tile_axis_plan(
+              layer.repeat.x,
+              origin_rect.x(),
+              origin_rect.width(),
+              tile_w,
+              offset_x,
+              visible_clip.min_x(),
+              visible_clip.max_x(),
+            );
+            let positions_y = Self::tile_axis_plan(
+              layer.repeat.y,
+              origin_rect.y(),
+              origin_rect.height(),
+              tile_h,
+              offset_y,
+              visible_clip.min_y(),
+              visible_clip.max_y(),
+            );
 
-              let quality = Self::image_filter_quality(Some(style));
-              let repeat_both_axes = matches!(
-                layer.repeat,
-                crate::style::types::BackgroundRepeat {
-                  x: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
-                  y: BackgroundRepeatKeyword::Repeat | BackgroundRepeatKeyword::Round,
-                }
-              );
+            let max_x = visible_clip.max_x();
+            let max_y = visible_clip.max_y();
 
-              // Fast path: for the common `repeat`/`round` in both axes case, emit a single pattern
-              // fill instead of one item per tile.
-              if repeat_both_axes {
-                if let Some(counter) = self.background_pattern_fast_paths.as_ref() {
-                  counter.fetch_add(1, Ordering::Relaxed);
+            let mut deadline_counter = 0usize;
+            'tiles: for ty in positions_y.iter() {
+              for tx in positions_x.iter() {
+                if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
+                  break 'tiles;
                 }
-                if let Some(counter) = self.background_tiles.as_ref() {
-                  let positions_x = Self::tile_axis_plan(
-                    layer.repeat.x,
-                    origin_rect.x(),
-                    origin_rect.width(),
-                    tile_w,
-                    offset_x,
-                    visible_clip.min_x(),
-                    visible_clip.max_x(),
-                  );
-                  let positions_y = Self::tile_axis_plan(
-                    layer.repeat.y,
-                    origin_rect.y(),
-                    origin_rect.height(),
-                    tile_h,
-                    offset_y,
-                    visible_clip.min_y(),
-                    visible_clip.max_y(),
-                  );
-                  let tiles = (positions_x.count as u64).saturating_mul(positions_y.count as u64);
-                  if tiles > 0 {
-                    counter.fetch_add(tiles, Ordering::Relaxed);
+                if tx >= max_x || ty >= max_y {
+                  continue;
+                }
+
+                let tile_rect = Rect::from_xywh(tx, ty, tile_w, tile_h);
+                let Some(intersection) = tile_rect.intersection(visible_clip) else {
+                  continue;
+                };
+                if intersection.width() <= 0.0 || intersection.height() <= 0.0 {
+                  continue;
+                }
+
+                let scale_x = image.width as f32 / tile_w;
+                let scale_y = image.height as f32 / tile_h;
+                if !scale_x.is_finite() || !scale_y.is_finite() {
+                  continue;
+                }
+
+                let src_rect = Rect::from_xywh(
+                  (intersection.x() - tile_rect.x()) * scale_x,
+                  (intersection.y() - tile_rect.y()) * scale_y,
+                  intersection.width() * scale_x,
+                  intersection.height() * scale_y,
+                );
+                let src_rect = {
+                  let src_x = src_rect.x().max(0.0).floor() as u32;
+                  let src_y = src_rect.y().max(0.0).floor() as u32;
+                  let src_w = src_rect.width().ceil() as u32;
+                  let src_h = src_rect.height().ceil() as u32;
+                  let max_x = image.width.saturating_sub(src_x);
+                  let max_y = image.height.saturating_sub(src_y);
+                  let crop_w = src_w.min(max_x);
+                  let crop_h = src_h.min(max_y);
+                  if src_x == 0
+                    && src_y == 0
+                    && crop_w == image.width
+                    && crop_h == image.height
+                  {
+                    None
+                  } else {
+                    Some(src_rect)
                   }
-                }
+                };
 
-                self.list.push(DisplayItem::ImagePattern(ImagePatternItem {
-                  dest_rect: visible_clip,
+                self.emit_background_tile(DisplayItem::Image(ImageItem {
+                  dest_rect: intersection,
                   image: image.clone(),
-                  tile_size: Size::new(tile_w, tile_h),
-                  origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
-                  repeat: ImagePatternRepeat::Repeat,
                   filter_quality: quality,
+                  src_rect,
                 }));
-              } else {
-                let positions_x = Self::tile_axis_plan(
-                  layer.repeat.x,
-                  origin_rect.x(),
-                  origin_rect.width(),
-                  tile_w,
-                  offset_x,
-                  visible_clip.min_x(),
-                  visible_clip.max_x(),
-                );
-                let positions_y = Self::tile_axis_plan(
-                  layer.repeat.y,
-                  origin_rect.y(),
-                  origin_rect.height(),
-                  tile_h,
-                  offset_y,
-                  visible_clip.min_y(),
-                  visible_clip.max_y(),
-                );
-
-                let max_x = visible_clip.max_x();
-                let max_y = visible_clip.max_y();
-
-                let mut deadline_counter = 0usize;
-                'tiles: for ty in positions_y.iter() {
-                  for tx in positions_x.iter() {
-                    if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
-                      break 'tiles;
-                    }
-                    if tx >= max_x || ty >= max_y {
-                      continue;
-                    }
-
-                    let tile_rect = Rect::from_xywh(tx, ty, tile_w, tile_h);
-                    let Some(intersection) = tile_rect.intersection(visible_clip) else {
-                      continue;
-                    };
-                    if intersection.width() <= 0.0 || intersection.height() <= 0.0 {
-                      continue;
-                    }
-
-                    let scale_x = image.width as f32 / tile_w;
-                    let scale_y = image.height as f32 / tile_h;
-                    if !scale_x.is_finite() || !scale_y.is_finite() {
-                      continue;
-                    }
-
-                    let src_rect = Rect::from_xywh(
-                      (intersection.x() - tile_rect.x()) * scale_x,
-                      (intersection.y() - tile_rect.y()) * scale_y,
-                      intersection.width() * scale_x,
-                      intersection.height() * scale_y,
-                    );
-                    let src_rect = {
-                      let src_x = src_rect.x().max(0.0).floor() as u32;
-                      let src_y = src_rect.y().max(0.0).floor() as u32;
-                      let src_w = src_rect.width().ceil() as u32;
-                      let src_h = src_rect.height().ceil() as u32;
-                      let max_x = image.width.saturating_sub(src_x);
-                      let max_y = image.height.saturating_sub(src_y);
-                      let crop_w = src_w.min(max_x);
-                      let crop_h = src_h.min(max_y);
-                      if src_x == 0 && src_y == 0 && crop_w == image.width && crop_h == image.height
-                      {
-                        None
-                      } else {
-                        Some(src_rect)
-                      }
-                    };
-
-                    self.emit_background_tile(DisplayItem::Image(ImageItem {
-                      dest_rect: intersection,
-                      image: image.clone(),
-                      filter_quality: quality,
-                      src_rect,
-                    }));
-                  }
-                }
               }
             }
           }
@@ -11867,7 +11975,7 @@ mod tests {
     );
 
     let (w, h) = DisplayListBuilder::compute_background_size(
-      &layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0, false,
+      &layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0, None,
     );
     assert_eq!(w, 0.0);
     assert_eq!(h, 0.0);
@@ -11881,7 +11989,7 @@ mod tests {
       100.0,
       0.0,
       0.0,
-      false,
+      None,
     );
     assert!((w - 20.0).abs() < 1e-6);
     assert!((h - 10.0).abs() < 1e-6);

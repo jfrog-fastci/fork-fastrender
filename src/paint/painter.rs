@@ -3828,7 +3828,7 @@ impl Painter {
       let mut resolved_mode = layer.mode;
       let mut img_w = 0.0f32;
       let mut img_h = 0.0f32;
-      let mut has_intrinsic_ratio = false;
+      let mut intrinsic_ratio: Option<f32> = None;
       let mut tile_pixmap: Option<Arc<Pixmap>> = None;
 
       enum MaskUrlTile {
@@ -3877,18 +3877,18 @@ impl Painter {
               render_h,
             })
           } else {
-            let resolved_src = self.image_cache.resolve_url(src);
-            let image = match self.image_cache.load(&resolved_src) {
-              Ok(img) => img,
-              Err(_) => continue,
-            };
-            let orientation = style.image_orientation.resolve(image.orientation, true);
-            has_intrinsic_ratio = image.intrinsic_ratio(orientation).is_some();
-            let Some((w, h)) =
-              image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
-            else {
-              continue;
-            };
+             let resolved_src = self.image_cache.resolve_url(src);
+             let image = match self.image_cache.load(&resolved_src) {
+               Ok(img) => img,
+               Err(_) => continue,
+             };
+             let orientation = style.image_orientation.resolve(image.orientation, true);
+             intrinsic_ratio = image.intrinsic_ratio(orientation);
+             let Some((w, h)) =
+               image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
+             else {
+               continue;
+             };
             img_w = w;
             img_h = h;
 
@@ -3926,7 +3926,7 @@ impl Painter {
         origin_rect_css.height(),
         img_w,
         img_h,
-        has_intrinsic_ratio,
+        intrinsic_ratio,
       );
       if tile_w <= 0.0 || tile_h <= 0.0 {
         continue;
@@ -3948,12 +3948,7 @@ impl Painter {
           BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
         )
       {
-        if has_intrinsic_ratio {
-          let aspect = if img_w > 0.0 && img_h > 0.0 {
-            img_w / img_h
-          } else {
-            1.0
-          };
+        if let Some(aspect) = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0) {
           if rounded_x {
             tile_h = tile_w / aspect;
           } else {
@@ -4393,7 +4388,7 @@ impl Painter {
           origin_rect_css.height(),
           0.0,
           0.0,
-          false,
+          None,
         );
         if tile_w <= 0.0 || tile_h <= 0.0 {
           return;
@@ -4593,7 +4588,7 @@ impl Painter {
         else {
           return;
         };
-        let has_intrinsic_ratio = image.intrinsic_ratio(orientation).is_some();
+        let intrinsic_ratio = image.intrinsic_ratio(orientation);
         if img_w <= 0.0 || img_h <= 0.0 || img_w_raw == 0 || img_h_raw == 0 {
           return;
         }
@@ -4606,7 +4601,7 @@ impl Painter {
           origin_rect_css.height(),
           img_w,
           img_h,
-          has_intrinsic_ratio,
+          intrinsic_ratio,
         );
         if tile_w <= 0.0 || tile_h <= 0.0 {
           return;
@@ -4628,8 +4623,7 @@ impl Painter {
             BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
           )
         {
-          if has_intrinsic_ratio {
-            let aspect = if img_h != 0.0 { img_w / img_h } else { 1.0 };
+          if let Some(aspect) = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0) {
             if rounded_x {
               tile_h = tile_w / aspect;
             } else {
@@ -15457,39 +15451,45 @@ fn compute_background_size(
   area_h: f32,
   img_w: f32,
   img_h: f32,
-  has_intrinsic_ratio: bool,
+  intrinsic_ratio: Option<f32>,
 ) -> (f32, f32) {
   let natural_w = if img_w > 0.0 { Some(img_w) } else { None };
   let natural_h = if img_h > 0.0 { Some(img_h) } else { None };
-  let ratio = if has_intrinsic_ratio && img_w > 0.0 && img_h > 0.0 {
-    Some(img_w / img_h)
-  } else {
-    None
-  };
+  let ratio = intrinsic_ratio.filter(|r| r.is_finite() && *r > 0.0);
 
   match layer.size {
     BackgroundSize::Keyword(BackgroundSizeKeyword::Cover) => {
-      if has_intrinsic_ratio {
-        if let (Some(w), Some(h)) = (natural_w, natural_h) {
-          let scale = (area_w / w).max(area_h / h);
-          (w * scale, h * scale)
+      let area_w = area_w.max(0.0);
+      let area_h = area_h.max(0.0);
+      if let Some(ratio) = ratio {
+        if area_w <= 0.0 || area_h <= 0.0 {
+          return (area_w, area_h);
+        }
+        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        if area_ratio > ratio {
+          (area_w, area_w / ratio)
         } else {
-          (area_w.max(0.0), area_h.max(0.0))
+          (area_h * ratio, area_h)
         }
       } else {
-        (area_w.max(0.0), area_h.max(0.0))
+        (area_w, area_h)
       }
     }
     BackgroundSize::Keyword(BackgroundSizeKeyword::Contain) => {
-      if has_intrinsic_ratio {
-        if let (Some(w), Some(h)) = (natural_w, natural_h) {
-          let scale = (area_w / w).min(area_h / h);
-          (w * scale, h * scale)
+      let area_w = area_w.max(0.0);
+      let area_h = area_h.max(0.0);
+      if let Some(ratio) = ratio {
+        if area_w <= 0.0 || area_h <= 0.0 {
+          return (area_w, area_h);
+        }
+        let area_ratio = if area_h != 0.0 { area_w / area_h } else { f32::INFINITY };
+        if area_ratio > ratio {
+          (area_h * ratio, area_h)
         } else {
-          (area_w.max(0.0), area_h.max(0.0))
+          (area_w, area_w / ratio)
         }
       } else {
-        (area_w.max(0.0), area_h.max(0.0))
+        (area_w, area_h)
       }
     }
     BackgroundSize::Explicit(x, y) => {
@@ -19632,7 +19632,7 @@ mod tests {
       100.0,
       50.0,
       50.0,
-      true,
+      Some(1.0),
     );
     let (ox, oy) = resolve_background_offset(
       layer.position,
@@ -19698,7 +19698,7 @@ mod tests {
       100.0,
       100.0,
       50.0,
-      true,
+      Some(2.0),
     );
     assert!((tw - 50.0).abs() < 0.01);
     assert!((th - 25.0).abs() < 0.01);
@@ -19716,7 +19716,7 @@ mod tests {
       80.0,
       30.0,
       10.0,
-      true,
+      Some(3.0),
     );
     assert!((tw - 30.0).abs() < 0.01);
     assert!((th - 10.0).abs() < 0.01);
@@ -19730,7 +19730,7 @@ mod tests {
       60.0,
       0.0,
       0.0,
-      false,
+      None,
     );
     assert!((tw - 50.0).abs() < 0.01);
     assert!((th - 60.0).abs() < 0.01);
@@ -21695,7 +21695,7 @@ mod tests {
         origin_rect_css.height(),
         0.0,
         0.0,
-        false,
+        None,
       );
       if tile_w <= 0.0 || tile_h <= 0.0 {
         continue;
