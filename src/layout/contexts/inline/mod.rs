@@ -62,6 +62,7 @@ use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::inline::float_integration::InlineFloatIntegration;
+use crate::layout::inline::float_integration::LineSpaceOptions;
 use crate::layout::profile::layout_timer;
 use crate::layout::profile::LayoutKind;
 use crate::layout::utils::compute_replaced_size;
@@ -10336,6 +10337,10 @@ impl InlineFormattingContext {
     let mut flow_order: Vec<FlowChunk> = Vec::new();
     let mut block_run_max_width: f32 = 0.0;
     let mut deadline_counter = 0usize;
+    // Inline segments that contain only static-position anchors (e.g. blocks containing only
+    // abspos/fixed descendants) should not generate line boxes, but we still need to record a
+    // float-aware static position for those anchors.
+    let mut deferred_anchor_positions: HashMap<usize, Point> = HashMap::new();
 
     let flush_pending = |pending: &mut Vec<InlineItem>,
                          use_first_line_width: &mut bool,
@@ -10343,17 +10348,99 @@ impl InlineFormattingContext {
                          lines_out: &mut Vec<Line>,
                          ctx_ref: Option<&FloatContext>,
                          order: &mut Vec<FlowChunk>,
-                         line_clamp_truncated: &mut bool|
+                         line_clamp_truncated: &mut bool,
+                         anchor_positions: &mut HashMap<usize, Point>|
      -> Result<Option<(f32, f32, f32)>, LayoutError> {
       if pending.is_empty() {
         return Ok(None);
       }
-      if pending
-        .iter()
-        .all(|item| matches!(item, InlineItem::StaticPositionAnchor(_)))
-      {
-        // Static-position anchors are bookkeeping-only and should not create line boxes when
-        // there is otherwise no in-flow content.
+      // Static-position anchors are bookkeeping-only and should not create line boxes when there
+      // is otherwise no in-flow content. This can happen even when the anchors are nested inside
+      // empty inline boxes (`<span><span style="position:absolute"></span></span>`).
+      //
+      // Still record float-aware static positions at the start of the would-be line box.
+      let mut anchor_ids: Vec<usize> = Vec::new();
+      let mut has_flow_content = false;
+      let mut has_non_bookkeeping_anchor = false;
+      fn scan_item(
+        item: &InlineItem,
+        anchor_ids: &mut Vec<usize>,
+        has_flow_content: &mut bool,
+        has_non_bookkeeping_anchor: &mut bool,
+      ) {
+        match item {
+          InlineItem::StaticPositionAnchor(anchor) => {
+            if anchor.running.is_some() || anchor.footnote.is_some() {
+              *has_non_bookkeeping_anchor = true;
+            } else {
+              anchor_ids.push(anchor.box_id);
+            }
+          }
+          InlineItem::InlineBox(b) => {
+            for child in &b.children {
+              scan_item(child, anchor_ids, has_flow_content, has_non_bookkeeping_anchor);
+            }
+          }
+          // Any other inline item represents in-flow content that should still build line boxes.
+          _ => *has_flow_content = true,
+        }
+      }
+      for item in pending.iter() {
+        scan_item(
+          item,
+          &mut anchor_ids,
+          &mut has_flow_content,
+          &mut has_non_bookkeeping_anchor,
+        );
+      }
+      if !anchor_ids.is_empty() && !has_flow_content && !has_non_bookkeeping_anchor {
+        let base_width = if matches!(
+          style.text_wrap,
+          TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
+        ) {
+          subsequent_line_width
+        } else if *use_first_line_width {
+          first_line_width
+        } else {
+          subsequent_line_width
+        };
+        let (line_abs_y, line_left_edge) = if let Some(ctx) = ctx_ref {
+          let integration = InlineFloatIntegration::new(ctx);
+          let space = integration.find_line_space(
+            float_base_y + *line_offset,
+            LineSpaceOptions::default().line_height(strut_metrics.line_height),
+          );
+          let left_edge = space.left_edge.max(0.0);
+          let right_edge = space.right_edge.min(base_width);
+          let _width = (right_edge - left_edge).max(0.0);
+          (space.y, left_edge)
+        } else {
+          (float_base_y + *line_offset, 0.0)
+        };
+        let line_y = (line_abs_y - float_base_y).max(0.0);
+        let indent_for_line = if *use_first_line_width {
+          if indent_hanging {
+            0.0
+          } else {
+            indent_value
+          }
+        } else {
+          0.0
+        };
+        let indent_offset = if matches!(base_direction, crate::style::types::Direction::Rtl) {
+          -indent_for_line
+        } else {
+          indent_for_line
+        };
+        let inline_x = line_left_edge + indent_offset;
+        let anchor_point = if inline_vertical {
+          Point::new(line_y, inline_x)
+        } else {
+          Point::new(inline_x, line_y)
+        };
+        for id in anchor_ids {
+          anchor_positions.insert(id, anchor_point);
+        }
         pending.clear();
         return Ok(None);
       }
@@ -10579,6 +10666,7 @@ impl InlineFormattingContext {
               .or(local_float_ctx.as_ref()),
             &mut flow_order,
             &mut line_clamp_truncated,
+            &mut deferred_anchor_positions,
           )?;
           if let Some(limit) = active_line_clamp {
             if lines.len() >= limit {
@@ -10623,6 +10711,7 @@ impl InlineFormattingContext {
       final_ctx,
       &mut flow_order,
       &mut line_clamp_truncated,
+      &mut deferred_anchor_positions,
     )?;
 
     let mut lines = self.apply_text_overflow(lines, style, &strut_metrics, inline_vertical)?;
@@ -10768,7 +10857,7 @@ impl InlineFormattingContext {
       Some(relative_cb_width),
       relative_cb_height.is_finite().then_some(relative_cb_height),
     );
-    let mut anchor_positions: HashMap<usize, Point> = HashMap::new();
+    let mut anchor_positions: HashMap<usize, Point> = deferred_anchor_positions;
     let mut positioned_containing_blocks: HashMap<usize, ContainingBlock> = HashMap::new();
     let mut line_fragments = self.create_fragments(
       lines,

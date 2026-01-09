@@ -160,3 +160,41 @@ fn abspos_static_position_in_inline_flow_respects_float_offset() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn abspos_static_position_nested_in_inline_flow_respects_float_offset() {
+  // Like `abspos_static_position_in_inline_flow_respects_float_offset`, but with the positioned
+  // element nested inside an (otherwise empty) inline box so the static-position anchor is not a
+  // direct child of the block formatting context.
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = fastrender::FastRender::new().expect("renderer");
+      let html = r#"
+        <style>
+          body { margin: 0; background: white; }
+          .cb { position: relative; width: 200px; height: 40px; background: white; }
+          .float { float: left; width: 50px; height: 20px; background: rgb(0, 255, 0); }
+          .abs { position: absolute; display: inline-block; width: 20px; height: 20px; background: rgb(255, 0, 0); }
+        </style>
+        <div class="cb">
+          <div class="float"></div><span class="wrap"><span class="abs"></span></span>
+        </div>
+      "#;
+
+      let pixmap = renderer.render_html(html, 220, 60).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 5, 5),
+        [0, 255, 0, 255],
+        "expected float to paint green at the block start"
+      );
+      assert_eq!(
+        pixel(&pixmap, 55, 5),
+        [255, 0, 0, 255],
+        "expected abspos static position to start after the float even when nested"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
