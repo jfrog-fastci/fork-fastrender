@@ -257,6 +257,25 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_matches_selector",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, selectors: String| {
+        let mut dom = dom.borrow_mut();
+        let node_id = NodeId::from_index(node as usize);
+        let result = dom.mutate_dom(|dom| match dom.matches_selector(node_id, &selectors) {
+          Ok(matched) => (Ok(matched), false),
+          Err(err) => (Err(err), false),
+        });
+        match result {
+          Ok(matched) => Ok(matched),
+          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_get_element_by_id",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -713,6 +732,10 @@ const DOM_BINDINGS_SHIM: &str = r##"
       out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
     }
     return out;
+  };
+
+  Element.prototype.matches = function (selectors) {
+    return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
   };
 
   function defineReflectedString(prop, attr) {
@@ -1704,6 +1727,36 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
             var first = document.body.querySelector("div.b");
             if (first !== all[0]) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok);
+    Ok(())
+  }
+
+  #[test]
+  fn element_matches_selector() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html(
+      "<!doctype html><html><body><div id=x class=a><span id=y></span></div></body></html>",
+    )?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var x = document.getElementById("x");
+            var y = document.getElementById("y");
+            if (!x.matches("div.a")) return false;
+            if (x.matches("span")) return false;
+            if (y.matches("span") !== true) return false;
+            if (y.matches("div")) return false;
             return true;
           })()"#,
         )
