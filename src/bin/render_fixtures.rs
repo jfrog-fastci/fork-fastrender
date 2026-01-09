@@ -141,6 +141,7 @@ struct Cli {
   /// This injects the same tags used by `xtask chrome-baseline-fixtures`:
   /// - force `color-scheme: light` + white background on `html, body` (for determinism),
   /// - inject a strict Content-Security-Policy (offline invariant),
+  /// - hide scrollbars (match Chrome `--hide-scrollbars`),
   /// - disable CSS animations/transitions.
   ///
   /// This flag is primarily intended for `xtask fixture-chrome-diff` (FastRender vs Chrome fixture

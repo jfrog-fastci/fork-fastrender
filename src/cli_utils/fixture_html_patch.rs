@@ -7,8 +7,8 @@
 //!   resolving against the fixture directory.
 //! - `render_fixtures --patch-html-for-chrome-baseline`: When comparing FastRender fixture renders
 //!   against Chrome baselines, the baseline harness forces a light color scheme and white root
-//!   background for determinism; this flag applies the same patch on the FastRender side so
-//!   comparisons are meaningful.
+//!   background for determinism and hides scrollbars; this flag applies the same patch on the
+//!   FastRender side so comparisons are meaningful.
 
 /// Patch HTML fixture bytes in-place by injecting deterministic/offline tags into `<head>`.
 ///
@@ -26,6 +26,11 @@ pub fn patch_html_bytes(
 ) -> Vec<u8> {
   const DISABLE_ANIMATIONS_STYLE: &str =
     "<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n";
+  // Chrome baselines are rendered with `--hide-scrollbars`, which removes scrollbar gutters from
+  // layout. FastRender reserves classic scrollbar space during layout (15px for `auto`), so inject
+  // `scrollbar-width: none` to keep our layout viewport aligned with Chrome.
+  const HIDE_SCROLLBARS_STYLE: &str =
+    "<style>* { scrollbar-width: none !important; }</style>\n";
   const FORCE_LIGHT_META: &str = "<meta name=\"color-scheme\" content=\"light\">\n";
   const FORCE_LIGHT_STYLE: &str =
     "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n";
@@ -48,6 +53,7 @@ pub fn patch_html_bytes(
   inserts.extend_from_slice(
     format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n").as_bytes(),
   );
+  inserts.extend_from_slice(HIDE_SCROLLBARS_STYLE.as_bytes());
   if disable_animations {
     inserts.extend_from_slice(DISABLE_ANIMATIONS_STYLE.as_bytes());
   }
@@ -198,6 +204,9 @@ mod tests {
       !output_str.contains("transition: none !important"),
       "opt-out should omit the transition-disabling CSS"
     );
+    assert!(
+      output_str.contains("scrollbar-width: none"),
+      "patched HTML should hide scrollbars to keep layout viewport aligned with Chrome"
+    );
   }
 }
-
