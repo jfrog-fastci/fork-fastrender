@@ -15,8 +15,10 @@ use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use vm_js::{GcObject, PropertyKey, RootId, Value, VmError};
+use vm_js::{GcObject, PropertyDescriptorPatch, PropertyKey, RootId, Value, VmError};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
+
+const CHILD_NODES_CACHE_PROP: &str = "__fastrender_childNodes";
 
 #[derive(Debug, Clone)]
 enum PlatformObjectKind {
@@ -287,6 +289,98 @@ fn get_text_content(dom: &dom2::Document, root: NodeId) -> String {
     }
   }
   out
+}
+
+fn direct_child_nodes(dom: &dom2::Document, parent: NodeId) -> Result<Vec<NodeId>, dom2::DomError> {
+  Ok(
+    dom
+      .children(parent)?
+      .iter()
+      .copied()
+      .filter(|&child| {
+        child.index() < dom.nodes_len() && dom.node(child).parent == Some(parent)
+      })
+      .collect(),
+  )
+}
+
+fn direct_element_children(
+  dom: &dom2::Document,
+  parent: NodeId,
+) -> Result<Vec<NodeId>, dom2::DomError> {
+  Ok(
+    direct_child_nodes(dom, parent)?
+      .into_iter()
+      .filter(|&child| {
+        matches!(
+          dom.node(child).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      })
+      .collect(),
+  )
+}
+
+fn maybe_refresh_cached_child_nodes(
+  rt: &mut VmJsRuntime,
+  dom: &Rc<RefCell<dom2::Document>>,
+  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  document_node_id: NodeId,
+  document: Value,
+  prototypes: Prototypes,
+  node_id: NodeId,
+) -> Result<(), VmError> {
+  let Some(wrapper_obj) = node_wrapper_cache.borrow().get(&node_id).copied() else {
+    return Ok(());
+  };
+  let wrapper = Value::Object(wrapper_obj);
+
+  let cache_key = prop_key_str(rt, CHILD_NODES_CACHE_PROP)?;
+  let cached = rt.get(wrapper, cache_key)?;
+  let Value::Object(array_obj) = cached else {
+    return Ok(());
+  };
+
+  // Snapshot child wrappers first; the array update logic below borrows the heap mutably via
+  // `Scope`, so we must not call into `wrap_node` while the scope is alive.
+  let child_ids = {
+    let dom_ref = dom.borrow();
+    direct_child_nodes(&dom_ref, node_id)
+      .map_err(|e| rt.throw_type_error(&format!("childNodes refresh: {e}")))?
+  };
+  let mut child_wrappers: Vec<Value> = Vec::new();
+  for child_id in child_ids {
+    child_wrappers.push(wrap_node(
+      rt,
+      dom,
+      platform_objects,
+      node_wrapper_cache,
+      document_node_id,
+      document,
+      prototypes,
+      child_id,
+    )?);
+  }
+
+  // Mutate the cached array in-place so stored references behave like a live NodeList.
+  let mut scope = rt.heap_mut().scope();
+  let length_key = PropertyKey::String(scope.alloc_string("length")?);
+  let _ = scope.define_own_property(
+    array_obj,
+    length_key,
+    PropertyDescriptorPatch {
+      value: Some(Value::Number(0.0)),
+      writable: Some(true),
+      ..Default::default()
+    },
+  )?;
+  for (idx, value) in child_wrappers.into_iter().enumerate() {
+    let key = PropertyKey::String(scope.alloc_string(&idx.to_string())?);
+    scope.create_data_property_or_throw(array_obj, key, value)?;
+  }
+
+  Ok(())
 }
 
 fn set_text_content(dom: &mut dom2::Document, node: NodeId, value: &str) -> Result<(), dom2::DomError> {
@@ -930,6 +1024,7 @@ fn install_constructors(
     // appendChild
     let dom_for_append = dom.clone();
     let platform_objects_for_append = platform_objects.clone();
+    let node_wrapper_cache_for_append = node_wrapper_cache.clone();
     let append_child = rt.alloc_function_value(move |rt, this, args| {
       let parent_id = extract_node_id(rt, &platform_objects_for_append, this)?;
       let child = args
@@ -937,10 +1032,36 @@ fn install_constructors(
         .copied()
         .ok_or_else(|| rt.throw_type_error("appendChild: missing child"))?;
       let child_id = extract_node_id(rt, &platform_objects_for_append, child)?;
+      let old_parent = dom_for_append.borrow().parent_node(child_id);
       dom_for_append
         .borrow_mut()
         .append_child(parent_id, child_id)
         .map_err(|e| rt.throw_type_error(&format!("appendChild: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_append,
+        &platform_objects_for_append,
+        &node_wrapper_cache_for_append,
+        document_node_id,
+        document,
+        prototypes,
+        parent_id,
+      )?;
+      if let Some(old_parent) = old_parent {
+        if old_parent != parent_id {
+          maybe_refresh_cached_child_nodes(
+            rt,
+            &dom_for_append,
+            &platform_objects_for_append,
+            &node_wrapper_cache_for_append,
+            document_node_id,
+            document,
+            prototypes,
+            old_parent,
+          )?;
+        }
+      }
       Ok(child)
     })?;
     define_method(rt, prototypes.node, "appendChild", append_child)?;
@@ -971,6 +1092,7 @@ fn install_constructors(
     // removeChild
     let dom_for_remove = dom.clone();
     let platform_objects_for_remove = platform_objects.clone();
+    let node_wrapper_cache_for_remove = node_wrapper_cache.clone();
     let remove_child = rt.alloc_function_value(move |rt, this, args| {
       let parent_id = extract_node_id(rt, &platform_objects_for_remove, this)?;
       let child = args
@@ -982,6 +1104,17 @@ fn install_constructors(
         .borrow_mut()
         .remove_child(parent_id, child_id)
         .map_err(|e| rt.throw_type_error(&format!("removeChild: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_remove,
+        &platform_objects_for_remove,
+        &node_wrapper_cache_for_remove,
+        document_node_id,
+        document,
+        prototypes,
+        parent_id,
+      )?;
       Ok(child)
     })?;
     define_method(rt, prototypes.node, "removeChild", remove_child)?;
@@ -1031,6 +1164,286 @@ fn install_constructors(
       }
     })?;
     define_accessor(rt, prototypes.node, "parentNode", parent_node_get, Value::Undefined)?;
+
+    // parentElement
+    let dom_for_parent_element = dom.clone();
+    let platform_objects_for_parent_element = platform_objects.clone();
+    let node_wrapper_cache_for_parent_element = node_wrapper_cache.clone();
+    let parent_element_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_parent_element, this)?;
+      let dom_ref = dom_for_parent_element.borrow();
+      let parent = dom_ref.parent_node(node_id).filter(|&id| {
+        matches!(
+          dom_ref.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      });
+      match parent {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_parent_element,
+          &platform_objects_for_parent_element,
+          &node_wrapper_cache_for_parent_element,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "parentElement",
+      parent_element_get,
+      Value::Undefined,
+    )?;
+
+    // childNodes
+    let dom_for_child_nodes = dom.clone();
+    let platform_objects_for_child_nodes = platform_objects.clone();
+    let node_wrapper_cache_for_child_nodes = node_wrapper_cache.clone();
+    let child_nodes_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_child_nodes, this)?;
+      let Value::Object(_) = this else {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      };
+
+      let cache_key = prop_key_str(rt, CHILD_NODES_CACHE_PROP)?;
+      let cached = rt.get(this, cache_key)?;
+      if matches!(cached, Value::Object(_)) {
+        return Ok(cached);
+      }
+
+      let arr = rt.alloc_array()?;
+      rt.define_data_property(this, cache_key, arr, /* enumerable */ false)?;
+
+      // Populate and return the cached array.
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_child_nodes,
+        &platform_objects_for_child_nodes,
+        &node_wrapper_cache_for_child_nodes,
+        document_node_id,
+        document,
+        prototypes,
+        node_id,
+      )?;
+      Ok(arr)
+    })?;
+    define_accessor(rt, prototypes.node, "childNodes", child_nodes_get, Value::Undefined)?;
+
+    // children (element-only)
+    let dom_for_children = dom.clone();
+    let platform_objects_for_children = platform_objects.clone();
+    let node_wrapper_cache_for_children = node_wrapper_cache.clone();
+    let children_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_children, this)?;
+      let child_ids = {
+        let dom_ref = dom_for_children.borrow();
+        direct_element_children(&dom_ref, node_id)
+          .map_err(|e| rt.throw_type_error(&format!("children: {e}")))?
+      };
+      let mut wrappers: Vec<Value> = Vec::new();
+      for child_id in child_ids {
+        wrappers.push(wrap_node(
+          rt,
+          &dom_for_children,
+          &platform_objects_for_children,
+          &node_wrapper_cache_for_children,
+          document_node_id,
+          document,
+          prototypes,
+          child_id,
+        )?);
+      }
+
+      let arr = rt.alloc_array()?;
+      let Value::Object(arr_obj) = arr else {
+        unreachable!("alloc_array must return an object");
+      };
+      let mut scope = rt.heap_mut().scope();
+      for (idx, value) in wrappers.into_iter().enumerate() {
+        let key = PropertyKey::String(scope.alloc_string(&idx.to_string())?);
+        scope.create_data_property_or_throw(arr_obj, key, value)?;
+      }
+      Ok(arr)
+    })?;
+    define_accessor(rt, prototypes.node, "children", children_get, Value::Undefined)?;
+
+    // childElementCount
+    let dom_for_child_element_count = dom.clone();
+    let platform_objects_for_child_element_count = platform_objects.clone();
+    let child_element_count_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_child_element_count, this)?;
+      let dom_ref = dom_for_child_element_count.borrow();
+      let count = direct_element_children(&dom_ref, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("childElementCount: {e}")))?
+        .len();
+      Ok(Value::Number(count as f64))
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "childElementCount",
+      child_element_count_get,
+      Value::Undefined,
+    )?;
+
+    // firstElementChild / lastElementChild
+    let dom_for_first_el = dom.clone();
+    let platform_objects_for_first_el = platform_objects.clone();
+    let node_wrapper_cache_for_first_el = node_wrapper_cache.clone();
+    let first_element_child_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_first_el, this)?;
+      let dom_ref = dom_for_first_el.borrow();
+      let first = direct_element_children(&dom_ref, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("firstElementChild: {e}")))?
+        .into_iter()
+        .next();
+      match first {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_first_el,
+          &platform_objects_for_first_el,
+          &node_wrapper_cache_for_first_el,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "firstElementChild",
+      first_element_child_get,
+      Value::Undefined,
+    )?;
+
+    let dom_for_last_el = dom.clone();
+    let platform_objects_for_last_el = platform_objects.clone();
+    let node_wrapper_cache_for_last_el = node_wrapper_cache.clone();
+    let last_element_child_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_last_el, this)?;
+      let dom_ref = dom_for_last_el.borrow();
+      let last = direct_element_children(&dom_ref, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("lastElementChild: {e}")))?
+        .into_iter()
+        .last();
+      match last {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_last_el,
+          &platform_objects_for_last_el,
+          &node_wrapper_cache_for_last_el,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "lastElementChild",
+      last_element_child_get,
+      Value::Undefined,
+    )?;
+
+    // previousElementSibling / nextElementSibling
+    let dom_for_prev_el_sib = dom.clone();
+    let platform_objects_for_prev_el_sib = platform_objects.clone();
+    let node_wrapper_cache_for_prev_el_sib = node_wrapper_cache.clone();
+    let previous_element_sibling_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_prev_el_sib, this)?;
+      let dom_ref = dom_for_prev_el_sib.borrow();
+      let Some(parent) = dom_ref.parent_node(node_id) else {
+        return Ok(Value::Null);
+      };
+      let siblings = direct_child_nodes(&dom_ref, parent)
+        .map_err(|e| rt.throw_type_error(&format!("previousElementSibling: {e}")))?;
+      let Some(pos) = siblings.iter().position(|&id| id == node_id) else {
+        return Ok(Value::Null);
+      };
+      let prev = siblings
+        .into_iter()
+        .take(pos)
+        .rev()
+        .find(|&id| {
+          matches!(
+            dom_ref.node(id).kind,
+            NodeKind::Element { .. } | NodeKind::Slot { .. }
+          )
+        });
+      match prev {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_prev_el_sib,
+          &platform_objects_for_prev_el_sib,
+          &node_wrapper_cache_for_prev_el_sib,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "previousElementSibling",
+      previous_element_sibling_get,
+      Value::Undefined,
+    )?;
+
+    let dom_for_next_el_sib = dom.clone();
+    let platform_objects_for_next_el_sib = platform_objects.clone();
+    let node_wrapper_cache_for_next_el_sib = node_wrapper_cache.clone();
+    let next_element_sibling_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_next_el_sib, this)?;
+      let dom_ref = dom_for_next_el_sib.borrow();
+      let Some(parent) = dom_ref.parent_node(node_id) else {
+        return Ok(Value::Null);
+      };
+      let siblings = direct_child_nodes(&dom_ref, parent)
+        .map_err(|e| rt.throw_type_error(&format!("nextElementSibling: {e}")))?;
+      let Some(pos) = siblings.iter().position(|&id| id == node_id) else {
+        return Ok(Value::Null);
+      };
+      let next = siblings.into_iter().skip(pos + 1).find(|&id| {
+        matches!(
+          dom_ref.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      });
+      match next {
+        Some(id) => wrap_node(
+          rt,
+          &dom_for_next_el_sib,
+          &platform_objects_for_next_el_sib,
+          &node_wrapper_cache_for_next_el_sib,
+          document_node_id,
+          document,
+          prototypes,
+          id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "nextElementSibling",
+      next_element_sibling_get,
+      Value::Undefined,
+    )?;
 
     // firstChild
     let dom_for_first = dom.clone();
@@ -1174,6 +1587,7 @@ fn install_constructors(
 
     let dom_for_text_content_set = dom.clone();
     let platform_objects_for_text_content_set = platform_objects.clone();
+    let node_wrapper_cache_for_text_content_set = node_wrapper_cache.clone();
     let text_content_set = rt.alloc_function_value(move |rt, this, args| {
       let node_id = extract_node_id(rt, &platform_objects_for_text_content_set, this)?;
       let v = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -1184,6 +1598,17 @@ fn install_constructors(
       };
       set_text_content(&mut dom_for_text_content_set.borrow_mut(), node_id, &text)
         .map_err(|e| rt.throw_type_error(&format!("textContent: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_text_content_set,
+        &platform_objects_for_text_content_set,
+        &node_wrapper_cache_for_text_content_set,
+        document_node_id,
+        document,
+        prototypes,
+        node_id,
+      )?;
       Ok(Value::Undefined)
     })?;
 
@@ -1974,6 +2399,106 @@ mod tests {
     let got = realm.rt.get(document, current_script_key).unwrap();
 
     assert_eq!(got, realm.wrap_node(script).unwrap());
+  }
+
+  #[test]
+  fn child_nodes_are_live_and_element_traversal_properties_work() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let document = realm.document();
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+
+    let parent = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let a = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let b = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    // parent.appendChild(a); parent.appendChild(b);
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(parent, append_child_key).unwrap();
+    realm.rt.call_function(append_child, parent, &[a]).unwrap();
+    realm.rt.call_function(append_child, parent, &[b]).unwrap();
+
+    // document.appendChild(parent);
+    let append_child_doc = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_child_doc, document, &[parent])
+      .unwrap();
+
+    // childNodes should be cached and live-ish.
+    let child_nodes_key = pk(&mut realm.rt, "childNodes");
+    let nodes = realm.rt.get(parent, child_nodes_key).unwrap();
+    let nodes2 = realm.rt.get(parent, child_nodes_key).unwrap();
+    assert_eq!(nodes, nodes2);
+
+    let length_key = pk(&mut realm.rt, "length");
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(2.0));
+
+    let idx0 = pk(&mut realm.rt, "0");
+    let idx1 = pk(&mut realm.rt, "1");
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(nodes, idx1).unwrap(), b);
+
+    let parent_element_key = pk(&mut realm.rt, "parentElement");
+    assert_eq!(realm.rt.get(a, parent_element_key).unwrap(), parent);
+    assert_eq!(realm.rt.get(b, parent_element_key).unwrap(), parent);
+
+    let children_key = pk(&mut realm.rt, "children");
+    let kids = realm.rt.get(parent, children_key).unwrap();
+    assert_eq!(realm.rt.get(kids, length_key).unwrap(), Value::Number(2.0));
+    assert_eq!(realm.rt.get(kids, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(kids, idx1).unwrap(), b);
+
+    let child_element_count_key = pk(&mut realm.rt, "childElementCount");
+    assert_eq!(
+      realm.rt.get(parent, child_element_count_key).unwrap(),
+      Value::Number(2.0)
+    );
+
+    let first_element_child_key = pk(&mut realm.rt, "firstElementChild");
+    let last_element_child_key = pk(&mut realm.rt, "lastElementChild");
+    assert_eq!(realm.rt.get(parent, first_element_child_key).unwrap(), a);
+    assert_eq!(realm.rt.get(parent, last_element_child_key).unwrap(), b);
+
+    let next_element_sibling_key = pk(&mut realm.rt, "nextElementSibling");
+    let previous_element_sibling_key = pk(&mut realm.rt, "previousElementSibling");
+    assert_eq!(realm.rt.get(a, next_element_sibling_key).unwrap(), b);
+    assert_eq!(realm.rt.get(b, previous_element_sibling_key).unwrap(), a);
+
+    // parent.removeChild(a);
+    let remove_child_key = pk(&mut realm.rt, "removeChild");
+    let remove_child = realm.rt.get(parent, remove_child_key).unwrap();
+    realm.rt.call_function(remove_child, parent, &[a]).unwrap();
+
+    // The cached `nodes` array should update in place.
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), b);
+
+    // a should be detached.
+    let parent_node_key = pk(&mut realm.rt, "parentNode");
+    assert_eq!(realm.rt.get(a, parent_node_key).unwrap(), Value::Null);
+    assert_eq!(realm.rt.get(a, parent_element_key).unwrap(), Value::Null);
+
+    // b should now have no element siblings.
+    assert_eq!(
+      realm.rt.get(b, previous_element_sibling_key).unwrap(),
+      Value::Null
+    );
+    assert_eq!(realm.rt.get(b, next_element_sibling_key).unwrap(), Value::Null);
   }
 
   #[test]
