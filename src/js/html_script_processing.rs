@@ -711,7 +711,7 @@ mod tests {
 
   #[test]
   fn microtasks_queued_before_first_script_run_before_script_when_parsing_inside_task() -> Result<()> {
-    // Regression test for the old heuristic that checked `EventLoop::currently_running_task()`:
+    // Regression test for the old heuristic that keyed off the event-loop task state:
     // HTML parsing commonly occurs inside event-loop tasks, but the pre-`</script>` microtask
     // checkpoint must still happen when the JS execution context stack is empty.
     let mut host = Host::default();
