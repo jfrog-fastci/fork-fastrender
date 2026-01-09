@@ -37,6 +37,7 @@ use crate::style::position::Position;
 use crate::style::string_set::parse_string_set_value;
 use crate::style::types::*;
 use crate::style::values::CustomPropertyValue;
+use crate::style::values::CustomPropertyComputeContext;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::var_resolution::resolve_var_for_property;
@@ -7839,6 +7840,60 @@ pub(crate) fn apply_declaration_with_base_and_custom_properties(
 }
 
 impl ComputedStyle {
+  pub(crate) fn canonicalize_registered_custom_properties(&mut self, viewport: Size) -> bool {
+    if self.custom_properties.is_empty() {
+      return false;
+    }
+
+    let line_height = match &self.line_height {
+      LineHeight::Normal => self.font_size * 1.2,
+      LineHeight::Number(mult) => mult * self.font_size,
+      LineHeight::Percentage(pct) => (pct / 100.0) * self.font_size,
+      LineHeight::Length(len) => len
+        .resolve_with_context(
+          Some(self.font_size),
+          viewport.width,
+          viewport.height,
+          self.font_size,
+          self.root_font_size,
+        )
+        .unwrap_or(self.font_size * 1.2),
+    };
+
+    let ctx = CustomPropertyComputeContext {
+      font_size: self.font_size,
+      root_font_size: self.root_font_size,
+      line_height,
+      viewport,
+      current_color: self.color,
+      is_dark_color_scheme: self.used_dark_color_scheme,
+    };
+
+    let mut updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
+    for (name, value) in self.custom_properties.iter() {
+      let Some(typed) = value.typed.as_ref() else {
+        continue;
+      };
+      let computed_typed = typed.to_computed_value(&ctx);
+      let css_text = computed_typed.to_css();
+      if css_text == value.value && computed_typed == *typed {
+        continue;
+      }
+      updates.push((
+        Arc::clone(name),
+        CustomPropertyValue::new(css_text, Some(computed_typed)),
+      ));
+    }
+
+    if updates.is_empty() {
+      return false;
+    }
+    for (name, value) in updates {
+      self.custom_properties.insert(name, value);
+    }
+    true
+  }
+
   /// Recomputes this element's custom-property store from the current inherited base.
   ///
   /// FastRender applies animations/transitions at paint time by mutating `ComputedStyle` per
@@ -7849,7 +7904,7 @@ impl ComputedStyle {
   /// - the *current* parent `custom_properties`,
   /// - registry inheritance semantics (registered `inherits: false`),
   /// - this element's stored winning custom-property declarations (in cascade order).
-  pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle) {
+  pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle, viewport: Size) {
     // Start from the current parent store (animations may have mutated it).
     let mut store = parent_styles.custom_properties.clone();
     let registry_changed = !Arc::ptr_eq(
@@ -7965,51 +8020,53 @@ impl ComputedStyle {
 
     self.custom_properties = store;
 
-    if self.custom_property_declarations.is_empty() {
-      return;
+    if !self.custom_property_declarations.is_empty() {
+      let mut declarations: Vec<(Arc<str>, crate::style::CustomPropertyDeclaration)> = self
+        .custom_property_declarations
+        .iter()
+        .map(|(name, entry)| (Arc::clone(name), entry.clone()))
+        .collect();
+      declarations.sort_unstable_by_key(|(_, entry)| entry.order);
+
+      let default_revert_base = CustomPropertyStore::default();
+      let author_revert_base = self.custom_property_revert_base.clone();
+      for (name, entry) in declarations {
+        let crate::style::CustomPropertyDeclaration {
+          order: _,
+          value,
+          contains_var,
+          revert_base_is_default,
+          revert_layer_base,
+        } = entry;
+
+        let revert_base = if revert_base_is_default {
+          &default_revert_base
+        } else {
+          &author_revert_base
+        };
+
+        // Reapply the specified declaration (pre-var-resolution) so the current inherited base can
+        // influence var() and CSS-wide keyword resolution for registered custom properties.
+        let decl = Declaration {
+          property: crate::css::types::PropertyName::Custom(Arc::clone(&name)),
+          value,
+          raw_value: String::new(),
+          important: false,
+          contains_var,
+        };
+        let _ = apply_custom_property_declaration(
+          self,
+          &decl,
+          parent_styles,
+          revert_base,
+          revert_layer_base.as_ref(),
+        );
+      }
     }
 
-    let mut declarations: Vec<(Arc<str>, crate::style::CustomPropertyDeclaration)> = self
-      .custom_property_declarations
-      .iter()
-      .map(|(name, entry)| (Arc::clone(name), entry.clone()))
-      .collect();
-    declarations.sort_unstable_by_key(|(_, entry)| entry.order);
-
-    let default_revert_base = CustomPropertyStore::default();
-    let author_revert_base = self.custom_property_revert_base.clone();
-    for (name, entry) in declarations {
-      let crate::style::CustomPropertyDeclaration {
-        order: _,
-        value,
-        contains_var,
-        revert_base_is_default,
-        revert_layer_base,
-      } = entry;
-
-      let revert_base = if revert_base_is_default {
-        &default_revert_base
-      } else {
-        &author_revert_base
-      };
-
-      // Reapply the specified declaration (pre-var-resolution) so the current inherited base can
-      // influence var() and CSS-wide keyword resolution for registered custom properties.
-      let decl = Declaration {
-        property: crate::css::types::PropertyName::Custom(Arc::clone(&name)),
-        value,
-        raw_value: String::new(),
-        important: false,
-        contains_var,
-      };
-      let _ = apply_custom_property_declaration(
-        self,
-        &decl,
-        parent_styles,
-        revert_base,
-        revert_layer_base.as_ref(),
-      );
-    }
+    // Registered custom properties substitute their computed values (e.g. resolving `1em`/`currentColor`)
+    // when referenced via `var()`. Paint-time recomputation must preserve that behavior.
+    self.canonicalize_registered_custom_properties(viewport);
   }
 
   /// Recomputes properties whose winning declarations depend on custom properties.
@@ -8022,6 +8079,34 @@ impl ComputedStyle {
     &mut self,
     parent_styles: &ComputedStyle,
     viewport: Size,
+  ) {
+    self.recompute_var_dependent_properties_internal(parent_styles, viewport, None);
+  }
+
+  pub(crate) fn recompute_var_dependent_properties_with_container_query_context(
+    &mut self,
+    parent_styles: &ComputedStyle,
+    viewport: Size,
+    node_id: usize,
+    ancestor_ids: &[usize],
+    container_ctx: Option<&crate::style::cascade::ContainerQueryContext>,
+  ) {
+    self.recompute_var_dependent_properties_internal(
+      parent_styles,
+      viewport,
+      Some(ContainerQueryResolutionContext {
+        node_id,
+        ancestor_ids,
+        container_ctx,
+      }),
+    );
+  }
+
+  fn recompute_var_dependent_properties_internal(
+    &mut self,
+    parent_styles: &ComputedStyle,
+    viewport: Size,
+    container_ctx: Option<ContainerQueryResolutionContext<'_>>,
   ) {
     if self.var_dependent_declarations.is_empty() {
       return;
@@ -8069,9 +8154,37 @@ impl ComputedStyle {
     // `border-inline-end-width` actually update their physical counterparts and lengths stay in px.
     resolve_pending_logical_properties(self);
     apply_content_visibility_implied_containment(self);
+
+    if let Some(ctx) = container_ctx.as_ref() {
+      crate::style::cascade::resolve_container_query_font_size(
+        self,
+        ctx.node_id,
+        ctx.ancestor_ids,
+        ctx.container_ctx,
+        parent_styles.font_size,
+        self.root_font_size,
+        viewport,
+        false,
+      );
+    }
+
     crate::style::cascade::resolve_line_height_length(self, viewport);
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
-    self.font_size_pending = None;
+
+    if let Some(ctx) = container_ctx.as_ref() {
+      crate::style::cascade::resolve_container_query_lengths(
+        self,
+        ctx.node_id,
+        ctx.ancestor_ids,
+        ctx.container_ctx,
+        viewport,
+        false,
+      );
+    } else {
+      // Paint-time recomputation does not have access to a container query context. Clear any
+      // pending container-query font size so we don't leak unresolved units into later code.
+      self.font_size_pending = None;
+    }
   }
 
   /// Recomputes properties whose winning declarations depended on `currentColor`.
@@ -8130,6 +8243,13 @@ impl ComputedStyle {
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
     self.font_size_pending = None;
   }
+}
+
+#[derive(Clone, Copy)]
+struct ContainerQueryResolutionContext<'a> {
+  node_id: usize,
+  ancestor_ids: &'a [usize],
+  container_ctx: Option<&'a crate::style::cascade::ContainerQueryContext>,
 }
 
 #[cfg(test)]

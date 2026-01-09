@@ -15341,7 +15341,7 @@ fn compute_base_styles<'a>(
       &tree_scoped_custom_property_registry,
     ) {
       ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
-      ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+      ua_styles.recompute_inherited_custom_properties(parent_ua_styles, viewport);
     }
     if !Arc::ptr_eq(
       &ua_styles.position_try_registry,
@@ -15358,7 +15358,7 @@ fn compute_base_styles<'a>(
       &tree_scoped_custom_property_registry,
     ) {
       styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
-      styles.recompute_inherited_custom_properties(parent_styles);
+      styles.recompute_inherited_custom_properties(parent_styles, viewport);
     }
     if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
       styles.position_try_registry = tree_scoped_position_try_registry.clone();
@@ -15478,7 +15478,7 @@ fn compute_base_styles<'a>(
     &tree_scoped_custom_property_registry,
   ) {
     ua_styles.custom_property_registry = tree_scoped_custom_property_registry.clone();
-    ua_styles.recompute_inherited_custom_properties(parent_ua_styles);
+    ua_styles.recompute_inherited_custom_properties(parent_ua_styles, viewport);
   }
   if !Arc::ptr_eq(
     &ua_styles.position_try_registry,
@@ -15578,7 +15578,7 @@ fn compute_base_styles<'a>(
     false,
   );
 
-  let current_ua_root_font_size = if is_root {
+  let mut current_ua_root_font_size = if is_root {
     ua_styles.font_size
   } else {
     ua_root_font_size
@@ -15606,7 +15606,7 @@ fn compute_base_styles<'a>(
     &tree_scoped_custom_property_registry,
   ) {
     styles.custom_property_registry = tree_scoped_custom_property_registry;
-    styles.recompute_inherited_custom_properties(parent_styles);
+    styles.recompute_inherited_custom_properties(parent_styles, viewport);
   }
   if !Arc::ptr_eq(&styles.position_try_registry, &tree_scoped_position_try_registry) {
     styles.position_try_registry = tree_scoped_position_try_registry;
@@ -15674,7 +15674,7 @@ fn compute_base_styles<'a>(
   );
 
   // Root font size for rem resolution: the document root sets the value for all descendants.
-  let current_root_font_size = if is_root {
+  let mut current_root_font_size = if is_root {
     styles.font_size
   } else {
     root_font_size
@@ -15725,25 +15725,16 @@ fn compute_base_styles<'a>(
     is_root,
   );
 
-  let ua_typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
-    &mut ua_styles,
-    node_id,
-    container_query_ancestor_ids.as_ref(),
-    container_ctx,
-    viewport,
-    false,
-  );
-  let typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
-    &mut styles,
-    node_id,
-    container_query_ancestor_ids.as_ref(),
-    container_ctx,
-    viewport,
-    false,
-  );
-  if ua_typed_custom_properties_changed {
-    ua_styles.recompute_var_dependent_properties(parent_ua_styles, viewport);
-    resolve_container_query_lengths(
+  // Registered custom properties must substitute their computed values when referenced via `var()`
+  // (CSS Properties & Values API). Canonicalize those values once font-size/root-font-size, colors,
+  // and the used color scheme are finalized.
+  //
+  // Canonicalization can affect var()/currentColor-dependent declarations on the same element
+  // (including `font-size` itself). Iterate a small bounded fixpoint so dependent declarations see
+  // the computed substitutions.
+  const MAX_REGISTERED_CUSTOM_PROPERTY_PASSES: usize = 4;
+  for _ in 0..MAX_REGISTERED_CUSTOM_PROPERTY_PASSES {
+    let mut changed = finalize_registered_custom_properties_for_node(
       &mut ua_styles,
       node_id,
       container_query_ancestor_ids.as_ref(),
@@ -15751,9 +15742,39 @@ fn compute_base_styles<'a>(
       viewport,
       false,
     );
-  }
-  if typed_custom_properties_changed {
-    styles.recompute_var_dependent_properties(parent_styles, viewport);
+    changed |= finalize_registered_custom_properties_for_node(
+      &mut styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+    if !changed {
+      break;
+    }
+
+    styles.recompute_var_dependent_properties_with_container_query_context(
+      parent_styles,
+      viewport,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+    );
+    ua_styles.recompute_var_dependent_properties_with_container_query_context(
+      parent_ua_styles,
+      viewport,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+    );
+    styles.recompute_current_color_dependent_properties(parent_styles, viewport);
+    ua_styles.recompute_current_color_dependent_properties(parent_ua_styles, viewport);
+
+    current_root_font_size = if is_root { styles.font_size } else { root_font_size };
+    styles.root_font_size = current_root_font_size;
+    resolve_line_height_length(&mut styles, viewport);
+    resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
     resolve_container_query_lengths(
       &mut styles,
       node_id,
@@ -15762,7 +15783,59 @@ fn compute_base_styles<'a>(
       viewport,
       false,
     );
+
+    current_ua_root_font_size = if is_root {
+      ua_styles.font_size
+    } else {
+      ua_root_font_size
+    };
+    ua_styles.root_font_size = current_ua_root_font_size;
+    resolve_line_height_length(&mut ua_styles, viewport);
+    resolve_absolute_lengths(&mut ua_styles, current_ua_root_font_size, viewport);
+    resolve_container_query_lengths(
+      &mut ua_styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+
+    let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+    styles.used_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+    ua_styles.used_dark_color_scheme = styles.used_dark_color_scheme;
+
+    if is_root {
+      if let Some(selected) = &selected_scheme {
+        if matches!(selected, ColorSchemeEntry::Dark) {
+          let dark_text = Rgba::rgb(232, 232, 232);
+          let dark_background = Rgba::rgb(16, 16, 16);
+          if styles.color == ua_default_color {
+            styles.color = dark_text;
+          }
+          if ua_styles.color == ua_default_color {
+            ua_styles.color = dark_text;
+          }
+          if styles.background_color == ua_default_background {
+            styles.background_color = dark_background;
+          }
+          if ua_styles.background_color == ua_default_background {
+            ua_styles.background_color = dark_background;
+          }
+        }
+      }
+    }
+
+    apply_color_scheme_palette(
+      &mut styles,
+      &mut ua_styles,
+      ua_default_color,
+      ua_default_background,
+      &selected_scheme,
+      is_root,
+    );
   }
+
   apply_forced_colors_overrides(&mut styles);
 
   styles.inert = node_is_inert(node, ancestors);
@@ -35132,7 +35205,7 @@ fn container_query_unit_bases(
   bases
 }
 
-fn resolve_container_query_font_size(
+pub(crate) fn resolve_container_query_font_size(
   styles: &mut ComputedStyle,
   node_id: usize,
   ancestor_ids: &[usize],
@@ -35372,7 +35445,7 @@ fn finalize_registered_custom_properties_for_node(
   )
 }
 
-fn resolve_container_query_lengths(
+pub(crate) fn resolve_container_query_lengths(
   styles: &mut ComputedStyle,
   node_id: usize,
   ancestor_ids: &[usize],

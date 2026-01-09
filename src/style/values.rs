@@ -18,6 +18,9 @@ use std::fmt;
 
 use smallvec::SmallVec;
 
+use crate::geometry::Size;
+use crate::style::color::Rgba;
+
 /// CSS length units
 ///
 /// Represents the unit portion of a CSS length value.
@@ -2501,6 +2504,16 @@ pub enum CustomPropertyTypedValue {
   },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CustomPropertyComputeContext {
+  pub font_size: f32,
+  pub root_font_size: f32,
+  pub line_height: f32,
+  pub viewport: Size,
+  pub current_color: Rgba,
+  pub is_dark_color_scheme: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CustomPropertyListSeparator {
   Space,
@@ -2508,6 +2521,44 @@ pub enum CustomPropertyListSeparator {
 }
 
 impl CustomPropertyTypedValue {
+  pub(crate) fn to_computed_value(&self, ctx: &CustomPropertyComputeContext) -> Self {
+    match self {
+      CustomPropertyTypedValue::Length(len) => {
+        CustomPropertyTypedValue::Length(compute_custom_property_length(*len, ctx))
+      }
+      CustomPropertyTypedValue::Number(value) => {
+        if *value == 0.0 {
+          CustomPropertyTypedValue::Number(0.0)
+        } else {
+          CustomPropertyTypedValue::Number(*value)
+        }
+      }
+      CustomPropertyTypedValue::Percentage(value) => {
+        if *value == 0.0 {
+          CustomPropertyTypedValue::Percentage(0.0)
+        } else {
+          CustomPropertyTypedValue::Percentage(*value)
+        }
+      }
+      CustomPropertyTypedValue::Color(color) => {
+        let rgba = color.to_rgba_with_scheme(ctx.current_color, ctx.is_dark_color_scheme);
+        CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
+      }
+      CustomPropertyTypedValue::Angle(deg) => {
+        let normalized = if deg.is_finite() {
+          deg.rem_euclid(360.0)
+        } else {
+          *deg
+        };
+        CustomPropertyTypedValue::Angle(normalized)
+      }
+      CustomPropertyTypedValue::List { separator, items } => CustomPropertyTypedValue::List {
+        separator: *separator,
+        items: items.iter().map(|item| item.to_computed_value(ctx)).collect(),
+      },
+    }
+  }
+
   /// Serializes the typed value back to CSS text.
   pub fn to_css(&self) -> String {
     match self {
@@ -2543,6 +2594,169 @@ impl CustomPropertyTypedValue {
       }
     }
   }
+}
+
+fn compute_custom_property_length(length: Length, ctx: &CustomPropertyComputeContext) -> Length {
+  if let Some(calc) = length.calc {
+    let computed = compute_custom_property_calc_length(calc, ctx);
+    if computed.is_zero() {
+      return Length::px(0.0);
+    }
+    if let Some(term) = computed.single_term() {
+      return Length::new(term.value, term.unit);
+    }
+    return Length::calc(computed);
+  }
+
+  match length.unit {
+    unit if unit.is_absolute() => Length::px(length.to_px()),
+    LengthUnit::Em => {
+      if ctx.font_size.is_finite() {
+        Length::px(length.value * ctx.font_size)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Ex | LengthUnit::Ch => {
+      if ctx.font_size.is_finite() {
+        Length::px(length.value * ctx.font_size * 0.5)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Rem => {
+      if ctx.root_font_size.is_finite() {
+        Length::px(length.value * ctx.root_font_size)
+      } else {
+        length
+      }
+    }
+    LengthUnit::Lh => {
+      if ctx.line_height.is_finite() {
+        Length::px(length.value * ctx.line_height)
+      } else {
+        length
+      }
+    }
+    unit if unit.is_viewport_relative() => length
+      .resolve_with_viewport(ctx.viewport.width, ctx.viewport.height)
+      .map(Length::px)
+      .unwrap_or(length),
+    _ => length,
+  }
+}
+
+fn compute_custom_property_calc_length(calc: CalcLength, ctx: &CustomPropertyComputeContext) -> CalcLength {
+  use CalcLengthKind::*;
+  match calc.kind() {
+    Linear => compute_custom_property_calc_linear(calc, ctx).unwrap_or(calc),
+    Min => compute_custom_property_calc_function(calc, ctx, CalcLengthKind::Min),
+    Max => compute_custom_property_calc_function(calc, ctx, CalcLengthKind::Max),
+    Clamp => compute_custom_property_calc_function(calc, ctx, CalcLengthKind::Clamp),
+  }
+}
+
+fn compute_custom_property_calc_function(
+  calc: CalcLength,
+  ctx: &CustomPropertyComputeContext,
+  kind: CalcLengthKind,
+) -> CalcLength {
+  debug_assert!(kind != CalcLengthKind::Linear);
+  let mut args: Vec<CalcLength> = Vec::new();
+  let mut current = CalcLength::empty();
+
+  for term in calc.terms() {
+    if term.unit == LengthUnit::Calc {
+      args.push(current);
+      current = CalcLength::empty();
+      continue;
+    }
+    let Some(mapped) = compute_custom_property_calc_term(*term, ctx) else {
+      return calc;
+    };
+    if current.push(mapped.unit, mapped.value).is_err() {
+      return calc;
+    }
+  }
+  args.push(current);
+
+  match kind {
+    CalcLengthKind::Min => CalcLength::min_function(&args).unwrap_or(calc),
+    CalcLengthKind::Max => CalcLength::max_function(&args).unwrap_or(calc),
+    CalcLengthKind::Clamp => {
+      if args.len() != 3 {
+        return calc;
+      }
+      CalcLength::clamp_function(args[0], args[1], args[2]).unwrap_or(calc)
+    }
+    CalcLengthKind::Linear => calc,
+  }
+}
+
+fn compute_custom_property_calc_linear(
+  calc: CalcLength,
+  ctx: &CustomPropertyComputeContext,
+) -> Option<CalcLength> {
+  let mut out = CalcLength::empty();
+  for term in calc.terms() {
+    if term.unit == LengthUnit::Calc {
+      return None;
+    }
+    let mapped = compute_custom_property_calc_term(*term, ctx)?;
+    out.push(mapped.unit, mapped.value).ok()?;
+  }
+  Some(out)
+}
+
+fn compute_custom_property_calc_term(
+  term: CalcTerm,
+  ctx: &CustomPropertyComputeContext,
+) -> Option<CalcTerm> {
+  let mut value = term.value;
+  let unit = match term.unit {
+    LengthUnit::Percent => LengthUnit::Percent,
+    unit if unit.is_absolute() => {
+      value = Length::new(value, unit).to_px();
+      LengthUnit::Px
+    }
+    unit if unit.is_viewport_relative() => {
+      let px = Length::new(value, unit).resolve_with_viewport(ctx.viewport.width, ctx.viewport.height)?;
+      value = px;
+      LengthUnit::Px
+    }
+    LengthUnit::Em => {
+      if !ctx.font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.font_size;
+      LengthUnit::Px
+    }
+    LengthUnit::Ex | LengthUnit::Ch => {
+      if !ctx.font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.font_size * 0.5;
+      LengthUnit::Px
+    }
+    LengthUnit::Rem => {
+      if !ctx.root_font_size.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.root_font_size;
+      LengthUnit::Px
+    }
+    LengthUnit::Lh => {
+      if !ctx.line_height.is_finite() {
+        return Some(term);
+      }
+      value *= ctx.line_height;
+      LengthUnit::Px
+    }
+    LengthUnit::Calc => LengthUnit::Calc,
+    other => other,
+  };
+
+  Some(CalcTerm { unit, value })
 }
 
 /// Stored value for a custom property, optionally carrying a parsed typed value

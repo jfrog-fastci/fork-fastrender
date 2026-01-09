@@ -4,6 +4,7 @@ use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::style::cascade::apply_styles;
 use fastrender::style::color::Rgba;
 use fastrender::style::properties::DEFAULT_VIEWPORT;
+use fastrender::style::types::{LengthOrNumber, StrokeDasharray};
 use fastrender::style::values::Length;
 
 fn dom_with_child() -> DomNode {
@@ -25,7 +26,7 @@ fn dom_with_child() -> DomNode {
 }
 
 #[test]
-fn registered_custom_property_length_is_computed_in_declaration_context() {
+fn registered_custom_property_length_computes_at_declaration_site() {
   let css = r#"
     @property --len {
       syntax: "<length>";
@@ -38,7 +39,7 @@ fn registered_custom_property_length_is_computed_in_declaration_context() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   assert_eq!(child.styles.margin_left, Some(Length::px(10.0)));
 }
@@ -74,7 +75,7 @@ fn registered_custom_property_length_max_is_not_flattened_across_arguments() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   assert_eq!(child.styles.margin_left, Some(Length::px(10.0)));
 }
@@ -93,7 +94,7 @@ fn registered_custom_property_length_percentage_max_preserves_percent_terms() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   let expected = parse_length("max(50%, 10px)").expect("parse expected max()");
   assert_eq!(child.styles.margin_left, Some(expected));
@@ -113,7 +114,7 @@ fn registered_custom_property_length_vi_uses_writing_mode_inline_axis() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   assert_eq!(
     child.styles.margin_left,
@@ -135,7 +136,7 @@ fn registered_custom_property_length_vb_uses_writing_mode_block_axis() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   assert_eq!(
     child.styles.margin_left,
@@ -144,7 +145,7 @@ fn registered_custom_property_length_vb_uses_writing_mode_block_axis() {
 }
 
 #[test]
-fn registered_custom_property_color_resolves_current_color_at_declaration_site() {
+fn registered_custom_property_color_currentcolor_computes_at_declaration_site() {
   let css = r#"
     @property --c {
       syntax: "<color>";
@@ -157,9 +158,39 @@ fn registered_custom_property_color_resolves_current_color_at_declaration_site()
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
   assert_eq!(child.styles.background_color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn registered_custom_property_list_values_compute_at_declaration_site() {
+  let css = r#"
+    @property --xs {
+      syntax: "<length>#";
+      inherits: true;
+      initial-value: 0px;
+    }
+    #root { font-size: 10px; --xs: 1em, 2em; }
+    #child { font-size: 20px; stroke-dasharray: var(--xs); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child styles");
+
+  match &child.styles.svg_stroke_dasharray {
+    Some(StrokeDasharray::Values(values)) => {
+      assert_eq!(
+        values.as_ref(),
+        &[
+          LengthOrNumber::Length(Length::px(10.0)),
+          LengthOrNumber::Length(Length::px(20.0))
+        ]
+      );
+    }
+    other => panic!("expected computed stroke-dasharray, got {other:?}"),
+  }
 }
 
 #[test]
@@ -171,17 +202,9 @@ fn unregistered_custom_property_substitutes_tokens_in_use_site_context() {
   let sheet = parse_stylesheet(css).unwrap();
   let dom = dom_with_child();
   let styled = apply_styles(&dom, &sheet);
-  let child = styled.children.first().expect("child");
+  let child = styled.children.first().expect("child styles");
 
-  let len = child.styles.margin_left.expect("computed margin-left");
-  let resolved_px = len
-    .resolve_with_context(
-      None,
-      DEFAULT_VIEWPORT.width,
-      DEFAULT_VIEWPORT.height,
-      child.styles.font_size,
-      child.styles.root_font_size,
-    )
-    .expect("resolved margin-left");
-  assert!((resolved_px - 20.0).abs() < 1e-6, "expected 20px, got {resolved_px}");
+  // Unregistered custom properties substitute raw tokens. `1em` is therefore interpreted against
+  // the child's font-size, rather than being precomputed against the parent's font-size.
+  assert_eq!(child.styles.margin_left, Some(Length::em(1.0)));
 }
