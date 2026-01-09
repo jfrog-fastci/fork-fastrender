@@ -107,6 +107,9 @@ we can land a correct classic-script core first:
 - The `nomodule` attribute behavior
 - `document.write()` and the “ignore-destructive-writes counter”
 - **Stylesheet-blocking scripts** (scripts that wait for render-blocking stylesheets)
+  - A prototype exists for the harness (`src/js/html_scripting.rs` +
+    `src/js/script_blocking_stylesheets.rs`), but it is not yet fully integrated with the real
+    streaming parser + scheduler pipeline.
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
