@@ -1014,7 +1014,6 @@ impl App {
               }
 
               clicked_item_idx
-              clicked_item_idx
             })
             .inner
         });
