@@ -3,6 +3,8 @@
 // Source inputs:
 // - specs/whatwg-dom/dom.bs
 // - specs/whatwg-html/source
+// - specs/whatwg-url/url.bs
+// - specs/whatwg-fetch/fetch.bs
 
 use super::*;
 
@@ -267,12 +269,607 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "BarProp",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("visible"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean visible",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "BeforeUnloadEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("returnValue"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString returnValue",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "BroadcastChannel",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "CDATASection",
     inherits: Some("Text"),
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
     members: &[
+    ],
+  },
+  WebIdlInterface {
+    name: "CanvasGradient",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("addColorStop"),
+        ext_attrs: &[
+        ],
+        raw: "undefined addColorStop(double offset, DOMString color)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "CanvasPattern",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(optional DOMMatrix2DInit transform = {})",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "CanvasRenderingContext2D",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("canvas"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLCanvasElement canvas",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getContextAttributes"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasRenderingContext2DSettings getContextAttributes()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("save"),
+        ext_attrs: &[
+        ],
+        raw: "undefined save()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("restore"),
+        ext_attrs: &[
+        ],
+        raw: "undefined restore()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reset"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reset()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isContextLost"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isContextLost()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scale"),
+        ext_attrs: &[
+        ],
+        raw: "undefined scale(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rotate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rotate(unrestricted double angle)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("translate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined translate(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined transform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getTransform"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "DOMMatrix getTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(optional DOMMatrix2DInit transform = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("resetTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined resetTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) strokeStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) fillStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createLinearGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createLinearGradient(double x0, double y0, double x1, double y1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createRadialGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createRadialGradient(double x0, double y0, double r0, double x1, double y1, double r1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createConicGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createConicGradient(double startAngle, double x, double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createPattern"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasPattern? createPattern(CanvasImageSource image, [LegacyNullToEmptyString] DOMString repetition)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetX"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetX",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetY"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetY",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowBlur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowBlur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowColor"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString shadowColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("filter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString filter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("beginPath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined beginPath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke(Path2D path)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(Path2D path, unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(Path2D path, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawFocusIfNeeded"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawFocusIfNeeded(Element element)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawFocusIfNeeded"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawFocusIfNeeded(Path2D path, Element element)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("measureText"),
+        ext_attrs: &[
+        ],
+        raw: "TextMetrics measureText(DOMString text)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double sx, unrestricted double sy, unrestricted double sw, unrestricted double sh, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData([EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData(ImageData imageData)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData getImageData([EnforceRange] long sx, [EnforceRange] long sy, [EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy, [EnforceRange] long dirtyX, [EnforceRange] long dirtyY, [EnforceRange] long dirtyWidth, [EnforceRange] long dirtyHeight)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineWidth"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineCap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineCap lineCap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineJoin"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineJoin lineJoin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("miterLimit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double miterLimit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setLineDash(sequence<unrestricted double> segments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<unrestricted double> getLineDash()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineDashOffset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineDashOffset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lang"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString lang",
+      },
+      WebIdlInterfaceMember {
+        name: Some("font"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString font",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textAlign"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextAlign textAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextBaseline textBaseline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("direction"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasDirection direction",
+      },
+      WebIdlInterfaceMember {
+        name: Some("letterSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString letterSpacing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontKerning"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontKerning fontKerning",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontStretch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontStretch fontStretch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontVariantCaps"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontVariantCaps fontVariantCaps",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textRendering"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextRendering textRendering",
+      },
+      WebIdlInterfaceMember {
+        name: Some("wordSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString wordSpacing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("closePath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined closePath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("moveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined moveTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined lineTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("quadraticCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined quadraticCurveTo(unrestricted double cpx, unrestricted double cpy, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bezierCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined bezierCurveTo(unrestricted double cp1x, unrestricted double cp1y, unrestricted double cp2x, unrestricted double cp2y, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arcTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arcTo(unrestricted double x1, unrestricted double y1, unrestricted double x2, unrestricted double y2, unrestricted double radius)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("roundRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined roundRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h, optional (unrestricted double or DOMPointInit or sequence<(unrestricted double or DOMPointInit)>) radii = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arc"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arc(unrestricted double x, unrestricted double y, unrestricted double radius, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ellipse"),
+        ext_attrs: &[
+        ],
+        raw: "undefined ellipse(unrestricted double x, unrestricted double y, unrestricted double radiusX, unrestricted double radiusY, unrestricted double rotation, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
     ],
   },
   WebIdlInterface {
@@ -371,6 +968,78 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "CloseWatcher",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(optional CloseWatcherOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("requestClose"),
+        ext_attrs: &[
+        ],
+        raw: "undefined requestClose()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("destroy"),
+        ext_attrs: &[
+        ],
+        raw: "undefined destroy()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncancel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncancel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "CommandEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional CommandEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element? source",
+      },
+      WebIdlInterfaceMember {
+        name: Some("command"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString command",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "Comment",
     inherits: Some("CharacterData"),
     ext_attrs: &[
@@ -382,6 +1051,60 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "constructor(optional DOMString data = \"\")",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "CustomElementRegistry",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("define"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined define(DOMString name, CustomElementConstructor constructor, optional ElementDefinitionOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: None,
+        ext_attrs: &[
+        ],
+        raw: "(CustomElementConstructor or undefined) get(DOMString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getName"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? getName(CustomElementConstructor constructor)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("whenDefined"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<CustomElementConstructor> whenDefined(DOMString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("upgrade"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined upgrade(Node root)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("initialize"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined initialize(Node root)",
       },
     ],
   },
@@ -409,6 +1132,21 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "undefined initCustomEvent(DOMString type, optional boolean bubbles = false, optional boolean cancelable = false, optional any detail = null)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "CustomStateSet",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: None,
+        ext_attrs: &[
+        ],
+        raw: "setlike<DOMString>",
       },
     ],
   },
@@ -445,6 +1183,28 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "boolean hasFeature()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DOMParser",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("parseFromString"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Document parseFromString((TrustedHTML or DOMString) string, DOMParserSupportedType type)",
       },
     ],
   },
@@ -576,6 +1336,250 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "iterable<DOMString>",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DataTransfer",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("dropEffect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString dropEffect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("effectAllowed"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString effectAllowed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("items"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute DataTransferItemList items",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setDragImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setDragImage(Element image, long x, long y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("types"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<DOMString> types",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getData"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString getData(DOMString format)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setData(DOMString format, DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearData(optional DOMString format)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("files"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute FileList files",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DataTransferItem",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("kind"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString kind",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getAsString"),
+        ext_attrs: &[
+        ],
+        raw: "undefined getAsString(FunctionStringCallback? _callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getAsBlob"),
+        ext_attrs: &[
+        ],
+        raw: "Blob getAsBlob()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getAsFile"),
+        ext_attrs: &[
+        ],
+        raw: "-->\n  File? getAsFile()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getAsObject"),
+        ext_attrs: &[
+        ],
+        raw: "getAsObject(FunctionObjectCallback _callback)",
+      },
+      WebIdlInterfaceMember {
+        name: None,
+        ext_attrs: &[
+        ],
+        raw: "-->",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DataTransferItemList",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("DataTransferItem"),
+        ext_attrs: &[
+        ],
+        raw: "getter DataTransferItem (unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+        ],
+        raw: "DataTransferItem? add(DOMString data, DOMString type)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+        ],
+        raw: "DataTransferItem? add(Blob data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+        ],
+        raw: "-->\n  DataTransferItem? add(File data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+        ],
+        raw: "DataTransferItem? add(any data, DOMString type)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("add"),
+        ext_attrs: &[
+        ],
+        raw: "-->DataTransferItem? add(DataTransferPromise data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("remove"),
+        ext_attrs: &[
+        ],
+        raw: "-->\n  undefined remove(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clear"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clear()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DedicatedWorkerGlobalScope",
+    inherits: Some("WorkerGlobalScope"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Global", value: Some("(Worker,DedicatedWorker)") },
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("DedicatedWorker") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, sequence<object> transfer)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("requestAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned long requestAnimationFrame(FrameRequestCallback callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cancelAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "undefined cancelAnimationFrame(unsigned long handle)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
       },
     ],
   },
@@ -1027,6 +2031,80 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "attribute EventHandler onvisibilitychange",
       },
       WebIdlInterfaceMember {
+        name: Some("fgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString fgColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("linkColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString linkColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vlinkColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString vlinkColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("alinkColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString alinkColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString bgColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("anchors"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLCollection anchors",
+      },
+      WebIdlInterfaceMember {
+        name: Some("applets"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLCollection applets",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clear"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clear()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("captureEvents"),
+        ext_attrs: &[
+        ],
+        raw: "undefined captureEvents()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("releaseEvents"),
+        ext_attrs: &[
+        ],
+        raw: "undefined releaseEvents()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("all"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLAllCollection all",
+      },
+      WebIdlInterfaceMember {
         name: Some("getElementById"),
         ext_attrs: &[
         ],
@@ -1131,6 +2209,464 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "XPathResult evaluate(DOMString expression, Node contextNode, optional XPathNSResolver? resolver = null, optional unsigned short type = 0, optional XPathResult? result = null)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onabort"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onabort",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onauxclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onauxclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeinput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeinput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforematch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforematch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforetoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforetoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onblur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onblur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncancel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncancel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplaythrough"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplaythrough",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncommand"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncommand",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextlost"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextlost",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextmenu"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextmenu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextrestored"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextrestored",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncopy"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncopy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncuechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncuechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncut"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncut",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondblclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondblclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrag"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrag",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragenter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragleave"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrop"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondurationchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondurationchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onemptied"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onemptied",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onended"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onended",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnErrorEventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onfocus"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onfocus",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onformdata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onformdata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninvalid"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninvalid",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeydown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeydown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeypress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeypress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeyup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeyup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadeddata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadeddata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadedmetadata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadedmetadata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousedown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousedown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseenter"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseleave"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousemove"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousemove",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseout"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseout",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpaste"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpaste",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpause"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpause",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplaying"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplaying",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onprogress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onprogress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onratechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onratechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onreset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onreset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onresize"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onresize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscroll"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscroll",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscrollend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscrollend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsecuritypolicyviolation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsecuritypolicyviolation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeked"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeked",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeking"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeking",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onselect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onselect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onslotchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onslotchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstalled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstalled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsubmit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsubmit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsuspend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsuspend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontimeupdate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontimeupdate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onvolumechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onvolumechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwaiting"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwaiting",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationiteration"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationiteration",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkittransitionend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkittransitionend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwheel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwheel",
       },
     ],
   },
@@ -1280,6 +2816,27 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "Unscopable", value: None },
         ],
         raw: "undefined remove()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "DragEvent",
+    inherits: Some("MouseEvent"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional DragEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("dataTransfer"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DataTransfer? dataTransfer",
       },
     ],
   },
@@ -1523,6 +3080,40 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "undefined insertAdjacentText(DOMString where, DOMString data)",
       },
       WebIdlInterfaceMember {
+        name: Some("setHTMLUnsafe"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined setHTMLUnsafe((TrustedHTML or DOMString) html)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getHTML"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString getHTML(optional GetHTMLOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("innerHTML"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute (TrustedHTML or [LegacyNullToEmptyString] DOMString) innerHTML",
+      },
+      WebIdlInterfaceMember {
+        name: Some("outerHTML"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute (TrustedHTML or [LegacyNullToEmptyString] DOMString) outerHTML",
+      },
+      WebIdlInterfaceMember {
+        name: Some("insertAdjacentHTML"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined insertAdjacentHTML(DOMString position, (TrustedHTML or DOMString) string)",
+      },
+      WebIdlInterfaceMember {
         name: Some("children"),
         ext_attrs: &[
           WebIdlExtendedAttribute { name: "SameObject", value: None },
@@ -1640,6 +3231,127 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute HTMLSlotElement? assignedSlot",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ElementInternals",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("shadowRoot"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ShadowRoot? shadowRoot",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setFormValue"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setFormValue((File or USVString or FormData)? value,\n                         optional (File or USVString or FormData)? state)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setValidity"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setValidity(optional ValidityStateFlags flags = {},\n                        optional DOMString message,\n                        optional HTMLElement anchor)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("willValidate"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean willValidate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validity"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ValidityState validity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validationMessage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString validationMessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("checkValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean checkValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean reportValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
+      },
+      WebIdlInterfaceMember {
+        name: Some("states"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute CustomStateSet states",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ErrorEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional ErrorEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("message"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString message",
+      },
+      WebIdlInterfaceMember {
+        name: Some("filename"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString filename",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineno"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long lineno",
+      },
+      WebIdlInterfaceMember {
+        name: Some("colno"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long colno",
+      },
+      WebIdlInterfaceMember {
+        name: Some("error"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any error",
       },
     ],
   },
@@ -1806,6 +3518,81 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "EventSource",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(USVString url, optional EventSourceInit eventSourceInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("withCredentials"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean withCredentials",
+      },
+      WebIdlInterfaceMember {
+        name: Some("CONNECTING"),
+        ext_attrs: &[
+        ],
+        raw: "const unsigned short CONNECTING = 0",
+      },
+      WebIdlInterfaceMember {
+        name: Some("OPEN"),
+        ext_attrs: &[
+        ],
+        raw: "const unsigned short OPEN = 1",
+      },
+      WebIdlInterfaceMember {
+        name: Some("CLOSED"),
+        ext_attrs: &[
+        ],
+        raw: "const unsigned short CLOSED = 2",
+      },
+      WebIdlInterfaceMember {
+        name: Some("readyState"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned short readyState",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onopen"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onopen",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "EventTarget",
     inherits: None,
     ext_attrs: &[
@@ -1845,6 +3632,80 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
     members: &[
+    ],
+  },
+  WebIdlInterface {
+    name: "External",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("AddSearchProvider"),
+        ext_attrs: &[
+        ],
+        raw: "undefined AddSearchProvider()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("IsSearchProviderInstalled"),
+        ext_attrs: &[
+        ],
+        raw: "undefined IsSearchProviderInstalled()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "FakeWorkletGlobalScope",
+    inherits: Some("WorkletGlobalScope"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Global", value: Some("(Worklet,FakeWorklet)") },
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("FakeWorklet") },
+      WebIdlExtendedAttribute { name: "SecureContext", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("registerFake"),
+        ext_attrs: &[
+        ],
+        raw: "undefined registerFake(DOMString type, Function classConstructor)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "FetchLaterResult",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("activated"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean activated",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "FormDataEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, FormDataEventInit eventInitDict)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("formData"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FormData formData",
+      },
     ],
   },
   WebIdlInterface {
@@ -1965,6 +3826,46 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "CEReactions", value: None },
         ],
         raw: "attribute DOMString referrerPolicy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("coords"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString coords",
+      },
+      WebIdlInterfaceMember {
+        name: Some("charset"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString charset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rev"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString rev",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shape"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString shape",
       },
       WebIdlInterfaceMember {
         name: Some("href"),
@@ -2132,6 +4033,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "attribute DOMString referrerPolicy",
       },
       WebIdlInterfaceMember {
+        name: Some("noHref"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean noHref",
+      },
+      WebIdlInterfaceMember {
         name: Some("href"),
         ext_attrs: &[
           WebIdlExtendedAttribute { name: "CEReactions", value: None },
@@ -2241,6 +4150,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("clear"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString clear",
+      },
     ],
   },
   WebIdlInterface {
@@ -2288,6 +4205,162 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString text",
+      },
+      WebIdlInterfaceMember {
+        name: Some("link"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString link",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vLink"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString vLink",
+      },
+      WebIdlInterfaceMember {
+        name: Some("aLink"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString aLink",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString bgColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("background"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString background",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onafterprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onafterprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnBeforeUnloadEventHandler onbeforeunload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onhashchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onhashchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onlanguagechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onlanguagechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onoffline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onoffline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ononline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ononline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagehide"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagehide",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagereveal"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagereveal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageshow"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageshow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageswap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageswap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpopstate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpopstate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onrejectionhandled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onrejectionhandled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstorage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstorage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunhandledrejection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunhandledrejection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunload",
       },
     ],
   },
@@ -2439,6 +4512,75 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "readonly attribute NodeList labels",
       },
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetElement"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute Element? popoverTargetElement",
+      },
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetAction"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString popoverTargetAction",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLCanvasElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute unsigned long width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute unsigned long height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getContext"),
+        ext_attrs: &[
+        ],
+        raw: "RenderingContext? getContext(DOMString contextId, optional any options = null)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toDataURL"),
+        ext_attrs: &[
+        ],
+        raw: "USVString toDataURL(optional DOMString type = \"image/png\", optional any quality)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toBlob"),
+        ext_attrs: &[
+        ],
+        raw: "undefined toBlob(BlobCallback _callback, optional DOMString type = \"image/png\", optional any quality)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transferControlToOffscreen"),
+        ext_attrs: &[
+        ],
+        raw: "OffscreenCanvas transferControlToOffscreen()",
+      },
     ],
   },
   WebIdlInterface {
@@ -2483,6 +4625,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("compact"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean compact",
+      },
     ],
   },
   WebIdlInterface {
@@ -2510,6 +4660,151 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "HTMLDataListElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("options"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLCollection options",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLDetailsElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("open"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean open",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLDialogElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("open"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean open",
+      },
+      WebIdlInterfaceMember {
+        name: Some("returnValue"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString returnValue",
+      },
+      WebIdlInterfaceMember {
+        name: Some("closedBy"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute DOMString closedBy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("show"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined show()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("showModal"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined showModal()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined close(optional DOMString returnValue)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("requestClose"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined requestClose(optional DOMString returnValue)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLDirectoryElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("compact"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean compact",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "HTMLDivElement",
     inherits: Some("HTMLElement"),
     ext_attrs: &[
@@ -2522,6 +4817,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
       },
     ],
   },
@@ -2704,6 +5007,491 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "attribute boolean headingReset",
       },
       WebIdlInterfaceMember {
+        name: Some("onabort"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onabort",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onauxclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onauxclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeinput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeinput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforematch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforematch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforetoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforetoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onblur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onblur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncancel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncancel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplaythrough"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplaythrough",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncommand"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncommand",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextlost"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextlost",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextmenu"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextmenu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextrestored"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextrestored",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncopy"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncopy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncuechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncuechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncut"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncut",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondblclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondblclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrag"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrag",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragenter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragleave"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrop"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondurationchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondurationchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onemptied"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onemptied",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onended"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onended",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnErrorEventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onfocus"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onfocus",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onformdata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onformdata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninvalid"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninvalid",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeydown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeydown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeypress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeypress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeyup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeyup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadeddata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadeddata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadedmetadata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadedmetadata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousedown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousedown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseenter"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseleave"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousemove"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousemove",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseout"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseout",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpaste"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpaste",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpause"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpause",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplaying"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplaying",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onprogress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onprogress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onratechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onratechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onreset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onreset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onresize"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onresize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscroll"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscroll",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscrollend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscrollend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsecuritypolicyviolation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsecuritypolicyviolation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeked"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeked",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeking"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeking",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onselect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onselect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onslotchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onslotchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstalled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstalled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsubmit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsubmit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsuspend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsuspend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontimeupdate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontimeupdate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onvolumechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onvolumechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwaiting"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwaiting",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationiteration"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationiteration",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkittransitionend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkittransitionend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwheel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwheel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("contentEditable"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString contentEditable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("enterKeyHint"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString enterKeyHint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isContentEditable"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isContentEditable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("inputMode"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString inputMode",
+      },
+      WebIdlInterfaceMember {
         name: Some("dataset"),
         ext_attrs: &[
           WebIdlExtendedAttribute { name: "SameObject", value: None },
@@ -2797,6 +5585,150 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "Document? getSVGDocument()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLFieldSetElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean disabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("elements"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute HTMLCollection elements",
+      },
+      WebIdlInterfaceMember {
+        name: Some("willValidate"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean willValidate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validity"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute ValidityState validity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validationMessage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString validationMessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("checkValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean checkValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean reportValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setCustomValidity"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setCustomValidity(DOMString error)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLFontElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("color"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString color",
+      },
+      WebIdlInterfaceMember {
+        name: Some("face"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString face",
+      },
+      WebIdlInterfaceMember {
+        name: Some("size"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString size",
       },
     ],
   },
@@ -2975,6 +5907,238 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "HTMLFrameElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrolling"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString scrolling",
+      },
+      WebIdlInterfaceMember {
+        name: Some("src"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString src",
+      },
+      WebIdlInterfaceMember {
+        name: Some("frameBorder"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString frameBorder",
+      },
+      WebIdlInterfaceMember {
+        name: Some("longDesc"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString longDesc",
+      },
+      WebIdlInterfaceMember {
+        name: Some("noResize"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean noResize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("contentDocument"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Document? contentDocument",
+      },
+      WebIdlInterfaceMember {
+        name: Some("contentWindow"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute WindowProxy? contentWindow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("marginHeight"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString marginHeight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("marginWidth"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString marginWidth",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLFrameSetElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cols"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString cols",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rows"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString rows",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onafterprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onafterprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnBeforeUnloadEventHandler onbeforeunload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onhashchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onhashchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onlanguagechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onlanguagechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onoffline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onoffline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ononline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ononline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagehide"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagehide",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagereveal"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagereveal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageshow"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageshow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageswap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageswap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpopstate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpopstate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onrejectionhandled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onrejectionhandled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstorage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstorage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunhandledrejection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunhandledrejection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunload",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "HTMLHRElement",
     inherits: Some("HTMLElement"),
     ext_attrs: &[
@@ -2987,6 +6151,46 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("color"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString color",
+      },
+      WebIdlInterfaceMember {
+        name: Some("noShade"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean noShade",
+      },
+      WebIdlInterfaceMember {
+        name: Some("size"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString size",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString width",
       },
     ],
   },
@@ -3020,6 +6224,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
     ],
   },
   WebIdlInterface {
@@ -3035,6 +6247,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("version"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString version",
       },
     ],
   },
@@ -3147,6 +6367,54 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "Document? getSVGDocument()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrolling"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString scrolling",
+      },
+      WebIdlInterfaceMember {
+        name: Some("frameBorder"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString frameBorder",
+      },
+      WebIdlInterfaceMember {
+        name: Some("longDesc"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString longDesc",
+      },
+      WebIdlInterfaceMember {
+        name: Some("marginHeight"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString marginHeight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("marginWidth"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString marginWidth",
       },
     ],
   },
@@ -3293,6 +6561,62 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "Promise<undefined> decode()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lowsrc"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString lowsrc",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long hspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long vspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("longDesc"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString longDesc",
+      },
+      WebIdlInterfaceMember {
+        name: Some("border"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString border",
       },
     ],
   },
@@ -3697,6 +7021,37 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "undefined showPicker()",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("useMap"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString useMap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetElement"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute Element? popoverTargetElement",
+      },
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetAction"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString popoverTargetAction",
+      },
     ],
   },
   WebIdlInterface {
@@ -3720,6 +7075,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "Reflect", value: None },
         ],
         raw: "attribute long value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString type",
       },
     ],
   },
@@ -3756,6 +7119,36 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute HTMLElement? control",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLLegendElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
       },
     ],
   },
@@ -3900,6 +7293,30 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "attribute DOMString fetchPriority",
       },
+      WebIdlInterfaceMember {
+        name: Some("charset"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString charset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rev"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString rev",
+      },
+      WebIdlInterfaceMember {
+        name: Some("target"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString target",
+      },
     ],
   },
   WebIdlInterface {
@@ -3930,6 +7347,123 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "SameObject", value: None },
         ],
         raw: "readonly attribute HTMLCollection areas",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLMarqueeElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("behavior"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString behavior",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString bgColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("direction"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString direction",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long hspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("loop"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute long loop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollAmount"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("6") },
+        ],
+        raw: "attribute unsigned long scrollAmount",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollDelay"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("85") },
+        ],
+        raw: "attribute unsigned long scrollDelay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("trueSpeed"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean trueSpeed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long vspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("start"),
+        ext_attrs: &[
+        ],
+        raw: "undefined start()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stop"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stop()",
       },
     ],
   },
@@ -4247,6 +7781,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("compact"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean compact",
+      },
     ],
   },
   WebIdlInterface {
@@ -4294,6 +7836,84 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "Reflect", value: None },
         ],
         raw: "attribute DOMString media",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scheme"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString scheme",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLMeterElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("min"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double min",
+      },
+      WebIdlInterfaceMember {
+        name: Some("max"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double max",
+      },
+      WebIdlInterfaceMember {
+        name: Some("low"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double low",
+      },
+      WebIdlInterfaceMember {
+        name: Some("high"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double high",
+      },
+      WebIdlInterfaceMember {
+        name: Some("optimum"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double optimum",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
       },
     ],
   },
@@ -4367,6 +7987,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "Reflect", value: None },
         ],
         raw: "attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("compact"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean compact",
       },
     ],
   },
@@ -4484,6 +8112,200 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "undefined setCustomValidity(DOMString error)",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("archive"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString archive",
+      },
+      WebIdlInterfaceMember {
+        name: Some("code"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString code",
+      },
+      WebIdlInterfaceMember {
+        name: Some("declare"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean declare",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long hspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("standby"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString standby",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vspace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute unsigned long vspace",
+      },
+      WebIdlInterfaceMember {
+        name: Some("codeBase"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute DOMString codeBase",
+      },
+      WebIdlInterfaceMember {
+        name: Some("codeType"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString codeType",
+      },
+      WebIdlInterfaceMember {
+        name: Some("useMap"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString useMap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("border"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString border",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLOptGroupElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean disabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("label"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString label",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLOptionElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "LegacyFactoryFunction", value: Some("Option(optional DOMString text = \"\", optional DOMString value, optional boolean defaultSelected = false, optional boolean selected = false)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean disabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("label"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute DOMString label",
+      },
+      WebIdlInterfaceMember {
+        name: Some("defaultSelected"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"selected\"") },
+        ],
+        raw: "attribute boolean defaultSelected",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selected"),
+        ext_attrs: &[
+        ],
+        raw: "attribute boolean selected",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute DOMString value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString text",
+      },
+      WebIdlInterfaceMember {
+        name: Some("index"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long index",
+      },
     ],
   },
   WebIdlInterface {
@@ -4530,6 +8352,107 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "HTMLOutputElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("htmlFor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+          WebIdlExtendedAttribute { name: "PutForwards", value: Some("value") },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"for\"") },
+        ],
+        raw: "readonly attribute DOMTokenList htmlFor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("defaultValue"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString defaultValue",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("willValidate"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean willValidate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validity"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ValidityState validity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validationMessage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString validationMessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("checkValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean checkValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean reportValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setCustomValidity"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setCustomValidity(DOMString error)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "HTMLParagraphElement",
     inherits: Some("HTMLElement"),
     ext_attrs: &[
@@ -4542,6 +8465,62 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLParamElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("valueType"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString valueType",
       },
     ],
   },
@@ -4575,6 +8554,59 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute long width",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLProgressElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute double value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("max"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectPositive", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("1.0") },
+        ],
+        raw: "attribute double max",
+      },
+      WebIdlInterfaceMember {
+        name: Some("position"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double position",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
+      },
     ],
   },
   WebIdlInterface {
@@ -4598,6 +8630,194 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "ReflectURL", value: None },
         ],
         raw: "attribute USVString cite",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLScriptElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("src"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectURL", value: None },
+        ],
+        raw: "attribute USVString src",
+      },
+      WebIdlInterfaceMember {
+        name: Some("noModule"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean noModule",
+      },
+      WebIdlInterfaceMember {
+        name: Some("async"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute boolean async",
+      },
+      WebIdlInterfaceMember {
+        name: Some("defer"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean defer",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blocking"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+          WebIdlExtendedAttribute { name: "PutForwards", value: Some("value") },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "readonly attribute DOMTokenList blocking",
+      },
+      WebIdlInterfaceMember {
+        name: Some("crossOrigin"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString? crossOrigin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("referrerPolicy"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString referrerPolicy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("integrity"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString integrity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fetchPriority"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString fetchPriority",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString text",
+      },
+      WebIdlInterfaceMember {
+        name: Some("supports"),
+        ext_attrs: &[
+        ],
+        raw: "static boolean supports(DOMString type)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("charset"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString charset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("event"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString event",
+      },
+      WebIdlInterfaceMember {
+        name: Some("htmlFor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"for\"") },
+        ],
+        raw: "attribute DOMString htmlFor",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLSelectedContentElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLSlotElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("assignedNodes"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<Node> assignedNodes(optional AssignedNodesOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("assignedElements"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<Element> assignedElements(optional AssignedNodesOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("assign"),
+        ext_attrs: &[
+        ],
+        raw: "undefined assign((Element or Text)... nodes)",
       },
     ],
   },
@@ -4726,6 +8946,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "readonly attribute DOMTokenList blocking",
       },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString type",
+      },
     ],
   },
   WebIdlInterface {
@@ -4741,6 +8969,14 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
         ],
         raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
       },
     ],
   },
@@ -4807,6 +9043,78 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "attribute DOMString abbr",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("axis"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString axis",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"char\"") },
+        ],
+        raw: "attribute DOMString ch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("chOff"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"charoff\"") },
+        ],
+        raw: "attribute DOMString chOff",
+      },
+      WebIdlInterfaceMember {
+        name: Some("noWrap"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean noWrap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vAlign"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString vAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString bgColor",
+      },
     ],
   },
   WebIdlInterface {
@@ -4832,6 +9140,46 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "ReflectRange", value: Some("(1, 1000)") },
         ],
         raw: "attribute unsigned long span",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"char\"") },
+        ],
+        raw: "attribute DOMString ch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("chOff"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"charoff\"") },
+        ],
+        raw: "attribute DOMString chOff",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vAlign"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString vAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString width",
       },
     ],
   },
@@ -4942,6 +9290,78 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "undefined deleteRow(long index)",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("border"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString border",
+      },
+      WebIdlInterfaceMember {
+        name: Some("frame"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString frame",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rules"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString rules",
+      },
+      WebIdlInterfaceMember {
+        name: Some("summary"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString summary",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString bgColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cellPadding"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString cellPadding",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cellSpacing"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString cellSpacing",
+      },
     ],
   },
   WebIdlInterface {
@@ -4990,6 +9410,46 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "undefined deleteCell(long index)",
       },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"char\"") },
+        ],
+        raw: "attribute DOMString ch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("chOff"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"charoff\"") },
+        ],
+        raw: "attribute DOMString chOff",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vAlign"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString vAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bgColor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString bgColor",
+      },
     ],
   },
   WebIdlInterface {
@@ -5025,6 +9485,328 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "CEReactions", value: None },
         ],
         raw: "undefined deleteRow(long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("align"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString align",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"char\"") },
+        ],
+        raw: "attribute DOMString ch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("chOff"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: Some("\"charoff\"") },
+        ],
+        raw: "attribute DOMString chOff",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vAlign"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString vAlign",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLTemplateElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("content"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DocumentFragment content",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowRootMode"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString shadowRootMode",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowRootDelegatesFocus"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean shadowRootDelegatesFocus",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowRootClonable"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean shadowRootClonable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowRootSerializable"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean shadowRootSerializable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowRootCustomElementRegistry"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString shadowRootCustomElementRegistry",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "HTMLTextAreaElement",
+    inherits: Some("HTMLElement"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "HTMLConstructor", value: None },
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("autocomplete"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectSetter", value: None },
+        ],
+        raw: "attribute DOMString autocomplete",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cols"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectPositiveWithFallback", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("20") },
+        ],
+        raw: "attribute unsigned long cols",
+      },
+      WebIdlInterfaceMember {
+        name: Some("dirName"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString dirName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("disabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean disabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("form"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLFormElement? form",
+      },
+      WebIdlInterfaceMember {
+        name: Some("maxLength"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectNonNegative", value: None },
+        ],
+        raw: "attribute long maxLength",
+      },
+      WebIdlInterfaceMember {
+        name: Some("minLength"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectNonNegative", value: None },
+        ],
+        raw: "attribute long minLength",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("placeholder"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString placeholder",
+      },
+      WebIdlInterfaceMember {
+        name: Some("readOnly"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean readOnly",
+      },
+      WebIdlInterfaceMember {
+        name: Some("required"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean required",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rows"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "ReflectPositiveWithFallback", value: None },
+          WebIdlExtendedAttribute { name: "ReflectDefault", value: Some("2") },
+        ],
+        raw: "attribute unsigned long rows",
+      },
+      WebIdlInterfaceMember {
+        name: Some("wrap"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString wrap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("defaultValue"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString defaultValue",
+      },
+      WebIdlInterfaceMember {
+        name: Some("value"),
+        ext_attrs: &[
+        ],
+        raw: "attribute [LegacyNullToEmptyString] DOMString value",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textLength"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long textLength",
+      },
+      WebIdlInterfaceMember {
+        name: Some("willValidate"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean willValidate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validity"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ValidityState validity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("validationMessage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString validationMessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("checkValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean checkValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportValidity"),
+        ext_attrs: &[
+        ],
+        raw: "boolean reportValidity()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setCustomValidity"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setCustomValidity(DOMString error)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("labels"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NodeList labels",
+      },
+      WebIdlInterfaceMember {
+        name: Some("select"),
+        ext_attrs: &[
+        ],
+        raw: "undefined select()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selectionStart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unsigned long selectionStart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selectionEnd"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unsigned long selectionEnd",
+      },
+      WebIdlInterfaceMember {
+        name: Some("selectionDirection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString selectionDirection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setRangeText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setRangeText(DOMString replacement)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setRangeText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setRangeText(DOMString replacement, unsigned long start, unsigned long end, optional SelectionMode selectionMode = \"preserve\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setSelectionRange"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setSelectionRange(unsigned long start, unsigned long end, optional DOMString direction)",
       },
     ],
   },
@@ -5180,6 +9962,22 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "constructor()",
       },
+      WebIdlInterfaceMember {
+        name: Some("compact"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute boolean compact",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute DOMString type",
+      },
     ],
   },
   WebIdlInterface {
@@ -5252,6 +10050,350 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "HashChangeEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional HashChangeEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oldURL"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString oldURL",
+      },
+      WebIdlInterfaceMember {
+        name: Some("newURL"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString newURL",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Headers",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(optional HeadersInit init)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("append"),
+        ext_attrs: &[
+        ],
+        raw: "undefined append(ByteString name, ByteString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("delete"),
+        ext_attrs: &[
+        ],
+        raw: "undefined delete(ByteString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("get"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString? get(ByteString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getSetCookie"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<ByteString> getSetCookie()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("has"),
+        ext_attrs: &[
+        ],
+        raw: "boolean has(ByteString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("set"),
+        ext_attrs: &[
+        ],
+        raw: "undefined set(ByteString name, ByteString value)",
+      },
+      WebIdlInterfaceMember {
+        name: None,
+        ext_attrs: &[
+        ],
+        raw: "iterable<ByteString, ByteString>",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "History",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollRestoration"),
+        ext_attrs: &[
+        ],
+        raw: "attribute ScrollRestoration scrollRestoration",
+      },
+      WebIdlInterfaceMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any state",
+      },
+      WebIdlInterfaceMember {
+        name: Some("go"),
+        ext_attrs: &[
+        ],
+        raw: "undefined go(optional long delta = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("back"),
+        ext_attrs: &[
+        ],
+        raw: "undefined back()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("forward"),
+        ext_attrs: &[
+        ],
+        raw: "undefined forward()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pushState"),
+        ext_attrs: &[
+        ],
+        raw: "undefined pushState(any data, DOMString unused, optional USVString? url = null)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("replaceState"),
+        ext_attrs: &[
+        ],
+        raw: "undefined replaceState(any data, DOMString unused, optional USVString? url = null)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ImageBitmap",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+      WebIdlExtendedAttribute { name: "Serializable", value: None },
+      WebIdlExtendedAttribute { name: "Transferable", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ImageBitmapRenderingContext",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("canvas"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute (HTMLCanvasElement or OffscreenCanvas) canvas",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transferFromImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "undefined transferFromImageBitmap(ImageBitmap? bitmap)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ImageData",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+      WebIdlExtendedAttribute { name: "Serializable", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(unsigned long sw, unsigned long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(ImageDataArray data, unsigned long sw, optional unsigned long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("data"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ImageDataArray data",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pixelFormat"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ImageDataPixelFormat pixelFormat",
+      },
+      WebIdlInterfaceMember {
+        name: Some("colorSpace"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute PredefinedColorSpace colorSpace",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Location",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("href"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "stringifier attribute USVString href",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("protocol"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString protocol",
+      },
+      WebIdlInterfaceMember {
+        name: Some("host"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString host",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hostname"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString hostname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString port",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pathname"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString pathname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("search"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString search",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hash"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "attribute USVString hash",
+      },
+      WebIdlInterfaceMember {
+        name: Some("assign"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "undefined assign(USVString url)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("replace"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "undefined replace(USVString url)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reload"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "undefined reload()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ancestorOrigins"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute DOMStringList ancestorOrigins",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "MediaError",
     inherits: None,
     ext_attrs: &[
@@ -5293,6 +10435,197 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute DOMString message",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "MessageChannel",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port1"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute MessagePort port1",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port2"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute MessagePort port2",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "MessageEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker,AudioWorklet)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional MessageEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("data"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any data",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lastEventId"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString lastEventId",
+      },
+      WebIdlInterfaceMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute MessageEventSource? source",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ports"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<MessagePort> ports",
+      },
+      WebIdlInterfaceMember {
+        name: Some("initMessageEvent"),
+        ext_attrs: &[
+        ],
+        raw: "undefined initMessageEvent(DOMString type, optional boolean bubbles = false, optional boolean cancelable = false, optional any data = null, optional USVString origin = \"\", optional DOMString lastEventId = \"\", optional MessageEventSource? source = null, optional sequence<MessagePort> ports = [])",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "MessagePort",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker,AudioWorklet)") },
+      WebIdlExtendedAttribute { name: "Transferable", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, sequence<object> transfer)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("start"),
+        ext_attrs: &[
+        ],
+        raw: "undefined start()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "MimeType",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("description"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString description",
+      },
+      WebIdlInterfaceMember {
+        name: Some("suffixes"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString suffixes",
+      },
+      WebIdlInterfaceMember {
+        name: Some("enabledPlugin"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Plugin enabledPlugin",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "MimeTypeArray",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("item"),
+        ext_attrs: &[
+        ],
+        raw: "getter MimeType? item(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("namedItem"),
+        ext_attrs: &[
+        ],
+        raw: "getter MimeType? namedItem(DOMString name)",
       },
     ],
   },
@@ -5454,6 +10787,571 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
           WebIdlExtendedAttribute { name: "CEReactions", value: None },
         ],
         raw: "Attr removeNamedItemNS(DOMString? namespace, DOMString localName)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigateEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, NavigateEventInit eventInitDict)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationType navigationType",
+      },
+      WebIdlInterfaceMember {
+        name: Some("destination"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationDestination destination",
+      },
+      WebIdlInterfaceMember {
+        name: Some("canIntercept"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean canIntercept",
+      },
+      WebIdlInterfaceMember {
+        name: Some("userInitiated"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean userInitiated",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hashChange"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean hashChange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("signal"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute AbortSignal signal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("formData"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FormData? formData",
+      },
+      WebIdlInterfaceMember {
+        name: Some("downloadRequest"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? downloadRequest",
+      },
+      WebIdlInterfaceMember {
+        name: Some("info"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any info",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hasUAVisualTransition"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean hasUAVisualTransition",
+      },
+      WebIdlInterfaceMember {
+        name: Some("sourceElement"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element? sourceElement",
+      },
+      WebIdlInterfaceMember {
+        name: Some("intercept"),
+        ext_attrs: &[
+        ],
+        raw: "undefined intercept(optional NavigationInterceptOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scroll"),
+        ext_attrs: &[
+        ],
+        raw: "undefined scroll()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Navigation",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("entries"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<NavigationHistoryEntry> entries()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("currentEntry"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationHistoryEntry? currentEntry",
+      },
+      WebIdlInterfaceMember {
+        name: Some("updateCurrentEntry"),
+        ext_attrs: &[
+        ],
+        raw: "undefined updateCurrentEntry(NavigationUpdateCurrentEntryOptions options)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transition"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationTransition? transition",
+      },
+      WebIdlInterfaceMember {
+        name: Some("activation"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationActivation? activation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("canGoBack"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean canGoBack",
+      },
+      WebIdlInterfaceMember {
+        name: Some("canGoForward"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean canGoForward",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigate"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationResult navigate(USVString url, optional NavigationNavigateOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reload"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationResult reload(optional NavigationReloadOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("traverseTo"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationResult traverseTo(DOMString key, optional NavigationOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("back"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationResult back(optional NavigationOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("forward"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationResult forward(optional NavigationOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onnavigate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onnavigate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onnavigatesuccess"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onnavigatesuccess",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onnavigateerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onnavigateerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncurrententrychange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncurrententrychange",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationActivation",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("from"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationHistoryEntry? from",
+      },
+      WebIdlInterfaceMember {
+        name: Some("entry"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationHistoryEntry entry",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationType navigationType",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationCurrentEntryChangeEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, NavigationCurrentEntryChangeEventInit eventInitDict)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationType? navigationType",
+      },
+      WebIdlInterfaceMember {
+        name: Some("from"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationHistoryEntry from",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationDestination",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("key"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString key",
+      },
+      WebIdlInterfaceMember {
+        name: Some("id"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString id",
+      },
+      WebIdlInterfaceMember {
+        name: Some("index"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long long index",
+      },
+      WebIdlInterfaceMember {
+        name: Some("sameDocument"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean sameDocument",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getState"),
+        ext_attrs: &[
+        ],
+        raw: "any getState()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationHistoryEntry",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString? url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("key"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString key",
+      },
+      WebIdlInterfaceMember {
+        name: Some("id"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString id",
+      },
+      WebIdlInterfaceMember {
+        name: Some("index"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute long long index",
+      },
+      WebIdlInterfaceMember {
+        name: Some("sameDocument"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean sameDocument",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getState"),
+        ext_attrs: &[
+        ],
+        raw: "any getState()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondispose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondispose",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationPrecommitController",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("redirect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined redirect(USVString url, optional NavigationNavigateOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("addHandler"),
+        ext_attrs: &[
+        ],
+        raw: "undefined addHandler(NavigationInterceptHandler handler)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NavigationTransition",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationType navigationType",
+      },
+      WebIdlInterfaceMember {
+        name: Some("from"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationHistoryEntry from",
+      },
+      WebIdlInterfaceMember {
+        name: Some("to"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationDestination to",
+      },
+      WebIdlInterfaceMember {
+        name: Some("committed"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Promise<undefined> committed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("finished"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Promise<undefined> finished",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Navigator",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("userActivation"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute UserActivation userActivation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appCodeName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appCodeName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appVersion"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appVersion",
+      },
+      WebIdlInterfaceMember {
+        name: Some("platform"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString platform",
+      },
+      WebIdlInterfaceMember {
+        name: Some("product"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString product",
+      },
+      WebIdlInterfaceMember {
+        name: Some("productSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString productSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("userAgent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString userAgent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendorSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendorSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("taintEnabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "boolean taintEnabled()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oscpu"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString oscpu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("language"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString language",
+      },
+      WebIdlInterfaceMember {
+        name: Some("languages"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<DOMString> languages",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onLine"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean onLine",
+      },
+      WebIdlInterfaceMember {
+        name: Some("registerProtocolHandler"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "undefined registerProtocolHandler(DOMString scheme, USVString url)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("unregisterProtocolHandler"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "undefined unregisterProtocolHandler(DOMString scheme, USVString url)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cookieEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean cookieEnabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("plugins"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute PluginArray plugins",
+      },
+      WebIdlInterfaceMember {
+        name: Some("mimeTypes"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute MimeTypeArray mimeTypes",
+      },
+      WebIdlInterfaceMember {
+        name: Some("javaEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "boolean javaEnabled()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pdfViewerEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean pdfViewerEnabled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hardwareConcurrency"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long long hardwareConcurrency",
       },
     ],
   },
@@ -5955,6 +11853,912 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "NotRestoredReasonDetails",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("reason"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString reason",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toJSON"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Default", value: None },
+        ],
+        raw: "object toJSON()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "NotRestoredReasons",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("src"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString? src",
+      },
+      WebIdlInterfaceMember {
+        name: Some("id"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? id",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString? url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reasons"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<NotRestoredReasonDetails>? reasons",
+      },
+      WebIdlInterfaceMember {
+        name: Some("children"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<NotRestoredReasons>? children",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toJSON"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Default", value: None },
+        ],
+        raw: "object toJSON()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "OffscreenCanvas",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+      WebIdlExtendedAttribute { name: "Transferable", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor([EnforceRange] unsigned long long width, [EnforceRange] unsigned long long height)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "attribute [EnforceRange] unsigned long long width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("height"),
+        ext_attrs: &[
+        ],
+        raw: "attribute [EnforceRange] unsigned long long height",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getContext"),
+        ext_attrs: &[
+        ],
+        raw: "OffscreenRenderingContext? getContext(OffscreenRenderingContextId contextId, optional any options = null)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transferToImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "ImageBitmap transferToImageBitmap()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("convertToBlob"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<Blob> convertToBlob(optional ImageEncodeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextlost"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextlost",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextrestored"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextrestored",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "OffscreenCanvasRenderingContext2D",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("canvas"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute OffscreenCanvas canvas",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getContextAttributes"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasRenderingContext2DSettings getContextAttributes()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("save"),
+        ext_attrs: &[
+        ],
+        raw: "undefined save()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("restore"),
+        ext_attrs: &[
+        ],
+        raw: "undefined restore()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reset"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reset()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isContextLost"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isContextLost()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scale"),
+        ext_attrs: &[
+        ],
+        raw: "undefined scale(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rotate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rotate(unrestricted double angle)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("translate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined translate(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined transform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getTransform"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "DOMMatrix getTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(optional DOMMatrix2DInit transform = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("resetTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined resetTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) strokeStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) fillStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createLinearGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createLinearGradient(double x0, double y0, double x1, double y1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createRadialGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createRadialGradient(double x0, double y0, double r0, double x1, double y1, double r1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createConicGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createConicGradient(double startAngle, double x, double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createPattern"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasPattern? createPattern(CanvasImageSource image, [LegacyNullToEmptyString] DOMString repetition)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetX"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetX",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetY"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetY",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowBlur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowBlur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowColor"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString shadowColor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("filter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString filter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("beginPath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined beginPath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke(Path2D path)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(Path2D path, unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(Path2D path, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("measureText"),
+        ext_attrs: &[
+        ],
+        raw: "TextMetrics measureText(DOMString text)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double sx, unrestricted double sy, unrestricted double sw, unrestricted double sh, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData([EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData(ImageData imageData)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData getImageData([EnforceRange] long sx, [EnforceRange] long sy, [EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy, [EnforceRange] long dirtyX, [EnforceRange] long dirtyY, [EnforceRange] long dirtyWidth, [EnforceRange] long dirtyHeight)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineWidth"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineCap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineCap lineCap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineJoin"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineJoin lineJoin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("miterLimit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double miterLimit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setLineDash(sequence<unrestricted double> segments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<unrestricted double> getLineDash()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineDashOffset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineDashOffset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lang"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString lang",
+      },
+      WebIdlInterfaceMember {
+        name: Some("font"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString font",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textAlign"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextAlign textAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextBaseline textBaseline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("direction"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasDirection direction",
+      },
+      WebIdlInterfaceMember {
+        name: Some("letterSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString letterSpacing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontKerning"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontKerning fontKerning",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontStretch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontStretch fontStretch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontVariantCaps"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontVariantCaps fontVariantCaps",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textRendering"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextRendering textRendering",
+      },
+      WebIdlInterfaceMember {
+        name: Some("wordSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString wordSpacing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("closePath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined closePath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("moveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined moveTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined lineTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("quadraticCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined quadraticCurveTo(unrestricted double cpx, unrestricted double cpy, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bezierCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined bezierCurveTo(unrestricted double cp1x, unrestricted double cp1y, unrestricted double cp2x, unrestricted double cp2y, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arcTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arcTo(unrestricted double x1, unrestricted double y1, unrestricted double x2, unrestricted double y2, unrestricted double radius)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("roundRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined roundRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h, optional (unrestricted double or DOMPointInit or sequence<(unrestricted double or DOMPointInit)>) radii = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arc"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arc(unrestricted double x, unrestricted double y, unrestricted double radius, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ellipse"),
+        ext_attrs: &[
+        ],
+        raw: "undefined ellipse(unrestricted double x, unrestricted double y, unrestricted double radiusX, unrestricted double radiusY, unrestricted double rotation, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Origin",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("from"),
+        ext_attrs: &[
+        ],
+        raw: "static Origin from(any value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("opaque"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean opaque",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isSameOrigin"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isSameOrigin(Origin other)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isSameSite"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isSameSite(Origin other)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PageRevealEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional PageRevealEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("viewTransition"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ViewTransition? viewTransition",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PageSwapEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional PageSwapEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("activation"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute NavigationActivation? activation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("viewTransition"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ViewTransition? viewTransition",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PageTransitionEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional PageTransitionEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("persisted"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean persisted",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Path2D",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(optional (Path2D or DOMString) path)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("addPath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined addPath(Path2D path, optional DOMMatrix2DInit transform = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("closePath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined closePath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("moveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined moveTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined lineTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("quadraticCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined quadraticCurveTo(unrestricted double cpx, unrestricted double cpy, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bezierCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined bezierCurveTo(unrestricted double cp1x, unrestricted double cp1y, unrestricted double cp2x, unrestricted double cp2y, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arcTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arcTo(unrestricted double x1, unrestricted double y1, unrestricted double x2, unrestricted double y2, unrestricted double radius)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("roundRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined roundRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h, optional (unrestricted double or DOMPointInit or sequence<(unrestricted double or DOMPointInit)>) radii = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arc"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arc(unrestricted double x, unrestricted double y, unrestricted double radius, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ellipse"),
+        ext_attrs: &[
+        ],
+        raw: "undefined ellipse(unrestricted double x, unrestricted double y, unrestricted double radiusX, unrestricted double radiusY, unrestricted double rotation, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Plugin",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("description"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString description",
+      },
+      WebIdlInterfaceMember {
+        name: Some("filename"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString filename",
+      },
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("item"),
+        ext_attrs: &[
+        ],
+        raw: "getter MimeType? item(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("namedItem"),
+        ext_attrs: &[
+        ],
+        raw: "getter MimeType? namedItem(DOMString name)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PluginArray",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("refresh"),
+        ext_attrs: &[
+        ],
+        raw: "undefined refresh()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("item"),
+        ext_attrs: &[
+        ],
+        raw: "getter Plugin? item(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("namedItem"),
+        ext_attrs: &[
+        ],
+        raw: "getter Plugin? namedItem(DOMString name)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PopStateEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional PopStateEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any state",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hasUAVisualTransition"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean hasUAVisualTransition",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "ProcessingInstruction",
     inherits: Some("CharacterData"),
     ext_attrs: &[
@@ -5966,6 +12770,33 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute DOMString target",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "PromiseRejectionEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, PromiseRejectionEventInit eventInitDict)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("promise"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute object promise",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reason"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute any reason",
       },
     ],
   },
@@ -6161,6 +12992,327 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "stringifier",
       },
+      WebIdlInterfaceMember {
+        name: Some("createContextualFragment"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "DocumentFragment createContextualFragment((TrustedHTML or DOMString) string)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Request",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(RequestInfo input, optional RequestInit init = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("method"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ByteString method",
+      },
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("headers"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute Headers headers",
+      },
+      WebIdlInterfaceMember {
+        name: Some("destination"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestDestination destination",
+      },
+      WebIdlInterfaceMember {
+        name: Some("referrer"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString referrer",
+      },
+      WebIdlInterfaceMember {
+        name: Some("referrerPolicy"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ReferrerPolicy referrerPolicy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("mode"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestMode mode",
+      },
+      WebIdlInterfaceMember {
+        name: Some("credentials"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestCredentials credentials",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cache"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestCache cache",
+      },
+      WebIdlInterfaceMember {
+        name: Some("redirect"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestRedirect redirect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("integrity"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString integrity",
+      },
+      WebIdlInterfaceMember {
+        name: Some("keepalive"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean keepalive",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isReloadNavigation"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isReloadNavigation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isHistoryNavigation"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isHistoryNavigation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("signal"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute AbortSignal signal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("duplex"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute RequestDuplex duplex",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clone"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Request clone()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("body"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ReadableStream? body",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bodyUsed"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean bodyUsed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arrayBuffer"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<ArrayBuffer> arrayBuffer()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blob"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Blob> blob()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bytes"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Uint8Array> bytes()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("formData"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<FormData> formData()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("json"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<any> json()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<USVString> text()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Response",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(optional BodyInit? body = null, optional ResponseInit init = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("error"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "static Response error()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("redirect"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "static Response redirect(USVString url, optional unsigned short status = 302)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("json"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "static Response json(any data, optional ResponseInit init = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ResponseType type",
+      },
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("redirected"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean redirected",
+      },
+      WebIdlInterfaceMember {
+        name: Some("status"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned short status",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ok"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean ok",
+      },
+      WebIdlInterfaceMember {
+        name: Some("statusText"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ByteString statusText",
+      },
+      WebIdlInterfaceMember {
+        name: Some("headers"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute Headers headers",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clone"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Response clone()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("body"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ReadableStream? body",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bodyUsed"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean bodyUsed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arrayBuffer"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<ArrayBuffer> arrayBuffer()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blob"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Blob> blob()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bytes"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Uint8Array> bytes()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("formData"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<FormData> formData()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("json"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<any> json()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<USVString> text()",
+      },
     ],
   },
   WebIdlInterface {
@@ -6213,6 +13365,26 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         raw: "attribute EventHandler onslotchange",
       },
       WebIdlInterfaceMember {
+        name: Some("setHTMLUnsafe"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "undefined setHTMLUnsafe((TrustedHTML or DOMString) html)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getHTML"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString getHTML(optional GetHTMLOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("innerHTML"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute (TrustedHTML or [LegacyNullToEmptyString] DOMString) innerHTML",
+      },
+      WebIdlInterfaceMember {
         name: Some("customElementRegistry"),
         ext_attrs: &[
         ],
@@ -6223,6 +13395,62 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute Element? activeElement",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "SharedWorker",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor((TrustedScriptURL or USVString) scriptURL, optional (DOMString or WorkerOptions) options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute MessagePort port",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onerror",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "SharedWorkerGlobalScope",
+    inherits: Some("WorkerGlobalScope"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Global", value: Some("(Worker,SharedWorker)") },
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("SharedWorker") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onconnect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onconnect",
       },
     ],
   },
@@ -6238,6 +13466,123 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "constructor(StaticRangeInit init)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Storage",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("key"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? key(unsigned long index)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getItem"),
+        ext_attrs: &[
+        ],
+        raw: "getter DOMString? getItem(DOMString key)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setItem"),
+        ext_attrs: &[
+        ],
+        raw: "setter undefined setItem(DOMString key, DOMString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("removeItem"),
+        ext_attrs: &[
+        ],
+        raw: "deleter undefined removeItem(DOMString key)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clear"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clear()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "StorageEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional StorageEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("key"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? key",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oldValue"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? oldValue",
+      },
+      WebIdlInterfaceMember {
+        name: Some("newValue"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString? newValue",
+      },
+      WebIdlInterfaceMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString url",
+      },
+      WebIdlInterfaceMember {
+        name: Some("storageArea"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Storage? storageArea",
+      },
+      WebIdlInterfaceMember {
+        name: Some("initStorageEvent"),
+        ext_attrs: &[
+        ],
+        raw: "undefined initStorageEvent(DOMString type, optional boolean bubbles = false, optional boolean cancelable = false, optional DOMString? key = null, optional DOMString? oldValue = null, optional DOMString? newValue = null, optional USVString url = \"\", optional Storage? storageArea = null)",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "SubmitEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional SubmitEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("submitter"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute HTMLElement? submitter",
       },
     ],
   },
@@ -6272,6 +13617,87 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute HTMLSlotElement? assignedSlot",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "TextMetrics",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("width"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double width",
+      },
+      WebIdlInterfaceMember {
+        name: Some("actualBoundingBoxLeft"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double actualBoundingBoxLeft",
+      },
+      WebIdlInterfaceMember {
+        name: Some("actualBoundingBoxRight"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double actualBoundingBoxRight",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontBoundingBoxAscent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double fontBoundingBoxAscent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontBoundingBoxDescent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double fontBoundingBoxDescent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("actualBoundingBoxAscent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double actualBoundingBoxAscent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("actualBoundingBoxDescent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double actualBoundingBoxDescent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("emHeightAscent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double emHeightAscent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("emHeightDescent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double emHeightDescent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hangingBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double hangingBaseline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("alphabeticBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double alphabeticBaseline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ideographicBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute double ideographicBaseline",
       },
     ],
   },
@@ -6501,6 +13927,39 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "ToggleEvent",
+    inherits: Some("Event"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(DOMString type, optional ToggleEventInit eventInitDict = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oldState"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString oldState",
+      },
+      WebIdlInterfaceMember {
+        name: Some("newState"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString newState",
+      },
+      WebIdlInterfaceMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element? source",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "TrackEvent",
     inherits: Some("Event"),
     ext_attrs: &[
@@ -6598,6 +14057,284 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
+    name: "URL",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
+      WebIdlExtendedAttribute { name: "LegacyWindowAlias", value: Some("webkitURL") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(USVString url, optional USVString base)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("parse"),
+        ext_attrs: &[
+        ],
+        raw: "static URL? parse(USVString url, optional USVString base)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("canParse"),
+        ext_attrs: &[
+        ],
+        raw: "static boolean canParse(USVString url, optional USVString base)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("href"),
+        ext_attrs: &[
+        ],
+        raw: "stringifier attribute USVString href",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("protocol"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString protocol",
+      },
+      WebIdlInterfaceMember {
+        name: Some("username"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString username",
+      },
+      WebIdlInterfaceMember {
+        name: Some("password"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString password",
+      },
+      WebIdlInterfaceMember {
+        name: Some("host"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString host",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hostname"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString hostname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString port",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pathname"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString pathname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("search"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString search",
+      },
+      WebIdlInterfaceMember {
+        name: Some("searchParams"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute URLSearchParams searchParams",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hash"),
+        ext_attrs: &[
+        ],
+        raw: "attribute USVString hash",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toJSON"),
+        ext_attrs: &[
+        ],
+        raw: "USVString toJSON()",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "URLSearchParams",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor(optional (sequence<sequence<USVString>> or record<USVString, USVString> or USVString) init = \"\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("size"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long size",
+      },
+      WebIdlInterfaceMember {
+        name: Some("append"),
+        ext_attrs: &[
+        ],
+        raw: "undefined append(USVString name, USVString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("delete"),
+        ext_attrs: &[
+        ],
+        raw: "undefined delete(USVString name, optional USVString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("get"),
+        ext_attrs: &[
+        ],
+        raw: "USVString? get(USVString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getAll"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<USVString> getAll(USVString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("has"),
+        ext_attrs: &[
+        ],
+        raw: "boolean has(USVString name, optional USVString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("set"),
+        ext_attrs: &[
+        ],
+        raw: "undefined set(USVString name, USVString value)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("sort"),
+        ext_attrs: &[
+        ],
+        raw: "undefined sort()",
+      },
+      WebIdlInterfaceMember {
+        name: None,
+        ext_attrs: &[
+        ],
+        raw: "iterable<USVString, USVString>",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stringifier"),
+        ext_attrs: &[
+        ],
+        raw: "stringifier",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "UserActivation",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("hasBeenActive"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean hasBeenActive",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isActive"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isActive",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "ValidityState",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("valueMissing"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean valueMissing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("typeMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean typeMismatch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("patternMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean patternMismatch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("tooLong"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean tooLong",
+      },
+      WebIdlInterfaceMember {
+        name: Some("tooShort"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean tooShort",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rangeUnderflow"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean rangeUnderflow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rangeOverflow"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean rangeOverflow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stepMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean stepMismatch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("badInput"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean badInput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("customError"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean customError",
+      },
+      WebIdlInterfaceMember {
+        name: Some("valid"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean valid",
+      },
+    ],
+  },
+  WebIdlInterface {
     name: "VideoTrack",
     inherits: None,
     ext_attrs: &[
@@ -6688,11 +14425,292 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterface {
-    name: "Window",
-    inherits: None,
+    name: "VisibilityStateEntry",
+    inherits: Some("PerformanceEntry"),
     ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window)") },
     ],
     members: &[
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("entryType"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString entryType",
+      },
+      WebIdlInterfaceMember {
+        name: Some("startTime"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMHighResTimeStamp startTime",
+      },
+      WebIdlInterfaceMember {
+        name: Some("duration"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long duration",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Window",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Global", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("window"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "readonly attribute WindowProxy window",
+      },
+      WebIdlInterfaceMember {
+        name: Some("self"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute WindowProxy self",
+      },
+      WebIdlInterfaceMember {
+        name: Some("document"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "readonly attribute Document document",
+      },
+      WebIdlInterfaceMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString name",
+      },
+      WebIdlInterfaceMember {
+        name: Some("location"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "PutForwards", value: Some("href") },
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "readonly attribute Location location",
+      },
+      WebIdlInterfaceMember {
+        name: Some("history"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute History history",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigation"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute Navigation navigation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("customElements"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute CustomElementRegistry customElements",
+      },
+      WebIdlInterfaceMember {
+        name: Some("locationbar"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp locationbar",
+      },
+      WebIdlInterfaceMember {
+        name: Some("menubar"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp menubar",
+      },
+      WebIdlInterfaceMember {
+        name: Some("personalbar"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp personalbar",
+      },
+      WebIdlInterfaceMember {
+        name: Some("scrollbars"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp scrollbars",
+      },
+      WebIdlInterfaceMember {
+        name: Some("statusbar"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp statusbar",
+      },
+      WebIdlInterfaceMember {
+        name: Some("toolbar"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute BarProp toolbar",
+      },
+      WebIdlInterfaceMember {
+        name: Some("status"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString status",
+      },
+      WebIdlInterfaceMember {
+        name: Some("close"),
+        ext_attrs: &[
+        ],
+        raw: "undefined close()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("closed"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean closed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stop"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stop()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("focus"),
+        ext_attrs: &[
+        ],
+        raw: "undefined focus()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blur"),
+        ext_attrs: &[
+        ],
+        raw: "undefined blur()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("frames"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute WindowProxy frames",
+      },
+      WebIdlInterfaceMember {
+        name: Some("length"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute unsigned long length",
+      },
+      WebIdlInterfaceMember {
+        name: Some("top"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyUnforgeable", value: None },
+        ],
+        raw: "readonly attribute WindowProxy? top",
+      },
+      WebIdlInterfaceMember {
+        name: Some("opener"),
+        ext_attrs: &[
+        ],
+        raw: "attribute any opener",
+      },
+      WebIdlInterfaceMember {
+        name: Some("parent"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute WindowProxy? parent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("frameElement"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Element? frameElement",
+      },
+      WebIdlInterfaceMember {
+        name: Some("open"),
+        ext_attrs: &[
+        ],
+        raw: "WindowProxy? open(optional USVString url = \"\", optional DOMString target = \"_blank\", optional [LegacyNullToEmptyString] DOMString features = \"\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("object"),
+        ext_attrs: &[
+        ],
+        raw: "getter object (DOMString name)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigator"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Navigator navigator",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clientInformation"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute Navigator clientInformation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("originAgentCluster"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean originAgentCluster",
+      },
+      WebIdlInterfaceMember {
+        name: Some("alert"),
+        ext_attrs: &[
+        ],
+        raw: "undefined alert()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("alert"),
+        ext_attrs: &[
+        ],
+        raw: "undefined alert(DOMString message)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("confirm"),
+        ext_attrs: &[
+        ],
+        raw: "boolean confirm(optional DOMString message = \"\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("prompt"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? prompt(optional DOMString message = \"\", optional DOMString default = \"\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("print"),
+        ext_attrs: &[
+        ],
+        raw: "undefined print()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, USVString targetOrigin, optional sequence<object> transfer = [])",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, optional WindowPostMessageOptions options = {})",
+      },
       WebIdlInterfaceMember {
         name: Some("event"),
         ext_attrs: &[
@@ -6700,6 +14718,1138 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ],
         raw: "readonly attribute (Event or undefined) event",
       },
+      WebIdlInterfaceMember {
+        name: Some("fakeWorklet1"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "readonly attribute Worklet fakeWorklet1",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fakeWorklet2"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "readonly attribute Worklet fakeWorklet2",
+      },
+      WebIdlInterfaceMember {
+        name: Some("captureEvents"),
+        ext_attrs: &[
+        ],
+        raw: "undefined captureEvents()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("releaseEvents"),
+        ext_attrs: &[
+        ],
+        raw: "undefined releaseEvents()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("external"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute External external",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fetchLater"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "FetchLaterResult fetchLater(RequestInfo input, optional DeferredRequestInit init = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onabort"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onabort",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onauxclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onauxclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeinput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeinput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforematch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforematch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforetoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforetoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onblur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onblur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncancel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncancel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplaythrough"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplaythrough",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncommand"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncommand",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextlost"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextlost",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextmenu"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextmenu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextrestored"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextrestored",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncopy"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncopy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncuechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncuechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncut"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncut",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondblclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondblclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrag"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrag",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragenter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragleave"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrop"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondurationchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondurationchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onemptied"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onemptied",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onended"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onended",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnErrorEventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onfocus"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onfocus",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onformdata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onformdata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninvalid"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninvalid",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeydown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeydown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeypress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeypress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeyup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeyup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadeddata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadeddata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadedmetadata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadedmetadata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousedown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousedown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseenter"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseleave"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousemove"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousemove",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseout"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseout",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpaste"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpaste",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpause"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpause",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplaying"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplaying",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onprogress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onprogress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onratechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onratechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onreset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onreset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onresize"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onresize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscroll"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscroll",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscrollend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscrollend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsecuritypolicyviolation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsecuritypolicyviolation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeked"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeked",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeking"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeking",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onselect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onselect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onslotchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onslotchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstalled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstalled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsubmit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsubmit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsuspend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsuspend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontimeupdate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontimeupdate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onvolumechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onvolumechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwaiting"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwaiting",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationiteration"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationiteration",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkittransitionend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkittransitionend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwheel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwheel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onafterprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onafterprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnBeforeUnloadEventHandler onbeforeunload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onhashchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onhashchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onlanguagechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onlanguagechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onoffline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onoffline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ononline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ononline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagehide"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagehide",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagereveal"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagereveal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageshow"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageshow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageswap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageswap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpopstate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpopstate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onrejectionhandled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onrejectionhandled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstorage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstorage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunhandledrejection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunhandledrejection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isSecureContext"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isSecureContext",
+      },
+      WebIdlInterfaceMember {
+        name: Some("crossOriginIsolated"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean crossOriginIsolated",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportError"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reportError(any e)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("btoa"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString btoa(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("atob"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString atob(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "long setTimeout(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearTimeout(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setInterval"),
+        ext_attrs: &[
+        ],
+        raw: "long setInterval(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearInterval"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearInterval(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("queueMicrotask"),
+        ext_attrs: &[
+        ],
+        raw: "undefined queueMicrotask(VoidFunction callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, long sx, long sy, long sw, long sh, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("structuredClone"),
+        ext_attrs: &[
+        ],
+        raw: "any structuredClone(any value, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fetch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Response> fetch(RequestInfo input, optional RequestInit init = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("requestAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned long requestAnimationFrame(FrameRequestCallback callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cancelAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "undefined cancelAnimationFrame(unsigned long handle)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("sessionStorage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Storage sessionStorage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("localStorage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Storage localStorage",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Worker",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,DedicatedWorker,SharedWorker)") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor((TrustedScriptURL or USVString) scriptURL, optional WorkerOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("terminate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined terminate()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, sequence<object> transfer)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("postMessage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined postMessage(any message, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "WorkerGlobalScope",
+    inherits: Some("EventTarget"),
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("self"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute WorkerGlobalScope self",
+      },
+      WebIdlInterfaceMember {
+        name: Some("location"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute WorkerLocation location",
+      },
+      WebIdlInterfaceMember {
+        name: Some("navigator"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute WorkerNavigator navigator",
+      },
+      WebIdlInterfaceMember {
+        name: Some("importScripts"),
+        ext_attrs: &[
+        ],
+        raw: "undefined importScripts((TrustedScriptURL or USVString)... urls)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnErrorEventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onlanguagechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onlanguagechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onoffline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onoffline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ononline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ononline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onrejectionhandled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onrejectionhandled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunhandledrejection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunhandledrejection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isSecureContext"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isSecureContext",
+      },
+      WebIdlInterfaceMember {
+        name: Some("crossOriginIsolated"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean crossOriginIsolated",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportError"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reportError(any e)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("btoa"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString btoa(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("atob"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString atob(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "long setTimeout(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearTimeout(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setInterval"),
+        ext_attrs: &[
+        ],
+        raw: "long setInterval(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearInterval"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearInterval(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("queueMicrotask"),
+        ext_attrs: &[
+        ],
+        raw: "undefined queueMicrotask(VoidFunction callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, long sx, long sy, long sw, long sh, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("structuredClone"),
+        ext_attrs: &[
+        ],
+        raw: "any structuredClone(any value, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fetch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Response> fetch(RequestInfo input, optional RequestInit init = {})",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "WorkerLocation",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("href"),
+        ext_attrs: &[
+        ],
+        raw: "stringifier readonly attribute USVString href",
+      },
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("protocol"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString protocol",
+      },
+      WebIdlInterfaceMember {
+        name: Some("host"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString host",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hostname"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString hostname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("port"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString port",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pathname"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString pathname",
+      },
+      WebIdlInterfaceMember {
+        name: Some("search"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString search",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hash"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute USVString hash",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "WorkerNavigator",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("appCodeName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appCodeName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appVersion"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appVersion",
+      },
+      WebIdlInterfaceMember {
+        name: Some("platform"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString platform",
+      },
+      WebIdlInterfaceMember {
+        name: Some("product"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString product",
+      },
+      WebIdlInterfaceMember {
+        name: Some("productSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString productSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("userAgent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString userAgent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendorSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendorSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("taintEnabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "boolean taintEnabled()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oscpu"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString oscpu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("language"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString language",
+      },
+      WebIdlInterfaceMember {
+        name: Some("languages"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<DOMString> languages",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onLine"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean onLine",
+      },
+      WebIdlInterfaceMember {
+        name: Some("hardwareConcurrency"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long long hardwareConcurrency",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "Worklet",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+      WebIdlExtendedAttribute { name: "SecureContext", value: None },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("addModule"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<undefined> addModule(USVString moduleURL, optional WorkletOptions options = {})",
+      },
+    ],
+  },
+  WebIdlInterface {
+    name: "WorkletGlobalScope",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Worklet") },
+      WebIdlExtendedAttribute { name: "SecureContext", value: None },
+    ],
+    members: &[
     ],
   },
   WebIdlInterface {
@@ -6709,6 +15859,27 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
     members: &[
+    ],
+  },
+  WebIdlInterface {
+    name: "XMLSerializer",
+    inherits: None,
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("constructor"),
+        ext_attrs: &[
+        ],
+        raw: "constructor()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("serializeToString"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString serializeToString(Node root)",
+      },
     ],
   },
   WebIdlInterface {
@@ -6965,6 +16136,679 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   ],
   interface_mixins: &[
   WebIdlInterfaceMixin {
+    name: "AbstractWorker",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onerror",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "AnimationFrameProvider",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("requestAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned long requestAnimationFrame(FrameRequestCallback callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("cancelAnimationFrame"),
+        ext_attrs: &[
+        ],
+        raw: "undefined cancelAnimationFrame(unsigned long handle)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "Body",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("body"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute ReadableStream? body",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bodyUsed"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean bodyUsed",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arrayBuffer"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<ArrayBuffer> arrayBuffer()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("blob"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Blob> blob()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bytes"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Uint8Array> bytes()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("formData"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<FormData> formData()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("json"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<any> json()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("text"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<USVString> text()",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasDrawImage",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawImage"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawImage(CanvasImageSource image, unrestricted double sx, unrestricted double sy, unrestricted double sw, unrestricted double sh, unrestricted double dx, unrestricted double dy, unrestricted double dw, unrestricted double dh)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasDrawPath",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("beginPath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined beginPath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fill"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fill(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("stroke"),
+        ext_attrs: &[
+        ],
+        raw: "undefined stroke(Path2D path)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clip"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clip(Path2D path, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInPath"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInPath(Path2D path, unrestricted double x, unrestricted double y, optional CanvasFillRule fillRule = \"nonzero\")",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isPointInStroke"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isPointInStroke(Path2D path, unrestricted double x, unrestricted double y)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasFillStrokeStyles",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("strokeStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) strokeStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillStyle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute (DOMString or CanvasGradient or CanvasPattern) fillStyle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createLinearGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createLinearGradient(double x0, double y0, double x1, double y1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createRadialGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createRadialGradient(double x0, double y0, double r0, double x1, double y1, double r1)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createConicGradient"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasGradient createConicGradient(double startAngle, double x, double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createPattern"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasPattern? createPattern(CanvasImageSource image, [LegacyNullToEmptyString] DOMString repetition)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasFilters",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("filter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString filter",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasImageData",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData([EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData createImageData(ImageData imageData)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getImageData"),
+        ext_attrs: &[
+        ],
+        raw: "ImageData getImageData([EnforceRange] long sx, [EnforceRange] long sy, [EnforceRange] long sw, [EnforceRange] long sh, optional ImageDataSettings settings = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("putImageData"),
+        ext_attrs: &[
+        ],
+        raw: "undefined putImageData(ImageData imageData, [EnforceRange] long dx, [EnforceRange] long dy, [EnforceRange] long dirtyX, [EnforceRange] long dirtyY, [EnforceRange] long dirtyWidth, [EnforceRange] long dirtyHeight)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasPath",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("closePath"),
+        ext_attrs: &[
+        ],
+        raw: "undefined closePath()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("moveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined moveTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined lineTo(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("quadraticCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined quadraticCurveTo(unrestricted double cpx, unrestricted double cpy, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("bezierCurveTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined bezierCurveTo(unrestricted double cp1x, unrestricted double cp1y, unrestricted double cp2x, unrestricted double cp2y, unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arcTo"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arcTo(unrestricted double x1, unrestricted double y1, unrestricted double x2, unrestricted double y2, unrestricted double radius)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("roundRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined roundRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h, optional (unrestricted double or DOMPointInit or sequence<(unrestricted double or DOMPointInit)>) radii = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("arc"),
+        ext_attrs: &[
+        ],
+        raw: "undefined arc(unrestricted double x, unrestricted double y, unrestricted double radius, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ellipse"),
+        ext_attrs: &[
+        ],
+        raw: "undefined ellipse(unrestricted double x, unrestricted double y, unrestricted double radiusX, unrestricted double radiusY, unrestricted double rotation, unrestricted double startAngle, unrestricted double endAngle, optional boolean counterclockwise = false)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasPathDrawingStyles",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("lineWidth"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineWidth",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineCap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineCap lineCap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineJoin"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasLineJoin lineJoin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("miterLimit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double miterLimit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setLineDash(sequence<unrestricted double> segments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getLineDash"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<unrestricted double> getLineDash()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("lineDashOffset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double lineDashOffset",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasRect",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("clearRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fillRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeRect"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeRect(unrestricted double x, unrestricted double y, unrestricted double w, unrestricted double h)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasSettings",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("getContextAttributes"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasRenderingContext2DSettings getContextAttributes()",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasShadowStyles",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetX"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetX",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowOffsetY"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowOffsetY",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowBlur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute unrestricted double shadowBlur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("shadowColor"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString shadowColor",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasState",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("save"),
+        ext_attrs: &[
+        ],
+        raw: "undefined save()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("restore"),
+        ext_attrs: &[
+        ],
+        raw: "undefined restore()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reset"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reset()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isContextLost"),
+        ext_attrs: &[
+        ],
+        raw: "boolean isContextLost()",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasText",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("fillText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined fillText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("strokeText"),
+        ext_attrs: &[
+        ],
+        raw: "undefined strokeText(DOMString text, unrestricted double x, unrestricted double y, optional unrestricted double maxWidth)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("measureText"),
+        ext_attrs: &[
+        ],
+        raw: "TextMetrics measureText(DOMString text)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasTextDrawingStyles",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("lang"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString lang",
+      },
+      WebIdlInterfaceMember {
+        name: Some("font"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString font",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textAlign"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextAlign textAlign",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textBaseline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextBaseline textBaseline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("direction"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasDirection direction",
+      },
+      WebIdlInterfaceMember {
+        name: Some("letterSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString letterSpacing",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontKerning"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontKerning fontKerning",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontStretch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontStretch fontStretch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fontVariantCaps"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasFontVariantCaps fontVariantCaps",
+      },
+      WebIdlInterfaceMember {
+        name: Some("textRendering"),
+        ext_attrs: &[
+        ],
+        raw: "attribute CanvasTextRendering textRendering",
+      },
+      WebIdlInterfaceMember {
+        name: Some("wordSpacing"),
+        ext_attrs: &[
+        ],
+        raw: "attribute DOMString wordSpacing",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasTransform",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("scale"),
+        ext_attrs: &[
+        ],
+        raw: "undefined scale(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("rotate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined rotate(unrestricted double angle)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("translate"),
+        ext_attrs: &[
+        ],
+        raw: "undefined translate(unrestricted double x, unrestricted double y)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("transform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined transform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("getTransform"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "DOMMatrix getTransform()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(unrestricted double a, unrestricted double b, unrestricted double c, unrestricted double d, unrestricted double e, unrestricted double f)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined setTransform(optional DOMMatrix2DInit transform = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("resetTransform"),
+        ext_attrs: &[
+        ],
+        raw: "undefined resetTransform()",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "CanvasUserInterface",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("drawFocusIfNeeded"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawFocusIfNeeded(Element element)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("drawFocusIfNeeded"),
+        ext_attrs: &[
+        ],
+        raw: "undefined drawFocusIfNeeded(Path2D path, Element element)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
     name: "ChildNode",
     ext_attrs: &[
     ],
@@ -7019,6 +16863,505 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute Element? activeElement",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "ElementContentEditable",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("contentEditable"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString contentEditable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("enterKeyHint"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString enterKeyHint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isContentEditable"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isContentEditable",
+      },
+      WebIdlInterfaceMember {
+        name: Some("inputMode"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString inputMode",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "GlobalEventHandlers",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("onabort"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onabort",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onauxclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onauxclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeinput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeinput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforematch"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforematch",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforetoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforetoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onblur"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onblur",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncancel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncancel",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncanplaythrough"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncanplaythrough",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onclose"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onclose",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncommand"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncommand",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextlost"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextlost",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextmenu"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextmenu",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncontextrestored"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncontextrestored",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncopy"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncopy",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncuechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncuechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oncut"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oncut",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondblclick"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondblclick",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrag"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrag",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragenter"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragleave"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondragstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondragstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondrop"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondrop",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ondurationchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ondurationchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onemptied"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onemptied",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onended"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onended",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnErrorEventHandler onerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onfocus"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onfocus",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onformdata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onformdata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninput"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninput",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oninvalid"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler oninvalid",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeydown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeydown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeypress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeypress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onkeyup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onkeyup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadeddata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadeddata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadedmetadata"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadedmetadata",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onloadstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onloadstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousedown"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousedown",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseenter"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseenter",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseleave"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "LegacyLenientThis", value: None },
+        ],
+        raw: "attribute EventHandler onmouseleave",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmousemove"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmousemove",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseout"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseout",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseover"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseover",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmouseup"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmouseup",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpaste"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpaste",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpause"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpause",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplay"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplay",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onplaying"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onplaying",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onprogress"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onprogress",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onratechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onratechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onreset"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onreset",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onresize"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onresize",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscroll"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscroll",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onscrollend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onscrollend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsecuritypolicyviolation"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsecuritypolicyviolation",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeked"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeked",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onseeking"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onseeking",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onselect"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onselect",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onslotchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onslotchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstalled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstalled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsubmit"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsubmit",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onsuspend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onsuspend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontimeupdate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontimeupdate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ontoggle"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ontoggle",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onvolumechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onvolumechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwaiting"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwaiting",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationiteration"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationiteration",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkitanimationstart"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkitanimationstart",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwebkittransitionend"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwebkittransitionend",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onwheel"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onwheel",
       },
     ],
   },
@@ -7155,6 +17498,215 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterfaceMixin {
+    name: "MessageEventTarget",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorConcurrentHardware",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("hardwareConcurrency"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute unsigned long long hardwareConcurrency",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorContentUtils",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("registerProtocolHandler"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "undefined registerProtocolHandler(DOMString scheme, USVString url)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("unregisterProtocolHandler"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SecureContext", value: None },
+        ],
+        raw: "undefined unregisterProtocolHandler(DOMString scheme, USVString url)",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorCookies",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("cookieEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean cookieEnabled",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorID",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("appCodeName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appCodeName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appName"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appName",
+      },
+      WebIdlInterfaceMember {
+        name: Some("appVersion"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString appVersion",
+      },
+      WebIdlInterfaceMember {
+        name: Some("platform"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString platform",
+      },
+      WebIdlInterfaceMember {
+        name: Some("product"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString product",
+      },
+      WebIdlInterfaceMember {
+        name: Some("productSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString productSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("userAgent"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString userAgent",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendor"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendor",
+      },
+      WebIdlInterfaceMember {
+        name: Some("vendorSub"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString vendorSub",
+      },
+      WebIdlInterfaceMember {
+        name: Some("taintEnabled"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "boolean taintEnabled()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("oscpu"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
+        ],
+        raw: "readonly attribute DOMString oscpu",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorLanguage",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("language"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute DOMString language",
+      },
+      WebIdlInterfaceMember {
+        name: Some("languages"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute FrozenArray<DOMString> languages",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorOnLine",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("onLine"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean onLine",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "NavigatorPlugins",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("plugins"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute PluginArray plugins",
+      },
+      WebIdlInterfaceMember {
+        name: Some("mimeTypes"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "SameObject", value: None },
+        ],
+        raw: "readonly attribute MimeTypeArray mimeTypes",
+      },
+      WebIdlInterfaceMember {
+        name: Some("javaEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "boolean javaEnabled()",
+      },
+      WebIdlInterfaceMember {
+        name: Some("pdfViewerEnabled"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean pdfViewerEnabled",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
     name: "NonDocumentTypeChildNode",
     ext_attrs: &[
     ],
@@ -7263,6 +17815,28 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlInterfaceMixin {
+    name: "PopoverTargetAttributes",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetElement"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+          WebIdlExtendedAttribute { name: "Reflect", value: None },
+        ],
+        raw: "attribute Element? popoverTargetElement",
+      },
+      WebIdlInterfaceMember {
+        name: Some("popoverTargetAction"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "CEReactions", value: None },
+        ],
+        raw: "attribute DOMString popoverTargetAction",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
     name: "Slottable",
     ext_attrs: &[
     ],
@@ -7272,6 +17846,246 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "readonly attribute HTMLSlotElement? assignedSlot",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "WindowEventHandlers",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("onafterprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onafterprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeprint"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onbeforeprint",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onbeforeunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute OnBeforeUnloadEventHandler onbeforeunload",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onhashchange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onhashchange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onlanguagechange"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onlanguagechange",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onmessageerror"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onmessageerror",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onoffline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onoffline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("ononline"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler ononline",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagehide"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagehide",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpagereveal"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpagereveal",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageshow"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageshow",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpageswap"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpageswap",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onpopstate"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onpopstate",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onrejectionhandled"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onrejectionhandled",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onstorage"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onstorage",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunhandledrejection"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunhandledrejection",
+      },
+      WebIdlInterfaceMember {
+        name: Some("onunload"),
+        ext_attrs: &[
+        ],
+        raw: "attribute EventHandler onunload",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "WindowLocalStorage",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("localStorage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Storage localStorage",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "WindowOrWorkerGlobalScope",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("origin"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "Replaceable", value: None },
+        ],
+        raw: "readonly attribute USVString origin",
+      },
+      WebIdlInterfaceMember {
+        name: Some("isSecureContext"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean isSecureContext",
+      },
+      WebIdlInterfaceMember {
+        name: Some("crossOriginIsolated"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute boolean crossOriginIsolated",
+      },
+      WebIdlInterfaceMember {
+        name: Some("reportError"),
+        ext_attrs: &[
+        ],
+        raw: "undefined reportError(any e)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("btoa"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString btoa(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("atob"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString atob(DOMString data)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "long setTimeout(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearTimeout"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearTimeout(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("setInterval"),
+        ext_attrs: &[
+        ],
+        raw: "long setInterval(TimerHandler handler, optional long timeout = 0, any... arguments)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("clearInterval"),
+        ext_attrs: &[
+        ],
+        raw: "undefined clearInterval(optional long id = 0)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("queueMicrotask"),
+        ext_attrs: &[
+        ],
+        raw: "undefined queueMicrotask(VoidFunction callback)",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("createImageBitmap"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, long sx, long sy, long sw, long sh, optional ImageBitmapOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("structuredClone"),
+        ext_attrs: &[
+        ],
+        raw: "any structuredClone(any value, optional StructuredSerializeOptions options = {})",
+      },
+      WebIdlInterfaceMember {
+        name: Some("fetch"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "NewObject", value: None },
+        ],
+        raw: "Promise<Response> fetch(RequestInfo input, optional RequestInit init = {})",
+      },
+    ],
+  },
+  WebIdlInterfaceMixin {
+    name: "WindowSessionStorage",
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlInterfaceMember {
+        name: Some("sessionStorage"),
+        ext_attrs: &[
+        ],
+        raw: "readonly attribute Storage sessionStorage",
       },
     ],
   },
@@ -7330,6 +18144,92 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlDictionary {
+    name: "AssignedNodesOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("flatten"),
+        ext_attrs: &[
+        ],
+        raw: "boolean flatten = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "CanvasRenderingContext2DSettings",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("alpha"),
+        ext_attrs: &[
+        ],
+        raw: "boolean alpha = true",
+      },
+      WebIdlDictionaryMember {
+        name: Some("desynchronized"),
+        ext_attrs: &[
+        ],
+        raw: "boolean desynchronized = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("colorSpace"),
+        ext_attrs: &[
+        ],
+        raw: "PredefinedColorSpace colorSpace = \"srgb\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("colorType"),
+        ext_attrs: &[
+        ],
+        raw: "CanvasColorType colorType = \"unorm8\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("willReadFrequently"),
+        ext_attrs: &[
+        ],
+        raw: "boolean willReadFrequently = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "CloseWatcherOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("signal"),
+        ext_attrs: &[
+        ],
+        raw: "AbortSignal signal",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "CommandEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "Element? source = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("command"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString command = \"\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
     name: "CustomEventInit",
     inherits: Some("EventInit"),
     ext_attrs: &[
@@ -7340,6 +18240,34 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "any detail = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "DeferredRequestInit",
+    inherits: Some("RequestInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("activateAfter"),
+        ext_attrs: &[
+        ],
+        raw: "DOMHighResTimeStamp activateAfter",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "DragEventInit",
+    inherits: Some("MouseEventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("dataTransfer"),
+        ext_attrs: &[
+        ],
+        raw: "DataTransfer? dataTransfer = null",
       },
     ],
   },
@@ -7360,6 +18288,58 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "DOMString is",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ElementDefinitionOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("extends"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString extends",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ErrorEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("message"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString message = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("filename"),
+        ext_attrs: &[
+        ],
+        raw: "USVString filename = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("lineno"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned long lineno = 0",
+      },
+      WebIdlDictionaryMember {
+        name: Some("colno"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned long colno = 0",
+      },
+      WebIdlDictionaryMember {
+        name: Some("error"),
+        ext_attrs: &[
+        ],
+        raw: "any error",
       },
     ],
   },
@@ -7404,6 +18384,74 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlDictionary {
+    name: "EventSourceInit",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("withCredentials"),
+        ext_attrs: &[
+        ],
+        raw: "boolean withCredentials = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "FocusOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("preventScroll"),
+        ext_attrs: &[
+        ],
+        raw: "boolean preventScroll = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("focusVisible"),
+        ext_attrs: &[
+        ],
+        raw: "boolean focusVisible",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "FormDataEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("formData"),
+        ext_attrs: &[
+        ],
+        raw: "required FormData formData",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "GetHTMLOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("serializableShadowRoots"),
+        ext_attrs: &[
+        ],
+        raw: "boolean serializableShadowRoots = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("shadowRoots"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<ShadowRoot> shadowRoots = []",
+      },
+    ],
+  },
+  WebIdlDictionary {
     name: "GetRootNodeOptions",
     inherits: None,
     ext_attrs: &[
@@ -7414,6 +18462,126 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "boolean composed = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "HashChangeEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("oldURL"),
+        ext_attrs: &[
+        ],
+        raw: "USVString oldURL = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("newURL"),
+        ext_attrs: &[
+        ],
+        raw: "USVString newURL = \"\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ImageBitmapOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("imageOrientation"),
+        ext_attrs: &[
+        ],
+        raw: "ImageOrientation imageOrientation = \"from-image\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("premultiplyAlpha"),
+        ext_attrs: &[
+        ],
+        raw: "PremultiplyAlpha premultiplyAlpha = \"default\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("colorSpaceConversion"),
+        ext_attrs: &[
+        ],
+        raw: "ColorSpaceConversion colorSpaceConversion = \"default\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("resizeWidth"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "EnforceRange", value: None },
+        ],
+        raw: "unsigned long resizeWidth",
+      },
+      WebIdlDictionaryMember {
+        name: Some("resizeHeight"),
+        ext_attrs: &[
+          WebIdlExtendedAttribute { name: "EnforceRange", value: None },
+        ],
+        raw: "unsigned long resizeHeight",
+      },
+      WebIdlDictionaryMember {
+        name: Some("resizeQuality"),
+        ext_attrs: &[
+        ],
+        raw: "ResizeQuality resizeQuality = \"low\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ImageBitmapRenderingContextSettings",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("alpha"),
+        ext_attrs: &[
+        ],
+        raw: "boolean alpha = true",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ImageDataSettings",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("colorSpace"),
+        ext_attrs: &[
+        ],
+        raw: "PredefinedColorSpace colorSpace",
+      },
+      WebIdlDictionaryMember {
+        name: Some("pixelFormat"),
+        ext_attrs: &[
+        ],
+        raw: "ImageDataPixelFormat pixelFormat = \"rgba-unorm8\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ImageEncodeOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString type = \"image/png\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("quality"),
+        ext_attrs: &[
+        ],
+        raw: "unrestricted double quality",
       },
     ],
   },
@@ -7434,6 +18602,44 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "boolean selfOnly = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "MessageEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("data"),
+        ext_attrs: &[
+        ],
+        raw: "any data = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("origin"),
+        ext_attrs: &[
+        ],
+        raw: "USVString origin = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("lastEventId"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString lastEventId = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "MessageEventSource? source = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("ports"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<MessagePort> ports = []",
       },
     ],
   },
@@ -7484,6 +18690,426 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
         ext_attrs: &[
         ],
         raw: "sequence<DOMString> attributeFilter",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigateEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationType navigationType = \"push\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("destination"),
+        ext_attrs: &[
+        ],
+        raw: "required NavigationDestination destination",
+      },
+      WebIdlDictionaryMember {
+        name: Some("canIntercept"),
+        ext_attrs: &[
+        ],
+        raw: "boolean canIntercept = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("userInitiated"),
+        ext_attrs: &[
+        ],
+        raw: "boolean userInitiated = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("hashChange"),
+        ext_attrs: &[
+        ],
+        raw: "boolean hashChange = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("signal"),
+        ext_attrs: &[
+        ],
+        raw: "required AbortSignal signal",
+      },
+      WebIdlDictionaryMember {
+        name: Some("formData"),
+        ext_attrs: &[
+        ],
+        raw: "FormData? formData = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("downloadRequest"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? downloadRequest = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("info"),
+        ext_attrs: &[
+        ],
+        raw: "any info",
+      },
+      WebIdlDictionaryMember {
+        name: Some("hasUAVisualTransition"),
+        ext_attrs: &[
+        ],
+        raw: "boolean hasUAVisualTransition = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("sourceElement"),
+        ext_attrs: &[
+        ],
+        raw: "Element? sourceElement = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationCurrentEntryChangeEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("navigationType"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationType? navigationType = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("from"),
+        ext_attrs: &[
+        ],
+        raw: "required NavigationHistoryEntry from",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationInterceptOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("precommitHandler"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationPrecommitHandler precommitHandler",
+      },
+      WebIdlDictionaryMember {
+        name: Some("handler"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationInterceptHandler handler",
+      },
+      WebIdlDictionaryMember {
+        name: Some("focusReset"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationFocusReset focusReset",
+      },
+      WebIdlDictionaryMember {
+        name: Some("scroll"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationScrollBehavior scroll",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationNavigateOptions",
+    inherits: Some("NavigationOptions"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "any state",
+      },
+      WebIdlDictionaryMember {
+        name: Some("history"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationHistoryBehavior history = \"auto\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("info"),
+        ext_attrs: &[
+        ],
+        raw: "any info",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationReloadOptions",
+    inherits: Some("NavigationOptions"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "any state",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationResult",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("committed"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<NavigationHistoryEntry> committed",
+      },
+      WebIdlDictionaryMember {
+        name: Some("finished"),
+        ext_attrs: &[
+        ],
+        raw: "Promise<NavigationHistoryEntry> finished",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "NavigationUpdateCurrentEntryOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "required any state",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "PageRevealEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("viewTransition"),
+        ext_attrs: &[
+        ],
+        raw: "ViewTransition? viewTransition = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "PageSwapEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("activation"),
+        ext_attrs: &[
+        ],
+        raw: "NavigationActivation? activation = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("viewTransition"),
+        ext_attrs: &[
+        ],
+        raw: "ViewTransition? viewTransition = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "PageTransitionEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("persisted"),
+        ext_attrs: &[
+        ],
+        raw: "boolean persisted = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "PopStateEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("state"),
+        ext_attrs: &[
+        ],
+        raw: "any state = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("hasUAVisualTransition"),
+        ext_attrs: &[
+        ],
+        raw: "boolean hasUAVisualTransition = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "PromiseRejectionEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("promise"),
+        ext_attrs: &[
+        ],
+        raw: "required object promise",
+      },
+      WebIdlDictionaryMember {
+        name: Some("reason"),
+        ext_attrs: &[
+        ],
+        raw: "any reason",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "RequestInit",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("method"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString method",
+      },
+      WebIdlDictionaryMember {
+        name: Some("headers"),
+        ext_attrs: &[
+        ],
+        raw: "HeadersInit headers",
+      },
+      WebIdlDictionaryMember {
+        name: Some("body"),
+        ext_attrs: &[
+        ],
+        raw: "BodyInit? body",
+      },
+      WebIdlDictionaryMember {
+        name: Some("referrer"),
+        ext_attrs: &[
+        ],
+        raw: "USVString referrer",
+      },
+      WebIdlDictionaryMember {
+        name: Some("referrerPolicy"),
+        ext_attrs: &[
+        ],
+        raw: "ReferrerPolicy referrerPolicy",
+      },
+      WebIdlDictionaryMember {
+        name: Some("mode"),
+        ext_attrs: &[
+        ],
+        raw: "RequestMode mode",
+      },
+      WebIdlDictionaryMember {
+        name: Some("credentials"),
+        ext_attrs: &[
+        ],
+        raw: "RequestCredentials credentials",
+      },
+      WebIdlDictionaryMember {
+        name: Some("cache"),
+        ext_attrs: &[
+        ],
+        raw: "RequestCache cache",
+      },
+      WebIdlDictionaryMember {
+        name: Some("redirect"),
+        ext_attrs: &[
+        ],
+        raw: "RequestRedirect redirect",
+      },
+      WebIdlDictionaryMember {
+        name: Some("integrity"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString integrity",
+      },
+      WebIdlDictionaryMember {
+        name: Some("keepalive"),
+        ext_attrs: &[
+        ],
+        raw: "boolean keepalive",
+      },
+      WebIdlDictionaryMember {
+        name: Some("signal"),
+        ext_attrs: &[
+        ],
+        raw: "AbortSignal? signal",
+      },
+      WebIdlDictionaryMember {
+        name: Some("duplex"),
+        ext_attrs: &[
+        ],
+        raw: "RequestDuplex duplex",
+      },
+      WebIdlDictionaryMember {
+        name: Some("priority"),
+        ext_attrs: &[
+        ],
+        raw: "RequestPriority priority",
+      },
+      WebIdlDictionaryMember {
+        name: Some("window"),
+        ext_attrs: &[
+        ],
+        raw: "any window",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ResponseInit",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("status"),
+        ext_attrs: &[
+        ],
+        raw: "unsigned short status = 200",
+      },
+      WebIdlDictionaryMember {
+        name: Some("statusText"),
+        ext_attrs: &[
+        ],
+        raw: "ByteString statusText = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("headers"),
+        ext_attrs: &[
+        ],
+        raw: "HeadersInit headers",
       },
     ],
   },
@@ -7578,6 +19204,98 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     ],
   },
   WebIdlDictionary {
+    name: "StorageEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("key"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? key = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("oldValue"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? oldValue = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("newValue"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString? newValue = null",
+      },
+      WebIdlDictionaryMember {
+        name: Some("url"),
+        ext_attrs: &[
+        ],
+        raw: "USVString url = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("storageArea"),
+        ext_attrs: &[
+        ],
+        raw: "Storage? storageArea = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "StructuredSerializeOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("transfer"),
+        ext_attrs: &[
+        ],
+        raw: "sequence<object> transfer = []",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "SubmitEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("submitter"),
+        ext_attrs: &[
+        ],
+        raw: "HTMLElement? submitter = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "ToggleEventInit",
+    inherits: Some("EventInit"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("oldState"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString oldState = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("newState"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString newState = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("source"),
+        ext_attrs: &[
+        ],
+        raw: "Element? source = null",
+      },
+    ],
+  },
+  WebIdlDictionary {
     name: "TogglePopoverOptions",
     inherits: Some("ShowPopoverOptions"),
     ext_attrs: &[
@@ -7605,6 +19323,128 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       },
     ],
   },
+  WebIdlDictionary {
+    name: "ValidityStateFlags",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("valueMissing"),
+        ext_attrs: &[
+        ],
+        raw: "boolean valueMissing = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("typeMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "boolean typeMismatch = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("patternMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "boolean patternMismatch = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("tooLong"),
+        ext_attrs: &[
+        ],
+        raw: "boolean tooLong = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("tooShort"),
+        ext_attrs: &[
+        ],
+        raw: "boolean tooShort = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("rangeUnderflow"),
+        ext_attrs: &[
+        ],
+        raw: "boolean rangeUnderflow = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("rangeOverflow"),
+        ext_attrs: &[
+        ],
+        raw: "boolean rangeOverflow = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("stepMismatch"),
+        ext_attrs: &[
+        ],
+        raw: "boolean stepMismatch = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("badInput"),
+        ext_attrs: &[
+        ],
+        raw: "boolean badInput = false",
+      },
+      WebIdlDictionaryMember {
+        name: Some("customError"),
+        ext_attrs: &[
+        ],
+        raw: "boolean customError = false",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "WindowPostMessageOptions",
+    inherits: Some("StructuredSerializeOptions"),
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("targetOrigin"),
+        ext_attrs: &[
+        ],
+        raw: "USVString targetOrigin = \"/\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "WorkerOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("name"),
+        ext_attrs: &[
+        ],
+        raw: "DOMString name = \"\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("type"),
+        ext_attrs: &[
+        ],
+        raw: "WorkerType type = \"classic\"",
+      },
+      WebIdlDictionaryMember {
+        name: Some("credentials"),
+        ext_attrs: &[
+        ],
+        raw: "RequestCredentials credentials = \"same-origin\"",
+      },
+    ],
+  },
+  WebIdlDictionary {
+    name: "WorkletOptions",
+    inherits: None,
+    ext_attrs: &[
+    ],
+    members: &[
+      WebIdlDictionaryMember {
+        name: Some("credentials"),
+        ext_attrs: &[
+        ],
+        raw: "RequestCredentials credentials = \"same-origin\"",
+      },
+    ],
+  },
   ],
   enums: &[
   WebIdlEnum {
@@ -7615,6 +19455,151 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       "",
       "maybe",
       "probably",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasColorType",
+    ext_attrs: &[
+    ],
+    values: &[
+      "unorm8",
+      "float16",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasDirection",
+    ext_attrs: &[
+    ],
+    values: &[
+      "ltr",
+      "rtl",
+      "inherit",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasFillRule",
+    ext_attrs: &[
+    ],
+    values: &[
+      "nonzero",
+      "evenodd",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasFontKerning",
+    ext_attrs: &[
+    ],
+    values: &[
+      "auto",
+      "normal",
+      "none",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasFontStretch",
+    ext_attrs: &[
+    ],
+    values: &[
+      "ultra-condensed",
+      "extra-condensed",
+      "condensed",
+      "semi-condensed",
+      "normal",
+      "semi-expanded",
+      "expanded",
+      "extra-expanded",
+      "ultra-expanded",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasFontVariantCaps",
+    ext_attrs: &[
+    ],
+    values: &[
+      "normal",
+      "small-caps",
+      "all-small-caps",
+      "petite-caps",
+      "all-petite-caps",
+      "unicase",
+      "titling-caps",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasLineCap",
+    ext_attrs: &[
+    ],
+    values: &[
+      "butt",
+      "round",
+      "square",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasLineJoin",
+    ext_attrs: &[
+    ],
+    values: &[
+      "round",
+      "bevel",
+      "miter",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasTextAlign",
+    ext_attrs: &[
+    ],
+    values: &[
+      "start",
+      "end",
+      "left",
+      "right",
+      "center",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasTextBaseline",
+    ext_attrs: &[
+    ],
+    values: &[
+      "top",
+      "hanging",
+      "middle",
+      "alphabetic",
+      "ideographic",
+      "bottom",
+    ],
+  },
+  WebIdlEnum {
+    name: "CanvasTextRendering",
+    ext_attrs: &[
+    ],
+    values: &[
+      "auto",
+      "optimizeSpeed",
+      "optimizeLegibility",
+      "geometricPrecision",
+    ],
+  },
+  WebIdlEnum {
+    name: "ColorSpaceConversion",
+    ext_attrs: &[
+    ],
+    values: &[
+      "none",
+      "default",
+    ],
+  },
+  WebIdlEnum {
+    name: "DOMParserSupportedType",
+    ext_attrs: &[
+    ],
+    values: &[
+      "text/html",
+      "text/xml",
+      "application/xml",
+      "application/xhtml+xml",
+      "image/svg+xml",
     ],
   },
   WebIdlEnum {
@@ -7634,6 +19619,240 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     values: &[
       "visible",
       "hidden",
+    ],
+  },
+  WebIdlEnum {
+    name: "ImageDataPixelFormat",
+    ext_attrs: &[
+    ],
+    values: &[
+      "rgba-unorm8",
+      "rgba-float16",
+    ],
+  },
+  WebIdlEnum {
+    name: "ImageOrientation",
+    ext_attrs: &[
+    ],
+    values: &[
+      "from-image",
+      "flipY",
+    ],
+  },
+  WebIdlEnum {
+    name: "ImageSmoothingQuality",
+    ext_attrs: &[
+    ],
+    values: &[
+      "low",
+      "medium",
+      "high",
+    ],
+  },
+  WebIdlEnum {
+    name: "NavigationFocusReset",
+    ext_attrs: &[
+    ],
+    values: &[
+      "after-transition",
+      "manual",
+    ],
+  },
+  WebIdlEnum {
+    name: "NavigationHistoryBehavior",
+    ext_attrs: &[
+    ],
+    values: &[
+      "auto",
+      "push",
+      "replace",
+    ],
+  },
+  WebIdlEnum {
+    name: "NavigationScrollBehavior",
+    ext_attrs: &[
+    ],
+    values: &[
+      "after-transition",
+      "manual",
+    ],
+  },
+  WebIdlEnum {
+    name: "NavigationType",
+    ext_attrs: &[
+    ],
+    values: &[
+      "push",
+      "replace",
+      "reload",
+      "traverse",
+    ],
+  },
+  WebIdlEnum {
+    name: "OffscreenRenderingContextId",
+    ext_attrs: &[
+    ],
+    values: &[
+      "2d",
+      "bitmaprenderer",
+      "webgl",
+      "webgl2",
+      "webgpu",
+    ],
+  },
+  WebIdlEnum {
+    name: "PredefinedColorSpace",
+    ext_attrs: &[
+    ],
+    values: &[
+      "srgb",
+      "srgb-linear",
+      "display-p3",
+      "display-p3-linear",
+    ],
+  },
+  WebIdlEnum {
+    name: "PremultiplyAlpha",
+    ext_attrs: &[
+    ],
+    values: &[
+      "none",
+      "premultiply",
+      "default",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestCache",
+    ext_attrs: &[
+    ],
+    values: &[
+      "default",
+      "no-store",
+      "reload",
+      "no-cache",
+      "force-cache",
+      "only-if-cached",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestCredentials",
+    ext_attrs: &[
+    ],
+    values: &[
+      "omit",
+      "same-origin",
+      "include",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestDestination",
+    ext_attrs: &[
+    ],
+    values: &[
+      "",
+      "audio",
+      "audioworklet",
+      "document",
+      "embed",
+      "font",
+      "frame",
+      "iframe",
+      "image",
+      "json",
+      "manifest",
+      "object",
+      "paintworklet",
+      "report",
+      "script",
+      "sharedworker",
+      "style",
+      "track",
+      "video",
+      "worker",
+      "xslt",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestDuplex",
+    ext_attrs: &[
+    ],
+    values: &[
+      "half",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestMode",
+    ext_attrs: &[
+    ],
+    values: &[
+      "navigate",
+      "same-origin",
+      "no-cors",
+      "cors",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestPriority",
+    ext_attrs: &[
+    ],
+    values: &[
+      "high",
+      "low",
+      "auto",
+    ],
+  },
+  WebIdlEnum {
+    name: "RequestRedirect",
+    ext_attrs: &[
+    ],
+    values: &[
+      "follow",
+      "error",
+      "manual",
+    ],
+  },
+  WebIdlEnum {
+    name: "ResizeQuality",
+    ext_attrs: &[
+    ],
+    values: &[
+      "pixelated",
+      "low",
+      "medium",
+      "high",
+    ],
+  },
+  WebIdlEnum {
+    name: "ResponseType",
+    ext_attrs: &[
+    ],
+    values: &[
+      "basic",
+      "cors",
+      "default",
+      "error",
+      "opaque",
+      "opaqueredirect",
+    ],
+  },
+  WebIdlEnum {
+    name: "ScrollRestoration",
+    ext_attrs: &[
+    ],
+    values: &[
+      "auto",
+      "manual",
+    ],
+  },
+  WebIdlEnum {
+    name: "SelectionMode",
+    ext_attrs: &[
+    ],
+    values: &[
+      "select",
+      "start",
+      "end",
+      "preserve",
     ],
   },
   WebIdlEnum {
@@ -7676,8 +19895,41 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
       "showing",
     ],
   },
+  WebIdlEnum {
+    name: "WorkerType",
+    ext_attrs: &[
+    ],
+    values: &[
+      "classic",
+      "module",
+    ],
+  },
   ],
   typedefs: &[
+  WebIdlTypedef {
+    name: "BodyInit",
+    ext_attrs: &[
+    ],
+    type_: "(ReadableStream or XMLHttpRequestBodyInit)",
+  },
+  WebIdlTypedef {
+    name: "CanvasImageSource",
+    ext_attrs: &[
+    ],
+    type_: "(HTMLOrSVGImageElement or\n         HTMLVideoElement or\n         HTMLCanvasElement or\n         ImageBitmap or\n         OffscreenCanvas or\n         VideoFrame)",
+  },
+  WebIdlTypedef {
+    name: "EventHandler",
+    ext_attrs: &[
+    ],
+    type_: "EventHandlerNonNull?",
+  },
+  WebIdlTypedef {
+    name: "HTMLOrSVGImageElement",
+    ext_attrs: &[
+    ],
+    type_: "(HTMLImageElement or\n         SVGImageElement)",
+  },
   WebIdlTypedef {
     name: "HTMLOrSVGScriptElement",
     ext_attrs: &[
@@ -7685,18 +19937,171 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
     type_: "(HTMLScriptElement or SVGScriptElement)",
   },
   WebIdlTypedef {
+    name: "HeadersInit",
+    ext_attrs: &[
+    ],
+    type_: "(sequence<sequence<ByteString>> or record<ByteString, ByteString>)",
+  },
+  WebIdlTypedef {
+    name: "ImageBitmapSource",
+    ext_attrs: &[
+    ],
+    type_: "(CanvasImageSource or\n         Blob or\n         ImageData)",
+  },
+  WebIdlTypedef {
+    name: "ImageDataArray",
+    ext_attrs: &[
+    ],
+    type_: "(Uint8ClampedArray or Float16Array)",
+  },
+  WebIdlTypedef {
     name: "MediaProvider",
     ext_attrs: &[
     ],
     type_: "(MediaStream or MediaSource or Blob)",
   },
+  WebIdlTypedef {
+    name: "MessageEventSource",
+    ext_attrs: &[
+    ],
+    type_: "(WindowProxy or MessagePort or ServiceWorker)",
+  },
+  WebIdlTypedef {
+    name: "OffscreenRenderingContext",
+    ext_attrs: &[
+    ],
+    type_: "(OffscreenCanvasRenderingContext2D or ImageBitmapRenderingContext or WebGLRenderingContext or WebGL2RenderingContext or GPUCanvasContext)",
+  },
+  WebIdlTypedef {
+    name: "OnBeforeUnloadEventHandler",
+    ext_attrs: &[
+    ],
+    type_: "OnBeforeUnloadEventHandlerNonNull?",
+  },
+  WebIdlTypedef {
+    name: "OnErrorEventHandler",
+    ext_attrs: &[
+    ],
+    type_: "OnErrorEventHandlerNonNull?",
+  },
+  WebIdlTypedef {
+    name: "RenderingContext",
+    ext_attrs: &[
+    ],
+    type_: "(CanvasRenderingContext2D or ImageBitmapRenderingContext or WebGLRenderingContext or WebGL2RenderingContext or GPUCanvasContext)",
+  },
+  WebIdlTypedef {
+    name: "RequestInfo",
+    ext_attrs: &[
+    ],
+    type_: "(Request or USVString)",
+  },
+  WebIdlTypedef {
+    name: "TimerHandler",
+    ext_attrs: &[
+    ],
+    type_: "(DOMString or Function or TrustedScript)",
+  },
+  WebIdlTypedef {
+    name: "XMLHttpRequestBodyInit",
+    ext_attrs: &[
+    ],
+    type_: "(Blob or BufferSource or FormData or URLSearchParams or USVString)",
+  },
   ],
   callbacks: &[
+  WebIdlCallback {
+    name: "<dfn callback>BlobCallback</dfn>",
+    ext_attrs: &[
+    ],
+    type_: "undefined (<span>Blob</span>? blob)",
+  },
+  WebIdlCallback {
+    name: "<dfn callback>CustomElementConstructor</dfn>",
+    ext_attrs: &[
+    ],
+    type_: "<span>HTMLElement</span> ()",
+  },
+  WebIdlCallback {
+    name: "<dfn callback>FunctionStringCallback</dfn>",
+    ext_attrs: &[
+    ],
+    type_: "undefined (DOMString data)",
+  },
+  WebIdlCallback {
+    name: "<dfn callback>NavigationInterceptHandler</dfn>",
+    ext_attrs: &[
+    ],
+    type_: "<span data-x=\"idl-Promise\">Promise</span><undefined> ()",
+  },
+  WebIdlCallback {
+    name: "<dfn callback>NavigationPrecommitHandler</dfn>",
+    ext_attrs: &[
+    ],
+    type_: "<span data-x=\"idl-Promise\">Promise</span><undefined> (<span>NavigationPrecommitController</span> controller)",
+  },
+  WebIdlCallback {
+    name: "BlobCallback",
+    ext_attrs: &[
+    ],
+    type_: "undefined (Blob? blob)",
+  },
+  WebIdlCallback {
+    name: "CustomElementConstructor",
+    ext_attrs: &[
+    ],
+    type_: "HTMLElement ()",
+  },
+  WebIdlCallback {
+    name: "EventHandlerNonNull",
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "LegacyTreatNonObjectAsNull", value: None },
+    ],
+    type_: "any (Event event)",
+  },
+  WebIdlCallback {
+    name: "FrameRequestCallback",
+    ext_attrs: &[
+    ],
+    type_: "undefined (DOMHighResTimeStamp time)",
+  },
+  WebIdlCallback {
+    name: "FunctionStringCallback",
+    ext_attrs: &[
+    ],
+    type_: "undefined (DOMString data)",
+  },
   WebIdlCallback {
     name: "MutationCallback",
     ext_attrs: &[
     ],
     type_: "undefined (sequence<MutationRecord> mutations, MutationObserver observer)",
+  },
+  WebIdlCallback {
+    name: "NavigationInterceptHandler",
+    ext_attrs: &[
+    ],
+    type_: "Promise<undefined> ()",
+  },
+  WebIdlCallback {
+    name: "NavigationPrecommitHandler",
+    ext_attrs: &[
+    ],
+    type_: "Promise<undefined> (NavigationPrecommitController controller)",
+  },
+  WebIdlCallback {
+    name: "OnBeforeUnloadEventHandlerNonNull",
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "LegacyTreatNonObjectAsNull", value: None },
+    ],
+    type_: "DOMString? (Event event)",
+  },
+  WebIdlCallback {
+    name: "OnErrorEventHandlerNonNull",
+    ext_attrs: &[
+      WebIdlExtendedAttribute { name: "LegacyTreatNonObjectAsNull", value: None },
+    ],
+    type_: "any ((Event or DOMString) event, optional DOMString source, optional unsigned long lineno, optional unsigned long colno, optional any error)",
   },
   ],
 };

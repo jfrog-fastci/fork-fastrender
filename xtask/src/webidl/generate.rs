@@ -63,6 +63,8 @@ fn generate_rust_module_unformatted(world: &ResolvedWebIdlWorld) -> String {
      // Source inputs:\n\
      // - specs/whatwg-dom/dom.bs\n\
      // - specs/whatwg-html/source\n\
+     // - specs/whatwg-url/url.bs\n\
+     // - specs/whatwg-fetch/fetch.bs\n\
      \n\
      use super::*;\n"
   );
