@@ -120,6 +120,7 @@ use crate::scroll::ScrollState;
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
 use crate::style::color::Rgba;
+use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
 use crate::style::position::Position;
 use crate::style::PhysicalSide;
@@ -10185,6 +10186,81 @@ impl DisplayListBuilder {
     }
   }
 
+  /// Splits `rect` into logical inline-start and inline-end segments.
+  ///
+  /// `inline_start_len` is the length of the inline-start segment along the element's inline axis.
+  ///
+  /// For `writing-mode: horizontal-tb`:
+  /// - LTR: inline-start is physical left, inline-end is physical right
+  /// - RTL: inline-start is physical right, inline-end is physical left
+  fn split_rect_inline_start(
+    rect: Rect,
+    style: &ComputedStyle,
+    inline_start_len: f32,
+  ) -> (Rect, Rect) {
+    let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+    if inline_axis_is_horizontal(style.writing_mode) {
+      let total = rect.width().max(0.0);
+      let inline_start_len = inline_start_len.clamp(0.0, total);
+      let inline_end_len = (total - inline_start_len).max(0.0);
+      if inline_positive {
+        let inline_start = Rect::from_xywh(rect.x(), rect.y(), inline_start_len, rect.height());
+        let inline_end = Rect::from_xywh(
+          rect.x() + inline_start_len,
+          rect.y(),
+          inline_end_len,
+          rect.height(),
+        );
+        (inline_start, inline_end)
+      } else {
+        let inline_start = Rect::from_xywh(
+          rect.max_x() - inline_start_len,
+          rect.y(),
+          inline_start_len,
+          rect.height(),
+        );
+        let inline_end = Rect::from_xywh(rect.x(), rect.y(), inline_end_len, rect.height());
+        (inline_start, inline_end)
+      }
+    } else {
+      let total = rect.height().max(0.0);
+      let inline_start_len = inline_start_len.clamp(0.0, total);
+      let inline_end_len = (total - inline_start_len).max(0.0);
+      if inline_positive {
+        let inline_start = Rect::from_xywh(rect.x(), rect.y(), rect.width(), inline_start_len);
+        let inline_end = Rect::from_xywh(
+          rect.x(),
+          rect.y() + inline_start_len,
+          rect.width(),
+          inline_end_len,
+        );
+        (inline_start, inline_end)
+      } else {
+        let inline_start = Rect::from_xywh(
+          rect.x(),
+          rect.max_y() - inline_start_len,
+          rect.width(),
+          inline_start_len,
+        );
+        let inline_end = Rect::from_xywh(rect.x(), rect.y(), rect.width(), inline_end_len);
+        (inline_start, inline_end)
+      }
+    }
+  }
+
+  /// Splits `rect` into logical inline-start (returned first) and inline-end segments, where
+  /// `inline_end_len` is the length of the inline-end segment.
+  fn split_rect_inline_end(rect: Rect, style: &ComputedStyle, inline_end_len: f32) -> (Rect, Rect) {
+    let total = if inline_axis_is_horizontal(style.writing_mode) {
+      rect.width().max(0.0)
+    } else {
+      rect.height().max(0.0)
+    };
+    let inline_end_len = inline_end_len.clamp(0.0, total);
+    let inline_start_len = (total - inline_end_len).max(0.0);
+    Self::split_rect_inline_start(rect, style, inline_start_len)
+  }
+
   fn emit_form_control(
     &mut self,
     control: &FormControl,
@@ -10274,7 +10350,7 @@ impl DisplayListBuilder {
       let start_x = if center_x {
         rect.x() + ((rect.width() - advance_width).max(0.0) / 2.0)
       } else {
-        rect.x()
+        Self::aligned_text_start_x(style, rect, advance_width)
       };
 
       let shadows = Self::text_shadows_from_style(Some(style), builder.viewport);
@@ -10447,20 +10523,9 @@ impl DisplayListBuilder {
         }
         let mut affordance_rect: Option<Rect> = None;
         if affordance_space > 0.0 {
-          let right = content_rect.max_x();
-          let left = (right - affordance_space).max(content_rect.x());
-          affordance_rect = Some(Rect::from_xywh(
-            left,
-            content_rect.y(),
-            (right - left).max(0.0),
-            content_rect.height(),
-          ));
-          text_rect = Rect::from_xywh(
-            content_rect.x(),
-            content_rect.y(),
-            (left - content_rect.x()).max(0.0),
-            content_rect.height(),
-          );
+          let (text, affordance) = Self::split_rect_inline_end(content_rect, style, affordance_space);
+          text_rect = text;
+          affordance_rect = Some(affordance);
         }
 
         let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
@@ -10857,32 +10922,65 @@ impl DisplayListBuilder {
           let arrow_rect = if matches!(control.appearance, Appearance::None) {
             None
           } else {
-            let padding_right = (padding_rect.max_x() - content_rect.max_x()).max(0.0);
-            if padding_right > 0.0 {
-              Some(Rect::from_xywh(
-                content_rect.max_x(),
-                content_rect.y(),
-                padding_right,
-                content_rect.height(),
-              ))
-            } else {
-              let arrow_space = 14.0_f32.min(content_rect.width().max(0.0));
-              if arrow_space <= 0.0 {
-                None
-              } else {
-                label_rect = Rect::from_xywh(
-                  content_rect.x(),
-                  content_rect.y(),
-                  (content_rect.width() - arrow_space).max(0.0),
-                  content_rect.height(),
-                );
-                Some(Rect::from_xywh(
-                  content_rect.max_x() - arrow_space,
-                  content_rect.y(),
-                  arrow_space,
-                  content_rect.height(),
-                ))
-              }
+             let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+             let inline_end_padding = if inline_axis_is_horizontal(style.writing_mode) {
+               if inline_positive {
+                 (padding_rect.max_x() - content_rect.max_x()).max(0.0)
+               } else {
+                 (content_rect.x() - padding_rect.x()).max(0.0)
+               }
+             } else if inline_positive {
+               (padding_rect.max_y() - content_rect.max_y()).max(0.0)
+             } else {
+               (content_rect.y() - padding_rect.y()).max(0.0)
+             };
+
+             if inline_end_padding > 0.0 {
+               Some(if inline_axis_is_horizontal(style.writing_mode) {
+                 if inline_positive {
+                   Rect::from_xywh(
+                     content_rect.max_x(),
+                     content_rect.y(),
+                     inline_end_padding,
+                     content_rect.height(),
+                   )
+                 } else {
+                   Rect::from_xywh(
+                     padding_rect.x(),
+                     content_rect.y(),
+                     inline_end_padding,
+                     content_rect.height(),
+                   )
+                 }
+               } else if inline_positive {
+                 Rect::from_xywh(
+                   content_rect.x(),
+                   content_rect.max_y(),
+                   content_rect.width(),
+                   inline_end_padding,
+                 )
+               } else {
+                 Rect::from_xywh(
+                   content_rect.x(),
+                   padding_rect.y(),
+                   content_rect.width(),
+                   inline_end_padding,
+                 )
+               })
+             } else {
+               let inline_len = if inline_axis_is_horizontal(style.writing_mode) {
+                 content_rect.width().max(0.0)
+               } else {
+                 content_rect.height().max(0.0)
+               };
+               let arrow_space = 14.0_f32.min(inline_len);
+               if arrow_space <= 0.0 {
+                 None
+               } else {
+                 let (label, arrow) = Self::split_rect_inline_end(content_rect, style, arrow_space);
+                 label_rect = label;
+                 Some(arrow)
+               }
             }
           };
 
@@ -11022,20 +11120,21 @@ impl DisplayListBuilder {
           })
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
-        let knob_height = thumb_style
-          .and_then(|style| {
-            style
-              .height
-              .map(|len| resolve_px(style, len, padding_rect.height()))
-          })
-          .filter(|px| px.is_finite() && *px > 0.0)
-          .unwrap_or(default_knob_diameter);
+         let knob_height = thumb_style
+           .and_then(|style| {
+             style
+               .height
+               .map(|len| resolve_px(style, len, padding_rect.height()))
+           })
+           .filter(|px| px.is_finite() && *px > 0.0)
+           .unwrap_or(default_knob_diameter);
 
         let knob_travel = (padding_rect.width() - knob_width).max(0.0);
-        let knob_center_x = if style.direction == crate::style::types::Direction::Rtl {
-          padding_rect.max_x() - knob_width / 2.0 - clamped * knob_travel
-        } else {
+        let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+        let knob_center_x = if inline_positive {
           padding_rect.x() + knob_width / 2.0 + clamped * knob_travel
+        } else {
+          padding_rect.max_x() - knob_width / 2.0 - clamped * knob_travel
         };
         let mut knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
         if let Some(thumb_style) = thumb_style {
@@ -11100,20 +11199,20 @@ impl DisplayListBuilder {
                     radii: BorderRadii::uniform(track_height / 2.0),
                   }));
               }
-
+  
               if !appearance_none {
-                let filled_rect = if style.direction == crate::style::types::Direction::Rtl {
-                  Rect::from_xywh(
-                    knob_center_x,
-                    track_rect.y(),
-                    (track_rect.max_x() - knob_center_x).max(0.0),
-                    track_rect.height(),
-                  )
-                } else {
+                let filled_rect = if inline_positive {
                   Rect::from_xywh(
                     track_rect.x(),
                     track_rect.y(),
                     (knob_center_x - track_rect.x()).max(0.0),
+                    track_rect.height(),
+                  )
+                } else {
+                  Rect::from_xywh(
+                    knob_center_x,
+                    track_rect.y(),
+                    (track_rect.max_x() - knob_center_x).max(0.0),
                     track_rect.height(),
                   )
                 };
@@ -11549,29 +11648,39 @@ impl DisplayListBuilder {
           .unwrap_or(default_button_w)
           .min(rect.width());
 
-        let button_h = button_pseudo_style
-          .and_then(|style| {
-            style
-              .height
-              .map(|len| resolve_px(style, len, rect.height()))
+         let button_h = button_pseudo_style
+           .and_then(|style| {
+             style
+               .height
+               .map(|len| resolve_px(style, len, rect.height()))
               .filter(|px| px.is_finite() && *px > 0.0)
           })
-          .unwrap_or(rect.height())
-          .min(rect.height());
+           .unwrap_or(rect.height())
+           .min(rect.height());
 
-        let button_rect = Rect::from_xywh(
-          rect.x(),
-          rect.y() + (rect.height() - button_h) / 2.0,
-          button_w,
-          button_h,
-        );
-        let gap = 6.0_f32.min(rect.width().max(0.0));
-        let file_rect = Rect::from_xywh(
-          (button_rect.max_x() + gap).min(rect.max_x()),
-          rect.y(),
-          (rect.max_x() - (button_rect.max_x() + gap)).max(0.0),
-          rect.height(),
-        );
+         let inline_len = if inline_axis_is_horizontal(style.writing_mode) {
+           rect.width().max(0.0)
+         } else {
+           rect.height().max(0.0)
+         };
+         let gap = 6.0_f32.min(inline_len);
+         let (button_plus_gap, file_rect) =
+           Self::split_rect_inline_start(rect, style, (button_w + gap).min(inline_len));
+         let (button_base, _) = Self::split_rect_inline_start(
+           button_plus_gap,
+           style,
+           button_w.min(if inline_axis_is_horizontal(style.writing_mode) {
+             button_plus_gap.width().max(0.0)
+           } else {
+             button_plus_gap.height().max(0.0)
+           }),
+         );
+          let button_rect = Rect::from_xywh(
+            button_base.x(),
+            rect.y() + (rect.height() - button_h) / 2.0,
+            button_base.width(),
+            button_h,
+          );
 
         if let Some(button_style) = button_pseudo_style {
           self.emit_box_shadows_from_style(button_rect, button_style, false);

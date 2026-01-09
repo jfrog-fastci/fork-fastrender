@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use vm_js::{
-  Budget, Heap, HeapLimits, Job, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks,
-  VmHost, VmJobContext, VmOptions,
+  Budget, Heap, HeapLimits, Job, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost,
+  VmHostHooks, VmJobContext, VmOptions,
 };
 
 use super::event_loop::{EventLoop, TimerId};

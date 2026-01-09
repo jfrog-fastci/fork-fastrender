@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #ffffff;
+      padding: 24px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+    }
+
+    .col {
+      border: 1px solid #d0d0d0;
+      padding: 16px;
+      background: #fafafa;
+    }
+
+    .heading {
+      font-weight: 700;
+      margin-bottom: 14px;
+      color: #333;
+    }
+
+    .control {
+      display: block;
+      width: 260px;
+      height: 30px;
+      margin: 0 auto 12px auto;
+    }
+
+    input[type="range"].control {
+      margin-top: 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="col" dir="ltr">
+      <div class="heading">LTR</div>
+      <select class="control">
+        <option selected>Dropdown</option>
+        <option>Second</option>
+      </select>
+      <input class="control" type="number" value="12">
+      <input class="control" type="range" min="0" max="100" value="75">
+      <input class="control" type="file" value="/tmp/example.txt">
+    </div>
+
+    <div class="col" dir="rtl">
+      <div class="heading" dir="ltr">RTL</div>
+      <select class="control">
+        <option selected>Dropdown</option>
+        <option>Second</option>
+      </select>
+      <input class="control" type="number" value="12">
+      <input class="control" type="range" min="0" max="100" value="75">
+      <input class="control" type="file" value="/tmp/example.txt">
+    </div>
+  </div>
+</body>
+</html>
