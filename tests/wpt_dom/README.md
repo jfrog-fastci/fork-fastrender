@@ -76,21 +76,44 @@ This means test files should use the usual WPT absolute-root resource paths, e.g
 
 ## Adding/importing new tests
 
-1. **Pick a testharness test** from upstream WPT (`*.html` and/or `*.window.js`) that
-   targets the DOM/web API behavior you are implementing.
-2. **Copy it into** `tests/wpt_dom/tests/`, preserving the original relative path from
-   WPT root (this makes it easier to sync later and keeps URLs stable).
-3. **Vendor any required support files** alongside it (or under `resources/` if the
-   upstream test references `/resources/...`).
-4. **Keep the suite offline and stable**:
-   - avoid real network access (no `https://example.com/...`),
-   - avoid dependencies on WPT infra not vendored here (e.g. `/common/`),
-   - prefer deterministic timers and avoid flaky races.
-5. **Update `expectations.toml`**:
-   - default is `pass` (no entry needed),
-   - use `skip` for unimplemented tests,
-   - use `xfail` for known failures (with a reason),
-   - use `flaky` for intermittently failing tests.
+Import tests from a local upstream WPT checkout with the dedicated importer:
+
+```bash
+# Import a single test (paths are relative to the WPT repo root)
+cargo run --bin import_wpt_dom -- \
+  --wpt-root ~/src/wpt \
+  --test dom/nodes/Node-appendChild.window.js
+
+# Or import a suite via globs (repeatable)
+cargo run --bin import_wpt_dom -- \
+  --wpt-root ~/src/wpt \
+  --suite 'dom/nodes/*.window.js' \
+  --suite 'dom/events/**'
+```
+
+The importer:
+
+- copies selected `*.html`, `*.window.js`, `*.any.js` tests into `tests/wpt_dom/tests/`,
+  preserving upstream relative paths,
+- copies referenced support files (e.g. `/resources/...`, `/common/...`) into the appropriate
+  local mirror (`tests/` vs `resources/`),
+- rewrites `https://web-platform.test/...` and `//web-platform.test/...` URLs to origin-absolute
+  paths so the offline runner can resolve them,
+- refuses to leave fetchable `http(s)://` or protocol-relative (`//...`) URLs behind (use
+  `--strict-offline` for an even stricter scan).
+
+After importing, run the offline corpus validator (fast, CI-safe):
+
+```bash
+cargo test -p js-wpt-dom-runner --test corpus_validation
+```
+
+Finally, update `expectations.toml`:
+
+- default is `pass` (no entry needed),
+- use `skip` for unimplemented tests,
+- use `xfail` for known failures (with a reason),
+- use `flaky` for intermittently failing tests.
 
 ## Reporting integration (FastRender runner)
 
@@ -130,5 +153,11 @@ Payload shape (high level):
 Upstream WPT uses `resources/testharness.js` + `resources/testharnessreport.js`.
 
 In this repo these files are currently a **minimal compatible subset** sufficient for the
-`tests/smoke/` corpus. As the WPT DOM suite grows, we should replace these with verbatim
-upstream copies and pin the upstream commit hash here.
+`tests/smoke/` corpus. As the WPT DOM suite grows, we should replace these with verbatim upstream
+copies and pin the upstream commit hash in `UPSTREAM_COMMIT.txt`.
+
+The importer supports syncing the harness snapshot later:
+
+```bash
+cargo run --bin import_wpt_dom -- --wpt-root ~/src/wpt --sync-harness --overwrite
+```

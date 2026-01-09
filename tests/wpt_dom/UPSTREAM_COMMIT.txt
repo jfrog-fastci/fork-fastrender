@@ -1,0 +1,10 @@
+UNPINNED
+
+This corpus currently uses a small, local `testharness.js`/`testharnessreport.js` subset under
+`tests/wpt_dom/resources/` (see `tests/wpt_dom/resources/LICENSE`).
+
+When switching to verbatim upstream WPT harness copies, re-sync the harness via:
+
+  cargo run --bin import_wpt_dom -- --wpt-root <WPT> --sync-harness --overwrite
+
+The importer will update this file to the upstream WPT git commit hash used for the snapshot.
