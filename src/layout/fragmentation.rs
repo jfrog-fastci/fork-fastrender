@@ -808,9 +808,25 @@ pub(crate) fn parallel_flow_content_extent(
       for child in root.children.iter() {
         bbox = bbox.union(child.logical_bounding_box());
       }
-      axis
-        .block_size(&bbox)
-        .max(root.slice_info.original_block_size)
+      let bbox_extent = axis.block_size(&bbox);
+      let bounds_extent = axis.block_size(&root.bounds);
+      let mut original_extent = root.slice_info.original_block_size;
+
+      // When balancing columns inside a clipped fragment (e.g. when paginating a multi-column
+      // container), the slice metadata still reflects the original unfragmented block-size.
+      // Clamping prevents a "full height" original size from forcing additional columns within the
+      // clipped fragmentainer.
+      if original_extent.is_finite()
+        && original_extent > 0.0
+        && bounds_extent.is_finite()
+        && bounds_extent > 0.0
+      {
+        original_extent = original_extent.min(bounds_extent);
+      } else if !original_extent.is_finite() || original_extent < 0.0 {
+        original_extent = 0.0;
+      }
+
+      bbox_extent.max(original_extent)
     }
     FragmentationContext::Page => axis.block_size(&root.logical_bounding_box()),
   };
