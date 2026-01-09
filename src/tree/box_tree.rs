@@ -255,7 +255,10 @@ pub enum FormControlKind {
     /// Raw value attribute (if present); used as a best-effort "selected file" hint.
     value: Option<String>,
   },
-  /// Fallback for unknown input types
+  /// Fallback for unimplemented form control kinds.
+  ///
+  /// Note: per HTML spec, unknown `<input type=...>` values default to `type=text` and are
+  /// represented as `FormControlKind::Text { kind: Plain, .. }` during box generation.
   Unknown { label: Option<String> },
 }
 

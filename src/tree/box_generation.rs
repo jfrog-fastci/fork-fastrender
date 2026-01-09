@@ -5371,29 +5371,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         || input_type.eq_ignore_ascii_case("email")
       {
         TextControlKind::Plain
-      } else if input_type.eq_ignore_ascii_case("image") {
-        let label = placeholder
-          .or_else(|| (!value.is_empty()).then_some(value))
-          .or_else(|| Some(input_type.to_ascii_uppercase()));
-        return Some(FormControl {
-          control: FormControlKind::Unknown { label },
-          appearance,
-          placeholder_style: None,
-          slider_thumb_style: None,
-          slider_track_style: None,
-          progress_bar_style: None,
-          progress_value_style: None,
-          meter_bar_style: None,
-          meter_optimum_value_style: None,
-          meter_suboptimum_value_style: None,
-          meter_even_less_good_value_style: None,
-          file_selector_button_style: None,
-          disabled,
-          focused,
-          focus_visible,
-          required,
-          invalid,
-        });
       } else {
         TextControlKind::Plain
       };
