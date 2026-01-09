@@ -2430,8 +2430,12 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
       .unwrap_or(&[])
   };
 
-  let resolve_single =
-    |ty: FontFeatureValueType, name: &str| resolve_list(ty, name).first().copied();
+  // CSS Fonts 4 requires @stylistic/@swash/@ornaments/@annotation definitions to be single-valued;
+  // multi-valued definitions are syntax errors and must be ignored.
+  let resolve_single = |ty: FontFeatureValueType, name: &str| {
+    let values = resolve_list(ty, name);
+    (values.len() == 1).then(|| values[0])
+  };
 
   if let Some(set) = alternates.stylistic.as_ref() {
     // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.

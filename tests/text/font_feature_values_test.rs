@@ -357,6 +357,136 @@ fn font_variant_alternates_character_variant_invalid_three_integer_mapping_is_ig
 }
 
 #[test]
+fn font_variant_alternates_swash_named_multi_value_definition_is_ignored() {
+  let (font_context, family) = load_fixture_font_context();
+
+  let dom = dom::parse_html(r#"<div id="t">A</div>"#).expect("parse html");
+  let css = format!(
+    r#"
+      @font-feature-values "{family}" {{ @swash {{ bad: 3 5; }} }}
+      #t {{
+        font-family: "{family}";
+        font-size: 16px;
+        font-variant-alternates: swash(bad);
+      }}
+    "#
+  );
+  let stylesheet = parse_stylesheet(&css).expect("stylesheet");
+  let styled = apply_styles(&dom, &stylesheet);
+  let node = find_by_id(&styled, "t").expect("expected node");
+
+  let text = "A";
+  let run = ItemizedRun {
+    text: text.to_string(),
+    start: 0,
+    end: text.len(),
+    script: Script::Latin,
+    direction: Direction::LeftToRight,
+    level: 0,
+  };
+  let font_runs = assign_fonts(&[run], &node.styles, &font_context).expect("assign fonts");
+  assert_eq!(font_runs.len(), 1, "expected a single font run");
+
+  let mut seen: HashMap<[u8; 4], u32> = HashMap::new();
+  for f in font_runs[0].features.iter() {
+    seen.insert(f.tag.to_bytes(), f.value);
+  }
+
+  assert!(
+    seen.get(b"swsh").is_none(),
+    "@swash definitions with multiple integers must be ignored (no swsh feature)"
+  );
+  assert!(
+    seen.get(b"cswh").is_none(),
+    "@swash definitions with multiple integers must be ignored (no cswh feature)"
+  );
+}
+
+#[test]
+fn font_variant_alternates_annotation_named_multi_value_definition_is_ignored() {
+  let (font_context, family) = load_fixture_font_context();
+
+  let dom = dom::parse_html(r#"<div id="t">A</div>"#).expect("parse html");
+  let css = format!(
+    r#"
+      @font-feature-values "{family}" {{ @annotation {{ bad: 1 2; }} }}
+      #t {{
+        font-family: "{family}";
+        font-size: 16px;
+        font-variant-alternates: annotation(bad);
+      }}
+    "#
+  );
+  let stylesheet = parse_stylesheet(&css).expect("stylesheet");
+  let styled = apply_styles(&dom, &stylesheet);
+  let node = find_by_id(&styled, "t").expect("expected node");
+
+  let text = "A";
+  let run = ItemizedRun {
+    text: text.to_string(),
+    start: 0,
+    end: text.len(),
+    script: Script::Latin,
+    direction: Direction::LeftToRight,
+    level: 0,
+  };
+  let font_runs = assign_fonts(&[run], &node.styles, &font_context).expect("assign fonts");
+  assert_eq!(font_runs.len(), 1, "expected a single font run");
+
+  let mut seen: HashMap<[u8; 4], u32> = HashMap::new();
+  for f in font_runs[0].features.iter() {
+    seen.insert(f.tag.to_bytes(), f.value);
+  }
+
+  assert!(
+    seen.get(b"nalt").is_none(),
+    "@annotation definitions with multiple integers must be ignored (no nalt feature)"
+  );
+}
+
+#[test]
+fn font_variant_alternates_stylistic_named_multi_value_definition_is_ignored() {
+  let (font_context, family) = load_fixture_font_context();
+
+  let dom = dom::parse_html(r#"<div id="t">A</div>"#).expect("parse html");
+  let css = format!(
+    r#"
+      @font-feature-values "{family}" {{ @stylistic {{ bad: 2 3; }} }}
+      #t {{
+        font-family: "{family}";
+        font-size: 16px;
+        font-variant-alternates: stylistic(bad);
+      }}
+    "#
+  );
+  let stylesheet = parse_stylesheet(&css).expect("stylesheet");
+  let styled = apply_styles(&dom, &stylesheet);
+  let node = find_by_id(&styled, "t").expect("expected node");
+
+  let text = "A";
+  let run = ItemizedRun {
+    text: text.to_string(),
+    start: 0,
+    end: text.len(),
+    script: Script::Latin,
+    direction: Direction::LeftToRight,
+    level: 0,
+  };
+  let font_runs = assign_fonts(&[run], &node.styles, &font_context).expect("assign fonts");
+  assert_eq!(font_runs.len(), 1, "expected a single font run");
+
+  let mut seen: HashMap<[u8; 4], u32> = HashMap::new();
+  for f in font_runs[0].features.iter() {
+    seen.insert(f.tag.to_bytes(), f.value);
+  }
+
+  assert!(
+    seen.get(b"salt").is_none(),
+    "@stylistic definitions with multiple integers must be ignored (no salt feature)"
+  );
+}
+
+#[test]
 fn font_feature_values_rejects_generic_family_names() {
   let css = r#"@font-feature-values serif { @styleset { a: 1; } }"#;
   let sheet = parse_stylesheet(css).expect("stylesheet should parse");
