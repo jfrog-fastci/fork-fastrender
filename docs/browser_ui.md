@@ -64,7 +64,9 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
     [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs) (large stack; wrapper around
     `spawn_browser_worker`), which handles navigation/history, scrolling, and DOM interaction and
     produces `WorkerToUi` updates.
-  - Renders a small egui popup for `<select>` dropdowns driven by `WorkerToUi::OpenSelectDropdown`.
+  - Renders a small egui popup for `<select>` dropdowns. Workers can request a popup via:
+    - `WorkerToUi::OpenSelectDropdown` (legacy cursor-anchored message)
+    - `WorkerToUi::SelectDropdownOpened` (preferred; includes an explicit `anchor_css` rect)
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -149,9 +151,12 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 **UI → worker** (`UiToWorker`) includes requests like:
 
 - `Navigate { tab_id, url, reason }`
+- `Tick { tab_id }` — periodic “event loop slice” / repaint driver (used by JS-capable workers)
 - `ViewportChanged { tab_id, viewport_css, dpr }`
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
+- `SelectDropdownChoose { tab_id, select_node_id, option_node_id }` — user selected an option from
+  a dropdown popup (sent after `WorkerToUi::SelectDropdownOpened`)
 
 Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
 at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
@@ -160,9 +165,11 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 **Worker → UI** (`WorkerToUi`) includes:
 
 - `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata
-- `OpenSelectDropdown { tab_id, select_node_id, control }` — request the UI open a dropdown popup
-  for a `<select>` control (used for `size=1` single-select dropdowns; listbox selects are handled
-  directly by DOM interaction).
+- `OpenSelectDropdown { tab_id, select_node_id, control }` — legacy dropdown popup request for a
+  `<select>` control (cursor-anchored; kept for back-compat with older UIs).
+- `SelectDropdownOpened { tab_id, select_node_id, control, anchor_css }` — request the UI open a
+  dropdown popup for a `<select>` control, with an explicit `anchor_css` in **viewport-local CSS
+  pixels** so the popup can be positioned relative to the rendered frame.
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
@@ -170,9 +177,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed `browser`
-app uses `spawn_browser_worker` and emits `FrameReady`, `OpenSelectDropdown`, and
-navigation/scroll/loading events. Stage heartbeats are only sent when a stage listener is installed
-by the worker.
+app uses `spawn_browser_worker` and emits `FrameReady`, select dropdown open messages
+(`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading events. Stage heartbeats
+are only sent when a stage listener is installed by the worker.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
