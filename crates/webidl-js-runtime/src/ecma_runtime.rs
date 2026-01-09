@@ -141,16 +141,16 @@ impl VmJsRuntime {
         }
         return Err(VmError::InvalidHandle);
       }
-      let id = match self.heap.add_root(v) {
-        Ok(id) => id,
+
+      match self.heap.add_root(v) {
+        Ok(id) => root_ids.push(id),
         Err(e) => {
           for id in root_ids {
             self.heap.remove_root(id);
           }
           return Err(e);
         }
-      };
-      root_ids.push(id);
+      }
     }
 
     let result = f(self);
