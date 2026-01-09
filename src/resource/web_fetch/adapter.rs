@@ -1,11 +1,27 @@
 use crate::debug::runtime;
-use crate::error::{Error, Result};
+use crate::error::{Error, ResourceError, Result};
 use crate::resource::{
-  ensure_cors_allows_origin, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
-  ResourceFetcher,
+  validate_cors_allow_origin, CorsMode, DocumentOrigin, FetchCredentialsMode, FetchDestination,
+  FetchRequest, FetchedResource, ResourceFetcher,
 };
 
 use super::{Body, Headers, HeadersGuard, Request, RequestMode, Response, ResponseType};
+
+fn cors_error(resource: &FetchedResource, requested_url: &str, message: String) -> Error {
+  let mut err = ResourceError::new(requested_url.to_string(), message)
+    .with_final_url(
+      resource
+        .final_url
+        .clone()
+        .unwrap_or_else(|| requested_url.to_string()),
+    )
+    .with_validators(resource.etag.clone(), resource.last_modified.clone())
+    .with_content_type(resource.content_type.clone());
+  if let Some(status) = resource.status {
+    err = err.with_status(status);
+  }
+  Error::Resource(err)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct WebFetchExecutionContext<'a> {
@@ -58,8 +74,16 @@ pub fn execute_web_fetch(
 
   let mut resource = fetcher.fetch_with_request(fetch_request)?;
 
-  if request.mode == RequestMode::Cors && ctx.client_origin.is_some() {
-    ensure_cors_allows_origin(ctx.client_origin, &resource, requested_url)?;
+  if request.mode == RequestMode::Cors {
+    if let Some(client_origin) = ctx.client_origin.filter(|origin| origin.is_http_like()) {
+      let cors_mode = match ctx.credentials_mode {
+        FetchCredentialsMode::Include => CorsMode::UseCredentials,
+        FetchCredentialsMode::Omit | FetchCredentialsMode::SameOrigin => CorsMode::Anonymous,
+      };
+
+      validate_cors_allow_origin(&resource, requested_url, client_origin, cors_mode)
+        .map_err(|message| cors_error(&resource, requested_url, message))?;
+    }
   }
 
   let status = resource.status.unwrap_or(200);
@@ -250,6 +274,100 @@ mod tests {
     let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected CORS error");
     assert!(matches!(err, Error::Resource(_)));
     assert!(err.to_string().contains("blocked by CORS"));
+  }
+
+  #[test]
+  fn cors_allows_matching_origin() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    let fetcher = StaticFetcher { resource };
+
+    let request = Request::new("GET", "https://other.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::Omit,
+      ..WebFetchExecutionContext::default()
+    };
+
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected CORS pass");
+  }
+
+  #[test]
+  fn cors_allows_wildcard_for_anonymous_but_not_credentialed() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("*".to_string());
+    let fetcher = StaticFetcher {
+      resource: resource.clone(),
+    };
+
+    let request = Request::new("GET", "https://other.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::Omit,
+      ..WebFetchExecutionContext::default()
+    };
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard CORS pass");
+
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::SameOrigin,
+      ..WebFetchExecutionContext::default()
+    };
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected wildcard CORS pass");
+
+    let fetcher = StaticFetcher { resource };
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::Include,
+      ..WebFetchExecutionContext::default()
+    };
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
+    assert!(err.to_string().contains("Access-Control-Allow-Origin * is not allowed"));
+  }
+
+  #[test]
+  fn cors_rejects_comma_separated_allow_origin() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin =
+      Some("https://client.example, https://other.example".to_string());
+    let fetcher = StaticFetcher { resource };
+
+    let request = Request::new("GET", "https://other.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::Omit,
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err =
+      execute_web_fetch(&fetcher, &request, ctx).expect_err("expected comma-separated CORS fail");
+    assert!(err.to_string().contains("multiple values"));
+  }
+
+  #[test]
+  fn cors_credentialed_requests_require_allow_credentials() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    resource.access_control_allow_credentials = false;
+    let fetcher = StaticFetcher { resource };
+
+    let request = Request::new("GET", "https://other.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      credentials_mode: FetchCredentialsMode::Include,
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err = execute_web_fetch(&fetcher, &request, ctx)
+      .expect_err("expected credentialed CORS to require allow-credentials");
+    assert!(err
+      .to_string()
+      .contains("missing Access-Control-Allow-Credentials: true"));
   }
 
   #[test]
