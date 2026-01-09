@@ -321,16 +321,6 @@ fn is_discrete_property(name: &str) -> bool {
   )
 }
 
-fn transition_value_distance(a: &TransitionValue, b: &TransitionValue) -> Option<f32> {
-  match (a, b) {
-    (
-      TransitionValue::Builtin(AnimatedValue::Opacity(x)),
-      TransitionValue::Builtin(AnimatedValue::Opacity(y)),
-    ) => Some((*y - *x).abs()),
-    _ => None,
-  }
-}
-
 fn can_interpolate_custom_property(from: &ComputedStyle, to: &ComputedStyle, name: &str) -> bool {
   match (
     from.custom_property_registry.get(name),
@@ -572,21 +562,6 @@ impl TransitionState {
             continue;
           }
 
-          let adjusted_duration = if reversing {
-            duration
-          } else {
-            let old_distance = TransitionRecord::extract_value(&existing.from_style, name, &cmp_ctx)
-              .and_then(|from| {
-                TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
-                  .and_then(|to| transition_value_distance(&from, &to))
-              });
-            let new_distance = transition_value_distance(&before_value, &after_value);
-            match (old_distance, new_distance) {
-              (Some(old), Some(new)) if old > 0.0 => duration * (new / old),
-              _ => duration,
-            }
-          };
-
           let record = if reversing {
             let Some(old_end_value) =
               TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
@@ -638,7 +613,7 @@ impl TransitionState {
               &before_value,
               now_ms,
               delay,
-              adjusted_duration,
+              duration,
               timing,
               behavior,
               allow_discrete,
@@ -930,6 +905,44 @@ mod tests {
     super::super::apply_transitions(&mut t200, 200.0, viewport);
     let style = t200.root.style.as_deref().expect("style");
     assert!((style.opacity - 0.2).abs() < 1e-6, "opacity={}", style.opacity);
+  }
+
+  #[test]
+  fn transition_state_non_reversing_retarget_uses_full_duration() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+    let tree_c = make_box_tree(make_opacity_style(0.5));
+
+    // Start A -> B at t=0ms, then retarget to C at t=200ms. This is *not* the reversal special-case
+    // (CSS Transitions 1 step 4.3), so step 4.4 starts a new transition using the matching
+    // transition duration from the after-change style.
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_bc =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_c, 200.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record = state_bc
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("retargeted transition record");
+    assert!(
+      (record.duration_ms - 1000.0).abs() < 1e-6,
+      "expected unscaled duration=1000ms, got {}",
+      record.duration_ms
+    );
+
+    let mut t700 = make_fragment_tree(tree_c.root.style.clone(), state_bc);
+    super::super::apply_transitions(&mut t700, 700.0, Size::new(100.0, 100.0));
+    let style = t700.root.style.as_deref().expect("style");
+    assert!(
+      (style.opacity - 0.35).abs() < 1e-6,
+      "expected opacity=0.35 at 700ms, got {}",
+      style.opacity
+    );
   }
 
   #[test]

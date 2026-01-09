@@ -537,7 +537,7 @@ fn starting_style_transition_can_be_interrupted() -> Result<()> {
   let base_tree = prepared.fragment_tree().clone();
 
   let eps = 1e-3;
-  let cases = [(200.0, 0.2), (700.0, 0.5)];
+  let cases = [(200.0, 0.2), (700.0, 0.35), (1200.0, 0.5)];
   for (time, expected) in cases {
     let mut sampled = base_tree.clone();
     let viewport = sampled.viewport_size();
