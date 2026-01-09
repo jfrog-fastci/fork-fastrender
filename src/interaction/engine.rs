@@ -1982,7 +1982,7 @@ impl InteractionEngine {
       KeyAction::Space => {
         // Handled by `key_activate` (may trigger navigation).
       }
-      KeyAction::Tab => {
+      KeyAction::Tab | KeyAction::ShiftTab => {
         unreachable!("handled above")
       }
       KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
@@ -2105,12 +2105,6 @@ impl InteractionEngine {
           let option_node_id = options[next_idx].0;
           changed |= dom_mutation::activate_select_option(dom, focused, option_node_id, false);
         }
-      }
-      KeyAction::Space => {
-        // Handled by `key_activate` (may trigger navigation).
-      }
-      KeyAction::Tab | KeyAction::ShiftTab => {
-        unreachable!("handled above")
       }
     }
 
