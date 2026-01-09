@@ -394,6 +394,19 @@ input, textarea, select, button {
     border-radius: 4px;
 }
 
+progress, meter {
+    display: inline-block;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #767676;
+    background-color: rgb(230, 230, 230);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: 1.2;
+}
+
 input::placeholder,
 textarea::placeholder {
     opacity: 0.6;

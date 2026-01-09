@@ -59,6 +59,7 @@ mod form_control_placeholder_style_variant;
 mod form_control_text_align;
 mod form_control_overflow_clip_padding_box;
 mod form_invalid_placeholder_shown_fixture;
+mod progress_meter_paint;
 mod fragmented_root_paint;
 mod individual_transform_properties_test;
 mod iframe_background_compositing;

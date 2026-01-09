@@ -62,6 +62,7 @@ mod float_logical_sides;
 mod float_shrink_to_min;
 mod button_inline_flex_children;
 mod form_control_baseline;
+mod progress_meter_intrinsic_sizing;
 mod fragmentation;
 mod fragmentation_widows_orphans;
 mod grid_abspos_static_position;

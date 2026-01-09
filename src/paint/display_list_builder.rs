@@ -10271,6 +10271,195 @@ impl DisplayListBuilder {
         }
         true
       }
+      FormControlKind::Progress { value, max } => {
+        if matches!(control.appearance, Appearance::None) {
+          return true;
+        }
+        let track_rect = content_rect;
+        if track_rect.width() <= 0.0 || track_rect.height() <= 0.0 {
+          return true;
+        }
+
+        let mut track_color = style.background_color;
+        if track_color.is_transparent() {
+          track_color = Rgba::rgb(230, 230, 230);
+        }
+        if control.disabled {
+          track_color = track_color.with_alpha((track_color.a * 0.85).clamp(0.0, 1.0));
+        }
+
+        let track_radii = Self::resolve_clip_radii(
+          style,
+          &rects,
+          BackgroundBox::ContentBox,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        )
+        .clamped(track_rect.width(), track_rect.height());
+
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect: track_rect,
+            color: track_color,
+            radii: track_radii,
+          }));
+
+        let is_indeterminate = *value < 0.0 || !value.is_finite();
+        let fill_rect = if is_indeterminate {
+          Rect::from_xywh(
+            track_rect.x() + track_rect.width() * 0.25,
+            track_rect.y(),
+            (track_rect.width() * 0.5).max(0.0),
+            track_rect.height(),
+          )
+        } else {
+          let denom = if *max > 0.0 && max.is_finite() { *max } else { 1.0 };
+          let ratio = (*value / denom).clamp(0.0, 1.0);
+          Rect::from_xywh(
+            track_rect.x(),
+            track_rect.y(),
+            (track_rect.width() * ratio).max(0.0),
+            track_rect.height(),
+          )
+        };
+        if fill_rect.width() <= 0.0 {
+          return true;
+        }
+
+        let mut fill_radii = track_radii.clamped(fill_rect.width(), fill_rect.height());
+        if !is_indeterminate && fill_rect.width() + 0.01 < track_rect.width() {
+          fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+        }
+
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect: fill_rect,
+            color: muted_accent,
+            radii: fill_radii,
+          }));
+        true
+      }
+      FormControlKind::Meter {
+        value,
+        min,
+        max,
+        low,
+        high,
+        optimum,
+      } => {
+        if matches!(control.appearance, Appearance::None) {
+          return true;
+        }
+        let track_rect = content_rect;
+        if track_rect.width() <= 0.0 || track_rect.height() <= 0.0 {
+          return true;
+        }
+
+        let mut track_color = style.background_color;
+        if track_color.is_transparent() {
+          track_color = Rgba::rgb(230, 230, 230);
+        }
+        if control.disabled {
+          track_color = track_color.with_alpha((track_color.a * 0.85).clamp(0.0, 1.0));
+        }
+
+        let track_radii = Self::resolve_clip_radii(
+          style,
+          &rects,
+          BackgroundBox::ContentBox,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        )
+        .clamped(track_rect.width(), track_rect.height());
+
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect: track_rect,
+            color: track_color,
+            radii: track_radii,
+          }));
+
+        let span = (*max - *min).abs().max(0.0001);
+        let ratio = ((*value - *min) / span).clamp(0.0, 1.0);
+        let fill_rect = Rect::from_xywh(
+          track_rect.x(),
+          track_rect.y(),
+          (track_rect.width() * ratio).max(0.0),
+          track_rect.height(),
+        );
+        if fill_rect.width() <= 0.0 {
+          return true;
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum MeterZone {
+          Low,
+          Mid,
+          High,
+        }
+
+        let warn_color = Rgba::rgb(245, 169, 26);
+        let bad_color = Rgba::rgb(212, 43, 43);
+
+        let mut fill_color = muted_accent;
+        if let Some(optimum) = (*optimum).filter(|v| v.is_finite()) {
+          let mut low_val = (*low).unwrap_or(*min).clamp(*min, *max);
+          let mut high_val = (*high).unwrap_or(*max).clamp(*min, *max);
+          if low_val > high_val {
+            low_val = high_val;
+          }
+
+          let value_zone = if *value < low_val {
+            MeterZone::Low
+          } else if *value > high_val {
+            MeterZone::High
+          } else {
+            MeterZone::Mid
+          };
+          let optimum_zone = if optimum < low_val {
+            MeterZone::Low
+          } else if optimum > high_val {
+            MeterZone::High
+          } else {
+            MeterZone::Mid
+          };
+
+          fill_color = if value_zone == optimum_zone {
+            muted_accent
+          } else if optimum_zone == MeterZone::Mid {
+            warn_color
+          } else if optimum_zone == MeterZone::Low {
+            if value_zone == MeterZone::Mid { warn_color } else { bad_color }
+          } else if value_zone == MeterZone::Mid {
+            warn_color
+          } else {
+            bad_color
+          };
+
+          if control.disabled {
+            fill_color = fill_color.with_alpha((fill_color.a * 0.7).clamp(0.0, 1.0));
+          }
+        }
+
+        let mut fill_radii = track_radii.clamped(fill_rect.width(), fill_rect.height());
+        if fill_rect.width() + 0.01 < track_rect.width() {
+          fill_radii.top_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+          fill_radii.bottom_right = crate::paint::display_list::BorderRadius { x: 0.0, y: 0.0 };
+        }
+
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect: fill_rect,
+            color: fill_color,
+            radii: fill_radii,
+          }));
+        true
+      }
       FormControlKind::Color { value, raw } => {
         if matches!(control.appearance, Appearance::None) {
           // `appearance: none` leaves the author-provided background/border visible; suppress the

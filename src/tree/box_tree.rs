@@ -207,6 +207,30 @@ pub enum FormControlKind {
     /// Maximum value (defaults to 100; clamped to `min` when `max < min`)
     max: f32,
   },
+  /// Progress bar control (`<progress>`)
+  ///
+  /// When `value` is negative, the element is treated as "indeterminate" (no value attribute).
+  Progress {
+    /// Current value, clamped to `[0, max]` when determinate.
+    value: f32,
+    /// Maximum value (defaults to 1, clamped to a positive finite number).
+    max: f32,
+  },
+  /// Meter gauge control (`<meter>`)
+  Meter {
+    /// Current value, clamped to `[min, max]`.
+    value: f32,
+    /// Minimum value (defaults to 0).
+    min: f32,
+    /// Maximum value (defaults to 1; clamped to be `>= min`).
+    max: f32,
+    /// Low boundary for "suboptimal" range (optional, clamped into `[min, max]`).
+    low: Option<f32>,
+    /// High boundary for "suboptimal" range (optional, clamped into `[min, max]`).
+    high: Option<f32>,
+    /// Optimum point (optional, clamped into `[min, max]`).
+    optimum: Option<f32>,
+  },
   /// Color input (<input type=color>)
   Color {
     /// Resolved color value (defaults to black)

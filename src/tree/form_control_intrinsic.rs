@@ -193,6 +193,13 @@ pub(crate) fn intrinsic_content_size_for_form_control(
       let height = thumb_height.max(track_height);
       Size::new(width, height)
     }
+    FormControlKind::Progress { .. } | FormControlKind::Meter { .. } => {
+      // Browsers generally size these controls around 10em × 1em when the author doesn't specify
+      // explicit dimensions. Use font-size (em) directly rather than line-height so the intrinsic
+      // height tracks the element's font size even under large leading.
+      let em = style.font_size.max(0.0);
+      Size::new(em * 10.0, em)
+    }
     FormControlKind::Color { .. } => Size::new(
       (line_height * 2.0).max(char_width * 6.0),
       line_height.max(16.0_f32.min(line_height * 1.2)),
@@ -219,4 +226,3 @@ pub(crate) fn intrinsic_content_size_for_form_control(
     FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
   }
 }
-

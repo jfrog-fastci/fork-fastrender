@@ -4138,7 +4138,10 @@ fn build_appearance_none_form_control_fallback(
         push_text(&mut children, Arc::clone(&styled.styles), text.clone(), None);
       }
     }
-    FormControlKind::Checkbox { .. } | FormControlKind::Color { .. } => {}
+    FormControlKind::Checkbox { .. }
+    | FormControlKind::Color { .. }
+    | FormControlKind::Progress { .. }
+    | FormControlKind::Meter { .. } => {}
   }
 
   (children, suppress_dom_children, force_position_relative)
@@ -4817,6 +4820,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     && !tag.eq_ignore_ascii_case("textarea")
     && !tag.eq_ignore_ascii_case("select")
     && !tag.eq_ignore_ascii_case("button")
+    && !tag.eq_ignore_ascii_case("progress")
+    && !tag.eq_ignore_ascii_case("meter")
   {
     return None;
   }
@@ -4831,6 +4836,14 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   {
     return None;
   }
+  let parse_f32_attr = |node: &DomNode, name: &str| -> Option<f32> {
+    node
+      .get_attribute_ref(name)
+      .map(trim_ascii_whitespace)
+      .filter(|v| !v.is_empty())
+      .and_then(|v| v.parse::<f32>().ok())
+      .filter(|v| v.is_finite())
+  };
 
   let disabled = styled.node.get_attribute_ref("disabled").is_some();
   let inert = styled.node.get_attribute_ref("inert").is_some()
@@ -4893,6 +4906,84 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     } else {
       invalid = !element_ref.accessibility_is_valid();
     }
+  }
+
+  if tag.eq_ignore_ascii_case("progress") {
+    let max = parse_f32_attr(&styled.node, "max")
+      .filter(|v| *v > 0.0)
+      .unwrap_or(1.0);
+    let value = match styled.node.get_attribute_ref("value") {
+      None => -1.0,
+      Some(raw) => {
+        let parsed = trim_ascii_whitespace(raw)
+          .parse::<f32>()
+          .ok()
+          .filter(|v| v.is_finite());
+        match parsed {
+          Some(v) => v.clamp(0.0, max),
+          None => -1.0,
+        }
+      }
+    };
+
+    return Some(FormControl {
+      control: FormControlKind::Progress { value, max },
+      appearance,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled,
+      focused,
+      focus_visible,
+      required: false,
+      invalid: false,
+    });
+  }
+
+  if tag.eq_ignore_ascii_case("meter") {
+    let mut min = parse_f32_attr(&styled.node, "min").unwrap_or(0.0);
+    if !min.is_finite() {
+      min = 0.0;
+    }
+    let mut max = parse_f32_attr(&styled.node, "max").unwrap_or(1.0);
+    if !max.is_finite() {
+      max = 1.0;
+    }
+    if max < min {
+      max = min;
+    }
+
+    let value = parse_f32_attr(&styled.node, "value").unwrap_or(min).clamp(min, max);
+    let mut low = parse_f32_attr(&styled.node, "low").map(|v| v.clamp(min, max));
+    let mut high = parse_f32_attr(&styled.node, "high").map(|v| v.clamp(min, max));
+    if let (Some(low_v), Some(high_v)) = (low, high) {
+      if low_v > high_v {
+        low = Some(high_v);
+      }
+    }
+    let optimum = parse_f32_attr(&styled.node, "optimum").map(|v| v.clamp(min, max));
+
+    return Some(FormControl {
+      control: FormControlKind::Meter {
+        value,
+        min,
+        max,
+        low,
+        high,
+        optimum,
+      },
+      appearance,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled,
+      focused,
+      focus_visible,
+      required: false,
+      invalid: false,
+    });
   }
 
   if tag.eq_ignore_ascii_case("input") {
@@ -7302,6 +7393,68 @@ mod tests {
         FormControlKind::TextArea { rows, cols, .. } if rows == &Some(4) && cols == &Some(10)
       )),
       "rows/cols should be captured on textarea for intrinsic sizing"
+    );
+  }
+
+  #[test]
+  fn progress_and_meter_generate_form_control_replaced_boxes() {
+    let html = "<html><body>
+      <progress></progress>
+      <progress value=\"15\" max=\"10\"></progress>
+      <progress value=\"not-a-number\" max=\"10\"></progress>
+      <meter value=\"200\" min=\"0\" max=\"100\" low=\"80\" high=\"20\" optimum=\"50\"></meter>
+    </body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn collect_controls(node: &BoxNode, out: &mut Vec<FormControl>) {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          out.push(control.clone());
+        }
+      }
+      for child in node.children.iter() {
+        collect_controls(child, out);
+      }
+    }
+
+    let mut controls = Vec::new();
+    collect_controls(&box_tree.root, &mut controls);
+
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Progress { value, max } if *value < 0.0 && *max == 1.0
+      )),
+      "progress without value attribute should be represented as indeterminate"
+    );
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Progress { value, max } if *value == 10.0 && *max == 10.0
+      )),
+      "progress values should clamp into [0,max]"
+    );
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Progress { value, max } if *value < 0.0 && *max == 10.0
+      )),
+      "invalid progress value attribute should be treated as indeterminate"
+    );
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Meter { value, min, max, low, high, optimum }
+          if *value == 100.0
+            && *min == 0.0
+            && *max == 100.0
+            && *low == Some(20.0)
+            && *high == Some(20.0)
+            && *optimum == Some(50.0)
+      )),
+      "meter attributes should clamp and maintain low/high ordering"
     );
   }
 
