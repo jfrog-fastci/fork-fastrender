@@ -196,6 +196,7 @@ mod tests {
   use super::*;
   use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::RunLimits;
+  use std::sync::atomic::{AtomicBool, Ordering};
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
 
@@ -285,18 +286,26 @@ mod tests {
       vm: vm_js::Vm::new(vm_js::VmOptions::default()),
       heap: vm_js::Heap::new(limits),
     };
-
-    // Force microtask queueing to fail.
     let mut event_loop = EventLoop::<Host>::new();
     let mut queue_limits = QueueLimits::unbounded();
     queue_limits.max_pending_microtasks = 0;
     event_loop.set_queue_limits(queue_limits);
 
+    let ran1 = Arc::new(AtomicBool::new(false));
+    let ran2 = Arc::new(AtomicBool::new(false));
+
     let mut hooks = VmJsHostHooks::new(&mut event_loop);
 
     let (root1, job1) = {
-      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
-      let mut ctx = VmJsJobContext { host: &mut host, realm: None };
+      let ran = Arc::clone(&ran1);
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        ran.store(true, Ordering::Relaxed);
+        Ok(())
+      });
+      let mut ctx = VmJsJobContext {
+        host: &mut host,
+        realm: None,
+      };
       let root = job.add_root(&mut ctx, vm_js::Value::Null);
       (root, job)
     };
@@ -305,8 +314,15 @@ mod tests {
 
     // After a queueing error, additional jobs should be accepted but discarded during `finish`.
     let (root2, job2) = {
-      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| Ok(()));
-      let mut ctx = VmJsJobContext { host: &mut host, realm: None };
+      let ran = Arc::clone(&ran2);
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
+        ran.store(true, Ordering::Relaxed);
+        Ok(())
+      });
+      let mut ctx = VmJsJobContext {
+        host: &mut host,
+        realm: None,
+      };
       let root = job.add_root(&mut ctx, vm_js::Value::Undefined);
       (root, job)
     };
@@ -323,6 +339,19 @@ mod tests {
       }
     };
     assert!(msg.contains("max pending microtasks"), "msg={msg}");
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert!(
+      !ran1.load(Ordering::Relaxed),
+      "job should not run when it could not be enqueued"
+    );
+    assert!(
+      !ran2.load(Ordering::Relaxed),
+      "job should not run when it could not be enqueued"
+    );
 
     assert_eq!(host.heap.get_root(root1), None);
     assert_eq!(host.heap.get_root(root2), None);
