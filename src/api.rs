@@ -7739,6 +7739,7 @@ impl FastRender {
       html,
       DomParseOptions {
         compatibility_mode: self.dom_compat_mode,
+        ..Default::default()
       },
     )
   }

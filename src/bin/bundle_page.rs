@@ -1750,6 +1750,7 @@ fn crawl_document(
       html,
       DomParseOptions {
         compatibility_mode: render.dom_compat_mode,
+        ..Default::default()
       },
     )?;
     let viewport = Size::new(render.viewport.0 as f32, render.viewport.1 as f32);

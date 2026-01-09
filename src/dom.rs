@@ -92,6 +92,11 @@ impl Default for DomCompatibilityMode {
 /// Options for DOM parsing.
 #[derive(Debug, Clone, Copy)]
 pub struct DomParseOptions {
+  /// Whether to enable HTML parsing semantics that assume JavaScript is enabled.
+  ///
+  /// This maps directly to `html5ever::tree_builder::TreeBuilderOpts::scripting_enabled` and
+  /// affects parsing of elements such as `<noscript>`.
+  pub scripting_enabled: bool,
   /// Optional compatibility mutations applied after HTML parsing.
   pub compatibility_mode: DomCompatibilityMode,
 }
@@ -99,16 +104,33 @@ pub struct DomParseOptions {
 impl Default for DomParseOptions {
   fn default() -> Self {
     Self {
+      scripting_enabled: false,
       compatibility_mode: DomCompatibilityMode::Standard,
     }
   }
 }
 
 impl DomParseOptions {
+  /// Construct parse options with explicit scripting mode.
+  pub fn with_scripting_enabled(scripting_enabled: bool) -> Self {
+    Self {
+      scripting_enabled,
+      ..Default::default()
+    }
+  }
+
+  /// Enable JavaScript parsing semantics.
+  ///
+  /// Equivalent to `DomParseOptions::with_scripting_enabled(true)`.
+  pub fn javascript_enabled() -> Self {
+    Self::with_scripting_enabled(true)
+  }
+
   /// Enable compatibility DOM mutations (e.g., JS-managed class flips).
   pub fn compatibility() -> Self {
     Self {
       compatibility_mode: DomCompatibilityMode::Compatibility,
+      ..Default::default()
     }
   }
 }
@@ -2145,7 +2167,7 @@ impl<R: io::Read> io::Read for DeadlineCheckedRead<R> {
 pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<DomNode> {
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
-      scripting_enabled: false,
+      scripting_enabled: options.scripting_enabled,
       ..Default::default()
     },
     ..Default::default()
@@ -13352,6 +13374,44 @@ mod tests {
     }
     assert!(contains_text(&dom, "Example Domain"));
     assert!(contains_text(&dom, "documentation examples"));
+  }
+
+  #[test]
+  fn parse_html_with_scripting_disabled_parses_noscript_children_as_dom() {
+    let html =
+      "<!doctype html><html><body><noscript id='ns'><p>fallback</p></noscript></body></html>";
+    let dom =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
+    let noscript = find_element_by_id(&dom, "ns").expect("noscript element");
+    assert!(
+      noscript.children.iter().any(|child| {
+        matches!(&child.node_type, DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p"))
+      }),
+      "<noscript> should parse its contents as normal DOM when scripting is disabled"
+    );
+  }
+
+  #[test]
+  fn parse_html_with_scripting_enabled_parses_noscript_children_as_text() {
+    let html =
+      "<!doctype html><html><body><noscript id='ns'><p>fallback</p></noscript></body></html>";
+    let dom =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(true)).expect("parse");
+    let noscript = find_element_by_id(&dom, "ns").expect("noscript element");
+    assert_eq!(
+      noscript.children.len(),
+      1,
+      "<noscript> should have a single text child when scripting is enabled"
+    );
+    match &noscript.children[0].node_type {
+      DomNodeType::Text { content } => {
+        assert!(
+          content.contains("<p>fallback</p>"),
+          "noscript text should contain raw HTML: {content:?}"
+        );
+      }
+      other => panic!("expected noscript child to be text, got {other:?}"),
+    }
   }
 
   #[test]
