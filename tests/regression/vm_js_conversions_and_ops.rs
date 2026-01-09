@@ -58,10 +58,28 @@ fn tonumber_parses_whitespace_radixes_and_infinity() {
   let value = rt.exec_script(r#"+'0x10' === 16"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 
+  let value = rt.exec_script(r#"+'+0x10' === 16"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt.exec_script(r#"+'-0x10' === -16"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
   let value = rt.exec_script(r#"+'0b10' === 2"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 
+  let value = rt.exec_script(r#"+'+0b10' === 2"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt.exec_script(r#"+'-0b10' === -2"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
   let value = rt.exec_script(r#"+'0o10' === 8"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt.exec_script(r#"+'+0o10' === 8"#).unwrap();
+  assert_eq!(value, Value::Bool(true));
+
+  let value = rt.exec_script(r#"+'-0o10' === -8"#).unwrap();
   assert_eq!(value, Value::Bool(true));
 
   // Infinity parsing is case-sensitive in ECMAScript.
