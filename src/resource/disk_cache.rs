@@ -4574,7 +4574,7 @@ mod tests {
                 let line = line.trim_end_matches('\r');
                 let head = "origin:";
                 if line.len() >= head.len() && line[..head.len()].eq_ignore_ascii_case(head) {
-                  Some(line[head.len()..].trim().to_string())
+                  Some(super::super::trim_http_whitespace(&line[head.len()..]).to_string())
                 } else {
                   None
                 }

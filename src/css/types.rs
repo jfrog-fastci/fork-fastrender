@@ -131,7 +131,7 @@ impl CssParseError {
       cache.ensure_index(css_source);
       cache
         .line_slice(css_source, line)
-        .map(|line| line.trim_end().to_string())
+        .map(|line| line.trim_end_matches(is_ascii_whitespace_css).to_string())
     });
     Self {
       message: message.into(),
@@ -2348,6 +2348,14 @@ mod tests {
       FontSourceFormat::Unknown(name) => assert_eq!(name, format!("{nbsp}woff2")),
       other => panic!("expected Unknown format hint, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_css_parse_error_snippet_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let css = format!("div {{ color: red; }}{nbsp}\nspan {{}}");
+    let err = CssParseError::with_snippet("msg", 1, 1, &css);
+    assert_eq!(err.snippet, Some(format!("div {{ color: red; }}{nbsp}")));
   }
 
   fn rules_contain_selector(rules: &[CssRule], selector: &str) -> bool {

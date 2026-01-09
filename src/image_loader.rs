@@ -7634,11 +7634,16 @@ mod tests {
     String::from_utf8_lossy(&buf).to_string()
   }
 
+  fn trim_http_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+  }
+
   fn extract_range_header(req: &str) -> Option<String> {
     req.lines().find_map(|line| {
+      let line = line.trim_end_matches('\r');
       let (name, value) = line.split_once(':')?;
-      if name.trim().eq_ignore_ascii_case("range") {
-        Some(value.trim().to_string())
+      if trim_http_whitespace(name).eq_ignore_ascii_case("range") {
+        Some(trim_http_whitespace(value).to_string())
       } else {
         None
       }
@@ -7646,10 +7651,10 @@ mod tests {
   }
 
   fn parse_range_end(range: &str) -> Option<usize> {
-    let range = range.trim();
+    let range = trim_http_whitespace(range);
     let range = range.strip_prefix("bytes=")?;
     let (_start, end) = range.split_once('-')?;
-    end.trim().parse::<usize>().ok()
+    trim_http_whitespace(end).parse::<usize>().ok()
   }
 
   #[test]
