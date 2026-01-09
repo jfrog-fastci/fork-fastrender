@@ -34,7 +34,7 @@ pub trait VmJsEngineHost {
 ///
 /// FastRender stores the realm that a job was enqueued with so the eventual evaluator integration
 /// can re-establish the correct realm/settings object when running the job.
-pub struct VmJsJobContext<'a, Host> {
+pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {
   /// The host value passed to [`EventLoop`] tasks/microtasks.
   pub host: &'a mut Host,
   /// The realm the job was enqueued with (opaque identifier from `vm-js`).
@@ -49,8 +49,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    let mut scope = heap.scope();
-    vm.call(&mut scope, callee, this, args)
+    heap.call(vm, callee, this, args)
   }
 
   fn construct(
@@ -154,6 +153,16 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       }
       self.enqueue_error = Some(err);
     }
+  }
+
+  fn host_call_job_callback(
+    &mut self,
+    ctx: &mut dyn vm_js::VmJobContext,
+    callback: &vm_js::JobCallback,
+    this_argument: vm_js::Value,
+    arguments: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    ctx.call(vm_js::Value::Object(callback.callback()), this_argument, arguments)
   }
 
   fn host_promise_rejection_tracker(

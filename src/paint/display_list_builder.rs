@@ -3158,6 +3158,9 @@ impl DisplayListBuilder {
       .list
       .push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: context.z_index,
+        // `backface-visibility` plane culling is represented via separate
+        // `PushBackfaceVisibility`/`PopBackfaceVisibility` display items, not as an ad-hoc stacking
+        // context boundary.
         creates_stacking_context: true,
         is_root,
         establishes_backdrop_root,
