@@ -42,6 +42,56 @@ fn identity_and_selectors() {
 }
 
 #[test]
+fn element_scoped_query_selectors_do_not_include_the_scope_element() {
+  let dom = make_dom(
+    r#"<!doctype html><html><body><div id="p" class="x"><span id="a" class="x"></span><span id="b" class="x"></span></div></body></html>"#,
+  );
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const parent = document.getElementById("p");
+            const a = document.getElementById("a");
+            const b = document.getElementById("b");
+            if (!parent || !a || !b) return "missing";
+
+            const list = parent.querySelectorAll(".x");
+            if (list.length !== 2) return "bad_len:" + String(list.length);
+            if (list[0] !== a || list[1] !== b) return "bad_identity";
+
+            const first = parent.querySelector(".x");
+            if (first !== a) return "bad_qs";
+
+            const none = a.querySelector(".x");
+            if (none !== null) return "bad_descend";
+
+            // Invalid selector should throw SyntaxError.
+            try {
+              parent.querySelectorAll("[");
+              return "no_throw";
+            } catch (e) {
+              return String(e && e.name);
+            }
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "SyntaxError", "element querySelector(All) failed: {outcome}");
+  });
+}
+
+#[test]
 fn element_creation_append_and_text_content() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 
@@ -251,15 +301,15 @@ fn node_remove_detaches_from_dom() {
           y.remove();
 
           // Calling remove on a detached node should be a no-op.
-          const detached = document.createElement("div");
-          detached.remove();
-
-          const afterLookup = document.getElementById("y");
-          const afterLookupOk = afterLookup == null;
-          const yParentOk = y.parentNode == null;
-          const detachedParentOk = detached.parentNode == null;
-          return [afterLookupOk, yParentOk, detachedParentOk].join(",");
-        })()
+           const detached = document.createElement("div");
+           detached.remove();
+ 
+           const afterLookup = document.getElementById("y");
+           const afterLookupOk = afterLookup === null;
+           const yParentOk = y.parentNode === null;
+           const detachedParentOk = detached.parentNode === null;
+           return [afterLookupOk, yParentOk, detachedParentOk].join(",");
+         })()
       "#,
       )
       .unwrap();

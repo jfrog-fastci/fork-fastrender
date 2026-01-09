@@ -36,6 +36,77 @@ const DOM_EXCEPTION_SHIM: &str = r#"
   g.__fastrender_throw_dom_exception = function (name, message) {
     throw new g.DOMException(message, name);
   };
+ })();
+ "#;
+
+// rquickjs maps Rust `Option<T>` return values to `undefined` when `None`. Many DOM APIs are
+// specified to return `null` (e.g. `querySelector`, `getElementById`, `parentNode`). Patch the
+// prototype so callers observe spec-shaped `null` instead of `undefined`.
+const DOM_NULLABLE_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  function nullify(v) { return v === undefined ? null : v; }
+
+  function wrapMethod(proto, name) {
+    try {
+      var orig = proto[name];
+      if (typeof orig !== "function") return;
+      proto[name] = function () {
+        return nullify(orig.apply(this, arguments));
+      };
+    } catch (_e) {}
+  }
+
+  function findProtoGetter(obj, name) {
+    var proto = Object.getPrototypeOf(obj);
+    while (proto) {
+      var desc = Object.getOwnPropertyDescriptor(proto, name);
+      if (desc && typeof desc.get === "function") return desc.get;
+      proto = Object.getPrototypeOf(proto);
+    }
+    return null;
+  }
+
+  // Patch nullable accessors by defining an own-property getter on the node wrapper object. This
+  // avoids relying on the underlying prototype descriptor being configurable.
+  g.__fastrender_patch_node_nullables = function (obj) {
+    try {
+      if (!obj) return;
+      function shadowGetter(name) {
+        var getter = findProtoGetter(obj, name);
+        if (!getter) return;
+        Object.defineProperty(obj, name, {
+          get: function () { return nullify(getter.call(this)); },
+          enumerable: true,
+          configurable: true,
+        });
+      }
+
+      // Node traversal.
+      shadowGetter("parentNode");
+      shadowGetter("firstChild");
+      shadowGetter("lastChild");
+      shadowGetter("previousSibling");
+      shadowGetter("nextSibling");
+
+      // Document getters.
+      shadowGetter("documentElement");
+      shadowGetter("head");
+      shadowGetter("body");
+      shadowGetter("currentScript");
+    } catch (_e) {}
+  };
+
+  try {
+    if (!g.document) return;
+    var proto = Object.getPrototypeOf(g.document);
+    if (!proto) return;
+
+    // Nullable methods.
+    wrapMethod(proto, "getElementById");
+    wrapMethod(proto, "getAttribute");
+    wrapMethod(proto, "querySelector");
+  } catch (_e) {}
 })();
 "#;
 
@@ -113,7 +184,15 @@ pub fn install_dom_bindings<'js>(
 
   // Create the `document` global.
   let document_obj = state.wrap_node(ctx.clone(), root)?;
-  ctx.globals().set("document", document_obj)?;
+  ctx.globals().set("document", document_obj.clone())?;
+  ctx.eval::<(), _>(DOM_NULLABLE_SHIM)?;
+  if let Ok(Some(patch_fn)) =
+    ctx.globals().get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
+  {
+    // Best-effort; if the shim fails to patch, callers will still see `undefined` which most
+    // scripts treat as nullish.
+    let _ = patch_fn.call::<_, ()>((document_obj,));
+  }
 
   Ok(())
 }
@@ -145,6 +224,11 @@ impl DomState {
       },
     )?;
     let obj: Object<'js> = inst.into_inner();
+    if let Ok(Some(patch_fn)) =
+      ctx.globals().get::<_, Option<Function<'js>>>("__fastrender_patch_node_nullables")
+    {
+      let _ = patch_fn.call::<_, ()>((obj.clone(),));
+    }
     let weakref_obj = weakref_new(&ctx, obj.clone())?;
     cache.set(key.as_str(), weakref_obj)?;
     register_cache_finalizer(&ctx, key.as_str(), &obj)?;
@@ -410,27 +494,61 @@ impl Node {
     ctx: Ctx<'js>,
     selectors: String,
   ) -> JsResult<Option<Object<'js>>> {
-    self.ensure_document(ctx.clone())?;
-    let result = {
+    let (scope, filter_self) = {
+      let dom = self.state.dom.borrow();
+      match &dom.node(self.node_id).kind {
+        NodeKind::Document { .. } => (None, false),
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), true),
+        _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
+      }
+    };
+
+    // `dom2` selector engines treat the scope element itself as a candidate; `Element#querySelector`
+    // must only consider descendants. Filter `self.node_id` out of results when scoping to an
+    // element-like node.
+    if filter_self {
+      let ids = {
+        let mut dom = self.state.dom.borrow_mut();
+        dom
+          .query_selector_all(&selectors, scope)
+          .map_err(|e| dom_exception_to_js(&ctx, e))?
+      };
+      let found = ids.into_iter().find(|id| *id != self.node_id);
+      return found.map(|id| self.state.wrap_node(ctx, id)).transpose();
+    }
+
+    let found = {
       let mut dom = self.state.dom.borrow_mut();
       dom
-        .query_selector(&selectors, None)
+        .query_selector(&selectors, scope)
         .map_err(|e| dom_exception_to_js(&ctx, e))?
     };
-    result.map(|id| self.state.wrap_node(ctx, id)).transpose()
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   #[qjs(rename = "querySelectorAll")]
-  fn query_selector_all<'js>(&self, ctx: Ctx<'js>, selectors: String) -> JsResult<Vec<Object<'js>>> {
-    self.ensure_document(ctx.clone())?;
+  fn query_selector_all<'js>(
+    &self,
+    ctx: Ctx<'js>,
+    selectors: String,
+  ) -> JsResult<Vec<Object<'js>>> {
+    let (scope, filter_self) = {
+      let dom = self.state.dom.borrow();
+      match &dom.node(self.node_id).kind {
+        NodeKind::Document { .. } => (None, false),
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), true),
+        _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
+      }
+    };
     let ids = {
       let mut dom = self.state.dom.borrow_mut();
       dom
-        .query_selector_all(&selectors, None)
+        .query_selector_all(&selectors, scope)
         .map_err(|e| dom_exception_to_js(&ctx, e))?
     };
     ids
       .into_iter()
+      .filter(|id| !filter_self || *id != self.node_id)
       .map(|id| self.state.wrap_node(ctx.clone(), id))
       .collect()
   }
