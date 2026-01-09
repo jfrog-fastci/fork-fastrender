@@ -62,6 +62,10 @@ Browser-related environment variables live in [env-vars.md](env-vars.md). Notabl
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the
   `browser` process. This is applied at process start (and may be unsupported on some platforms).
+- **Test-only headless hooks** (used by integration tests / CI):
+  - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – exit successfully before creating a window.
+  - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – run a minimal end-to-end UI↔worker headless smoke test and
+    print `HEADLESS_SMOKE_OK` on success (no winit/wgpu init).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).

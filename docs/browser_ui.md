@@ -33,8 +33,13 @@ scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --b
 The `browser` binary also supports an in-process, best-effort address-space cap via
 `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
 
-For CI environments without a display/GPU, the `browser` binary also supports a test-only headless
-smoke mode (`FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`; see [env-vars.md](env-vars.md)).
+For CI environments without a display/GPU, the `browser` entrypoint provides **test-only** headless
+hooks to exercise startup and UI↔worker wiring without creating a window:
+
+- `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1`
+- `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` (prints `HEADLESS_SMOKE_OK` on success)
+
+See [env-vars.md](env-vars.md) for details.
 
 ## Code layout
 
