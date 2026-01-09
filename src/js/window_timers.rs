@@ -194,6 +194,7 @@ fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Erro
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -275,6 +276,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
 fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -301,6 +303,7 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
 fn set_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -380,6 +383,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
 fn clear_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -405,6 +409,7 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
 fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: vm_js::GcObject,
   this: Value,
   args: &[Value],

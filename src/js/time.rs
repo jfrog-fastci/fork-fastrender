@@ -227,6 +227,7 @@ fn with_time_context<T>(
 fn date_now_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
@@ -242,6 +243,7 @@ fn date_now_native(
 fn performance_now_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],

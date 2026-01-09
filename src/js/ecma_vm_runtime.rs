@@ -551,24 +551,27 @@ impl FastRenderJobContext {
 }
 
 impl VmJobContext for FastRenderJobContext {
-  fn heap(&self) -> &Heap {
-    // SAFETY: The context is only constructed while the host is alive.
-    unsafe { &*self.heap }
-  }
-
-  fn heap_mut(&mut self) -> &mut Heap {
-    unsafe { &mut *self.heap }
-  }
-
-  fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> std::result::Result<Value, VmError> {
+  fn call(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
     // SAFETY: `FastRenderJobContext` is only used while `EcmaVmRuntime` is alive. This uses raw
     // pointers so the VM can be passed as both a `VmJobContext` and `VmHostHooks` implementation in
     // `Job::run`.
-    unsafe { (&mut *self.heap).call(&mut *self.vm, callee, this, args) }
+    unsafe {
+      let heap = &mut *self.heap;
+      let vm = &mut *self.vm;
+      let mut scope = heap.scope();
+      vm.call(&mut scope, callee, this, args)
+    }
   }
 
   fn construct(
     &mut self,
+    _host: &mut dyn VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
@@ -595,20 +598,19 @@ struct HeapRootContext<'a> {
 }
 
 impl VmJobContext for HeapRootContext<'_> {
-  fn heap(&self) -> &Heap {
-    self.heap
-  }
-
-  fn heap_mut(&mut self) -> &mut Heap {
-    self.heap
-  }
-
-  fn call(&mut self, _callee: Value, _this: Value, _args: &[Value]) -> std::result::Result<Value, VmError> {
+  fn call(
+    &mut self,
+    _host: &mut dyn VmHostHooks,
+    _callee: Value,
+    _this: Value,
+    _args: &[Value],
+  ) -> std::result::Result<Value, VmError> {
     Err(VmError::Unimplemented("HeapRootContext::call"))
   }
 
   fn construct(
     &mut self,
+    _host: &mut dyn VmHostHooks,
     _callee: Value,
     _args: &[Value],
     _new_target: Value,
@@ -717,6 +719,7 @@ fn throw_type_error(scope: &mut Scope<'_>, message: &str) -> VmError {
 fn native_queue_microtask<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -769,6 +772,7 @@ fn native_queue_microtask<State: 'static>(
 fn native_set_timeout<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -872,6 +876,7 @@ fn native_set_timeout<State: 'static>(
 fn native_clear_timeout<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -892,6 +897,7 @@ fn native_clear_timeout<State: 'static>(
 fn native_set_interval<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -993,6 +999,7 @@ fn native_set_interval<State: 'static>(
 fn native_clear_interval<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -1013,6 +1020,7 @@ fn native_clear_interval<State: 'static>(
 fn native_promise_resolve<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   _args: &[Value],
@@ -1054,6 +1062,7 @@ fn native_promise_resolve<State: 'static>(
 fn native_promise_then<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -1076,8 +1085,8 @@ fn native_promise_then<State: 'static>(
     Value::Object((*host_ptr).realm.global_object())
   });
 
-  let mut job = Job::new(JobKind::Promise, move |ctx, _hooks| {
-    ctx.call(callback, global_this, &[]).map(|_| ())
+  let mut job = Job::new(JobKind::Promise, move |ctx, hooks| {
+    ctx.call(hooks, callback, global_this, &[]).map(|_| ())
   });
   job.push_root(callback_root);
 
@@ -1187,6 +1196,7 @@ mod tests {
   fn log_sync(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1200,6 +1210,7 @@ mod tests {
   fn log_micro(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1213,6 +1224,7 @@ mod tests {
   fn log_timeout(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
+    _host: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1315,6 +1327,7 @@ mod tests {
     fn set_interval_id(
       _vm: &mut Vm,
       _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       args: &[Value],
@@ -1330,6 +1343,7 @@ mod tests {
     fn interval_cb(
       vm: &mut Vm,
       scope: &mut Scope<'_>,
+      _host: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       _args: &[Value],

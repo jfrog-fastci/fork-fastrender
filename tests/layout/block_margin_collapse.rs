@@ -334,6 +334,133 @@ fn parent_last_child_margin_collapses() {
 }
 
 #[test]
+fn border_prevents_parent_last_child_margin_collapse() {
+  let mut child_style = block_style_with_height(Some(10.0));
+  child_style.margin_bottom = Some(Length::px(20.0));
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.border_bottom_style = BorderStyle::Solid;
+  outer_style.border_bottom_width = Length::px(10.0);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![child],
+  );
+
+  let next = block_with_height_and_margins(10.0, 0.0, 0.0);
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer, next],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let outer_fragment = &fragment.children[0];
+  let next_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.height(),
+    40.0,
+    "expected border-bottom to keep last child's margin inside the parent (height=child+margin+border)",
+  );
+  assert_approx(
+    next_fragment.bounds.y() - outer_fragment.bounds.max_y(),
+    0.0,
+    "expected border-bottom to prevent parent/last-child margin collapse affecting sibling placement",
+  );
+}
+
+#[test]
+fn padding_prevents_parent_last_child_margin_collapse() {
+  let mut child_style = block_style_with_height(Some(10.0));
+  child_style.margin_bottom = Some(Length::px(20.0));
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.padding_bottom = Length::px(10.0);
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![child],
+  );
+
+  let next = block_with_height_and_margins(10.0, 0.0, 0.0);
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer, next],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let outer_fragment = &fragment.children[0];
+  let next_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.height(),
+    40.0,
+    "expected padding-bottom to keep last child's margin inside the parent (height=child+margin+padding)",
+  );
+  assert_approx(
+    next_fragment.bounds.y() - outer_fragment.bounds.max_y(),
+    0.0,
+    "expected padding-bottom to prevent parent/last-child margin collapse affecting sibling placement",
+  );
+}
+
+#[test]
+fn bfc_prevents_parent_last_child_margin_collapse() {
+  let mut child_style = block_style_with_height(Some(10.0));
+  child_style.margin_bottom = Some(Length::px(20.0));
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let mut outer_style = block_style_with_height(None);
+  outer_style.overflow_y = Overflow::Hidden;
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Block,
+    vec![child],
+  );
+
+  let next = block_with_height_and_margins(10.0, 0.0, 0.0);
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer, next],
+  );
+  let tree = BoxTree::new(root);
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let outer_fragment = &fragment.children[0];
+  let next_fragment = &fragment.children[1];
+
+  assert_approx(
+    outer_fragment.bounds.height(),
+    30.0,
+    "expected BFC root to keep last child's margin inside the parent (height=child+margin)",
+  );
+  assert_approx(
+    next_fragment.bounds.y() - outer_fragment.bounds.max_y(),
+    0.0,
+    "expected BFC root to prevent parent/last-child margin collapse affecting sibling placement",
+  );
+}
+
+#[test]
 fn collapse_through_empty_blocks() {
   let red = block_with_height_and_margins(10.0, 0.0, 10.0);
   let empty = empty_block_with_margins(20.0, 30.0);

@@ -144,28 +144,28 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
 }
 
 impl vm_js::VmJobContext for WindowRealm {
-  fn heap(&self) -> &Heap {
-    self.heap()
-  }
-
-  fn heap_mut(&mut self) -> &mut Heap {
-    self.heap_mut()
-  }
-
-  fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+  fn call(
+    &mut self,
+    host: &mut dyn vm_js::VmHostHooks,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     let (vm, heap) = self.vm_and_heap_mut();
-    heap.call(vm, callee, this, args)
+    let mut scope = heap.scope();
+    vm.call_with_host(&mut scope, host, callee, this, args)
   }
 
   fn construct(
     &mut self,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
-    vm.construct(&mut scope, callee, args, new_target)
+    vm.construct_with_host(&mut scope, host, callee, args, new_target)
   }
 
   fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
@@ -270,6 +270,7 @@ impl Drop for ConsoleSinkGuard {
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn vm_js::VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],

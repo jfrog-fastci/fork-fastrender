@@ -41,7 +41,6 @@ pub trait VmJsEngineHost {
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
 ///
 /// `vm-js` models job execution via [`vm_js::VmJobContext`], which provides:
-/// - access to the [`vm_js::Heap`] for Promise state machines and persistent roots,
 /// - `call` / `construct` for invoking JavaScript values, and
 /// - `add_root` / `remove_root` for keeping GC handles alive while queued.
 ///
@@ -61,22 +60,15 @@ impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
 }
 
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
-  fn heap(&self) -> &vm_js::Heap {
-    self.host.vm_js_heap()
-  }
-
-  fn heap_mut(&mut self) -> &mut vm_js::Heap {
-    let (_, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap
-  }
-
   fn call(
     &mut self,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     this: vm_js::Value,
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    let mut scope = heap.scope();
     // `vm-js` jobs are executed as host work; if a realm is provided, run the call under an
     // execution context bound to that realm.
     if let Some(realm) = self.realm {
@@ -84,14 +76,15 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      heap.call(&mut vm, callee, this, args)
+      vm.call_with_host(&mut scope, host, callee, this, args)
     } else {
-      heap.call(vm, callee, this, args)
+      vm.call_with_host(&mut scope, host, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
+    host: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     args: &[vm_js::Value],
     new_target: vm_js::Value,
@@ -103,9 +96,9 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      vm.construct(&mut scope, callee, args, new_target)
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     } else {
-      vm.construct(&mut scope, callee, args, new_target)
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     }
   }
 
@@ -209,7 +202,12 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     this_argument: vm_js::Value,
     arguments: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
-    ctx.call(vm_js::Value::Object(callback.callback()), this_argument, arguments)
+    ctx.call(
+      self,
+      vm_js::Value::Object(callback.callback()),
+      this_argument,
+      arguments,
+    )
   }
 
   fn host_promise_rejection_tracker(
@@ -239,6 +237,7 @@ mod tests {
   fn noop(
     _vm: &mut vm_js::Vm,
     _scope: &mut vm_js::Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],
@@ -249,6 +248,7 @@ mod tests {
   fn record_callback_call(
     _vm: &mut vm_js::Vm,
     _scope: &mut vm_js::Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],
