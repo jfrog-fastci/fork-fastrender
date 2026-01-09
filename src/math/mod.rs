@@ -5566,18 +5566,19 @@ mod tests {
     };
     let root_layout = ctx.layout_node(&root_node, &math_style, &style);
 
-    let radical_start_x = root_layout
-      .fragments
-      .iter()
-      .filter_map(|frag| match frag {
-        MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
-        MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
-        MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
-        MathFragment::Line { from, to, .. } => {
-          (from.y.min(to.y) >= 0.0).then_some(from.x.min(to.x))
-        }
-      })
-      .fold(f32::INFINITY, |acc, x| acc.min(x));
+      let radical_start_x = root_layout
+        .fragments
+        .iter()
+        .filter_map(|frag| match frag {
+          MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
+          MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
+          MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
+          MathFragment::StrokeRoundedRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
+          MathFragment::Line { from, to, .. } => {
+            (from.y.min(to.y) >= 0.0).then_some(from.x.min(to.x))
+          }
+        })
+        .fold(f32::INFINITY, |acc, x| acc.min(x));
 
     assert!(
       radical_start_x.is_finite(),
