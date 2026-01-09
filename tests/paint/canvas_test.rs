@@ -155,6 +155,54 @@ fn test_draw_rect_at_origin() {
 }
 
 #[test]
+fn opaque_axis_aligned_rect_fills_are_pixel_snapped() {
+  let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
+
+  // This intentionally uses a fractional height similar to the Berkeley fixture header:
+  // `padding: 0.3rem` on a 16px root font size yields box edges at 51.6px.
+  //
+  // Anti-aliased fills produce a 1px seam at the bottom edge when the box is immediately followed
+  // by another background. Our canvas rect fill path snaps opaque, axis-aligned fills to device
+  // pixels to avoid this.
+  canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 10.0, 51.6), Rgba::rgb(0, 38, 118));
+  // Simulate the adjacent content section background that starts at the same fractional boundary.
+  canvas.draw_rect(Rect::from_xywh(0.0, 51.6, 10.0, 8.4), Rgba::WHITE);
+
+  let p51 = canvas.pixmap().pixel(0, 51).unwrap();
+  assert_eq!(
+    (p51.red(), p51.green(), p51.blue(), p51.alpha()),
+    (0, 38, 118, 255),
+    "expected the last covered row to be fully filled (no blended seam)"
+  );
+
+  let p52 = canvas.pixmap().pixel(0, 52).unwrap();
+  assert_eq!(
+    (p52.red(), p52.green(), p52.blue(), p52.alpha()),
+    (255, 255, 255, 255),
+    "expected the fill not to extend past the snapped bounds"
+  );
+}
+
+#[test]
+fn opaque_axis_aligned_rect_fills_inside_clips_are_pixel_snapped() {
+  let mut canvas = Canvas::new(10, 60, Rgba::WHITE).unwrap();
+  canvas
+    .set_clip(Rect::from_xywh(0.0, 0.6, 10.0, 59.0))
+    .unwrap();
+
+  // When an opaque rect is fully inside the clip bounds, we still want to pixel-snap its edges.
+  // This matches how Chrome avoids fractional-edge seams for UI elements inside scrolling/clip
+  // containers (e.g. the Berkeley hero video controls, which are clipped to the hero media box).
+  canvas.draw_rect(Rect::from_xywh(2.0, 10.6, 6.0, 5.0), Rgba::rgb(0, 38, 118));
+
+  let p10 = canvas.pixmap().pixel(2, 10).unwrap();
+  assert_eq!((p10.red(), p10.green(), p10.blue(), p10.alpha()), (255, 255, 255, 255));
+
+  let p11 = canvas.pixmap().pixel(2, 11).unwrap();
+  assert_eq!((p11.red(), p11.green(), p11.blue(), p11.alpha()), (0, 38, 118, 255));
+}
+
+#[test]
 fn test_draw_multiple_rects() {
   let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
 

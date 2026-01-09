@@ -15209,6 +15209,52 @@ mod tests {
   }
 
   #[test]
+  fn flex_gap_applies_when_auto_margins_absorb_free_space() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.grid_column_gap = Length::px(16.0);
+    container_style.grid_column_gap_is_normal = false;
+    container_style.grid_row_gap = Length::px(0.0);
+    container_style.grid_row_gap_is_normal = false;
+
+    let item1 = BoxNode::new_block(
+      create_item_style(100.0, 50.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    let item2 = BoxNode::new_block(
+      create_item_style(100.0, 50.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut item3_style = ComputedStyle::default();
+    item3_style.width = Some(Length::px(100.0));
+    item3_style.height = Some(Length::px(50.0));
+    item3_style.width_keyword = None;
+    item3_style.height_keyword = None;
+    item3_style.margin_left = None; // margin-left: auto
+    let item3 = BoxNode::new_block(Arc::new(item3_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item1, item2, item3],
+    );
+
+    let constraints = LayoutConstraints::definite(500.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    // Gap should apply between all items, even when auto margins absorb the remaining free space.
+    assert_eq!(fragment.children[0].bounds.x(), 0.0);
+    assert_eq!(fragment.children[1].bounds.x(), 116.0); // 100 + 16 gap
+    assert_eq!(fragment.children[2].bounds.x(), 400.0); // flush-right: 500 - 100
+  }
+
+  #[test]
   fn test_align_items_center() {
     let fc = FlexFormattingContext::new();
 

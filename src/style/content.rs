@@ -1468,24 +1468,89 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
   }
 
   let mut result = String::new();
-  let mut escaped = false;
 
+  // CSS escape rules apply inside string tokens:
+  // - `\<hex>{1,6} <whitespace>?` decodes a codepoint (Font Awesome uses this heavily for icons,
+  //   e.g. `content: "\f04c"`).
+  // - `\` followed by a newline escapes the newline (produces nothing).
+  // - Otherwise the backslash escapes the next codepoint.
+  //
+  // Note: We keep the legacy `\n`/`\t`/`\r` shorthands used by existing tests, even though they are
+  // not standard CSS escapes.
   while let Some(c) = chars.next() {
-    if escaped {
+    if c == quote {
+      return Some(result);
+    }
+
+    if c != '\\' {
+      result.push(c);
+      continue;
+    }
+
+    let Some(&next) = chars.peek() else {
+      result.push(char::REPLACEMENT_CHARACTER);
+      break;
+    };
+
+    // Line continuation (CSS Syntax: escaped newline).
+    match next {
+      '\n' | '\u{000C}' => {
+        chars.next();
+        continue;
+      }
+      '\r' => {
+        chars.next();
+        if matches!(chars.peek().copied(), Some('\n')) {
+          chars.next();
+        }
+        continue;
+      }
+      _ => {}
+    }
+
+    // Hex escape (`\f04c`, `\26 `, etc).
+    if next.is_ascii_hexdigit() {
+      let mut digits = 0usize;
+      let mut value: u32 = 0;
+      while digits < 6 {
+        let Some(&ch) = chars.peek() else {
+          break;
+        };
+        if !ch.is_ascii_hexdigit() {
+          break;
+        }
+        let digit = ch.to_digit(16).unwrap();
+        value = (value << 4) | digit;
+        digits += 1;
+        chars.next();
+      }
+
+      if matches!(chars.peek().copied(), Some(c) if is_ascii_whitespace_html_css(c)) {
+        chars.next();
+      }
+
+      let decoded = match value {
+        0 | 0xD800..=0xDFFF | 0x110000.. => char::REPLACEMENT_CHARACTER,
+        _ => char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER),
+      };
+      result.push(decoded);
+      continue;
+    }
+
+    // Legacy convenience escapes (used by existing tests).
+    if matches!(next, 'n' | 't' | 'r') {
+      let c = chars.next().unwrap();
       result.push(match c {
         'n' => '\n',
         't' => '\t',
         'r' => '\r',
-        _ => c,
+        _ => unreachable!(),
       });
-      escaped = false;
-    } else if c == '\\' {
-      escaped = true;
-    } else if c == quote {
-      return Some(result);
-    } else {
-      result.push(c);
+      continue;
     }
+
+    // Default: escape the next character.
+    result.push(chars.next().unwrap());
   }
 
   // Unterminated string
@@ -2341,6 +2406,27 @@ mod tests {
     assert_eq!(
       content,
       ContentValue::Items(vec![ContentItem::String("Hello\nWorld".to_string())])
+    );
+  }
+
+  #[test]
+  fn test_parse_hex_escaped_string() {
+    // CSS string escape: `\<hex>{1,6}` yields the corresponding Unicode scalar value.
+    // Font Awesome uses this heavily for icon glyphs (e.g. `content: "\f04c"`).
+    let content = parse_content("\"\\f04c\"").unwrap();
+    assert_eq!(
+      content,
+      ContentValue::Items(vec![ContentItem::String("\u{F04C}".to_string())])
+    );
+  }
+
+  #[test]
+  fn test_parse_hex_escape_consumes_trailing_whitespace() {
+    // Per CSS Syntax, hex escapes may be terminated by a single whitespace character.
+    let content = parse_content("\"\\26 B\"").unwrap();
+    assert_eq!(
+      content,
+      ContentValue::Items(vec![ContentItem::String("&B".to_string())])
     );
   }
 

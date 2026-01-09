@@ -5137,21 +5137,6 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
   }
 }
 
-fn button_label(node: &StyledNode) -> String {
-  let text = collect_text_content(node);
-  let trimmed = trim_ascii_whitespace(&text);
-  if !trimmed.is_empty() {
-    return trimmed.to_string();
-  }
-
-  node
-    .node
-    .get_attribute_ref("value")
-    .filter(|v| !v.is_empty())
-    .map(|v| v.to_string())
-    .unwrap_or_default()
-}
-
 fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
   let appearance = styled.styles.appearance.clone();
@@ -5159,20 +5144,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   if !tag.eq_ignore_ascii_case("input")
     && !tag.eq_ignore_ascii_case("textarea")
     && !tag.eq_ignore_ascii_case("select")
-    && !tag.eq_ignore_ascii_case("button")
     && !tag.eq_ignore_ascii_case("progress")
     && !tag.eq_ignore_ascii_case("meter")
-  {
-    return None;
-  }
-
-  // Buttons can contain arbitrary HTML (icons, rich text). Treat them as form controls only when
-  // they have no element children so we can still lay out icon buttons correctly.
-  if tag.eq_ignore_ascii_case("button")
-    && styled
-      .children
-      .iter()
-      .any(|child| child.node.tag_name().is_some())
   {
     return None;
   }
@@ -5530,28 +5503,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     let control = select_control.unwrap_or_else(|| build_select_control(styled));
     Some(FormControl {
       control: FormControlKind::Select(control),
-      appearance,
-      placeholder_style: None,
-      slider_thumb_style: None,
-      slider_track_style: None,
-      progress_bar_style: None,
-      progress_value_style: None,
-      meter_bar_style: None,
-      meter_optimum_value_style: None,
-      meter_suboptimum_value_style: None,
-      meter_even_less_good_value_style: None,
-      file_selector_button_style: None,
-      disabled,
-      focused,
-      focus_visible,
-      required,
-      invalid,
-    })
-  } else if tag.eq_ignore_ascii_case("button") {
-    Some(FormControl {
-      control: FormControlKind::Button {
-        label: button_label(styled),
-      },
       appearance,
       placeholder_style: None,
       slider_thumb_style: None,
@@ -6985,7 +6936,7 @@ mod tests {
   }
 
   #[test]
-  fn form_controls_generate_replaced_boxes() {
+  fn form_controls_generate_replaced_boxes_except_button() {
     let html = "<html><body>
       <input id=\"text\" value=\"hello\">
       <input type=\"checkbox\" checked>

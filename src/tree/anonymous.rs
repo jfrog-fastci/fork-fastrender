@@ -610,6 +610,7 @@ impl AnonymousBoxCreator {
         // the anonymous wrapper. Doing so effectively applies those properties twice when a
         // blockified inline element (e.g. an inline flex item) lays out its inline children,
         // inflating line boxes and the element's used height (notably for inline-flex buttons).
+        // https://www.w3.org/TR/CSS21/visuren.html#anonymous
         let mut style = inherited_style(parent_style.as_ref());
         style.display = Display::Inline;
         Arc::new(style)

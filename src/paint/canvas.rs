@@ -1787,9 +1787,57 @@ impl Canvas {
     };
 
     if let Some(skia_rect) = self.to_skia_rect(rect) {
+      let transform = self.current_state.transform;
+
+      // Fast path: for opaque, axis-aligned rect fills, snap to device pixels to avoid
+      // fractional-edge seams between adjacent backgrounds.
+      //
+      // Chrome appears to round CSS pixel bounds for solid background fills, which keeps
+      // separators between same-color strips from being anti-aliased into a 1px "gap" when the
+      // box height is fractional (e.g. `padding: 0.3rem` on a 16px root font size).
+      //
+      // tiny-skia's anti-aliased path fill will blend the bottom edge into the underlying
+      // background in that scenario, producing visible seams and large diffs in fixture
+      // comparisons. For fully opaque fills with identity transforms and no clip masks, we can
+      // use `fill_rect` with AA disabled to match the pixel-snapped behavior.
+      let effective_alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
+      let can_snap = transform == Transform::identity()
+        && effective_alpha >= 1.0 - 1e-6
+        && match self.current_state.clip_rect {
+          // Allow snapping when a clip is present as long as the rect is comfortably inside the
+          // clip bounds. This avoids introducing accidental overpaint or visible clip-edge
+          // differences while still fixing common fractional-position seams for in-flow content.
+          Some(clip) => rect.min_x() >= clip.min_x() + 1.0
+            && rect.max_x() <= clip.max_x() - 1.0
+            && rect.min_y() >= clip.min_y() + 1.0
+            && rect.max_y() <= clip.max_y() - 1.0,
+          None => true,
+        };
+      if can_snap {
+        // Round each edge to the nearest device pixel. This avoids 1px seams while also preventing
+        // adjacent opaque fills from "fighting" over a boundary pixel when one ends and the next
+        // begins at the same fractional coordinate.
+        let x0 = rect.min_x().round();
+        let y0 = rect.min_y().round();
+        let x1 = rect.max_x().round();
+        let y1 = rect.max_y().round();
+        let snapped = Rect::from_xywh(x0, y0, x1 - x0, y1 - y0);
+        let Some(skia_rect) = self.to_skia_rect(snapped) else {
+          return;
+        };
+        let mut paint = self.current_state.create_paint(color);
+        paint.anti_alias = false;
+        self.pixmap.fill_rect(
+          skia_rect,
+          &paint,
+          Transform::identity(),
+          self.current_state.clip_mask.as_deref(),
+        );
+        return;
+      }
+
       let path = PathBuilder::from_rect(skia_rect);
       let paint = self.current_state.create_paint(color);
-      let transform = self.current_state.transform;
 
       let needs_scratch = (transform.kx.abs() > 1e-6 || transform.ky.abs() > 1e-6)
         && transform != Transform::identity()
@@ -2117,6 +2165,29 @@ impl Canvas {
     // If no radius, use simple rect
     if !radii.has_radius() {
       return self.draw_rect(rect, color);
+    }
+
+    // Similar to the opaque rect fill fast path in `draw_rect_impl`, snap fully-opaque, axis
+    // aligned rounded-rect fills to device pixels when possible. This avoids fractional-edge
+    // antialiasing seams in common UI patterns (e.g. rounded search inputs positioned at `y:
+    // 4.8px`), which Chrome tends to paint on device pixel boundaries.
+    let mut rect = rect;
+    let effective_alpha = (color.a * self.current_state.opacity).clamp(0.0, 1.0);
+    let can_snap = self.current_state.transform == Transform::identity()
+      && effective_alpha >= 1.0 - 1e-6
+      && match self.current_state.clip_rect {
+        Some(clip) => rect.min_x() >= clip.min_x() + 1.0
+          && rect.max_x() <= clip.max_x() - 1.0
+          && rect.min_y() >= clip.min_y() + 1.0
+          && rect.max_y() <= clip.max_y() - 1.0,
+        None => true,
+      };
+    if can_snap {
+      let x0 = rect.min_x().round();
+      let y0 = rect.min_y().round();
+      let x1 = rect.max_x().round();
+      let y1 = rect.max_y().round();
+      rect = Rect::from_xywh(x0, y0, x1 - x0, y1 - y0);
     }
 
     if let Some(clip) = self.current_state.clip_rect {
@@ -3950,6 +4021,28 @@ mod tests {
 
     // Just verify it doesn't crash
     let _ = canvas.into_pixmap();
+  }
+
+  #[test]
+  fn opaque_axis_aligned_rounded_rect_fills_are_pixel_snapped() {
+    let mut canvas = Canvas::new(100, 60, Rgba::rgb(0, 38, 118)).unwrap();
+    let rect = Rect::from_xywh(10.0, 4.8, 80.0, 42.0);
+    let radii = BorderRadii::uniform(20.0);
+    canvas.draw_rounded_rect(rect, radii, Rgba::WHITE);
+
+    // Sample a pixel in the middle of the top edge (away from rounded corners). With snapping, the
+    // row immediately above the rounded-rect should remain the background color.
+    let above = canvas.pixmap().pixel(50, 4).unwrap();
+    assert_eq!(
+      (above.red(), above.green(), above.blue(), above.alpha()),
+      (0, 38, 118, 255)
+    );
+
+    let inside = canvas.pixmap().pixel(50, 5).unwrap();
+    assert_eq!(
+      (inside.red(), inside.green(), inside.blue(), inside.alpha()),
+      (255, 255, 255, 255)
+    );
   }
 
   #[test]

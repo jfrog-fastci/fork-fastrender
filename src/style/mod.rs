@@ -25,6 +25,7 @@ pub mod properties;
 pub mod string_set;
 pub mod style_set;
 pub mod types;
+pub mod used_codepoints;
 pub mod values;
 pub mod var_resolution;
 

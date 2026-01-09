@@ -1973,6 +1973,25 @@ fn distribute_remaining_free_space(flex_lines: &mut [FlexLine], constants: &Algo
           }
         }
       }
+
+      // Even when `justify-content` is bypassed (because auto margins absorb free space),
+      // flex item gaps still apply between items.
+      //
+      // Taffy currently models gaps as part of the per-item main-axis offset. The
+      // `justify-content` path sets `offset_main` via `compute_alignment_offset` (which includes
+      // the gap for non-first items), but the auto-margin branch historically left `offset_main`
+      // at `0`. This caused the gap to be subtracted from free space (via `used_space`) without
+      // being inserted into layout positions, leaving an incorrect trailing gap after the last
+      // item.
+      let gap = constants.gap.main(constants.dir);
+      let set_gap_offset = |(i, child): (usize, &mut FlexItem)| {
+        child.offset_main = if i == 0 { 0.0 } else { gap };
+      };
+      if constants.dir.is_reverse() {
+        line.items.iter_mut().rev().enumerate().for_each(set_gap_offset);
+      } else {
+        line.items.iter_mut().enumerate().for_each(set_gap_offset);
+      }
     } else {
       let num_items = line.items.len();
       let layout_reverse = constants.dir.is_reverse();

@@ -223,6 +223,38 @@ fn flex_basis_content_uses_max_content_size_for_base_size() {
 }
 
 #[test]
+fn intrinsic_max_content_width_spans_adjacent_inline_items() {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "About".to_string());
+
+  let mut inline_block_style = ComputedStyle::default();
+  inline_block_style.display = Display::InlineBlock;
+  inline_block_style.width = Some(Length::px(10.0));
+  let inline_block = BoxNode::new_inline_block(
+    Arc::new(inline_block_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let node = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![text, inline_block],
+  );
+
+  let (min_content, max_content) = BlockFormattingContext::new()
+    .compute_intrinsic_inline_sizes(&node)
+    .expect("intrinsic inline sizes");
+
+  assert!(
+    max_content > min_content + 5.0,
+    "expected max-content ({max_content:.2}) to include the following inline-block, exceeding min-content ({min_content:.2})",
+  );
+}
+
+#[test]
 fn flex_basis_content_ignores_min_main_size_when_growing() {
   let text = "x y";
 

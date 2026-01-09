@@ -10904,56 +10904,6 @@ impl FastRender {
         css_metadata_timer,
       );
     }
-
-    // Collect codepoints used in text nodes to avoid fetching unused web font subsets. Skip the
-    // DOM walk entirely when there are no @font-face rules (common for many pages).
-    let used_codepoints_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let used_codepoints = if font_faces.is_empty() {
-      Vec::new()
-    } else {
-      dom::collect_text_codepoints(&dom_with_state)?
-    };
-    if let Some(rec) = stats.as_deref_mut() {
-      RenderStatsRecorder::add_ms(
-        &mut rec.stats.timings.css_parse_used_codepoints_ms,
-        used_codepoints_timer,
-      );
-    }
-
-    // Best-effort loading; rendering should continue even if a web font fails.
-    let load_webfonts_timer = stats.as_deref().and_then(|rec| rec.timer());
-    if !font_faces.is_empty() {
-      let _ = self.font_context.load_web_fonts(
-        &font_faces,
-        self.base_url.as_deref(),
-        Some(&used_codepoints),
-      );
-      let _ = self
-        .font_context
-        .wait_for_pending_web_fonts(crate::text::font_loader::DEFAULT_WEB_FONT_TIMEOUT);
-    }
-    if let Some(rec) = stats.as_deref_mut() {
-      RenderStatsRecorder::add_ms(
-        &mut rec.stats.timings.css_parse_load_webfonts_ms,
-        load_webfonts_timer,
-      );
-    }
-
-    // `@font-face { font-display: swap }` is intentionally non-blocking, but for deterministic
-    // offline rendering it's often desirable to wait briefly for the deferred faces so text uses
-    // the intended web fonts rather than falling back to bundled/system fonts.
-    //
-    // This is controlled via a runtime toggle so tooling like `render_fixtures` can opt into the
-    // higher-fidelity behavior without making all renders pay the cost.
-    let web_font_wait_ms = runtime::runtime_toggles()
-      .u64("FASTR_WEB_FONT_WAIT_MS")
-      .unwrap_or(0);
-    if web_font_wait_ms > 0 && !font_faces.is_empty() {
-      self
-        .font_context
-        .wait_for_pending_web_fonts(Duration::from_millis(web_font_wait_ms));
-    }
-
     let keyframes_timer = stats.as_deref().and_then(|rec| rec.timer());
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
@@ -11028,6 +10978,53 @@ impl FastRender {
     check_deadline(deadline, RenderStage::Cascade)?;
     if let Some(start) = style_apply_start {
       eprintln!("timing:style_apply {:?}", start.elapsed());
+    }
+
+    // Collect codepoints used in DOM text nodes and generated content (e.g. Font Awesome icons via
+    // `::before { content: ... }`) so unicode-range web font subsets are not filtered out.
+    //
+    // This happens after cascade so custom-property-dependent `content` values are resolved.
+    let used_codepoints_timer = stats.as_deref().and_then(|rec| rec.timer());
+    let used_codepoints = if font_faces.is_empty() {
+      Vec::new()
+    } else {
+      crate::style::used_codepoints::collect_used_codepoints(&styled_tree)?
+    };
+    if let Some(rec) = stats.as_deref_mut() {
+      RenderStatsRecorder::add_ms(
+        &mut rec.stats.timings.css_parse_used_codepoints_ms,
+        used_codepoints_timer,
+      );
+    }
+
+    // Best-effort loading; rendering should continue even if a web font fails.
+    let load_webfonts_timer = stats.as_deref().and_then(|rec| rec.timer());
+    if !font_faces.is_empty() {
+      let _ = self.font_context.load_web_fonts(
+        &font_faces,
+        self.base_url.as_deref(),
+        Some(&used_codepoints),
+      );
+    }
+    // `@font-face { font-display: swap }` is intentionally non-blocking, but for deterministic
+    // offline rendering it's often desirable to wait briefly for the deferred faces so text uses
+    // the intended web fonts rather than falling back to bundled/system fonts.
+    //
+    // This is controlled via a runtime toggle so tooling like `render_fixtures` can opt into the
+    // higher-fidelity behavior without making all renders pay the cost.
+    let web_font_wait_ms = runtime::runtime_toggles()
+      .u64("FASTR_WEB_FONT_WAIT_MS")
+      .unwrap_or(0);
+    if web_font_wait_ms > 0 && !font_faces.is_empty() {
+      self
+        .font_context
+        .wait_for_pending_web_fonts(Duration::from_millis(web_font_wait_ms));
+    }
+    if let Some(rec) = stats.as_deref_mut() {
+      RenderStatsRecorder::add_ms(
+        &mut rec.stats.timings.css_parse_load_webfonts_ms,
+        load_webfonts_timer,
+      );
     }
     let mut svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&styled_tree);
     let mut svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&styled_tree);
