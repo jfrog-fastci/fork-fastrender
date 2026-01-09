@@ -157,7 +157,20 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
       to_js_sequence(rt, ctx, elem, values, limits, typedef_stack)
     }
 
-    IdlType::AsyncSequence(_) => Err(rt.throw_type_error("async sequence return values are not supported")),
+    IdlType::AsyncSequence(_) => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let v = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_object(v) {
+          return Err(rt.throw_type_error("platform object is not an object"));
+        }
+        Ok(v)
+      }
+      _ => Err(rt.throw_type_error(
+        "async sequence return values require a platform object handle",
+      )),
+    },
     IdlType::Record(key_ty, value_ty) => {
       let WebIdlValue::Record { entries, .. } = value else {
         return Err(rt.throw_type_error("expected a record value"));
@@ -1077,6 +1090,19 @@ mod tests {
       msg.contains("not an object"),
       "expected not-an-object message, got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn async_sequence_return_allows_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("async_sequence<DOMString>")?;
+    let obj = rt.alloc_object_value()?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert_eq!(out, obj);
     Ok(())
   }
 
