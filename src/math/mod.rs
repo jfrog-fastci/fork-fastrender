@@ -1331,7 +1331,8 @@ impl MathLayoutContext {
         rspace: MathLengthOrKeyword::Medium,
       },
       // Large operators.
-      "∑" | "∏" => OperatorProperties {
+      "∑" | "∏" | "∐" | "⋀" | "⋁" | "⋂" | "⋃" | "⨀" | "⨁" | "⨂" | "⨃" | "⨄" | "⨅" | "⨆"
+      | "⨉" | "⫿" | "∫" | "∬" | "∭" | "∮" | "∯" | "∰" => OperatorProperties {
         fence: false,
         separator: false,
         stretchy: false,
@@ -2138,6 +2139,44 @@ impl MathLayoutContext {
       operator_props[idx] = Some(props);
     }
 
+    // Size large operators in display style even when they're not marked stretchy. OpenType MATH
+    // fonts provide vertical variants (or an explicit minimum via `display_operator_min_height`)
+    // for operators such as ∑/∫/⋂. Unlike delimiters, these should not stretch to surrounding
+    // content; they only need to meet the display operator minimum.
+    if style.display_style {
+      for (idx, props) in operator_props.iter().enumerate() {
+        let Some(props) = props else {
+          continue;
+        };
+        if !props.large_op || props.stretchy {
+          continue;
+        }
+        let Some(MathNode::Operator { text, variant, .. }) = children.get(idx) else {
+          continue;
+        };
+        let Some(current) = layouts.get(idx) else {
+          continue;
+        };
+        let target_ascent = current.baseline;
+        let target_descent = current.height - current.baseline;
+        let resolved_variant = self.resolve_variant(*variant, style, MathVariant::Normal);
+        if let Some(layout) = self.stretch_operator_vertical(
+          text,
+          resolved_variant,
+          target_ascent,
+          target_descent,
+          style,
+          base_style,
+          false,
+          true,
+        ) {
+          if let Some(slot) = layouts.get_mut(idx) {
+            *slot = layout;
+          }
+        }
+      }
+    }
+
     // Stretch operators after seeing surrounding content.
     let stretchy_indices: Vec<usize> = operator_props
       .iter()
@@ -2714,7 +2753,8 @@ impl MathLayoutContext {
       if let Some(op) = Self::operator_like(base) {
         // MathML Core operator dictionary: large operators such as ∑ have movable limits in
         // display style, but become scripts in inline style.
-        if Self::operator_default_properties(op.text, OperatorForm::Infix).movable_limits {
+        let form = op.form.unwrap_or(OperatorForm::Infix);
+        if Self::operator_default_properties(op.text, form).movable_limits {
           return self.layout_superscript(base, over, under, style, base_style);
         }
       }
@@ -3416,10 +3456,39 @@ impl MathLayoutContext {
         let resolved = self.resolve_variant(*variant, style, MathVariant::Normal);
         self.layout_glyphs(text, base_style, style, resolved)
       }
-      MathNode::Operator { text, variant, .. } => {
-        let resolved = self.resolve_variant(*variant, style, MathVariant::Normal);
-        // Stretching handled during row aggregation by scaling font size heuristically.
-        self.layout_glyphs(text, base_style, style, resolved)
+      MathNode::Operator {
+        text,
+        form,
+        stretchy,
+        variant,
+        ..
+      } => {
+        let resolved_variant = self.resolve_variant(*variant, style, MathVariant::Normal);
+        // Stretching to surrounding content is handled during row aggregation, but display style
+        // large operators (e.g. ∑, ∫) also need to select vertical variants based on
+        // `display_operator_min_height` even when they're not stretchy.
+        let mut layout = self.layout_glyphs(text, base_style, style, resolved_variant);
+        if style.display_style {
+          let default =
+            Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
+          if default.large_op && !(*stretchy).unwrap_or(default.stretchy) {
+            let target_ascent = layout.baseline;
+            let target_descent = layout.height - layout.baseline;
+            if let Some(stretched) = self.stretch_operator_vertical(
+              text,
+              resolved_variant,
+              target_ascent,
+              target_descent,
+              style,
+              base_style,
+              false,
+              true,
+            ) {
+              layout = stretched;
+            }
+          }
+        }
+        layout
       }
       MathNode::Text { text, variant } => {
         let resolved = self.resolve_variant(*variant, style, MathVariant::Normal);

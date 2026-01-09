@@ -9,6 +9,8 @@ use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::{FastRender, FragmentContent, FragmentNode};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 
 fn find_math_fragment<'a>(fragment: &'a FragmentNode) -> Option<&'a ReplacedType> {
@@ -38,6 +40,34 @@ fn deterministic_renderer() -> FastRender {
     .font_sources(FontConfig::bundled_only())
     .build()
     .expect("renderer")
+}
+
+fn stix_math_font_context() -> FontContext {
+  static CTX: OnceLock<FontContext> = OnceLock::new();
+  CTX
+    .get_or_init(|| {
+      let font_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts");
+      FontContext::with_config(FontConfig::bundled_only().add_font_dir(font_dir))
+    })
+    .clone()
+}
+
+fn stix_math_style(font_size: f32) -> fastrender::ComputedStyle {
+  let mut style = fastrender::ComputedStyle::default();
+  style.font_size = font_size;
+  style.font_family = Arc::from(vec!["STIX Two Math".to_string()]);
+  style
+}
+
+fn mo(text: &str) -> MathNode {
+  MathNode::Operator {
+    text: text.to_string(),
+    form: None,
+    stretchy: None,
+    lspace: None,
+    rspace: None,
+    variant: None,
+  }
 }
 
 #[test]
@@ -74,6 +104,83 @@ fn fraction_mathml_layouts_and_paints() {
         .iter()
         .any(|item| matches!(item, DisplayItem::Text(_))),
       "math text should emit glyphs",
+    );
+  });
+}
+
+#[test]
+fn display_style_large_operator_is_larger_than_inline() {
+  with_stack(|| {
+    let style = stix_math_style(22.0);
+    let font_ctx = stix_math_font_context();
+    let inline = MathNode::Math {
+      display_style: false,
+      children: vec![mo("∑")],
+    };
+    let display = MathNode::Math {
+      display_style: true,
+      children: vec![mo("∑")],
+    };
+    let inline_layout = layout_mathml(&inline, &style, &font_ctx);
+    let display_layout = layout_mathml(&display, &style, &font_ctx);
+    assert!(
+      display_layout.height > inline_layout.height + 0.5,
+      "expected display-style ∑ to be taller than inline (inline={}, display={})",
+      inline_layout.height,
+      display_layout.height
+    );
+  });
+}
+
+#[test]
+fn movable_limits_integral_moves_limits_to_scripts_in_inline() {
+  with_stack(|| {
+    let style = stix_math_style(22.0);
+    let font_ctx = stix_math_font_context();
+
+    let under = MathNode::Number {
+      text: "12345678901234567890".into(),
+      variant: None,
+    };
+    let over = MathNode::Number {
+      text: "12345678901234567890".into(),
+      variant: None,
+    };
+    let base = mo("∫");
+
+    let inline = MathNode::Math {
+      display_style: false,
+      children: vec![MathNode::UnderOver {
+        base: Box::new(base.clone()),
+        under: Box::new(under.clone()),
+        over: Box::new(over.clone()),
+      }],
+    };
+    let display = MathNode::Math {
+      display_style: true,
+      children: vec![MathNode::UnderOver {
+        base: Box::new(base),
+        under: Box::new(under),
+        over: Box::new(over),
+      }],
+    };
+
+    let inline_layout = layout_mathml(&inline, &style, &font_ctx);
+    let display_layout = layout_mathml(&display, &style, &font_ctx);
+
+    // If movable limits are working, inline math should place limits as scripts (to the side),
+    // making it wider, while display style keeps them stacked (less wide but taller).
+    assert!(
+      inline_layout.width > display_layout.width + 1.0,
+      "expected inline ∫ limits to increase width (inline={}, display={})",
+      inline_layout.width,
+      display_layout.width
+    );
+    assert!(
+      display_layout.height > inline_layout.height + 1.0,
+      "expected display-style ∫ limits to increase height (inline={}, display={})",
+      inline_layout.height,
+      display_layout.height
     );
   });
 }
