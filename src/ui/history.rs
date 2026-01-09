@@ -119,6 +119,29 @@ impl TabHistory {
     self.current()
   }
 
+  /// Attempts a back/forward navigation to `target_url`, but only when it matches the immediate
+  /// back or forward history entry.
+  ///
+  /// This avoids surprising "global search" jumps when the UI provides a stale URL (e.g. after
+  /// rapid navigations).
+  pub fn go_back_forward_to(&mut self, target_url: &str) -> Option<&HistoryEntry> {
+    let i = self.index?;
+
+    if i > 0 && self.entries.get(i - 1).is_some_and(|entry| entry.url == target_url) {
+      self.index = Some(i - 1);
+      return self.current();
+    }
+
+    if i + 1 < self.entries.len()
+      && self.entries.get(i + 1).is_some_and(|entry| entry.url == target_url)
+    {
+      self.index = Some(i + 1);
+      return self.current();
+    }
+
+    None
+  }
+
   pub fn reload_target(&self) -> Option<&HistoryEntry> {
     self.current()
   }

@@ -1,5 +1,6 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
+use crate::ui::cancel::CancelGens;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::interaction::KeyAction;
@@ -88,6 +89,7 @@ pub enum UiToWorker {
   CreateTab {
     tab_id: TabId,
     initial_url: Option<String>,
+    cancel: CancelGens,
   },
   CloseTab {
     tab_id: TabId,

@@ -137,6 +137,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "browser_ui")]
 fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
+  use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
   use std::collections::HashMap;
   use std::sync::mpsc;
@@ -176,9 +177,13 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
       let mut worker = fastrender::ui::browser_worker::BrowserWorker::new(renderer, worker_to_ui_tx);
       let mut tabs: HashMap<TabId, TabState> = HashMap::new();
 
-      for msg in ui_to_worker_rx {
-        match msg {
-          UiToWorker::CreateTab { tab_id, initial_url } => {
+       for msg in ui_to_worker_rx {
+         match msg {
+          UiToWorker::CreateTab {
+            tab_id,
+            initial_url,
+            ..
+          } => {
             tabs.insert(
               tab_id,
               TabState {
@@ -248,6 +253,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   ui_to_worker_tx.send(UiToWorker::CreateTab {
     tab_id,
     initial_url: None,
+    cancel: CancelGens::new(),
   })?;
   ui_to_worker_tx.send(UiToWorker::ViewportChanged {
     tab_id,
@@ -514,6 +520,7 @@ impl App {
       .send(fastrender::ui::UiToWorker::CreateTab {
         tab_id,
         initial_url: Some(initial_url),
+        cancel: fastrender::ui::cancel::CancelGens::new(),
       });
     let _ = self
       .ui_to_worker_tx
@@ -928,6 +935,7 @@ impl App {
           let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
             tab_id,
             initial_url: Some(initial_url),
+            cancel: fastrender::ui::cancel::CancelGens::new(),
           });
           let _ = self
             .ui_to_worker_tx
@@ -1307,15 +1315,16 @@ fn spawn_default_render_worker(
       let mut tabs: HashMap<fastrender::ui::TabId, WorkerTab> = HashMap::new();
       let mut active: Option<fastrender::ui::TabId> = None;
 
-      while let Ok(msg) = ui_to_worker_rx.recv() {
-        match msg {
-          UiToWorker::CreateTab {
-            tab_id,
-            initial_url,
-          } => {
-            let url = initial_url.unwrap_or_else(|| "about:newtab".to_string());
-            tabs.insert(
+        while let Ok(msg) = ui_to_worker_rx.recv() {
+          match msg {
+            UiToWorker::CreateTab {
               tab_id,
+              initial_url,
+              ..
+            } => {
+              let url = initial_url.unwrap_or_else(|| "about:newtab".to_string());
+              tabs.insert(
+                tab_id,
               WorkerTab {
                 url: url.clone(),
                 viewport_css: (800, 600),

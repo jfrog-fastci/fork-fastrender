@@ -65,10 +65,7 @@ impl TabEngine {
     } = self;
 
     match msg {
-      UiToWorker::CreateTab {
-        tab_id,
-        initial_url,
-      } => {
+      UiToWorker::CreateTab { tab_id, initial_url, .. } => {
         let mut tab = TabState::new();
         if let Some(url) = initial_url {
           tab.history.push(url.clone());
@@ -387,6 +384,7 @@ mod tests {
     engine.handle(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: crate::ui::cancel::CancelGens::new(),
     });
     engine.handle(UiToWorker::ViewportChanged {
       tab_id,

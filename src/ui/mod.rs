@@ -5,6 +5,7 @@ pub mod browser_worker;
 pub mod cancel;
 pub mod history;
 pub mod messages;
+pub mod render_thread;
 pub mod tab_engine;
 pub mod ui_worker;
 pub mod worker;
@@ -18,6 +19,7 @@ pub mod chrome;
 pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
+pub use render_thread::spawn_browser_render_thread;
 pub use ui_worker::UiWorker;
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the

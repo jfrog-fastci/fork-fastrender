@@ -163,7 +163,11 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
 
   while let Ok(msg) = rx.recv() {
     match msg {
-      UiToWorker::CreateTab { tab_id, initial_url } => {
+      UiToWorker::CreateTab {
+        tab_id,
+        initial_url,
+        ..
+      } => {
         let entry = tabs.entry(tab_id).or_insert_with(TabState::new);
         entry.history = TabHistory::new();
         entry.document = None;

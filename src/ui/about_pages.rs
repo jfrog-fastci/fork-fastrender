@@ -1,6 +1,8 @@
 pub const ABOUT_BLANK: &str = "about:blank";
 pub const ABOUT_NEWTAB: &str = "about:newtab";
 pub const ABOUT_ERROR: &str = "about:error";
+pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
+pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
 
 /// Base URL hint used for all `about:` pages.
 ///
@@ -19,6 +21,8 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_BLANK => Some(blank_html().to_string()),
     ABOUT_NEWTAB => Some(newtab_html().to_string()),
     ABOUT_ERROR => Some(error_html("Navigation error", None)),
+    ABOUT_TEST_SCROLL => Some(test_scroll_html()),
+    ABOUT_TEST_HEAVY => Some(test_heavy_html()),
     _ => None,
   }
 }
@@ -100,6 +104,44 @@ fn error_html(title: &str, message: Option<&str>) -> String {
   </body>
 </html>"
   )
+}
+
+fn test_scroll_html() -> String {
+  // Simple tall page used by browser UI tests.
+  "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <title>Scroll Test</title>
+    <style>
+      body { margin: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
+      .spacer { height: 4000px; background: linear-gradient(#eee, #ccc); }
+    </style>
+  </head>
+  <body>
+    <div class=\"spacer\">scroll</div>
+  </body>
+</html>"
+    .to_string()
+}
+
+fn test_heavy_html() -> String {
+  // Large DOM used by cancellation tests. Keep this deterministic and offline.
+  let mut out = String::with_capacity(256 * 1024);
+  out.push_str(
+    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Heavy Test</title>\
+     <style>body{margin:0;font:14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;}\
+     .row{padding:4px 8px;border-bottom:1px solid rgba(0,0,0,0.08);}</style>\
+     </head><body>",
+  );
+  // 5000 rows is enough to trigger a meaningful amount of layout/paint work without making tests
+  // excessively slow in CI.
+  for i in 0..5000u32 {
+    use std::fmt::Write;
+    let _ = write!(out, "<div class=\"row\">row {i}</div>");
+  }
+  out.push_str("</body></html>");
+  out
 }
 
 fn escape_html(text: &str) -> String {

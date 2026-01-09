@@ -1,5 +1,6 @@
 use crate::scroll::ScrollState;
 
+use super::cancel::CancelGens;
 use super::history::TabHistory;
 use super::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use super::url::normalize_user_url;
@@ -18,6 +19,7 @@ pub struct BrowserAppState {
 #[derive(Debug)]
 pub struct TabState {
   pub id: TabId,
+  pub cancel: CancelGens,
   pub history: TabHistory,
   pub loading: bool,
   pub viewport_css: (u32, u32),
@@ -41,6 +43,7 @@ impl TabState {
     };
     let mut tab = Self {
       id,
+      cancel: CancelGens::new(),
       history,
       loading: false,
       viewport_css: (0, 0),
@@ -98,9 +101,15 @@ impl BrowserAppState {
 
   pub fn create_tab(&mut self, initial_url: Option<String>) -> UiToWorker {
     let tab_id = TabId::new();
-    self.tabs.push(TabState::new(tab_id, initial_url.clone()));
+    let tab = TabState::new(tab_id, initial_url.clone());
+    let cancel = tab.cancel.clone();
+    self.tabs.push(tab);
 
-    UiToWorker::CreateTab { tab_id, initial_url }
+    UiToWorker::CreateTab {
+      tab_id,
+      initial_url,
+      cancel,
+    }
   }
 
   pub fn close_tab(&mut self, tab_id: TabId) -> Option<UiToWorker> {

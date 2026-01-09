@@ -63,10 +63,7 @@ impl UiWorker {
 
   pub fn handle_message(&mut self, msg: UiToWorker) {
     match msg {
-      UiToWorker::CreateTab {
-        tab_id,
-        initial_url,
-      } => {
+      UiToWorker::CreateTab { tab_id, initial_url, .. } => {
         self.tabs.insert(tab_id, TabState::new(initial_url));
         self.active_tab.get_or_insert(tab_id);
       }

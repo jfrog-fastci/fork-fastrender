@@ -294,7 +294,11 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
 
   while let Ok(msg) = rx.recv() {
     match msg {
-      UiToWorker::CreateTab { tab_id, initial_url } => {
+      UiToWorker::CreateTab {
+        tab_id,
+        initial_url,
+        ..
+      } => {
         let renderer = match FastRender::builder().build() {
           Ok(renderer) => renderer,
           Err(err) => {
