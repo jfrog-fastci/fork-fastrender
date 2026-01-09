@@ -1,5 +1,6 @@
 use crate::dom::{enumerate_dom_ids, DomNode, DomNodeType};
 use crate::geometry::{Point, Size};
+use crate::scroll::build_scroll_chain;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use rustc_hash::FxHashSet;
@@ -136,12 +137,22 @@ pub fn scroll_offset_for_fragment_target(
   let mut scroll_y = target_y;
 
   // Clamp to the document scroll range.
-  let content_bbox = fragment_tree.content_size();
-  let max_scroll_y = (content_bbox.height() - viewport.height).max(0.0);
+  //
+  // Note: `FragmentTree::content_size()` includes additional fragment roots (e.g. viewport-fixed
+  // layers). For scrolling we want the scroll bounds of the root scroll container, which:
+  // - ignores viewport-fixed descendants, and
+  // - can have a negative min when content extends into negative coordinates.
+  let bounds = build_scroll_chain(&fragment_tree.root, viewport, &[])
+    .first()
+    .map(|state| state.bounds);
   if !scroll_y.is_finite() {
     scroll_y = 0.0;
   }
-  scroll_y = scroll_y.max(0.0).min(max_scroll_y);
+  if let Some(bounds) = bounds {
+    scroll_y = bounds.clamp(Point::new(0.0, scroll_y)).y;
+  } else {
+    scroll_y = scroll_y.max(0.0);
+  }
 
   Some(Point::new(0.0, scroll_y))
 }
