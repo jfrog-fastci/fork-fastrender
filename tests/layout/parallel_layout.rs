@@ -8,7 +8,7 @@ use fastrender::render_control::{RenderDeadline, StageGuard};
 use fastrender::snapshot_fragment_tree;
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
-use fastrender::style::types::InsetValue;
+use fastrender::style::types::{ContentVisibility, InsetValue};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_loader::FontContext;
@@ -328,6 +328,56 @@ fn build_block_stack_with_fixed_cb_ancestor() -> (BoxTree, usize) {
   (tree, fixed_id)
 }
 
+fn build_block_stack_with_content_visibility_auto_descendant() -> (BoxTree, usize) {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut spacer_style = ComputedStyle::default();
+  spacer_style.display = Display::Block;
+  spacer_style.height = Some(Length::px(500.0));
+  let spacer_style = Arc::new(spacer_style);
+
+  let spacer = |label: &str, style: &Arc<ComputedStyle>| {
+    let text = BoxNode::new_text(style.clone(), label.to_string());
+    BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![text])
+  };
+
+  let mut leaf_style = ComputedStyle::default();
+  leaf_style.display = Display::Block;
+  let leaf_style = Arc::new(leaf_style);
+  let leaf_text = BoxNode::new_text(leaf_style.clone(), "auto-leaf".to_string());
+  let leaf = BoxNode::new_block(leaf_style, FormattingContextType::Block, vec![leaf_text]);
+
+  let mut auto_style = ComputedStyle::default();
+  auto_style.display = Display::Block;
+  auto_style.content_visibility = ContentVisibility::Auto;
+  // Provide a deterministic placeholder size so the offscreen subtree can be skipped.
+  auto_style.height = Some(Length::px(10.0));
+  auto_style.height_keyword = None;
+  let auto_style = Arc::new(auto_style);
+  let auto_box = BoxNode::new_block(auto_style, FormattingContextType::Block, vec![leaf]);
+
+  let mut host_style = ComputedStyle::default();
+  host_style.display = Display::Block;
+  let host_style = Arc::new(host_style);
+  let host_text = BoxNode::new_text(host_style.clone(), "host".to_string());
+  let host = BoxNode::new_block(
+    host_style,
+    FormattingContextType::Block,
+    vec![host_text, auto_box],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![spacer("spacer-0", &spacer_style), spacer("spacer-1", &spacer_style), host],
+  );
+  let tree = BoxTree::new(root);
+  let auto_id = find_box_id_by_content_visibility(&tree.root, ContentVisibility::Auto)
+    .expect("auto box id should be assigned");
+  (tree, auto_id)
+}
+
 fn build_flex_container(children: usize) -> BoxNode {
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
@@ -512,6 +562,23 @@ fn find_tree_fragment_by_box_id<'a>(
 ) -> Option<&'a FragmentNodeSnapshot> {
   for root in &tree.roots {
     if let Some(found) = find_fragment_by_box_id(root, box_id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_box_id_by_content_visibility(node: &BoxNode, visibility: ContentVisibility) -> Option<usize> {
+  if node.style.content_visibility == visibility {
+    return Some(node.id);
+  }
+  for child in &node.children {
+    if let Some(found) = find_box_id_by_content_visibility(child, visibility) {
+      return Some(found);
+    }
+  }
+  if let Some(body) = node.footnote_body.as_deref() {
+    if let Some(found) = find_box_id_by_content_visibility(body, visibility) {
       return Some(found);
     }
   }
@@ -730,6 +797,45 @@ fn parallel_block_children_preserve_external_fixed_containing_blocks() {
     parallel_fixed.bounds.y < 0.0,
     "expected fixed fragment to be offset by the containing block translation (y<0), got {:?}",
     parallel_fixed.bounds
+  );
+}
+
+#[test]
+fn parallel_block_children_respect_content_visibility_auto_in_descendants() {
+  let _guard = super::layout_parallel_debug_lock();
+  let (box_tree, auto_box_id) = build_block_stack_with_content_visibility_auto_descendant();
+  let viewport = Size::new(300.0, 200.0);
+
+  let serial_engine =
+    LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
+  let parallel_engine = LayoutEngine::with_font_context(
+    LayoutConfig::for_viewport(viewport).with_parallelism(
+      LayoutParallelism::enabled(2).with_max_threads(Some(available_threads())),
+    ),
+    FontContext::new(),
+  );
+
+  let serial_snapshot =
+    snapshot_fragment_tree(&serial_engine.layout_tree(&box_tree).expect("serial layout"));
+  let parallel_snapshot =
+    snapshot_fragment_tree(&parallel_engine.layout_tree(&box_tree).expect("parallel layout"));
+
+  if let Some(diff) = diff_trees(&serial_snapshot, &parallel_snapshot) {
+    panic!("serial vs parallel diff: {diff}");
+  }
+
+  let serial_auto = find_tree_fragment_by_box_id(&serial_snapshot, auto_box_id)
+    .expect("serial snapshot missing auto fragment");
+  let parallel_auto = find_tree_fragment_by_box_id(&parallel_snapshot, auto_box_id)
+    .expect("parallel snapshot missing auto fragment");
+
+  assert!(
+    serial_auto.children.is_empty(),
+    "expected offscreen auto subtree to be skipped in serial layout"
+  );
+  assert!(
+    parallel_auto.children.is_empty(),
+    "expected offscreen auto subtree to be skipped in parallel layout"
   );
 }
 

@@ -2497,6 +2497,41 @@ impl BlockFormattingContext {
     false
   }
 
+  fn subtree_contains_content_visibility_auto(node: &BoxNode) -> bool {
+    // `content-visibility:auto` decisions depend on the element's final placement relative to the
+    // viewport. Parallel block layout currently lays out siblings at `box_y=0` and translates the
+    // fragment root afterward, which can change whether an auto subtree is considered "in view".
+    //
+    // Until the parallel path is able to translate viewport-relative state into each child before
+    // layout (or otherwise make auto activation translation-invariant), conservatively disable
+    // parallelization when any descendant opts into auto skipping.
+    if matches!(
+      node.style.content_visibility,
+      crate::style::types::ContentVisibility::Auto
+    ) {
+      return true;
+    }
+    let mut stack: Vec<&BoxNode> = node.children.iter().collect();
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    while let Some(node) = stack.pop() {
+      if matches!(
+        node.style.content_visibility,
+        crate::style::types::ContentVisibility::Auto
+      ) {
+        return true;
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter() {
+        stack.push(child);
+      }
+    }
+    false
+  }
+
   fn translate_fragment_tree(fragment: &mut FragmentNode, delta: Point) {
     if delta.x == 0.0 && delta.y == 0.0 {
       return;
@@ -2626,6 +2661,7 @@ impl BlockFormattingContext {
       || !float_ctx_empty
       || !Self::can_parallelize_block_children(parent)
       || Self::subtree_contains_floats(parent)
+      || Self::subtree_contains_content_visibility_auto(parent)
       || Self::is_multicol_container(&parent.style)
     {
       return None;
