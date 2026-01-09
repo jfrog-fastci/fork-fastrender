@@ -71,6 +71,14 @@ struct Args {
   #[arg(long, value_name = "DIR")]
   dump_json: Option<PathBuf>,
 
+  /// Write a deterministic snapshot of the imported `dom2::Document` into this JSON file.
+  ///
+  /// This imports the parsed renderer DOM into `dom2` and then serializes it via
+  /// `fastrender::debug::snapshot::snapshot_dom2`. This is useful for debugging DOM connectedness
+  /// and inert subtree handling without executing layout/paint.
+  #[arg(long, value_name = "JSON")]
+  dump_dom2_json: Option<PathBuf>,
+
   /// Print a combined pipeline snapshot JSON to stdout.
   #[arg(long)]
   dump_snapshot: bool,
@@ -1179,6 +1187,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_pretty_json(&dir.join("display_list.json"), &snapshot.display_list)?;
   }
 
+  if let Some(path) = &args.dump_dom2_json {
+    let dom2_doc = fastrender::dom2::Document::from_renderer_dom(&output.dom);
+    let dom2_snapshot = fastrender::debug::snapshot::snapshot_dom2(&dom2_doc);
+    write_pretty_json(path, &dom2_snapshot)?;
+  }
+
   if args.dump_snapshot {
     let snapshot = snapshot_pipeline(
       &output.dom,
@@ -1351,6 +1365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let has_explicit_output = args.dump_json.is_some()
+    || args.dump_dom2_json.is_some()
     || args.dump_snapshot
     || args.render_overlay.is_some()
     || !args.trace_text.is_empty()

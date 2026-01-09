@@ -49,7 +49,7 @@ pub use ecma_embed::{
 };
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
-  ScriptOrchestrator,
+  ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
 };
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{

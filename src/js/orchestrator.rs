@@ -1,7 +1,9 @@
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::Result;
 use crate::js::ScriptType;
+use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 /// Host-side bookkeeping for `Document.currentScript`.
@@ -63,12 +65,70 @@ impl CurrentScriptState {
   }
 }
 
+/// Debug record of a script execution.
+///
+/// This is intended for tooling and unit tests that need to understand script ordering and the
+/// host's `document.currentScript` bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptExecutionLogEntry {
+  /// `dom2::NodeId::index()` of the `<script>` element being executed.
+  pub script_id: usize,
+  #[serde(flatten)]
+  pub source: ScriptSourceSnapshot,
+  /// `dom2::NodeId::index()` observed as `document.currentScript` during execution.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub current_script_node_id: Option<usize>,
+}
+
+/// Snapshot of whether a script is external (`src=`) or inline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ScriptSourceSnapshot {
+  Inline,
+  Url { url: String },
+}
+
+/// Bounded FIFO log of executed scripts.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptExecutionLog {
+  capacity: usize,
+  entries: VecDeque<ScriptExecutionLogEntry>,
+}
+
+impl ScriptExecutionLog {
+  pub fn new(capacity: usize) -> Self {
+    Self {
+      capacity: capacity.max(1),
+      entries: VecDeque::new(),
+    }
+  }
+
+  pub fn entries(&self) -> &VecDeque<ScriptExecutionLogEntry> {
+    &self.entries
+  }
+
+  pub fn record(&mut self, entry: ScriptExecutionLogEntry) {
+    while self.entries.len() >= self.capacity {
+      self.entries.pop_front();
+    }
+    self.entries.push_back(entry);
+  }
+}
+
 /// Trait for host types that carry `Document.currentScript` state.
 pub trait CurrentScriptHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle;
 
   fn current_script(&self) -> Option<NodeId> {
     self.current_script_state().borrow().current_script
+  }
+
+  fn script_execution_log(&self) -> Option<&ScriptExecutionLog> {
+    None
+  }
+
+  fn script_execution_log_mut(&mut self) -> Option<&mut ScriptExecutionLog> {
+    None
   }
 }
 
@@ -137,9 +197,34 @@ impl ScriptOrchestrator {
       .current_script_state()
       .borrow_mut()
       .push(new_current_script);
+    if let Some(log) = host.script_execution_log_mut() {
+      log.record(ScriptExecutionLogEntry {
+        script_id: script.index(),
+        source: script_source_snapshot(dom, script),
+        current_script_node_id: new_current_script.map(|id| id.index()),
+      });
+    }
     let result = executor.execute_script(host, self, dom, script, script_type);
     host.current_script_state().borrow_mut().pop();
     result
+  }
+}
+
+fn script_source_snapshot(dom: &Document, script: NodeId) -> ScriptSourceSnapshot {
+  let node = dom.node(script);
+  let NodeKind::Element { attributes, .. } = &node.kind else {
+    return ScriptSourceSnapshot::Inline;
+  };
+
+  // HTML attributes are case-insensitive for script elements; treat any `src` attribute as
+  // identifying an external script (even if empty, as the fetch would still resolve).
+  let src = attributes
+    .iter()
+    .find(|(k, _)| k.eq_ignore_ascii_case("src"))
+    .map(|(_, v)| v.to_string());
+  match src {
+    Some(url) => ScriptSourceSnapshot::Url { url },
+    None => ScriptSourceSnapshot::Inline,
   }
 }
 
@@ -171,11 +256,20 @@ mod tests {
   #[derive(Default)]
   struct Host {
     script_state: CurrentScriptStateHandle,
+    log: Option<ScriptExecutionLog>,
   }
 
   impl CurrentScriptHost for Host {
     fn current_script_state(&self) -> &CurrentScriptStateHandle {
       &self.script_state
+    }
+
+    fn script_execution_log(&self) -> Option<&ScriptExecutionLog> {
+      self.log.as_ref()
+    }
+
+    fn script_execution_log_mut(&mut self) -> Option<&mut ScriptExecutionLog> {
+      self.log.as_mut()
     }
   }
 
@@ -413,6 +507,88 @@ mod tests {
     assert_eq!(host.current_script(), None);
     assert_eq!(executor.observed, vec![Some(live_script)]);
     assert_eq!(host.script_state.borrow().stack_depth(), 0);
+    Ok(())
+  }
+
+  #[test]
+  fn records_script_execution_log_with_current_script() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><script></script><script></script>")
+      .unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 2);
+
+    let mut host = Host::default();
+    host.log = Some(ScriptExecutionLog::new(16));
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = RecordingExecutor::default();
+
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      scripts[0],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      scripts[1],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+
+    let log = host.log.as_ref().expect("log enabled");
+    assert_eq!(
+      log.entries().iter().cloned().collect::<Vec<_>>(),
+      vec![
+        ScriptExecutionLogEntry {
+          script_id: scripts[0].index(),
+          source: ScriptSourceSnapshot::Inline,
+          current_script_node_id: Some(scripts[0].index()),
+        },
+        ScriptExecutionLogEntry {
+          script_id: scripts[1].index(),
+          source: ScriptSourceSnapshot::Inline,
+          current_script_node_id: Some(scripts[1].index()),
+        },
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn script_execution_log_is_bounded_fifo() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html("<!doctype html><script></script><script></script>")
+      .unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 2);
+
+    let mut host = Host::default();
+    host.log = Some(ScriptExecutionLog::new(1));
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = RecordingExecutor::default();
+
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      scripts[0],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      scripts[1],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+
+    let log = host.log.as_ref().expect("log enabled");
+    let entries = log.entries().iter().cloned().collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].script_id, scripts[1].index());
     Ok(())
   }
 }

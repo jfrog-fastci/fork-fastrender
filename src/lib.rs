@@ -265,10 +265,12 @@ pub use css::types::PropertyValue;
 pub use css::types::Transform;
 // Debug tools
 pub use debug::snapshot::{
-  snapshot_box_tree, snapshot_dom, snapshot_fragment_tree, snapshot_pipeline, snapshot_styled,
-  BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, DomNodeSnapshot,
-  DomSnapshot, FragmentNodeSnapshot, FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot,
-  SchemaVersion, StyledNodeSnapshot, StyledSnapshot,
+  assert_dom2_snapshot_eq, assert_dom2_snapshot_invariants, snapshot_box_tree, snapshot_dom,
+  snapshot_dom2, snapshot_dom_from_dom2, snapshot_fragment_tree, snapshot_pipeline, snapshot_styled,
+  BoxNodeSnapshot, BoxTreeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, Dom2NodeKindSnapshot,
+  Dom2NodeSnapshot, Dom2Snapshot, DomNodeSnapshot, DomSnapshot, FragmentNodeSnapshot,
+  FragmentTreeSnapshot, PipelineSnapshot, QuirksModeSnapshot, SchemaVersion, StyledNodeSnapshot,
+  StyledSnapshot,
 };
 pub use debug::tree_printer::{
   ColorMode, DiffMode, DotExporter, EnhancedTreePrinter, JsonExportConfig, PrintConfig, TreeDiff,

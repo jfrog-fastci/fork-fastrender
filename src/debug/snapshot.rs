@@ -121,6 +121,63 @@ pub struct AttributeSnapshot {
   pub value: String,
 }
 
+/// Snapshot of a live `dom2::Document` tree.
+///
+/// Unlike [`DomSnapshot`], this snapshot captures `dom2` node ids (stable indices into the document's
+/// node arena) and explicit parent/child relationships so ordering/connectedness issues can be
+/// debugged without re-rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Dom2Snapshot {
+  pub schema_version: SchemaVersion,
+  /// Node id of the document root (typically `0`).
+  pub root: usize,
+  /// All nodes currently allocated in the `dom2::Document`, in `NodeId` index order.
+  pub nodes: Vec<Dom2NodeSnapshot>,
+}
+
+/// Snapshot of an individual `dom2` node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Dom2NodeSnapshot {
+  /// `dom2::NodeId::index()`.
+  pub node_id: usize,
+  /// Parent node id, if known.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub parent: Option<usize>,
+  /// Child node ids, in tree order.
+  pub children: Vec<usize>,
+  /// Whether this node's subtree is considered inert (currently used for `<template>` contents).
+  pub inert_subtree: bool,
+  /// Node kind specific data.
+  pub kind: Dom2NodeKindSnapshot,
+}
+
+/// `dom2` node kind specific data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Dom2NodeKindSnapshot {
+  Document {
+    #[serde(default)]
+    quirks_mode: QuirksModeSnapshot,
+  },
+  ShadowRoot {
+    mode: String,
+    delegates_focus: bool,
+  },
+  Slot {
+    namespace: String,
+    attributes: Vec<AttributeSnapshot>,
+    assigned: bool,
+  },
+  Element {
+    tag_name: String,
+    namespace: String,
+    attributes: Vec<AttributeSnapshot>,
+  },
+  Text {
+    content: String,
+  },
+}
+
 /// Snapshot of a styled DOM tree.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StyledSnapshot {
@@ -384,6 +441,144 @@ pub fn snapshot_dom(dom: &DomNode) -> DomSnapshot {
 pub fn snapshot_composed_dom(dom: &DomNode) -> crate::Result<DomSnapshot> {
   let composed = crate::dom::composed_dom_snapshot(dom)?;
   Ok(snapshot_dom(&composed))
+}
+
+const DOM2_SNAPSHOT_TEXT_MAX_CHARS: usize = 200;
+
+/// Capture a `dom2::Document` snapshot (including parent pointers and inert subtree flags).
+pub fn snapshot_dom2(doc: &crate::dom2::Document) -> Dom2Snapshot {
+  let root = doc.root().index();
+  let nodes = doc
+    .nodes()
+    .iter()
+    .enumerate()
+    .map(|(idx, node)| Dom2NodeSnapshot {
+      node_id: idx,
+      parent: node.parent.map(|id| id.index()),
+      children: node.children.iter().map(|id| id.index()).collect(),
+      inert_subtree: node.inert_subtree,
+      kind: snapshot_dom2_kind(&node.kind),
+    })
+    .collect();
+
+  Dom2Snapshot {
+    schema_version: SchemaVersion::current(),
+    root,
+    nodes,
+  }
+}
+
+/// Convenience helper: snapshot the renderer's immutable [`DomNode`] produced by a `dom2` document.
+pub fn snapshot_dom_from_dom2(doc: &crate::dom2::Document) -> DomSnapshot {
+  let renderer_dom = doc.to_renderer_dom();
+  snapshot_dom(&renderer_dom)
+}
+
+fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
+  match kind {
+    crate::dom2::NodeKind::Document { quirks_mode } => Dom2NodeKindSnapshot::Document {
+      quirks_mode: QuirksModeSnapshot::from(*quirks_mode),
+    },
+    crate::dom2::NodeKind::ShadowRoot {
+      mode,
+      delegates_focus,
+    } => Dom2NodeKindSnapshot::ShadowRoot {
+      mode: format!("{mode:?}"),
+      delegates_focus: *delegates_focus,
+    },
+    crate::dom2::NodeKind::Slot {
+      namespace,
+      attributes,
+      assigned,
+    } => Dom2NodeKindSnapshot::Slot {
+      namespace: namespace.clone(),
+      attributes: snapshot_attributes(attributes),
+      assigned: *assigned,
+    },
+    crate::dom2::NodeKind::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => Dom2NodeKindSnapshot::Element {
+      tag_name: tag_name.clone(),
+      namespace: namespace.clone(),
+      attributes: snapshot_attributes(attributes),
+    },
+    crate::dom2::NodeKind::Text { content } => Dom2NodeKindSnapshot::Text {
+      content: truncate_dom2_snapshot_text(content),
+    },
+  }
+}
+
+fn truncate_dom2_snapshot_text(text: &str) -> String {
+  let mut chars = text.chars();
+  let mut out = String::new();
+  for _ in 0..DOM2_SNAPSHOT_TEXT_MAX_CHARS {
+    let Some(ch) = chars.next() else {
+      return out;
+    };
+    out.push(ch);
+  }
+  if chars.next().is_some() {
+    out.push_str("…");
+  }
+  out
+}
+
+#[track_caller]
+pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
+  assert!(
+    snapshot.root < snapshot.nodes.len(),
+    "dom2 snapshot root out of range: root={} nodes={}",
+    snapshot.root,
+    snapshot.nodes.len()
+  );
+
+  for (idx, node) in snapshot.nodes.iter().enumerate() {
+    assert_eq!(
+      node.node_id, idx,
+      "dom2 snapshot node_id mismatch: expected {idx}, got {}",
+      node.node_id
+    );
+
+    if idx == snapshot.root {
+      assert!(
+        node.parent.is_none(),
+        "dom2 snapshot root must have no parent"
+      );
+    }
+
+    if let Some(parent) = node.parent {
+      assert!(
+        parent < snapshot.nodes.len(),
+        "dom2 snapshot parent out of range: node_id={idx} parent={parent}"
+      );
+      assert!(
+        snapshot.nodes[parent].children.contains(&idx),
+        "dom2 snapshot parent->children missing: node_id={idx} parent={parent}"
+      );
+    }
+
+    for &child in &node.children {
+      assert!(
+        child < snapshot.nodes.len(),
+        "dom2 snapshot child out of range: node_id={idx} child={child}"
+      );
+      assert_eq!(
+        snapshot.nodes[child].parent,
+        Some(idx),
+        "dom2 snapshot child->parent mismatch: parent={idx} child={child}"
+      );
+    }
+  }
+}
+
+#[track_caller]
+pub fn assert_dom2_snapshot_eq(actual: &Dom2Snapshot, expected: &Dom2Snapshot) {
+  let actual_json = serde_json::to_string_pretty(actual).expect("serialize actual Dom2Snapshot");
+  let expected_json =
+    serde_json::to_string_pretty(expected).expect("serialize expected Dom2Snapshot");
+  assert_eq!(actual_json, expected_json);
 }
 
 fn snapshot_dom_node(node: &DomNode, next: &mut usize) -> DomNodeSnapshot {
@@ -1165,5 +1360,64 @@ pub fn snapshot_pipeline(
     box_tree: snapshot_box_tree(box_tree),
     fragment_tree: snapshot_fragment_tree(fragment_tree),
     display_list: snapshot_display_list(display_list),
+  }
+}
+
+#[cfg(test)]
+mod dom2_snapshot_tests {
+  use super::*;
+  use crate::dom2::Document as Dom2Document;
+
+  #[test]
+  fn dom2_snapshot_captures_inert_template_and_parent_child_invariants() {
+    let html = concat!(
+      "<!doctype html>",
+      "<html><body>",
+      "<div id=host>",
+      "<template shadowroot=open>",
+      "<slot name=s></slot><span>shadow</span>",
+      "</template>",
+      "<p>light</p>",
+      "</div>",
+      "<template><span>inert</span></template>",
+      "</body></html>"
+    );
+    let renderer_dom = crate::dom::parse_html(html).unwrap();
+    let dom2 = Dom2Document::from_renderer_dom(&renderer_dom);
+
+    let snapshot = snapshot_dom2(&dom2);
+    assert_dom2_snapshot_invariants(&snapshot);
+
+    let template = snapshot
+      .nodes
+      .iter()
+      .find(|node| match &node.kind {
+        Dom2NodeKindSnapshot::Element { tag_name, .. } => tag_name.eq_ignore_ascii_case("template"),
+        _ => false,
+      })
+      .expect("expected inert <template> element in dom2 snapshot");
+    assert!(
+      template.inert_subtree,
+      "expected <template> to set inert_subtree=true in snapshot"
+    );
+    assert!(
+      !template.children.is_empty(),
+      "expected <template> contents to remain in the tree"
+    );
+
+    assert!(
+      snapshot
+        .nodes
+        .iter()
+        .any(|node| matches!(node.kind, Dom2NodeKindSnapshot::ShadowRoot { .. })),
+      "expected a ShadowRoot node in the dom2 snapshot"
+    );
+    assert!(
+      snapshot
+        .nodes
+        .iter()
+        .any(|node| matches!(node.kind, Dom2NodeKindSnapshot::Slot { .. })),
+      "expected a Slot node in the dom2 snapshot"
+    );
   }
 }
