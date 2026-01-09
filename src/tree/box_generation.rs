@@ -4011,11 +4011,41 @@ fn create_pseudo_element_box(
     _ => None,
   };
 
-  let pseudo_style = Arc::clone(styles);
+  let mut pseudo_style = Arc::clone(styles);
+  let mut display = pseudo_style.display;
+  if pseudo_style.position.is_in_flow()
+    && matches!(
+      styled.styles.display,
+      Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+    )
+  {
+    let blockified = match display {
+      Display::Inline => Display::Block,
+      Display::InlineBlock => Display::FlowRoot,
+      Display::InlineFlex => Display::Flex,
+      Display::InlineGrid => Display::Grid,
+      Display::InlineTable => Display::Table,
+      // FastRender models ruby as inline-level flow boxes; blockify to a plain block.
+      Display::Ruby
+      | Display::RubyBase
+      | Display::RubyText
+      | Display::RubyBaseContainer
+      | Display::RubyTextContainer => Display::Block,
+      _ => display,
+    };
+    if blockified != display {
+      let mut new_style = pseudo_style.as_ref().clone();
+      new_style.display = blockified;
+      pseudo_style = Arc::new(new_style);
+      display = blockified;
+    }
+  }
+
   // Generated content items behave like anonymous child boxes of the pseudo-element. They inherit
   // inheritable properties (font, color, etc.) from the pseudo-element but should not copy
   // layout-affecting properties like `display` or `position`.
-  let generated_content_style = Arc::new(crate::tree::anonymous::inherited_style(&pseudo_style));
+  let generated_content_style =
+    Arc::new(crate::tree::anonymous::inherited_style(pseudo_style.as_ref()));
 
   let mut context = ContentContext::new();
   for (name, value) in styled.node.attributes_iter() {
@@ -4152,13 +4182,12 @@ fn create_pseudo_element_box(
   *quote_depth = context.quote_depth();
 
   // Determine the box type based on display property
-  let fc_type = styles
-    .display
+  let fc_type = display
     .formatting_context_type()
     .unwrap_or(FormattingContextType::Block);
 
   // Wrap in appropriate box type based on display
-  let mut pseudo_box = match styles.display {
+  let mut pseudo_box = match display {
     Display::None => {
       debug_assert!(
         false,

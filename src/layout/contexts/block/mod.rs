@@ -139,12 +139,25 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 fn is_ignorable_whitespace(node: &BoxNode) -> bool {
-  matches!(&node.box_type, BoxType::Text(text_box)
-    if trim_ascii_whitespace(&text_box.text).is_empty()
-      && !matches!(
-        node.style.white_space,
-        crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
-      ))
+  // CSS 2.1 §8.3.1: An element can be considered "empty" for margin-collapsing purposes when there
+  // is no in-flow content that would generate line boxes. In HTML, inter-element whitespace becomes
+  // text nodes that collapse away, but our box tree may wrap that text in anonymous inline boxes.
+  // Treat anonymous inline wrappers as ignorable when their subtree is entirely ignorable
+  // whitespace so empty blocks like `<p> </p>` collapse through correctly.
+  match &node.box_type {
+    BoxType::Text(text_box) => {
+      trim_ascii_whitespace(&text_box.text).is_empty()
+        && !matches!(
+          node.style.white_space,
+          crate::style::types::WhiteSpace::Pre | crate::style::types::WhiteSpace::PreWrap
+        )
+    }
+    BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => node
+      .children
+      .iter()
+      .all(is_ignorable_whitespace),
+    _ => false,
+  }
 }
 
 fn subtree_contains_float(node: &BoxNode) -> bool {

@@ -79,6 +79,7 @@ fn line_height_normal_uses_fallback_font_metrics_for_text_fragments() {
 fn bundled_sans_serif_normal_line_height_is_reasonable() {
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());
   let font = font_ctx.get_sans_serif().expect("bundled sans-serif font");
+  assert_eq!(font.family, "Roboto Flex");
   let face = ttf_parser::Face::parse(font.data.as_slice(), font.index)
     .expect("parse bundled sans-serif font");
   assert!(

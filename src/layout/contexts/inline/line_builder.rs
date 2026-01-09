@@ -94,6 +94,11 @@ fn explicit_bidi_eq(a: Option<ExplicitBidiContext>, b: Option<ExplicitBidiContex
 
 const LINE_BUILDER_DEADLINE_STRIDE: usize = 256;
 const LINE_DEFAULT_ITEM_CAPACITY: usize = 8;
+// Subpixel layout relies on floating point arithmetic, which can introduce tiny rounding errors when
+// comparing item advances to the available line width. Without a tolerance, content that should
+// "just fit" can be treated as overflowing, triggering emergency wrap opportunities like
+// `word-break: break-word` and inflating line heights (e.g. single-word footer links wrapping).
+const LINE_FIT_EPSILON: f32 = 0.01;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -3489,11 +3494,11 @@ impl<'a> LineBuilder<'a> {
           let start_x = box_start_x + start_edge + used_width;
           let (next, next_width) = next.resolve_width_at(start_x);
 
-          if used_width + next_width <= available_children_width {
-            fragment_children.push(next);
-            used_width += next_width;
-            continue;
-          }
+           if used_width + next_width <= available_children_width + LINE_FIT_EPSILON {
+             fragment_children.push(next);
+             used_width += next_width;
+             continue;
+           }
 
           match next {
             InlineItem::Text(text_item) => {
@@ -3743,6 +3748,8 @@ impl<'a> LineBuilder<'a> {
       // Baseline-relative alignments (e.g., middle/sub/super/text-top) depend on the
       // parent's font metrics. The strut represents the parent inline box, so thread it
       // through to compute x-height/ascent-based offsets correctly.
+      // `LineBaselineAccumulator` returns a baseline shift in the same coordinate system used for
+      // fragment placement (positive y = down), so store it directly.
       self
         .baseline_acc
         .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))

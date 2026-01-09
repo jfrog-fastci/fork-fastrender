@@ -79,9 +79,7 @@ pub(crate) struct BundledFont {
 pub(crate) const BUNDLED_FONTS: &[BundledFont] = &[
   // Roboto Flex provides a modern variable sans face with sane line metrics, helping pages that
   // fall back to generic `sans-serif` (e.g. sites that request Helvetica/Arial but ship no web
-  // fonts in offline fixtures). It is not necessarily the default generic fallback (see
-  // `set_bundled_generic_fallbacks`), but serves as a high-quality option when the preferred face
-  // is unavailable.
+  // fonts in offline fixtures).
   BundledFont {
     name: "Roboto Flex",
     data: include_bytes!("../../tests/fonts/RobotoFlex-VF.ttf"),
@@ -89,6 +87,10 @@ pub(crate) const BUNDLED_FONTS: &[BundledFont] = &[
   BundledFont {
     name: "Noto Sans",
     data: include_bytes!("../../tests/fixtures/fonts/NotoSans-subset.ttf"),
+  },
+  BundledFont {
+    name: "FastRender Serif",
+    data: include_bytes!("../../tests/fixtures/fonts/FastRenderSerif-subset.ttf"),
   },
   BundledFont {
     name: "Noto Serif",
@@ -461,10 +463,15 @@ fn set_bundled_generic_fallbacks(db: &mut FontDbDatabase) {
   };
 
   // Prefer stable bundled defaults; fall back to the first bundled family if those are missing.
-  let serif = first_matching_family(&["Noto Serif"]).unwrap_or_else(|| primary_family.clone());
-  // Prefer Noto Sans for determinism; its glyph shapes are reasonably close to common Linux
-  // sans-serif defaults used by Chrome in our screenshot baselines.
-  let sans = first_matching_family(&["Noto Sans", "DejaVu Sans", "Roboto Flex"])
+  //
+  // `STIX Two Math` is not a perfect serif text face, but its Times-like metrics are substantially
+  // closer to common browser defaults than Noto Serif. This matters for offline fixtures that
+  // omit webfonts and rely on the UA default `serif` font for line wrapping (e.g. microsoft.com).
+  let serif = first_matching_family(&["STIX Two Math", "FastRender Serif", "Noto Serif"])
+    .unwrap_or_else(|| primary_family.clone());
+  // Prefer Roboto Flex: its metrics are closer to Chrome's typical Linux sans-serif fallback
+  // (narrower than Noto Sans), reducing wrap-driven layout drift in offline fixtures.
+  let sans = first_matching_family(&["Roboto Flex", "Noto Sans", "DejaVu Sans"])
     .unwrap_or_else(|| primary_family.clone());
   let monospace =
     first_matching_family(&["Noto Sans Mono"]).unwrap_or_else(|| primary_family.clone());
@@ -1267,7 +1274,10 @@ impl GenericFamily {
   pub fn prefers_named_fallbacks_first(self) -> bool {
     matches!(
       self,
-      GenericFamily::SystemUi
+      GenericFamily::Serif
+        | GenericFamily::SansSerif
+        | GenericFamily::Monospace
+        | GenericFamily::SystemUi
         | GenericFamily::UiSerif
         | GenericFamily::UiSansSerif
         | GenericFamily::UiMonospace
@@ -2518,6 +2528,13 @@ mod tests {
     let fallbacks = GenericFamily::SansSerif.fallback_families();
     assert!(fallbacks.contains(&"Arial"));
     assert!(fallbacks.contains(&"Helvetica"));
+  }
+
+  #[test]
+  fn test_generic_family_prefers_named_fallbacks_for_core_generics() {
+    assert!(GenericFamily::Serif.prefers_named_fallbacks_first());
+    assert!(GenericFamily::SansSerif.prefers_named_fallbacks_first());
+    assert!(GenericFamily::Monospace.prefers_named_fallbacks_first());
   }
 
   #[test]

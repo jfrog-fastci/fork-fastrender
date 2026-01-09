@@ -19344,6 +19344,75 @@ mod tests {
   }
 
   #[test]
+  fn word_break_break_word_does_not_split_on_tiny_overflow() {
+    // Floating point rounding can produce extremely small overflows in otherwise "exact fit"
+    // scenarios (e.g. shrink-to-fit widths derived from measured text advance). When
+    // `word-break: break-word` is enabled, those tiny overflows must not trigger emergency
+    // intra-word breaks; browsers treat the word as fitting at subpixel precision.
+    let ifc = InlineFormattingContext::new();
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    text_style.word_break = WordBreak::BreakWord;
+    text_style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(text_style);
+
+    let text = "Sitemap";
+    let advance = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          text,
+          text_style.as_ref(),
+          &ifc.font_context,
+          pipeline_direction(text_style.direction),
+        )
+        .expect("shape");
+      TextItem::apply_spacing_to_runs(
+        &mut runs,
+        text,
+        text_style.letter_spacing,
+        text_style.word_spacing,
+      );
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+    let width = advance - 0.005;
+
+    let root_style = default_style();
+    let root = BoxNode::new_block(
+      root_style.clone(),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(text_style, text.to_string())],
+    );
+    let items = ifc
+      .collect_inline_items(&root, width, None)
+      .expect("collect items");
+    let strut = ifc.compute_strut_metrics(root_style.as_ref());
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        width,
+        width,
+        root_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        root_style.direction,
+        root_style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .expect("line layout")
+      .lines;
+
+    assert_eq!(line_texts(&lines), vec![text]);
+  }
+
+  #[test]
   fn word_break_anywhere_respects_nowrap() {
     let mut text_style = ComputedStyle::default();
     text_style.word_break = WordBreak::Anywhere;

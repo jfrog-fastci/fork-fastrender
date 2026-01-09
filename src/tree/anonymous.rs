@@ -970,6 +970,7 @@ mod tests {
   use crate::style::values::Length;
   use crate::tree::box_tree::MarkerContent;
   use crate::tree::table_fixup::TableStructureFixer;
+  use crate::Float;
 
   fn default_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
@@ -1600,5 +1601,33 @@ mod tests {
     assert_eq!(wrapper.style.color, Rgba::BLUE);
     // Position is non-inherited; wrapper should be static even if parent is positioned.
     assert_eq!(wrapper.style.position, Position::Static);
+  }
+
+  #[test]
+  fn anonymous_inline_wrappers_do_not_copy_float_from_parent_inline_box() {
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.float = Float::Left;
+    let inline_block_style = Arc::new(inline_block_style);
+
+    let text = BoxNode::new_text(default_style(), "Hello".to_string());
+    let inline_block = BoxNode::new_inline_block(
+      inline_block_style,
+      FormattingContextType::Block,
+      vec![text],
+    );
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![inline_block],
+    );
+
+    let fixed = fixup_tree(root);
+
+    let inline_fixed = &fixed.children[0];
+    assert_eq!(inline_fixed.children.len(), 1);
+    let wrapper = &inline_fixed.children[0];
+    assert!(wrapper.is_anonymous());
+    assert_eq!(wrapper.style.float, Float::None);
   }
 }

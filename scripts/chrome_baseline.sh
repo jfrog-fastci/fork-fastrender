@@ -584,7 +584,14 @@ PY
     "${HEADLESS_FLAG}"
     --no-sandbox
     --disable-dev-shm-usage
-    --disable-gpu
+  )
+  # `--headless=new` uses Chrome's normal compositor pipeline; on some builds `--disable-gpu` breaks
+  # screenshotting entirely (hangs/crashes before writing the `--screenshot` file). Only disable the
+  # GPU for legacy headless mode.
+  if [[ "${HEADLESS_FLAG}" != "--headless=new" ]]; then
+    chrome_args+=(--disable-gpu)
+  fi
+  chrome_args+=(
     --hide-scrollbars
     --window-size="${VIEWPORT_W},${WINDOW_H}"
     --force-device-scale-factor="${DPR}"
@@ -636,6 +643,7 @@ PY
       if [[ "${headless_new_unsupported}" -eq 1 ]]; then
         HEADLESS_FLAG="--headless"
         chrome_args[0]="${HEADLESS_FLAG}"
+        chrome_args+=(--disable-gpu)
         rm -f "${tmp_png_path}"
         printf "\n\n# Retrying with --headless\n" >>"${chrome_log}" 2>/dev/null || true
         ran_ok=0

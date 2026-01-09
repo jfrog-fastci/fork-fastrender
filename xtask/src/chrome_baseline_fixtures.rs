@@ -114,6 +114,9 @@ impl Drop for ChromeRlimitAsGuard {
   }
 }
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 /// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
 /// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~88px
 /// (default).
@@ -1280,28 +1283,42 @@ fn build_chrome_common_args(
   let dpr_arg = format!("--force-device-scale-factor={}", dpr);
   let profile_arg = format!("--user-data-dir={}", profile_dir.display());
 
-  Ok(vec![
-    headless_flag.to_string(),
-    "--disable-gpu".to_string(),
-    "--no-sandbox".to_string(),
-    "--disable-dev-shm-usage".to_string(),
-    "--hide-scrollbars".to_string(),
-    viewport_arg,
-    dpr_arg,
-    // Keep behaviour consistent with scripts/chrome_baseline.sh when loading local fixtures.
-    "--disable-web-security".to_string(),
-    "--allow-file-access-from-files".to_string(),
-    // Keep renders deterministic/offline when fixture HTML accidentally references http(s).
-    "--disable-background-networking".to_string(),
-    "--dns-prefetch-disable".to_string(),
-    "--no-first-run".to_string(),
-    "--no-default-browser-check".to_string(),
-    "--disable-component-update".to_string(),
-    "--disable-default-apps".to_string(),
-    "--disable-sync".to_string(),
-    "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost".to_string(),
-    profile_arg,
-  ])
+  let mut args = vec![headless_flag.to_string()];
+  // `--headless=new` uses Chrome's normal compositor pipeline, so disabling the GPU can break
+  // screenshots on some builds (hangs/crashes before emitting `--screenshot` output). Legacy headless
+  // mode is fine with `--disable-gpu` and historically recommended it for stability.
+  if matches!(headless, HeadlessMode::Legacy) {
+    args.push("--disable-gpu".to_string());
+  }
+  args.extend([
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--hide-scrollbars",
+  ]
+  .iter()
+  .map(|v| v.to_string()));
+  args.push(viewport_arg);
+  args.push(dpr_arg);
+  args.extend(
+    [
+      // Keep behaviour consistent with scripts/chrome_baseline.sh when loading local fixtures.
+      "--disable-web-security",
+      "--allow-file-access-from-files",
+      // Keep renders deterministic/offline when fixture HTML accidentally references http(s).
+      "--disable-background-networking",
+      "--dns-prefetch-disable",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-component-update",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost",
+    ]
+    .iter()
+    .map(|v| v.to_string()),
+  );
+  args.push(profile_arg);
+  Ok(args)
 }
 
 fn run_chrome_with_timeout(
@@ -1375,7 +1392,6 @@ fn run_chrome_with_timeout(
   // so fixture baselines don't spuriously crash under the agent wrapper.
   #[cfg(target_os = "linux")]
   unsafe {
-    use std::os::unix::process::CommandExt;
     cmd.pre_exec(|| {
       let lim = libc::rlimit {
         rlim_cur: libc::RLIM_INFINITY,

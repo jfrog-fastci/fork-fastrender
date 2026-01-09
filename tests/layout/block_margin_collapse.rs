@@ -34,6 +34,24 @@ fn empty_block_with_margins(margin_top: f32, margin_bottom: f32) -> BoxNode {
   BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
 }
 
+fn whitespace_only_block_with_margins(margin_top: f32, margin_bottom: f32) -> BoxNode {
+  let mut block_style = block_style_with_height(None);
+  block_style.margin_top = Some(Length::px(margin_top));
+  block_style.margin_bottom = Some(Length::px(margin_bottom));
+
+  let mut inline_style = ComputedStyle::default();
+  inline_style.display = Display::Inline;
+  let inline_style = Arc::new(inline_style);
+
+  let text = BoxNode::new_text(inline_style.clone(), " \n\t".to_string());
+  let anon_inline = BoxNode::new_anonymous_inline(inline_style, vec![text]);
+  BoxNode::new_block(
+    Arc::new(block_style),
+    FormattingContextType::Block,
+    vec![anon_inline],
+  )
+}
+
 fn assert_approx(a: f32, b: f32, msg: &str) {
   assert!(
     (a - b).abs() <= EPS,
@@ -527,6 +545,33 @@ fn collapse_through_empty_blocks() {
     blue_fragment.bounds.y() - red_fragment.bounds.max_y(),
     40.0,
     "expected collapsed margin across empty block to be max(10,30,40)=40",
+  );
+}
+
+#[test]
+fn collapse_through_whitespace_only_blocks() {
+  let red = block_with_height_and_margins(10.0, 0.0, 10.0);
+  let empty = whitespace_only_block_with_margins(20.0, 30.0);
+  let blue = block_with_height_and_margins(10.0, 40.0, 0.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![red, empty, blue],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let red_fragment = &fragment.children[0];
+  let blue_fragment = &fragment.children[2];
+
+  assert_approx(
+    blue_fragment.bounds.y() - red_fragment.bounds.max_y(),
+    40.0,
+    "expected whitespace-only empty blocks to collapse through (max(10,30,40)=40)",
   );
 }
 
