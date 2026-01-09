@@ -1,4 +1,4 @@
-use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmOptions};
+use vm_js::{Heap, HeapLimits, JsRuntime, Value, Vm, VmError, VmOptions};
 
 fn new_runtime() -> JsRuntime {
   let vm = Vm::new(VmOptions::default());
@@ -96,4 +96,34 @@ fn objects_use_toprimitive_for_addition_and_equality() {
 
   let value = rt.exec_script(r#"({}) == '[object Object]'"#).unwrap();
   assert_eq!(value, Value::Bool(true));
+}
+
+#[test]
+fn abstract_equality_null_is_not_equal_to_zero() {
+  let mut rt = new_runtime();
+
+  let value = rt.exec_script(r#"null == 0"#).unwrap();
+  assert_eq!(value, Value::Bool(false));
+
+  let value = rt.exec_script(r#"undefined == 0"#).unwrap();
+  assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
+fn symbol_coercions_throw_typeerror() {
+  let mut rt = new_runtime();
+
+  let err = rt.exec_script(r#"+Symbol('x')"#).unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)), "err={err:?}");
+
+  // String concatenation uses `ToString`, which throws for Symbols.
+  let err = rt.exec_script(r#"'' + Symbol('x')"#).unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)), "err={err:?}");
+
+  let err = rt.exec_script(r#"Symbol('x') + ''"#).unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)), "err={err:?}");
+
+  // But equality just returns false (no coercion to string/number).
+  let value = rt.exec_script(r#"Symbol('x') == 'x'"#).unwrap();
+  assert_eq!(value, Value::Bool(false));
 }
