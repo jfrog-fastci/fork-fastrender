@@ -332,4 +332,30 @@ mod tests {
       other => panic!("expected span text child, got {other:?}"),
     }
   }
+
+  #[test]
+  fn dom_parse_fragment_timeout_is_cooperative() {
+    use crate::error::Error;
+    use crate::error::RenderStage;
+    use crate::render_control::{with_deadline, RenderDeadline};
+    use std::time::Duration;
+
+    let deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
+    let result = with_deadline(Some(&deadline), || {
+      parse_html_fragment(
+        "<span>hi</span>",
+        "div",
+        HTML_NAMESPACE,
+        DomParseOptions::default(),
+        QuirksMode::NoQuirks,
+      )
+    });
+
+    match result {
+      Err(Error::Render(crate::error::RenderError::Timeout { stage, .. })) => {
+        assert_eq!(stage, RenderStage::DomParse);
+      }
+      other => panic!("expected dom_parse timeout, got {other:?}"),
+    }
+  }
 }
