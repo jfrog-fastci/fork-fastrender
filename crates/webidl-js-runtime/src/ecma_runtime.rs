@@ -397,7 +397,12 @@ impl VmJsRuntime {
     Ok(())
   }
 
-  fn call_internal(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+  fn call_internal(
+    &mut self,
+    callee: Value,
+    this: Value,
+    args: &[Value],
+  ) -> Result<Value, VmError> {
     let Value::Object(func) = callee else {
       return Err(self.throw_type_error("value is not callable"));
     };

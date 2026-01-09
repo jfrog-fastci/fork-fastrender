@@ -236,16 +236,6 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use std::sync::Arc;
-  use vm_js::VmHostHooks;
-
-  #[derive(Default)]
-  struct NoopHostHooks;
-
-  impl VmHostHooks for NoopHostHooks {
-    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
-      // This test only uses synchronous native functions (no Promise jobs).
-    }
-  }
 
   fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
     let mut scope = heap.scope();
@@ -274,9 +264,8 @@ mod tests {
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
     let mut scope = heap.scope();
-    let mut hooks = NoopHostHooks::default();
     vm
-      .call(&mut hooks, &mut scope, callee, this, &[])
+      .call(&mut scope, callee, this, &[])
       .expect("call should succeed")
   }
 
@@ -289,7 +278,7 @@ mod tests {
 
     let mut vm = Vm::new(vm_js::VmOptions::default());
     let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let mut realm = Realm::new(&mut heap).expect("create realm");
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
 
     let web_time = WebTime::new(1_000);
     let _bindings = install_time_bindings(

@@ -30,7 +30,41 @@ pub struct VmJsJobContext<'a, Host> {
   pub realm: Option<vm_js::RealmId>,
 }
 
-impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {}
+impl<Host> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
+  fn call(
+    &mut self,
+    _callee: vm_js::Value,
+    _this: vm_js::Value,
+    _args: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "VmJsJobContext::call (FastRender job context)",
+    ))
+  }
+
+  fn construct(
+    &mut self,
+    _callee: vm_js::Value,
+    _args: &[vm_js::Value],
+    _new_target: vm_js::Value,
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    Err(vm_js::VmError::Unimplemented(
+      "VmJsJobContext::construct (FastRender job context)",
+    ))
+  }
+
+  fn add_root(&mut self, _value: vm_js::Value) -> vm_js::RootId {
+    // A correct implementation needs access to the `vm-js` heap so this can call
+    // `Heap::add_root`. FastRender has not yet plumbed the VM/heap into the HTML event-loop
+    // microtask runner, so for now this is a hard failure to avoid silently leaking/storing invalid
+    // root IDs.
+    panic!("VmJsJobContext::add_root is unimplemented (no Heap available)")
+  }
+
+  fn remove_root(&mut self, _id: vm_js::RootId) {
+    panic!("VmJsJobContext::remove_root is unimplemented (no Heap available)")
+  }
+}
 
 /// Adapter implementing `vm-js`'s [`vm_js::VmHostHooks`] by enqueueing jobs into a FastRender
 /// [`EventLoop`]'s microtask queue.
@@ -66,11 +100,14 @@ impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
       return;
     }
 
-    let result = self.event_loop.queue_microtask(move |host, _event_loop| {
+    let result = self.event_loop.queue_microtask(move |host, event_loop| {
       let mut ctx = VmJsJobContext { host, realm };
-      job
-        .run(&mut ctx)
+      let mut hooks = VmJsHostHooks::new(event_loop);
+      job.run(&mut ctx, &mut hooks)
         .map_err(|err| Error::Other(format!("vm-js job failed: {err}")))?;
+      if let Some(err) = hooks.take_error() {
+        return Err(err);
+      }
       Ok(())
     });
 
@@ -117,7 +154,7 @@ mod tests {
       let mut hooks = VmJsHostHooks::new(event_loop);
       let log1 = log_for_task.clone();
       hooks.host_enqueue_promise_job(
-        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx| {
+        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log1.lock().unwrap().push("job1");
           Ok(())
         }),
@@ -125,7 +162,7 @@ mod tests {
       );
       let log2 = log_for_task.clone();
       hooks.host_enqueue_promise_job(
-        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx| {
+        vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log2.lock().unwrap().push("job2");
           Ok(())
         }),

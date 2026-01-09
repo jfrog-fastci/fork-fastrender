@@ -37,7 +37,7 @@ impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm = Vm::new(VmOptions::default());
     let mut heap = Heap::new(default_heap_limits());
-    let realm = Realm::new(&mut heap)?;
+    let realm = Realm::new(&mut vm, &mut heap)?;
     let console_sink_id = init_window_globals(&mut vm, &mut heap, &realm, &config)?;
     Ok(Self {
       vm,
@@ -243,16 +243,6 @@ fn init_window_globals(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use vm_js::VmHostHooks;
-
-  #[derive(Default)]
-  struct NoopHostHooks;
-
-  impl VmHostHooks for NoopHostHooks {
-    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
-      // This test only calls synchronous native functions.
-    }
-  }
 
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
@@ -310,14 +300,8 @@ mod tests {
       panic!("expected object");
     };
     let log = get_prop(&mut scope, console_obj, "log");
-    let mut hooks = NoopHostHooks::default();
-    let call_result = vm.call(
-      &mut hooks,
-      &mut scope,
-      log,
-      Value::Object(console_obj),
-      &[Value::Number(1.0), Value::Null],
-    )?;
+    let call_result =
+      vm.call(&mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
     assert_eq!(call_result, Value::Undefined);
 
     Ok(())

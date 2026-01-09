@@ -14,8 +14,10 @@ pub mod generate;
 pub mod load;
 pub mod overload_ir;
 pub mod parse;
+pub mod parse_dictionary;
 pub mod resolve;
 pub mod type_resolution;
+pub mod semantic;
 
 pub use analyze::{
   analyze_resolved_world, AnalyzedInterface, AnalyzedInterfaceMember, AnalyzedInterfaceMixin,
@@ -23,6 +25,8 @@ pub use analyze::{
 };
 pub use ast::{Argument, BuiltinType, IdlLiteral, IdlType, InterfaceMember, SpecialOperation};
 pub use parse::{parse_idl_type, parse_interface_member};
+pub use parse_dictionary::{parse_dictionary_member, ParsedDictionaryMember};
+pub use semantic::{SemanticDiagnostic, SemanticWorld};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedAttribute {
