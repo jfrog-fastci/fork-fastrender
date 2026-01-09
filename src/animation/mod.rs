@@ -9462,12 +9462,50 @@ mod tests {
       vec!["border-top-width", "border-top-color", "border-top-style"]
     );
     assert_eq!(
+      expand_transition_property_name("border-right"),
+      vec![
+        "border-right-width",
+        "border-right-color",
+        "border-right-style",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-bottom"),
+      vec![
+        "border-bottom-width",
+        "border-bottom-color",
+        "border-bottom-style",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-left"),
+      vec!["border-left-width", "border-left-color", "border-left-style"]
+    );
+    assert_eq!(
       expand_transition_property_name("border-color"),
       vec![
         "border-top-color",
         "border-right-color",
         "border-bottom-color",
         "border-left-color",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-width"),
+      vec![
+        "border-top-width",
+        "border-right-width",
+        "border-bottom-width",
+        "border-left-width",
+      ]
+    );
+    assert_eq!(
+      expand_transition_property_name("border-style"),
+      vec![
+        "border-top-style",
+        "border-right-style",
+        "border-bottom-style",
+        "border-left-style",
       ]
     );
     assert_eq!(
