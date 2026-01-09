@@ -549,13 +549,25 @@ fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(Str
 
     let name_decoded_len = urlencoded_decoded_len(name_part);
     let value_decoded_len = urlencoded_decoded_len(value_part);
-    let pair_decoded_len = name_decoded_len.checked_add(value_decoded_len).ok_or(WebUrlError::LimitExceeded {
+    let (name, name_bytes) = decode_urlencoded_component_limited(
+      name_part,
+      name_decoded_len,
+      total_decoded_bytes,
+      limits.max_total_query_bytes,
+    )?;
+    let total_after_name = total_decoded_bytes.checked_add(name_bytes).ok_or(WebUrlError::LimitExceeded {
       kind: WebUrlLimitKind::TotalQueryBytes,
       limit: limits.max_total_query_bytes,
       attempted: usize::MAX,
     })?;
+    let (value, value_bytes) = decode_urlencoded_component_limited(
+      value_part,
+      value_decoded_len,
+      total_after_name,
+      limits.max_total_query_bytes,
+    )?;
 
-    let next_total = total_decoded_bytes.checked_add(pair_decoded_len).ok_or(WebUrlError::LimitExceeded {
+    let next_total = total_after_name.checked_add(value_bytes).ok_or(WebUrlError::LimitExceeded {
       kind: WebUrlLimitKind::TotalQueryBytes,
       limit: limits.max_total_query_bytes,
       attempted: usize::MAX,
@@ -567,9 +579,6 @@ fn parse_urlencoded_pairs(input: &str, limits: &WebUrlLimits) -> Result<Vec<(Str
         attempted: next_total,
       });
     }
-
-    let name = decode_urlencoded_component(name_part, name_decoded_len)?;
-    let value = decode_urlencoded_component(value_part, value_decoded_len)?;
 
     total_decoded_bytes = next_total;
     pairs.try_reserve(1)?;
@@ -641,7 +650,12 @@ fn urlencoded_decoded_len(input: &str) -> usize {
   out_len
 }
 
-fn decode_urlencoded_component(input: &str, decoded_len: usize) -> Result<String, WebUrlError> {
+fn decode_urlencoded_component_limited(
+  input: &str,
+  decoded_len: usize,
+  total_so_far: usize,
+  max_total: usize,
+) -> Result<(String, usize), WebUrlError> {
   let bytes = input.as_bytes();
   let mut out = Vec::new();
   out.try_reserve_exact(decoded_len)?;
@@ -669,11 +683,14 @@ fn decode_urlencoded_component(input: &str, decoded_len: usize) -> Result<String
     }
   }
 
+  // If our decoding length accounting ever diverges, clamp to the observed length to keep bounded.
+  // This should never happen as `urlencoded_decoded_len` matches the logic above, but keep the
+  // parser robust to future edits.
   if out.len() != decoded_len {
-    return Err(WebUrlError::InvalidUtf8);
+    out.truncate(decoded_len.min(out.len()));
   }
 
-  String::from_utf8(out).map_err(|_| WebUrlError::InvalidUtf8)
+  decode_utf8_lossy_limited(&out, total_so_far, max_total)
 }
 
 fn push_byte_checked(out: &mut Vec<u8>, byte: u8, max_len: usize) -> Result<(), WebUrlError> {
@@ -683,6 +700,74 @@ fn push_byte_checked(out: &mut Vec<u8>, byte: u8, max_len: usize) -> Result<(), 
   }
   out.try_reserve(1)?;
   out.push(byte);
+  Ok(())
+}
+
+fn decode_utf8_lossy_limited(
+  input: &[u8],
+  total_so_far: usize,
+  max_total: usize,
+) -> Result<(String, usize), WebUrlError> {
+  let mut out = String::new();
+  // Lossy output can grow due to U+FFFD (3 bytes). Reserve only what the remaining budget allows.
+  let reserve_hint = input.len().min(max_total.saturating_sub(total_so_far));
+  out.try_reserve(reserve_hint)?;
+
+  let mut written: usize = 0;
+  let mut i: usize = 0;
+  while i < input.len() {
+    match std::str::from_utf8(&input[i..]) {
+      Ok(valid) => {
+        push_str_limited(&mut out, valid, &mut written, total_so_far, max_total)?;
+        break;
+      }
+      Err(err) => {
+        let valid_up_to = err.valid_up_to();
+        if valid_up_to > 0 {
+          // SAFETY: `valid_up_to` is guaranteed to be on a UTF-8 boundary by `Utf8Error`.
+          let valid = unsafe { std::str::from_utf8_unchecked(&input[i..i + valid_up_to]) };
+          push_str_limited(&mut out, valid, &mut written, total_so_far, max_total)?;
+        }
+
+        push_str_limited(&mut out, "\u{FFFD}", &mut written, total_so_far, max_total)?;
+
+        let advance = err.error_len().unwrap_or(1);
+        i = i.saturating_add(valid_up_to).saturating_add(advance);
+      }
+    }
+  }
+
+  Ok((out, written))
+}
+
+fn push_str_limited(
+  out: &mut String,
+  s: &str,
+  written: &mut usize,
+  total_so_far: usize,
+  max_total: usize,
+) -> Result<(), WebUrlError> {
+  let next_written = written.checked_add(s.len()).ok_or(WebUrlError::LimitExceeded {
+    kind: WebUrlLimitKind::TotalQueryBytes,
+    limit: max_total,
+    attempted: usize::MAX,
+  })?;
+  let next_total = total_so_far.checked_add(next_written).ok_or(WebUrlError::LimitExceeded {
+    kind: WebUrlLimitKind::TotalQueryBytes,
+    limit: max_total,
+    attempted: usize::MAX,
+  })?;
+  if next_total > max_total {
+    return Err(WebUrlError::LimitExceeded {
+      kind: WebUrlLimitKind::TotalQueryBytes,
+      limit: max_total,
+      attempted: next_total,
+    });
+  }
+
+  out.try_reserve(s.len())?;
+  out.push_str(s);
+  *written = next_written;
   Ok(())
 }
 
@@ -821,6 +906,67 @@ mod tests {
         kind: WebUrlLimitKind::InputBytes,
         limit: 3,
         attempted: 5,
+      }
+    );
+  }
+
+  #[test]
+  fn parse_limit_rejects_too_many_pairs() {
+    let limits = WebUrlLimits {
+      max_query_pairs: 2,
+      ..WebUrlLimits::default()
+    };
+    let err = WebUrlSearchParams::parse("a=1&b=2&c=3", &limits).unwrap_err();
+    assert_eq!(
+      err,
+      WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::QueryPairs,
+        limit: 2,
+        attempted: 3,
+      }
+    );
+  }
+
+  #[test]
+  fn parse_limit_rejects_too_many_total_query_bytes() {
+    let limits = WebUrlLimits {
+      max_total_query_bytes: 5,
+      ..WebUrlLimits::default()
+    };
+    let err = WebUrlSearchParams::parse("aaaaa=b", &limits).unwrap_err();
+    assert_eq!(
+      err,
+      WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: 5,
+        attempted: 6,
+      }
+    );
+  }
+
+  #[test]
+  fn parse_decodes_invalid_utf8_lossily() {
+    let limits = WebUrlLimits::default();
+    let params = WebUrlSearchParams::parse("a=%FF%FF", &limits).unwrap();
+    assert_eq!(params.get("a").unwrap(), Some("\u{FFFD}\u{FFFD}".to_string()));
+  }
+
+  #[test]
+  fn parse_counts_lossy_replacement_bytes_toward_limit() {
+    // "%FF" percent-decodes to a single 0xFF byte, which is not valid UTF-8. URLSearchParams uses
+    // UTF-8 decode with replacement, so this becomes U+FFFD (3 bytes). Ensure our decoded bytes
+    // accounting enforces the post-decoding string length, not the raw percent-decoded length.
+    let limits = WebUrlLimits {
+      max_total_query_bytes: 2,
+      ..WebUrlLimits::default()
+    };
+    let err = WebUrlSearchParams::parse("a=%FF", &limits).unwrap_err();
+    assert_eq!(
+      err,
+      WebUrlError::LimitExceeded {
+        kind: WebUrlLimitKind::TotalQueryBytes,
+        limit: 2,
+        attempted: 4,
       }
     );
   }
