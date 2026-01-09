@@ -775,7 +775,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
-
+ 
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
@@ -796,7 +796,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
-
+ 
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
@@ -819,7 +819,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
-
+ 
         let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           engine.pointer_up_with_scroll(
             dom,
@@ -834,7 +834,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
           Ok(action) => action,
           Err(_) => continue,
         };
-
+ 
         match action {
           InteractionAction::Navigate { href } => {
             if let Some(url) = fragment_navigation_target(tab, &href) {

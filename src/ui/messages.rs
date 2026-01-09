@@ -110,20 +110,27 @@ pub enum UiToWorker {
   SetActiveTab {
     tab_id: TabId,
   },
+  /// Navigate to a new URL (typed in the address bar or clicked on the page).
   Navigate {
     tab_id: TabId,
     url: String,
     reason: NavigationReason,
   },
   /// Navigate to the previous history entry for this tab.
+  ///
+  /// The worker owns history state, so the UI does not provide a URL.
   GoBack {
     tab_id: TabId,
   },
   /// Navigate to the next history entry for this tab.
+  ///
+  /// The worker owns history state, so the UI does not provide a URL.
   GoForward {
     tab_id: TabId,
   },
   /// Reload the current history entry for this tab.
+  ///
+  /// The worker owns history state, so the UI does not provide a URL.
   Reload {
     tab_id: TabId,
   },
@@ -299,5 +306,24 @@ mod tests {
   fn rendered_frame_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<RenderedFrame>();
+  }
+
+  #[test]
+  fn ui_to_worker_new_history_actions_are_debug_constructible() {
+    let tab_id = TabId(1);
+
+    // Ensure the new variants can be constructed and formatted. This is
+    // intentionally lightweight: we just want compilation coverage for the
+    // message protocol.
+    let msgs = [
+      UiToWorker::GoBack { tab_id },
+      UiToWorker::GoForward { tab_id },
+      UiToWorker::Reload { tab_id },
+    ];
+
+    for msg in msgs {
+      let formatted = format!("{msg:?}");
+      assert!(!formatted.is_empty());
+    }
   }
 }

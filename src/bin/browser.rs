@@ -791,34 +791,20 @@ impl App {
           self.close_select_dropdown();
         }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          let push_history = match tab.history.current() {
-            Some(entry) => entry.url != url,
-            None => true,
-          };
-          tab.history.push(url.clone());
-          tab.sync_nav_flags_from_history();
-          if push_history {
-            tab.title = None;
-          }
-          tab.current_url = Some(url.clone());
-          tab.loading = true;
-          tab.error = None;
-          tab.stage = None;
-          tab.pending_nav_url = Some(url.clone());
+          tab.apply_navigation_started(url.clone());
           tab.title = None;
+          tab.clear_scroll_restore();
         }
-        if self.browser_state.active_tab_id() == Some(tab_id) {
-          if !self.browser_state.chrome.address_bar_editing {
-            self.browser_state.chrome.address_bar_text = url;
-          }
+        if self.browser_state.active_tab_id() == Some(tab_id) && !self.browser_state.chrome.address_bar_editing {
+          self.browser_state.chrome.address_bar_text = url;
         }
       }
       fastrender::ui::WorkerToUi::NavigationCommitted {
         tab_id,
         url,
         title,
-        can_go_back: _,
-        can_go_forward: _,
+        can_go_back,
+        can_go_forward,
       } => {
         if self
           .open_select_dropdown
@@ -829,25 +815,7 @@ impl App {
         }
         let mut restore_scroll: Option<(f32, f32)> = None;
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          if let Some(original_url) = tab
-            .pending_nav_url
-            .take()
-            .or_else(|| tab.history.current().map(|entry| entry.url.clone()))
-          {
-            tab
-              .history
-              .commit_navigation(&original_url, Some(&url));
-          }
-          if let Some(title) = title.clone() {
-            tab.history.set_title(title);
-          }
-
-          tab.current_url = Some(url.clone());
-          tab.title = title;
-          tab.loading = false;
-          tab.error = None;
-          tab.stage = None;
-          tab.sync_nav_flags_from_history();
+          tab.apply_navigation_committed(url.clone(), title, can_go_back, can_go_forward);
 
           tab.note_scroll_restore_nav_committed();
           if let Some(delta) = tab.take_scroll_restore_delta_if_ready() {
@@ -863,10 +831,10 @@ impl App {
             pointer_css: None,
           });
         }
-        if self.browser_state.active_tab_id() == Some(tab_id) {
-          if !self.browser_state.chrome.address_bar_editing {
-            self.browser_state.chrome.address_bar_text = url;
-          }
+        if self.browser_state.active_tab_id() == Some(tab_id)
+          && !self.browser_state.chrome.address_bar_editing
+        {
+          self.browser_state.chrome.address_bar_text = url;
         }
       }
       fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {
@@ -1128,7 +1096,7 @@ impl App {
         // Avoid stealing the common "move cursor by word" behaviour on macOS where Option == Alt.
         if self.egui_ctx.wants_keyboard_input() {
           match action {
-            ShortcutAction::Back | ShortcutAction::Forward => return false,
+            ShortcutAction::Back | ShortcutAction::Forward | ShortcutAction::Reload => return false,
             _ => {}
           }
         }
@@ -1461,7 +1429,6 @@ impl App {
 
   fn handle_chrome_actions(&mut self, actions: Vec<fastrender::ui::ChromeAction>) {
     use fastrender::ui::ChromeAction;
-    use fastrender::ui::NavigationReason;
     use fastrender::ui::RepaintReason;
     use fastrender::ui::UiToWorker;
 
@@ -1575,25 +1542,14 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some((url, restore)) = self.browser_state.tab(tab_id).and_then(|t| {
-            if let Some(entry) = t.history.reload_target() {
-              return Some((entry.url.clone(), (entry.scroll_x, entry.scroll_y)));
-            }
-            t.current_url().map(|url| (url.to_string(), (0.0, 0.0)))
-          }) else {
-            continue;
-          };
-
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.current_url = Some(url.clone());
-            tab.pending_nav_url = Some(url.clone());
-            tab.begin_scroll_restore(restore.0, restore.1);
+            tab.pending_nav_url = None;
+            tab.clear_scroll_restore();
           }
 
-          self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
 
           self.send_worker_msg(UiToWorker::Reload { tab_id });
@@ -1602,63 +1558,43 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some(url) = (|| {
-            let tab = self.browser_state.tab_mut(tab_id)?;
-            let (url, restore, title) = {
-              let entry = tab.history.go_back()?;
-              (entry.url.clone(), (entry.scroll_x, entry.scroll_y), entry.title.clone())
-            };
-            tab.sync_nav_flags_from_history();
+          if !self
+            .browser_state
+            .tab(tab_id)
+            .is_some_and(|tab| tab.can_go_back)
+          {
+            continue;
+          }
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.current_url = Some(url.clone());
-            tab.title = title;
-            tab.pending_nav_url = Some(url.clone());
-            tab.begin_scroll_restore(restore.0, restore.1);
-            Some(url)
-          })() else {
-            continue;
-          };
-
-          self.browser_state.chrome.address_bar_text = url.clone();
+            tab.pending_nav_url = None;
+            tab.clear_scroll_restore();
+          }
           self.page_has_focus = false;
-          self.send_worker_msg(UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: NavigationReason::BackForward,
-          });
+          self.send_worker_msg(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some(url) = (|| {
-            let tab = self.browser_state.tab_mut(tab_id)?;
-            let (url, restore, title) = {
-              let entry = tab.history.go_forward()?;
-              (entry.url.clone(), (entry.scroll_x, entry.scroll_y), entry.title.clone())
-            };
-            tab.sync_nav_flags_from_history();
+          if !self
+            .browser_state
+            .tab(tab_id)
+            .is_some_and(|tab| tab.can_go_forward)
+          {
+            continue;
+          }
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.current_url = Some(url.clone());
-            tab.title = title;
-            tab.pending_nav_url = Some(url.clone());
-            tab.begin_scroll_restore(restore.0, restore.1);
-            Some(url)
-          })() else {
-            continue;
-          };
-
-          self.browser_state.chrome.address_bar_text = url.clone();
+            tab.pending_nav_url = None;
+            tab.clear_scroll_restore();
+          }
           self.page_has_focus = false;
-          self.send_worker_msg(UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: NavigationReason::BackForward,
-          });
+          self.send_worker_msg(UiToWorker::GoForward { tab_id });
         }
       }
     }

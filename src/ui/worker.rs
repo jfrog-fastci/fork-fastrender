@@ -292,6 +292,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
+        // Persist the current scroll position before moving in history.
         tab
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -927,6 +928,9 @@ fn navigate_tab(
     .document
     .as_ref()
     .and_then(|doc| crate::html::title::find_document_title(doc.dom()));
+  if let Some(title) = title.as_ref() {
+    tab.history.set_title(title.clone());
+  }
 
   if let Some(title) = title.clone() {
     tab.history.set_title(title);

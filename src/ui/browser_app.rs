@@ -208,6 +208,30 @@ impl BrowserTabState {
       .unwrap_or_else(|| "New Tab".to_string())
   }
 
+  pub fn apply_navigation_started(&mut self, url: String) {
+    self.current_url = Some(url.clone());
+    self.loading = true;
+    self.error = None;
+    self.stage = None;
+    self.pending_nav_url = Some(url);
+  }
+
+  pub fn apply_navigation_committed(
+    &mut self,
+    url: String,
+    title: Option<String>,
+    can_go_back: bool,
+    can_go_forward: bool,
+  ) {
+    self.current_url = Some(url);
+    self.title = title;
+    self.can_go_back = can_go_back;
+    self.can_go_forward = can_go_forward;
+    self.loading = false;
+    self.error = None;
+    self.stage = None;
+    self.pending_nav_url = None;
+  }
 
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///

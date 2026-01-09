@@ -113,33 +113,31 @@ impl UiWorker {
         // The test-oriented UI worker has no JS/event loop; ticks are a no-op.
       }
       UiToWorker::GoBack { tab_id } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
-        let target = tab.history.go_back().map(|entry| entry.url.clone());
-        let Some(url) = target else {
-          return;
-        };
-        let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+        let url = self
+          .tabs
+          .get_mut(&tab_id)
+          .and_then(|tab| tab.history.go_back().map(|entry| entry.url.clone()));
+        if let Some(url) = url {
+          let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+        }
       }
       UiToWorker::GoForward { tab_id } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
-        let target = tab.history.go_forward().map(|entry| entry.url.clone());
-        let Some(url) = target else {
-          return;
-        };
-        let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+        let url = self
+          .tabs
+          .get_mut(&tab_id)
+          .and_then(|tab| tab.history.go_forward().map(|entry| entry.url.clone()));
+        if let Some(url) = url {
+          let _ = self.navigate(tab_id, url, NavigationReason::BackForward);
+        }
       }
       UiToWorker::Reload { tab_id } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
-        let Some(url) = tab.history.current().map(|entry| entry.url.clone()) else {
-          return;
-        };
-        let _ = self.navigate(tab_id, url, NavigationReason::Reload);
+        let url = self
+          .tabs
+          .get(&tab_id)
+          .and_then(|tab| tab.history.reload_target().map(|entry| entry.url.clone()));
+        if let Some(url) = url {
+          let _ = self.navigate(tab_id, url, NavigationReason::Reload);
+        }
       }
       UiToWorker::Scroll {
         tab_id,
