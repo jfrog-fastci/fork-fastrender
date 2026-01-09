@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
@@ -208,9 +209,25 @@ fn cancellation_on_scroll_drops_stale_frames() {
     })
     .unwrap();
 
-  // Repaints (scroll/input) do not forward stage heartbeats; wait briefly so the worker has time to
-  // begin the first scroll paint before we bump cancellation.
-  std::thread::sleep(Duration::from_millis(50));
+  // Wait until we observe the scroll repaint enter the paint stages so we can cancel it mid-flight.
+  let mut pre_cancel: Vec<WorkerToUi> = Vec::new();
+  loop {
+    match ui_rx.recv_timeout(Duration::from_secs(10)) {
+      Ok(msg) => {
+        let saw_paint_stage = matches!(
+          &msg,
+          WorkerToUi::Stage { tab_id: msg_id, stage }
+            if *msg_id == tab_id
+              && matches!(*stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+        );
+        pre_cancel.push(msg);
+        if saw_paint_stage {
+          break;
+        }
+      }
+      Err(err) => panic!("timed out waiting for paint stage heartbeat: {err}"),
+    }
+  }
 
   cancel.bump_paint();
   ui_tx
@@ -226,6 +243,21 @@ fn cancellation_on_scroll_drops_stale_frames() {
 
   let mut saw_scroll1_frame = false;
   let mut saw_scroll2_frame = false;
+
+  for msg in pre_cancel {
+    if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = msg {
+      if msg_id != tab_id {
+        continue;
+      }
+      let y = frame.scroll_state.viewport.y;
+      if (y - 200.0).abs() < 5.0 {
+        saw_scroll1_frame = true;
+      }
+      if (y - 400.0).abs() < 5.0 {
+        saw_scroll2_frame = true;
+      }
+    }
+  }
 
   while let Ok(msg) = ui_rx.recv_timeout(Duration::from_secs(30)) {
     if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = msg {

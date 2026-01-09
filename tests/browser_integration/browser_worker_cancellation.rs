@@ -245,9 +245,38 @@ fn rapid_scroll_cancels_stale_paint() {
     })
     .expect("scroll 1");
 
-  // Repaints (scroll/input) do not forward stage heartbeats. Sleep briefly so the worker has time
-  // to begin the first scroll paint before we bump cancellation.
-  std::thread::sleep(Duration::from_millis(50));
+  // Wait until we observe the scroll repaint enter the paint stages so we can cancel it mid-flight.
+  let mut frames = Vec::new();
+  let mut captured = Vec::new();
+  let paint_stage_deadline = Instant::now() + MAX_WAIT;
+  let mut saw_paint_stage = false;
+  while Instant::now() < paint_stage_deadline && !saw_paint_stage {
+    match worker.rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        if matches!(
+          &msg,
+          WorkerToUi::Stage { tab_id: got, stage }
+            if *got == tab_id
+              && matches!(*stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
+        ) {
+          saw_paint_stage = true;
+        }
+        if let WorkerToUi::FrameReady { tab_id: got, frame } = &msg {
+          if *got == tab_id {
+            frames.push(frame.scroll_state.clone());
+          }
+        }
+        captured.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  assert!(
+    saw_paint_stage,
+    "timed out waiting for paint stage heartbeat during scroll repaint; messages:\n{}",
+    support::format_messages(&captured)
+  );
 
   cancel.bump_paint();
   worker
@@ -260,9 +289,6 @@ fn rapid_scroll_cancels_stale_paint() {
     .expect("scroll 2");
 
   let deadline = Instant::now() + MAX_WAIT;
-  let mut frames = Vec::new();
-  let mut captured = Vec::new();
-
   while Instant::now() < deadline {
     match worker.rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => {
