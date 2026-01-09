@@ -451,6 +451,98 @@ fn accessibility_presentational_role_honored_with_only_non_global_aria_attribute
 }
 
 #[test]
+fn accessibility_presentational_role_disallowed_with_aria_invalid() {
+  let html = r##"
+    <html>
+      <body>
+        <div id="x" role="presentation" aria-invalid="true">Text</div>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["x"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "x": {
+        "role": "generic",
+        "name": "Text",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": true,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
+fn accessibility_presentational_role_disallowed_with_aria_activedescendant() {
+  let html = r##"
+    <html>
+      <body>
+        <div id="target">Target</div>
+        <div id="origin" role="presentation" aria-activedescendant="target">Origin</div>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["origin", "target"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "origin": {
+        "role": "generic",
+        "name": "Origin",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        },
+        "relations": {
+          "active_descendant": "target"
+        }
+      },
+      "target": {
+        "role": "generic",
+        "name": "Target",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_details_expanded_state() {
   let html = r##"
     <html>

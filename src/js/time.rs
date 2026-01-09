@@ -247,7 +247,9 @@ mod tests {
   fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string(name).expect("alloc key string");
-    scope.push_root(Value::String(key_s)).expect("push root");
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push_root key string");
     let key = PropertyKey::from_string(key_s);
     let global = realm.global_object();
     scope
@@ -260,7 +262,9 @@ mod tests {
   fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Value {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string(name).expect("alloc key string");
-    scope.push_root(Value::String(key_s)).expect("push root");
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push_root key string");
     let key = PropertyKey::from_string(key_s);
     scope
       .heap()

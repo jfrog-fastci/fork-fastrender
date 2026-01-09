@@ -1257,7 +1257,8 @@ fn has_global_aria_attributes(node: &DomNode) -> bool {
       lower.as_str(),
       // ARIA global states/properties (excluding aria-hidden). These prevent the author from
       // stripping semantics via role="presentation"/"none" per the ARIA-in-HTML processing rules.
-      "aria-atomic"
+      "aria-activedescendant"
+        | "aria-atomic"
         | "aria-busy"
         | "aria-controls"
         | "aria-current"
@@ -1269,6 +1270,7 @@ fn has_global_aria_attributes(node: &DomNode) -> bool {
         | "aria-flowto"
         | "aria-grabbed"
         | "aria-haspopup"
+        | "aria-invalid"
         | "aria-keyshortcuts"
         | "aria-label"
         | "aria-labelledby"

@@ -8,7 +8,7 @@ fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
   let key_s = scope.alloc_string(name).expect("alloc key string");
   scope
     .push_root(Value::String(key_s))
-    .expect("root key string");
+    .expect("push_root key string");
   let key = PropertyKey::from_string(key_s);
   let global = realm.global_object();
   scope
@@ -23,7 +23,7 @@ fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Val
   let key_s = scope.alloc_string(name).expect("alloc key string");
   scope
     .push_root(Value::String(key_s))
-    .expect("root key string");
+    .expect("push_root key string");
   let key = PropertyKey::from_string(key_s);
   scope
     .heap()
