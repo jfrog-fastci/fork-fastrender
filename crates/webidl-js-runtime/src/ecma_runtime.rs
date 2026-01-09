@@ -141,7 +141,15 @@ impl VmJsRuntime {
         }
         return Err(VmError::InvalidHandle);
       }
-      let id = self.heap.add_root(v);
+      let id = match self.heap.add_root(v) {
+        Ok(id) => id,
+        Err(e) => {
+          for id in root_ids {
+            self.heap.remove_root(id);
+          }
+          return Err(e);
+        }
+      };
       root_ids.push(id);
     }
     let result = f(self);
@@ -162,7 +170,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("window")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle));
+    let _ = self.heap.add_root(Value::String(handle))?;
     self.interned_window = Some(handle);
     Ok(handle)
   }
@@ -173,7 +181,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("document")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle));
+    let _ = self.heap.add_root(Value::String(handle))?;
     self.interned_document = Some(handle);
     Ok(handle)
   }
@@ -759,9 +767,11 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn alloc_array(&mut self) -> Result<Value, VmError> {
-    // `vm-js` does not yet provide Array exotic objects. For WebIDL conversions we only require an
-    // object with indexed own properties.
-    self.alloc_object_value()
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_array(0)?
+    };
+    Ok(Value::Object(obj))
   }
 
   fn define_data_property(

@@ -319,8 +319,14 @@ fn to_js_sequence<R: WebIdlJsRuntime>(
   }
 
   // Arrays expose a non-enumerable `length` data property.
+  //
+  // Some runtimes may choose to return an Array exotic object from `alloc_array` (preferred), in
+  // which case `length` already exists with the correct attributes. If `alloc_array` returns an
+  // ordinary object, define `length` manually.
   let length_key = rt.property_key_from_str("length")?;
-  rt.define_data_property(array, length_key, rt.js_number(values.len() as f64), false)?;
+  if rt.get_own_property(array, length_key)?.is_none() {
+    rt.define_data_property(array, length_key, rt.js_number(values.len() as f64), false)?;
+  }
   Ok(array)
 }
 
