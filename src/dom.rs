@@ -135,6 +135,9 @@ impl DomParseOptions {
   }
 }
 
+mod scripting_parser;
+pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct DomParseDiagnostics {
   pub html5ever_ms: f64,
