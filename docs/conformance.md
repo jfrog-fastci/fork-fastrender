@@ -5,7 +5,7 @@ FastRender is spec-first: correctness is defined by the HTML/CSS specifications 
 ## Targeted specifications
 
 ### HTML
-- **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder (`ParseOpts` in `src/dom.rs`). Parsing currently runs with scripting disabled, but the conformance target is to run in HTML “scripting enabled” mode when JavaScript support is turned on (parser pauses + `<script>` processing model).
+- **Parsing**: HTML5 parsing via html5ever's spec-mode tree builder (`ParseOpts` in `src/dom.rs`). Parsing runs with scripting disabled by default, but callers can opt into HTML “scripting enabled” mode via `FastRenderConfig::with_dom_scripting_enabled(true)` to match JS-enabled browser parse semantics (e.g. `<noscript>` suppression) even before script execution is implemented.
 - **Encoding sniffing**: HTML Living Standard BOM/`Content-Type`/`<meta charset>` sniffing (`src/html/encoding.rs`).
 - **Shadow DOM snapshots**: Static `<template shadowroot>` attachment with slot distribution during parse (`attach_shadow_roots` and `distribute_slots` in `src/dom.rs`).
 - **Template inertness**: `<template>` contents are treated as inert for rendering and accessibility (even if author CSS overrides `template { display: block }`).
@@ -41,7 +41,7 @@ Status legend: ✅ Supported, ⚠️ Partial/targeted, 🚫 Not supported.
 
 | Stage  | Feature area | Status | Implementation | Tests | Notes |
 | --- | --- | --- | --- | --- | --- |
-| Parse | HTML5 tree builder | ✅ | [src/dom.rs](../src/dom.rs) | [tests/dom_compatibility_test.rs](../tests/dom_compatibility_test.rs) | html5ever spec mode; currently parsed with scripting disabled, but will run in HTML “scripting enabled” mode once JS support is enabled. Optional DOM compatibility toggles for legacy class flips (`DomCompatibilityMode`). |
+| Parse | HTML5 tree builder | ✅ | [src/dom.rs](../src/dom.rs) | [tests/dom_compatibility_test.rs](../tests/dom_compatibility_test.rs) | html5ever spec mode; parsed with scripting disabled by default. `FastRenderConfig::with_dom_scripting_enabled(true)` enables HTML “scripting enabled” parsing semantics (e.g. `<noscript>` suppression) without executing scripts. Optional DOM compatibility toggles for legacy class flips (`DomCompatibilityMode`). |
 | Parse | Encoding sniffing | ✅ | [src/html/encoding.rs](../src/html/encoding.rs) | Module tests in [src/html/encoding.rs](../src/html/encoding.rs) | BOM → `Content-Type` → `<meta charset>` scan with Windows-1252 fallback. |
 | Parse | Base URL & meta viewport | ✅ | [src/html/mod.rs](../src/html/mod.rs)<br>[src/html/viewport.rs](../src/html/viewport.rs) | [tests/integration_test.rs](../tests/integration_test.rs) | `<base href>` resolution drives URL absolutization; `<meta name="viewport">` parsed/applied when enabled via `FastRenderConfig::with_meta_viewport`. |
 | Parse | Shadow DOM snapshots | ⚠️ | [src/dom.rs](../src/dom.rs) | [tests/tree/shadow_dom.rs](../tests/tree/shadow_dom.rs) | `<template shadowroot>` is attached eagerly and slots distributed; no runtime attach/detach or JS-driven shadow roots. |

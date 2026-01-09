@@ -88,6 +88,7 @@ mod manual_multicol_breaks;
 mod multicol;
 mod nested_absolute;
 mod noscript_layout;
+mod noscript_scripting_enabled_layout;
 mod padding_offsets;
 mod paged_media;
 mod parallel_layout;

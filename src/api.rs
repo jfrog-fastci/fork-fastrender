@@ -504,6 +504,12 @@ pub struct FastRender {
   /// Optional compatibility mode applied during DOM parsing
   dom_compat_mode: DomCompatibilityMode,
 
+  /// Whether HTML parsing should use "scripting enabled" semantics (e.g. `<noscript>` handling).
+  ///
+  /// Note: This does not execute scripts; it only affects HTML parsing and downstream render
+  /// semantics for elements like `<noscript>`.
+  dom_scripting_enabled: bool,
+
   /// Manual fragmentation options when no `@page` rules are present.
   fragmentation: Option<FragmentationOptions>,
 
@@ -538,6 +544,7 @@ impl std::fmt::Debug for FastRender {
       .field("base_url", &self.base_url)
       .field("compat_profile", &self.compat_profile)
       .field("dom_compat_mode", &self.dom_compat_mode)
+      .field("dom_scripting_enabled", &self.dom_scripting_enabled)
       .field("fragmentation", &self.fragmentation)
       .field("resource_policy", &self.resource_policy)
       .field("max_iframe_depth", &self.max_iframe_depth)
@@ -605,6 +612,13 @@ pub struct FastRenderConfig {
   /// Optional compatibility mode used when parsing HTML.
   pub dom_compat_mode: DomCompatibilityMode,
 
+  /// Whether HTML parsing should use "scripting enabled" semantics (e.g. `<noscript>` handling).
+  ///
+  /// This maps to `html5ever::tree_builder::TreeBuilderOpts::scripting_enabled`, but FastRender
+  /// still does not execute scripts. When enabled, `<noscript>` fallback content is suppressed
+  /// to match JS-enabled browser parsing behavior.
+  pub dom_scripting_enabled: bool,
+
   /// Whether to honor `<meta name="viewport">` when computing the layout viewport.
   pub apply_meta_viewport: bool,
 
@@ -666,6 +680,7 @@ impl Default for FastRenderConfig {
       allowed_subresource_origins: Vec::new(),
       compat_profile: CompatProfile::default(),
       dom_compat_mode: DomCompatibilityMode::Standard,
+      dom_scripting_enabled: false,
       apply_meta_viewport: false,
       fragmentation: None,
       fit_canvas_to_content: false,
@@ -817,6 +832,12 @@ impl FastRenderBuilder {
   /// Sets the DOM compatibility mode applied during parsing.
   pub fn dom_compatibility_mode(mut self, mode: DomCompatibilityMode) -> Self {
     self.config.dom_compat_mode = mode;
+    self
+  }
+
+  /// Enables or disables JS-enabled HTML parsing semantics (e.g. `<noscript>` handling).
+  pub fn dom_scripting_enabled(mut self, enabled: bool) -> Self {
+    self.config.dom_scripting_enabled = enabled;
     self
   }
 
@@ -3159,6 +3180,14 @@ impl FastRenderConfig {
     self
   }
 
+  /// Enables or disables JS-enabled HTML parsing semantics (e.g. `<noscript>` handling).
+  ///
+  /// This affects parse-time behavior but does not execute scripts.
+  pub fn with_dom_scripting_enabled(mut self, enabled: bool) -> Self {
+    self.dom_scripting_enabled = enabled;
+    self
+  }
+
   /// Sets the runtime debug/configuration toggles to use for this renderer.
   pub fn with_runtime_toggles(mut self, toggles: RuntimeToggles) -> Self {
     self.runtime_toggles = Arc::new(toggles);
@@ -4828,7 +4857,9 @@ impl FastRender {
   }
 
   fn box_generation_options(&self) -> BoxGenerationOptions {
-    BoxGenerationOptions::default().with_compat_profile(self.compat_profile)
+    BoxGenerationOptions::default()
+      .with_compat_profile(self.compat_profile)
+      .with_dom_scripting_enabled(self.dom_scripting_enabled)
   }
 
   fn from_parts(
@@ -4868,6 +4899,7 @@ impl FastRender {
       base_url: config.base_url.clone(),
       document_url: None,
       dom_compat_mode: config.dom_compat_mode,
+      dom_scripting_enabled: config.dom_scripting_enabled,
       compat_profile: config.compat_profile,
       fragmentation: config.fragmentation,
       resource_policy: ResourceAccessPolicy {
@@ -7925,6 +7957,7 @@ impl FastRender {
     dom::parse_html_with_options(
       html,
       DomParseOptions {
+        scripting_enabled: self.dom_scripting_enabled,
         compatibility_mode: self.dom_compat_mode,
         ..Default::default()
       },
@@ -17143,6 +17176,7 @@ pub(crate) fn layout_html_with_shared_resources(
       .and_then(|ctx| ctx.document_url.clone()),
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
+    dom_scripting_enabled: false,
     fragmentation: None,
     resource_policy,
     resource_context: resource_context.clone(),
@@ -17225,6 +17259,7 @@ pub(crate) fn render_html_with_shared_resources(
       .and_then(|ctx| ctx.document_url.clone()),
     compat_profile: CompatProfile::default(),
     dom_compat_mode: DomCompatibilityMode::Standard,
+    dom_scripting_enabled: false,
     fragmentation: None,
     resource_policy,
     resource_context: resource_context.clone(),

@@ -114,6 +114,13 @@ pub struct BoxGenerationOptions {
   /// When pagination is disabled, treating `float: footnote` as a real footnote
   /// would detach its contents from the normal flow and drop it from the output.
   pub enable_footnote_floats: bool,
+
+  /// Whether the document was parsed with "scripting enabled" HTML semantics.
+  ///
+  /// When enabled, elements that represent nothing in JS-enabled environments (notably
+  /// `<noscript>`) are suppressed from box generation so fallback markup does not appear in the
+  /// rendered output.
+  pub dom_scripting_enabled: bool,
 }
 
 impl Default for BoxGenerationOptions {
@@ -121,6 +128,7 @@ impl Default for BoxGenerationOptions {
     Self {
       compat_profile: CompatProfile::Standards,
       enable_footnote_floats: false,
+      dom_scripting_enabled: false,
     }
   }
 }
@@ -140,6 +148,12 @@ impl BoxGenerationOptions {
   /// Enables or disables `float: footnote` handling.
   pub fn with_footnote_floats(mut self, enabled: bool) -> Self {
     self.enable_footnote_floats = enabled;
+    self
+  }
+
+  /// Enables or disables JS-enabled HTML parsing semantics for box generation.
+  pub fn with_dom_scripting_enabled(mut self, enabled: bool) -> Self {
+    self.dom_scripting_enabled = enabled;
     self
   }
 
@@ -2870,7 +2884,25 @@ fn generate_boxes_for_styled_into(
             continue;
           }
         }
- 
+
+        // When HTML parsing is in "scripting enabled" mode, `<noscript>` represents nothing and
+        // should not contribute boxes, even if author styles attempt to force it visible.
+        if options.dom_scripting_enabled {
+          if let DomNodeType::Element {
+            tag_name,
+            namespace,
+            ..
+          } = &styled.node.node_type
+          {
+            if tag_name.eq_ignore_ascii_case("noscript")
+              && (namespace.is_empty() || namespace == HTML_NAMESPACE)
+            {
+              stack.pop();
+              continue;
+            }
+          }
+        }
+
         let in_footnote = stack
           .last()
           .map(|frame| frame.in_footnote)
