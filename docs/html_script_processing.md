@@ -191,12 +191,16 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 - (Legacy/testing utility) `src/dom/scripting_parser.rs` (`ScriptingHtmlParser`,
   `parse_html_with_scripting`)
 
-**Key operations (conceptual):**
+**Key operations (current API; see `StreamingHtmlParser`):**
 
-- `feed(bytes)` → advances parse state until:
-  - it needs to block on a parser-inserted script, or
-  - end-of-input is reached.
-- `resume()` → continues parsing after the scheduler unblocks.
+- `push_str(chunk)` / `push_front_str(chunk)` → supply decoded input (including `document.write`-style
+  injection).
+- `pump()` → advances parse state until:
+  - it yields `Script { script, base_url_at_this_point }`, or
+  - it yields `NeedMoreInput`, or
+  - it yields `Finished { document }`.
+- After handling a yielded `Script`, call `pump()` again to resume parsing (there is no separate
+  `resume()` API).
 
 **Important integration point:** for `async` scripts, the parser must periodically yield to the
 script scheduler (so “async-ready” scripts can interrupt parsing, as browsers do). In a
