@@ -4,16 +4,16 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
-  ScriptBlockExecutor, ScriptElementSpec, ScriptId, ScriptOrchestrator, ScriptScheduler,
-  ScriptSchedulerAction, ScriptType, TaskSource,
+  CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, JsExecutionOptions, RunLimits,
+  RunUntilIdleOutcome, ScriptBlockExecutor, ScriptElementSpec, ScriptId, ScriptOrchestrator,
+  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use crate::resource::{FetchDestination, FetchRequest};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
+use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
 
 pub trait BrowserTabJsExecutor {
   fn execute_classic_script(
@@ -44,6 +44,7 @@ pub struct BrowserTabHost {
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
   external_script_sources: HashMap<String, String>,
+  js_execution_options: JsExecutionOptions,
 }
 
 impl BrowserTabHost {
@@ -51,6 +52,7 @@ impl BrowserTabHost {
     document: BrowserDocumentDom2,
     executor: Box<dyn BrowserTabJsExecutor>,
     trace: TraceHandle,
+    js_execution_options: JsExecutionOptions,
   ) -> Self {
     Self {
       trace,
@@ -64,6 +66,7 @@ impl BrowserTabHost {
       parser_blocked_on: None,
       document_url: None,
       external_script_sources: HashMap::new(),
+      js_execution_options,
     }
   }
 
@@ -221,6 +224,11 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
+    if spec_for_table.script_type == ScriptType::Classic && spec_for_table.src.is_none() {
+      self
+        .js_execution_options
+        .check_script_source(&spec_for_table.inline_text, "source=inline")?;
+    }
     let discovered = self
       .scheduler
       .discovered_parser_script(spec, node_id, base_url_at_discovery)?;
@@ -401,6 +409,10 @@ impl BrowserTabHost {
 
     if let Some(source) = self.external_script_sources.get(url) {
       span.arg_u64("bytes", source.as_bytes().len() as u64);
+      self.js_execution_options.check_script_source_bytes(
+        source.as_bytes().len(),
+        &format!("source=external url={url}"),
+      )?;
       return Ok(source.clone());
     }
 
@@ -411,6 +423,10 @@ impl BrowserTabHost {
     }
     let resource = fetcher.fetch_with_request(req)?;
     span.arg_u64("bytes", resource.bytes.len() as u64);
+    self.js_execution_options.check_script_source_bytes(
+      resource.bytes.len(),
+      &format!("source=external url={url}"),
+    )?;
     Ok(String::from_utf8_lossy(&resource.bytes).to_string())
   }
 }
@@ -449,14 +465,32 @@ impl BrowserTab {
   where
     E: BrowserTabJsExecutor + 'static,
   {
+    Self::from_html_with_js_execution_options(html, options, executor, JsExecutionOptions::default())
+  }
+
+  pub fn from_html_with_js_execution_options<E>(
+    html: &str,
+    options: RenderOptions,
+    executor: E,
+    js_execution_options: JsExecutionOptions,
+  ) -> Result<Self>
+  where
+    E: BrowserTabJsExecutor + 'static,
+  {
     let trace_session = super::TraceSession::from_options(Some(&options));
     let trace_handle = trace_session.handle.clone();
     let trace_output = trace_session.output.clone();
 
     let document = BrowserDocumentDom2::from_html(html, options)?;
-    let host = BrowserTabHost::new(document, Box::new(executor), trace_handle.clone());
+    let host = BrowserTabHost::new(
+      document,
+      Box::new(executor),
+      trace_handle.clone(),
+      js_execution_options,
+    );
     let mut event_loop = EventLoop::new();
     event_loop.set_trace_handle(trace_handle.clone());
+    event_loop.set_queue_limits(js_execution_options.event_loop_queue_limits);
 
     let mut tab = Self {
       trace: trace_handle,
@@ -488,8 +522,7 @@ impl BrowserTab {
     self.trace_output = trace_session.output.clone();
 
     self.host.document.reset_with_html(html, options)?;
-    self.event_loop = EventLoop::new();
-    self.event_loop.set_trace_handle(self.trace.clone());
+    self.reset_event_loop();
     self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(None);
     self.discover_and_schedule_scripts(None)
@@ -501,8 +534,7 @@ impl BrowserTab {
     self.trace_output = trace_session.output.clone();
 
     let report = self.host.document.navigate_url(url, options)?;
-    self.event_loop = EventLoop::new();
-    self.event_loop.set_trace_handle(self.trace.clone());
+    self.reset_event_loop();
     self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(report.final_url.clone());
     self.discover_and_schedule_scripts(report.final_url.as_deref())
@@ -510,6 +542,53 @@ impl BrowserTab {
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     self.event_loop.run_until_idle(&mut self.host, limits)
+  }
+
+  pub fn js_execution_options(&self) -> JsExecutionOptions {
+    self.host.js_execution_options
+  }
+
+  pub fn set_js_execution_options(&mut self, options: JsExecutionOptions) {
+    self.host.js_execution_options = options;
+    self.event_loop.set_queue_limits(options.event_loop_queue_limits);
+  }
+
+  pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
+    self.run_until_stable_with_run_limits(self.host.js_execution_options.event_loop_run_limits, max_frames)
+  }
+
+  pub fn run_until_stable_with_run_limits(
+    &mut self,
+    limits: RunLimits,
+    max_frames: usize,
+  ) -> Result<RunUntilStableOutcome> {
+    let mut frames_rendered = 0usize;
+
+    loop {
+      match self.run_event_loop_until_idle(limits)? {
+        RunUntilIdleOutcome::Idle => {}
+        RunUntilIdleOutcome::Stopped(reason) => {
+          return Ok(RunUntilStableOutcome::Stopped {
+            reason: RunUntilStableStopReason::EventLoop(reason),
+            frames_rendered,
+          });
+        }
+      }
+
+      if self.host.document.is_dirty() {
+        if frames_rendered >= max_frames {
+          return Ok(RunUntilStableOutcome::Stopped {
+            reason: RunUntilStableStopReason::MaxFrames { limit: max_frames },
+            frames_rendered,
+          });
+        }
+        let _pixmap = self.host.document.render_frame()?;
+        frames_rendered += 1;
+        continue;
+      }
+
+      return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+    }
   }
 
   pub fn render_if_needed(&mut self) -> Result<Option<Pixmap>> {
@@ -526,6 +605,13 @@ impl BrowserTab {
 
   pub fn dom_mut(&mut self) -> &mut Document {
     self.host.dom_mut()
+  }
+
+  fn reset_event_loop(&mut self) {
+    let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(self.trace.clone());
+    event_loop.set_queue_limits(self.host.js_execution_options.event_loop_queue_limits);
+    self.event_loop = event_loop;
   }
 
   /// Notify the tab that the HTML parser discovered a parser-inserted `<script>` element.

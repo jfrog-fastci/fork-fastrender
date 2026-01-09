@@ -90,7 +90,7 @@ executor; real integrations will wire this to a JS engine.
 ```rust
 use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, RenderOptions, Result};
 use fastrender::dom2::NodeId;
-use fastrender::js::{EventLoop, RunLimits, ScriptElementSpec};
+use fastrender::js::{EventLoop, ScriptElementSpec};
 
 #[derive(Default)]
 struct NoopExecutor;
@@ -116,8 +116,8 @@ fn main() -> Result<()> {
         NoopExecutor::default(),
     )?;
 
-    // 2) Drive the event loop (if scripts/tasks were queued).
-    let _ = tab.run_event_loop_until_idle(RunLimits::unbounded())?;
+    // 2) Drive the event loop + rerender until stable (bounded by default JS limits).
+    let _ = tab.run_until_stable(/* max_frames */ 10)?;
 
     // 3) Render a frame.
     let pixmap = tab.render_frame()?;
