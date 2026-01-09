@@ -592,6 +592,8 @@ impl App {
       }
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.history.push(url.clone());
+          tab.sync_nav_flags_from_history();
           tab.loading = true;
           tab.error = None;
           tab.stage = None;

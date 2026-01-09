@@ -332,13 +332,69 @@ impl BrowserRuntime {
   }
 
   fn schedule_navigation(&mut self, tab_id: TabId, url: String, reason: NavigationReason) {
-    let url = match crate::ui::normalize_user_url(&url) {
-      Ok(normalized) => normalized,
-      Err(_) => url.trim().to_string(),
-    };
+    let requested_url = url.trim().to_string();
+    if requested_url.is_empty() {
+      return;
+    }
 
-    let push_history = matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick);
-    self.begin_navigation(tab_id, url, push_history);
+    match reason {
+      NavigationReason::TypedUrl => {
+        // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
+        // stored in history (the UI sends those URLs verbatim).
+        let url = crate::ui::normalize_user_url(&requested_url).unwrap_or(requested_url);
+        self.begin_navigation(tab_id, url, true);
+      }
+      NavigationReason::LinkClick => {
+        // Link clicks are resolved by the interaction engine against the current document base
+        // URL, so we treat them as already-canonical.
+        self.begin_navigation(tab_id, requested_url, true);
+      }
+      NavigationReason::Reload => {
+        let (nav_url, push_history) = {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+          };
+          let push_history = tab.history.current().is_none();
+          let nav_url = tab
+            .history
+            .reload_target()
+            .map(|entry| entry.url.clone())
+            .unwrap_or_else(|| requested_url.clone());
+          (nav_url, push_history)
+        };
+        self.begin_navigation(tab_id, nav_url, push_history);
+      }
+      NavigationReason::BackForward => {
+        let nav_url = {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
+          };
+
+          if tab
+            .history
+            .current()
+            .is_some_and(|entry| entry.url == requested_url)
+          {
+            Some(requested_url.clone())
+          } else {
+            tab
+              .history
+              .go_back_forward_to(&requested_url)
+              .map(|entry| entry.url.clone())
+          }
+        };
+
+        let Some(nav_url) = nav_url else {
+          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("ignoring BackForward navigation to unknown URL: {requested_url}"),
+          });
+          return;
+        };
+
+        self.begin_navigation(tab_id, nav_url, false);
+      }
+    }
   }
 
   fn begin_navigation(&mut self, tab_id: TabId, url: String, push_history: bool) {
