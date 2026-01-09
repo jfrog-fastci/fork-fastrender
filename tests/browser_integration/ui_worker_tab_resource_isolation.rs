@@ -1,13 +1,12 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg_with_cancel, navigate_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let px = pixmap.pixel(x, y).unwrap();
@@ -77,7 +76,7 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
 
   let tab1 = TabId::new();
   ui_tx
-    .send(create_tab_msg_with_cancel(tab1, None, CancelGens::new()))
+    .send(create_tab_msg(tab1, None))
     .expect("create tab1");
   ui_tx
     .send(viewport_changed_msg(tab1, (64, 64), 1.0))
@@ -90,7 +89,7 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
 
   let tab2 = TabId::new();
   ui_tx
-    .send(create_tab_msg_with_cancel(tab2, None, CancelGens::new()))
+    .send(create_tab_msg(tab2, None))
     .expect("create tab2");
   ui_tx
     .send(viewport_changed_msg(tab2, (64, 64), 1.0))

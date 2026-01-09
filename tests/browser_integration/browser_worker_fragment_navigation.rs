@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{PointerButton, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
 
@@ -66,11 +65,7 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
   let tab_id = TabId::new();
   worker
     .tx
-    .send(support::create_tab_msg_with_cancel(
-      tab_id,
-      Some(url),
-      CancelGens::new(),
-    ))
+    .send(support::create_tab_msg(tab_id, Some(url)))
     .expect("create tab");
   worker
     .tx
@@ -137,11 +132,7 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let tab_id = TabId::new();
   worker
     .tx
-    .send(support::create_tab_msg_with_cancel(
-      tab_id,
-      Some(url.clone()),
-      CancelGens::new(),
-    ))
+    .send(support::create_tab_msg(tab_id, Some(url.clone())))
     .expect("create tab");
   worker
     .tx

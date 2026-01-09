@@ -1,9 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{
-  create_tab_with_cancel, navigate_msg, recv_for_tab, scroll_msg, viewport_changed_msg, TempSite,
+  create_tab_msg, navigate_msg, recv_for_tab, scroll_msg, viewport_changed_msg, TempSite,
 };
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use fastrender::ui::{BrowserTabState, NavigationReason, TabId, UiToWorker, WorkerToUi};
 use std::sync::mpsc::{Receiver, Sender};
@@ -255,7 +254,7 @@ fn back_navigation_restores_viewport_scroll_from_history() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(create_tab_with_cancel(tab_id, None, CancelGens::new()))
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, VIEWPORT_CSS, DPR))

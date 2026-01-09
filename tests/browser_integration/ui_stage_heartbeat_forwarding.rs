@@ -1,15 +1,14 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
-use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
 use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::ui::worker_loop::spawn_ui_worker as spawn_ui_worker_loop;
 use fastrender::{FastRender, PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg_with_cancel, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn assert_stage_order(stages: &[StageHeartbeat], expected: &[StageHeartbeat]) {
   let mut next = 0usize;
@@ -143,7 +142,7 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   let tab_id = TabId::new();
 
   ui_tx
-    .send(create_tab_msg_with_cancel(tab_id, None, CancelGens::new()))
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
@@ -236,25 +235,13 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   let tab_id = TabId::new();
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: CancelGens::new(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

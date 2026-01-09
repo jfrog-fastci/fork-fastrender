@@ -1,11 +1,13 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 
 fn wait_for_navigation_complete(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> bool {
   let deadline = Instant::now() + Duration::from_secs(10);
@@ -69,25 +71,13 @@ fn stage_listener_is_cleared_after_navigation_job() {
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 100),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   // Wait for navigation completion: FrameReady is sent before the navigation function returns,

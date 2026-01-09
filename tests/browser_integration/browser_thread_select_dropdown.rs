@@ -2,7 +2,6 @@
 
 use super::support;
 use fastrender::tree::box_tree::SelectItem;
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{PointerButton, TabId, UiToWorker, WorkerToUi};
 use std::time::Duration;
 
@@ -37,16 +36,14 @@ fn browser_thread_click_dropdown_select_emits_open_select_dropdown_message() {
   let fastrender::ui::BrowserWorkerHandle { tx, rx, join } = worker;
 
   let tab_id = TabId::new();
-  tx.send(support::create_tab_msg_with_cancel(
-    tab_id,
-    Some(url),
-    CancelGens::new(),
-  ))
-  .expect("CreateTab");
+  tx
+    .send(support::create_tab_msg(tab_id, Some(url)))
+    .expect("CreateTab");
   tx.send(UiToWorker::SetActiveTab { tab_id })
     .expect("SetActiveTab");
-  tx.send(support::viewport_changed_msg(tab_id, (200, 80), 1.0))
-  .expect("ViewportChanged");
+  tx
+    .send(support::viewport_changed_msg(tab_id, (200, 80), 1.0))
+    .expect("ViewportChanged");
 
   let _frame = match support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })

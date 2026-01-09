@@ -1,6 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{self, create_tab_msg, navigate_msg, viewport_changed_msg};
+use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::time::Duration;
@@ -40,13 +40,13 @@ fn fragment_navigation_scrolls_viewport_to_target() {
   let tab_id = TabId(1);
 
   ui_tx
-    .send(create_tab_msg(tab_id, None))
+    .send(support::create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {

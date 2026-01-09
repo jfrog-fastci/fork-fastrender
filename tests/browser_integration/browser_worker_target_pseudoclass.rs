@@ -1,8 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -59,19 +58,11 @@ fn fragment_navigation_updates_target_pseudoclass_even_without_scroll() {
   let tab_id = TabId::new();
   worker
     .tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: Some(page_url.clone()),
-      cancel: CancelGens::new(),
-    })
+    .send(support::create_tab_msg(tab_id, Some(page_url.clone())))
     .expect("create tab");
   worker
     .tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (64, 64),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .expect("viewport");
 
   let first_frame = next_frame_ready(&worker.rx, tab_id);
@@ -92,11 +83,11 @@ fn fragment_navigation_updates_target_pseudoclass_even_without_scroll() {
   let url_with_fragment = format!("{page_url}#target");
   worker
     .tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url_with_fragment.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url_with_fragment.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("navigate");
 
   let msg = next_navigation_committed(&worker.rx, tab_id);
@@ -128,4 +119,3 @@ fn fragment_navigation_updates_target_pseudoclass_even_without_scroll() {
   drop(worker.tx);
   worker.join.join().expect("worker join");
 }
-
