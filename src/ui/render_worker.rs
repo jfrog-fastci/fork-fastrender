@@ -699,6 +699,12 @@ impl BrowserRuntime {
       } => {
         self.handle_select_dropdown_choose(tab_id, select_node_id, option_node_id);
       }
+      UiToWorker::SelectDropdownCancel { tab_id } => {
+        // The browser UI typically owns the dropdown overlay state, so cancellation is a no-op on
+        // the worker side. Emit `SelectDropdownClosed` anyway so front-ends that expect an explicit
+        // close notification can dismiss the popup deterministically.
+        let _ = self.ui_tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+      }
       UiToWorker::SelectDropdownPick {
         tab_id,
         select_node_id,

@@ -204,6 +204,13 @@ pub enum UiToWorker {
     select_node_id: usize,
     option_node_id: usize,
   },
+  /// User dismissed an open dropdown `<select>` popup without choosing an option.
+  ///
+  /// Front-ends typically send this when the user presses Escape or clicks outside the popup.
+  /// Workers may treat this as a no-op or use it to emit [`WorkerToUi::SelectDropdownClosed`].
+  SelectDropdownCancel {
+    tab_id: TabId,
+  },
   TextInput {
     tab_id: TabId,
     text: String,
@@ -230,6 +237,10 @@ impl UiToWorker {
       select_node_id,
       option_node_id,
     }
+  }
+
+  pub fn select_dropdown_cancel(tab_id: TabId) -> Self {
+    UiToWorker::SelectDropdownCancel { tab_id }
   }
 }
 

@@ -199,3 +199,89 @@ fn dropdown_select_pick_updates_dom_and_repaints() {
   drop(ui_tx);
   join.join().unwrap();
 }
+
+#[test]
+fn dropdown_select_cancel_emits_select_dropdown_closed_message() {
+  let _lock = super::stage_listener_test_lock();
+  let site = support::TempSite::new();
+  let url = site.write(
+    "index.html",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #sel { position: absolute; left: 0; top: 0; width: 120px; height: 24px; }
+    </style>
+  </head>
+  <body>
+    <select id="sel">
+      <option selected>One</option>
+      <option>Two</option>
+    </select>
+  </body>
+</html>
+"#,
+  );
+
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-select-dropdown-cancel")
+    .expect("spawn ui worker")
+    .split();
+
+  let tab_id = TabId::new();
+  ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: CancelGens::new(),
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (160, 160),
+      dpr: 1.0,
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    })
+    .unwrap();
+  let _frame = next_frame_ready(&ui_rx, tab_id);
+
+  // Click the <select> to open the dropdown.
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .unwrap();
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SelectDropdownOpened { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for SelectDropdownOpened for tab {tab_id:?}"));
+
+  ui_tx
+    .send(UiToWorker::SelectDropdownCancel { tab_id })
+    .unwrap();
+
+  support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SelectDropdownClosed { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for SelectDropdownClosed for tab {tab_id:?}"));
+
+  drop(ui_tx);
+  join.join().unwrap();
+}

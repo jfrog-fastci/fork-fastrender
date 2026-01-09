@@ -598,6 +598,7 @@ impl App {
       | UiToWorker::PointerDown { tab_id, .. }
       | UiToWorker::PointerUp { tab_id, .. }
       | UiToWorker::SelectDropdownChoose { tab_id, .. }
+      | UiToWorker::SelectDropdownCancel { tab_id }
       | UiToWorker::SelectDropdownPick { tab_id, .. }
       | UiToWorker::TextInput { tab_id, .. }
       | UiToWorker::KeyAction { tab_id, .. }
@@ -619,6 +620,7 @@ impl App {
         | UiToWorker::PointerDown { .. }
         | UiToWorker::PointerUp { .. }
         | UiToWorker::SelectDropdownChoose { .. }
+        | UiToWorker::SelectDropdownCancel { .. }
         | UiToWorker::SelectDropdownPick { .. }
         | UiToWorker::TextInput { .. }
         | UiToWorker::KeyAction { .. }
@@ -664,6 +666,15 @@ impl App {
   fn close_select_dropdown(&mut self) {
     self.open_select_dropdown = None;
     self.open_select_dropdown_rect = None;
+  }
+
+  fn cancel_select_dropdown(&mut self) {
+    if let Some(dropdown) = self.open_select_dropdown.as_ref() {
+      self.send_worker_msg(fastrender::ui::UiToWorker::select_dropdown_cancel(
+        dropdown.tab_id,
+      ));
+    }
+    self.close_select_dropdown();
   }
 
   fn flush_pending_pointer_move(&mut self) {
@@ -1022,13 +1033,13 @@ impl App {
     }
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
-      self.close_select_dropdown();
+      self.cancel_select_dropdown();
       self.window.request_redraw();
       return;
     }
 
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-      self.close_select_dropdown();
+      self.cancel_select_dropdown();
       self.window.request_redraw();
       return;
     }
@@ -1106,12 +1117,12 @@ impl App {
       ..
     }) = control.items.get(clicked_item_idx)
     else {
-      self.close_select_dropdown();
+      self.cancel_select_dropdown();
       self.window.request_redraw();
       return;
     };
     if *disabled {
-      self.close_select_dropdown();
+      self.cancel_select_dropdown();
       self.window.request_redraw();
       return;
     }
@@ -1230,7 +1241,7 @@ impl App {
           {
             return;
           }
-          self.close_select_dropdown();
+          self.cancel_select_dropdown();
           self.window.request_redraw();
           return;
         }
@@ -1320,7 +1331,7 @@ impl App {
 
         if self.open_select_dropdown.is_some() {
           if matches!(key, VirtualKeyCode::Escape) {
-            self.close_select_dropdown();
+            self.cancel_select_dropdown();
             self.window.request_redraw();
             return;
           }
@@ -1335,7 +1346,7 @@ impl App {
           if let Some(nav_key) = dropdown_nav_key {
             self.update_open_select_dropdown_selection_for_key(nav_key);
           } else {
-            self.close_select_dropdown();
+            self.cancel_select_dropdown();
             self.window.request_redraw();
           }
         }
@@ -1399,7 +1410,7 @@ impl App {
           return;
         }
         if self.open_select_dropdown.is_some() {
-          self.close_select_dropdown();
+          self.cancel_select_dropdown();
           self.window.request_redraw();
         }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
@@ -1420,7 +1431,7 @@ impl App {
     use fastrender::ui::UiToWorker;
 
     if !actions.is_empty() {
-      self.close_select_dropdown();
+      self.cancel_select_dropdown();
     }
 
     for action in actions {
@@ -1685,7 +1696,7 @@ impl App {
           {
             wheel_blocked_by_dropdown = true;
           } else {
-            self.close_select_dropdown();
+            self.cancel_select_dropdown();
           }
         }
       }
