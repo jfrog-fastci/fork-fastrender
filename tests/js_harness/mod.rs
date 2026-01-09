@@ -124,6 +124,11 @@ const JS_BOOTSTRAP: &str = r##"
     g.__fastrender_dom_append_child(this.__h, child.__h);
     return child;
   };
+  Node.prototype.insertBefore = function (child, ref) {
+    var refHandle = ref && ref.__h ? ref.__h : 0;
+    g.__fastrender_dom_insert_before(this.__h, child.__h, refHandle);
+    return child;
+  };
 
   function wrap(handle) { return handle ? new Node(handle) : null; }
 
@@ -417,6 +422,38 @@ impl HostState {
                 .dom
                 .append_child(parent, child)
                 .expect("appendChild failed");
+
+              let mut scheduler = std::mem::take(&mut host.script_scheduler);
+              prepare_dynamic_script_on_insertion(host, &mut scheduler, event_loop, child)
+                .expect("prepare_dynamic_script_on_insertion failed");
+              host.script_scheduler = scheduler;
+            })
+          })?,
+        )?;
+
+        globals.set(
+          "__fastrender_dom_insert_before",
+          Function::new(ctx.clone(), |parent: u32, child: u32, reference: u32| {
+            with_env_mut(|host, event_loop| {
+              let parent = host
+                .resolve_node_handle(parent)
+                .expect("invalid parent node handle");
+              let child = host
+                .resolve_node_handle(child)
+                .expect("invalid child node handle");
+              let reference = if reference == 0 {
+                None
+              } else {
+                Some(
+                  host
+                    .resolve_node_handle(reference)
+                    .expect("invalid reference node handle"),
+                )
+              };
+              host
+                .dom
+                .insert_before(parent, child, reference)
+                .expect("insertBefore failed");
 
               let mut scheduler = std::mem::take(&mut host.script_scheduler);
               prepare_dynamic_script_on_insertion(host, &mut scheduler, event_loop, child)

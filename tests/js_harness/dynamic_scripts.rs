@@ -35,6 +35,39 @@ fn dynamic_external_script_executes_as_script_task() -> Result<()> {
 }
 
 #[test]
+fn dynamic_external_script_via_insert_before_executes_as_script_task() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+  h.set_external_script_sources(HashMap::from([(
+    "/a.js".to_string(),
+    "if (!document.currentScript || document.currentScript.getAttribute('id') !== 'dyn') throw new Error('bad currentScript'); console.log('a');".to_string(),
+  )]));
+
+  h.exec_script(
+    r#"
+      var ref = document.createElement("div");
+      ref.setAttribute("id", "ref");
+      document.body.appendChild(ref);
+
+      var s = document.createElement("script");
+      s.setAttribute("id", "dyn");
+      s.setAttribute("src", "/a.js");
+      document.body.insertBefore(s, ref);
+      console.log("after-insert");
+    "#,
+  )?;
+
+  assert_eq!(h.take_log(), vec!["after-insert".to_string()]);
+
+  h.complete_external_script("/a.js")?;
+  assert!(h.take_log().is_empty(), "expected execution to be task-queued");
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(h.take_log(), vec!["a".to_string()]);
+  Ok(())
+}
+
+#[test]
 fn dynamic_inline_script_executes_and_flushes_microtasks() -> Result<()> {
   let html = "<!doctype html><html><body></body></html>";
   let mut h = Harness::new("https://example.com/", html)?;
