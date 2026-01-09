@@ -164,3 +164,92 @@ fn container_query_accounts_for_scrollbar_gutter_stable_with_overflow_hidden() {
     bbb
   );
 }
+
+#[test]
+fn container_query_accounts_for_dynamic_auto_scrollbar_gutter() {
+  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let mut renderer = FastRender::with_config(config).expect("renderer");
+
+  let options = RenderOptions::default().with_viewport(220, 240);
+
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          .container {
+            width: 200px;
+            height: 50px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            container-type: inline-size;
+          }
+          .target { display: flex; }
+          .spacer { height: 200px; }
+          @container (min-width: 190px) {
+            .target { display: block; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="target">
+            <div>AAA</div>
+            <div>BBB</div>
+          </div>
+          <div class="spacer"></div>
+        </div>
+        <div class="container">
+          <div class="target">
+            <div>CCC</div>
+            <div>DDD</div>
+          </div>
+        </div>
+      </body>
+    </html>"#;
+
+  let report = renderer
+    .render_html_with_stylesheets_report(
+      html,
+      "https://example.test/",
+      options,
+      RenderArtifactRequest {
+        fragment_tree: true,
+        ..RenderArtifactRequest::default()
+      },
+    )
+    .expect("render with container query");
+
+  let fragment_tree = report
+    .artifacts
+    .fragment_tree
+    .as_ref()
+    .expect("expected fragment tree artifact");
+
+  let aaa = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "AAA")
+    .expect("expected text fragment containing AAA");
+  let bbb = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "BBB")
+    .expect("expected text fragment containing BBB");
+  let ccc = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "CCC")
+    .expect("expected text fragment containing CCC");
+  let ddd = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "DDD")
+    .expect("expected text fragment containing DDD");
+
+  // The first container overflows vertically, so `overflow-y:auto` should reserve space for the
+  // scrollbar and the min-width query should NOT match (flex layout keeps BBB on the same row).
+  assert!(
+    bbb.y() <= aaa.y() + 1.0,
+    "expected container query to NOT match for overflowing container; aaa={:?} bbb={:?}",
+    aaa,
+    bbb
+  );
+
+  // The second container does not overflow, so no scrollbar should be reserved and the query SHOULD
+  // match (block layout stacks DDD under CCC).
+  assert!(
+    ddd.y() > ccc.y() + 1.0,
+    "expected container query to match for non-overflowing container; ccc={:?} ddd={:?}",
+    ccc,
+    ddd
+  );
+}

@@ -2,7 +2,7 @@
 //!
 //! Contains common functions used across multiple layout modules.
 
-use crate::geometry::Size;
+use crate::geometry::{Point, Rect, Size};
 use crate::style::computed::PositionedStyle;
 use crate::style::types::BoxSizing;
 use crate::style::types::ContainIntrinsicSizeAxis;
@@ -22,6 +22,7 @@ use crate::text::font_db::FontStyle as FontFaceStyle;
 use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ReplacedBox;
+use crate::tree::fragment_tree::{FragmentNode, ScrollbarReservation};
 
 /// Resolves a length using the provided percentage base, font size, and root font size.
 ///
@@ -332,6 +333,188 @@ pub fn resolve_scrollbar_width(style: &ComputedStyle) -> f32 {
     ScrollbarWidth::Thin => 8.0,
     ScrollbarWidth::None => 0.0,
   }
+}
+
+/// Returns the scrollbar gutter reservation requested by `style`, expressed as inset values on each
+/// edge.
+///
+/// Layout currently models classic (non-overlay) scrollbars by effectively increasing resolved
+/// padding when scrollbars (or `scrollbar-gutter: stable`) request reserved space. Callers that
+/// need to mirror layout sizing (notably container queries and overflow:auto reflow) should use
+/// this helper instead of duplicating the gutter logic.
+pub fn scrollbar_reservation_for_style(style: &ComputedStyle) -> ScrollbarReservation {
+  let mut reservation = ScrollbarReservation::default();
+  let gutter = resolve_scrollbar_width(style);
+  if gutter <= 0.0 {
+    return reservation;
+  }
+
+  let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable
+      && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+  if reserve_vertical_gutter {
+    if style.scrollbar_gutter.both_edges {
+      reservation.left += gutter;
+    }
+    reservation.right += gutter;
+  }
+
+  let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
+    || (style.scrollbar_gutter.stable
+      && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+  if reserve_horizontal_gutter {
+    if style.scrollbar_gutter.both_edges {
+      reservation.top += gutter;
+    }
+    reservation.bottom += gutter;
+  }
+
+  reservation
+}
+
+fn resolve_length_for_scrollport(
+  length: Length,
+  percentage_base: Option<f32>,
+  style: &ComputedStyle,
+  viewport: Size,
+  font_context: Option<&FontContext>,
+) -> f32 {
+  resolve_length_with_percentage_metrics(
+    length,
+    percentage_base,
+    viewport,
+    style.font_size,
+    style.root_font_size,
+    Some(style),
+    font_context,
+  )
+  .unwrap_or(0.0)
+}
+
+/// Computes the scroll container's content box rectangle (origin relative to the fragment's local
+/// coordinate space).
+///
+/// This mirrors the sizing model used by the block/flex/grid/table layout implementations:
+/// borders and padding are subtracted from the fragment's border box to yield the inner content
+/// size. Scrollbar gutters behave like additional padding.
+pub fn content_box_rect_for_style(
+  fragment_bounds: Rect,
+  style: &ComputedStyle,
+  containing_width: f32,
+  viewport: Size,
+  font_context: Option<&FontContext>,
+) -> Rect {
+  let percentage_base = containing_width.is_finite().then_some(containing_width.max(0.0));
+
+  // Resolve physical padding/border sides for the fragment coordinate system (inline = X,
+  // block = Y). `scrollbar_reservation_for_style` is expressed in this same coordinate space.
+  let (inline_start, inline_end) = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+    (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+  } else {
+    (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+  };
+  let (block_start, block_end) = match (
+    crate::style::block_axis_is_horizontal(style.writing_mode),
+    crate::style::block_axis_positive(style.writing_mode),
+  ) {
+    (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
+    (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
+    (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
+    (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
+  };
+  let border_for = |side: crate::style::PhysicalSide| match side {
+    crate::style::PhysicalSide::Top => style.used_border_top_width(),
+    crate::style::PhysicalSide::Right => style.used_border_right_width(),
+    crate::style::PhysicalSide::Bottom => style.used_border_bottom_width(),
+    crate::style::PhysicalSide::Left => style.used_border_left_width(),
+  };
+  let padding_for = |side: crate::style::PhysicalSide| match side {
+    crate::style::PhysicalSide::Top => style.padding_top,
+    crate::style::PhysicalSide::Right => style.padding_right,
+    crate::style::PhysicalSide::Bottom => style.padding_bottom,
+    crate::style::PhysicalSide::Left => style.padding_left,
+  };
+
+  let border_inline_start =
+    resolve_length_for_scrollport(border_for(inline_start), None, style, viewport, font_context);
+  let border_inline_end =
+    resolve_length_for_scrollport(border_for(inline_end), None, style, viewport, font_context);
+  let border_block_start =
+    resolve_length_for_scrollport(border_for(block_start), None, style, viewport, font_context);
+  let border_block_end =
+    resolve_length_for_scrollport(border_for(block_end), None, style, viewport, font_context);
+
+  let mut padding_inline_start =
+    resolve_length_for_scrollport(padding_for(inline_start), percentage_base, style, viewport, font_context);
+  let mut padding_inline_end =
+    resolve_length_for_scrollport(padding_for(inline_end), percentage_base, style, viewport, font_context);
+  let mut padding_block_start =
+    resolve_length_for_scrollport(padding_for(block_start), percentage_base, style, viewport, font_context);
+  let mut padding_block_end =
+    resolve_length_for_scrollport(padding_for(block_end), percentage_base, style, viewport, font_context);
+
+  let reservation = scrollbar_reservation_for_style(style);
+  padding_inline_start += reservation.left;
+  padding_inline_end += reservation.right;
+  padding_block_start += reservation.top;
+  padding_block_end += reservation.bottom;
+
+  let origin_x = border_inline_start + padding_inline_start;
+  let origin_y = border_block_start + padding_block_start;
+
+  let mut width = fragment_bounds.width()
+    - border_inline_start
+    - border_inline_end
+    - padding_inline_start
+    - padding_inline_end;
+  let mut height = fragment_bounds.height()
+    - border_block_start
+    - border_block_end
+    - padding_block_start
+    - padding_block_end;
+  if !width.is_finite() {
+    width = 0.0;
+  }
+  if !height.is_finite() {
+    height = 0.0;
+  }
+
+  Rect::from_xywh(origin_x, origin_y, width.max(0.0), height.max(0.0))
+}
+
+/// Returns `(overflow_x, overflow_y)` for `fragment` when treated as a scroll container.
+///
+/// Overflow is detected by comparing the union of descendant fragment bounds (expressed in the
+/// fragment's local coordinate space) against the fragment's computed content box.
+pub fn fragment_overflows_content_box(
+  fragment: &FragmentNode,
+  style: &ComputedStyle,
+  containing_width: f32,
+  viewport: Size,
+  font_context: Option<&FontContext>,
+) -> (bool, bool) {
+  let content = content_box_rect_for_style(fragment.bounds, style, containing_width, viewport, font_context);
+  if content.width() <= 0.0 || content.height() <= 0.0 {
+    return (false, false);
+  }
+
+  let mut bbox: Option<Rect> = None;
+  for child in fragment.children.iter() {
+    let child_bbox = child.bounding_box();
+    bbox = Some(match bbox {
+      Some(current) => current.union(child_bbox),
+      None => child_bbox,
+    });
+  }
+
+  let bbox = bbox.unwrap_or_else(|| Rect::from_xywh(content.x(), content.y(), 0.0, 0.0));
+  let bbox_in_content = bbox.translate(Point::new(-content.x(), -content.y()));
+
+  let overflow_x =
+    bbox_in_content.min_x() < -0.01 || bbox_in_content.max_x() > content.width() + 0.01;
+  let overflow_y =
+    bbox_in_content.min_y() < -0.01 || bbox_in_content.max_y() > content.height() + 0.01;
+  (overflow_x, overflow_y)
 }
 
 /// Resolves a length-or-auto value to an optional pixel value.

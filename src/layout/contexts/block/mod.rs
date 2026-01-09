@@ -479,6 +479,7 @@ impl BlockFormattingContext {
     external_float_base_y: f32,
     paint_viewport: Rect,
   ) -> Result<FragmentNode, LayoutError> {
+    if crate::layout::auto_scrollbars::should_bypass(child) {
     let toggles = crate::debug::runtime::runtime_toggles();
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
@@ -502,7 +503,9 @@ impl BlockFormattingContext {
       return Ok(fragment);
     }
 
-    let style = &child.style;
+    let style_override = crate::layout::style_override::style_override_for(child.id);
+    let style_arc = style_override.unwrap_or_else(|| child.style.clone());
+    let style = style_arc.as_ref();
     let font_size = style.font_size; // Get font-size for resolving em units
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
     // Map physical width/height inputs to the logical inline/block axes used by the block
@@ -808,15 +811,12 @@ impl BlockFormattingContext {
           crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
         };
         let mut width_style = style.clone();
-        {
-          let s = Arc::make_mut(&mut width_style);
-          if inline_is_horizontal {
-            s.width = Some(Length::px(specified_width));
-            s.width_keyword = None;
-          } else {
-            s.height = Some(Length::px(specified_width));
-            s.height_keyword = None;
-          }
+        if inline_is_horizontal {
+          width_style.width = Some(Length::px(specified_width));
+          width_style.width_keyword = None;
+        } else {
+          width_style.height = Some(Length::px(specified_width));
+          width_style.height_keyword = None;
         }
         computed_width = compute_block_width(
           &width_style,
@@ -2111,7 +2111,7 @@ impl BlockFormattingContext {
         box_id: Some(child.id),
       },
       child_fragments,
-      child.style.clone(),
+      style_arc.clone(),
     );
     fragment.block_metadata = Some(BlockFragmentMetadata {
       margin_top,
@@ -2144,7 +2144,207 @@ impl BlockFormattingContext {
       &mut fragment,
     )?;
 
-    Ok(fragment)
+    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+    return Ok(fragment);
+    }
+
+    let style_override = crate::layout::style_override::style_override_for(child.id);
+    let base_style = style_override.unwrap_or_else(|| child.style.clone());
+    let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
+    if gutter <= 0.0
+      || (!matches!(base_style.overflow_x, Overflow::Auto)
+        && !matches!(base_style.overflow_y, Overflow::Auto))
+    {
+      return crate::layout::auto_scrollbars::with_bypass(child, || {
+        self.layout_block_child(
+          parent,
+          child,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          external_float_ctx,
+          external_float_base_y,
+          paint_viewport,
+        )
+      });
+    }
+
+    // `layout_block_child` can participate in float placement via `external_float_ctx`. Running
+    // multiple layout passes must not mutate the caller's float context repeatedly, so we run
+    // convergence passes against a scratch clone and only apply the final chosen style to the real
+    // float context once.
+    let float_ctx_snapshot: Option<FloatContext> = external_float_ctx.as_deref().cloned();
+
+    let mut force_x = false;
+    let mut force_y = false;
+    for _ in 0..3 {
+      let mut override_style = base_style.clone();
+      let mut overridden = false;
+      {
+        let s = Arc::make_mut(&mut override_style);
+        if force_x
+          && matches!(base_style.overflow_x, Overflow::Auto)
+          && !base_style.scrollbar_gutter.stable
+        {
+          s.overflow_x = Overflow::Scroll;
+          overridden = true;
+        }
+        if force_y
+          && matches!(base_style.overflow_y, Overflow::Auto)
+          && !base_style.scrollbar_gutter.stable
+        {
+          s.overflow_y = Overflow::Scroll;
+          overridden = true;
+        }
+      }
+
+      let mut scratch_float = float_ctx_snapshot.clone();
+      let fragment = if overridden && child.id != 0 {
+        crate::layout::style_override::with_style_override(child.id, override_style.clone(), || {
+          crate::layout::auto_scrollbars::with_bypass(child, || {
+            self.layout_block_child(
+              parent,
+              child,
+              containing_width,
+              constraints,
+              box_y,
+              nearest_positioned_cb,
+              nearest_fixed_cb,
+              scratch_float.as_mut(),
+              external_float_base_y,
+              paint_viewport,
+            )
+          })
+        })
+      } else if overridden {
+        let mut cloned = child.clone();
+        cloned.style = override_style.clone();
+        crate::layout::auto_scrollbars::with_bypass(&cloned, || {
+          self.layout_block_child(
+            parent,
+            &cloned,
+            containing_width,
+            constraints,
+            box_y,
+            nearest_positioned_cb,
+            nearest_fixed_cb,
+            scratch_float.as_mut(),
+            external_float_base_y,
+            paint_viewport,
+          )
+        })
+      } else {
+        crate::layout::auto_scrollbars::with_bypass(child, || {
+          self.layout_block_child(
+            parent,
+            child,
+            containing_width,
+            constraints,
+            box_y,
+            nearest_positioned_cb,
+            nearest_fixed_cb,
+            scratch_float.as_mut(),
+            external_float_base_y,
+            paint_viewport,
+          )
+        })
+      }?;
+
+      let (overflow_x, overflow_y) = crate::layout::utils::fragment_overflows_content_box(
+        &fragment,
+        override_style.as_ref(),
+        containing_width,
+        self.viewport_size,
+        Some(&self.font_context),
+      );
+      let need_x = gutter > 0.0
+        && matches!(base_style.overflow_x, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+        && overflow_x;
+      let need_y = gutter > 0.0
+        && matches!(base_style.overflow_y, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+        && overflow_y;
+
+      if need_x == force_x && need_y == force_y {
+        break;
+      }
+      force_x = need_x;
+      force_y = need_y;
+    }
+
+    // Run one final pass that mutates the caller's float context and returns the fragment.
+    let mut final_style = base_style.clone();
+    let mut final_overridden = false;
+    {
+      let s = Arc::make_mut(&mut final_style);
+      if force_x
+        && matches!(base_style.overflow_x, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+      {
+        s.overflow_x = Overflow::Scroll;
+        final_overridden = true;
+      }
+      if force_y
+        && matches!(base_style.overflow_y, Overflow::Auto)
+        && !base_style.scrollbar_gutter.stable
+      {
+        s.overflow_y = Overflow::Scroll;
+        final_overridden = true;
+      }
+    }
+    if final_overridden && child.id != 0 {
+      crate::layout::style_override::with_style_override(child.id, final_style.clone(), || {
+        crate::layout::auto_scrollbars::with_bypass(child, || {
+          self.layout_block_child(
+            parent,
+            child,
+            containing_width,
+            constraints,
+            box_y,
+            nearest_positioned_cb,
+            nearest_fixed_cb,
+            external_float_ctx,
+            external_float_base_y,
+            paint_viewport,
+          )
+        })
+      })
+    } else if final_overridden {
+      let mut cloned = child.clone();
+      cloned.style = final_style;
+      crate::layout::auto_scrollbars::with_bypass(&cloned, || {
+        self.layout_block_child(
+          parent,
+          &cloned,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          external_float_ctx,
+          external_float_base_y,
+          paint_viewport,
+        )
+      })
+    } else {
+      crate::layout::auto_scrollbars::with_bypass(child, || {
+        self.layout_block_child(
+          parent,
+          child,
+          containing_width,
+          constraints,
+          box_y,
+          nearest_positioned_cb,
+          nearest_fixed_cb,
+          external_float_ctx,
+          external_float_base_y,
+          paint_viewport,
+        )
+      })
+    }
   }
 
   fn can_parallelize_block_children(parent: &BoxNode) -> bool {
@@ -5150,6 +5350,7 @@ impl FormattingContext for BlockFormattingContext {
     box_node: &BoxNode,
     constraints: &LayoutConstraints,
   ) -> Result<FragmentNode, LayoutError> {
+    if crate::layout::auto_scrollbars::should_bypass(box_node) {
     let _profile = layout_timer(LayoutKind::Block);
     if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
       return Err(LayoutError::Timeout { elapsed });
@@ -6875,6 +7076,8 @@ impl FormattingContext for BlockFormattingContext {
       fragment = PositionedLayout::with_font_context(self.font_context.clone())
         .apply_relative_positioning(&fragment, &positioned_style, &containing_block)?;
     }
+
+    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
     let converted = convert_fragment_axes(
       fragment,
       box_width,
@@ -6892,7 +7095,74 @@ impl FormattingContext for BlockFormattingContext {
       self.viewport_size,
     );
 
-    Ok(converted)
+    return Ok(converted);
+    }
+
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
+    let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
+    if gutter <= 0.0
+      || (!matches!(base_style.overflow_x, Overflow::Auto)
+        && !matches!(base_style.overflow_y, Overflow::Auto))
+    {
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints));
+    }
+
+    let containing_width = constraints
+      .inline_percentage_base
+      .or_else(|| constraints.width())
+      .unwrap_or(self.viewport_size.width);
+    let mut force_x = false;
+    let mut force_y = false;
+    let mut last: Option<FragmentNode> = None;
+    for _ in 0..3 {
+      let mut override_style = base_style.clone();
+      let mut overridden = false;
+      {
+        let s = Arc::make_mut(&mut override_style);
+        if force_x && matches!(base_style.overflow_x, Overflow::Auto) && !base_style.scrollbar_gutter.stable {
+          s.overflow_x = Overflow::Scroll;
+          overridden = true;
+        }
+        if force_y && matches!(base_style.overflow_y, Overflow::Auto) && !base_style.scrollbar_gutter.stable {
+          s.overflow_y = Overflow::Scroll;
+          overridden = true;
+        }
+      }
+
+      let fragment = if overridden && box_node.id != 0 {
+        crate::layout::style_override::with_style_override(box_node.id, override_style.clone(), || {
+          crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
+        })
+      } else if overridden {
+        let mut cloned = box_node.clone();
+        cloned.style = override_style.clone();
+        crate::layout::auto_scrollbars::with_bypass(&cloned, || self.layout(&cloned, constraints))
+      } else {
+        crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
+      }?;
+
+      let (overflow_x, overflow_y) = crate::layout::utils::fragment_overflows_content_box(
+        &fragment,
+        override_style.as_ref(),
+        containing_width,
+        self.viewport_size,
+        Some(&self.font_context),
+      );
+      let need_x =
+        gutter > 0.0 && matches!(base_style.overflow_x, Overflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_x;
+      let need_y =
+        gutter > 0.0 && matches!(base_style.overflow_y, Overflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_y;
+
+      last = Some(fragment);
+      if need_x == force_x && need_y == force_y {
+        break;
+      }
+      force_x = need_x;
+      force_y = need_y;
+    }
+
+    Ok(last.expect("at least one layout pass"))
   }
 
   fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
@@ -7310,6 +7580,22 @@ fn convert_fragment_axes_in_place(
     style_wm,
     dir,
   );
+  if block_axis_is_horizontal(style_wm) {
+    // `ScrollbarReservation` is expressed in the fragment's local coordinate space. When converting
+    // logical axes to physical, swap the edge contributions the same way `logical_rect_to_physical`
+    // swaps width/height and x/y.
+    let inline_positive = inline_axis_positive(style_wm, dir);
+    let block_positive = block_axis_positive(style_wm);
+    let logical = fragment.scrollbar_reservation;
+    fragment.scrollbar_reservation = crate::tree::fragment_tree::ScrollbarReservation {
+      // Physical x axis corresponds to the logical block axis in vertical writing modes.
+      left: if block_positive { logical.top } else { logical.bottom },
+      right: if block_positive { logical.bottom } else { logical.top },
+      // Physical y axis corresponds to the logical inline axis.
+      top: if inline_positive { logical.left } else { logical.right },
+      bottom: if inline_positive { logical.right } else { logical.left },
+    };
+  }
 
   // Recurse into children using this fragment's writing mode (children are laid out in the
   // fragment's logical coordinate system).
@@ -7448,6 +7734,20 @@ fn unconvert_fragment_axes_in_place(
     style_wm,
     dir,
   );
+  if block_axis_is_horizontal(style_wm) {
+    // Invert the edge swapping performed in `convert_fragment_axes_in_place`.
+    let inline_positive = inline_axis_positive(style_wm, dir);
+    let block_positive = block_axis_positive(style_wm);
+    let physical = fragment.scrollbar_reservation;
+    fragment.scrollbar_reservation = crate::tree::fragment_tree::ScrollbarReservation {
+      // Logical inline axis maps to physical y.
+      left: if inline_positive { physical.top } else { physical.bottom },
+      right: if inline_positive { physical.bottom } else { physical.top },
+      // Logical block axis maps to physical x.
+      top: if block_positive { physical.left } else { physical.right },
+      bottom: if block_positive { physical.right } else { physical.left },
+    };
+  }
   for child in fragment.children_mut() {
     unconvert_fragment_axes_in_place(child, child_inline, child_block, style_wm, dir);
   }

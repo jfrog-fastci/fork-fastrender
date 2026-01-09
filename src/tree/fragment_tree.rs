@@ -591,6 +591,19 @@ pub struct GridFragmentationInfo {
   pub items: Vec<GridItemFragmentationData>,
 }
 
+/// Space reserved inside a scroll container for classic (non-overlay) scrollbars.
+///
+/// Values are expressed in CSS pixels and correspond to physical edges in the fragment's
+/// coordinate space. When non-zero, the reserved area behaves like additional padding for
+/// layout sizing (i.e., it reduces the content box size).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ScrollbarReservation {
+  pub left: f32,
+  pub right: f32,
+  pub top: f32,
+  pub bottom: f32,
+}
+
 /// A single fragment in the fragment tree
 ///
 /// Represents a laid-out box with a definite position and size.
@@ -688,6 +701,9 @@ pub struct FragmentNode {
   /// ancestor scroll ranges or paint bounds.
   pub scroll_overflow: Rect,
 
+  /// Space reserved for scrollbars inside this fragment's scrollport.
+  pub scrollbar_reservation: ScrollbarReservation,
+
   /// Fragmentation metadata for nested fragmentainers (e.g., multi-column containers).
   pub fragmentation: Option<FragmentationInfo>,
 
@@ -715,6 +731,7 @@ impl Clone for FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
     }
@@ -811,6 +828,7 @@ impl FragmentNode {
       fragmentainer,
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
+      scrollbar_reservation: ScrollbarReservation::default(),
       fragmentation: None,
       grid_fragmentation: None,
     }
@@ -842,6 +860,7 @@ impl FragmentNode {
       fragmentainer,
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
+      scrollbar_reservation: ScrollbarReservation::default(),
       fragmentation: None,
       grid_fragmentation: None,
     }
@@ -1264,6 +1283,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
     }
@@ -1454,6 +1474,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
     }
@@ -1499,6 +1520,7 @@ impl FragmentNode {
       fragmentainer: self.fragmentainer,
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
+      scrollbar_reservation: self.scrollbar_reservation,
       fragmentation: self.fragmentation.clone(),
       grid_fragmentation: self.grid_fragmentation.clone(),
     }

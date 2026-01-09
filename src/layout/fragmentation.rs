@@ -2398,6 +2398,7 @@ fn clone_without_children(node: &FragmentNode) -> FragmentNode {
     fragmentainer: node.fragmentainer,
     slice_info: node.slice_info,
     scroll_overflow: node.scroll_overflow,
+    scrollbar_reservation: node.scrollbar_reservation,
     fragmentation: node.fragmentation.clone(),
     grid_fragmentation: node.grid_fragmentation.clone(),
   }

@@ -8208,6 +8208,7 @@ impl FormattingContext for GridFormattingContext {
     box_node: &BoxNode,
     constraints: &LayoutConstraints,
   ) -> Result<FragmentNode, LayoutError> {
+    if crate::layout::auto_scrollbars::should_bypass(box_node) {
     debug_assert!(
       matches!(
         box_node.formatting_context(),
@@ -9772,6 +9773,8 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
+    fragment.scrollbar_reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+
     if !disable_global_layout_cache {
       layout_cache_store(
         box_node,
@@ -9783,7 +9786,74 @@ impl FormattingContext for GridFormattingContext {
       );
     }
 
-    Ok(fragment)
+    return Ok(fragment);
+    }
+
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let base_style = style_override.unwrap_or_else(|| box_node.style.clone());
+    let gutter = crate::layout::utils::resolve_scrollbar_width(&base_style);
+    if gutter <= 0.0
+      || (!matches!(base_style.overflow_x, CssOverflow::Auto)
+        && !matches!(base_style.overflow_y, CssOverflow::Auto))
+    {
+      return crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints));
+    }
+
+    let containing_width = constraints
+      .inline_percentage_base
+      .or_else(|| constraints.width())
+      .unwrap_or(self.viewport_size.width);
+    let mut force_x = false;
+    let mut force_y = false;
+    let mut last: Option<FragmentNode> = None;
+    for _ in 0..3 {
+      let mut override_style = base_style.clone();
+      let mut overridden = false;
+      {
+        let s = Arc::make_mut(&mut override_style);
+        if force_x && matches!(base_style.overflow_x, CssOverflow::Auto) && !base_style.scrollbar_gutter.stable {
+          s.overflow_x = CssOverflow::Scroll;
+          overridden = true;
+        }
+        if force_y && matches!(base_style.overflow_y, CssOverflow::Auto) && !base_style.scrollbar_gutter.stable {
+          s.overflow_y = CssOverflow::Scroll;
+          overridden = true;
+        }
+      }
+
+      let fragment = if overridden && box_node.id != 0 {
+        crate::layout::style_override::with_style_override(box_node.id, override_style.clone(), || {
+          crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
+        })
+      } else if overridden {
+        let mut cloned = box_node.clone();
+        cloned.style = override_style.clone();
+        crate::layout::auto_scrollbars::with_bypass(&cloned, || self.layout(&cloned, constraints))
+      } else {
+        crate::layout::auto_scrollbars::with_bypass(box_node, || self.layout(box_node, constraints))
+      }?;
+
+      let (overflow_x, overflow_y) = crate::layout::utils::fragment_overflows_content_box(
+        &fragment,
+        override_style.as_ref(),
+        containing_width,
+        self.viewport_size,
+        Some(&self.font_context),
+      );
+      let need_x =
+        gutter > 0.0 && matches!(base_style.overflow_x, CssOverflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_x;
+      let need_y =
+        gutter > 0.0 && matches!(base_style.overflow_y, CssOverflow::Auto) && !base_style.scrollbar_gutter.stable && overflow_y;
+
+      last = Some(fragment);
+      if need_x == force_x && need_y == force_y {
+        break;
+      }
+      force_x = need_x;
+      force_y = need_y;
+    }
+
+    Ok(last.expect("at least one layout pass"))
   }
 
   fn compute_intrinsic_inline_size(

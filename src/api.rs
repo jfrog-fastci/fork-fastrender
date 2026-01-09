@@ -195,6 +195,7 @@ use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentInstrumentationGuard;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
+use crate::tree::fragment_tree::ScrollbarReservation;
 use crate::tree::fragment_tree::{
   enable_fragment_instrumentation, reset_fragment_instrumentation_counters,
 };
@@ -16317,7 +16318,11 @@ fn extract_fragment(url: &str) -> Option<String> {
   })
 }
 
-fn collect_fragment_sizes(fragment: &FragmentNode, sizes: &mut HashMap<usize, (f32, f32)>) {
+fn collect_fragment_sizes(
+  fragment: &FragmentNode,
+  sizes: &mut HashMap<usize, (f32, f32)>,
+  scrollbars: &mut HashMap<usize, ScrollbarReservation>,
+) {
   let box_id = match &fragment.content {
     FragmentContent::Block { box_id }
     | FragmentContent::Inline { box_id, .. }
@@ -16332,18 +16337,24 @@ fn collect_fragment_sizes(fragment: &FragmentNode, sizes: &mut HashMap<usize, (f
     let entry = sizes.entry(id).or_insert((0.0, 0.0));
     entry.0 = entry.0.max(fragment.bounds.width());
     entry.1 = entry.1.max(fragment.bounds.height());
+
+    let reservation = scrollbars.entry(id).or_insert_with(ScrollbarReservation::default);
+    reservation.left = reservation.left.max(fragment.scrollbar_reservation.left);
+    reservation.right = reservation.right.max(fragment.scrollbar_reservation.right);
+    reservation.top = reservation.top.max(fragment.scrollbar_reservation.top);
+    reservation.bottom = reservation.bottom.max(fragment.scrollbar_reservation.bottom);
   }
 
   match &fragment.content {
     FragmentContent::RunningAnchor { snapshot, .. }
     | FragmentContent::FootnoteAnchor { snapshot } => {
-      collect_fragment_sizes(snapshot, sizes);
+      collect_fragment_sizes(snapshot, sizes, scrollbars);
     }
     _ => {}
   }
 
   for child in fragment.children.iter() {
-    collect_fragment_sizes(child, sizes);
+    collect_fragment_sizes(child, sizes, scrollbars);
   }
 }
 
@@ -17062,9 +17073,10 @@ fn build_container_query_context(
   include_style_containers: bool,
 ) -> ContainerQueryContext {
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
-  collect_fragment_sizes(&fragments.root, &mut sizes);
+  let mut scrollbar_reservations: HashMap<usize, ScrollbarReservation> = HashMap::new();
+  collect_fragment_sizes(&fragments.root, &mut sizes, &mut scrollbar_reservations);
   for extra in &fragments.additional_fragments {
-    collect_fragment_sizes(extra, &mut sizes);
+    collect_fragment_sizes(extra, &mut sizes, &mut scrollbar_reservations);
   }
 
   fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
@@ -17148,6 +17160,7 @@ fn build_container_query_context(
   fn walk_containers(
     node: &BoxNode,
     sizes: &HashMap<usize, (f32, f32)>,
+    scrollbar_reservations: &HashMap<usize, ScrollbarReservation>,
     styles: &HashMap<usize, Arc<ComputedStyle>>,
     containers: &mut HashMap<usize, ContainerQueryInfo>,
     parent_content_width: f32,
@@ -17183,42 +17196,13 @@ fn build_container_query_context(
     let mut padding_top = padding_top;
     let mut padding_bottom = padding_bottom;
 
-    // Block layout reserves space for scrollbars via padding adjustments (including
-    // `scrollbar-gutter: stable`). Mirror that accounting so container query size snapshots match
-    // the actual content box used during layout.
-    {
-      use crate::style::types::Overflow;
-      let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-        || (style.scrollbar_gutter.stable
-          && matches!(
-            style.overflow_y,
-            Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-          ));
-      if reserve_vertical_gutter {
-        let gutter = crate::layout::utils::resolve_scrollbar_width(style);
-        if gutter > 0.0 {
-          if style.scrollbar_gutter.both_edges {
-            padding_left += gutter;
-          }
-          padding_right += gutter;
-        }
-      }
-
-      let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-        || (style.scrollbar_gutter.stable
-          && matches!(
-            style.overflow_x,
-            Overflow::Hidden | Overflow::Auto | Overflow::Scroll
-          ));
-      if reserve_horizontal_gutter {
-        let gutter = crate::layout::utils::resolve_scrollbar_width(style);
-        if gutter > 0.0 {
-          if style.scrollbar_gutter.both_edges {
-            padding_top += gutter;
-          }
-          padding_bottom += gutter;
-        }
-      }
+    // Layout models classic scrollbars as additional padding. Use the reservation recorded on the
+    // fragment tree so container query snapshots match dynamic `overflow:auto` scrollbars too.
+    if let Some(reservation) = scrollbar_reservations.get(&node.id) {
+      padding_left += reservation.left;
+      padding_right += reservation.right;
+      padding_top += reservation.top;
+      padding_bottom += reservation.bottom;
     }
 
     // `Length::to_px()` is a best-effort helper for absolute units; it returns raw values for
@@ -17313,16 +17297,33 @@ fn build_container_query_context(
     }
 
     if let Some(body) = node.footnote_body.as_deref() {
-      walk_containers(body, sizes, styles, containers, child_base, viewport);
+      walk_containers(
+        body,
+        sizes,
+        scrollbar_reservations,
+        styles,
+        containers,
+        child_base,
+        viewport,
+      );
     }
     for child in node.children.iter() {
-      walk_containers(child, sizes, styles, containers, child_base, viewport);
+      walk_containers(
+        child,
+        sizes,
+        scrollbar_reservations,
+        styles,
+        containers,
+        child_base,
+        viewport,
+      );
     }
   }
 
   walk_containers(
     &box_tree.root,
     &sizes,
+    &scrollbar_reservations,
     &styles,
     &mut containers,
     viewport.width,
