@@ -47,7 +47,10 @@ fn backface_hidden_non_stacking_elements_are_culled_by_ancestor_transform() {
     Arc::new(parent_style),
   );
 
-  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 30.0, 30.0), vec![parent]);
+  // Use a synthetic box id on the viewport root so `DisplayListBuilder` does not propagate the
+  // child's background to the canvas background (HTML background propagation fallback).
+  let root =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 30.0, 30.0), 0, vec![parent]);
   let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
 
   let pixmap = DisplayListRenderer::new(30, 30, Rgba::WHITE, FontContext::new())
@@ -60,4 +63,3 @@ fn backface_hidden_non_stacking_elements_are_culled_by_ancestor_transform() {
   // And the rest of the canvas stays white.
   assert_eq!(pixel(&pixmap, 20, 20), (255, 255, 255, 255));
 }
-
