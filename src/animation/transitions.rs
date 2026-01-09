@@ -577,7 +577,6 @@ impl TransitionState {
             TransitionBehavior::Normal,
           );
           let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
-
           let reversing = existing.reversing_adjusted_start_value == after_value;
 
           if !allow_discrete && is_discrete_property(name) {
@@ -608,15 +607,21 @@ impl TransitionState {
               continue;
             };
 
-            let old_timing_output =
-              existing.timing_function.value_at(existing.raw_progress(now_ms));
-            let new_factor = (old_timing_output * existing.reversing_shortening_factor
-              + (1.0 - existing.reversing_shortening_factor))
-              .abs()
-              .clamp(0.0, 1.0);
+            let old_raw_progress = existing.raw_progress(now_ms);
+            let timing_output = existing.timing_function.value_at(old_raw_progress);
+            let old_factor = existing.reversing_shortening_factor;
+            let mut new_factor = (timing_output * old_factor + (1.0 - old_factor)).abs();
+            if !new_factor.is_finite() {
+              new_factor = 1.0;
+            }
+            let new_factor = new_factor.clamp(0.0, 1.0);
 
             let scaled_delay = if delay >= 0.0 { delay } else { delay * new_factor };
             let scaled_duration = duration * new_factor;
+            if scaled_duration <= 0.0 {
+              element.completed.remove(&name_arc);
+              continue;
+            }
 
             let record = start_transition_record(
               name_arc.clone(),
