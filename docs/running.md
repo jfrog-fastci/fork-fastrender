@@ -14,6 +14,7 @@ Use the `xtask` wrapper for common local loops:
 - Deterministic fixture-vs-Chrome evidence report (offline): `bash scripts/cargo_agent.sh xtask fixture-chrome-diff` (writes `target/fixture_chrome_diff/report.html`; pass `--no-build` to reuse an existing `target/release/diff_renders` binary)
 - Recapture offline page fixtures from a manifest (pageset guardrails by default): `bash scripts/cargo_agent.sh xtask recapture-page-fixtures`
 - Validate that offline page fixtures do not reference network resources: `bash scripts/cargo_agent.sh xtask validate-page-fixtures`
+- Lints: `bash scripts/cargo_agent.sh xtask lint-no-panics` and `bash scripts/cargo_agent.sh xtask lint-no-openssl --workspace --all-features`
 - Cached-pages Chrome-vs-FastRender evidence report (best-effort): `scripts/chrome_vs_fastrender.sh --pages example.com` (writes `target/chrome_vs_fastrender/report.html` by default)
 
 Safety note: helper scripts in `scripts/` already run Cargo via `bash scripts/cargo_agent.sh` (which enforces
