@@ -111,21 +111,19 @@ impl BrowserDocumentJs {
     };
 
     let run_limits = self.js_execution_options.event_loop_run_limits;
-    if event_loop.pending_microtask_count() > 0 {
+    let step_result = if event_loop.pending_microtask_count() > 0 {
       let microtask_limits = RunLimits {
         max_tasks: 0,
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match event_loop.run_until_idle(self, microtask_limits)? {
-        RunUntilIdleOutcome::Idle
-        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
-        RunUntilIdleOutcome::Stopped(reason) => {
-          self.event_loop = Some(event_loop);
-          return Err(crate::error::Error::Other(format!(
-            "BrowserDocumentJs::tick_frame microtask checkpoint stopped: {reason:?}"
-          )));
-        }
+      match event_loop.run_until_idle(self, microtask_limits) {
+        Ok(RunUntilIdleOutcome::Idle)
+        | Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. })) => Ok(()),
+        Ok(RunUntilIdleOutcome::Stopped(reason)) => Err(crate::error::Error::Other(format!(
+          "BrowserDocumentJs::tick_frame microtask checkpoint stopped: {reason:?}"
+        ))),
+        Err(err) => Err(err),
       }
     } else {
       let one_task_limits = RunLimits {
@@ -133,18 +131,18 @@ impl BrowserDocumentJs {
         max_microtasks: run_limits.max_microtasks,
         max_wall_time: run_limits.max_wall_time,
       };
-      match event_loop.run_until_idle(self, one_task_limits)? {
-        RunUntilIdleOutcome::Idle
-        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
-        RunUntilIdleOutcome::Stopped(reason) => {
-          self.event_loop = Some(event_loop);
-          return Err(crate::error::Error::Other(format!(
-            "BrowserDocumentJs::tick_frame task turn stopped: {reason:?}"
-          )));
-        }
+      match event_loop.run_until_idle(self, one_task_limits) {
+        Ok(RunUntilIdleOutcome::Idle)
+        | Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. })) => Ok(()),
+        Ok(RunUntilIdleOutcome::Stopped(reason)) => Err(crate::error::Error::Other(format!(
+          "BrowserDocumentJs::tick_frame task turn stopped: {reason:?}"
+        ))),
+        Err(err) => Err(err),
       }
-    }
+    };
+    // Always restore the event loop, even when JS execution returns an error.
     self.event_loop = Some(event_loop);
+    step_result?;
     self.render_if_needed()
   }
 
@@ -251,8 +249,14 @@ impl BrowserDocumentJs {
         .take()
         .ok_or_else(|| Error::Other("BrowserDocumentJs event loop is unavailable".to_string()))?;
 
-      let outcome = event_loop.run_until_idle(self, limits);
-      match outcome? {
+      let outcome = match event_loop.run_until_idle(self, limits) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+          self.event_loop = Some(event_loop);
+          return Err(err);
+        }
+      };
+      match outcome {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
           self.event_loop = Some(event_loop);
@@ -263,22 +267,32 @@ impl BrowserDocumentJs {
         }
       }
 
-      let raf_outcome = event_loop.run_animation_frame(self)?;
+      let raf_outcome = match event_loop.run_animation_frame(self) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+          self.event_loop = Some(event_loop);
+          return Err(err);
+        }
+      };
       if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
         let microtask_limits = RunLimits {
           max_tasks: 0,
           max_microtasks: limits.max_microtasks,
           max_wall_time: limits.max_wall_time,
         };
-        match event_loop.run_until_idle(self, microtask_limits)? {
-          RunUntilIdleOutcome::Idle => {}
-          RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
-          RunUntilIdleOutcome::Stopped(reason) => {
+        match event_loop.run_until_idle(self, microtask_limits) {
+          Ok(RunUntilIdleOutcome::Idle) => {}
+          Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. })) => {}
+          Ok(RunUntilIdleOutcome::Stopped(reason)) => {
             self.event_loop = Some(event_loop);
             return Ok(RunUntilStableOutcome::Stopped {
               reason: RunUntilStableStopReason::EventLoop(reason),
               frames_rendered,
             });
+          }
+          Err(err) => {
+            self.event_loop = Some(event_loop);
+            return Err(err);
           }
         }
       }
@@ -528,6 +542,65 @@ mod tests {
       other => panic!("expected Error::Other, got {other:?}"),
     }
     assert_eq!(*counter.borrow(), 5);
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_restores_event_loop_after_task_error() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    runtime.event_loop_mut()?.queue_task(TaskSource::Script, |_host, _event_loop| {
+      Err(Error::Other("boom".to_string()))
+    })?;
+
+    let err = runtime
+      .tick_frame()
+      .expect_err("expected tick_frame to surface the task error");
+    assert!(matches!(err, Error::Other(ref msg) if msg == "boom"), "{err:?}");
+
+    // The event loop should still be available after the error.
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_stable_restores_event_loop_after_task_error() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits::unbounded();
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    runtime.event_loop_mut()?.queue_task(TaskSource::Script, |_host, _event_loop| {
+      Err(Error::Other("boom".to_string()))
+    })?;
+
+    let err = runtime
+      .run_until_stable(10)
+      .expect_err("expected run_until_stable to surface the task error");
+    assert!(matches!(err, Error::Other(ref msg) if msg == "boom"), "{err:?}");
+
+    runtime
+      .event_loop_mut()?
+      .queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
     Ok(())
   }
 

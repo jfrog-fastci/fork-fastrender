@@ -1134,7 +1134,7 @@ mod tests {
       let dom = s
         .parser
         .document()
-        .expect("expected parser document to be available while blocked");
+        .expect("expected parser to expose a document while blocked on an external script");
       dom.get_element_by_id("after").is_some()
     };
     assert!(

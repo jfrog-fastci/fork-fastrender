@@ -34409,7 +34409,7 @@ mod tests {
   }
 
   #[test]
-  fn font_variant_alternates_duplicate_historical_forms_invalidates_declaration() {
+  fn font_variant_alternates_duplicate_historical_forms_preserves_swash() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.stylesets =
       vec![FontVariantAlternateValue::Name("Keep".to_string())];
