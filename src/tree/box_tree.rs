@@ -357,6 +357,12 @@ pub enum SelectItem {
     disabled: bool,
   },
   Option {
+    /// Stable DOM pre-order id of the underlying `<option>` element.
+    ///
+    /// This matches the `StyledNode.node_id` assigned during the CSS cascade (see
+    /// [`crate::dom::enumerate_dom_ids`]). It allows listbox hit-testing / interaction code to map
+    /// painted rows back to DOM nodes.
+    node_id: usize,
     label: String,
     value: String,
     selected: bool,
@@ -1592,6 +1598,7 @@ mod tests {
       multiple: false,
       size: 1,
       items: Arc::new(vec![SelectItem::Option {
+        node_id: 1,
         label: nbsp.to_string(),
         value: "fallback".to_string(),
         selected: true,

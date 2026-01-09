@@ -39,6 +39,7 @@ fn listbox_select_uses_border_box_geometry_once() {
     size: 3,
     items: Arc::new(vec![
       SelectItem::Option {
+        node_id: 1,
         label: "One".to_string(),
         value: "one".to_string(),
         selected: true,
@@ -46,6 +47,7 @@ fn listbox_select_uses_border_box_geometry_once() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: 2,
         label: "Two".to_string(),
         value: "two".to_string(),
         selected: false,
@@ -53,6 +55,7 @@ fn listbox_select_uses_border_box_geometry_once() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: 3,
         label: "Three".to_string(),
         value: "three".to_string(),
         selected: false,

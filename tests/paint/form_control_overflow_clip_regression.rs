@@ -30,6 +30,7 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
     multiple: false,
     size: 1,
     items: Arc::new(vec![SelectItem::Option {
+      node_id: 1,
       label: "Label".to_string(),
       value: "value".to_string(),
       selected: true,
@@ -124,6 +125,7 @@ fn form_control_overflow_clip_uses_padding_box_radii() {
     multiple: false,
     size: 1,
     items: Arc::new(vec![SelectItem::Option {
+      node_id: 1,
       label: "Label".to_string(),
       value: "value".to_string(),
       selected: true,

@@ -4122,6 +4122,7 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
         let disabled = optgroup_disabled || node.node.get_attribute_ref("disabled").is_some();
         let idx = items.len();
         items.push(SelectItem::Option {
+          node_id: node.node_id,
           label: option_label_from_node(node),
           value: option_value_from_node(node),
           selected: node.node.get_attribute_ref("selected").is_some(),

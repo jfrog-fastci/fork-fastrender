@@ -12653,6 +12653,7 @@ mod tests {
           multiple: true,
           size: 1,
           items: Arc::new(vec![box_tree::SelectItem::Option {
+            node_id: 1,
             label: "Option".to_string(),
             value: "Option".to_string(),
             selected: true,

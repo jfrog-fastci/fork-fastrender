@@ -134,6 +134,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
         multiple: false,
         size: 1,
         items: Arc::new(vec![SelectItem::Option {
+          node_id: 1,
           label: "Option".to_string(),
           value: "option".to_string(),
           selected: true,
