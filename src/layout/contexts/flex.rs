@@ -4504,29 +4504,17 @@ impl FormattingContext for FlexFormattingContext {
     };
 
     let mut contribution = 0.0f32;
-    let mut in_flow_count = 0usize;
+    let mut in_flow_items = 0usize;
     for child_total in contributions.into_iter().flatten() {
       check_layout_deadline(&mut deadline_counter)?;
-      in_flow_count += 1;
+      in_flow_items += 1;
       if is_row_axis {
         contribution += child_total;
-        in_flow_count += 1;
       } else {
         contribution = contribution.max(child_total);
       }
     }
-    if is_row_axis && in_flow_count > 1 {
-      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-      let gap_len = if inline_is_horizontal {
-        style.grid_column_gap
-      } else {
-        style.grid_row_gap
-      };
-      let gap_px = self.resolve_length_for_width(gap_len, 0.0, style).max(0.0);
-      contribution += gap_px * (in_flow_count.saturating_sub(1) as f32);
-    }
-
-    if is_row_axis && in_flow_count > 1 {
+    if is_row_axis && in_flow_items > 1 {
       // Taffy's flexbox algorithm accounts for `gap` between items, but our intrinsic sizing fast
       // path approximates the inline size by summing child contributions. Include the column-gap
       // so that flex base-size resolution matches full layout and avoids spurious wrapping.
@@ -4536,11 +4524,15 @@ impl FormattingContext for FlexFormattingContext {
       // lengths like `rem`.)
       let gap = self.resolve_length_for_width(style.grid_column_gap, 0.0, style);
       if gap.is_finite() && gap > 0.0 {
-        contribution += gap * (in_flow_count as f32 - 1.0);
+        contribution += gap * (in_flow_items as f32 - 1.0);
       }
     }
 
-    let edges = self.horizontal_edges_px(style).unwrap_or(0.0);
+    let edges = if inline_is_horizontal {
+      self.horizontal_edges_px(style).unwrap_or(0.0)
+    } else {
+      self.vertical_edges_px(style).unwrap_or(0.0)
+    };
     let width = (contribution + edges).max(0.0);
     intrinsic_cache_store(box_node, mode, width);
     Ok(width)
