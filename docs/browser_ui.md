@@ -132,6 +132,11 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
+Note: not all worker implementations emit every message variant. For example, the windowed UI’s
+current in-binary worker (`spawn_default_render_worker`) focuses on `FrameReady` and navigation
+events, while `Stage` heartbeats are currently emitted by the synchronous `BrowserWorker` helper
+(used by the headless smoke mode).
+
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
 The UI wrapper in [`src/ui/worker.rs`](../src/ui/worker.rs) assumes the worker runs **at most one**
