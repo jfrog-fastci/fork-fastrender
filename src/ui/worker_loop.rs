@@ -550,6 +550,10 @@ fn spawn_ui_worker_inner(
     .name(name)
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || {
+      // The render delay knob is intended for UI integration tests / browser UI builds.
+      // In normal library builds `set_test_render_delay_ms` is not available, so ignore the
+      // parameter to keep non-test binaries (e.g. `render_fixtures`) building cleanly.
+      #[cfg(any(test, feature = "browser_ui"))]
       if let Some(delay) = test_render_delay_ms {
         #[cfg(any(test, feature = "browser_ui"))]
         crate::render_control::set_test_render_delay_ms(Some(delay));
@@ -560,6 +564,8 @@ fn spawn_ui_worker_inner(
           let _ = delay;
         }
       }
+      #[cfg(not(any(test, feature = "browser_ui")))]
+      let _ = test_render_delay_ms;
       run_worker_loop(to_worker_rx, to_ui_tx, cancel_gens_for_worker);
     })?;
 
