@@ -325,8 +325,11 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(());
     }
 
-    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
-    record_stage(StageHeartbeat::Script);
+    let _stage_guard =
+      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
+    if render_control::active_stage().is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
 
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
@@ -356,8 +359,11 @@ impl<Host: 'static> EventLoop<Host> {
   /// Returns `Ok(true)` when a task was executed, `Ok(false)` when the task queue was empty.
   /// After executing a task, a microtask checkpoint is performed.
   pub fn run_next_task(&mut self, host: &mut Host) -> Result<bool> {
-    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
-    record_stage(StageHeartbeat::Script);
+    let _stage_guard =
+      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
+    if render_control::active_stage().is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
 
     self.queue_due_timers()?;
 
@@ -386,8 +392,11 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub fn run_until_idle(&mut self, host: &mut Host, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
-    record_stage(StageHeartbeat::Script);
+    let _stage_guard =
+      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
+    if render_control::active_stage().is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
 
     let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
 
@@ -558,8 +567,11 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(());
     }
 
-    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
-    record_stage(StageHeartbeat::Script);
+    let _stage_guard =
+      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
+    if render_control::active_stage().is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
 
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
@@ -815,8 +827,11 @@ impl<Host: 'static> EventLoop<Host> {
     limits: RunLimits,
     mut condition: impl FnMut(&Host) -> bool,
   ) -> Result<SpinOutcome> {
-    let _stage_guard = StageGuard::install(Some(RenderStage::Script));
-    record_stage(StageHeartbeat::Script);
+    let _stage_guard =
+      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
+    if render_control::active_stage().is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
 
     let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
     match self.spin_until_inner(host, &mut run_state, &mut condition) {

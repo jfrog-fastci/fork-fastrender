@@ -121,11 +121,12 @@ impl StreamingHtmlParser {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::{StreamingHtmlParser, StreamingParserYield};
-  use crate::dom2::{Document, NodeId, NodeKind};
-  use crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
-  use crate::js::ScriptElementSpec;
+  mod tests {
+    use super::{StreamingHtmlParser, StreamingParserYield};
+    use crate::dom2::{Document, NodeId, NodeKind};
+    use crate::html::base_url_tracker::BaseUrlTracker;
+    use crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
+    use crate::js::ScriptElementSpec;
 
   fn find_first_element(doc: &Document, tag: &str) -> Option<NodeId> {
     let mut stack = vec![doc.root()];
@@ -303,8 +304,8 @@ mod tests {
           base_url_at_this_point,
         } => {
           let doc = parser.document();
-          let spec =
-            build_parser_inserted_script_element_spec_dom2(&doc, script, base_url_at_this_point);
+          let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+          let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
           specs.push(spec);
         }
         StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),

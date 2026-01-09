@@ -4,5 +4,5 @@
 // Run with:
 //   cargo test --test text_keywords_case_insensitive_test
 //
-#[path = "style/text_keywords_case_insensitive_test.rs"]
+#[path = "../style/text_keywords_case_insensitive_test.rs"]
 mod text_keywords_case_insensitive_test;

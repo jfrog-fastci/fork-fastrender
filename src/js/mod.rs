@@ -46,8 +46,8 @@ pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
 pub use event_loop::{
-  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
-  TaskSource, TimerId,
+  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
+  Task, TaskSource, TimerId,
 };
 pub use options::JsExecutionOptions;
 pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};
@@ -63,8 +63,8 @@ pub use orchestrator::{
 pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
-  ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,
-  ScriptSchedulerAction,
+  ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,
+  ScriptScheduler, ScriptSchedulerAction,
 };
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlSearchParams};
@@ -116,15 +116,14 @@ pub struct ScriptElementSpec {
   pub script_type: ScriptType,
 }
 
+/// Determine the script type for a `<script>` element based on `type`/`language` attributes.
+///
+/// This follows the HTML Standard script preparation rules for computing the script block type
+/// string and then mapping it to `classic`/`module`/`importmap`/unknown.
 fn determine_script_type_from_attrs(
-  tag_name: &str,
-  type_value_raw: Option<&str>,
-  language_value_raw: Option<&str>,
+  type_attr: Option<&str>,
+  language_attr: Option<&str>,
 ) -> ScriptType {
-  if !tag_name.eq_ignore_ascii_case("script") {
-    return ScriptType::Unknown;
-  }
-
   // Compute the "script block's type string" per the HTML Standard:
   // - `type=""` => defaults to `text/javascript`
   // - no `type` + `language=""` => defaults to `text/javascript`
@@ -134,13 +133,13 @@ fn determine_script_type_from_attrs(
   //   - `language=<value>` => `text/<value>` (no trimming)
   //
   // Notably, whitespace-only values do *not* count as empty-string defaults.
-  let type_string = if let Some(value) = type_value_raw {
+  let type_string = if let Some(value) = type_attr {
     if value.is_empty() {
       "text/javascript".to_string()
     } else {
       trim_ascii_whitespace(value).to_string()
     }
-  } else if let Some(value) = language_value_raw {
+  } else if let Some(value) = language_attr {
     if value.is_empty() {
       "text/javascript".to_string()
     } else {
@@ -193,25 +192,44 @@ fn determine_script_type_from_attrs(
   ScriptType::Unknown
 }
 
-/// Determine the script type for a `<script>` element based on `type`/`language` attributes.
-///
-/// This follows the HTML Standard script preparation rules for computing the script block type
-/// string and then mapping it to `classic`/`module`/`importmap`/unknown.
 pub fn determine_script_type(script: &crate::dom::DomNode) -> ScriptType {
   let Some(tag_name) = script.tag_name() else {
     return ScriptType::Unknown;
   };
+  if !tag_name.eq_ignore_ascii_case("script") {
+    return ScriptType::Unknown;
+  }
+
   determine_script_type_from_attrs(
-    tag_name,
     script.get_attribute_ref("type"),
     script.get_attribute_ref("language"),
   )
 }
 
+pub fn determine_script_type_dom2(
+  doc: &crate::dom2::Document,
+  node: crate::dom2::NodeId,
+) -> ScriptType {
+  use crate::dom2::NodeKind;
+
+  let NodeKind::Element { tag_name, .. } = &doc.node(node).kind else {
+    return ScriptType::Unknown;
+  };
+  if !tag_name.eq_ignore_ascii_case("script") {
+    return ScriptType::Unknown;
+  }
+
+  determine_script_type_from_attrs(
+    doc.get_attribute(node, "type"),
+    doc.get_attribute(node, "language"),
+  )
+}
 #[cfg(test)]
 mod tests {
-  use super::{determine_script_type, ScriptType};
+  use super::{determine_script_type, determine_script_type_dom2, ScriptType};
   use crate::dom::{DomNode, DomNodeType};
+  use crate::dom2::Document as Dom2Document;
+  use selectors::context::QuirksMode;
 
   fn script(attrs: &[(&str, &str)]) -> DomNode {
     DomNode {
@@ -225,6 +243,20 @@ mod tests {
       },
       children: Vec::new(),
     }
+  }
+
+  fn dom2_script(attrs: &[(&str, &str)]) -> (Dom2Document, crate::dom2::NodeId) {
+    let mut doc = Dom2Document::new(QuirksMode::NoQuirks);
+    let script = doc.create_element("script", "");
+    for (name, value) in attrs {
+      doc
+        .set_attribute(script, name, value)
+        .expect("set_attribute should succeed");
+    }
+    doc
+      .append_child(doc.root(), script)
+      .expect("append_child should succeed");
+    (doc, script)
   }
 
   #[test]
@@ -317,5 +349,27 @@ mod tests {
     let js_wrapped = format!("{vt}text/javascript{vt}");
     let node = script(&[("type", js_wrapped.as_str())]);
     assert_eq!(determine_script_type(&node), ScriptType::Unknown);
+  }
+
+  #[test]
+  fn dom2_script_type_matches_legacy_for_common_cases() {
+    for attrs in [
+      vec![],
+      vec![("type", "")],
+      vec![("type", "  ")],
+      vec![("type", "module")],
+      vec![("type", "importmap")],
+      vec![("language", "")],
+      vec![("language", "ecmascript")],
+      vec![("TyPe", "text/javascript")],
+    ] {
+      let legacy = script(&attrs);
+      let (doc, script_id) = dom2_script(&attrs);
+      assert_eq!(
+        determine_script_type_dom2(&doc, script_id),
+        determine_script_type(&legacy),
+        "attrs={attrs:?}"
+      );
+    }
   }
 }
