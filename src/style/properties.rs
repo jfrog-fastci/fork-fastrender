@@ -3856,6 +3856,7 @@ fn set_length_with_order(
 fn set_size_property_with_order(
   length_target: &mut Option<Length>,
   keyword_target: &mut Option<IntrinsicSizeKeyword>,
+  anchor_size_target: &mut Option<AnchorSizeFunction>,
   order_slot: &mut i32,
   value: crate::style::LogicalSizingValue,
   order: i32,
@@ -3865,6 +3866,24 @@ fn set_size_property_with_order(
   }
   *length_target = value.length;
   *keyword_target = value.keyword;
+  *anchor_size_target = None;
+  *order_slot = order;
+}
+
+fn set_anchor_size_property_with_order(
+  length_target: &mut Option<Length>,
+  keyword_target: &mut Option<IntrinsicSizeKeyword>,
+  anchor_size_target: &mut Option<AnchorSizeFunction>,
+  order_slot: &mut i32,
+  value: AnchorSizeFunction,
+  order: i32,
+) {
+  if order < *order_slot {
+    return;
+  }
+  *length_target = None;
+  *keyword_target = None;
+  *anchor_size_target = Some(value);
   *order_slot = order;
 }
 
@@ -4161,6 +4180,7 @@ fn set_axis_dimension(
     }
     styles.width = value.length;
     styles.width_keyword = value.keyword;
+    styles.width_anchor_size = None;
     styles.logical.width_order = order;
   } else {
     if order < styles.logical.height_order {
@@ -4168,6 +4188,7 @@ fn set_axis_dimension(
     }
     styles.height = value.length;
     styles.height_keyword = value.keyword;
+    styles.height_anchor_size = None;
     styles.logical.height_order = order;
   }
 }
@@ -4192,6 +4213,7 @@ fn set_axis_min_dimension(
     }
     styles.min_width = value.length;
     styles.min_width_keyword = value.keyword;
+    styles.min_width_anchor_size = None;
     styles.logical.min_width_order = order;
   } else {
     if order < styles.logical.min_height_order {
@@ -4199,6 +4221,7 @@ fn set_axis_min_dimension(
     }
     styles.min_height = value.length;
     styles.min_height_keyword = value.keyword;
+    styles.min_height_anchor_size = None;
     styles.logical.min_height_order = order;
   }
 }
@@ -4223,6 +4246,7 @@ fn set_axis_max_dimension(
     }
     styles.max_width = value.length;
     styles.max_width_keyword = value.keyword;
+    styles.max_width_anchor_size = None;
     styles.logical.max_width_order = order;
   } else {
     if order < styles.logical.max_height_order {
@@ -4230,6 +4254,7 @@ fn set_axis_max_dimension(
     }
     styles.max_height = value.length;
     styles.max_height_keyword = value.keyword;
+    styles.max_height_anchor_size = None;
     styles.logical.max_height_order = order;
   }
 }
@@ -4786,76 +4811,148 @@ pub(crate) fn apply_property_from_source(
       styles.outline_offset = source.outline_offset;
     }
     "width" => {
-      set_size_property_with_order(
-        &mut styles.width,
-        &mut styles.width_keyword,
-        &mut styles.logical.width_order,
-        crate::style::LogicalSizingValue {
-          length: source.width,
-          keyword: source.width_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.width_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.width,
+          &mut styles.width_keyword,
+          &mut styles.width_anchor_size,
+          &mut styles.logical.width_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.width,
+          &mut styles.width_keyword,
+          &mut styles.width_anchor_size,
+          &mut styles.logical.width_order,
+          crate::style::LogicalSizingValue {
+            length: source.width,
+            keyword: source.width_keyword,
+          },
+          order,
+        );
+      }
     }
     "height" => {
-      set_size_property_with_order(
-        &mut styles.height,
-        &mut styles.height_keyword,
-        &mut styles.logical.height_order,
-        crate::style::LogicalSizingValue {
-          length: source.height,
-          keyword: source.height_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.height_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.height,
+          &mut styles.height_keyword,
+          &mut styles.height_anchor_size,
+          &mut styles.logical.height_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.height,
+          &mut styles.height_keyword,
+          &mut styles.height_anchor_size,
+          &mut styles.logical.height_order,
+          crate::style::LogicalSizingValue {
+            length: source.height,
+            keyword: source.height_keyword,
+          },
+          order,
+        );
+      }
     }
     "min-width" => {
-      set_size_property_with_order(
-        &mut styles.min_width,
-        &mut styles.min_width_keyword,
-        &mut styles.logical.min_width_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_min_length(source.min_width),
-          keyword: source.min_width_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.min_width_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.min_width,
+          &mut styles.min_width_keyword,
+          &mut styles.min_width_anchor_size,
+          &mut styles.logical.min_width_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.min_width,
+          &mut styles.min_width_keyword,
+          &mut styles.min_width_anchor_size,
+          &mut styles.logical.min_width_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_min_length(source.min_width),
+            keyword: source.min_width_keyword,
+          },
+          order,
+        );
+      }
     }
     "min-height" => {
-      set_size_property_with_order(
-        &mut styles.min_height,
-        &mut styles.min_height_keyword,
-        &mut styles.logical.min_height_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_min_length(source.min_height),
-          keyword: source.min_height_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.min_height_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.min_height,
+          &mut styles.min_height_keyword,
+          &mut styles.min_height_anchor_size,
+          &mut styles.logical.min_height_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.min_height,
+          &mut styles.min_height_keyword,
+          &mut styles.min_height_anchor_size,
+          &mut styles.logical.min_height_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_min_length(source.min_height),
+            keyword: source.min_height_keyword,
+          },
+          order,
+        );
+      }
     }
     "max-width" => {
-      set_size_property_with_order(
-        &mut styles.max_width,
-        &mut styles.max_width_keyword,
-        &mut styles.logical.max_width_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_max_length(source.max_width),
-          keyword: source.max_width_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.max_width_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.max_width,
+          &mut styles.max_width_keyword,
+          &mut styles.max_width_anchor_size,
+          &mut styles.logical.max_width_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.max_width,
+          &mut styles.max_width_keyword,
+          &mut styles.max_width_anchor_size,
+          &mut styles.logical.max_width_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_max_length(source.max_width),
+            keyword: source.max_width_keyword,
+          },
+          order,
+        );
+      }
     }
     "max-height" => {
-      set_size_property_with_order(
-        &mut styles.max_height,
-        &mut styles.max_height_keyword,
-        &mut styles.logical.max_height_order,
-        crate::style::LogicalSizingValue {
-          length: sanitize_max_length(source.max_height),
-          keyword: source.max_height_keyword,
-        },
-        order,
-      );
+      if let Some(anchor_size) = source.max_height_anchor_size.clone() {
+        set_anchor_size_property_with_order(
+          &mut styles.max_height,
+          &mut styles.max_height_keyword,
+          &mut styles.max_height_anchor_size,
+          &mut styles.logical.max_height_order,
+          anchor_size,
+          order,
+        );
+      } else {
+        set_size_property_with_order(
+          &mut styles.max_height,
+          &mut styles.max_height_keyword,
+          &mut styles.max_height_anchor_size,
+          &mut styles.logical.max_height_order,
+          crate::style::LogicalSizingValue {
+            length: sanitize_max_length(source.max_height),
+            keyword: source.max_height_keyword,
+          },
+          order,
+        );
+      }
     }
     "inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
@@ -8835,10 +8932,31 @@ fn apply_declaration_with_base_internal_with_order(
 
     // Width and height
     "width" => {
-      if let Some(value) = extract_sizing_value(resolved_value, false) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(anchor_size) = parse_anchor_size_function_str(raw) {
+          set_anchor_size_property_with_order(
+            &mut styles.width,
+            &mut styles.width_keyword,
+            &mut styles.width_anchor_size,
+            &mut styles.logical.width_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          set_size_property_with_order(
+            &mut styles.width,
+            &mut styles.width_keyword,
+            &mut styles.width_anchor_size,
+            &mut styles.logical.width_order,
+            value,
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
         set_size_property_with_order(
           &mut styles.width,
           &mut styles.width_keyword,
+          &mut styles.width_anchor_size,
           &mut styles.logical.width_order,
           value,
           order,
@@ -8846,10 +8964,31 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "height" => {
-      if let Some(value) = extract_sizing_value(resolved_value, false) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(anchor_size) = parse_anchor_size_function_str(raw) {
+          set_anchor_size_property_with_order(
+            &mut styles.height,
+            &mut styles.height_keyword,
+            &mut styles.height_anchor_size,
+            &mut styles.logical.height_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          set_size_property_with_order(
+            &mut styles.height,
+            &mut styles.height_keyword,
+            &mut styles.height_anchor_size,
+            &mut styles.logical.height_order,
+            value,
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
         set_size_property_with_order(
           &mut styles.height,
           &mut styles.height_keyword,
+          &mut styles.height_anchor_size,
           &mut styles.logical.height_order,
           value,
           order,
@@ -8857,10 +8996,35 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "min-width" => {
-      if let Some(value) = extract_sizing_value(resolved_value, false) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(mut anchor_size) = parse_anchor_size_function_str(raw) {
+          anchor_size.fallback = sanitize_min_length(anchor_size.fallback);
+          set_anchor_size_property_with_order(
+            &mut styles.min_width,
+            &mut styles.min_width_keyword,
+            &mut styles.min_width_anchor_size,
+            &mut styles.logical.min_width_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          set_size_property_with_order(
+            &mut styles.min_width,
+            &mut styles.min_width_keyword,
+            &mut styles.min_width_anchor_size,
+            &mut styles.logical.min_width_order,
+            crate::style::LogicalSizingValue {
+              length: sanitize_min_length(value.length),
+              keyword: value.keyword,
+            },
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
         set_size_property_with_order(
           &mut styles.min_width,
           &mut styles.min_width_keyword,
+          &mut styles.min_width_anchor_size,
           &mut styles.logical.min_width_order,
           crate::style::LogicalSizingValue {
             length: sanitize_min_length(value.length),
@@ -8871,10 +9035,35 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "min-height" => {
-      if let Some(value) = extract_sizing_value(resolved_value, false) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(mut anchor_size) = parse_anchor_size_function_str(raw) {
+          anchor_size.fallback = sanitize_min_length(anchor_size.fallback);
+          set_anchor_size_property_with_order(
+            &mut styles.min_height,
+            &mut styles.min_height_keyword,
+            &mut styles.min_height_anchor_size,
+            &mut styles.logical.min_height_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, false) {
+          set_size_property_with_order(
+            &mut styles.min_height,
+            &mut styles.min_height_keyword,
+            &mut styles.min_height_anchor_size,
+            &mut styles.logical.min_height_order,
+            crate::style::LogicalSizingValue {
+              length: sanitize_min_length(value.length),
+              keyword: value.keyword,
+            },
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, false) {
         set_size_property_with_order(
           &mut styles.min_height,
           &mut styles.min_height_keyword,
+          &mut styles.min_height_anchor_size,
           &mut styles.logical.min_height_order,
           crate::style::LogicalSizingValue {
             length: sanitize_min_length(value.length),
@@ -8885,10 +9074,35 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "max-width" => {
-      if let Some(value) = extract_sizing_value(resolved_value, true) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(mut anchor_size) = parse_anchor_size_function_str(raw) {
+          anchor_size.fallback = sanitize_max_length(anchor_size.fallback);
+          set_anchor_size_property_with_order(
+            &mut styles.max_width,
+            &mut styles.max_width_keyword,
+            &mut styles.max_width_anchor_size,
+            &mut styles.logical.max_width_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, true) {
+          set_size_property_with_order(
+            &mut styles.max_width,
+            &mut styles.max_width_keyword,
+            &mut styles.max_width_anchor_size,
+            &mut styles.logical.max_width_order,
+            crate::style::LogicalSizingValue {
+              length: sanitize_max_length(value.length),
+              keyword: value.keyword,
+            },
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, true) {
         set_size_property_with_order(
           &mut styles.max_width,
           &mut styles.max_width_keyword,
+          &mut styles.max_width_anchor_size,
           &mut styles.logical.max_width_order,
           crate::style::LogicalSizingValue {
             length: sanitize_max_length(value.length),
@@ -8899,10 +9113,35 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "max-height" => {
-      if let Some(value) = extract_sizing_value(resolved_value, true) {
+      if let PropertyValue::Keyword(raw) = resolved_value {
+        if let Some(mut anchor_size) = parse_anchor_size_function_str(raw) {
+          anchor_size.fallback = sanitize_max_length(anchor_size.fallback);
+          set_anchor_size_property_with_order(
+            &mut styles.max_height,
+            &mut styles.max_height_keyword,
+            &mut styles.max_height_anchor_size,
+            &mut styles.logical.max_height_order,
+            anchor_size,
+            order,
+          );
+        } else if let Some(value) = extract_sizing_value(resolved_value, true) {
+          set_size_property_with_order(
+            &mut styles.max_height,
+            &mut styles.max_height_keyword,
+            &mut styles.max_height_anchor_size,
+            &mut styles.logical.max_height_order,
+            crate::style::LogicalSizingValue {
+              length: sanitize_max_length(value.length),
+              keyword: value.keyword,
+            },
+            order,
+          );
+        }
+      } else if let Some(value) = extract_sizing_value(resolved_value, true) {
         set_size_property_with_order(
           &mut styles.max_height,
           &mut styles.max_height_keyword,
+          &mut styles.max_height_anchor_size,
           &mut styles.logical.max_height_order,
           crate::style::LogicalSizingValue {
             length: sanitize_max_length(value.length),
@@ -14149,6 +14388,83 @@ fn parse_anchor_function_str(input: &str) -> Option<AnchorFunction> {
     side,
     fallback,
   })
+}
+
+fn parse_anchor_size_axis(token: &str) -> Option<AnchorSizeAxis> {
+  match token {
+    t if t.eq_ignore_ascii_case("width") => Some(AnchorSizeAxis::Width),
+    t if t.eq_ignore_ascii_case("height") => Some(AnchorSizeAxis::Height),
+    t if t.eq_ignore_ascii_case("inline-size") => Some(AnchorSizeAxis::InlineSize),
+    t if t.eq_ignore_ascii_case("block-size") => Some(AnchorSizeAxis::BlockSize),
+    _ => None,
+  }
+}
+
+fn parse_anchor_size_function_str(input: &str) -> Option<AnchorSizeFunction> {
+  let trimmed = trim_ascii_whitespace(input);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // Keep parsing small and deterministic: only accept a single `anchor-size(...)` function call.
+  let (head, tail) = trimmed.split_once('(')?;
+  if !head.eq_ignore_ascii_case("anchor-size") {
+    return None;
+  }
+  let tail = tail.strip_suffix(')')?;
+
+  // Split the argument list on a top-level comma to separate the fallback.
+  let mut depth: i32 = 0;
+  let mut comma_idx: Option<usize> = None;
+  for (idx, ch) in tail.char_indices() {
+    match ch {
+      '(' => depth += 1,
+      ')' => depth -= 1,
+      ',' if depth == 0 => {
+        comma_idx = Some(idx);
+        break;
+      }
+      _ => {}
+    }
+  }
+
+  let (args_part, fallback_part) = match comma_idx {
+    Some(idx) => {
+      let (before, after) = tail.split_at(idx);
+      (
+        trim_ascii_whitespace(before),
+        trim_ascii_whitespace(after.get(1..)?),
+      )
+    }
+    None => (trim_ascii_whitespace(tail), ""),
+  };
+
+  let fallback = if fallback_part.is_empty() {
+    None
+  } else {
+    Some(parse_length(fallback_part)?)
+  };
+
+  let tokens: Vec<&str> = split_ascii_whitespace(args_part).collect();
+  if tokens.is_empty() || tokens.len() > 2 {
+    return None;
+  }
+
+  let (name, axis) = match tokens.len() {
+    1 => (None, parse_anchor_size_axis(tokens[0])?),
+    2 => {
+      let axis0 = parse_anchor_size_axis(tokens[0]);
+      let axis1 = parse_anchor_size_axis(tokens[1]);
+      match (axis0, axis1) {
+        (Some(axis), None) if tokens[1].starts_with("--") => (Some(tokens[1].to_string()), axis),
+        (None, Some(axis)) if tokens[0].starts_with("--") => (Some(tokens[0].to_string()), axis),
+        _ => return None,
+      }
+    }
+    _ => return None,
+  };
+
+  Some(AnchorSizeFunction { name, axis, fallback })
 }
 
 pub fn extract_inset_value(value: &PropertyValue) -> Option<InsetValue> {

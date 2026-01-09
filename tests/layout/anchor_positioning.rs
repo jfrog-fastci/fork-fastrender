@@ -7,7 +7,8 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  AnchorFunction, AnchorScope, AnchorSide, Direction, InsetValue, PositionAnchor, WritingMode,
+  AnchorFunction, AnchorScope, AnchorSide, AnchorSizeAxis, AnchorSizeFunction, Direction, InsetValue,
+  PositionAnchor, WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
@@ -720,6 +721,190 @@ fn anchor_positioning_uses_fallback_when_anchor_missing() {
     (overlay_fragment.bounds.y() - 12.0).abs() < 0.1,
     "missing anchor should fall back to the provided top fallback (got y={})",
     overlay_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn anchor_positioning_anchor_size_sets_absolute_box_dimensions() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Width,
+    fallback: None,
+  });
+  overlay_style.height_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Height,
+    fallback: None,
+  });
+  // Clamp via max-width to ensure anchor-size participates in min/max sizing.
+  overlay_style.max_width = Some(Length::px(40.0));
+  overlay_style.max_width_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  container.id = 111;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.width() - 40.0).abs() < 0.1,
+    "anchor-size(width) should size the overlay, then max-width should clamp it (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 20.0).abs() < 0.1,
+    "anchor-size(height) should size the overlay height (got h={})",
+    overlay_fragment.bounds.height()
+  );
+}
+
+#[test]
+fn anchor_positioning_anchor_size_inline_block_respects_anchor_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(40.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.writing_mode = WritingMode::VerticalRl;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::InlineSize,
+    fallback: None,
+  });
+  overlay_style.height_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::BlockSize,
+    fallback: None,
+  });
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container =
+    BoxNode::new_block(container_style, FormattingContextType::Block, vec![anchor, overlay]);
+  container.id = 112;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.width() - 20.0).abs() < 0.1,
+    "inline-size should map to the anchor's physical height under vertical writing modes (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 40.0).abs() < 0.1,
+    "block-size should map to the anchor's physical width under vertical writing modes (got h={})",
+    overlay_fragment.bounds.height()
+  );
+}
+
+#[test]
+fn anchor_positioning_anchor_size_uses_fallback_when_anchor_missing() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  let container_style = Arc::new(container_style);
+
+  let overlay_id = 1usize;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--missing".to_string());
+  overlay_style.top = InsetValue::Length(Length::px(0.0));
+  overlay_style.left = InsetValue::Length(Length::px(0.0));
+  overlay_style.width_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Width,
+    fallback: Some(Length::px(33.0)),
+  });
+  overlay_style.height_anchor_size = Some(AnchorSizeFunction {
+    name: None,
+    axis: AnchorSizeAxis::Height,
+    fallback: Some(Length::px(44.0)),
+  });
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![overlay]);
+  container.id = 113;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+  assert!(
+    (overlay_fragment.bounds.width() - 33.0).abs() < 0.1,
+    "missing anchor should fall back to the provided width fallback (got w={})",
+    overlay_fragment.bounds.width()
+  );
+  assert!(
+    (overlay_fragment.bounds.height() - 44.0).abs() < 0.1,
+    "missing anchor should fall back to the provided height fallback (got h={})",
+    overlay_fragment.bounds.height()
   );
 }
 

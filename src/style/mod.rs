@@ -148,6 +148,7 @@ use types::OutlineStyle;
 use types::Overflow;
 use types::OverflowAnchor;
 use types::OverflowWrap;
+use types::AnchorSizeFunction;
 use types::AnchorScope;
 use types::InsetValue;
 use types::PositionAnchor;
@@ -932,16 +933,22 @@ pub struct ComputedStyle {
   // Box model
   pub width: Option<Length>,
   pub width_keyword: Option<IntrinsicSizeKeyword>,
+  pub width_anchor_size: Option<AnchorSizeFunction>,
   pub height: Option<Length>,
   pub height_keyword: Option<IntrinsicSizeKeyword>,
+  pub height_anchor_size: Option<AnchorSizeFunction>,
   pub min_width: Option<Length>,
   pub min_width_keyword: Option<IntrinsicSizeKeyword>,
+  pub min_width_anchor_size: Option<AnchorSizeFunction>,
   pub min_height: Option<Length>,
   pub min_height_keyword: Option<IntrinsicSizeKeyword>,
+  pub min_height_anchor_size: Option<AnchorSizeFunction>,
   pub max_width: Option<Length>,
   pub max_width_keyword: Option<IntrinsicSizeKeyword>,
+  pub max_width_anchor_size: Option<AnchorSizeFunction>,
   pub max_height: Option<Length>,
   pub max_height_keyword: Option<IntrinsicSizeKeyword>,
+  pub max_height_anchor_size: Option<AnchorSizeFunction>,
 
   pub margin_top: Option<Length>,
   pub margin_right: Option<Length>,
@@ -1353,16 +1360,22 @@ impl Default for ComputedStyle {
 
       width: None,
       width_keyword: None,
+      width_anchor_size: None,
       height: None,
       height_keyword: None,
+      height_anchor_size: None,
       min_width: None,
       min_width_keyword: None,
+      min_width_anchor_size: None,
       min_height: None,
       min_height_keyword: None,
+      min_height_anchor_size: None,
       max_width: None,
       max_width_keyword: None,
+      max_width_anchor_size: None,
       max_height: None,
       max_height_keyword: None,
+      max_height_anchor_size: None,
 
       margin_top: Some(Length::px(0.0)),
       margin_right: Some(Length::px(0.0)),

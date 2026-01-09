@@ -1,5 +1,6 @@
 //! Style integration tests.
 
+mod anchor_size_test;
 mod aria_label_noop_test;
 mod background_mask_case_insensitive_test;
 mod background_position_logical_test;

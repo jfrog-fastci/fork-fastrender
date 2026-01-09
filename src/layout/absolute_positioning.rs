@@ -2468,12 +2468,66 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   resolved.right = inset_to_offset(&style.right, InsetEdge::Right);
   resolved.top = inset_to_offset(&style.top, InsetEdge::Top);
   resolved.bottom = inset_to_offset(&style.bottom, InsetEdge::Bottom);
-  resolved.width = style.width.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
-  resolved.width_keyword = style.width_keyword;
-  resolved.height = style
-    .height
-    .map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
-  resolved.height_keyword = style.height_keyword;
+
+  let fallback_or_auto_size =
+    |func: &crate::style::types::AnchorSizeFunction| -> LengthOrAuto {
+      func
+        .fallback
+        .as_ref()
+        .copied()
+        .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
+    };
+
+  let resolve_anchor_size =
+    |func: &crate::style::types::AnchorSizeFunction| -> Option<f32> {
+      let anchor_name = func.name.as_deref().or_else(|| match &style.position_anchor {
+        crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
+        _ => None,
+      })?;
+      let anchor = anchors?.get_anchor_for_query(anchor_name, query_parent_box_id)?;
+      let rect = anchor.rect;
+      let value = match func.axis {
+        crate::style::types::AnchorSizeAxis::Width => rect.width(),
+        crate::style::types::AnchorSizeAxis::Height => rect.height(),
+        crate::style::types::AnchorSizeAxis::InlineSize => {
+          if crate::style::inline_axis_is_horizontal(anchor.writing_mode) {
+            rect.width()
+          } else {
+            rect.height()
+          }
+        }
+        crate::style::types::AnchorSizeAxis::BlockSize => {
+          if crate::style::block_axis_is_horizontal(anchor.writing_mode) {
+            rect.width()
+          } else {
+            rect.height()
+          }
+        }
+      };
+      value.is_finite().then_some(value)
+    };
+
+  if let Some(func) = style.width_anchor_size.as_ref() {
+    resolved.width = resolve_anchor_size(func)
+      .map(|px| LengthOrAuto::Length(Length::px(px)))
+      .unwrap_or_else(|| fallback_or_auto_size(func));
+    resolved.width_keyword = None;
+  } else {
+    resolved.width = style.width.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
+    resolved.width_keyword = style.width_keyword;
+  }
+
+  if let Some(func) = style.height_anchor_size.as_ref() {
+    resolved.height = resolve_anchor_size(func)
+      .map(|px| LengthOrAuto::Length(Length::px(px)))
+      .unwrap_or_else(|| fallback_or_auto_size(func));
+    resolved.height_keyword = None;
+  } else {
+    resolved.height = style
+      .height
+      .map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
+    resolved.height_keyword = style.height_keyword;
+  }
   resolved.box_sizing = style.box_sizing;
   resolved.aspect_ratio = style.aspect_ratio;
   resolved.font_family = style.font_family.to_vec();
@@ -2534,38 +2588,77 @@ pub(crate) fn resolve_positioned_style_with_anchors(
   resolved.border_width.bottom =
     resolve_len(&style.used_border_bottom_width(), inline_base).unwrap_or(0.0);
 
-  resolved.min_width = Length::px(
+  let min_width_px = if let Some(func) = style.min_width_anchor_size.as_ref() {
+    resolve_anchor_size(func)
+      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
+      .unwrap_or(0.0)
+  } else {
     style
       .min_width
       .as_ref()
       .and_then(|l| resolve_len(l, inline_base))
-      .unwrap_or(0.0),
-  );
-  resolved.min_width_keyword = style.min_width_keyword;
-  resolved.max_width = Length::px(
+      .unwrap_or(0.0)
+  };
+  resolved.min_width = Length::px(min_width_px);
+  resolved.min_width_keyword = if style.min_width_anchor_size.is_some() {
+    None
+  } else {
+    style.min_width_keyword
+  };
+
+  let max_width_px = if let Some(func) = style.max_width_anchor_size.as_ref() {
+    resolve_anchor_size(func)
+      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, inline_base)))
+      .unwrap_or(f32::INFINITY)
+  } else {
     style
       .max_width
       .as_ref()
       .and_then(|l| resolve_len(l, inline_base))
-      .unwrap_or(f32::INFINITY),
-  );
-  resolved.max_width_keyword = style.max_width_keyword;
-  resolved.min_height = Length::px(
+      .unwrap_or(f32::INFINITY)
+  };
+  resolved.max_width = Length::px(max_width_px);
+  resolved.max_width_keyword = if style.max_width_anchor_size.is_some() {
+    None
+  } else {
+    style.max_width_keyword
+  };
+
+  let min_height_px = if let Some(func) = style.min_height_anchor_size.as_ref() {
+    resolve_anchor_size(func)
+      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
+      .unwrap_or(0.0)
+  } else {
     style
       .min_height
       .as_ref()
       .and_then(|l| resolve_len(l, block_base))
-      .unwrap_or(0.0),
-  );
-  resolved.min_height_keyword = style.min_height_keyword;
-  resolved.max_height = Length::px(
+      .unwrap_or(0.0)
+  };
+  resolved.min_height = Length::px(min_height_px);
+  resolved.min_height_keyword = if style.min_height_anchor_size.is_some() {
+    None
+  } else {
+    style.min_height_keyword
+  };
+
+  let max_height_px = if let Some(func) = style.max_height_anchor_size.as_ref() {
+    resolve_anchor_size(func)
+      .or_else(|| func.fallback.as_ref().and_then(|l| resolve_len(l, block_base)))
+      .unwrap_or(f32::INFINITY)
+  } else {
     style
       .max_height
       .as_ref()
       .and_then(|l| resolve_len(l, block_base))
-      .unwrap_or(f32::INFINITY),
-  );
-  resolved.max_height_keyword = style.max_height_keyword;
+      .unwrap_or(f32::INFINITY)
+  };
+  resolved.max_height = Length::px(max_height_px);
+  resolved.max_height_keyword = if style.max_height_anchor_size.is_some() {
+    None
+  } else {
+    style.max_height_keyword
+  };
 
   resolved.margin_left_auto = style.margin_left.is_none();
   resolved.margin_right_auto = style.margin_right.is_none();

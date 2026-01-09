@@ -3518,6 +3518,31 @@ pub struct AnchorFunction {
   pub fallback: Option<Length>,
 }
 
+/// Axis keywords supported by the `anchor-size()` function.
+///
+/// Baseline support: only the size axes needed to implement tooltip/popover sizing against an
+/// anchor element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorSizeAxis {
+  Width,
+  Height,
+  InlineSize,
+  BlockSize,
+}
+
+/// Parsed `anchor-size()` function as used in sizing properties (width/height/min/max).
+///
+/// Like `anchor()`, FastRender resolves `anchor-size()` during positioned layout from the
+/// already-laid-out fragment tree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnchorSizeFunction {
+  /// Optional explicit anchor name (`anchor-size(--foo width)`); when absent, use `position-anchor`.
+  pub name: Option<String>,
+  pub axis: AnchorSizeAxis,
+  /// Optional fallback value (`anchor-size(width, 12px)`).
+  pub fallback: Option<Length>,
+}
+
 /// Computed inset value (`top/right/bottom/left`) supporting `anchor()`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InsetValue {
