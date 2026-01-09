@@ -22,6 +22,204 @@ const DOM_SHIM: &str = r##"
     throw new TypeError("Illegal constructor");
   }
 
+  // --- Events (minimal EventTarget / Event) ---
+  var EVENT_LISTENERS = new WeakMap(); // target -> Map(type -> [{callback,capture,once,passive}])
+  var EVENT_PARENTS = new WeakMap(); // EventTarget instance -> parent EventTarget
+
+  function normalizeListenerOptions(options) {
+    var capture = false;
+    var once = false;
+    var passive = false;
+    if (options === true) {
+      capture = true;
+    } else if (options && typeof options === "object") {
+      if (options.capture) capture = true;
+      if (options.once) once = true;
+      if (options.passive) passive = true;
+    }
+    return { capture: capture, once: once, passive: passive };
+  }
+
+  function getListenerList(target, type, create) {
+    var map = EVENT_LISTENERS.get(target);
+    if (!map) {
+      if (!create) return null;
+      map = new Map();
+      EVENT_LISTENERS.set(target, map);
+    }
+    var list = map.get(type);
+    if (!list) {
+      if (!create) return null;
+      list = [];
+      map.set(type, list);
+    }
+    return list;
+  }
+
+  function isNodeWrapper(o) {
+    return typeof o === "object" && o !== null && typeof o[NODE_ID] === "number";
+  }
+
+  function eventParent(target) {
+    if (target === g) return null;
+    if (target === g.document) return g;
+    if (isNodeWrapper(target)) return target.parentNode || null;
+    return EVENT_PARENTS.get(target) || null;
+  }
+
+  function EventTarget(parent) {
+    if (parent !== null && parent !== undefined) {
+      if (typeof parent !== "object" || parent === null) {
+        throw new TypeError("Failed to construct 'EventTarget': parameter 1 is not of type 'EventTarget'.");
+      }
+      EVENT_PARENTS.set(this, parent);
+    }
+  }
+
+  EventTarget.prototype.addEventListener = function (type, callback, options) {
+    if (callback === null || callback === undefined) return;
+    if (typeof callback !== "function") return;
+    var t = String(type);
+    var opts = normalizeListenerOptions(options);
+    var list = getListenerList(this, t, true);
+    for (var i = 0; i < list.length; i++) {
+      var l = list[i];
+      if (l.callback === callback && l.capture === opts.capture) return;
+    }
+    list.push({
+      callback: callback,
+      capture: opts.capture,
+      once: opts.once,
+      passive: opts.passive,
+    });
+  };
+
+  EventTarget.prototype.removeEventListener = function (type, callback, options) {
+    if (callback === null || callback === undefined) return;
+    if (typeof callback !== "function") return;
+    var t = String(type);
+    var opts = normalizeListenerOptions(options);
+    var list = getListenerList(this, t, false);
+    if (!list) return;
+    for (var i = 0; i < list.length; i++) {
+      var l = list[i];
+      if (l.callback === callback && l.capture === opts.capture) {
+        list.splice(i, 1);
+        return;
+      }
+    }
+  };
+
+  function Event(type, init) {
+    if (arguments.length < 1) {
+      throw new TypeError("Failed to construct 'Event': 1 argument required, but only 0 present.");
+    }
+    this.type = String(type);
+    this.bubbles = !!(init && init.bubbles);
+    this.cancelable = !!(init && init.cancelable);
+    this.defaultPrevented = false;
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this._propagationStopped = false;
+    this._immediateStopped = false;
+    this._inPassiveListener = false;
+  }
+
+  Event.NONE = 0;
+  Event.CAPTURING_PHASE = 1;
+  Event.AT_TARGET = 2;
+  Event.BUBBLING_PHASE = 3;
+
+  Event.prototype.preventDefault = function () {
+    if (this.cancelable && !this._inPassiveListener) {
+      this.defaultPrevented = true;
+    }
+  };
+
+  Event.prototype.stopPropagation = function () {
+    this._propagationStopped = true;
+  };
+
+  Event.prototype.stopImmediatePropagation = function () {
+    this._propagationStopped = true;
+    this._immediateStopped = true;
+  };
+
+  EventTarget.prototype.dispatchEvent = function (event) {
+    if (typeof event !== "object" || event === null) {
+      throw new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.");
+    }
+    if (typeof event.type !== "string") {
+      throw new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': event.type must be a string.");
+    }
+    event.target = this;
+    event.currentTarget = null;
+    event.eventPhase = Event.NONE;
+    event._propagationStopped = false;
+    event._immediateStopped = false;
+    event._inPassiveListener = false;
+    // Preserve defaultPrevented across dispatches, matching browser behavior for re-dispatch.
+
+    var path = [];
+    var seen = new Set();
+    var cur = this;
+    while (cur && !seen.has(cur) && path.length < 10000) {
+      path.push(cur);
+      seen.add(cur);
+      cur = eventParent(cur);
+    }
+
+    function invoke(target, phase, capture) {
+      var list = getListenerList(target, event.type, false);
+      if (!list) return;
+      for (var i = 0; i < list.length; i++) {
+        var l = list[i];
+        if (l.capture !== capture) continue;
+        if (event._immediateStopped) break;
+        event.currentTarget = target;
+        event.eventPhase = phase;
+        event._inPassiveListener = !!l.passive;
+        try {
+          l.callback.call(target, event);
+        } finally {
+          event._inPassiveListener = false;
+        }
+        if (l.once) {
+          list.splice(i, 1);
+          i -= 1;
+        }
+      }
+    }
+
+    // Capturing phase: root -> parent (exclude target).
+    for (var i = path.length - 1; i >= 1; i--) {
+      if (event._propagationStopped) break;
+      invoke(path[i], Event.CAPTURING_PHASE, true);
+    }
+
+    // At target.
+    if (!event._propagationStopped) {
+      event._immediateStopped = false;
+      invoke(path[0], Event.AT_TARGET, true);
+      event._immediateStopped = false;
+      invoke(path[0], Event.AT_TARGET, false);
+    }
+
+    // Bubbling phase: parent -> root (exclude target).
+    if (event.bubbles) {
+      for (var i = 1; i < path.length; i++) {
+        if (event._propagationStopped) break;
+        event._immediateStopped = false;
+        invoke(path[i], Event.BUBBLING_PHASE, false);
+      }
+    }
+
+    event.currentTarget = null;
+    event.eventPhase = Event.NONE;
+    return event.defaultPrevented ? false : true;
+  };
+
   function Node() { illegal(); }
   function Document() { illegal(); }
   function DocumentFragment() { illegal(); }
@@ -29,6 +227,7 @@ const DOM_SHIM: &str = r##"
   function Text() { illegal(); }
   function HTMLCollection() { illegal(); }
 
+  Object.setPrototypeOf(Node.prototype, EventTarget.prototype);
   Object.setPrototypeOf(Document.prototype, Node.prototype);
   Object.setPrototypeOf(DocumentFragment.prototype, Node.prototype);
   Object.setPrototypeOf(Element.prototype, Node.prototype);
@@ -961,6 +1160,13 @@ const DOM_SHIM: &str = r##"
   Object.defineProperty(g, "Element", { value: Element, configurable: true, writable: true });
   Object.defineProperty(g, "Text", { value: Text, configurable: true, writable: true });
   Object.defineProperty(g, "HTMLCollection", { value: HTMLCollection, configurable: true, writable: true });
+  Object.defineProperty(g, "EventTarget", { value: EventTarget, configurable: true, writable: true });
+  Object.defineProperty(g, "Event", { value: Event, configurable: true, writable: true });
+
+  // Allow using window as an EventTarget for DOM-style event paths.
+  Object.defineProperty(g, "addEventListener", { value: EventTarget.prototype.addEventListener, configurable: true, writable: true });
+  Object.defineProperty(g, "removeEventListener", { value: EventTarget.prototype.removeEventListener, configurable: true, writable: true });
+  Object.defineProperty(g, "dispatchEvent", { value: EventTarget.prototype.dispatchEvent, configurable: true, writable: true });
 })();
 "##;
 

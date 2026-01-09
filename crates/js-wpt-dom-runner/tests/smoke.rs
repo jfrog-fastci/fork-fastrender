@@ -253,3 +253,12 @@ fn runs_node_sibling_props_test() {
 fn runs_error_constructor_smoke_test() {
   assert_wpt_pass("dom/error_constructor.window.js");
 }
+
+#[test]
+fn runs_eventtarget_smoke_tests() {
+  assert_wpt_pass("events/eventtarget.window.js");
+  assert_wpt_pass("events/eventtarget_dispatch_order.window.js");
+  assert_wpt_pass("events/eventtarget_order.window.js");
+  assert_wpt_pass("events/document_eventtarget_path.window.js");
+  assert_wpt_pass("events/passive_listener.window.js");
+}
