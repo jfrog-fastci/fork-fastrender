@@ -1,5 +1,6 @@
 use js_wpt_dom_runner::{discover_tests, RunOutcome, Runner, RunnerConfig, WptFs};
 use std::path::PathBuf;
+use std::time::Duration;
 
 fn corpus_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -29,6 +30,44 @@ fn runs_window_js_smoke_test() {
 }
 
 #[test]
+fn runs_any_js_in_window_realm() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/any_promise.any.js")
+    .expect("missing any_promise.any.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
+fn meta_timeout_long_overrides_runner_default_timeout() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/timeout_long.window.js")
+    .expect("missing timeout_long.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(
+    fs,
+    RunnerConfig {
+      default_timeout: Duration::from_millis(10),
+      long_timeout: Duration::from_millis(250),
+    },
+  );
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
 fn discovers_worker_tests_but_skips_them() {
   let corpus_root = corpus_root();
   let tests_root = tests_root();
@@ -44,6 +83,54 @@ fn discovers_worker_tests_but_skips_them() {
   match result.outcome {
     RunOutcome::Skip(reason) => {
       assert!(reason.contains("worker"), "reason should mention worker");
+    }
+    other => panic!("expected Skip, got {other:?}"),
+  }
+}
+
+#[test]
+fn discovers_serviceworker_tests_but_skips_them() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/unsupported.serviceworker.js")
+    .expect("missing unsupported.serviceworker.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  match result.outcome {
+    RunOutcome::Skip(reason) => {
+      assert!(
+        reason.contains("service worker"),
+        "reason should mention service worker: {reason}"
+      );
+    }
+    other => panic!("expected Skip, got {other:?}"),
+  }
+}
+
+#[test]
+fn discovers_sharedworker_tests_but_skips_them() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/unsupported.sharedworker.js")
+    .expect("missing unsupported.sharedworker.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  match result.outcome {
+    RunOutcome::Skip(reason) => {
+      assert!(
+        reason.contains("shared worker"),
+        "reason should mention shared worker: {reason}"
+      );
     }
     other => panic!("expected Skip, got {other:?}"),
   }
