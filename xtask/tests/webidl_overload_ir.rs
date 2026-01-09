@@ -352,7 +352,7 @@ fn default_value_from_idl_literal(lit: &IdlLiteral) -> Option<DefaultValue> {
 }
 
 #[test]
-fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_world() {
+fn overload_dispatch_plans_can_be_computed_for_window_exposed_dom_operations_in_semantic_world() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
     .expect("xtask has a parent dir");
@@ -378,14 +378,10 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
   let type_ctx = semantic.build_type_context();
 
   let mut failures = Vec::<String>::new();
+  let mut checked_sets = 0usize;
 
-  // A small set of "core DOM" interfaces whose members exercise optional args, unions, dictionaries,
-  // and interface inheritance.
-  for iface_name in ["EventTarget", "Node", "Element", "Document", "Window"] {
-    let Some(iface) = semantic.interfaces.get(iface_name) else {
-      continue;
-    };
-
+  // Validate overload planning across all Window-exposed interfaces in the semantic world.
+  for (iface_name, iface) in &semantic.interfaces {
     // Group operation overloads by (operation name, static flag). This is the minimal key for
     // WebIDL overload sets for named operations.
     let mut ops: BTreeMap<(String, bool), Vec<(String, Vec<xtask::webidl::semantic::SemanticArgument>)>> =
@@ -417,6 +413,7 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
     }
 
     if !ctors.is_empty() {
+      checked_sets += 1;
       let overloads = ctors
         .iter()
         .map(|(raw, args)| Overload {
@@ -441,7 +438,7 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
             })
             .collect(),
           origin: Some(Origin {
-            interface: iface_name.to_string(),
+            interface: iface_name.clone(),
             raw_member: raw.clone(),
           }),
         })
@@ -460,6 +457,7 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
     }
 
     for ((op_name, _static_), entries) in ops {
+      checked_sets += 1;
       let overloads = entries
         .iter()
         .map(|(raw, args)| Overload {
@@ -484,7 +482,7 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
             })
             .collect(),
           origin: Some(Origin {
-            interface: iface_name.to_string(),
+            interface: iface_name.clone(),
             raw_member: raw.clone(),
           }),
         })
@@ -503,6 +501,7 @@ fn overload_dispatch_plans_can_be_computed_for_core_dom_interfaces_in_semantic_w
     }
   }
 
+  assert!(checked_sets > 0, "expected at least one overload set to be checked");
   assert!(
     failures.is_empty(),
     "semantic-world overload planning failed:\n\n{}",
