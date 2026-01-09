@@ -604,9 +604,15 @@ fn inline_svg_use_references<'a>(
         break;
       }
     }
-    let href = href
-      .map(trim_ascii_whitespace)
-      .filter(|v| !v.is_empty());
+    if href.is_none() {
+      for attr in node.attributes() {
+        if attr.name() == "xlink:href" {
+          href = Some(attr.value());
+          break;
+        }
+      }
+    }
+    let href = href.map(trim_ascii_whitespace).filter(|v| !v.is_empty());
 
     let Some(href) = href else {
       continue;
@@ -684,9 +690,52 @@ fn inline_svg_use_references<'a>(
         continue;
       }
 
-      let sprite_text = match String::from_utf8(res.bytes) {
-        Ok(text) => text,
-        Err(_) => continue,
+      let sprite_text = {
+        let bytes = res.bytes;
+        if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
+          let mut decoder = GzDecoder::new(bytes.as_slice());
+          let mut out = Vec::new();
+          let mut buf = [0u8; 8192];
+          let mut decompression_deadline_counter = 0usize;
+          let mut ok = true;
+          loop {
+            check_root_periodic(
+              &mut decompression_deadline_counter,
+              32,
+              RenderStage::Paint,
+            )
+            .map_err(Error::Render)?;
+            let n = match decoder.read(&mut buf) {
+              Ok(n) => n,
+              Err(_) => {
+                // Best-effort: keep the `<use>` intact if sprite decompression fails.
+                ok = false;
+                break;
+              }
+            };
+            if n == 0 {
+              break;
+            }
+            if out.len().saturating_add(n) > MAX_SVGZ_DECOMPRESSED_BYTES {
+              // Best-effort: treat oversized sprites like a parse failure.
+              ok = false;
+              break;
+            }
+            out.extend_from_slice(&buf[..n]);
+          }
+          if !ok {
+            continue;
+          }
+          match String::from_utf8(out) {
+            Ok(text) => text,
+            Err(_) => continue,
+          }
+        } else {
+          match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(_) => continue,
+          }
+        }
       };
 
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -834,7 +883,7 @@ fn inline_svg_use_references<'a>(
       }
 
       match attr.name() {
-        "href" | "x" | "y" | "width" | "height" | "transform" => continue,
+        "href" | "xlink:href" | "x" | "y" | "width" | "height" | "transform" => continue,
         "xmlns" => continue,
         _ => {}
       }
@@ -8880,6 +8929,82 @@ mod tests {
       rgba.get_pixel(0, 0).0,
       [255, 0, 0, 255],
       "external <use href> sprite should inline and render red pixel"
+    );
+  }
+
+  #[test]
+  fn svg_external_use_sprite_renders_with_xlink_href() {
+    let sprite_url = "https://example.test/sprite.svg";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1" height="1"><use xlink:href="/sprite.svg#icon"/></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <use xlink:href> sprite should inline and render red pixel"
+    );
+  }
+
+  #[test]
+  fn svg_external_use_sprite_svgz_renders() {
+    let sprite_url = "https://example.test/sprite.svgz";
+    let main_url = "https://example.test/main.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let sprite_svgz = gzip_bytes(sprite_svg.as_bytes());
+    let main_svg =
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/sprite.svgz#icon"/></svg>"#;
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut sprite_res =
+      FetchedResource::new(sprite_svgz, Some("application/octet-stream".to_string()));
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (sprite_url.to_string(), sprite_res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(main_url).expect("load main svg");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "external <use> sprite should inline and render red pixel when sprite is gzipped"
     );
   }
 
