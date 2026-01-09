@@ -1,9 +1,11 @@
 use crate::debug::runtime;
 use crate::error::{Error, Result};
+use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::resource::{
   ensure_cors_allows_origin, origin_from_url, CorsMode, DocumentOrigin, FetchCredentialsMode,
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
+use url::Url;
 
 use super::{
   Body, Headers, HeadersGuard, Request, RequestCredentials, RequestMode, Response, ResponseType,
@@ -15,6 +17,8 @@ pub struct WebFetchExecutionContext<'a> {
   pub client_origin: Option<&'a DocumentOrigin>,
   pub referrer_policy: crate::resource::ReferrerPolicy,
   pub credentials_mode_override: Option<FetchCredentialsMode>,
+  /// Optional CSP policy to enforce (`connect-src` / `default-src`) for Fetch API requests.
+  pub csp: Option<&'a CspPolicy>,
 }
 
 impl<'a> Default for WebFetchExecutionContext<'a> {
@@ -24,6 +28,7 @@ impl<'a> Default for WebFetchExecutionContext<'a> {
       client_origin: None,
       referrer_policy: crate::resource::ReferrerPolicy::default(),
       credentials_mode_override: None,
+      csp: None,
     }
   }
 }
@@ -50,6 +55,22 @@ pub fn execute_web_fetch(
   }
 
   let requested_url = request.url.as_str();
+  if let Some(csp) = ctx.csp {
+    let parsed = Url::parse(requested_url).map_err(|_| {
+      Error::Other(format!(
+        "Blocked by Content-Security-Policy ({}) for requested URL (invalid URL): {}",
+        CspDirective::ConnectSrc.as_str(),
+        requested_url
+      ))
+    })?;
+    if !csp.allows_url(CspDirective::ConnectSrc, ctx.client_origin, &parsed) {
+      return Err(Error::Other(format!(
+        "Blocked by Content-Security-Policy ({}) for requested URL: {}",
+        CspDirective::ConnectSrc.as_str(),
+        parsed.as_str()
+      )));
+    }
+  }
   if request.mode == RequestMode::SameOrigin {
     let Some(client_origin) = ctx.client_origin else {
       return Err(Error::Other(
@@ -135,6 +156,23 @@ pub fn execute_web_fetch(
     .take()
     .unwrap_or_else(|| requested_url.to_string());
   let redirected = url != requested_url;
+
+  if let Some(csp) = ctx.csp {
+    let parsed = Url::parse(url.as_str()).map_err(|_| {
+      Error::Other(format!(
+        "Blocked by Content-Security-Policy ({}) for final URL (invalid URL): {}",
+        CspDirective::ConnectSrc.as_str(),
+        url
+      ))
+    })?;
+    if !csp.allows_url(CspDirective::ConnectSrc, ctx.client_origin, &parsed) {
+      return Err(Error::Other(format!(
+        "Blocked by Content-Security-Policy ({}) for final URL: {}",
+        CspDirective::ConnectSrc.as_str(),
+        parsed.as_str()
+      )));
+    }
+  }
 
   let mut headers = Headers::new_with_guard(HeadersGuard::Response);
   if let Some(response_headers) = resource.response_headers.take() {
@@ -599,6 +637,7 @@ mod tests {
       client_origin: Some(&origin),
       referrer_policy: crate::resource::ReferrerPolicy::StrictOriginWhenCrossOrigin,
       credentials_mode_override: Some(FetchCredentialsMode::Include),
+      csp: None,
     };
 
     execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
@@ -880,6 +919,51 @@ mod tests {
       err.to_string().contains("blocked cross-origin"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn csp_connect_src_self_blocks_cross_origin_before_fetching() {
+    let fetcher = PanicFetcher;
+    let request = Request::new("GET", "https://other.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let csp = CspPolicy::from_values(["connect-src 'self'"]).expect("csp");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      csp: Some(&csp),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected CSP block");
+    assert!(matches!(err, Error::Other(_)));
+    let message = err.to_string();
+    assert!(message.contains("Content-Security-Policy"));
+    assert!(message.contains("connect-src"));
+    assert!(message.contains("requested URL"));
+  }
+
+  #[test]
+  fn csp_connect_src_self_blocks_cross_origin_final_url_after_redirect() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://other.example/res".to_string());
+    // Allow the cross-origin redirect through CORS so we can assert CSP blocks the final URL.
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    let fetcher = StaticFetcher { resource };
+    let request = Request::new("GET", "https://client.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let csp = CspPolicy::from_values(["connect-src 'self'"]).expect("csp");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      csp: Some(&csp),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected CSP block");
+    assert!(matches!(err, Error::Other(_)));
+    let message = err.to_string();
+    assert!(message.contains("Content-Security-Policy"));
+    assert!(message.contains("connect-src"));
+    assert!(message.contains("final URL"));
+    assert!(message.contains("other.example"));
   }
 
   #[test]
