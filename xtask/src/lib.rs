@@ -5,6 +5,7 @@ pub mod capture_missing_failure_fixtures;
 pub mod cmd;
 pub mod freeze_page_fixture;
 pub mod lint_no_panics;
+pub mod lint_no_openssl;
 pub mod pageset_failure_fixtures;
 pub mod webidl;
 pub mod webidl_bindings_codegen;

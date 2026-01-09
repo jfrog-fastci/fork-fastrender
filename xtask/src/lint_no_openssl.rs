@@ -112,8 +112,41 @@ fn check_openssl_sys_absent(
   let stdout = String::from_utf8(output.stdout).context("decode cargo metadata stdout")?;
   let metadata: CargoMetadata =
     serde_json::from_str(&stdout).context("parse cargo metadata JSON")?;
+  let chains = openssl_sys_dependency_chains(&metadata, scope)?;
+
+  if !chains.is_empty() {
+    bail!(
+      "lint-no-openssl ({label}, {}): forbidden dependency `openssl-sys` found in the resolved build graph.\n\
+       \n\
+       This makes builds depend on system OpenSSL development headers.\n\
+       Prefer a Rust TLS backend (e.g. reqwest rustls) for hermetic CI/agent builds.\n\
+       \n\
+       Dependency path(s):\n\
+       {}\n\
+       \n\
+       To debug:\n\
+         cargo tree -i openssl-sys"
+      ,
+      scope.label(),
+      chains
+        .iter()
+        .map(|chain| format!("  - {chain}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+    );
+  }
+
+  println!(
+    "✓ lint-no-openssl ({label}, {}): openssl-sys not present in resolved dependency graph",
+    scope.label()
+  );
+  Ok(())
+}
+
+fn openssl_sys_dependency_chains(metadata: &CargoMetadata, scope: Scope) -> Result<Vec<String>> {
   let resolve = metadata
     .resolve
+    .as_ref()
     .context("cargo metadata did not include a resolved dependency graph")?;
 
   let fastrender_pkg = metadata.packages.iter().find(|pkg| pkg.name == "fastrender");
@@ -171,54 +204,75 @@ fn check_openssl_sys_absent(
       offenders.push(id);
     }
   }
+  offenders.sort_unstable();
 
-  if !offenders.is_empty() {
-    let mut chains = Vec::new();
-    for offender_id in &offenders {
-      let mut chain_ids = Vec::new();
-      let mut cur = *offender_id;
-      chain_ids.push(cur);
-      while let Some(prev) = parent.get(cur).copied() {
-        chain_ids.push(prev);
-        cur = prev;
-      }
-      chain_ids.reverse();
-
-      let mut labels = Vec::new();
-      for id in chain_ids {
-        let label = packages_by_id
-          .get(id)
-          .map(|pkg| format!("{}@{}", pkg.name, pkg.version))
-          .unwrap_or_else(|| id.to_string());
-        labels.push(label);
-      }
-      chains.push(labels.join(" -> "));
+  let mut chains = Vec::new();
+  for offender_id in &offenders {
+    let mut chain_ids = Vec::new();
+    let mut cur = *offender_id;
+    chain_ids.push(cur);
+    while let Some(prev) = parent.get(cur).copied() {
+      chain_ids.push(prev);
+      cur = prev;
     }
+    chain_ids.reverse();
 
-    bail!(
-      "lint-no-openssl ({label}, {}): forbidden dependency `openssl-sys` found in the resolved build graph.\n\
-       \n\
-       This makes builds depend on system OpenSSL development headers.\n\
-       Prefer a Rust TLS backend (e.g. reqwest rustls) for hermetic CI/agent builds.\n\
-       \n\
-       Dependency path(s):\n\
-       {}\n\
-       \n\
-       To debug:\n\
-         cargo tree -i openssl-sys"
-      ,
-      scope.label(),
-      chains
-        .iter()
-        .map(|chain| format!("  - {chain}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-    );
+    let mut labels = Vec::new();
+    for id in chain_ids {
+      let label = packages_by_id
+        .get(id)
+        .map(|pkg| format!("{}@{}", pkg.name, pkg.version))
+        .unwrap_or_else(|| id.to_string());
+      labels.push(label);
+    }
+    chains.push(labels.join(" -> "));
   }
 
-  println!(
-    "✓ lint-no-openssl ({label}, {}): openssl-sys not present in resolved dependency graph",
-    scope.label()
-  );
-  Ok(())
+  chains.sort();
+  Ok(chains)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn lint_no_openssl_workspace_scope_catches_other_members() {
+    let metadata: CargoMetadata = serde_json::from_str(
+      r#"
+      {
+        "packages": [
+          {"name": "fastrender", "version": "0.1.0", "id": "fastrender 0.1.0"},
+          {"name": "helper", "version": "0.1.0", "id": "helper 0.1.0"},
+          {"name": "native-tls", "version": "0.2.0", "id": "native-tls 0.2.0"},
+          {"name": "openssl-sys", "version": "0.9.99", "id": "openssl-sys 0.9.99"}
+        ],
+        "workspace_members": ["fastrender 0.1.0", "helper 0.1.0"],
+        "resolve": {
+          "nodes": [
+            {"id": "fastrender 0.1.0", "deps": []},
+            {"id": "helper 0.1.0", "deps": [{"pkg": "native-tls 0.2.0"}]},
+            {"id": "native-tls 0.2.0", "deps": [{"pkg": "openssl-sys 0.9.99"}]},
+            {"id": "openssl-sys 0.9.99", "deps": []}
+          ]
+        }
+      }
+      "#,
+    )
+    .expect("parse synthetic cargo metadata JSON");
+
+    let fastrender_only = openssl_sys_dependency_chains(&metadata, Scope::Fastrender)
+      .expect("scan fastrender scope");
+    assert!(
+      fastrender_only.is_empty(),
+      "expected fastrender scope to ignore helper's deps; got {fastrender_only:?}"
+    );
+
+    let workspace = openssl_sys_dependency_chains(&metadata, Scope::Workspace)
+      .expect("scan workspace scope");
+    assert_eq!(
+      workspace,
+      vec!["helper@0.1.0 -> native-tls@0.2.0 -> openssl-sys@0.9.99".to_string()]
+    );
+  }
 }
