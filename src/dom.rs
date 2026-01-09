@@ -139,6 +139,8 @@ mod scripting_parser;
 #[allow(deprecated)]
 pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
 
+pub(crate) mod forms_validation;
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct DomParseDiagnostics {
   pub html5ever_ms: f64,
@@ -5356,120 +5358,11 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_valid_control(&self) -> bool {
-    if self.is_disabled() {
-      return true;
-    }
-    if !self.supports_validation() {
-      return false;
-    }
-
-    let Some(tag) = self.node.tag_name() else {
-      return false;
-    };
-
-    let required = self.is_required();
-
-      if tag.eq_ignore_ascii_case("select") {
-        if !required {
-          return true;
-        }
-        let multiple = self.node.get_attribute_ref("multiple").is_some();
-        let size = select_display_size(self.node);
-
-        // HTML constraint validation: for listbox/multiple selects, a required selection must include
-        // at least one option that is *not disabled*.
-        if multiple || size != 1 {
-          return select_has_non_disabled_selected_option(self.node);
-        }
-
-        // For size=1 single selects, required validity is instead determined by the placeholder label
-        // option algorithm.
-        let Some(selected) = single_select_selected_option(self.node) else {
-        return false;
-      };
-
-      if let Some(placeholder) = select_placeholder_label_option(self.node) {
-        if ptr::eq(placeholder, selected) {
-          return false;
-        }
-      }
-
-      return true;
-    }
-
-    let value = self.control_value().unwrap_or_default();
-    if tag.eq_ignore_ascii_case("textarea") {
-      return !(required && value.is_empty());
-    }
-
-    if tag.eq_ignore_ascii_case("input") {
-      let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
-
-      if supports_placeholder(Some(input_type)) && !input_type.eq_ignore_ascii_case("number") {
-        return !(required && value.is_empty());
-      }
-
-      if input_type.eq_ignore_ascii_case("number") || input_type.eq_ignore_ascii_case("range") {
-        if trim_ascii_whitespace_html(&value).is_empty() {
-          return !required;
-        }
-        if let Some(num) = Self::parse_number(&value) {
-          return self.numeric_in_range(num).unwrap_or(true);
-        }
-        return false;
-      }
-
-      if input_type.eq_ignore_ascii_case("checkbox") {
-        if required {
-          if input_type.eq_ignore_ascii_case("checkbox") {
-            return self.node.get_attribute_ref("checked").is_some();
-          }
-
-          // For required radio buttons, group semantics apply: validity is satisfied if *any* radio
-          // button in the same group is effectively checked.
-          let Some(name) = self.radio_group_name() else {
-            return self.node.get_attribute_ref("checked").is_some();
-          };
-          let root = self.radio_group_root();
-          return Self::last_checked_radio_in_group(root, name).is_some();
-        }
-        return true;
-      }
-
-      if input_type.eq_ignore_ascii_case("radio") {
-        return !self.radio_group_is_missing();
-      }
-
-      return !(required && trim_ascii_whitespace_html(&value).is_empty());
-    }
-
-    true
+    crate::dom::forms_validation::validity_state(self).is_some_and(|state| state.valid)
   }
 
   fn range_state(&self) -> Option<bool> {
-    let tag = self.node.tag_name()?;
-    if !tag.eq_ignore_ascii_case("input") {
-      return None;
-    }
-    let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
-    if !input_type.eq_ignore_ascii_case("number") && !input_type.eq_ignore_ascii_case("range") {
-      return None;
-    }
-
-    if input_type.eq_ignore_ascii_case("range") {
-      let (min, max) = input_range_bounds(self.node)?;
-      let value = input_range_value(self.node)?;
-      return Some(value >= min && value <= max);
-    }
-
-    let value = self
-      .node
-      .get_attribute_ref("value")
-      .map(|v| v.to_string())
-      .unwrap_or_default();
-    let num = Self::parse_number(&value)?;
-
-    self.numeric_in_range(num)
+    crate::dom::forms_validation::range_state(self)
   }
 
   fn is_indeterminate(&self) -> bool {
@@ -5584,69 +5477,7 @@ impl<'a> ElementRef<'a> {
   }
 
   fn radio_group_is_missing(&self) -> bool {
-    let name = self.node.get_attribute_ref("name").unwrap_or("");
-    if name.is_empty() {
-      return self.node.get_attribute_ref("required").is_some()
-        && self.node.get_attribute_ref("checked").is_none();
-    }
-
-    let (tree_root, ancestors_in_tree) = self.tree_root_info();
-    let forms_by_id = Self::collect_forms_by_id(tree_root);
-
-    let self_nearest_form = ancestors_in_tree.iter().rev().copied().find(|node| {
-      node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
-    });
-    let self_form_owner =
-      Self::resolve_form_owner_for_node(self.node, self_nearest_form, &forms_by_id)
-        .map(|form| form as *const DomNode);
-
-    let mut group_required = false;
-    let mut stack: Vec<(&DomNode, Option<&DomNode>)> = vec![(tree_root, None)];
-
-    while let Some((node, nearest_form)) = stack.pop() {
-      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) && !ptr::eq(node, tree_root) {
-        continue;
-      }
-
-      let mut nearest_form = nearest_form;
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("form"))
-      {
-        nearest_form = Some(node);
-      }
-
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-        && node
-          .get_attribute_ref("type")
-          .unwrap_or("text")
-          .eq_ignore_ascii_case("radio")
-        && node.get_attribute_ref("name") == Some(name)
-      {
-        let owner =
-          Self::resolve_form_owner_for_node(node, nearest_form, &forms_by_id).map(|form| {
-            form as *const DomNode
-          });
-        if owner == self_form_owner {
-          if node.get_attribute_ref("checked").is_some() {
-            return false;
-          }
-          if node.get_attribute_ref("required").is_some() {
-            group_required = true;
-          }
-        }
-      }
-
-      for child in node.traversal_children().iter().rev() {
-        stack.push((child, nearest_form));
-      }
-    }
-
-    group_required
+    forms_validation::radio_group_is_missing(self)
   }
 
   fn is_default_submit_candidate(node: &DomNode, ancestors: &[&DomNode]) -> bool {
@@ -9304,6 +9135,99 @@ mod tests {
       vec![],
     );
     assert!(!ElementRef::new(&inf_input).is_valid_control());
+  }
+
+  #[test]
+  fn text_input_pattern_mismatch_sets_validity_flag() {
+    let input = element_with_attrs(
+      "input",
+      vec![("pattern", "[0-9]+"), ("value", "abc")],
+      vec![],
+    );
+    let state = forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
+    assert!(state.pattern_mismatch);
+    assert!(!state.valid);
+  }
+
+  #[test]
+  fn minlength_and_maxlength_set_too_short_and_too_long_flags() {
+    let too_short = element_with_attrs("input", vec![("minlength", "5"), ("value", "abc")], vec![]);
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&too_short)).expect("validity state");
+    assert!(state.too_short);
+    assert!(!state.valid);
+
+    let too_long = element_with_attrs("input", vec![("maxlength", "2"), ("value", "abc")], vec![]);
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&too_long)).expect("validity state");
+    assert!(state.too_long);
+    assert!(!state.valid);
+
+    let textarea = element_with_attrs("textarea", vec![("minlength", "3")], vec![text("hi")]);
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&textarea)).expect("validity state");
+    assert!(state.too_short);
+    assert!(!state.valid);
+  }
+
+  #[test]
+  fn number_step_mismatch_sets_step_mismatch_flag() {
+    let input = element_with_attrs(
+      "input",
+      vec![("type", "number"), ("step", "2"), ("value", "3")],
+      vec![],
+    );
+    let state = forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
+    assert!(state.step_mismatch);
+    assert!(!state.valid);
+  }
+
+  #[test]
+  fn email_and_url_type_mismatch_set_type_mismatch_flag() {
+    let email = element_with_attrs(
+      "input",
+      vec![("type", "email"), ("value", "not-an-email")],
+      vec![],
+    );
+    let state = forms_validation::validity_state(&ElementRef::new(&email)).expect("validity state");
+    assert!(state.type_mismatch);
+    assert!(!state.valid);
+
+    let url = element_with_attrs(
+      "input",
+      vec![("type", "url"), ("value", "example.com")],
+      vec![],
+    );
+    let state = forms_validation::validity_state(&ElementRef::new(&url)).expect("validity state");
+    assert!(state.type_mismatch);
+    assert!(!state.valid);
+  }
+
+  #[test]
+  fn bad_input_flags_invalid_numeric_and_date_time_values() {
+    let number = element_with_attrs("input", vec![("type", "number"), ("value", "abc")], vec![]);
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&number)).expect("validity state");
+    assert!(state.bad_input);
+    assert!(!state.valid);
+
+    let date = element_with_attrs("input", vec![("type", "date"), ("value", "2020-13-01")], vec![]);
+    let state = forms_validation::validity_state(&ElementRef::new(&date)).expect("validity state");
+    assert!(state.bad_input);
+    assert!(!state.valid);
+
+    let time = element_with_attrs("input", vec![("type", "time"), ("value", "25:00")], vec![]);
+    let state = forms_validation::validity_state(&ElementRef::new(&time)).expect("validity state");
+    assert!(state.bad_input);
+    assert!(!state.valid);
+  }
+
+  #[test]
+  fn file_required_sets_value_missing_flag() {
+    let input = element_with_attrs("input", vec![("type", "file"), ("required", "")], vec![]);
+    let state = forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
+    assert!(state.value_missing);
+    assert!(!state.valid);
   }
 
   #[test]

@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Regression fixture: real-world forms often combine :invalid and :placeholder-shown
+         so empty required fields don't show error styling until user input. */
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+      }
+
+      input {
+        display: block;
+        width: 80px;
+        height: 20px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        appearance: none;
+        background: rgb(0 255 0);
+      }
+
+      input:invalid {
+        background: rgb(255 0 0);
+      }
+
+      input:placeholder-shown {
+        background: rgb(0 0 255);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- required + empty => :invalid and :placeholder-shown => blue overrides red -->
+    <input id="empty" required type="email" placeholder="Email" value="" />
+    <!-- invalid email => :invalid only => red -->
+    <input id="bad" required type="email" placeholder="Email" value="not-an-email" />
+    <!-- valid email => neither => green -->
+    <input id="ok" required type="email" placeholder="Email" value="a@b.com" />
+  </body>
+</html>
+

@@ -1,4 +1,4 @@
-use crate::dom::{DomNode, DomNodeType, ElementRef, HTML_NAMESPACE};
+use crate::dom::{forms_validation, DomNode, DomNodeType, ElementRef, HTML_NAMESPACE};
 use crate::style::cascade::StyledNode;
 use crate::style::computed::Visibility;
 use crate::style::display::Display;
@@ -180,6 +180,22 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
 
   let labels = collect_labels(root, &node_scope, &ids_by_scope, &lookup);
 
+  let needs_validation_dom = lookup.values().any(|node| {
+    node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+      && node
+        .node
+        .get_attribute_ref("type")
+        .is_some_and(|t| t.eq_ignore_ascii_case("radio"))
+      && node
+        .node
+        .get_attribute_ref("name")
+        .is_some_and(|name| !name.is_empty())
+  });
+  let validation_dom = needs_validation_dom.then(|| ValidationDomIndex::build(root));
+
   let ctx = BuildContext {
     hidden,
     aria_hidden,
@@ -187,6 +203,7 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
     ids_by_scope,
     labels,
     lookup,
+    validation_dom,
   };
 
   let mut ancestors: Vec<&DomNode> = Vec::new();
@@ -261,6 +278,74 @@ fn composed_children<'a>(
   styled.children.iter().collect()
 }
 
+#[derive(Debug)]
+struct ValidationDomIndex {
+  /// Root of a fully-populated `DomNode` tree (unlike `StyledNode.node`, which is shallow).
+  ///
+  /// This is used for constraint-validation checks that require tree traversal, such as radio-group
+  /// requiredness.
+  root: Box<DomNode>,
+  /// 1-indexed pre-order node id -> node pointer.
+  node_by_id: Vec<*const DomNode>,
+  /// 1-indexed pre-order node id -> parent node id (0 for root).
+  parent_by_id: Vec<usize>,
+}
+
+impl ValidationDomIndex {
+  fn build(root: &StyledNode) -> Self {
+    let root = Box::new(clone_dom_subtree(root));
+    let mut node_by_id: Vec<*const DomNode> = Vec::new();
+    let mut parent_by_id: Vec<usize> = Vec::new();
+    node_by_id.push(std::ptr::null());
+    parent_by_id.push(0);
+
+    let mut stack: Vec<(*const DomNode, usize)> = Vec::new();
+    stack.push((&*root as *const DomNode, 0));
+
+    while let Some((ptr, parent)) = stack.pop() {
+      let node_id = node_by_id.len();
+      node_by_id.push(ptr);
+      parent_by_id.push(parent);
+
+      // Safety: pointers are derived from `root` and `root` is owned by `self`.
+      let node = unsafe { &*ptr };
+      for child in node.children.iter().rev() {
+        stack.push((child as *const DomNode, node_id));
+      }
+    }
+
+    Self {
+      root,
+      node_by_id,
+      parent_by_id,
+    }
+  }
+
+  fn with_element_ref<R>(&self, node_id: usize, f: impl FnOnce(ElementRef<'_>) -> R) -> Option<R> {
+    let ptr = *self.node_by_id.get(node_id)?;
+    if ptr.is_null() {
+      return None;
+    }
+
+    let mut ancestors: Vec<&DomNode> = Vec::new();
+    let mut current = *self.parent_by_id.get(node_id).unwrap_or(&0);
+    while current != 0 {
+      let ptr = *self.node_by_id.get(current).unwrap_or(&std::ptr::null());
+      if ptr.is_null() {
+        break;
+      }
+      // Safety: pointers are derived from `root` and remain valid for the duration of the call.
+      ancestors.push(unsafe { &*ptr });
+      current = *self.parent_by_id.get(current).unwrap_or(&0);
+    }
+    ancestors.reverse();
+
+    // Safety: pointers are derived from `root` and remain valid for the duration of the call.
+    let node = unsafe { &*ptr };
+    Some(f(ElementRef::with_ancestors(node, ancestors.as_slice())))
+  }
+}
+
 struct BuildContext<'a> {
   hidden: HashMap<usize, bool>,
   aria_hidden: HashMap<usize, bool>,
@@ -268,6 +353,7 @@ struct BuildContext<'a> {
   ids_by_scope: HashMap<usize, HashMap<String, usize>>,
   labels: HashMap<usize, Vec<usize>>,
   lookup: HashMap<usize, &'a StyledNode>,
+  validation_dom: Option<ValidationDomIndex>,
 }
 
 #[derive(Clone, Copy)]
@@ -528,9 +614,47 @@ impl<'a> BuildContext<'a> {
 }
 
 fn clone_dom_subtree(node: &StyledNode) -> DomNode {
-  let mut out = node.node.clone_shallow();
-  out.children = node.children.iter().map(clone_dom_subtree).collect();
-  out
+  fn clone_shallow(styled: &StyledNode) -> DomNode {
+    styled.node.clone_shallow()
+  }
+
+  struct Frame<'a> {
+    src: &'a StyledNode,
+    dst: *mut DomNode,
+    next_child: usize,
+  }
+
+  let mut root = clone_shallow(node);
+  let mut stack = vec![Frame {
+    src: node,
+    dst: &mut root as *mut DomNode,
+    next_child: 0,
+  }];
+
+  while let Some(mut frame) = stack.pop() {
+    // Safety: destination nodes are owned by `root` and its descendants, and we never mutate a
+    // node's children while a frame borrowing that node is active. This keeps raw pointers stable
+    // for the duration of the DFS clone.
+    let dst = unsafe { &mut *frame.dst };
+    let src = frame.src;
+
+    if frame.next_child < src.children.len() {
+      let child_src = &src.children[frame.next_child];
+      frame.next_child += 1;
+
+      dst.children.push(clone_shallow(child_src));
+      let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut DomNode;
+
+      stack.push(frame);
+      stack.push(Frame {
+        src: child_src,
+        dst: child_dst,
+        next_child: 0,
+      });
+    }
+  }
+
+  root
 }
 
 fn build_nodes<'a>(
@@ -2746,139 +2870,37 @@ fn compute_invalid(
       return true;
     }
   }
-  // TODO: Native constraint validation currently only covers a subset of cases used in our
-  // accessibility output. Keep this logic in sync with `ElementRef::is_valid_control` where
-  // feasible, but operate on the styled tree so we can correctly handle controls whose value is
-  // derived from descendants (e.g. `<textarea>` and `<select>`).
-  if !element_ref.accessibility_supports_validation() {
-    return false;
-  }
-
   let native_disabled = compute_native_disabled(node, styled_ancestors);
   if native_disabled {
     return false;
   }
 
-  if node
-    .node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
-  {
-    if !element_ref.accessibility_required() {
-      return false;
-    }
-
-    let multiple = node.node.get_attribute_ref("multiple").is_some();
-    let size = crate::dom::select_effective_size(&node.node);
-    if multiple || size != 1 {
-      return !select_has_non_disabled_selected_option(node, ctx);
-    }
-
-    let Some(selected_id) = selected_option_node_id(node, ctx) else {
-      return true;
-    };
-
-    return select_placeholder_label_option_node_id(node, ctx)
-      .is_some_and(|placeholder_id| placeholder_id == selected_id);
-  }
-
-  if node
-    .node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
-  {
-    if !element_ref.accessibility_required() {
-      return false;
-    }
-    return textarea_value_text(node, ctx).is_empty();
-  }
-
-  if node
+  let is_radio = node
     .node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
-  {
-    let input_type = node.node.get_attribute_ref("type");
-    let required = element_ref.accessibility_required();
+    && node
+      .node
+      .get_attribute_ref("type")
+      .is_some_and(|t| t.eq_ignore_ascii_case("radio"))
+    && node
+      .node
+      .get_attribute_ref("name")
+      .is_some_and(|name| !name.is_empty());
 
-    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"))
-    {
-      return required && node.node.get_attribute_ref("checked").is_none();
+  if is_radio {
+    if let Some(dom) = ctx.validation_dom.as_ref() {
+      return dom
+        .with_element_ref(node.node_id, |radio_ref| {
+          forms_validation::validity_state_with_disabled(&radio_ref, native_disabled)
+            .is_some_and(|state| !state.valid)
+        })
+        .unwrap_or(false);
     }
-
-    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number")) {
-      let raw = node.node.get_attribute_ref("value").unwrap_or_default();
-      if trim_ascii_whitespace(raw).is_empty() {
-        return required;
-      }
-
-      let parsed = trim_ascii_whitespace(raw)
-        .parse::<f64>()
-        .ok()
-        .filter(|v| v.is_finite());
-      let Some(value) = parsed else {
-        return true;
-      };
-
-      let min = node
-        .node
-        .get_attribute_ref("min")
-        .and_then(|m| {
-          trim_ascii_whitespace(m)
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite())
-        });
-      let max = node
-        .node
-        .get_attribute_ref("max")
-        .and_then(|m| {
-          trim_ascii_whitespace(m)
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite())
-        });
-
-      if let Some(min) = min {
-        if value < min {
-          return true;
-        }
-      }
-      if let Some(max) = max {
-        if value > max {
-          return true;
-        }
-      }
-
-      return false;
-    }
-
-    if matches!(input_type, Some(t) if t.eq_ignore_ascii_case("range")) {
-      // Range inputs use value sanitization; treat them as invalid only when required is explicitly
-      // set and there is no value string (rare, but matches our other required checks).
-      if !required {
-        return false;
-      }
-
-      if crate::dom::input_range_value(&node.node).is_some() {
-        return false;
-      }
-
-      return trim_ascii_whitespace(node.node.get_attribute_ref("value").unwrap_or_default()).is_empty();
-    }
-
-    if crate::dom::supports_placeholder(input_type)
-      && !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("number"))
-    {
-      let value = node.node.get_attribute_ref("value").unwrap_or_default();
-      return required && value.is_empty();
-    }
-
-    let value = node.node.get_attribute_ref("value").unwrap_or_default();
-    return required && trim_ascii_whitespace(value).is_empty();
   }
 
-  false
+  forms_validation::validity_state_with_disabled(element_ref, native_disabled)
+    .is_some_and(|state| !state.valid)
 }
 
 fn compute_checked(
