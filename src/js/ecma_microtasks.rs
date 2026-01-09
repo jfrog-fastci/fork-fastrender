@@ -11,6 +11,20 @@
 //! This module connects the two worlds by implementing `vm-js`'s host hooks in terms of
 //! [`EventLoop::queue_microtask`]. As long as the embedding performs microtask checkpoints after
 //! script execution (see `script_scheduler`), `vm-js` jobs will be drained at the right times.
+//!
+//! ## GC safety requirement (important!)
+//!
+//! FastRender's [`EventLoop`] queues are **host-owned** and are not traced by `vm-js`'s GC. Promise
+//! jobs can outlive the stack/rooting scope that created them, and FastRender may run GC between
+//! enqueue and execution.
+//!
+//! Because of that, FastRender requires `vm-js` Promise jobs to be **GC-safe**: any GC-managed
+//! [`vm_js::Value`] captured by a queued job must be kept alive via persistent roots, and those
+//! roots must be cleaned up when the job runs (or is discarded).
+//!
+//! This expectation is enforced via:
+//! - a compile-time API guard (see `vm_js_gc_safety_guard` below), and
+//! - a runtime regression test (`vm_js_promise_jobs_root_captured_values_until_run`).
 
 use crate::error::Error;
 
@@ -151,6 +165,35 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn remove_root(&mut self, id: vm_js::RootId) {
     self.host.vm_js_heap_mut().remove_root(id);
   }
+}
+
+// --- Compile-time regression guard (vm-js Promise-job GC safety) ---
+//
+// FastRender relies on `vm-js` jobs being able to own persistent roots because FastRender's host
+// microtask queue is not GC-traced. If the `engines/ecma-rs` submodule is bumped to a commit before
+// `vm-js` gained job-root support, we want compilation to fail *immediately* with a clear "missing
+// API" error instead of silently reintroducing stale-handle bugs.
+#[allow(dead_code)]
+mod vm_js_gc_safety_guard {
+  // Keep this guard extremely small and signature-based so it fails at compile time if the vm-js
+  // API regresses.
+  #[allow(clippy::type_complexity)]
+  const _: () = {
+    // `Job` must support owning persistent roots for captured Values.
+    let _add_root: fn(
+      &mut vm_js::Job,
+      &mut dyn vm_js::VmJobContext,
+      vm_js::Value,
+    ) -> Result<vm_js::RootId, vm_js::VmError> = vm_js::Job::add_root;
+
+    // `Job` must be executable/discardable with access to a `VmJobContext` so it can clean up roots.
+    let _run: fn(
+      vm_js::Job,
+      &mut dyn vm_js::VmJobContext,
+      &mut dyn vm_js::VmHostHooks,
+    ) -> vm_js::JobResult = vm_js::Job::run;
+    let _discard: fn(vm_js::Job, &mut dyn vm_js::VmJobContext) = vm_js::Job::discard;
+  };
 }
 
 /// Adapter implementing `vm-js`'s [`vm_js::VmHostHooks`] by enqueueing jobs into a FastRender
