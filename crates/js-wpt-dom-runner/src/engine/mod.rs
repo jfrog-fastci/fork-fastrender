@@ -3,7 +3,7 @@
 //! `js-wpt-dom-runner` executes a curated subset of WPT `testharness.js` DOM tests. The runner
 //! itself owns the harness logic (script ordering, META parsing, HTML script extraction, etc.).
 //! This module defines the minimal interface an embedded JS engine must provide so we can swap
-//! implementations (QuickJS today, `ecma-rs/vm-js` tomorrow) with minimal churn.
+//! implementations (`ecma-rs/vm-js` today, QuickJS legacy backend) with minimal churn.
 //!
 //! The interface is intentionally **spec-shaped**:
 //! - realm/global setup (`window`/`document`/`location`/timers/report hook)
