@@ -6,31 +6,23 @@ use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::scroll::ScrollState;
 use fastrender::ui::test_worker::spawn_ui_worker_for_test;
 use fastrender::ui::worker::spawn_ui_worker;
-use std::ffi::OsString;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
 
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -69,7 +61,7 @@ fn recv_until<F: FnMut(&WorkerToUi) -> bool>(
 fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame() {
   let _lock = super::stage_listener_test_lock();
   // Slow down render stages to make cancellation deterministic.
-  let delay_guard = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "20");
+  let delay_guard = TestRenderDelayGuard::set(Some(20));
 
   let handle = spawn_ui_worker("fastr-ui-worker-cancel-nav-gens").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
