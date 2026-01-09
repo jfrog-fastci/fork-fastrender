@@ -306,7 +306,24 @@ impl BrowserAppState {
     }
 
     // Prefer the tab that shifted into the removed index, otherwise the new last tab.
-    let new_active = self.tabs.get(idx).or_else(|| self.tabs.last()).unwrap().id;
+    let new_active = self
+      .tabs
+      .get(idx)
+      .or_else(|| self.tabs.last())
+      .map(|tab| tab.id);
+    let Some(new_active) = new_active else {
+      // This should be unreachable because we already handled the empty-tabs case above. Recover
+      // by creating a new tab so we never panic in production code.
+      let new_tab_id = TabId::new();
+      self.push_tab(
+        BrowserTabState::new(new_tab_id, "about:newtab".to_string()),
+        true,
+      );
+      return RemoveTabResult {
+        new_active: Some(new_tab_id),
+        created_tab: Some(new_tab_id),
+      };
+    };
     self.active_tab = Some(new_active);
     self.chrome.address_bar_editing = false;
     self.sync_address_bar_to_active();
