@@ -455,7 +455,11 @@ fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
 
 fn node_self_is_tab_inert(node: &DomNode) -> bool {
   // `<template>` contents are inert and should not be reachable via Tab.
-  node.template_contents_are_inert() || node_is_inert_like(node)
+  node.template_contents_are_inert()
+    || node_is_inert_like(node)
+    // MVP: treat `disabled` as making the subtree unreachable via Tab, matching our other
+    // interaction pruning which skips disabled ancestors.
+    || node.get_attribute_ref("disabled").is_some()
 }
 
 fn parse_tabindex(node: &DomNode) -> Option<i32> {
@@ -531,10 +535,13 @@ fn next_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize>
   let Some(current) = current else {
     return Some(focusables[0]);
   };
-  let Some(pos) = focusables.iter().position(|id| *id == current) else {
-    return Some(focusables[0]);
-  };
-  Some(focusables[(pos + 1) % focusables.len()])
+  // `focusables` is in DOM pre-order (increasing node id). Find the first focusable element after
+  // the current focused node. If none exists, wrap to the first.
+  focusables
+    .iter()
+    .copied()
+    .find(|id| *id > current)
+    .or_else(|| focusables.first().copied())
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
@@ -1540,7 +1547,6 @@ impl InteractionEngine {
     key: KeyAction,
   ) -> bool {
     self.modality = InputModality::Keyboard;
-
     if key == KeyAction::Tab {
       // Forward-only focus traversal (wraps at end).
       let mut index = DomIndexMut::new(dom);
