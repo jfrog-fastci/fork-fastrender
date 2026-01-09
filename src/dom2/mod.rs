@@ -296,6 +296,65 @@ impl Document {
     None
   }
 
+  #[inline]
+  fn is_html_element(&self, node_id: NodeId, tag: &str) -> bool {
+    let Some(node) = self.nodes.get(node_id.index()) else {
+      return false;
+    };
+    match &node.kind {
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } if (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case(tag) => {
+        true
+      }
+      _ => false,
+    }
+  }
+
+  /// Returns the document's HTML `<head>` element, if any.
+  ///
+  /// Minimal HTML-ish semantics:
+  /// - If `documentElement` exists and is an HTML `<html>` element, return the first HTML `<head>`
+  ///   child element (tree order).
+  /// - Otherwise return `None`.
+  pub fn head(&self) -> Option<NodeId> {
+    let html = self.document_element()?;
+    if !self.is_html_element(html, "html") {
+      return None;
+    }
+    let html_node = self.nodes.get(html.index())?;
+    html_node.children.iter().copied().find(|&child| {
+      self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| node.parent == Some(html))
+        && self.is_html_element(child, "head")
+    })
+  }
+
+  /// Returns the document's HTML `<body>` element, if any.
+  ///
+  /// Minimal HTML-ish semantics:
+  /// - If `documentElement` exists and is an HTML `<html>` element, return the first HTML `<body>`
+  ///   child element (tree order).
+  /// - Otherwise return `None`.
+  pub fn body(&self) -> Option<NodeId> {
+    let html = self.document_element()?;
+    if !self.is_html_element(html, "html") {
+      return None;
+    }
+    let html_node = self.nodes.get(html.index())?;
+    html_node.children.iter().copied().find(|&child| {
+      self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| node.parent == Some(html))
+        && self.is_html_element(child, "body")
+    })
+  }
+
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
     let id = NodeId(self.nodes.len());
     self.nodes.push(Node {
@@ -762,3 +821,58 @@ impl Document {
 mod mapping_tests;
 #[cfg(test)]
 mod selector_query_tests;
+
+#[cfg(test)]
+mod helper_tests {
+  use super::*;
+  use crate::dom::parse_html;
+
+  fn find_tag(doc: &Document, id: NodeId) -> Option<&str> {
+    match &doc.node(id).kind {
+      NodeKind::Element { tag_name, .. } => Some(tag_name.as_str()),
+      _ => None,
+    }
+  }
+
+  #[test]
+  fn head_and_body_return_elements_under_html_root() {
+    let root = parse_html("<!doctype html><html><head></head><body></body></html>").unwrap();
+    let doc = Document::from_renderer_dom(&root);
+
+    let head = doc.head().expect("expected head");
+    let body = doc.body().expect("expected body");
+    assert!(find_tag(&doc, head).is_some_and(|t| t.eq_ignore_ascii_case("head")));
+    assert!(find_tag(&doc, body).is_some_and(|t| t.eq_ignore_ascii_case("body")));
+  }
+
+  #[test]
+  fn head_and_body_are_none_without_html_document_element() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    doc.push_node(
+      NodeKind::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      Some(doc.root()),
+      /* inert_subtree */ false,
+    );
+
+    assert_eq!(doc.head(), None);
+    assert_eq!(doc.body(), None);
+  }
+
+  #[test]
+  fn head_and_body_return_first_matching_child() {
+    let root = parse_html(
+      "<!doctype html><html><head id=a></head><head id=b></head><body id=c></body><body id=d></body></html>",
+    )
+    .unwrap();
+    let doc = Document::from_renderer_dom(&root);
+
+    let head = doc.head().expect("expected head");
+    let body = doc.body().expect("expected body");
+    assert_eq!(doc.get_attribute(head, "id"), Some("a"));
+    assert_eq!(doc.get_attribute(body, "id"), Some("c"));
+  }
+}

@@ -7,7 +7,7 @@ use fastrender::dom::HTML_NAMESPACE;
 use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
 use fastrender::web::dom::DomException;
 use fastrender::js::CurrentScriptStateHandle;
-use rquickjs::{Ctx, Function, Object, Result as JsResult};
+use rquickjs::{Ctx, Function, Object, Result as JsResult, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -34,6 +34,69 @@ fn element_id(dom: &Dom2Document, node_id: NodeId) -> String {
     }
     _ => String::new(),
   }
+}
+
+fn element_tag_name(dom: &Dom2Document, node_id: NodeId) -> String {
+  match &dom.node(node_id).kind {
+    NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
+    NodeKind::Slot { .. } => "SLOT".to_string(),
+    _ => String::new(),
+  }
+}
+
+fn make_element_object<'js>(
+  ctx: Ctx<'js>,
+  dom: &Dom2Document,
+  node_id: NodeId,
+) -> JsResult<Object<'js>> {
+  let element = Object::new(ctx.clone())?;
+  element.set("id", element_id(dom, node_id))?;
+  element.set("tagName", element_tag_name(dom, node_id))?;
+  element.set("__node_id", node_id.index() as u32)?;
+
+  // Minimal DOM mutation hooks frequently used by bootstrap scripts:
+  // `document.head.appendChild(...)`, `document.body.appendChild(...)`, etc.
+  //
+  // This is a very small shim, not a full DOM: we mirror mutations into the Rust `dom2` tree via
+  // host functions, and maintain a JS-side `childNodes` array for compatibility with common code.
+  let child_nodes: Value<'js> = ctx.eval("[]")?;
+  element.set("childNodes", child_nodes)?;
+  let append_child: Function<'js> = ctx.eval(
+    r#"(function (child) {
+      if (!this.childNodes) this.childNodes = [];
+      if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+        throw new DOMException("InvalidNodeType", "InvalidNodeType");
+      }
+      if (typeof globalThis.__fastrender_dom_append_child === "function" && this.__node_id != null) {
+        globalThis.__fastrender_dom_append_child(this.__node_id, child.__node_id);
+      }
+      this.childNodes.push(child);
+      child.parentNode = this;
+      return child;
+    })"#,
+  )?;
+  element.set("appendChild", append_child)?;
+  let remove_child: Function<'js> = ctx.eval(
+    r#"(function (child) {
+      if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+        throw new DOMException("InvalidNodeType", "InvalidNodeType");
+      }
+      if (typeof globalThis.__fastrender_dom_remove_child === "function" && this.__node_id != null) {
+        globalThis.__fastrender_dom_remove_child(this.__node_id, child.__node_id);
+      }
+      if (this.childNodes && this.childNodes.length) {
+        var idx = this.childNodes.indexOf(child);
+        if (idx >= 0) this.childNodes.splice(idx, 1);
+      }
+      if (child && (typeof child === "object" || typeof child === "function")) {
+        if (child.parentNode === this) child.parentNode = null;
+      }
+      return child;
+    })"#,
+  )?;
+  element.set("removeChild", remove_child)?;
+
+  Ok(element)
 }
 
 pub fn install_dom_bindings<'js>(
@@ -77,7 +140,51 @@ pub fn install_dom_bindings<'js>(
      "});"
    ))?;
 
-  install_dom_exceptions_and_minimal_dom(ctx.clone(), globals, dom)?;
+  install_dom_exceptions_and_minimal_dom(ctx.clone(), globals, Rc::clone(&dom))?;
+
+  // `document.documentElement` / `document.head` / `document.body` are commonly used by bootstrap
+  // scripts (e.g. `document.head.appendChild(script)`).
+  //
+  // This is not a full DOM implementation; we expose stable JS objects with minimal shape needed by
+  // real-world scripts.
+  let (doc_el, head, body) = {
+    let dom = dom.borrow();
+    let doc_el = dom
+      .document_element()
+      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .transpose()?;
+    let head = dom
+      .head()
+      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .transpose()?;
+    let body = dom
+      .body()
+      .map(|node_id| make_element_object(ctx.clone(), &dom, node_id))
+      .transpose()?;
+    (doc_el, head, body)
+  };
+  document.set("documentElement", doc_el)?;
+  document.set("head", head)?;
+  document.set("body", body)?;
+
+  // Ensure these structural nodes are discoverable via `document.querySelector`, which is backed by
+  // the `__fastrender_node_by_id` mapping in `DOM_BINDINGS_SHIM`.
+  ctx.eval::<(), _>(
+    r#"(function () {
+      var g = typeof globalThis !== "undefined" ? globalThis : this;
+      var map = g.__fastrender_node_by_id;
+      if (!map || typeof map.set !== "function") return;
+      var doc = g.document;
+      if (!doc) return;
+      var nodes = [doc.documentElement, doc.head, doc.body];
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i];
+        if (n && n.__node_id != null) {
+          map.set(n.__node_id, n);
+        }
+      }
+    })();"#,
+  )?;
 
   Ok(())
 }
@@ -609,6 +716,37 @@ mod tests {
       );
       assert_eq!(out, "InvalidNodeType");
     });
+    Ok(())
+  }
+
+  #[test]
+  fn document_head_and_body_expose_tagname_and_appendchild() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            if (!document.head || !document.body) return false;
+            if (String(document.head.tagName).toUpperCase() !== "HEAD") return false;
+            if (String(document.body.tagName).toUpperCase() !== "BODY") return false;
+
+            var child = document.createElement("div");
+            var returned = document.body.appendChild(child);
+            if (returned !== child) return false;
+            if (!document.body.childNodes || document.body.childNodes.length !== 1) return false;
+            if (document.body.childNodes[0] !== child) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    assert!(ok, "expected head/body bindings to behave");
     Ok(())
   }
 }

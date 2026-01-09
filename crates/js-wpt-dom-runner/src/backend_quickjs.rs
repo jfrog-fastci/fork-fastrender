@@ -701,31 +701,37 @@ const HOST_SHIMS: &str = r#"
   class Document extends EventTarget {
     constructor() {
       super(null);
+      this.childNodes = [];
     }
- 
+  
     createElement(tagName) {
       var el = new Element(tagName);
       el.ownerDocument = this;
       return el;
     }
- 
+  
     appendChild(child) {
+      if (!this.childNodes) this.childNodes = [];
+      this.childNodes.push(child);
       if (child && (typeof child === "object" || typeof child === "function")) {
         child.parentNode = this;
       }
       return child;
     }
   }
- 
+  
   class Element extends EventTarget {
     constructor(tagName) {
       super(null);
       this.tagName = tagName ? String(tagName) : "";
       this.parentNode = null;
       this.ownerDocument = null;
+      this.childNodes = [];
     }
- 
+  
     appendChild(child) {
+      if (!this.childNodes) this.childNodes = [];
+      this.childNodes.push(child);
       if (child && (typeof child === "object" || typeof child === "function")) {
         child.parentNode = this;
       }
@@ -755,6 +761,37 @@ const HOST_SHIMS: &str = r#"
   }
   if (typeof g.document.appendChild !== "function") {
     g.document.appendChild = Document.prototype.appendChild;
+  }
+
+  // Minimal structural DOM (`document.documentElement`, `document.head`, `document.body`).
+  // Many bootstrap scripts assume these exist.
+  if (!g.document.childNodes) {
+    g.document.childNodes = [];
+  }
+  if (!g.document.documentElement) {
+    var html = g.document.createElement("html");
+    g.document.appendChild(html);
+    g.document.documentElement = html;
+  }
+  if (!g.document.head) {
+    var head = g.document.createElement("head");
+    if (
+      g.document.documentElement &&
+      typeof g.document.documentElement.appendChild === "function"
+    ) {
+      g.document.documentElement.appendChild(head);
+    }
+    g.document.head = head;
+  }
+  if (!g.document.body) {
+    var body = g.document.createElement("body");
+    if (
+      g.document.documentElement &&
+      typeof g.document.documentElement.appendChild === "function"
+    ) {
+      g.document.documentElement.appendChild(body);
+    }
+    g.document.body = body;
   }
 })();
 "#;
