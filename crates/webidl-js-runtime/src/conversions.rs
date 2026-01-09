@@ -929,9 +929,8 @@ fn convert_to_record<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   typedef_stack: &mut Vec<String>,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  if !rt.is_object(v) {
-    return Err(rt.throw_type_error("Value is not an object"));
-  }
+  // Record conversions use `ToObject` (per WebIDL), so accept primitives here.
+  let v = rt.to_object(v)?;
 
   let keys = rt.own_property_keys(v)?;
   let mut entries = BTreeMap::<String, ConvertedValue<R::JsValue>>::new();
@@ -1098,13 +1097,31 @@ fn convert_to_union<R: WebIdlJsRuntime>(
 
   // 11..16: object-based conversions
   if rt.is_object(v) {
+    // platform objects / interfaces
+    if let Some(opaque) = rt.platform_object_opaque(v) {
+      for ty in &flattened {
+        if let IdlType::Named(named) = ty {
+          if matches!(named.kind, NamedTypeKind::Interface) && rt.implements_interface(v, &named.name) {
+            return Ok(ConvertedValue::Union {
+              member_ty: Box::new(ty.clone()),
+              value: Box::new(ConvertedValue::PlatformObject(PlatformObject::new(opaque))),
+            });
+          }
+        }
+      }
+    }
+
     // sequence
-    if let Some(seq_ty) = flattened.iter().find(|t| matches!(t, IdlType::Sequence(_))) {
+    if let Some(seq_ty) = flattened
+      .iter()
+      .find(|t| matches!(t, IdlType::Sequence(_) | IdlType::FrozenArray(_)))
+    {
       let iterator_key = rt.symbol_iterator()?;
       let method = rt.get_method(v, iterator_key)?;
       if let Some(method) = method {
-        let IdlType::Sequence(elem_ty) = seq_ty else {
-          unreachable!();
+        let elem_ty = match seq_ty {
+          IdlType::Sequence(elem_ty) | IdlType::FrozenArray(elem_ty) => elem_ty,
+          _ => unreachable!(),
         };
         let seq = create_sequence_from_iterable(rt, v, method, elem_ty, ctx, typedef_stack)?;
         return Ok(ConvertedValue::Union {

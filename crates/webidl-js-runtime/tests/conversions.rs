@@ -333,6 +333,52 @@ fn convert_arguments_treats_defaulted_params_as_optional() {
 }
 
 #[test]
+fn record_conversion_uses_to_object() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let ty = IdlType::Record(
+    Box::new(IdlType::String(StringType::DomString)),
+    Box::new(IdlType::Numeric(NumericType::Long)),
+  );
+
+  let converted = convert_to_idl(&mut rt, Value::Bool(true), &ty, &ctx).unwrap();
+  let ConvertedValue::Record { entries, .. } = converted else {
+    panic!("expected record, got {converted:?}");
+  };
+  assert!(entries.is_empty());
+}
+
+#[test]
+fn union_conversion_prefers_matching_interface_member() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let opaque = 123u64;
+  let obj = rt.alloc_platform_object_value("Node", &[], opaque).unwrap();
+
+  let interface_ty = IdlType::Named(NamedType {
+    name: "Node".to_string(),
+    kind: NamedTypeKind::Interface,
+  });
+  let ty = IdlType::Union(vec![
+    interface_ty.clone(),
+    IdlType::String(StringType::DomString),
+  ]);
+
+  let converted = convert_to_idl(&mut rt, obj, &ty, &ctx).unwrap();
+  let ConvertedValue::Union { member_ty, value } = converted else {
+    panic!("expected union, got {converted:?}");
+  };
+  assert_eq!(*member_ty, interface_ty);
+
+  let ConvertedValue::PlatformObject(host) = *value else {
+    panic!("expected platform object union value, got {value:?}");
+  };
+  assert_eq!(host.downcast_ref::<u64>().copied(), Some(opaque));
+}
+
+#[test]
 fn dictionary_inheritance_includes_base_members_and_defaults() {
   let mut rt = VmJsRuntime::new();
 
