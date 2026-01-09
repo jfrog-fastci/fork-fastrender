@@ -118,7 +118,7 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
 }
 
 #[test]
-fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
+fn stage_heartbeats_forwarded_from_ui_worker_for_navigation_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
@@ -287,7 +287,7 @@ fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
 }
 
 #[test]
-fn stage_heartbeats_forwarded_from_history_worker_loop_for_navigation_and_repaints() {
+fn stage_heartbeats_forwarded_from_history_ui_worker_for_navigation_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 

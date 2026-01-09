@@ -59,7 +59,9 @@ impl<F: ResourceFetcher + 'static> ResourceScriptLoader<F> {
       let fetcher = Arc::clone(&fetcher);
       let state = Arc::clone(&state);
       let completion_tx = completion_tx.clone();
-      workers.push(std::thread::spawn(move || worker_loop(fetcher, state, completion_tx)));
+      workers.push(std::thread::spawn(move || {
+        script_loader_thread_main(fetcher, state, completion_tx)
+      }));
     }
 
     Self {
@@ -81,7 +83,7 @@ impl<F: ResourceFetcher + 'static> ResourceScriptLoader<F> {
   }
 }
 
-fn worker_loop<F: ResourceFetcher + 'static>(
+fn script_loader_thread_main<F: ResourceFetcher + 'static>(
   fetcher: Arc<F>,
   state: Arc<(Mutex<WorkerState>, Condvar)>,
   completion_tx: mpsc::Sender<(u64, Result<String>)>,
