@@ -82,6 +82,16 @@ fn runs_html_smoke_test() {
 }
 
 #[test]
+fn runs_html_async_test() {
+  assert_wpt_pass("smoke/async-timeout-pass.html");
+}
+
+#[test]
+fn runs_html_promise_test() {
+  assert_wpt_pass("smoke/promise-pass.html");
+}
+
+#[test]
 fn runs_setinterval_and_clearinterval() {
   assert_wpt_pass("smoke/interval_cancel.window.js");
 }

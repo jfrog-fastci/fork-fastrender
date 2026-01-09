@@ -11,14 +11,6 @@ var FAIL = 1;
 var TIMEOUT = 2;
 var NOTRUN = 3;
 
-// Minimal subset of the upstream WPT `test()` API.
-//
-// The vm-js backend currently only supports synchronous tests; we schedule final reporting in a
-// microtask so it runs after the current script finishes evaluating.
-var __fastrender_test_failed = false;
-var __fastrender_test_message = null;
-var __fastrender_test_scheduled = false;
-
 function assert_true(value) {
   if (value !== true) {
     throw "assert_true";
@@ -42,8 +34,8 @@ function assert_equals(actual, expected) {
 //
 // The upstream WPT `testharness.js` supports asynchronous tests, subtests, and rich reporting.
 // FastRender's in-tree `vm-js` backend is still a small interpreter, so this shim only supports
-// synchronous tests and collapses the file result into a single pass/fail status via the host hook
-// `__fastrender_wpt_report(...)`.
+// a small subset of the API surface and collapses the file result into a single pass/fail status
+// via the host hook `__fastrender_wpt_report(...)`.
 //
 // Note: The runner always loads this script (and `fastrender_testharness_report.js`) before each
 // WPT file; we defer "pass" reporting to a microtask so all `test(...)` calls in the file have a
@@ -51,7 +43,10 @@ function assert_equals(actual, expected) {
 
 var __fastrender_wpt_reported = false;
 var __fastrender_wpt_failed = false;
-var __fastrender_wpt_complete_scheduled = false;
+var __fastrender_wpt_script_done = false;
+var __fastrender_wpt_script_done_scheduled = false;
+var __fastrender_wpt_pending = false;
+var __fastrender_wpt_async_step_fn = null;
 
 function __fastrender_wpt_fail(message) {
   if (__fastrender_wpt_reported === true) return;
@@ -60,30 +55,114 @@ function __fastrender_wpt_fail(message) {
   __fastrender_wpt_report({ file_status: "fail", message: message });
 }
 
-function __fastrender_wpt_complete() {
+function __fastrender_wpt_maybe_complete() {
   if (__fastrender_wpt_reported === true) return;
   if (__fastrender_wpt_failed === true) return;
+  if (__fastrender_wpt_script_done !== true) return;
+  if (__fastrender_wpt_pending === true) return;
   __fastrender_wpt_reported = true;
   __fastrender_wpt_report({ file_status: "pass" });
 }
 
+function __fastrender_wpt_mark_script_done() {
+  __fastrender_wpt_script_done = true;
+  __fastrender_wpt_maybe_complete();
+}
+
+function __fastrender_wpt_schedule_script_done() {
+  if (__fastrender_wpt_script_done_scheduled === true) return;
+  __fastrender_wpt_script_done_scheduled = true;
+  queueMicrotask(__fastrender_wpt_mark_script_done);
+}
+
+function __fastrender_wpt_error_message(e) {
+  // The vm-js backend intentionally implements a tiny JS subset. In particular it does not support
+  // `typeof` or boxing primitives for property access, so avoid probing `e.name`/`e.message` and
+  // just forward the thrown value.
+  return e;
+}
+
 function test(fn, _name) {
-  if (__fastrender_wpt_complete_scheduled !== true) {
-    __fastrender_wpt_complete_scheduled = true;
-    queueMicrotask(__fastrender_wpt_complete);
-  }
+  __fastrender_wpt_schedule_script_done();
 
   if (__fastrender_wpt_reported === true) return;
 
   try {
     fn();
   } catch (e) {
-    // Try to surface `e.name` when possible (e.g. SyntaxError), but keep the shim tiny and avoid
-    // relying on String built-ins (not supported by the vm-js runner yet).
-    var msg = e;
-    try {
-      msg = e.name;
-    } catch (_e) {}
-    __fastrender_wpt_fail(msg);
+    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal async_test/promise_test support.
+//
+// The vm-js-backed runner doesn't support enough JavaScript (e.g. closures, arithmetic operators)
+// to run upstream WPT testharness in full. These helpers are just enough for the curated offline
+// smoke tests under `tests/wpt_dom/tests/smoke`.
+
+function __fastrender_wpt_async_done() {
+  if (__fastrender_wpt_reported === true) return;
+  __fastrender_wpt_pending = false;
+  __fastrender_wpt_maybe_complete();
+}
+
+function __fastrender_wpt_async_step_wrapper() {
+  if (__fastrender_wpt_reported === true) return;
+  try {
+    if (__fastrender_wpt_async_step_fn) {
+      __fastrender_wpt_async_step_fn();
+    }
+  } catch (e) {
+    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
+  }
+  __fastrender_wpt_async_done();
+}
+
+function __fastrender_wpt_async_step_func_done(fn) {
+  __fastrender_wpt_async_step_fn = fn;
+  return __fastrender_wpt_async_step_wrapper;
+}
+
+function async_test(fn, _name) {
+  __fastrender_wpt_schedule_script_done();
+  if (__fastrender_wpt_reported === true) return;
+
+  __fastrender_wpt_pending = true;
+  var t = {
+    done: __fastrender_wpt_async_done,
+    step_func_done: __fastrender_wpt_async_step_func_done
+  };
+
+  try {
+    fn(t);
+  } catch (e) {
+    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
+    __fastrender_wpt_async_done();
+  }
+
+  return t;
+}
+
+function __fastrender_wpt_promise_fulfilled(_value) {
+  __fastrender_wpt_async_done();
+}
+
+function __fastrender_wpt_promise_rejected(reason) {
+  __fastrender_wpt_fail(__fastrender_wpt_error_message(reason));
+  __fastrender_wpt_async_done();
+}
+
+function promise_test(fn, _name) {
+  __fastrender_wpt_schedule_script_done();
+  if (__fastrender_wpt_reported === true) return;
+
+  __fastrender_wpt_pending = true;
+  try {
+    var p = fn();
+    p.then(__fastrender_wpt_promise_fulfilled, __fastrender_wpt_promise_rejected);
+  } catch (e) {
+    __fastrender_wpt_fail(__fastrender_wpt_error_message(e));
+    __fastrender_wpt_async_done();
   }
 }
