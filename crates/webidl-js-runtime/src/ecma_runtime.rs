@@ -1100,7 +1100,12 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn to_numeric(&mut self, value: Value) -> Result<Value, VmError> {
-    if self.is_bigint(value) {
+    // Spec: <https://tc39.es/ecma262/#sec-tonumeric>
+    //
+    // `vm-js`'s `Value` enum now includes BigInt primitives, so treat them as numeric directly.
+    // Also handle BigInt wrapper objects created by our `ToObject` shim by unwrapping the hidden
+    // internal slot.
+    if matches!(value, Value::BigInt(_)) {
       return Ok(value);
     }
     if let Value::Object(obj) = value {
