@@ -8726,18 +8726,19 @@ fn apply_declaration_with_base_internal_with_order(
 
       if invalid {
         // Ignore invalid declarations.
-      } else {
-        let margin = margin.unwrap_or_else(|| Length::px(0.0));
-        // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
-        if margin.calc.is_none() && margin.value < 0.0 {
-          // Ignore invalid negative length.
-        } else if margin.unit == LengthUnit::Percent {
-          // `<length>` does not accept percentages.
         } else {
-          styles.overflow_clip_margin = OverflowClipMargin {
-            visual_box: visual_box.unwrap_or(VisualBox::PaddingBox),
-            margin,
-          };
+          let margin = margin.unwrap_or_else(|| Length::px(0.0));
+          // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
+          if margin.calc.is_none() && margin.value < 0.0 {
+            // Ignore invalid negative length.
+          } else if margin.has_percentage() {
+            // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`), so reject
+            // percentages even when they appear inside a `calc()` expression.
+          } else {
+            styles.overflow_clip_margin = OverflowClipMargin {
+              visual_box: visual_box.unwrap_or(VisualBox::PaddingBox),
+              margin,
+            };
         }
       }
     }

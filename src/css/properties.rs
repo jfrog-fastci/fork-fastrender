@@ -2516,14 +2516,18 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           || kw.eq_ignore_ascii_case("content-box")
       };
       let is_margin_len = |len: &Length| -> bool {
+        // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`), so reject percentages
+        // even when they appear inside a `calc()` expression.
+        if len.has_percentage() {
+          return false;
+        }
         if len.calc.is_some() {
           return true;
         }
         if !len.value.is_finite() || len.value < 0.0 {
           return false;
         }
-        // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`).
-        len.unit != LengthUnit::Percent
+        true
       };
 
       return match parsed {
