@@ -4546,6 +4546,41 @@ pub(crate) fn input_range_value(node: &DomNode) -> Option<f64> {
   Some(aligned.clamp(min, max))
 }
 
+fn parse_simple_color_hex(value: &str) -> Option<(u8, u8, u8)> {
+  // https://html.spec.whatwg.org/multipage/input.html#simple-colour
+  //
+  // A "simple color" is exactly 7 code points: '#' followed by 6 ASCII hex digits. Unlike some
+  // other HTML attributes (e.g. `bgcolor`), this is not a general CSS color syntax.
+  if value.len() != 7 || !value.starts_with('#') {
+    return None;
+  }
+  let hex = &value[1..];
+  if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+    return None;
+  }
+  let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+  let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+  let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+  Some((r, g, b))
+}
+
+pub(crate) fn input_color_value_string(node: &DomNode) -> Option<String> {
+  if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
+    return None;
+  }
+
+  let input_type = node.get_attribute_ref("type");
+  if !matches!(input_type, Some(t) if t.eq_ignore_ascii_case("color")) {
+    return None;
+  }
+
+  // Color input values are sanitized to a simple color, defaulting to black.
+  // (This is why `required` does not apply to them.)
+  let raw = node.get_attribute_ref("value").unwrap_or("");
+  let (r, g, b) = parse_simple_color_hex(raw).unwrap_or((0, 0, 0));
+  Some(format!("#{r:02x}{g:02x}{b:02x}"))
+}
+
 /// Wrapper for DomNode that implements Element trait for selector matching
 /// This wrapper carries context needed for matching (parent, siblings)
 #[derive(Debug, Clone, Copy)]
@@ -5383,6 +5418,9 @@ impl<'a> ElementRef<'a> {
     if tag.eq_ignore_ascii_case("input") {
       if let Some(value) = input_range_value(self.node) {
         return Some(format_number(value));
+      }
+      if let Some(value) = input_color_value_string(self.node) {
+        return Some(value);
       }
       return Some(
         self
@@ -8091,6 +8129,49 @@ mod tests {
       vec![],
     );
     assert_eq!(input_range_value(&snapped), Some(8.0));
+  }
+
+  #[test]
+  fn input_color_value_string_sanitizes_to_simple_color_or_default() {
+    let missing = element_with_attrs("input", vec![("type", "color")], vec![]);
+    assert_eq!(
+      input_color_value_string(&missing).as_deref(),
+      Some("#000000"),
+      "color inputs default to black when no value is provided"
+    );
+
+    let valid = element_with_attrs(
+      "input",
+      vec![("type", "color"), ("value", "#00FF00")],
+      vec![],
+    );
+    assert_eq!(
+      input_color_value_string(&valid).as_deref(),
+      Some("#00ff00"),
+      "simple colors should be accepted and normalized to lowercase"
+    );
+
+    let invalid_name = element_with_attrs(
+      "input",
+      vec![("type", "color"), ("value", "red")],
+      vec![],
+    );
+    assert_eq!(
+      input_color_value_string(&invalid_name).as_deref(),
+      Some("#000000"),
+      "named colors are not valid simple colors for <input type=color>"
+    );
+
+    let invalid_shorthand = element_with_attrs(
+      "input",
+      vec![("type", "color"), ("value", "#f60")],
+      vec![],
+    );
+    assert_eq!(
+      input_color_value_string(&invalid_shorthand).as_deref(),
+      Some("#000000"),
+      "shorthand hex colors are not valid simple colors for <input type=color>"
+    );
   }
 
   #[test]

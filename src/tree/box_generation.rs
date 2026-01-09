@@ -5033,16 +5033,14 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         .node
         .get_attribute_ref("value")
         .filter(|v| !v.is_empty());
-      let parsed = raw_value.and_then(parse_color_attribute);
-      let color_value = parsed.unwrap_or(Rgba {
+      let sanitized = crate::dom::input_color_value_string(&styled.node)
+        .unwrap_or_else(|| "#000000".to_string());
+      let color_value = parse_color_attribute(&sanitized).unwrap_or(Rgba {
         r: 0,
         g: 0,
         b: 0,
         a: 1.0,
       });
-      if raw_value.is_some() && parsed.is_none() && !disabled {
-        invalid = true;
-      }
       FormControlKind::Color {
         value: color_value,
         raw: raw_value.map(|v| v.to_string()),
@@ -7215,7 +7213,8 @@ mod tests {
       <input type=\"password\" value=\"abc\">
       <input type=\"number\" value=\"5\" data-fastr-focus=\"true\" data-fastr-focus-visible=\"true\">
       <input type=\"color\" value=\"#00ff00\">
-      <input type=\"color\" value=\"not-a-color\" disabled>
+      <input type=\"color\" value=\"not-a-color\">
+      <input type=\"color\" value=\"not-a-color-disabled\" disabled>
       <input type=\"date\" required>
       <input type=\"datetime-local\">
       <input type=\"month\">
@@ -7278,6 +7277,16 @@ mod tests {
         matches!(
           &c.control,
           FormControlKind::Color { raw, .. } if raw.as_deref() == Some("not-a-color")
+        ) && !c.disabled
+          && !c.invalid
+      }),
+      "color inputs sanitize invalid values and stay valid for painting"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Color { raw, .. } if raw.as_deref() == Some("not-a-color-disabled")
         ) && c.disabled
           && !c.invalid
       }),
