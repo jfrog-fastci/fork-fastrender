@@ -20,6 +20,7 @@ mod content_visibility_writing_mode;
 mod fixed_cb_propagation;
 mod inline_abspos_padding_edge;
 mod pages;
+mod js_fetch_bindings;
 mod js_url_bindings;
 mod vm_js_url_bindings;
 mod pseudo_element_generated_content;
