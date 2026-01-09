@@ -234,7 +234,10 @@ impl AnonymousBoxCreator {
       // contexts are not block formatting contexts; their direct children participate as
       // flex/grid/table items and must not be wrapped into anonymous block runs.
       BoxType::Block(block) => match block.formatting_context {
-        FormattingContextType::Flex | FormattingContextType::Grid | FormattingContextType::Table => children,
+        FormattingContextType::Flex | FormattingContextType::Grid => {
+          Self::fixup_flex_or_grid_children(children, parent_style.as_ref())
+        }
+        FormattingContextType::Table => children,
         FormattingContextType::Block | FormattingContextType::Inline => {
           Self::fixup_block_children(children, parent_style.as_ref())
         }
@@ -261,6 +264,54 @@ impl AnonymousBoxCreator {
       // Text boxes, replaced elements, and others don't need fixup
       _ => children,
     }
+  }
+
+  /// Fixes up direct children of flex/grid containers.
+  ///
+  /// Flex/grid layout items are not subject to the CSS 2.1 anonymous block run wrapping rule,
+  /// because each in-flow child participates as a separate flex/grid item.
+  ///
+  /// However, text nodes *do* generate anonymous flex/grid items. If we leave `BoxType::Text`
+  /// nodes directly under the flex/grid container, later layout stages may drop them entirely
+  /// because they are not element boxes. Wrap each non-collapsible text node into its own
+  /// anonymous block container so it participates as an item, matching browser behavior for
+  /// anonymous flex/grid items.
+  fn fixup_flex_or_grid_children(
+    children: Vec<BoxNode>,
+    parent_style: &ComputedStyle,
+  ) -> Vec<BoxNode> {
+    let Some(first_text_idx) = children
+      .iter()
+      .position(|child| matches!(child.box_type, BoxType::Text(_)))
+    else {
+      return children;
+    };
+
+    let mut result = Vec::with_capacity(children.len());
+    let mut anon_block_style: Option<Arc<ComputedStyle>> = None;
+
+    // Preserve allocation for the common prefix with no text nodes.
+    let mut iter = children.into_iter();
+    result.extend(iter.by_ref().take(first_text_idx));
+
+    for child in iter {
+      if matches!(child.box_type, BoxType::Text(_)) {
+        if Self::is_collapsible_whitespace_text_node(&child) {
+          continue;
+        }
+
+        let style = anon_block_style.get_or_insert_with(|| {
+          let mut style = inherited_style(parent_style);
+          style.display = Display::Block;
+          Arc::new(style)
+        });
+        result.push(Self::create_anonymous_block(style.clone(), vec![child]));
+      } else {
+        result.push(child);
+      }
+    }
+
+    result
   }
 
   /// Determines whether a child should participate as inline-level content for fixup.

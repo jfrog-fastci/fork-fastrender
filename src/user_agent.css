@@ -424,6 +424,9 @@ input[type="submit"], input[type="button"], input[type="reset"], button {
     background-color: rgb(240, 240, 240);
     border: 1px solid #767676;
     text-align: center;
+    /* In grid/layout contexts, buttons should default to their intrinsic (content) width rather
+       than stretching to fill the grid area. */
+    justify-self: start;
     cursor: pointer;
 }
 
