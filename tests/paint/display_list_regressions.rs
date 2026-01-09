@@ -125,6 +125,43 @@ fn overflow_clip_masks_content() {
 }
 
 #[test]
+fn background_tiling_culling_respects_stacking_context_transform() {
+  // Regression: background tiling is clamped against the "visible" rect to avoid emitting an
+  // unbounded number of tiles. The visible rect must be mapped into the stacking context's
+  // pre-transform coordinate space; otherwise we can drop background pixels that become visible
+  // *after* the element's transform is applied (e.g. centering via translateX(-50%)).
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: white; }
+      .container { position: relative; width: 100px; height: 20px; }
+      .bg {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 100%;
+        height: 20px;
+        background: linear-gradient(
+          to right,
+          rgb(255 0 0) 0%,
+          rgb(255 0 0) 50%,
+          rgb(0 0 255) 50%,
+          rgb(0 0 255) 100%
+        );
+      }
+    </style>
+    <div class="container">
+      <div class="bg"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 100, 32);
+  assert_close(pixel(&pixmap, 10, 10), (255, 0, 0, 255), 3);
+  assert_close(pixel(&pixmap, 90, 10), (0, 0, 255, 255), 3);
+}
+
+#[test]
 fn overflow_clip_clips_replaced_svg() {
   // Regression: ensure nested clips (`overflow: hidden` on both a container and a replaced SVG)
   // restrict raster image drawing.

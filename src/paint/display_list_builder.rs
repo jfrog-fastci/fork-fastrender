@@ -2117,10 +2117,11 @@ impl DisplayListBuilder {
             );
           }
           if !suppress_background {
-            self.emit_background_from_style_with_rects_and_text_clip(
+            self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
               rects,
               style,
               text_clip.as_ref(),
+              visibility.rect,
             );
           }
           if has_inset {
@@ -2135,24 +2136,27 @@ impl DisplayListBuilder {
         } else if decoration_rect == absolute_rect {
           if !suppress_background {
             if let Some(rects) = absolute_rects.as_ref() {
-              self.emit_background_from_style_with_rects_and_text_clip(
+              self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
                 rects,
                 style,
                 text_clip.as_ref(),
+                visibility.rect,
               );
             } else {
-              self.emit_background_from_style_with_text_clip(
+              self.emit_background_from_style_with_text_clip_and_culling_rect(
                 decoration_rect,
                 style,
                 text_clip.as_ref(),
+                visibility.rect,
               );
             }
           }
         } else if !suppress_background {
-          self.emit_background_from_style_with_text_clip(
+          self.emit_background_from_style_with_text_clip_and_culling_rect(
             decoration_rect,
             style,
             text_clip.as_ref(),
+            visibility.rect,
           );
         }
 
@@ -2187,7 +2191,7 @@ impl DisplayListBuilder {
       }
 
       if paint_self {
-        self.emit_content(fragment, absolute_rect);
+        self.emit_content(fragment, absolute_rect, child_visibility.rect);
       }
 
       if recurse_children {
@@ -2427,7 +2431,7 @@ impl DisplayListBuilder {
         if let Some(clip) = decoration_clip {
           self.list.push(DisplayItem::PushClip(clip));
         }
-        self.emit_background_from_style(decoration_rect, style);
+        self.emit_background_from_style_with_culling_rect(decoration_rect, style, visibility.rect);
         let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
         self.emit_border_from_style(decoration_rect, style, gap);
         if decoration_clip_pushed {
@@ -2443,7 +2447,7 @@ impl DisplayListBuilder {
     if !skip_contents {
       // Emit content before clipping children
       if paint_self {
-        self.emit_content(fragment, absolute_rect);
+        self.emit_content(fragment, absolute_rect, visibility.rect);
       }
 
       // Push clip if needed
@@ -5473,7 +5477,7 @@ impl DisplayListBuilder {
   }
 
   /// Emits display items for fragment content
-  fn emit_content(&mut self, fragment: &FragmentNode, rect: Rect) {
+  fn emit_content(&mut self, fragment: &FragmentNode, rect: Rect, culling_rect: Option<Rect>) {
     match &fragment.content {
       FragmentContent::Text {
         text,
@@ -5817,7 +5821,7 @@ impl DisplayListBuilder {
             }
             // `emit_form_control` expects the border box and computes the padding/content
             // boxes internally. Passing an already-inset rect causes double insets.
-            let painted = self.emit_form_control(control, fragment, rect);
+            let painted = self.emit_form_control(control, fragment, rect, culling_rect);
             if clip_contents.is_some() {
               self.list.push(DisplayItem::PopClip);
             }
@@ -6972,7 +6976,21 @@ impl DisplayListBuilder {
   }
 
   fn emit_background_from_style(&mut self, rect: Rect, style: &ComputedStyle) {
-    self.emit_background_from_style_with_text_clip(rect, style, None);
+    self.emit_background_from_style_with_text_clip_and_culling_rect(
+      rect,
+      style,
+      None,
+      self.viewport_rect(),
+    );
+  }
+
+  fn emit_background_from_style_with_culling_rect(
+    &mut self,
+    rect: Rect,
+    style: &ComputedStyle,
+    culling_rect: Option<Rect>,
+  ) {
+    self.emit_background_from_style_with_text_clip_and_culling_rect(rect, style, None, culling_rect);
   }
 
   fn emit_background_from_style_with_text_clip(
@@ -6981,13 +6999,33 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
   ) {
+    self.emit_background_from_style_with_text_clip_and_culling_rect(
+      rect,
+      style,
+      text_clip,
+      self.viewport_rect(),
+    );
+  }
+
+  fn emit_background_from_style_with_text_clip_and_culling_rect(
+    &mut self,
+    rect: Rect,
+    style: &ComputedStyle,
+    text_clip: Option<&Arc<[TextItem]>>,
+    culling_rect: Option<Rect>,
+  ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
       return;
     }
 
     let rects = Self::background_rects(rect, style, self.viewport);
-    self.emit_background_from_style_with_rects_and_text_clip(&rects, style, text_clip);
+    self.emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
+      &rects,
+      style,
+      text_clip,
+      culling_rect,
+    );
   }
 
   fn emit_background_from_style_with_rects(
@@ -6995,7 +7033,13 @@ impl DisplayListBuilder {
     rects: &BackgroundRects,
     style: &ComputedStyle,
   ) {
-    self.emit_background_from_style_with_rects_and_origin_and_text_clip(rects, rects, style, None);
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(
+      rects,
+      rects,
+      style,
+      None,
+      self.viewport_rect(),
+    );
   }
 
   fn emit_background_from_style_with_rects_and_origin(
@@ -7009,6 +7053,7 @@ impl DisplayListBuilder {
       origin_rects,
       style,
       None,
+      self.viewport_rect(),
     );
   }
 
@@ -7019,7 +7064,27 @@ impl DisplayListBuilder {
     text_clip: Option<&Arc<[TextItem]>>,
   ) {
     self.emit_background_from_style_with_rects_and_origin_and_text_clip(
-      rects, rects, style, text_clip,
+      rects,
+      rects,
+      style,
+      text_clip,
+      self.viewport_rect(),
+    );
+  }
+
+  fn emit_background_from_style_with_rects_and_text_clip_and_culling_rect(
+    &mut self,
+    rects: &BackgroundRects,
+    style: &ComputedStyle,
+    text_clip: Option<&Arc<[TextItem]>>,
+    culling_rect: Option<Rect>,
+  ) {
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(
+      rects,
+      rects,
+      style,
+      text_clip,
+      culling_rect,
     );
   }
 
@@ -7029,6 +7094,7 @@ impl DisplayListBuilder {
     origin_rects: &BackgroundRects,
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
+    culling_rect: Option<Rect>,
   ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
@@ -7094,6 +7160,7 @@ impl DisplayListBuilder {
           layer,
           image,
           text_clip,
+          culling_rect,
         );
       }
     }
@@ -7115,6 +7182,7 @@ impl DisplayListBuilder {
     layer: &BackgroundLayer,
     bg: &BackgroundImage,
     text_clip: Option<&Arc<[TextItem]>>,
+    culling_rect: Option<Rect>,
   ) {
     if self.deadline_reached() {
       return;
@@ -7164,11 +7232,17 @@ impl DisplayListBuilder {
 
     // Tiling is computed from `clip_rect`, which may be enormous for very tall pages. When we're
     // building a display list for a viewport-sized canvas we should only emit tiles that can
-    // actually land on the canvas; the optimizer will cull off-screen items anyway. Clamping here
-    // keeps paint build time proportional to what is visible.
-    let visible_clip = match self.viewport_rect() {
-      Some(viewport_rect) => {
-        let Some(intersection) = clip_rect.intersection(viewport_rect) else {
+    // actually land on the canvas; the optimizer will cull off-screen items anyway.
+    //
+    // IMPORTANT: background tiles are emitted in the *pre-transform* coordinate space and later
+    // transformed by `PushStackingContext`. The caller must therefore pass a culling rectangle in
+    // the same pre-transform space (typically from `visibility.rect`, already mapped into local
+    // space via `visible_in_local_space` at stacking-context boundaries). Using the raw viewport
+    // rectangle here would incorrectly drop background pixels that become visible after transforms
+    // (e.g. `left: 50%` + `translateX(-50%)` centering).
+    let visible_clip = match culling_rect.filter(|r| r.width() > 0.0 && r.height() > 0.0) {
+      Some(cull) => {
+        let Some(intersection) = clip_rect.intersection(cull) else {
           return;
         };
         if intersection.width() <= 0.0 || intersection.height() <= 0.0 {
@@ -10298,6 +10372,7 @@ impl DisplayListBuilder {
     control: &FormControl,
     fragment: &FragmentNode,
     rect: Rect,
+    culling_rect: Option<Rect>,
   ) -> bool {
     let Some(style) = fragment.style.as_deref() else {
       return false;
@@ -11220,7 +11295,7 @@ impl DisplayListBuilder {
 
               if let Some(track_style) = track_style {
                 self.emit_box_shadows_from_style(track_rect, track_style, false);
-                self.emit_background_from_style(track_rect, track_style);
+                self.emit_background_from_style_with_culling_rect(track_rect, track_style, culling_rect);
               } else {
                 self
                   .list
@@ -11296,7 +11371,7 @@ impl DisplayListBuilder {
             };
 
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
-            self.emit_background_from_style(knob_rect, style_for_thumb);
+            self.emit_background_from_style_with_culling_rect(knob_rect, style_for_thumb, culling_rect);
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
             self.emit_border_from_style(knob_rect, style_for_thumb, None);
           }
@@ -11715,7 +11790,7 @@ impl DisplayListBuilder {
 
         if let Some(button_style) = button_pseudo_style {
           self.emit_box_shadows_from_style(button_rect, button_style, false);
-          self.emit_background_from_style(button_rect, button_style);
+          self.emit_background_from_style_with_culling_rect(button_rect, button_style, culling_rect);
           self.emit_box_shadows_from_style(button_rect, button_style, true);
           self.emit_border_from_style(button_rect, button_style, None);
         } else if !appearance_none {
