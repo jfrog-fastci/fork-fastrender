@@ -31,13 +31,13 @@ test target.
 Run the default (headless) subset:
 
 ```bash
-scripts/cargo_agent.sh test --test browser_integration_tests
+bash scripts/cargo_agent.sh test --test browser_integration_tests
 ```
 
 Run tests that are gated behind the UI feature (optionally filtered to a specific test name):
 
 ```bash
-scripts/cargo_agent.sh test --test browser_integration_tests --features browser_ui <test-name>
+bash scripts/cargo_agent.sh test --test browser_integration_tests --features browser_ui <test-name>
 ```
 
 Notes:
@@ -77,14 +77,14 @@ Example:
 
 ```bash
 FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1 \
-  scripts/cargo_agent.sh run --features browser_ui --bin browser
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
 Headless-smoke example:
 
 ```bash
 FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 \
-  scripts/cargo_agent.sh run --features browser_ui --bin browser
+  bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
 ## Shared test helpers
