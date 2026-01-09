@@ -554,4 +554,36 @@ mod tests {
       "expected quirks-mode <p> to contain a <table> descendant; got tags {tags:?}"
     );
   }
+
+  #[test]
+  fn parse_fragment_in_svg_namespace_context() {
+    let nodes = parse_html_fragment(
+      r#"<circle cx="1" cy="2" r="3"></circle>"#,
+      "svg",
+      crate::dom::SVG_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+
+    assert_eq!(nodes.len(), 1);
+    let circle = &nodes[0];
+    match &circle.node_type {
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        attributes,
+      } => {
+        assert_eq!(tag_name, "circle");
+        assert_eq!(namespace, crate::dom::SVG_NAMESPACE);
+        assert!(
+          attributes
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("cx") && v == "1"),
+          "expected cx=1 attribute, got {attributes:?}"
+        );
+      }
+      other => panic!("expected <circle> element, got {other:?}"),
+    }
+  }
 }
