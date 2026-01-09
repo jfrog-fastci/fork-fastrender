@@ -2194,21 +2194,21 @@ fn margin_box_bounds_cover_all_areas() {
 
   let expectations = vec![
     (Rgba::rgb(255, 0, 0), (0.0, 0.0, 10.0, 10.0)),
-    (Rgba::rgb(255, 32, 0), (10.0, 0.0, 60.0, 10.0)),
-    (Rgba::rgb(255, 64, 0), (70.0, 0.0, 60.0, 10.0)),
-    (Rgba::rgb(255, 96, 0), (130.0, 0.0, 60.0, 10.0)),
+    (Rgba::rgb(255, 32, 0), (10.0, 0.0, 45.0, 10.0)),
+    (Rgba::rgb(255, 64, 0), (55.0, 0.0, 90.0, 10.0)),
+    (Rgba::rgb(255, 96, 0), (145.0, 0.0, 45.0, 10.0)),
     (Rgba::rgb(255, 128, 0), (190.0, 0.0, 10.0, 10.0)),
-    (Rgba::rgb(255, 160, 0), (190.0, 10.0, 10.0, 60.0)),
-    (Rgba::rgb(255, 192, 0), (190.0, 70.0, 10.0, 60.0)),
-    (Rgba::rgb(255, 224, 0), (190.0, 130.0, 10.0, 60.0)),
+    (Rgba::rgb(255, 160, 0), (190.0, 10.0, 10.0, 45.0)),
+    (Rgba::rgb(255, 192, 0), (190.0, 55.0, 10.0, 90.0)),
+    (Rgba::rgb(255, 224, 0), (190.0, 145.0, 10.0, 45.0)),
     (Rgba::rgb(0, 255, 0), (190.0, 190.0, 10.0, 10.0)),
-    (Rgba::rgb(0, 255, 32), (130.0, 190.0, 60.0, 10.0)),
-    (Rgba::rgb(0, 255, 64), (70.0, 190.0, 60.0, 10.0)),
-    (Rgba::rgb(0, 255, 96), (10.0, 190.0, 60.0, 10.0)),
+    (Rgba::rgb(0, 255, 32), (145.0, 190.0, 45.0, 10.0)),
+    (Rgba::rgb(0, 255, 64), (55.0, 190.0, 90.0, 10.0)),
+    (Rgba::rgb(0, 255, 96), (10.0, 190.0, 45.0, 10.0)),
     (Rgba::rgb(0, 255, 128), (0.0, 190.0, 10.0, 10.0)),
-    (Rgba::rgb(0, 0, 255), (0.0, 130.0, 10.0, 60.0)),
-    (Rgba::rgb(32, 0, 255), (0.0, 70.0, 10.0, 60.0)),
-    (Rgba::rgb(64, 0, 255), (0.0, 10.0, 10.0, 60.0)),
+    (Rgba::rgb(0, 0, 255), (0.0, 145.0, 10.0, 45.0)),
+    (Rgba::rgb(32, 0, 255), (0.0, 55.0, 10.0, 90.0)),
+    (Rgba::rgb(64, 0, 255), (0.0, 10.0, 10.0, 45.0)),
   ];
 
   for (color, expected_bounds) in expectations {
@@ -2216,6 +2216,41 @@ fn margin_box_bounds_cover_all_areas() {
       .unwrap_or_else(|| panic!("missing margin box for color {:?}", color));
     assert_bounds_close(&fragment.bounds, expected_bounds);
   }
+}
+
+#[test]
+fn margin_box_explicit_widths_override_auto_distribution() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 10px;
+            @top-left { background: rgb(255, 0, 0); width: 20px; content: ""; }
+            @top-center { background: rgb(0, 255, 0); content: ""; }
+            @top-right { background: rgb(0, 0, 255); width: 40px; content: ""; }
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = *pages(&tree).first().expect("at least one page");
+
+  let left = find_fragment_by_background(page, Rgba::rgb(255, 0, 0)).expect("top-left box");
+  let center = find_fragment_by_background(page, Rgba::rgb(0, 255, 0)).expect("top-center box");
+  let right = find_fragment_by_background(page, Rgba::rgb(0, 0, 255)).expect("top-right box");
+
+  assert_bounds_close(&left.bounds, (10.0, 0.0, 20.0, 10.0));
+  assert_bounds_close(&center.bounds, (50.0, 0.0, 100.0, 10.0));
+  assert_bounds_close(&right.bounds, (150.0, 0.0, 40.0, 10.0));
 }
 
 #[test]

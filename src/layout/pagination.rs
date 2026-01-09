@@ -11,7 +11,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::engine::{LayoutConfig, LayoutEngine};
 use crate::layout::formatting_context::{
-  layout_style_fingerprint, set_fragmentainer_block_size_hint, LayoutError,
+  layout_style_fingerprint, set_fragmentainer_block_size_hint, IntrinsicSizingMode, LayoutError,
 };
 use crate::layout::fragmentation::{
   apply_flex_parallel_flow_forced_break_shifts, apply_float_parallel_flow_forced_break_shifts,
@@ -23,6 +23,7 @@ use crate::layout::fragmentation::{
 };
 use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
 use crate::layout::running_strings::{StringSetEvent, StringSetEventCollector};
+use crate::layout::utils::{border_size_from_box_sizing, resolve_length_with_percentage};
 use crate::style::content::{
   ContentContext, ContentItem, ContentValue, CounterStyle, RunningElementValues,
   RunningStringValues,
@@ -31,7 +32,8 @@ use crate::style::display::{Display, FormattingContextType};
 use crate::style::page::{resolve_page_style, PageSide, ResolvedPageStyle};
 use crate::style::position::Position;
 use crate::style::types::WritingMode;
-use crate::style::{block_axis_is_horizontal, ComputedStyle};
+use crate::style::values::Length;
+use crate::style::{block_axis_is_horizontal, inline_axis_is_horizontal, ComputedStyle};
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::{BoxNode, BoxTree, CrossOriginAttribute, ReplacedType};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -2031,6 +2033,25 @@ fn collect_fixed_fragments(node: &FragmentNode, origin: Point, out: &mut Vec<Fra
   }
 }
 
+#[derive(Debug, Clone)]
+struct MarginBoxPlan {
+  style: Arc<ComputedStyle>,
+  content: MarginBoxPlanContent,
+}
+
+#[derive(Debug, Clone)]
+enum MarginBoxPlanContent {
+  /// `content: element(...)` and it resolved to a single snapshot, so we can reuse it directly
+  /// without running layout.
+  SnapshotOnly { snapshot: FragmentNode },
+  /// A regular margin box laid out via a dedicated box tree, plus any running-element snapshots to
+  /// append after layout.
+  BoxTree {
+    tree: BoxTree,
+    element_snapshots: Vec<FragmentNode>,
+  },
+}
+
 fn build_margin_box_fragments(
   style: &ResolvedPageStyle,
   font_ctx: &FontContext,
@@ -2039,8 +2060,6 @@ fn build_margin_box_fragments(
   running_strings: &HashMap<String, RunningStringValues>,
   running_elements: &HashMap<String, RunningElementValues>,
 ) -> Vec<FragmentNode> {
-  let mut fragments = Vec::new();
-
   const CANONICAL_MARGIN_AREA_ORDER: [PageMarginArea; 16] = [
     PageMarginArea::TopLeftCorner,
     PageMarginArea::TopLeft,
@@ -2060,6 +2079,7 @@ fn build_margin_box_fragments(
     PageMarginArea::LeftTop,
   ];
 
+  let mut plans: HashMap<PageMarginArea, MarginBoxPlan> = HashMap::new();
   for area in CANONICAL_MARGIN_AREA_ORDER {
     let Some(box_style) = style.margin_boxes.get(&area) else {
       continue;
@@ -2070,43 +2090,62 @@ fn build_margin_box_fragments(
     ) {
       continue;
     }
-
-    if let Some(bounds) = margin_box_bounds(area, style) {
-      if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-        continue;
+    // CSS Page 3: `display` does not apply to page-margin boxes, so treat them as block
+    // containers for layout purposes (even if the computed style says otherwise).
+    let mut owned_style = box_style.clone();
+    owned_style.display = Display::Block;
+    let style_arc = Arc::new(owned_style);
+    let box_style = style_arc.as_ref();
+    let plan = if let ContentValue::Items(items) = &box_style.content_value {
+      let mut element_snapshots = Vec::new();
+      for item in items {
+        if let ContentItem::Element { ident, select } = item {
+          if let Some(snapshot) = crate::layout::running_elements::select_running_element(
+            ident,
+            *select,
+            running_elements,
+          ) {
+            element_snapshots.push(snapshot);
+          }
+        }
       }
-
-      // CSS Page 3: `display` does not apply to page-margin boxes, so treat them as block
-      // containers for layout purposes (even if the computed style says otherwise).
-      let mut owned_style = box_style.clone();
-      owned_style.display = Display::Block;
-      let style_arc = Arc::new(owned_style);
-      let box_style = style_arc.as_ref();
-      if let ContentValue::Items(items) = &box_style.content_value {
-        let mut element_snapshots = Vec::new();
-        for item in items {
-          if let ContentItem::Element { ident, select } = item {
-            if let Some(snapshot) = crate::layout::running_elements::select_running_element(
-              ident,
-              *select,
-              running_elements,
-            ) {
-              element_snapshots.push(snapshot);
+      if items.len() == 1 {
+        if let ContentItem::Element { .. } = &items[0] {
+          if let Some(snapshot) = element_snapshots.pop() {
+            MarginBoxPlan {
+              style: style_arc,
+              content: MarginBoxPlanContent::SnapshotOnly { snapshot },
+            }
+          } else {
+            // The only content item was `element()` but it resolved to nothing, so the margin box is
+            // effectively empty.
+            let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, vec![]);
+            MarginBoxPlan {
+              style: style_arc,
+              content: MarginBoxPlanContent::BoxTree {
+                tree: BoxTree::new(root),
+                element_snapshots,
+              },
             }
           }
-        }
-        if items.len() == 1 {
-          if let ContentItem::Element { .. } = &items[0] {
-            if let Some(snapshot) = element_snapshots.pop() {
-              fragments.push(FragmentNode::new_block_styled(
-                bounds,
-                vec![snapshot],
-                style_arc,
-              ));
-              continue;
-            }
+        } else {
+          let children = build_margin_box_children(
+            box_style,
+            page_index,
+            page_count,
+            running_strings,
+            &style_arc,
+          );
+          let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+          MarginBoxPlan {
+            style: style_arc,
+            content: MarginBoxPlanContent::BoxTree {
+              tree: BoxTree::new(root),
+              element_snapshots,
+            },
           }
         }
+      } else {
         let children = build_margin_box_children(
           box_style,
           page_index,
@@ -2115,20 +2154,76 @@ fn build_margin_box_fragments(
           &style_arc,
         );
         let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
-        let box_tree = BoxTree::new(root);
+        MarginBoxPlan {
+          style: style_arc,
+          content: MarginBoxPlanContent::BoxTree {
+            tree: BoxTree::new(root),
+            element_snapshots,
+          },
+        }
+      }
+    } else {
+      let children = build_margin_box_children(
+        box_style,
+        page_index,
+        page_count,
+        running_strings,
+        &style_arc,
+      );
+      let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
+      MarginBoxPlan {
+        style: style_arc,
+        content: MarginBoxPlanContent::BoxTree {
+          tree: BoxTree::new(root),
+          element_snapshots: Vec::new(),
+        },
+      }
+    };
 
+    plans.insert(area, plan);
+  }
+
+  if plans.is_empty() {
+    return Vec::new();
+  }
+
+  // Intrinsic sizing probes for page-margin boxes can require layout to measure text. Use a shared
+  // engine so shaping caches (fonts) are reused, but compute the box sizes per CSS Page 3.
+  let intrinsic_engine =
+    LayoutEngine::with_font_context(LayoutConfig::new(style.total_size), font_ctx.clone());
+  let bounds_map = compute_margin_box_bounds(style, &plans, &intrinsic_engine);
+
+  let mut fragments = Vec::new();
+  for area in CANONICAL_MARGIN_AREA_ORDER {
+    let Some(plan) = plans.get(&area) else {
+      continue;
+    };
+    let Some(bounds) = bounds_map.get(&area).copied() else {
+      continue;
+    };
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+      continue;
+    }
+
+    match &plan.content {
+      MarginBoxPlanContent::SnapshotOnly { snapshot } => {
+        fragments.push(FragmentNode::new_block_styled(
+          bounds,
+          vec![snapshot.clone()],
+          plan.style.clone(),
+        ));
+      }
+      MarginBoxPlanContent::BoxTree {
+        tree: box_tree,
+        element_snapshots,
+      } => {
         let config = LayoutConfig::new(Size::new(bounds.width(), bounds.height()));
         let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
-        if let Ok(mut tree) = engine.layout_tree(&box_tree) {
-          tree.root.bounds = Rect::from_xywh(
-            tree.root.bounds.x(),
-            tree.root.bounds.y(),
-            bounds.width(),
-            bounds.height(),
-          );
+        if let Ok(mut tree) = engine.layout_tree(box_tree) {
+          tree.root.bounds = Rect::from_xywh(0.0, 0.0, bounds.width(), bounds.height());
           tree.root.scroll_overflow = Rect::from_xywh(
-            tree.root.scroll_overflow.x(),
-            tree.root.scroll_overflow.y(),
+            0.0,
+            0.0,
             tree.root.scroll_overflow.width().max(bounds.width()),
             tree.root.scroll_overflow.height().max(bounds.height()),
           );
@@ -2138,7 +2233,7 @@ fn build_margin_box_fragments(
             .iter()
             .map(|child| child.bounds.y() + child.bounds.height())
             .fold(0.0, f32::max);
-          for mut snapshot in element_snapshots {
+          for mut snapshot in element_snapshots.iter().cloned() {
             translate_fragment(&mut snapshot, 0.0, next_y);
             next_y += snapshot.bounds.height();
             tree.root.children_mut().push(snapshot);
@@ -2146,35 +2241,6 @@ fn build_margin_box_fragments(
           translate_fragment(&mut tree.root, bounds.x(), bounds.y());
           fragments.push(tree.root);
         }
-        continue;
-      }
-      let children = build_margin_box_children(
-        box_style,
-        page_index,
-        page_count,
-        running_strings,
-        &style_arc,
-      );
-      let root = BoxNode::new_block(style_arc.clone(), FormattingContextType::Block, children);
-      let box_tree = BoxTree::new(root);
-
-      let config = LayoutConfig::new(Size::new(bounds.width(), bounds.height()));
-      let engine = LayoutEngine::with_font_context(config, font_ctx.clone());
-      if let Ok(mut tree) = engine.layout_tree(&box_tree) {
-        tree.root.bounds = Rect::from_xywh(
-          tree.root.bounds.x(),
-          tree.root.bounds.y(),
-          bounds.width(),
-          bounds.height(),
-        );
-        tree.root.scroll_overflow = Rect::from_xywh(
-          tree.root.scroll_overflow.x(),
-          tree.root.scroll_overflow.y(),
-          tree.root.scroll_overflow.width().max(bounds.width()),
-          tree.root.scroll_overflow.height().max(bounds.height()),
-        );
-        translate_fragment(&mut tree.root, bounds.x(), bounds.y());
-        fragments.push(tree.root);
       }
     }
   }
@@ -2328,7 +2394,439 @@ fn layout_for_style<'a>(
   Ok(cache.get(&key).expect("layout cache just populated"))
 }
 
-fn margin_box_bounds(area: PageMarginArea, style: &ResolvedPageStyle) -> Option<Rect> {
+#[derive(Debug, Clone, Copy)]
+struct VariableMarginBox {
+  generated: bool,
+  /// Used outer size when the variable dimension is not `auto`.
+  outer: Option<f32>,
+  /// Outer min-content size (used when width/height is auto).
+  outer_min: f32,
+  /// Outer max-content size (used when width/height is auto).
+  outer_max: f32,
+  /// Outer min constraint from `min-width`/`min-height`.
+  min_constraint: f32,
+  /// Outer max constraint from `max-width`/`max-height`.
+  max_constraint: f32,
+  /// Margin on the start edge of the variable dimension (auto resolves to 0).
+  margin_start: f32,
+  /// Margin on the end edge of the variable dimension (auto resolves to 0).
+  margin_end: f32,
+}
+
+impl VariableMarginBox {
+  fn not_generated() -> Self {
+    Self {
+      generated: false,
+      outer: Some(0.0),
+      outer_min: 0.0,
+      outer_max: 0.0,
+      min_constraint: 0.0,
+      max_constraint: 0.0,
+      margin_start: 0.0,
+      margin_end: 0.0,
+    }
+  }
+
+  fn margin_sum(self) -> f32 {
+    self.margin_start + self.margin_end
+  }
+
+  fn fixed_outer(mut self, outer: f32) -> Self {
+    let outer = if outer.is_finite() {
+      outer.max(0.0)
+    } else {
+      0.0
+    };
+    self.outer = Some(outer);
+    self.outer_min = outer;
+    self.outer_max = outer;
+    self
+  }
+
+  fn border_box_size(self, used_outer: f32) -> f32 {
+    let size = used_outer - self.margin_sum();
+    if size.is_finite() {
+      size.max(0.0)
+    } else {
+      0.0
+    }
+  }
+}
+
+fn physical_axis_is_inline(writing_mode: WritingMode, axis: PhysicalAxis) -> bool {
+  match (inline_axis_is_horizontal(writing_mode), axis) {
+    (true, PhysicalAxis::X) => true,
+    (true, PhysicalAxis::Y) => false,
+    (false, PhysicalAxis::X) => false,
+    (false, PhysicalAxis::Y) => true,
+  }
+}
+
+fn resolve_len(
+  style: &ComputedStyle,
+  len: Length,
+  percent_base: Option<f32>,
+  viewport: Size,
+) -> f32 {
+  resolve_length_with_percentage(
+    len,
+    percent_base,
+    viewport,
+    style.font_size,
+    style.root_font_size,
+  )
+  .unwrap_or(0.0)
+}
+
+fn flex_fit_two_auto_boxes(
+  a: &VariableMarginBox,
+  c: &VariableMarginBox,
+  available: f32,
+) -> (f32, f32) {
+  let available = if available.is_finite() {
+    available.max(0.0)
+  } else {
+    0.0
+  };
+  let min_a = a.outer_min.max(0.0);
+  let max_a = a.outer_max.max(min_a);
+  let min_c = c.outer_min.max(0.0);
+  let max_c = c.outer_max.max(min_c);
+
+  let sum_max = max_a + max_c;
+  if sum_max < available {
+    let flex_space = available - sum_max;
+    let mut factor_a = max_a;
+    let mut factor_c = max_c;
+    let mut sum_factors = factor_a + factor_c;
+    if sum_factors == 0.0 {
+      factor_a = 1.0;
+      factor_c = 1.0;
+      sum_factors = 2.0;
+    }
+    let used_a = max_a + flex_space * factor_a / sum_factors;
+    let used_c = max_c + flex_space * factor_c / sum_factors;
+    return (used_a.max(0.0), used_c.max(0.0));
+  }
+
+  let sum_min = min_a + min_c;
+  let flex_space = available - sum_min;
+  let (mut factor_a, mut factor_c) = if sum_min < available {
+    // Case 2: distribute between min-content and max-content.
+    ((max_a - min_a).max(0.0), (max_c - min_c).max(0.0))
+  } else {
+    // Case 3: shrink below min-content proportionally.
+    (min_a, min_c)
+  };
+  let mut sum_factors = factor_a + factor_c;
+  if sum_factors == 0.0 {
+    factor_a = 1.0;
+    factor_c = 1.0;
+    sum_factors = 2.0;
+  }
+  let used_a = min_a + flex_space * factor_a / sum_factors;
+  let used_c = min_c + flex_space * factor_c / sum_factors;
+  (used_a.max(0.0), used_c.max(0.0))
+}
+
+fn distribute_two_boxes(
+  a: &VariableMarginBox,
+  c: &VariableMarginBox,
+  available: f32,
+) -> (f32, f32) {
+  match (a.outer, c.outer) {
+    (Some(a_fixed), Some(c_fixed)) => (a_fixed.max(0.0), c_fixed.max(0.0)),
+    (None, Some(c_fixed)) => ((available - c_fixed).max(0.0), c_fixed.max(0.0)),
+    (Some(a_fixed), None) => (a_fixed.max(0.0), (available - a_fixed).max(0.0)),
+    (None, None) => flex_fit_two_auto_boxes(a, c, available),
+  }
+}
+
+fn compute_used_outer_sizes(
+  a: &VariableMarginBox,
+  b: &VariableMarginBox,
+  c: &VariableMarginBox,
+  available: f32,
+) -> (f32, f32, f32) {
+  if !b.generated {
+    let (used_a, used_c) = distribute_two_boxes(a, c, available);
+    return (used_a, 0.0, used_c);
+  }
+
+  let used_b = if let Some(fixed) = b.outer {
+    fixed.max(0.0)
+  } else {
+    // Resolve B's auto size using the imaginary AC box.
+    let ac = if a.outer.is_none() && c.outer.is_none() {
+      // When both side boxes are auto, AC is also auto; its intrinsic sizes are derived from the
+      // larger of A/C so B remains centered.
+      let outer_min = 2.0 * a.outer_min.max(c.outer_min);
+      let outer_max = 2.0 * a.outer_max.max(c.outer_max);
+      VariableMarginBox {
+        generated: true,
+        outer: None,
+        outer_min,
+        outer_max,
+        min_constraint: 0.0,
+        max_constraint: f32::INFINITY,
+        margin_start: 0.0,
+        margin_end: 0.0,
+      }
+    } else {
+      // Otherwise, AC has a definite size based on the larger non-auto side.
+      let fixed_a = a.outer.unwrap_or(0.0);
+      let fixed_c = c.outer.unwrap_or(0.0);
+      VariableMarginBox::not_generated().fixed_outer(2.0 * fixed_a.max(fixed_c))
+    };
+    let (used_b, _used_ac) = distribute_two_boxes(b, &ac, available);
+    used_b
+  };
+
+  let remaining = (available - used_b).max(0.0);
+  let used_a = a.outer.unwrap_or(remaining / 2.0).max(0.0);
+  let used_c = c.outer.unwrap_or(remaining / 2.0).max(0.0);
+  (used_a, used_b, used_c)
+}
+
+fn compute_used_outer_sizes_with_minmax(
+  a: VariableMarginBox,
+  b: VariableMarginBox,
+  c: VariableMarginBox,
+  available: f32,
+) -> (f32, f32, f32) {
+  let (tentative_a, tentative_b, tentative_c) = compute_used_outer_sizes(&a, &b, &c, available);
+
+  let mut a2 = a;
+  let mut b2 = b;
+  let mut c2 = c;
+  let mut max_violation = false;
+  for (used, box_) in [
+    (tentative_a, &mut a2),
+    (tentative_b, &mut b2),
+    (tentative_c, &mut c2),
+  ] {
+    if !box_.generated {
+      continue;
+    }
+    let max = box_.max_constraint;
+    if max.is_finite() && used > max + EPSILON {
+      *box_ = box_.fixed_outer(max);
+      max_violation = true;
+    }
+  }
+  let (after_max_a, after_max_b, after_max_c) = if max_violation {
+    compute_used_outer_sizes(&a2, &b2, &c2, available)
+  } else {
+    (tentative_a, tentative_b, tentative_c)
+  };
+
+  let mut a3 = a2;
+  let mut b3 = b2;
+  let mut c3 = c2;
+  let mut min_violation = false;
+  for (used, box_) in [
+    (after_max_a, &mut a3),
+    (after_max_b, &mut b3),
+    (after_max_c, &mut c3),
+  ] {
+    if !box_.generated {
+      continue;
+    }
+    if used + EPSILON < box_.min_constraint {
+      *box_ = box_.fixed_outer(box_.min_constraint);
+      min_violation = true;
+    }
+  }
+  if min_violation {
+    compute_used_outer_sizes(&a3, &b3, &c3, available)
+  } else {
+    (after_max_a, after_max_b, after_max_c)
+  }
+}
+
+fn variable_box_metrics(
+  area: PageMarginArea,
+  plans: &HashMap<PageMarginArea, MarginBoxPlan>,
+  intrinsic_engine: &LayoutEngine,
+  variable_axis: PhysicalAxis,
+  variable_base: f32,
+  percentage_base: f32,
+  viewport: Size,
+) -> VariableMarginBox {
+  let Some(plan) = plans.get(&area) else {
+    return VariableMarginBox::not_generated();
+  };
+  let style = plan.style.as_ref();
+
+  let (margin_start, margin_end) = match variable_axis {
+    PhysicalAxis::X => (
+      style
+        .margin_left
+        .map(|len| resolve_len(style, len, Some(percentage_base), viewport))
+        .unwrap_or(0.0),
+      style
+        .margin_right
+        .map(|len| resolve_len(style, len, Some(percentage_base), viewport))
+        .unwrap_or(0.0),
+    ),
+    PhysicalAxis::Y => (
+      style
+        .margin_top
+        .map(|len| resolve_len(style, len, Some(percentage_base), viewport))
+        .unwrap_or(0.0),
+      style
+        .margin_bottom
+        .map(|len| resolve_len(style, len, Some(percentage_base), viewport))
+        .unwrap_or(0.0),
+    ),
+  };
+
+  let (padding_start, padding_end, border_start, border_end) = match variable_axis {
+    PhysicalAxis::X => (
+      resolve_len(style, style.padding_left, Some(percentage_base), viewport).max(0.0),
+      resolve_len(style, style.padding_right, Some(percentage_base), viewport).max(0.0),
+      resolve_len(
+        style,
+        style.used_border_left_width(),
+        Some(percentage_base),
+        viewport,
+      )
+      .max(0.0),
+      resolve_len(
+        style,
+        style.used_border_right_width(),
+        Some(percentage_base),
+        viewport,
+      )
+      .max(0.0),
+    ),
+    PhysicalAxis::Y => (
+      resolve_len(style, style.padding_top, Some(percentage_base), viewport).max(0.0),
+      resolve_len(style, style.padding_bottom, Some(percentage_base), viewport).max(0.0),
+      resolve_len(
+        style,
+        style.used_border_top_width(),
+        Some(percentage_base),
+        viewport,
+      )
+      .max(0.0),
+      resolve_len(
+        style,
+        style.used_border_bottom_width(),
+        Some(percentage_base),
+        viewport,
+      )
+      .max(0.0),
+    ),
+  };
+  let edges = padding_start + padding_end + border_start + border_end;
+  let margin_sum = margin_start + margin_end;
+
+  let mut min_constraint = 0.0;
+  let mut max_constraint = f32::INFINITY;
+  match variable_axis {
+    PhysicalAxis::X => {
+      if let Some(min_len) = style.min_width {
+        min_constraint = resolve_len(style, min_len, Some(variable_base), viewport);
+      }
+      if let Some(max_len) = style.max_width {
+        max_constraint = resolve_len(style, max_len, Some(variable_base), viewport);
+      }
+    }
+    PhysicalAxis::Y => {
+      if let Some(min_len) = style.min_height {
+        min_constraint = resolve_len(style, min_len, Some(variable_base), viewport);
+      }
+      if let Some(max_len) = style.max_height {
+        max_constraint = resolve_len(style, max_len, Some(variable_base), viewport);
+      }
+    }
+  }
+  let min_border = border_size_from_box_sizing(min_constraint.max(0.0), edges, style.box_sizing);
+  let max_border = if max_constraint.is_finite() {
+    border_size_from_box_sizing(max_constraint.max(0.0), edges, style.box_sizing)
+  } else {
+    f32::INFINITY
+  };
+  let min_outer = (min_border + margin_sum).max(0.0);
+  let max_outer = if max_border.is_finite() {
+    (max_border + margin_sum).max(min_outer)
+  } else {
+    f32::INFINITY
+  };
+
+  let mut result = VariableMarginBox {
+    generated: true,
+    outer: None,
+    outer_min: 0.0,
+    outer_max: 0.0,
+    min_constraint: min_outer,
+    max_constraint: max_outer,
+    margin_start,
+    margin_end,
+  };
+
+  let computed_size = match variable_axis {
+    PhysicalAxis::X => style.width,
+    PhysicalAxis::Y => style.height,
+  };
+  if let Some(len) = computed_size {
+    let resolved = resolve_len(style, len, Some(variable_base), viewport).max(0.0);
+    let border = border_size_from_box_sizing(resolved, edges, style.box_sizing);
+    let outer = border + margin_sum;
+    return result.fixed_outer(outer);
+  }
+
+  // Auto size: use intrinsic sizing to compute min/max content contributions.
+  let (intrinsic_min, intrinsic_max) = match &plan.content {
+    MarginBoxPlanContent::SnapshotOnly { snapshot } => {
+      let value = match variable_axis {
+        PhysicalAxis::X => snapshot.bounds.width(),
+        PhysicalAxis::Y => snapshot.bounds.height(),
+      };
+      (value.max(0.0), value.max(0.0))
+    }
+    MarginBoxPlanContent::BoxTree { tree, .. } => {
+      let axis_is_inline = physical_axis_is_inline(style.writing_mode, variable_axis);
+      let intrinsic = |mode| {
+        if axis_is_inline {
+          intrinsic_engine.compute_intrinsic_size(&tree.root, mode)
+        } else {
+          intrinsic_engine.compute_intrinsic_block_size(&tree.root, mode)
+        }
+      };
+      let min = intrinsic(IntrinsicSizingMode::MinContent).unwrap_or(0.0);
+      let max = match intrinsic(IntrinsicSizingMode::MaxContent) {
+        Ok(v) => v,
+        Err(LayoutError::Timeout { .. }) => {
+          return VariableMarginBox {
+            generated: true,
+            outer: None,
+            outer_min: (min.max(0.0) + margin_sum).max(0.0),
+            outer_max: (min.max(0.0) + margin_sum).max(0.0),
+            min_constraint: min_outer,
+            max_constraint: max_outer,
+            margin_start,
+            margin_end,
+          }
+          .fixed_outer((min.max(0.0) + margin_sum).max(0.0))
+        }
+        Err(_) => min,
+      };
+      (min.max(0.0), max.max(0.0))
+    }
+  };
+
+  result.outer_min = (intrinsic_min + margin_sum).max(0.0);
+  result.outer_max = (intrinsic_max + margin_sum).max(result.outer_min);
+  result
+}
+
+fn compute_margin_box_bounds(
+  style: &ResolvedPageStyle,
+  plans: &HashMap<PageMarginArea, MarginBoxPlan>,
+  intrinsic_engine: &LayoutEngine,
+) -> HashMap<PageMarginArea, Rect> {
   let trimmed_width = style.page_size.width - 2.0 * style.trim;
   let trimmed_height = style.page_size.height - 2.0 * style.trim;
   let origin_x = style.bleed + style.trim;
@@ -2338,9 +2836,11 @@ fn margin_box_bounds(area: PageMarginArea, style: &ResolvedPageStyle) -> Option<
   let mt = style.margin_top;
   let mb = style.margin_bottom;
 
-  let top_width = trimmed_width - ml - mr;
-  let side_height = trimmed_height - mt - mb;
+  let available_width = (trimmed_width - ml - mr).max(0.0);
+  let available_height = (trimmed_height - mt - mb).max(0.0);
+  let viewport = style.total_size;
 
+  let mut out: HashMap<PageMarginArea, Rect> = HashMap::new();
   let rect = |x: f32, y: f32, w: f32, h: f32| -> Option<Rect> {
     if w <= 0.0 || h <= 0.0 {
       None
@@ -2349,79 +2849,207 @@ fn margin_box_bounds(area: PageMarginArea, style: &ResolvedPageStyle) -> Option<
     }
   };
 
-  match area {
-    PageMarginArea::TopLeftCorner => rect(origin_x, origin_y, ml, mt),
-    PageMarginArea::TopLeft => rect(origin_x + ml, origin_y, top_width / 3.0, mt),
-    PageMarginArea::TopCenter => rect(
-      origin_x + ml + top_width / 3.0,
+  // Corner boxes are fixed-size intersections of the adjacent page margins.
+  let corner_bounds: &[(PageMarginArea, f32, f32, f32, f32)] = &[
+    (PageMarginArea::TopLeftCorner, origin_x, origin_y, ml, mt),
+    (
+      PageMarginArea::TopRightCorner,
+      origin_x + trimmed_width - mr,
       origin_y,
-      top_width / 3.0,
+      mr,
       mt,
     ),
-    PageMarginArea::TopRight => rect(
-      origin_x + ml + 2.0 * top_width / 3.0,
-      origin_y,
-      top_width / 3.0,
-      mt,
-    ),
-    PageMarginArea::TopRightCorner => rect(origin_x + trimmed_width - mr, origin_y, mr, mt),
-    PageMarginArea::RightTop => rect(
-      origin_x + trimmed_width - mr,
-      origin_y + mt,
-      mr,
-      side_height / 3.0,
-    ),
-    PageMarginArea::RightMiddle => rect(
-      origin_x + trimmed_width - mr,
-      origin_y + mt + side_height / 3.0,
-      mr,
-      side_height / 3.0,
-    ),
-    PageMarginArea::RightBottom => rect(
-      origin_x + trimmed_width - mr,
-      origin_y + mt + 2.0 * side_height / 3.0,
-      mr,
-      side_height / 3.0,
-    ),
-    PageMarginArea::BottomRightCorner => rect(
+    (
+      PageMarginArea::BottomRightCorner,
       origin_x + trimmed_width - mr,
       origin_y + trimmed_height - mb,
       mr,
       mb,
     ),
-    PageMarginArea::BottomRight => rect(
-      origin_x + ml + 2.0 * top_width / 3.0,
-      origin_y + trimmed_height - mb,
-      top_width / 3.0,
-      mb,
-    ),
-    PageMarginArea::BottomCenter => rect(
-      origin_x + ml + top_width / 3.0,
-      origin_y + trimmed_height - mb,
-      top_width / 3.0,
-      mb,
-    ),
-    PageMarginArea::BottomLeft => rect(
-      origin_x + ml,
-      origin_y + trimmed_height - mb,
-      top_width / 3.0,
-      mb,
-    ),
-    PageMarginArea::BottomLeftCorner => rect(origin_x, origin_y + trimmed_height - mb, ml, mb),
-    PageMarginArea::LeftBottom => rect(
+    (
+      PageMarginArea::BottomLeftCorner,
       origin_x,
-      origin_y + mt + 2.0 * side_height / 3.0,
+      origin_y + trimmed_height - mb,
       ml,
-      side_height / 3.0,
+      mb,
     ),
-    PageMarginArea::LeftMiddle => rect(
-      origin_x,
-      origin_y + mt + side_height / 3.0,
-      ml,
-      side_height / 3.0,
-    ),
-    PageMarginArea::LeftTop => rect(origin_x, origin_y + mt, ml, side_height / 3.0),
+  ];
+  for (area, x, y, w, h) in corner_bounds {
+    if plans.contains_key(area) {
+      if let Some(r) = rect(*x, *y, *w, *h) {
+        out.insert(*area, r);
+      }
+    }
   }
+
+  // Helper to compute the three boxes on a side (A/B/C) per CSS Page 3.
+  let compute_horizontal = |y: f32,
+                            height: f32,
+                            a_area: PageMarginArea,
+                            b_area: PageMarginArea,
+                            c_area: PageMarginArea,
+                            out: &mut HashMap<PageMarginArea, Rect>| {
+    if height <= 0.0 || available_width <= 0.0 {
+      return;
+    }
+    let cb_x = origin_x + ml;
+    let cb_w = available_width;
+    let a = variable_box_metrics(
+      a_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::X,
+      cb_w,
+      cb_w,
+      viewport,
+    );
+    let b = variable_box_metrics(
+      b_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::X,
+      cb_w,
+      cb_w,
+      viewport,
+    );
+    let c = variable_box_metrics(
+      c_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::X,
+      cb_w,
+      cb_w,
+      viewport,
+    );
+    let (used_a, used_b, used_c) = compute_used_outer_sizes_with_minmax(a, b, c, cb_w);
+
+    let a_outer_x = cb_x;
+    let b_outer_x = cb_x + (cb_w - used_b) / 2.0;
+    let c_outer_x = cb_x + cb_w - used_c;
+
+    let a_border_w = a.border_box_size(used_a);
+    let b_border_w = b.border_box_size(used_b);
+    let c_border_w = c.border_box_size(used_c);
+
+    if plans.contains_key(&a_area) {
+      if let Some(r) = rect(a_outer_x + a.margin_start, y, a_border_w, height) {
+        out.insert(a_area, r);
+      }
+    }
+    if plans.contains_key(&b_area) {
+      if let Some(r) = rect(b_outer_x + b.margin_start, y, b_border_w, height) {
+        out.insert(b_area, r);
+      }
+    }
+    if plans.contains_key(&c_area) {
+      if let Some(r) = rect(c_outer_x + c.margin_start, y, c_border_w, height) {
+        out.insert(c_area, r);
+      }
+    }
+  };
+
+  let compute_vertical = |x: f32,
+                          width: f32,
+                          a_area: PageMarginArea,
+                          b_area: PageMarginArea,
+                          c_area: PageMarginArea,
+                          out: &mut HashMap<PageMarginArea, Rect>| {
+    if width <= 0.0 || available_height <= 0.0 {
+      return;
+    }
+    let cb_y = origin_y + mt;
+    let cb_h = available_height;
+    let a = variable_box_metrics(
+      a_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::Y,
+      cb_h,
+      width,
+      viewport,
+    );
+    let b = variable_box_metrics(
+      b_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::Y,
+      cb_h,
+      width,
+      viewport,
+    );
+    let c = variable_box_metrics(
+      c_area,
+      plans,
+      intrinsic_engine,
+      PhysicalAxis::Y,
+      cb_h,
+      width,
+      viewport,
+    );
+    let (used_a, used_b, used_c) = compute_used_outer_sizes_with_minmax(a, b, c, cb_h);
+
+    let a_outer_y = cb_y;
+    let b_outer_y = cb_y + (cb_h - used_b) / 2.0;
+    let c_outer_y = cb_y + cb_h - used_c;
+
+    let a_border_h = a.border_box_size(used_a);
+    let b_border_h = b.border_box_size(used_b);
+    let c_border_h = c.border_box_size(used_c);
+
+    if plans.contains_key(&a_area) {
+      if let Some(r) = rect(x, a_outer_y + a.margin_start, width, a_border_h) {
+        out.insert(a_area, r);
+      }
+    }
+    if plans.contains_key(&b_area) {
+      if let Some(r) = rect(x, b_outer_y + b.margin_start, width, b_border_h) {
+        out.insert(b_area, r);
+      }
+    }
+    if plans.contains_key(&c_area) {
+      if let Some(r) = rect(x, c_outer_y + c.margin_start, width, c_border_h) {
+        out.insert(c_area, r);
+      }
+    }
+  };
+
+  // Top and bottom: variable width.
+  compute_horizontal(
+    origin_y,
+    mt,
+    PageMarginArea::TopLeft,
+    PageMarginArea::TopCenter,
+    PageMarginArea::TopRight,
+    &mut out,
+  );
+  compute_horizontal(
+    origin_y + trimmed_height - mb,
+    mb,
+    PageMarginArea::BottomLeft,
+    PageMarginArea::BottomCenter,
+    PageMarginArea::BottomRight,
+    &mut out,
+  );
+
+  // Left and right: variable height.
+  compute_vertical(
+    origin_x,
+    ml,
+    PageMarginArea::LeftTop,
+    PageMarginArea::LeftMiddle,
+    PageMarginArea::LeftBottom,
+    &mut out,
+  );
+  compute_vertical(
+    origin_x + trimmed_width - mr,
+    mr,
+    PageMarginArea::RightTop,
+    PageMarginArea::RightMiddle,
+    PageMarginArea::RightBottom,
+    &mut out,
+  );
+
+  out
 }
 
 #[cfg(test)]

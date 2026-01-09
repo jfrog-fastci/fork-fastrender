@@ -133,7 +133,9 @@ pub(crate) fn layout_thread_pool_for_threads(threads: usize) -> Option<Arc<Threa
 
   let cache = LAYOUT_THREAD_POOL_CACHE.get_or_init(|| Mutex::new(LruCache::unbounded()));
   {
-    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(result) = guard.get(&threads) {
       return result.as_ref().ok().cloned();
     }
@@ -154,7 +156,9 @@ pub(crate) fn layout_thread_pool_for_threads(threads: usize) -> Option<Arc<Threa
 
   let mut evicted = Vec::new();
   {
-    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = cache
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.put(threads, built.clone());
     while guard.len() > cache_max {
       if let Some((_key, value)) = guard.pop_lru() {
@@ -1232,6 +1236,24 @@ impl LayoutEngine {
     fc.compute_intrinsic_inline_size(box_node, mode)
   }
 
+  /// Computes intrinsic size for a box in the block axis.
+  ///
+  /// This mirrors [`Self::compute_intrinsic_size`], but returns the intrinsic block size rather
+  /// than the intrinsic inline size. It is primarily used by paged-media margin box sizing, where
+  /// the variable physical dimension may map to either the box's inline or block axis depending on
+  /// writing mode.
+  pub fn compute_intrinsic_block_size(
+    &self,
+    box_node: &BoxNode,
+    mode: IntrinsicSizingMode,
+  ) -> Result<f32, LayoutError> {
+    let fc_type = box_node.formatting_context().ok_or_else(|| {
+      LayoutError::MissingContext("Box does not establish a formatting context".to_string())
+    })?;
+    let fc = self.factory.get(fc_type);
+    fc.compute_intrinsic_block_size(box_node, mode)
+  }
+
   /// Returns the engine's configuration
   pub fn config(&self) -> &LayoutConfig {
     &self.config
@@ -1320,10 +1342,14 @@ mod tests {
 
   #[test]
   fn parallelism_workload_counts_footnote_bodies() {
-    let mut root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![
-      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
-      BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
-    ]);
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
+        BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]),
+      ],
+    );
     root.footnote_body = Some(Box::new(BoxNode::new_block(
       default_style(),
       FormattingContextType::Block,
@@ -1336,7 +1362,10 @@ mod tests {
     let tree = BoxTree::new(root);
 
     let workload = layout_parallelism_workload(&tree, 2);
-    assert_eq!(workload.nodes, 5, "expected footnote body subtree to be counted");
+    assert_eq!(
+      workload.nodes, 5,
+      "expected footnote body subtree to be counted"
+    );
     assert_eq!(workload.max_fanout, 2);
     assert_eq!(workload.parallel_children, 2);
   }
@@ -1878,7 +1907,9 @@ mod tests {
 
     let cache = LAYOUT_THREAD_POOL_CACHE.get_or_init(|| Mutex::new(LruCache::unbounded()));
     {
-      let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       guard.clear();
     }
 
@@ -1905,7 +1936,9 @@ mod tests {
 
     // Avoid leaving dedicated pools alive for the remainder of the test suite.
     {
-      let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
       guard.clear();
     }
   }
