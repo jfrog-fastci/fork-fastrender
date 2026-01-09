@@ -175,11 +175,12 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     .stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || -> Result<(), String> {
       let renderer = fastrender::FastRender::new().map_err(|e| e.to_string())?;
-      let mut worker = fastrender::ui::browser_worker::BrowserWorker::new(renderer, worker_to_ui_tx);
+      let mut worker =
+        fastrender::ui::browser_worker::BrowserWorker::new(renderer, worker_to_ui_tx);
       let mut tabs: HashMap<TabId, TabState> = HashMap::new();
 
-       for msg in ui_to_worker_rx {
-         match msg {
+      for msg in ui_to_worker_rx {
+        match msg {
           UiToWorker::CreateTab {
             tab_id,
             initial_url,
@@ -201,7 +202,9 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
                 .with_viewport(state.viewport_css.0, state.viewport_css.1)
                 .with_device_pixel_ratio(state.dpr)
                 .with_fit_canvas_to_content(false);
-              worker.navigate(tab_id, &url, options).map_err(|e| e.to_string())?;
+              worker
+                .navigate(tab_id, &url, options)
+                .map_err(|e| e.to_string())?;
             }
           }
           UiToWorker::ViewportChanged {
@@ -226,7 +229,9 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
               .with_viewport(state.viewport_css.0, state.viewport_css.1)
               .with_device_pixel_ratio(state.dpr)
               .with_fit_canvas_to_content(false);
-            worker.navigate(tab_id, &url, options).map_err(|e| e.to_string())?;
+            worker
+              .navigate(tab_id, &url, options)
+              .map_err(|e| e.to_string())?;
           }
           UiToWorker::CloseTab { tab_id } => {
             tabs.remove(&tab_id);
@@ -293,25 +298,26 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
-    return Err(format!(
-      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady"
-    )
-    .into());
+    return Err(format!("timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady").into());
   };
 
   if viewport_css != VIEWPORT_CSS {
-    return Err(format!(
-      "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
-      viewport_css, VIEWPORT_CSS
-    )
-    .into());
+    return Err(
+      format!(
+        "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
+        viewport_css, VIEWPORT_CSS
+      )
+      .into(),
+    );
   }
   if pixmap_w != VIEWPORT_CSS.0 || pixmap_h != VIEWPORT_CSS.1 {
-    return Err(format!(
-      "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
-      pixmap_w, pixmap_h, VIEWPORT_CSS.0, VIEWPORT_CSS.1
-    )
-    .into());
+    return Err(
+      format!(
+        "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
+        pixmap_w, pixmap_h, VIEWPORT_CSS.0, VIEWPORT_CSS.1
+      )
+      .into(),
+    );
   }
   if (dpr - DPR).abs() > 0.01 {
     return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
@@ -513,9 +519,10 @@ impl App {
     let tab_id = fastrender::ui::TabId::new();
     let initial_url = "about:newtab".to_string();
 
-    self
-      .browser_state
-      .push_tab(fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone()), true);
+    self.browser_state.push_tab(
+      fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone()),
+      true,
+    );
     self.browser_state.chrome.address_bar_text = initial_url.clone();
 
     let _ = self
@@ -655,19 +662,26 @@ impl App {
     }
   }
 
-  fn active_input_transform(&self) -> Option<(fastrender::ui::TabId, f32)> {
+  fn active_input_mapping(
+    &self,
+    image_rect_points: egui::Rect,
+  ) -> Option<(fastrender::ui::TabId, fastrender::ui::InputMapping)> {
     let tab_id = self.browser_state.active_tab_id()?;
-    let Some(tab) = self.browser_state.tab(tab_id) else {
-      return None;
-    };
+    let tab = self.browser_state.tab(tab_id)?;
 
-    let frame_dpr = tab
+    // Prefer the viewport size that produced the currently displayed frame so hit-testing matches
+    // what is painted. Fall back to the last viewport size we sent to the worker (e.g. before the
+    // first `FrameReady` arrives).
+    let viewport_css = tab
       .latest_frame_meta
       .as_ref()
-      .map(|m| m.dpr)
-      .filter(|dpr| dpr.is_finite() && *dpr > 0.0)
-      .unwrap_or(self.pixels_per_point.max(1.0));
-    Some((tab_id, frame_dpr))
+      .map(|m| m.viewport_css)
+      .or_else(|| (self.viewport_cache_tab == Some(tab_id)).then_some(self.viewport_cache_css))?;
+
+    Some((
+      tab_id,
+      fastrender::ui::InputMapping::new(image_rect_points, viewport_css),
+    ))
   }
 
   fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
@@ -807,13 +821,14 @@ impl App {
     self.page_has_focus = false;
     self.address_bar_select_all_pending = true;
     if let Some(address_bar_id) = self.address_bar_id {
-      self.egui_ctx.memory_mut(|mem| mem.request_focus(address_bar_id));
+      self
+        .egui_ctx
+        .memory_mut(|mem| mem.request_focus(address_bar_id));
     }
   }
 
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
-    use winit::event::MouseScrollDelta;
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
@@ -825,31 +840,33 @@ impl App {
         );
         self.last_cursor_pos_points = Some(pos_points);
 
-        if self.pointer_captured
-          || self
-            .page_rect_points
-            .is_some_and(|rect| rect.contains(pos_points))
-        {
-          if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
-            if let Some(rect) = self.page_rect_points {
-              let local = pos_points - rect.min;
-              let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor, local.y * factor);
-              let button = if self.pointer_captured {
-                self.captured_button
-              } else {
-                fastrender::ui::PointerButton::None
-              };
-              let _ = self
-                .ui_to_worker_tx
-                .send(fastrender::ui::UiToWorker::PointerMove {
-                  tab_id,
-                  pos_css,
-                  button,
-                });
-            }
-          }
+        let Some(rect) = self.page_rect_points else {
+          return;
+        };
+
+        if !self.pointer_captured && !rect.contains(pos_points) {
+          return;
         }
+
+        let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+          return;
+        };
+        let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+          return;
+        };
+
+        let button = if self.pointer_captured {
+          self.captured_button
+        } else {
+          fastrender::ui::PointerButton::None
+        };
+        let _ = self
+          .ui_to_worker_tx
+          .send(fastrender::ui::UiToWorker::PointerMove {
+            tab_id,
+            pos_css,
+            button,
+          });
       }
       WindowEvent::MouseInput { state, button, .. } => {
         let mapped_button = map_mouse_button(*button);
@@ -873,52 +890,56 @@ impl App {
         let Some(pos_points) = self.last_cursor_pos_points else {
           return;
         };
-        let Some(rect) = self.page_rect_points else {
-          return;
-        };
-
-        let in_page = rect.contains(pos_points);
 
         match state {
           ElementState::Pressed => {
-            if !in_page {
+            let Some(rect) = self.page_rect_points else {
+              return;
+            };
+            if !rect.contains(pos_points) {
               return;
             }
             self.page_has_focus = true;
             self.pointer_captured = true;
             self.captured_button = mapped_button;
 
-            if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
-              let local = pos_points - rect.min;
-              let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor, local.y * factor);
-              let _ = self
-                .ui_to_worker_tx
-                .send(fastrender::ui::UiToWorker::PointerDown {
-                  tab_id,
-                  pos_css,
-                  button: mapped_button,
-                });
-            }
+            let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+              return;
+            };
+            let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+              return;
+            };
+            let _ = self
+              .ui_to_worker_tx
+              .send(fastrender::ui::UiToWorker::PointerDown {
+                tab_id,
+                pos_css,
+                button: mapped_button,
+              });
           }
           ElementState::Released => {
             if !self.pointer_captured {
               return;
             }
             self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
 
-            if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
-              let local = pos_points - rect.min;
-              let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor, local.y * factor);
-              let _ = self
-                .ui_to_worker_tx
-                .send(fastrender::ui::UiToWorker::PointerUp {
-                  tab_id,
-                  pos_css,
-                  button: mapped_button,
-                });
-            }
+            let Some(rect) = self.page_rect_points else {
+              return;
+            };
+            let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+              return;
+            };
+            let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+              return;
+            };
+            let _ = self
+              .ui_to_worker_tx
+              .send(fastrender::ui::UiToWorker::PointerUp {
+                tab_id,
+                pos_css,
+                button: mapped_button,
+              });
           }
         }
       }
@@ -933,31 +954,25 @@ impl App {
           return;
         }
 
-        let Some((tab_id, frame_dpr)) = self.active_input_transform() else {
+        let Some((tab_id, mapping)) = self.active_input_mapping(rect) else {
+          return;
+        };
+        let Some(pointer_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
           return;
         };
 
-        let factor = self.pixels_per_point / frame_dpr;
-        let (dx_points, dy_points) = match delta {
-          MouseScrollDelta::LineDelta(x, y) => {
-            const LINE_HEIGHT_POINTS: f32 = 40.0;
-            (-x * LINE_HEIGHT_POINTS, -y * LINE_HEIGHT_POINTS)
-          }
-          MouseScrollDelta::PixelDelta(p) => (
-            -(p.x as f32) / self.pixels_per_point,
-            -(p.y as f32) / self.pixels_per_point,
-          ),
+        let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
+        let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
+          return;
         };
-        let delta_css = (dx_points * factor, dy_points * factor);
 
-        let local = pos_points - rect.min;
-        let pointer_css = Some((local.x * factor, local.y * factor));
-
-        let _ = self.ui_to_worker_tx.send(fastrender::ui::UiToWorker::Scroll {
-          tab_id,
-          delta_css,
-          pointer_css,
-        });
+        let _ = self
+          .ui_to_worker_tx
+          .send(fastrender::ui::UiToWorker::Scroll {
+            tab_id,
+            delta_css,
+            pointer_css: Some(pointer_css),
+          });
       }
       WindowEvent::KeyboardInput { input, .. } => {
         if input.state != ElementState::Pressed {
@@ -1005,14 +1020,17 @@ impl App {
           let tab_count = self.browser_state.tabs.len();
           if tab_count > 1 {
             if let Some(active) = self.browser_state.active_tab_id() {
-              if let Some(active_idx) = self.browser_state.tabs.iter().position(|t| t.id == active) {
+              if let Some(active_idx) = self.browser_state.tabs.iter().position(|t| t.id == active)
+              {
                 let next_idx = if mods.shift() {
                   (active_idx + tab_count - 1) % tab_count
                 } else {
                   (active_idx + 1) % tab_count
                 };
                 if let Some(next_id) = self.browser_state.tabs.get(next_idx).map(|t| t.id) {
-                  self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ActivateTab(next_id)]);
+                  self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ActivateTab(
+                    next_id,
+                  )]);
                   self.window.request_redraw();
                 }
               }
@@ -1060,7 +1078,10 @@ impl App {
 
         let _ = self
           .ui_to_worker_tx
-          .send(fastrender::ui::UiToWorker::KeyAction { tab_id, key: key_action });
+          .send(fastrender::ui::UiToWorker::KeyAction {
+            tab_id,
+            key: key_action,
+          });
       }
       WindowEvent::ReceivedCharacter(ch) => {
         if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
@@ -1072,10 +1093,12 @@ impl App {
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
-        let _ = self.ui_to_worker_tx.send(fastrender::ui::UiToWorker::TextInput {
-          tab_id,
-          text: ch.to_string(),
-        });
+        let _ = self
+          .ui_to_worker_tx
+          .send(fastrender::ui::UiToWorker::TextInput {
+            tab_id,
+            text: ch.to_string(),
+          });
       }
       _ => {}
     }
@@ -1096,9 +1119,10 @@ impl App {
         ChromeAction::NewTab => {
           let tab_id = fastrender::ui::TabId::new();
           let initial_url = "about:newtab".to_string();
-          self
-            .browser_state
-            .push_tab(fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone()), true);
+          self.browser_state.push_tab(
+            fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone()),
+            true,
+          );
           self.browser_state.chrome.address_bar_text = initial_url.clone();
           self.page_has_focus = false;
           self.viewport_cache_tab = None;
@@ -1131,9 +1155,9 @@ impl App {
               initial_url: Some(initial_url),
               cancel: fastrender::ui::cancel::CancelGens::new(),
             });
-            let _ = self
-              .ui_to_worker_tx
-              .send(UiToWorker::SetActiveTab { tab_id: created_tab });
+            let _ = self.ui_to_worker_tx.send(UiToWorker::SetActiveTab {
+              tab_id: created_tab,
+            });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
             let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
@@ -1295,7 +1319,8 @@ impl App {
     };
 
     for (id, image_delta) in &full_output.textures_delta.set {
-      self.egui_renderer
+      self
+        .egui_renderer
         .update_texture(&self.device, &self.queue, *id, image_delta);
     }
 
