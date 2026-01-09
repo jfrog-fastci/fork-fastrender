@@ -781,6 +781,16 @@ mod tests {
       .collect();
     assert_eq!(text_nodes, vec!["a".to_string(), "b".to_string()]);
   }
+
+  #[test]
+  fn wbr_snapshot_matches_legacy_parse_html() {
+    let html = "<!doctype html><p>a<wbr>b</p>";
+    let expected = crate::dom::parse_html(html).unwrap();
+
+    let doc = parse_with_sink(html);
+    let snapshot = doc.to_renderer_dom();
+    assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
+  }
 }
 
 #[cfg(test)]
@@ -1002,4 +1012,5 @@ mod base_url_tests {
       Some("https://ex/base/")
     );
   }
+
 }
