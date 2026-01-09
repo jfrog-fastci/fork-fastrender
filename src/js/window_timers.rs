@@ -1260,6 +1260,60 @@ mod tests {
   }
 
   #[test]
+  fn set_timeout_rejects_invalid_this() -> Result<(), VmError> {
+    fn cb_noop(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> Result<Value, VmError> {
+      Ok(Value::Undefined)
+    }
+
+    let mut host = Host::new();
+
+    let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+    install_window_timers_bindings::<Host>(vm, realm, heap)?;
+
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope.push_root(Value::Object(global))?;
+
+    let set_timeout = get_prop(&mut scope, global, "setTimeout");
+    let Value::Object(set_timeout_func) = set_timeout else {
+      panic!("expected setTimeout to be a function object");
+    };
+
+    let bad_this = scope.alloc_object()?;
+    scope.push_root(Value::Object(bad_this))?;
+    let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_noop);
+
+    // Invoke through `Function.prototype.call` so we can control `this`.
+    let call_key_s = scope.alloc_string("call")?;
+    scope.push_root(Value::String(call_key_s))?;
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call = vm.get(&mut scope, set_timeout_func, call_key)?;
+    let err = vm.call(
+      &mut scope,
+      call,
+      Value::Object(set_timeout_func),
+      &[
+        Value::Object(bad_this),
+        Value::Object(timeout_cb),
+        Value::Number(0.0),
+      ],
+    );
+
+    let Err(VmError::TypeError(msg)) = err else {
+      panic!("expected TypeError for invalid this");
+    };
+    assert_eq!(msg, "setTimeout called with invalid this value");
+    Ok(())
+  }
+
+  #[test]
   fn set_timeout_rejects_symbol_delay() -> Result<(), VmError> {
     let mut host = Host::new();
 
