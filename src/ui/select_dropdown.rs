@@ -102,6 +102,10 @@ struct OpenSelectDropdown {
 #[derive(Debug, Default, Clone)]
 pub struct SelectDropdown {
   open: Option<OpenSelectDropdown>,
+  /// Last popup rectangle (in egui points when `SelectDropdown::ui` is used).
+  ///
+  /// This is primarily used by UIs to suppress page input while interacting with the dropdown.
+  last_popup_rect: Option<Rect>,
 }
 
 impl SelectDropdown {
@@ -111,14 +115,20 @@ impl SelectDropdown {
       control,
       anchor,
     });
+    self.last_popup_rect = None;
   }
 
   pub fn close(&mut self) {
     self.open = None;
+    self.last_popup_rect = None;
   }
 
   pub fn is_open(&self) -> bool {
     self.open.is_some()
+  }
+
+  pub fn popup_rect(&self) -> Option<Rect> {
+    self.last_popup_rect
   }
 
   pub fn choose_item(&self, item_index: usize) -> Option<SelectDropdownChoice> {
@@ -142,6 +152,7 @@ impl SelectDropdown {
   #[cfg(feature = "browser_ui")]
   pub fn ui(&mut self, ctx: &egui::Context) -> Option<SelectDropdownChoice> {
     let Some(open) = self.open.clone() else {
+      self.last_popup_rect = None;
       return None;
     };
 
@@ -167,32 +178,41 @@ impl SelectDropdown {
     let inner = area.show(ctx, |ui| {
       egui::Frame::popup(ui.style()).show(ui, |ui| {
         if let Some(anchor) = open.anchor {
-          ui.set_min_width(anchor.width());
+          let min_width = anchor.width().max(200.0);
+          if min_width.is_finite() && min_width > 0.0 {
+            ui.set_min_width(min_width);
+          }
         }
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
           for (idx, item) in open.control.items.iter().enumerate() {
             match item {
-              SelectItem::OptGroupLabel { label, .. } => {
+              SelectItem::OptGroupLabel { label, disabled } => {
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(egui::RichText::new(label).strong()));
+                let text = egui::RichText::new(label).strong();
+                if *disabled {
+                  ui.add_enabled(false, egui::Label::new(text));
+                } else {
+                  ui.label(text);
+                }
                 ui.add_space(2.0);
               }
               SelectItem::Option {
                 label,
+                value,
                 selected,
                 disabled,
                 in_optgroup,
                 ..
               } => {
-                let response = if *in_optgroup {
-                  ui.add_enabled(
-                    !*disabled,
-                    egui::SelectableLabel::new(*selected, format!("  {label}")),
-                  )
+                let base = if label.trim().is_empty() { value } else { label };
+                let text = if *in_optgroup {
+                  format!("  {base}")
                 } else {
-                  ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, label.as_str()))
+                  base.to_string()
                 };
+
+                let response = ui.add_enabled(!*disabled, egui::SelectableLabel::new(*selected, text));
                 if response.clicked() {
                   choice = self.choose_item(idx);
                 }
@@ -207,6 +227,13 @@ impl SelectDropdown {
       self.close();
       return choice;
     }
+
+    self.last_popup_rect = Some(Rect::from_xywh(
+      inner.response.rect.min.x,
+      inner.response.rect.min.y,
+      inner.response.rect.width(),
+      inner.response.rect.height(),
+    ));
 
     let clicked_outside = ctx.input(|i| {
       i.pointer.any_pressed()
