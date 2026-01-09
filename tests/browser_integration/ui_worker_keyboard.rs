@@ -40,6 +40,26 @@ fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender:
   })
 }
 
+fn try_wait_for_frame_ready(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  timeout: Duration,
+) -> Option<fastrender::ui::messages::RenderedFrame> {
+  let deadline = Instant::now() + timeout;
+  loop {
+    let now = Instant::now();
+    let remaining = deadline.checked_duration_since(now)?;
+    match rx.recv_timeout(remaining) {
+      Ok(msg) => match msg {
+        WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => return Some(frame),
+        _ => continue,
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return None,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+    }
+  }
+}
+
 fn make_test_page() -> (tempfile::TempDir, String) {
   let dir = tempdir().expect("temp dir");
   let html = r#"<!doctype html>
@@ -110,6 +130,61 @@ fn assert_pixel_rgb(pixmap: &tiny_skia::Pixmap, x: u32, y: u32, expected: (u8, u
     (expected.0, expected.1, expected.2, 255),
     "unexpected pixel at ({x}, {y})"
   );
+}
+
+fn make_tab_traversal_page() -> (tempfile::TempDir, String) {
+  let dir = tempdir().expect("temp dir");
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+
+          #a {
+            position: absolute;
+            left: 0;
+            top: 30px;
+            width: 80px;
+            height: 20px;
+          }
+
+          #b {
+            position: absolute;
+            left: 0;
+            top: 60px;
+            width: 80px;
+            height: 20px;
+          }
+
+          #status {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 20px;
+            height: 20px;
+            background: rgb(0,0,0);
+          }
+
+          /* Focus should set a deterministic marker color. */
+          #a[data-fastr-focus="true"] ~ #status { background: rgb(255,0,0); }
+          #b[data-fastr-focus="true"] ~ #status { background: rgb(0,0,255); }
+
+          /* Focus-visible should override focus when keyboard traversal is used. */
+          #a[data-fastr-focus-visible="true"] ~ #status { background: rgb(255,0,255); }
+          #b[data-fastr-focus-visible="true"] ~ #status { background: rgb(0,255,255); }
+        </style>
+      </head>
+      <body>
+        <input id="a" value="a" />
+        <input id="b" value="b" />
+        <div id="status"></div>
+      </body>
+    </html>
+  "#;
+
+  std::fs::write(dir.path().join("index.html"), html).expect("write html");
+  let url = format!("file://{}/index.html", dir.path().display());
+  (dir, url)
 }
 
 #[test]
@@ -219,6 +294,107 @@ fn key_action_sets_focus_visible() {
     .expect("Backspace");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 66, 32, (255, 255, 0));
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
+fn tab_and_shift_tab_traverse_focus_and_wrap_in_ui_worker() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_tab_traversal_page();
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-tab-traversal").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId(1);
+  ui_tx
+    .send(create_tab_msg(tab_id, None))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (120, 120), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  // No focus initially, so the status box stays black.
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 0));
+
+  // Tab from no focus should focus the first focusable element and set focus-visible.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::Tab,
+    })
+    .expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 255));
+
+  // Tab should advance to the next focusable element.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::Tab,
+    })
+    .expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 255));
+
+  // Tab should wrap back to the first focusable element.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::Tab,
+    })
+    .expect("Tab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 255));
+
+  // Click the background to clear focus so we can test Shift+Tab from "no focus".
+  ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (90.0, 90.0),
+      button: PointerButton::Primary,
+    })
+    .expect("PointerDown");
+  ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (90.0, 90.0),
+      button: PointerButton::Primary,
+    })
+    .expect("PointerUp");
+  let mut frame = wait_for_frame_ready(&ui_rx, tab_id);
+  // PointerDown/PointerUp may trigger 1 or 2 repaints depending on whether PointerDown mutated any
+  // DOM flags for the hit-tested element. If a second repaint arrives quickly, prefer it so we
+  // assert against the final post-PointerUp state.
+  if let Some(next) = try_wait_for_frame_ready(&ui_rx, tab_id, Duration::from_millis(250)) {
+    frame = next;
+  }
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 0, 0));
+
+  // Shift+Tab from no focus should focus the last focusable element and set focus-visible.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::ShiftTab,
+    })
+    .expect("ShiftTab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (0, 255, 255));
+
+  // Shift+Tab should traverse backwards.
+  ui_tx
+    .send(UiToWorker::KeyAction {
+      tab_id,
+      key: KeyAction::ShiftTab,
+    })
+    .expect("ShiftTab");
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  assert_pixel_rgb(&frame.pixmap, 10, 10, (255, 0, 255));
 
   drop(ui_tx);
   join.join().expect("join ui worker");
