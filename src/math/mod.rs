@@ -3780,6 +3780,43 @@ mod tests {
     );
   }
 
+  #[test]
+  fn mspace_clamps_negative_and_nan_lengths_to_zero() {
+    let style = ComputedStyle::default();
+
+    let nan_node = MathNode::Space {
+      width: MathLength::Em(f32::NAN),
+      height: MathLength::Em(f32::NAN),
+      depth: MathLength::Em(f32::NAN),
+    };
+    let layout = layout_mathml(&nan_node, &style, &FontContext::empty());
+    assert_eq!(layout.width, 0.0);
+    assert_eq!(layout.height, 0.0);
+    assert_eq!(layout.baseline, 0.0);
+
+    let negative_node = MathNode::Space {
+      width: MathLength::Em(-1.0),
+      height: MathLength::Em(-2.0),
+      depth: MathLength::Em(-3.0),
+    };
+    let layout = layout_mathml(&negative_node, &style, &FontContext::empty());
+    assert_eq!(layout.width, 0.0);
+    assert_eq!(layout.height, 0.0);
+    assert_eq!(layout.baseline, 0.0);
+
+    // If only one of height/depth is positive, the negative length must clamp to 0 without
+    // affecting the other dimension.
+    let mixed_node = MathNode::Space {
+      width: MathLength::Em(-1.0),
+      height: MathLength::Em(-1.0),
+      depth: MathLength::Em(1.0),
+    };
+    let layout = layout_mathml(&mixed_node, &style, &FontContext::empty());
+    assert_eq!(layout.width, 0.0);
+    assert_eq!(layout.baseline, 0.0);
+    assert!((layout.height - style.font_size).abs() < 0.001);
+  }
+
   fn math_font_context() -> FontContext {
     let mut cfg = FontConfig::bundled_only();
     cfg.font_dirs.push(
