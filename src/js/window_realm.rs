@@ -334,6 +334,13 @@ const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
 const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
 const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
+const ELEMENT_INNER_HTML_GET_KEY: &str = "__fastrender_element_inner_html_get";
+const ELEMENT_INNER_HTML_SET_KEY: &str = "__fastrender_element_inner_html_set";
+const ELEMENT_OUTER_HTML_GET_KEY: &str = "__fastrender_element_outer_html_get";
+const ELEMENT_OUTER_HTML_SET_KEY: &str = "__fastrender_element_outer_html_set";
+const ELEMENT_INSERT_ADJACENT_HTML_KEY: &str = "__fastrender_element_insert_adjacent_html";
+const ELEMENT_INSERT_ADJACENT_ELEMENT_KEY: &str = "__fastrender_element_insert_adjacent_element";
+const ELEMENT_INSERT_ADJACENT_TEXT_KEY: &str = "__fastrender_element_insert_adjacent_text";
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1033,6 +1040,34 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let inner_html_get = {
+    let key = alloc_key(scope, ELEMENT_INNER_HTML_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let inner_html_set = {
+    let key = alloc_key(scope, ELEMENT_INNER_HTML_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let outer_html_get = {
+    let key = alloc_key(scope, ELEMENT_OUTER_HTML_GET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let outer_html_set = {
+    let key = alloc_key(scope, ELEMENT_OUTER_HTML_SET_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let insert_adjacent_html = {
+    let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_HTML_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let insert_adjacent_element = {
+    let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_ELEMENT_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let insert_adjacent_text = {
+    let key = alloc_key(scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let wrapper = scope.alloc_object()?;
   scope.push_root(Value::Object(wrapper))?;
@@ -1092,6 +1127,53 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = set_attribute {
     let key = alloc_key(scope, "setAttribute")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (inner_html_get, inner_html_set) {
+    let key = alloc_key(scope, "innerHTML")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let (Some(Value::Object(get)), Some(Value::Object(set))) = (outer_html_get, outer_html_set) {
+    let key = alloc_key(scope, "outerHTML")?;
+    scope.define_property(
+      wrapper,
+      key,
+      PropertyDescriptor {
+        enumerable: false,
+        configurable: true,
+        kind: PropertyKind::Accessor {
+          get: Value::Object(get),
+          set: Value::Object(set),
+        },
+      },
+    )?;
+  }
+
+  if let Some(Value::Object(func)) = insert_adjacent_html {
+    let key = alloc_key(scope, "insertAdjacentHTML")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = insert_adjacent_element {
+    let key = alloc_key(scope, "insertAdjacentElement")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = insert_adjacent_text {
+    let key = alloc_key(scope, "insertAdjacentText")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -1803,6 +1885,519 @@ fn element_set_attribute_native(
   Ok(Value::Undefined)
 }
 
+fn element_inner_html_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.innerHTML must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.innerHTML requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.innerHTML must be called on an element object",
+      ));
+    }
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.innerHTML requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.innerHTML must be called on an element object"))?;
+
+  match dom.inner_html(node_id) {
+    Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_inner_html_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.innerHTML must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.innerHTML requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.innerHTML must be called on an element object",
+      ));
+    }
+  };
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.innerHTML requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.innerHTML must be called on an element object"))?;
+
+  if let Err(err) = dom.set_inner_html(node_id, &html) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_outer_html_get_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.outerHTML must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.outerHTML requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.outerHTML must be called on an element object",
+      ));
+    }
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.outerHTML requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.outerHTML must be called on an element object"))?;
+
+  match dom.outer_html(node_id) {
+    Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_outer_html_set_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.outerHTML must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.outerHTML requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.outerHTML must be called on an element object",
+      ));
+    }
+  };
+
+  let html_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.outerHTML requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.outerHTML must be called on an element object"))?;
+
+  if let Err(err) = dom.set_outer_html(node_id, &html) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_insert_adjacent_html_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentHTML must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentHTML requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentHTML must be called on an element object",
+      ));
+    }
+  };
+
+  let position_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position_value = scope.heap_mut().to_string(position_value)?;
+  let position = scope
+    .heap()
+    .get_string(position_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let html_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let html_value = scope.heap_mut().to_string(html_value)?;
+  let html = scope
+    .heap()
+    .get_string(html_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentHTML requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.insertAdjacentHTML must be called on an element object")
+  })?;
+
+  if let Err(err) = dom.insert_adjacent_html(node_id, &position, &html) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn element_insert_adjacent_element_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentElement must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentElement requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentElement must be called on an element object",
+      ));
+    }
+  };
+
+  let position_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position_value = scope.heap_mut().to_string(position_value)?;
+  let position = scope
+    .heap()
+    .get_string(position_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let element_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let Value::Object(element_obj) = element_value else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentElement requires an element argument",
+    ));
+  };
+
+  let child_source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(element_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentElement requires an element argument",
+      ));
+    }
+  };
+  if child_source_id != source_id {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentElement cannot move nodes between documents",
+    ));
+  }
+
+  let child_index = match scope
+    .heap()
+    .object_get_own_data_property_value(element_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentElement requires an element argument",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentElement requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.insertAdjacentElement must be called on an element object")
+  })?;
+  let child_node_id = dom.node_id_from_index(child_index).map_err(|_| {
+    VmError::TypeError("Element.insertAdjacentElement requires an element argument")
+  })?;
+
+  match dom.insert_adjacent_element(node_id, &position, child_node_id) {
+    Ok(Some(_)) => Ok(element_value),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_insert_adjacent_text_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentText must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentText requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.insertAdjacentText must be called on an element object",
+      ));
+    }
+  };
+
+  let position_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let position_value = scope.heap_mut().to_string(position_value)?;
+  let position = scope
+    .heap()
+    .get_string(position_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let text_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let text_value = scope.heap_mut().to_string(text_value)?;
+  let text = scope
+    .heap()
+    .get_string(text_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.insertAdjacentText requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom.node_id_from_index(node_index).map_err(|_| {
+    VmError::TypeError("Element.insertAdjacentText must be called on an element object")
+  })?;
+
+  if let Err(err) = dom.insert_adjacent_text(node_id, &position, &text) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn document_current_script_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2383,6 +2978,134 @@ fn init_window_globals(
   let id_set_key = alloc_key(&mut scope, ELEMENT_ID_SET_KEY)?;
   scope.define_property(document_obj, id_set_key, data_desc(Value::Object(id_set_func)))?;
 
+  // Store shared Element.innerHTML/outerHTML accessors on `document` so wrappers can reuse them.
+  let inner_html_get_call_id = vm.register_native_call(element_inner_html_get_native)?;
+  let inner_html_get_name = scope.alloc_string("get innerHTML")?;
+  scope.push_root(Value::String(inner_html_get_name))?;
+  let inner_html_get_func =
+    scope.alloc_native_function(inner_html_get_call_id, None, inner_html_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(inner_html_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(inner_html_get_func))?;
+  let inner_html_get_key = alloc_key(&mut scope, ELEMENT_INNER_HTML_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    inner_html_get_key,
+    data_desc(Value::Object(inner_html_get_func)),
+  )?;
+
+  let inner_html_set_call_id = vm.register_native_call(element_inner_html_set_native)?;
+  let inner_html_set_name = scope.alloc_string("set innerHTML")?;
+  scope.push_root(Value::String(inner_html_set_name))?;
+  let inner_html_set_func =
+    scope.alloc_native_function(inner_html_set_call_id, None, inner_html_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(inner_html_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(inner_html_set_func))?;
+  let inner_html_set_key = alloc_key(&mut scope, ELEMENT_INNER_HTML_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    inner_html_set_key,
+    data_desc(Value::Object(inner_html_set_func)),
+  )?;
+
+  let outer_html_get_call_id = vm.register_native_call(element_outer_html_get_native)?;
+  let outer_html_get_name = scope.alloc_string("get outerHTML")?;
+  scope.push_root(Value::String(outer_html_get_name))?;
+  let outer_html_get_func =
+    scope.alloc_native_function(outer_html_get_call_id, None, outer_html_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(outer_html_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(outer_html_get_func))?;
+  let outer_html_get_key = alloc_key(&mut scope, ELEMENT_OUTER_HTML_GET_KEY)?;
+  scope.define_property(
+    document_obj,
+    outer_html_get_key,
+    data_desc(Value::Object(outer_html_get_func)),
+  )?;
+
+  let outer_html_set_call_id = vm.register_native_call(element_outer_html_set_native)?;
+  let outer_html_set_name = scope.alloc_string("set outerHTML")?;
+  scope.push_root(Value::String(outer_html_set_name))?;
+  let outer_html_set_func =
+    scope.alloc_native_function(outer_html_set_call_id, None, outer_html_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(outer_html_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(outer_html_set_func))?;
+  let outer_html_set_key = alloc_key(&mut scope, ELEMENT_OUTER_HTML_SET_KEY)?;
+  scope.define_property(
+    document_obj,
+    outer_html_set_key,
+    data_desc(Value::Object(outer_html_set_func)),
+  )?;
+
+  // Store shared insertAdjacent* functions.
+  let insert_adjacent_html_call_id = vm.register_native_call(element_insert_adjacent_html_native)?;
+  let insert_adjacent_html_name = scope.alloc_string("insertAdjacentHTML")?;
+  scope.push_root(Value::String(insert_adjacent_html_name))?;
+  let insert_adjacent_html_func =
+    scope.alloc_native_function(insert_adjacent_html_call_id, None, insert_adjacent_html_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      insert_adjacent_html_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(insert_adjacent_html_func))?;
+  let insert_adjacent_html_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_HTML_KEY)?;
+  scope.define_property(
+    document_obj,
+    insert_adjacent_html_key,
+    data_desc(Value::Object(insert_adjacent_html_func)),
+  )?;
+
+  let insert_adjacent_element_call_id =
+    vm.register_native_call(element_insert_adjacent_element_native)?;
+  let insert_adjacent_element_name = scope.alloc_string("insertAdjacentElement")?;
+  scope.push_root(Value::String(insert_adjacent_element_name))?;
+  let insert_adjacent_element_func = scope.alloc_native_function(
+    insert_adjacent_element_call_id,
+    None,
+    insert_adjacent_element_name,
+    2,
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      insert_adjacent_element_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(insert_adjacent_element_func))?;
+  let insert_adjacent_element_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_ELEMENT_KEY)?;
+  scope.define_property(
+    document_obj,
+    insert_adjacent_element_key,
+    data_desc(Value::Object(insert_adjacent_element_func)),
+  )?;
+
+  let insert_adjacent_text_call_id = vm.register_native_call(element_insert_adjacent_text_native)?;
+  let insert_adjacent_text_name = scope.alloc_string("insertAdjacentText")?;
+  scope.push_root(Value::String(insert_adjacent_text_name))?;
+  let insert_adjacent_text_func =
+    scope.alloc_native_function(insert_adjacent_text_call_id, None, insert_adjacent_text_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      insert_adjacent_text_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(insert_adjacent_text_func))?;
+  let insert_adjacent_text_key = alloc_key(&mut scope, ELEMENT_INSERT_ADJACENT_TEXT_KEY)?;
+  scope.define_property(
+    document_obj,
+    insert_adjacent_text_key,
+    data_desc(Value::Object(insert_adjacent_text_func)),
+  )?;
+
   let current_script_guard = config
     .current_script_state
     .clone()
@@ -2587,18 +3310,18 @@ mod tests {
     LOCK.get_or_init(|| StdMutex::new(()))
   }
 
+  struct DomSourceGuard {
+    id: u64,
+  }
+
+  impl Drop for DomSourceGuard {
+    fn drop(&mut self) {
+      unregister_dom_source(self.id);
+    }
+  }
+
   #[test]
   fn document_element_class_name_mutates_dom2_document() -> Result<(), VmError> {
-    struct DomSourceGuard {
-      id: u64,
-    }
-
-    impl Drop for DomSourceGuard {
-      fn drop(&mut self) {
-        unregister_dom_source(self.id);
-      }
-    }
-
     let renderer_dom = crate::dom::parse_html("<!doctype html><html></html>").unwrap();
     let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
     let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
@@ -2609,6 +3332,141 @@ mod tests {
 
     let doc_el = dom.document_element().expect("document element should exist");
     assert_eq!(dom.element_class_name(doc_el), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn element_inner_html_round_trips_via_window_realm_shim() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script("document.getElementById('target').innerHTML = '<span>hi</span>'")?;
+    let inner = realm.exec_script("document.getElementById('target').innerHTML")?;
+    assert_eq!(get_string(realm.heap(), inner), "<span>hi</span>");
+
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    assert_eq!(dom.inner_html(target).unwrap(), "<span>hi</span>");
+    Ok(())
+  }
+
+  #[test]
+  fn element_outer_html_setter_replaces_node_in_dom2_via_window_realm_shim() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script("document.getElementById('child').outerHTML = '<p>one</p><p>two</p>'")?;
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(dom.inner_html(root).unwrap(), "<p>one</p><p>two</p>");
+
+    let outer = realm.exec_script("document.getElementById('root').outerHTML")?;
+    assert_eq!(
+      get_string(realm.heap(), outer),
+      r#"<div id="root"><p>one</p><p>two</p></div>"#
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_html_inserts_fragment_and_returns_undefined() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let result = realm.exec_script(
+      "document.getElementById('target').insertAdjacentHTML('beforeend', '<b>hi</b>')",
+    )?;
+    assert_eq!(result, Value::Undefined);
+
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    assert_eq!(dom.inner_html(target).unwrap(), "<b>hi</b>");
+
+    let err_name = realm.exec_script(
+      "try { document.getElementById('target').insertAdjacentHTML('nope', '<b>x</b>'); 'no' } catch (e) { e.name }",
+    )?;
+    assert_eq!(get_string(realm.heap(), err_name), "SyntaxError");
+
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_text_inserts_text() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=target></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    realm.exec_script("document.getElementById('target').insertAdjacentText('afterbegin', 'x')")?;
+
+    let target = dom.get_element_by_id("target").expect("missing #target");
+    assert_eq!(dom.inner_html(target).unwrap(), "x");
+    Ok(())
+  }
+
+  #[test]
+  fn element_insert_adjacent_element_inserts_and_returns_element() -> Result<(), VmError> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><html><body><div id=root><span id=target></span></div></body></html>",
+    )
+    .unwrap();
+    let mut dom = Box::new(dom2::Document::from_renderer_dom(&renderer_dom));
+    let dom_source_id = register_dom_source(NonNull::from(dom.as_mut()));
+    let _guard = DomSourceGuard { id: dom_source_id };
+
+    let mut realm = WindowRealm::new(
+      WindowRealmConfig::new("https://example.com/").with_dom_source_id(dom_source_id),
+    )?;
+
+    let inserted_is_same = realm.exec_script(
+      "(() => {\n\
+        const b = document.createElement('b');\n\
+        b.appendChild(document.createElement('i'));\n\
+        const target = document.getElementById('target');\n\
+        return target.insertAdjacentElement('beforebegin', b) === b;\n\
+      })()",
+    )?;
+    assert_eq!(inserted_is_same, Value::Bool(true));
+
+    let root = dom.get_element_by_id("root").expect("missing #root");
+    assert_eq!(
+      dom.inner_html(root).unwrap(),
+      r#"<b><i></i></b><span id="target"></span>"#
+    );
+
     Ok(())
   }
 
