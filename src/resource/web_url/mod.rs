@@ -136,6 +136,16 @@ mod tests {
   }
 
   #[test]
+  fn url_search_setter_updates_hash_when_value_includes_fragment() {
+    let limits = WebUrlLimits::default();
+    let url = WebUrl::parse("https://example.com/path#old", None, &limits).unwrap();
+    url.set_search("?a=b#new").unwrap();
+    assert_eq!(url.search().unwrap(), "?a=b");
+    assert_eq!(url.hash().unwrap(), "#new");
+    assert_eq!(url.href().unwrap(), "https://example.com/path?a=b#new");
+  }
+
+  #[test]
   fn urlsearchparams_encoding_spaces_and_plus() {
     let limits = WebUrlLimits::default();
     let params = WebUrlSearchParams::parse("a=1+2&b=3%2B4", &limits).unwrap();

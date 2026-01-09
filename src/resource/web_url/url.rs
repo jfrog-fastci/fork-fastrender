@@ -395,8 +395,18 @@ impl WebUrl {
         url.set_query(None);
         return Ok(());
       }
-      let query = value.strip_prefix('?').unwrap_or(value);
+      let input = value.strip_prefix('?').unwrap_or(value);
+      // The WHATWG `URL.search` setter runs the URL parser in "query state", where `#` starts the
+      // fragment. `url::Url::set_query` percent-encodes `#` as `%23`, so we split on `#` ourselves
+      // to preserve delimiter semantics.
+      let (query, fragment) = match input.split_once('#') {
+        Some((query, fragment)) => (query, Some(fragment)),
+        None => (input, None),
+      };
       url.set_query(Some(query));
+      if let Some(fragment) = fragment {
+        url.set_fragment(Some(fragment));
+      }
       Ok(())
     })
   }
