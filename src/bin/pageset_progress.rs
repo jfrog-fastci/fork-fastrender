@@ -1546,11 +1546,21 @@ fn ensure_disk_cache_feature_available() {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProgressAccuracyFirstMismatch {
+  x: u32,
+  y: u32,
+  rendered_rgba: [u8; 4],
+  baseline_rgba: [u8; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ProgressAccuracy {
   baseline: String,
   diff_pixels: u64,
   diff_percent: f64,
   perceptual: f64,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  first_mismatch: Option<ProgressAccuracyFirstMismatch>,
   tolerance: u8,
   max_diff_percent: f64,
   #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1571,11 +1581,23 @@ impl ProgressAccuracy {
     baseline: &str,
     computed_at_commit: Option<&str>,
   ) -> Self {
+    let first_mismatch = diff.statistics.first_mismatch.and_then(|(x, y)| {
+      diff.statistics.first_mismatch_rgba.map(|(rendered_rgba, baseline_rgba)| {
+        ProgressAccuracyFirstMismatch {
+          x,
+          y,
+          rendered_rgba,
+          baseline_rgba,
+        }
+      })
+    });
+
     Self {
       baseline: baseline.to_string(),
       diff_pixels: diff.statistics.different_pixels,
       diff_percent: round_accuracy_metric(diff.statistics.different_percent, 4),
       perceptual: round_accuracy_metric(diff.statistics.perceptual_distance, 4),
+      first_mismatch,
       tolerance: diff.config.channel_tolerance,
       max_diff_percent: diff.config.max_different_percent,
       computed_at_commit: computed_at_commit.unwrap_or_default().to_string(),
@@ -1673,6 +1695,7 @@ fn compute_accuracy_for_pixmap(
       diff_pixels: expected_total_pixels,
       diff_percent: 100.0,
       perceptual: 1.0,
+      first_mismatch: None,
       tolerance,
       max_diff_percent,
       computed_at_commit: computed_at_commit.unwrap_or_default().to_string(),
@@ -5334,6 +5357,9 @@ fn print_accuracy_block(acc: &ProgressAccuracy, indent: &str) {
     acc.tolerance,
     acc.max_diff_percent
   );
+  if let Some(mismatch) = acc.first_mismatch.as_ref() {
+    line.push_str(&format!(" first_mismatch=({}, {})", mismatch.x, mismatch.y));
+  }
   if !acc.computed_at_commit.trim().is_empty() {
     line.push_str(&format!(" computed_at_commit={}", acc.computed_at_commit));
   }
@@ -12220,6 +12246,7 @@ mod tests {
       diff_pixels: 123,
       diff_percent: 1.2345,
       perceptual: 0.042,
+      first_mismatch: None,
       tolerance: 0,
       max_diff_percent: 0.0,
       computed_at_commit: "deadbeef".to_string(),
@@ -12244,6 +12271,8 @@ mod tests {
 
     let baseline_bytes = fs::read(baseline_fixture).expect("read baseline fixture");
     let rendered_bytes = fs::read(rendered_fixture).expect("read rendered fixture");
+    let baseline_img =
+      image_compare::decode_png(&baseline_bytes).expect("decode baseline fixture PNG");
     let rendered_img =
       image_compare::decode_png(&rendered_bytes).expect("decode rendered fixture PNG");
 
@@ -12272,6 +12301,31 @@ mod tests {
     assert_eq!(acc.diff_pixels, 1);
     assert_eq!(acc.diff_percent, 25.0);
     assert!(acc.perceptual > 0.0, "perceptual={}", acc.perceptual);
+    let expected_mismatch = {
+      let mut found = None;
+      for y in 0..baseline_img.height() {
+        for x in 0..baseline_img.width() {
+          let rendered_px = rendered_img.get_pixel(x, y).0;
+          let baseline_px = baseline_img.get_pixel(x, y).0;
+          if rendered_px != baseline_px {
+            found = Some((x, y, rendered_px, baseline_px));
+            break;
+          }
+        }
+        if found.is_some() {
+          break;
+        }
+      }
+      found
+    };
+    let Some((x, y, rendered_px, baseline_px)) = expected_mismatch else {
+      panic!("expected at least one mismatching pixel in fixture");
+    };
+    let mismatch = acc.first_mismatch.expect("expected first_mismatch to be populated");
+    assert_eq!(mismatch.x, x);
+    assert_eq!(mismatch.y, y);
+    assert_eq!(mismatch.rendered_rgba, rendered_px);
+    assert_eq!(mismatch.baseline_rgba, baseline_px);
     assert_eq!(acc.tolerance, 0);
     assert_eq!(acc.max_diff_percent, 0.0);
     assert_eq!(acc.computed_at_commit, "deadbeef");

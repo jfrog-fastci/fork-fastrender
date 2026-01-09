@@ -47,6 +47,16 @@ struct MetricsSummary {
   pixel_diff: u64,
   diff_percentage: f64,
   perceptual_distance: f64,
+  #[serde(default)]
+  first_mismatch: Option<FirstMismatchSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FirstMismatchSummary {
+  x: u32,
+  y: u32,
+  before_rgba: [u8; 4],
+  after_rgba: [u8; 4],
 }
 
 pub fn run_sync_progress_accuracy(mut args: SyncProgressAccuracyArgs) -> Result<()> {
@@ -219,6 +229,19 @@ fn build_accuracy_value(
     Value::Number(diff_percent_value),
   );
   obj.insert("perceptual".to_string(), Value::Number(perceptual_value));
+  if let Some(mismatch) = metrics.first_mismatch.as_ref() {
+    obj.insert(
+      "first_mismatch".to_string(),
+      serde_json::json!({
+        "x": mismatch.x,
+        "y": mismatch.y,
+        // The diff_renders report always records `before` as the baseline (Chrome) and `after` as
+        // the current render (FastRender).
+        "baseline_rgba": mismatch.before_rgba,
+        "rendered_rgba": mismatch.after_rgba,
+      }),
+    );
+  }
   obj.insert(
     "tolerance".to_string(),
     Value::Number(serde_json::Number::from(tolerance as u64)),

@@ -58,7 +58,13 @@ fn write_report(path: &Path) {
         "pixel_diff": 123,
         "total_pixels": 1000,
         "diff_percentage": 12.3456789,
-        "perceptual_distance": 0.1234567
+        "perceptual_distance": 0.1234567,
+        "first_mismatch": {
+          "x": 10,
+          "y": 20,
+          "before_rgba": [1, 2, 3, 4],
+          "after_rgba": [250, 251, 252, 253]
+        }
       }
     }]
   });
@@ -125,6 +131,36 @@ fn sync_progress_accuracy_writes_accuracy_block() {
   assert_eq!(
     accuracy.get("computed_at_commit").and_then(|v| v.as_str()),
     Some(sha.as_str())
+  );
+
+  let mismatch = accuracy
+    .get("first_mismatch")
+    .expect("first_mismatch should be present when reported");
+  assert_eq!(mismatch.get("x").and_then(|v| v.as_u64()), Some(10));
+  assert_eq!(mismatch.get("y").and_then(|v| v.as_u64()), Some(20));
+  assert_eq!(
+    mismatch.get("baseline_rgba").and_then(|v| v.as_array()).map(|arr| arr.len()),
+    Some(4)
+  );
+  assert_eq!(
+    mismatch
+      .get("baseline_rgba")
+      .and_then(|v| v.as_array())
+      .and_then(|arr| arr.get(0))
+      .and_then(|v| v.as_u64()),
+    Some(1)
+  );
+  assert_eq!(
+    mismatch.get("rendered_rgba").and_then(|v| v.as_array()).map(|arr| arr.len()),
+    Some(4)
+  );
+  assert_eq!(
+    mismatch
+      .get("rendered_rgba")
+      .and_then(|v| v.as_array())
+      .and_then(|arr| arr.get(0))
+      .and_then(|v| v.as_u64()),
+    Some(250)
   );
 }
 
