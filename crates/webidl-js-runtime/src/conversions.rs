@@ -243,10 +243,8 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
           "[Clamp]/[EnforceRange] annotations cannot apply to `object`",
         ));
       }
-      if !rt.is_object(v) {
-        return Err(rt.throw_type_error("Value is not an object"));
-      }
-      Ok(ConvertedValue::Object(v))
+      let obj = rt.to_object(v)?;
+      Ok(ConvertedValue::Object(obj))
     }
 
     IdlType::Symbol => Err(rt.throw_type_error("`symbol` conversions are not supported yet")),
@@ -264,6 +262,15 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
       convert_to_sequence(rt, v, elem_ty, ctx, typedef_stack)
     }
 
+    IdlType::FrozenArray(elem_ty) => {
+      if !state.int_attrs.is_empty() {
+        return Err(rt.throw_type_error(
+          "[Clamp]/[EnforceRange] annotations cannot apply to `FrozenArray`",
+        ));
+      }
+      convert_to_sequence(rt, v, elem_ty, ctx, typedef_stack)
+    }
+
     IdlType::Record(key_ty, value_ty) => {
       if !state.int_attrs.is_empty() {
         return Err(rt.throw_type_error(
@@ -274,8 +281,7 @@ fn convert_to_idl_inner<R: WebIdlJsRuntime>(
     }
 
     // Non-MVP types.
-    IdlType::FrozenArray(_)
-    | IdlType::AsyncSequence(_)
+    IdlType::AsyncSequence(_)
     | IdlType::Promise(_) => Err(rt.throw_type_error("WebIDL type conversion is not supported yet")),
   }
 }

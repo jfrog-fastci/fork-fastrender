@@ -203,3 +203,71 @@ fn interface_named_type_rejects_wrong_interface() {
 
   assert!(convert_to_idl(&mut rt, obj, &ty, &ctx).is_err());
 }
+
+#[test]
+fn object_conversion_uses_to_object() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let converted = convert_to_idl(&mut rt, Value::Bool(true), &IdlType::Object, &ctx).unwrap();
+  let ConvertedValue::Object(obj) = converted else {
+    panic!("expected object, got {converted:?}");
+  };
+  assert!(rt.is_object(obj));
+}
+
+#[test]
+fn frozen_array_conversion_from_custom_iterable() {
+  let mut rt = VmJsRuntime::new();
+  let ctx = TypeContext::default();
+
+  let next_key = rt.property_key_from_str("next").unwrap();
+  let done_key = rt.property_key_from_str("done").unwrap();
+  let value_key = rt.property_key_from_str("value").unwrap();
+
+  let iterator_obj = rt.alloc_object_value().unwrap();
+
+  let idx = Rc::new(Cell::new(0usize));
+  let values = Rc::new(vec![Value::Number(1.0), Value::Number(2.0)]);
+  let idx_for_next = idx.clone();
+  let values_for_next = values.clone();
+
+  let next_fn = rt
+    .alloc_function_value(move |rt, _this, _args| {
+      let i = idx_for_next.get();
+      let result_obj = rt.alloc_object_value()?;
+      if i >= values_for_next.len() {
+        rt.define_data_property(result_obj, done_key, Value::Bool(true), true)?;
+        rt.define_data_property(result_obj, value_key, Value::Undefined, true)?;
+      } else {
+        rt.define_data_property(result_obj, done_key, Value::Bool(false), true)?;
+        rt.define_data_property(result_obj, value_key, values_for_next[i], true)?;
+        idx_for_next.set(i + 1);
+      }
+      Ok(result_obj)
+    })
+    .unwrap();
+
+  rt.define_data_property(iterator_obj, next_key, next_fn, true)
+    .unwrap();
+
+  let iterator_getter = rt
+    .alloc_function_value(move |_rt, _this, _args| Ok(iterator_obj))
+    .unwrap();
+
+  let iterable_obj = rt.alloc_object_value().unwrap();
+  let iterator_sym = rt.symbol_iterator().unwrap();
+  rt.define_data_property(iterable_obj, iterator_sym, iterator_getter, true)
+    .unwrap();
+
+  let ty = IdlType::FrozenArray(Box::new(IdlType::Numeric(NumericType::Long)));
+  let converted = convert_to_idl(&mut rt, iterable_obj, &ty, &ctx).unwrap();
+
+  let ConvertedValue::Sequence { values, .. } = converted else {
+    panic!("expected frozen array to convert as sequence, got {converted:?}");
+  };
+  assert_eq!(
+    values,
+    vec![ConvertedValue::Long(1), ConvertedValue::Long(2)]
+  );
+}
