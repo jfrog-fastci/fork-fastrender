@@ -4,7 +4,7 @@ use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::float::{Clear, Float};
-use fastrender::style::types::Direction;
+use fastrender::style::types::{Direction, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContext, FragmentNode};
 
@@ -20,6 +20,24 @@ fn float_block(float: Float) -> BoxNode {
   let mut style = block_style();
   style.float = float;
   style.clear = Clear::Both;
+  style.width = Some(Length::px(50.0));
+  style.width_keyword = None;
+  style.height = Some(Length::px(10.0));
+  style.height_keyword = None;
+  style.margin_top = Some(Length::px(0.0));
+  style.margin_bottom = Some(Length::px(0.0));
+  style.margin_left = Some(Length::px(0.0));
+  style.margin_right = Some(Length::px(0.0));
+
+  BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+}
+
+fn float_block_with_writing_mode(float: Float, writing_mode: WritingMode, direction: Direction) -> BoxNode {
+  let mut style = block_style();
+  style.float = float;
+  style.clear = Clear::Both;
+  style.writing_mode = writing_mode;
+  style.direction = direction;
   style.width = Some(Length::px(50.0));
   style.width_keyword = None;
   style.height = Some(Length::px(10.0));
@@ -178,3 +196,112 @@ fn rtl_clear_left_does_not_clear_inline_start_floats() {
   );
 }
 
+#[test]
+fn vertical_writing_mode_inline_start_end_float_to_top_and_bottom_in_ltr() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Ltr;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![
+      float_block_with_writing_mode(Float::InlineStart, writing_mode, direction),
+      float_block_with_writing_mode(Float::InlineEnd, writing_mode, direction),
+    ],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let float_inline_start =
+    find_by_style(&fragment, &|s| s.float == Float::InlineStart).expect("float:inline-start");
+  let float_inline_end =
+    find_by_style(&fragment, &|s| s.float == Float::InlineEnd).expect("float:inline-end");
+
+  let container_height = fragment.bounds.height();
+  let float_height = float_inline_start.bounds.height();
+
+  assert!(
+    float_inline_start.bounds.y().abs() <= EPS,
+    "expected float:inline-start to align with physical top in vertical writing mode LTR (y={:.2})",
+    float_inline_start.bounds.y()
+  );
+  assert!(
+    (float_inline_end.bounds.y() - (container_height - float_height)).abs() <= EPS,
+    "expected float:inline-end to align with physical bottom in vertical writing mode LTR (y={:.2}, container_h={:.2}, float_h={:.2})",
+    float_inline_end.bounds.y(),
+    container_height,
+    float_height
+  );
+}
+
+#[test]
+fn vertical_writing_mode_inline_start_end_flip_in_rtl() {
+  let writing_mode = WritingMode::VerticalRl;
+  let direction = Direction::Rtl;
+
+  let mut root_style = block_style();
+  root_style.writing_mode = writing_mode;
+  root_style.direction = direction;
+  root_style.width = Some(Length::px(200.0));
+  root_style.width_keyword = None;
+  root_style.height = Some(Length::px(200.0));
+  root_style.height_keyword = None;
+  root_style.margin_top = Some(Length::px(0.0));
+  root_style.margin_bottom = Some(Length::px(0.0));
+  root_style.margin_left = Some(Length::px(0.0));
+  root_style.margin_right = Some(Length::px(0.0));
+  let root_style = Arc::new(root_style);
+
+  let root = BoxNode::new_block(
+    root_style,
+    FormattingContextType::Block,
+    vec![
+      float_block_with_writing_mode(Float::InlineStart, writing_mode, direction),
+      float_block_with_writing_mode(Float::InlineEnd, writing_mode, direction),
+    ],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let float_inline_start =
+    find_by_style(&fragment, &|s| s.float == Float::InlineStart).expect("float:inline-start");
+  let float_inline_end =
+    find_by_style(&fragment, &|s| s.float == Float::InlineEnd).expect("float:inline-end");
+
+  let container_height = fragment.bounds.height();
+  let float_height = float_inline_start.bounds.height();
+
+  assert!(
+    (float_inline_start.bounds.y() - (container_height - float_height)).abs() <= EPS,
+    "expected float:inline-start to align with physical bottom in vertical writing mode RTL (y={:.2}, container_h={:.2}, float_h={:.2})",
+    float_inline_start.bounds.y(),
+    container_height,
+    float_height
+  );
+  assert!(
+    float_inline_end.bounds.y().abs() <= EPS,
+    "expected float:inline-end to align with physical top in vertical writing mode RTL (y={:.2})",
+    float_inline_end.bounds.y()
+  );
+}
