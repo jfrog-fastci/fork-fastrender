@@ -922,6 +922,38 @@ fn transitions_expand_border_radius_shorthand_to_corner_longhands() {
 }
 
 #[test]
+fn transitions_shorthand_expansion_dedupes_by_expanded_longhand_name() {
+  // CSS Transitions 2: transitions are keyed by the "expanded transition property name" (longhand).
+  // Ensure that when shorthands and longhands overlap, the longhand entry wins after expansion so
+  // duration/delay lists are indexed correctly.
+  let html = r#"
+    <style>
+      @starting-style { #box { border: 0px solid rgb(0, 0, 0); } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border: 10px solid rgb(0, 0, 0);
+        transition-property: border, border-top-width;
+        transition-duration: 1000ms, 2000ms;
+        transition-timing-function: linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  // 500ms into the transition:
+  // - `border` (1000ms) would yield 5px.
+  // - `border-top-width` (2000ms) should win after expansion and yields 2.5px.
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((fragment_border_top_width(&mid, box_id) - 2.5).abs() < 1e-3);
+}
+
+#[test]
 fn transitions_do_not_start_border_style_transition_without_allow_discrete() {
   let html = r#"
     <style>
