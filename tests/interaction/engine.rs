@@ -3683,6 +3683,194 @@ fn range_arrow_keys_step_value() {
 }
 
 #[test]
+fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel")],
+        vec![
+          el("option", vec![("id", "o0"), ("disabled", "")], vec![]),
+          el("option", vec![("id", "o1")], vec![]),
+          el("option", vec![("id", "o2"), ("selected", "")], vec![]),
+          el(
+            "optgroup",
+            vec![("id", "g"), ("label", "Disabled group"), ("disabled", "")],
+            vec![el("option", vec![("id", "o3")], vec![])],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "sel");
+  let o0_dom_id = node_id(&dom, "o0");
+  let o1_dom_id = node_id(&dom, "o1");
+  let o2_dom_id = node_id(&dom, "o2");
+  let o3_dom_id = node_id(&dom, "o3");
+
+  let control = FormControlKind::Select(SelectControl {
+    multiple: false,
+    size: 1,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        node_id: o0_dom_id,
+        label: "Zero".to_string(),
+        value: "0".to_string(),
+        selected: false,
+        disabled: true,
+        in_optgroup: false,
+        option_node_id: o0_dom_id,
+      },
+      SelectItem::Option {
+        node_id: o1_dom_id,
+        label: "One".to_string(),
+        value: "1".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o1_dom_id,
+      },
+      SelectItem::Option {
+        node_id: o2_dom_id,
+        label: "Two".to_string(),
+        value: "2".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o2_dom_id,
+      },
+      SelectItem::OptGroupLabel {
+        label: "Disabled group".to_string(),
+        disabled: true,
+      },
+      SelectItem::Option {
+        node_id: o3_dom_id,
+        label: "Three".to_string(),
+        value: "3".to_string(),
+        selected: false,
+        // Disabled via optgroup.
+        disabled: true,
+        in_optgroup: true,
+        option_node_id: o3_dom_id,
+      },
+    ]),
+    selected: vec![2],
+  });
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(FormControl {
+      control,
+      appearance: Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    }),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(select_dom_id), false);
+
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "select should be focused"
+  );
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+
+  // Home should jump to the first enabled <option> (o1), skipping disabled o0.
+  assert!(
+    engine.key_action_with_box_tree(&mut dom, Some(&box_tree), KeyAction::Home),
+    "expected Home to update select state"
+  );
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o0", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
+    Some("true"),
+    "keyboard interaction should set focus-visible"
+  );
+
+  // End should jump to the last enabled <option> (o2), skipping disabled optgroup option o3.
+  assert!(
+    engine.key_action_with_box_tree(&mut dom, Some(&box_tree), KeyAction::End),
+    "expected End to update select state"
+  );
+  assert!(has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+}
+
+#[test]
+fn select_home_end_keys_jump_to_first_and_last_enabled_option_dom_fallback() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel")],
+        vec![
+          el("option", vec![("id", "o0"), ("disabled", "")], vec![]),
+          el("option", vec![("id", "o1")], vec![]),
+          el("option", vec![("id", "o2"), ("selected", "")], vec![]),
+          el(
+            "optgroup",
+            vec![("id", "g"), ("label", "Disabled group"), ("disabled", "")],
+            vec![el("option", vec![("id", "o3")], vec![])],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "sel");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(select_dom_id), false);
+
+  engine.key_action(&mut dom, KeyAction::Home);
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
+    Some("true"),
+    "keyboard interaction should set focus-visible"
+  );
+
+  engine.key_action(&mut dom, KeyAction::End);
+  assert!(has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+}
+
+#[test]
 fn disabled_and_readonly_range_inputs_do_not_update_value() {
   let mut dom = doc(vec![el(
     "html",

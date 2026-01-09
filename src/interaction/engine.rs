@@ -2028,6 +2028,15 @@ impl InteractionEngine {
             changed |= dom_mutation::step_range_value(node_mut, delta);
           }
         } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+          if matches!(key, KeyAction::Home | KeyAction::End)
+            && index
+              .node(focused)
+              .is_some_and(|node| node.get_attribute_ref("multiple").is_some())
+          {
+            // Home/End selection is only supported for single-select controls.
+            return changed;
+          }
+
           // Prefer the `BoxTree`'s `SelectControl` snapshot when available so keyboard navigation
           // matches what is painted (e.g. skipping `display:none` options). Fall back to DOM order
           // before the first render.
