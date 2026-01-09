@@ -7493,7 +7493,7 @@ impl TransitionState {
       return Arc::new(end_style.clone());
     };
 
-    let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
+    let mut updates: Vec<(String, AnimatedValue)> = Vec::new();
     let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
 
     for (name, idx) in pairs {
@@ -7529,7 +7529,7 @@ impl TransitionState {
         elapsed,
         &ctx,
       ) {
-        updates.insert(name.to_string(), animated);
+        updates.push((name.to_string(), animated));
       }
     }
 
@@ -7538,7 +7538,7 @@ impl TransitionState {
     }
 
     let mut updated_style = end_style.clone();
-    apply_animated_properties(&mut updated_style, &updates);
+    apply_animated_properties_ordered(&mut updated_style, &updates);
     let mut custom_properties_changed = false;
     for (name, value) in custom_updates {
       let needs_update = updated_style
@@ -7555,7 +7555,7 @@ impl TransitionState {
     if custom_properties_changed {
       let parent_styles = default_parent_style();
       updated_style.recompute_var_dependent_properties(parent_styles, viewport);
-      apply_animated_properties(&mut updated_style, &updates);
+      apply_animated_properties_ordered(&mut updated_style, &updates);
     }
     Arc::new(updated_style)
   }
