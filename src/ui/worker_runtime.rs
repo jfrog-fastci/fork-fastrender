@@ -2,6 +2,7 @@ use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions, RenderOptio
 use crate::dom::DomNode;
 use crate::geometry::{Point, Size};
 use crate::interaction::{InteractionAction, InteractionEngine};
+use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::text::font_db::FontConfig;
@@ -11,7 +12,36 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
+
+fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
+  let listener = Arc::new(move |stage: StageHeartbeat| {
+    // Best-effort: UI might have dropped its receiver.
+    let _ = sender.send(WorkerToUi::Stage { tab_id, stage });
+  });
+  push_stage_listener(Some(listener))
+}
+
+struct LoadingStateGuard {
+  tab_id: TabId,
+  tx: Sender<WorkerToUi>,
+}
+
+impl LoadingStateGuard {
+  fn new(tab_id: TabId, tx: Sender<WorkerToUi>) -> Self {
+    Self { tab_id, tx }
+  }
+}
+
+impl Drop for LoadingStateGuard {
+  fn drop(&mut self) {
+    let _ = self.tx.send(WorkerToUi::LoadingState {
+      tab_id: self.tab_id,
+      loading: false,
+    });
+  }
+}
 
 struct TabState {
   renderer: Option<FastRender>,
@@ -279,6 +309,7 @@ impl BrowserWorkerRuntime {
       tab_id,
       loading: true,
     });
+    let _loading_guard = LoadingStateGuard::new(tab_id, self.ui_tx.clone());
 
     if !Self::supported_navigation(&url) {
       let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
@@ -287,10 +318,6 @@ impl BrowserWorkerRuntime {
         error: "unsupported URL scheme".to_string(),
         can_go_back: tab.history.can_go_back(),
         can_go_forward: tab.history.can_go_forward(),
-      });
-      let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-        tab_id,
-        loading: false,
       });
       return;
     }
@@ -328,10 +355,6 @@ impl BrowserWorkerRuntime {
             can_go_back: tab.history.can_go_back(),
             can_go_forward: tab.history.can_go_forward(),
           });
-          let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-            tab_id,
-            loading: false,
-          });
           return;
         }
       }
@@ -342,13 +365,10 @@ impl BrowserWorkerRuntime {
         tab_id,
         line: "renderer unavailable after initialization".to_string(),
       });
-      let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-        tab_id,
-        loading: false,
-      });
       return;
     };
 
+    let _stage_guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
     let prepared = if about_pages::is_about_url(&url) {
       let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
         about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
@@ -371,10 +391,6 @@ impl BrowserWorkerRuntime {
           error: err.to_string(),
           can_go_back: tab.history.can_go_back(),
           can_go_forward: tab.history.can_go_forward(),
-        });
-        let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-          tab_id,
-          loading: false,
         });
         return;
       }
@@ -406,11 +422,6 @@ impl BrowserWorkerRuntime {
     });
 
     self.render_current(tab_id, RepaintReason::Navigation);
-
-    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
-      tab_id,
-      loading: false,
-    });
   }
 
   fn coalesce_scroll(
