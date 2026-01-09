@@ -3089,6 +3089,65 @@ fn footnote_float_generates_call_and_page_footnote_area() {
 }
 
 #[test]
+fn footnote_body_in_multicol_uses_page_width_in_footnote_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .multi { column-count: 2; column-gap: 0; }
+          .note { float: footnote; display: block; }
+        </style>
+      </head>
+      <body>
+        <div class="multi">
+          <p>
+            Alpha<span class="note">
+              Footnote body with enough words to wrap across lines when constrained to a single
+              column.
+            </span>
+          </p>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(!page_roots.is_empty());
+
+  let page1 = page_roots[0];
+  assert_eq!(
+    page1.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+  let content = page1.children.first().expect("page content");
+  let page_width = content.bounds.width();
+
+  let footnote_area = page1.children.get(1).expect("footnote area");
+  assert!(
+    footnote_area.children.len() >= 2,
+    "expected footnote area to include separator + footnote body"
+  );
+  let footnote_body = footnote_area.children.get(1).expect("footnote body");
+
+  // The footnote body should be laid out using the page footnote area width (full page content
+  // box), not the call site's column width.
+  assert!(
+    (footnote_body.bounds.width() - page_width).abs() < 0.1,
+    "expected footnote body width to match page content width (page_width={page_width}, footnote_width={})",
+    footnote_body.bounds.width()
+  );
+}
+
+#[test]
 fn footnote_overflow_defers_later_calls_to_next_page() {
   let html = r#"
     <html>

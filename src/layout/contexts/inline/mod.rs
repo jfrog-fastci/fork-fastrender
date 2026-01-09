@@ -548,10 +548,23 @@ impl InlineFormattingContext {
     available_width: f32,
   ) -> Result<FootnoteInfo, LayoutError> {
     let snapshot_node = body.clone();
-    let inline_size = if available_width.is_finite() {
+    // `float: footnote` bodies are laid out in the per-page footnote area (CSS GCPM/CSS Footnotes),
+    // which spans the full page content box rather than the call site's inline formatting context.
+    //
+    // The call site may live inside a narrower fragmentainer (e.g. a multicol column), so using the
+    // call site's available inline size would snapshot the body at column width and then reuse that
+    // narrow layout in the page footnote area. Prefer the page viewport's inline size instead.
+    let viewport_inline_size = if crate::style::inline_axis_is_horizontal(body.style.writing_mode) {
+      self.viewport_size.width
+    } else {
+      self.viewport_size.height
+    };
+    let inline_size = if viewport_inline_size.is_finite() {
+      viewport_inline_size.max(0.0)
+    } else if available_width.is_finite() {
       available_width.max(0.0)
     } else {
-      self.viewport_size.width
+      0.0
     };
     let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
       if snapshot_node.is_block_level() {
