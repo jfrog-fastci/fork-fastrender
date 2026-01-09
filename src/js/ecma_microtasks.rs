@@ -289,6 +289,14 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     JOB_CALLBACK_CALL_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
   }
 
+  type CurrentRealmLog = Arc<Mutex<Option<Option<vm_js::RealmId>>>>;
+
+  static CURRENT_REALM_LOGS: OnceLock<Mutex<HashMap<usize, CurrentRealmLog>>> = OnceLock::new();
+
+  fn current_realm_logs() -> &'static Mutex<HashMap<usize, CurrentRealmLog>> {
+    CURRENT_REALM_LOGS.get_or_init(|| Mutex::new(HashMap::new()))
+  }
+
   struct HeapCallLogGuard {
     heap_ptr: usize,
   }
@@ -312,6 +320,25 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       .unwrap()
       .insert(heap_ptr, log);
     HeapCallLogGuard { heap_ptr }
+  }
+
+  struct HeapCurrentRealmLogGuard {
+    heap_ptr: usize,
+  }
+
+  impl Drop for HeapCurrentRealmLogGuard {
+    fn drop(&mut self) {
+      current_realm_logs().lock().unwrap().remove(&self.heap_ptr);
+    }
+  }
+
+  fn install_current_realm_log(
+    heap: &vm_js::Heap,
+    log: CurrentRealmLog,
+  ) -> HeapCurrentRealmLogGuard {
+    let heap_ptr = heap as *const vm_js::Heap as usize;
+    current_realm_logs().lock().unwrap().insert(heap_ptr, log);
+    HeapCurrentRealmLogGuard { heap_ptr }
   }
 
   fn record_native_call(
@@ -344,6 +371,26 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     record_native_call(scope.heap(), callee, this, args);
+    Ok(vm_js::Value::Undefined)
+  }
+
+  fn record_current_realm_native(
+    vm: &mut vm_js::Vm,
+    scope: &mut vm_js::Scope<'_>,
+    _host: &mut dyn vm_js::VmHostHooks,
+    _callee: vm_js::GcObject,
+    _this: vm_js::Value,
+    _args: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    let heap_ptr = scope.heap() as *const vm_js::Heap as usize;
+    let log = current_realm_logs()
+      .lock()
+      .unwrap()
+      .get(&heap_ptr)
+      .cloned();
+    if let Some(log) = log {
+      *log.lock().unwrap() = Some(vm.current_realm());
+    }
     Ok(vm_js::Value::Undefined)
   }
 
@@ -777,6 +824,85 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       ctx.remove_root(root_id);
     }
     assert_eq!(host.heap_b.get_root(root_id), None);
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_call_under_the_enqueued_realm() -> crate::Result<()> {
+    let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
+
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let observed: Arc<Mutex<Option<Option<vm_js::RealmId>>>> = Arc::new(Mutex::new(None));
+    let _log_guard = install_current_realm_log(&host.heap, Arc::clone(&observed));
+
+    let call_id = host
+      .vm
+      .register_native_call(record_current_realm_native)
+      .map_err(vm_err)?;
+
+    let callback_func = {
+      let mut scope = host.heap.scope();
+      let name = scope.alloc_string("recordRealm").map_err(vm_err)?;
+      scope.push_root(vm_js::Value::String(name)).map_err(vm_err)?;
+      scope
+        .alloc_native_function(call_id, None, name, 0)
+        .map_err(vm_err)?
+    };
+
+    let realm = vm_js::RealmId::from_raw(0x1234_5678);
+
+    let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+      ctx.call(
+        hooks,
+        vm_js::Value::Object(callback_func),
+        vm_js::Value::Undefined,
+        &[],
+      )?;
+      Ok(())
+    });
+    {
+      let mut ctx = VmJsJobContext {
+        host: &mut host,
+        realm: Some(realm),
+      };
+      job
+        .add_root(&mut ctx, vm_js::Value::Object(callback_func))
+        .map_err(vm_err)?;
+    }
+
+    let mut hooks = VmJsHostHooks::new(&mut event_loop);
+    hooks.host_enqueue_promise_job(job, Some(realm));
+    assert!(hooks.finish(&mut host).is_none());
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    assert_eq!(*observed.lock().unwrap(), Some(Some(realm)));
+    assert_eq!(
+      host.vm.current_realm(),
+      None,
+      "execution_context_guard should restore the previous realm after the call returns"
+    );
     Ok(())
   }
 
