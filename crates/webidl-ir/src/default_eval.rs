@@ -481,22 +481,27 @@ fn parse_integer_literal_to_f64(token: &str) -> Result<f64, WebIdlException> {
   if let Some(after) = rest.strip_prefix('-') {
     sign = -1.0;
     rest = after;
-  } else if let Some(after) = rest.strip_prefix('+') {
-    rest = after;
+  } else if rest.starts_with('+') {
+    // `+` is not part of WebIDL `integer`, but keep a clear error in case an upstream parser is lax.
+    return Err(WebIdlException::type_error("invalid integer literal"));
   }
 
-  let (base, digits) =
+  // WebIDL integer token semantics:
+  // - if it begins with `0x`/`0X`, the base is 16 (hex digits after the prefix)
+  // - else if it begins with `0`, the base is 8 (octal digits after the leading 0; may be empty)
+  // - otherwise the base is 10 (decimal digits)
+  //
+  // <https://webidl.spec.whatwg.org/#dfn-value-of-integer-tokens>
+  let (base, digits, allow_empty_digits) =
     if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-      (16u32, hex)
-    } else if let Some(oct) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
-      (8u32, oct)
-    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
-      (2u32, bin)
+      (16u32, hex, false)
+    } else if let Some(after_0) = rest.strip_prefix('0') {
+      (8u32, after_0, true)
     } else {
-      (10u32, rest)
+      (10u32, rest, false)
     };
 
-  if digits.is_empty() {
+  if digits.is_empty() && !allow_empty_digits {
     return Err(WebIdlException::type_error("invalid integer literal"));
   }
 

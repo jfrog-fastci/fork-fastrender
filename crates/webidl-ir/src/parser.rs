@@ -405,7 +405,10 @@ fn parse_one_ext_attr(item: &str) -> TypeAnnotation {
   let (name, rhs) = if let Some((lhs, rhs)) = item.split_once('=') {
     (lhs.trim(), Some(rhs.trim().to_string()))
   } else {
-    let name = item.split_once('(').map(|(lhs, _)| lhs.trim()).unwrap_or(item);
+    let name = item
+      .split_once('(')
+      .map(|(lhs, _)| lhs.trim())
+      .unwrap_or(item);
     (name, None)
   };
 
@@ -608,8 +611,16 @@ fn parse_numeric_literal(p: &mut Parser<'_>) -> Result<DefaultValue, ParseError>
   }
 
   match token {
-    "Infinity" => return Ok(DefaultValue::Number(NumericLiteral::Infinity { negative: false })),
-    "-Infinity" => return Ok(DefaultValue::Number(NumericLiteral::Infinity { negative: true })),
+    "Infinity" => {
+      return Ok(DefaultValue::Number(NumericLiteral::Infinity {
+        negative: false,
+      }))
+    }
+    "-Infinity" => {
+      return Ok(DefaultValue::Number(NumericLiteral::Infinity {
+        negative: true,
+      }))
+    }
     "NaN" => return Ok(DefaultValue::Number(NumericLiteral::NaN)),
     _ => {}
   }
@@ -619,11 +630,15 @@ fn parse_numeric_literal(p: &mut Parser<'_>) -> Result<DefaultValue, ParseError>
       message: "invalid decimal literal".to_string(),
       offset: start,
     })?;
-    return Ok(DefaultValue::Number(NumericLiteral::Decimal(token.to_string())));
+    return Ok(DefaultValue::Number(NumericLiteral::Decimal(
+      token.to_string(),
+    )));
   }
 
   if is_valid_integer_literal(token) {
-    return Ok(DefaultValue::Number(NumericLiteral::Integer(token.to_string())));
+    return Ok(DefaultValue::Number(NumericLiteral::Integer(
+      token.to_string(),
+    )));
   }
 
   Err(ParseError {
@@ -637,21 +652,35 @@ fn is_valid_integer_literal(token: &str) -> bool {
   if token.is_empty() {
     return false;
   }
-  let (signless, _sign) = match token.as_bytes()[0] {
-    b'+' | b'-' => (&token[1..], true),
-    _ => (token, false),
-  };
-  if signless.is_empty() {
+
+  // WebIDL integer token regex:
+  // -?([1-9][0-9]*|0[Xx][0-9A-Fa-f]+|0[0-7]*)
+  let mut signless = token;
+  if let Some(rest) = signless.strip_prefix('-') {
+    signless = rest;
+  } else if signless.starts_with('+') {
+    // Unlike JavaScript numeric literals, WebIDL `integer` does not allow a leading `+`.
     return false;
   }
-  if let Some(hex) = signless.strip_prefix("0x").or_else(|| signless.strip_prefix("0X")) {
+
+  if let Some(hex) = signless
+    .strip_prefix("0x")
+    .or_else(|| signless.strip_prefix("0X"))
+  {
     return !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit());
   }
-  if let Some(oct) = signless.strip_prefix("0o").or_else(|| signless.strip_prefix("0O")) {
-    return !oct.is_empty() && oct.bytes().all(|b| matches!(b, b'0'..=b'7'));
+
+  if signless.starts_with('0') {
+    // Octal (including "0").
+    return signless.bytes().all(|b| matches!(b, b'0'..=b'7'));
   }
-  if let Some(bin) = signless.strip_prefix("0b").or_else(|| signless.strip_prefix("0B")) {
-    return !bin.is_empty() && bin.bytes().all(|b| matches!(b, b'0' | b'1'));
+
+  let bytes = signless.as_bytes();
+  let Some(first) = bytes.first().copied() else {
+    return false;
+  };
+  if !matches!(first, b'1'..=b'9') {
+    return false;
   }
-  signless.bytes().all(|b| b.is_ascii_digit())
+  bytes.iter().skip(1).all(|b| b.is_ascii_digit())
 }

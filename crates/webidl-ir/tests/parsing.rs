@@ -1,6 +1,6 @@
 use webidl_ir::{
-  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind, NumericLiteral, NumericType,
-  StringType, TypeAnnotation,
+  parse_default_value, parse_idl_type_complete, DefaultValue, IdlType, NamedType, NamedTypeKind,
+  NumericLiteral, NumericType, StringType, TypeAnnotation,
 };
 
 #[test]
@@ -48,11 +48,18 @@ fn flattened_union_members() {
 
 #[test]
 fn parse_default_values() {
-  assert_eq!(parse_default_value("true").unwrap(), DefaultValue::Boolean(true));
+  assert_eq!(
+    parse_default_value("true").unwrap(),
+    DefaultValue::Boolean(true)
+  );
   assert_eq!(parse_default_value("null").unwrap(), DefaultValue::Null);
   assert_eq!(
     parse_default_value("-1").unwrap(),
     DefaultValue::Number(NumericLiteral::Integer("-1".to_string()))
+  );
+  assert_eq!(
+    parse_default_value("012").unwrap(),
+    DefaultValue::Number(NumericLiteral::Integer("012".to_string()))
   );
   assert_eq!(
     parse_default_value("3.14").unwrap(),
@@ -62,14 +69,29 @@ fn parse_default_values() {
     parse_default_value("Infinity").unwrap(),
     DefaultValue::Number(NumericLiteral::Infinity { negative: false })
   );
-  assert_eq!(parse_default_value("NaN").unwrap(), DefaultValue::Number(NumericLiteral::NaN));
-  assert_eq!(parse_default_value("undefined").unwrap(), DefaultValue::Undefined);
+  assert_eq!(
+    parse_default_value("NaN").unwrap(),
+    DefaultValue::Number(NumericLiteral::NaN)
+  );
+  assert_eq!(
+    parse_default_value("undefined").unwrap(),
+    DefaultValue::Undefined
+  );
   assert_eq!(
     parse_default_value("\"abc\"").unwrap(),
     DefaultValue::String("abc".to_string())
   );
-  assert_eq!(parse_default_value("[]").unwrap(), DefaultValue::EmptySequence);
-  assert_eq!(parse_default_value("{}").unwrap(), DefaultValue::EmptyDictionary);
+  assert_eq!(
+    parse_default_value("[]").unwrap(),
+    DefaultValue::EmptySequence
+  );
+  assert_eq!(
+    parse_default_value("{}").unwrap(),
+    DefaultValue::EmptyDictionary
+  );
+
+  // WebIDL integer is octal after a leading `0`, so digits 8/9 are not allowed.
+  assert!(parse_default_value("08").is_err());
 }
 
 #[test]

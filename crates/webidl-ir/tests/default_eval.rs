@@ -15,6 +15,19 @@ fn optional_long_default_5() {
 }
 
 #[test]
+fn octal_integer_defaults_follow_webidl_rules() {
+  let ctx = TypeContext::default();
+  let ty = parse_idl_type_complete("long").unwrap();
+
+  // WebIDL `integer` uses octal when the token begins with `0` (and is not hex).
+  let dv = parse_default_value("012").unwrap();
+  assert_eq!(
+    eval_default_value(&ty, &dv, &ctx).unwrap(),
+    WebIdlValue::Long(10)
+  );
+}
+
+#[test]
 fn strings_domstring_usvstring_and_bytestring() {
   let ctx = TypeContext::default();
   let dv = parse_default_value("\"€\"").unwrap();
