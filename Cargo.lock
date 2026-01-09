@@ -2198,6 +2198,7 @@ dependencies = [
  "conformance-harness",
  "globset",
  "html5ever",
+ "markup5ever",
  "markup5ever_rcdom",
  "parse-js",
  "regex",

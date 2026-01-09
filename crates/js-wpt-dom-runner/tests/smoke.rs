@@ -97,6 +97,33 @@ fn runs_setinterval_and_clearinterval() {
 }
 
 #[test]
+#[cfg(feature = "quickjs")]
+fn runs_dom_shims_window_js() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/dom_shims.window.js")
+    .expect("missing dom_shims.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(
+    fs,
+    RunnerConfig {
+      backend: BackendSelection::QuickJs,
+      ..RunnerConfig::default()
+    },
+  );
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+  let report = result
+    .wpt_report
+    .expect("dom_shims should include report payload");
+  assert_eq!(report.file_status, "pass");
+}
+
+#[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   for (backend, result) in run_test_id_all_backends(
     "smoke/timeout_long.window.js",

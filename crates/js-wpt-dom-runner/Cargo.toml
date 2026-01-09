@@ -12,7 +12,7 @@ vmjs = ["dep:vm-js", "dep:parse-js"]
 
 # QuickJS (`rquickjs`) backend (optional). Useful for comparison/debugging, but it is not
 # deterministic (timers are wall-clock based) and provides only minimal DOM shims.
-quickjs = ["dep:rquickjs"]
+quickjs = ["dep:rquickjs", "dep:markup5ever"]
 
 [dependencies]
 anyhow = "1"
@@ -26,6 +26,7 @@ thiserror = "1.0"
 url = "2.5"
 walkdir = "2"
 html5ever = "0.35"
+markup5ever = { version = "0.35", optional = true }
 markup5ever_rcdom = "0.35"
 rquickjs = { version = "0.9", optional = true }
 vm-js = { path = "../../engines/ecma-rs/vm-js", optional = true }

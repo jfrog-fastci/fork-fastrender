@@ -16,6 +16,8 @@ mod backend;
 mod engine;
 #[cfg(feature = "vmjs")]
 mod backend_vmjs;
+#[cfg(feature = "quickjs")]
+mod dom_shims;
 mod meta;
 mod runner;
 mod suite;
