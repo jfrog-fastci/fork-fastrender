@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use std::sync::mpsc::Receiver;
@@ -92,23 +93,25 @@ fn stage_listener_is_cleared_after_navigation_job() {
   // Drain any pending messages (including stage heartbeats emitted during the navigation job).
   while ui_rx.try_recv().is_ok() {}
 
-  // Stage forwarding must be scoped to the navigation job (guard drops before LoadingState(false)),
-  // but paints should still forward stage heartbeats. Scrolling triggers a repaint, and the worker
-  // should emit stage messages for that paint without "leaking" stage forwarding outside the render
-  // call.
+  // Stage forwarding must be scoped to each render job. Scrolling triggers a repaint, and the
+  // worker should emit stage messages for that paint without including navigation-specific fetch
+  // stages (e.g. ReadCache/FollowRedirects).
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .expect("Scroll");
 
   let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_scroll_frame = false;
-  let mut saw_stage_after_scroll = false;
+  let mut stages_after_scroll = Vec::new();
   while Instant::now() < deadline && !saw_scroll_frame {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match ui_rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
-          saw_stage_after_scroll = true;
+        WorkerToUi::Stage {
+          tab_id: got,
+          stage,
+        } if got == tab_id => {
+          stages_after_scroll.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
           if frame.scroll_state.viewport.y > 0.0 {
@@ -123,8 +126,15 @@ fn stage_listener_is_cleared_after_navigation_job() {
   }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    saw_stage_after_scroll,
+    !stages_after_scroll.is_empty(),
     "expected stage heartbeats during scroll repaint"
+  );
+  assert!(
+    !stages_after_scroll.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
+    )),
+    "unexpected fetch stage heartbeats during scroll repaint: {stages_after_scroll:?}"
   );
 
   drop(ui_tx);

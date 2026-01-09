@@ -223,8 +223,8 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   );
 
   // Stage forwarding must be scoped to each render job. Pointer moves trigger a repaint, and the
-  // worker should forward stage heartbeats for that paint so callers can observe progress (and
-  // cancel in-flight work if needed).
+  // worker should forward stage heartbeats for that paint without including navigation-specific
+  // fetch stages (e.g. ReadCache/FollowRedirects).
   while ui_rx.try_recv().is_ok() {}
   ui_tx
     .send(UiToWorker::PointerMove {
@@ -236,13 +236,16 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
 
   let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_frame_after_input = false;
-  let mut saw_stage_after_input = false;
+  let mut stages_after_input = Vec::new();
   while std::time::Instant::now() < deadline && !saw_frame_after_input {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
-          saw_stage_after_input = true;
+        WorkerToUi::Stage {
+          tab_id: got,
+          stage,
+        } if got == tab_id => {
+          stages_after_input.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id => {
           saw_frame_after_input = true;
@@ -255,8 +258,15 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   }
   assert!(saw_frame_after_input, "expected FrameReady after PointerMove");
   assert!(
-    saw_stage_after_input,
+    !stages_after_input.is_empty(),
     "expected stage heartbeats during PointerMove repaint"
+  );
+  assert!(
+    !stages_after_input.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
+    )),
+    "unexpected fetch stage heartbeats during PointerMove repaint: {stages_after_input:?}"
   );
 
   drop(ui_tx);
@@ -373,8 +383,8 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   assert_stage_order(&stages, &expected);
 
   // Stage forwarding must be scoped to each render job. Scrolling triggers a repaint, and the
-  // worker should forward stage heartbeats for that paint so callers can observe progress (and
-  // cancel in-flight work if needed).
+  // worker should forward stage heartbeats for that paint without including navigation-specific
+  // fetch stages (e.g. ReadCache/FollowRedirects).
   while ui_rx.try_recv().is_ok() {}
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
@@ -382,13 +392,16 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
 
   let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_scroll_frame = false;
-  let mut saw_stage_after_scroll = false;
+  let mut stages_after_scroll = Vec::new();
   while std::time::Instant::now() < deadline && !saw_scroll_frame {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage { tab_id: got, .. } if got == tab_id => {
-          saw_stage_after_scroll = true;
+        WorkerToUi::Stage {
+          tab_id: got,
+          stage,
+        } if got == tab_id => {
+          stages_after_scroll.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
           if frame.scroll_state.viewport.y > 0.0 {
@@ -403,8 +416,15 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    saw_stage_after_scroll,
+    !stages_after_scroll.is_empty(),
     "expected stage heartbeats during scroll repaint"
+  );
+  assert!(
+    !stages_after_scroll.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
+    )),
+    "unexpected fetch stage heartbeats during scroll repaint: {stages_after_scroll:?}"
   );
 
   drop(ui_tx);

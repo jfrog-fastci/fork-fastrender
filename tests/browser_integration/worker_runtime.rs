@@ -1,7 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use super::worker_harness::{assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent};
-use super::support::{self, create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{
+  self, create_tab_msg, navigate_msg, scroll_at_pointer, scroll_viewport, viewport_changed_msg,
+};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
 use tempfile::tempdir;
@@ -129,7 +131,7 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
   // Scroll the listbox down by ~2 rows.
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    scroll_msg(tab_id, (0.0, 40.0), Some((10.0, 10.0))),
+    scroll_at_pointer(tab_id, (0.0, 40.0), (10.0, 10.0)),
   );
   let _ = drain_after_frame(&h, events);
   assert!(
@@ -363,7 +365,7 @@ fn reload_preserves_scroll_offset() {
 
   let (_frame, scroll_events) = h.send_and_wait_for_frame(
     tab_id,
-    scroll_msg(tab_id, (0.0, 120.0), None),
+    scroll_viewport(tab_id, (0.0, 120.0)),
   );
   let scroll_events = drain_after_frame(&h, scroll_events);
   let scrolled_y = scroll_events.iter().find_map(|ev| match ev {
@@ -419,7 +421,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   // Scroll down; mandatory scroll snap should snap to the second section.
   let (_frame, scroll_events) = h.send_and_wait_for_frame(
     tab_id,
-    scroll_msg(tab_id, (0.0, 60.0), None),
+    scroll_viewport(tab_id, (0.0, 60.0)),
   );
   let scroll_events = drain_after_frame(&h, scroll_events);
   let scroll_y = scroll_events.iter().find_map(|ev| match ev {
@@ -435,7 +437,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   // Scroll beyond the end; should clamp to max scroll (100px for 2x100px content in 100px viewport).
   let (_frame, clamp_events) = h.send_and_wait_for_frame(
     tab_id,
-    scroll_msg(tab_id, (0.0, 10_000.0), None),
+    scroll_viewport(tab_id, (0.0, 10_000.0)),
   );
   let clamp_events = drain_after_frame(&h, clamp_events);
   let clamp_y = clamp_events.iter().find_map(|ev| match ev {
@@ -583,9 +585,9 @@ fn cancellation_rapid_scroll_coalesces_to_last_frame() {
   let _ = drain_after_frame(&h, events);
 
   // Fire multiple scroll messages back-to-back.
-  h.send(scroll_msg(tab_id, (0.0, 10.0), None));
-  h.send(scroll_msg(tab_id, (0.0, 20.0), None));
-  h.send(scroll_msg(tab_id, (0.0, 30.0), None));
+  h.send(scroll_viewport(tab_id, (0.0, 10.0)));
+  h.send(scroll_viewport(tab_id, (0.0, 20.0)));
+  h.send(scroll_viewport(tab_id, (0.0, 30.0)));
 
   let (frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
   assert!(

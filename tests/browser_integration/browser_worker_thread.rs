@@ -165,6 +165,18 @@ fn create_tab_triggers_initial_navigation_and_frame() {
       cancel: CancelGens::new(),
     })
     .expect("CreateTab");
+  worker
+    .tx()
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+  worker
+    .tx()
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("SetActiveTab");
 
   let msg1 = worker
     .rx
@@ -285,6 +297,18 @@ fn cancellation_drops_stale_output() {
       cancel: cancel.clone(),
     })
     .expect("CreateTab");
+  worker
+    .tx()
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+  worker
+    .tx()
+    .send(UiToWorker::SetActiveTab { tab_id })
+    .expect("SetActiveTab");
 
   let _ = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
   let _ = wait_for_frame(&worker.rx, tab_id, TIMEOUT);

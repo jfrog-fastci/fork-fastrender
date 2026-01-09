@@ -1833,8 +1833,8 @@ impl BrowserRuntime {
     let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(cancel_callback.clone()));
 
-    // Forward stage heartbeats for all paints (including scroll-driven repaints) so UI callers and
-    // integration tests can observe progress and deterministically cancel in-flight work.
+    // Forward stage heartbeats for all paints (including scroll/hover-driven repaints) so callers
+    // can observe progress and deterministically cancel in-flight work.
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
       if force {
