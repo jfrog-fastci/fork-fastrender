@@ -1140,6 +1140,31 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
   }
 
+  struct JsCurrentScriptShapeExecutor {
+    ctx: Context,
+  }
+
+  impl ScriptBlockExecutor<Host> for JsCurrentScriptShapeExecutor {
+    fn execute_script(
+      &mut self,
+      _host: &mut Host,
+      _orchestrator: &mut ScriptOrchestrator,
+      _script: NodeId,
+      _script_type: ScriptType,
+    ) -> Result<()> {
+      self
+        .ctx
+        .with(|ctx| {
+          ctx.eval::<(), _>(concat!(
+            "globalThis.obs.push(document.currentScript && document.currentScript.tagName);",
+            "globalThis.obs.push(document.currentScript && typeof document.currentScript.appendChild);",
+          ))
+        })
+        .map_err(|e| Error::Other(e.to_string()))?;
+      Ok(())
+    }
+  }
+
   fn read_obs(ctx: &Context) -> Vec<Option<String>> {
     ctx
       .with(|ctx| ctx.eval::<Vec<Option<String>>, _>("globalThis.obs"))
@@ -1182,6 +1207,32 @@ const DOM_BINDINGS_SHIM: &str = r##"
     assert_eq!(
       read_obs(&executor.ctx),
       vec![Some("a".to_string()), Some("b".to_string())]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn document_current_script_is_element_wrapper() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html("<!doctype html><script id=a></script>")?;
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
+    let script_a = find_script_by_id(&dom, "a");
+
+    let script_state = CurrentScriptStateHandle::default();
+    let mut host = Host {
+      dom,
+      script_state: script_state.clone(),
+    };
+
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom_for_bindings), script_state);
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = JsCurrentScriptShapeExecutor { ctx };
+
+    orchestrator.execute_script_element(&mut host, script_a, ScriptType::Classic, &mut executor)?;
+
+    assert_eq!(
+      read_obs(&executor.ctx),
+      vec![Some("SCRIPT".to_string()), Some("function".to_string())]
     );
     Ok(())
   }
