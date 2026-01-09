@@ -620,7 +620,7 @@ impl FloatContext {
   /// narrower containing block) must restore the previous value once the scoped layout is
   /// complete.
   pub fn set_containing_block_width(&mut self, containing_block_width: f32) {
-    self.containing_block_width = containing_block_width;
+    self.containing_block_width = clamp_positive_finite(containing_block_width);
   }
 
   fn reset_sweep_state(&mut self) {

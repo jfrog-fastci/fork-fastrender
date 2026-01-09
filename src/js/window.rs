@@ -3,7 +3,6 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
-use crate::js::window_timers::VmJsEventLoopHooks;
 use crate::js::window_realm::{
   register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
 };
@@ -135,15 +134,9 @@ impl WindowHost {
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
       let window = host.window_mut();
-      // Route Promise jobs created during script execution into the FastRender event loop microtask
-      // queue (HTML `HostEnqueuePromiseJob`).
-      let mut hooks = VmJsEventLoopHooks::<WindowHostState>::new();
       let result = window
-        .exec_script_with_host(&mut hooks, source)
+        .exec_script(source)
         .map_err(|e| Error::Other(e.to_string()));
-      if let Some(err) = hooks.finish(window.heap_mut()) {
-        return Err(err);
-      }
       result
     })
   }

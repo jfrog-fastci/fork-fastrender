@@ -86,6 +86,7 @@ mod flex_width_calc_percentage;
 mod flex_zero_main_size;
 mod float_line_box_intrusion;
 mod float_logical_sides;
+mod float_external_context_width;
 mod float_shrink_to_min;
 mod intrinsic_float_children;
 mod button_inline_flex_children;

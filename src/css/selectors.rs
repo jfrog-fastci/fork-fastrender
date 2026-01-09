@@ -874,6 +874,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
       "selection" | "-moz-selection" => true,
+      // Legacy pseudo-elements that are widely used in single-colon form for compatibility
+      // (Selectors Level 3 §7.2).
+      "before" | "after" | "first-line" | "first-letter" => true,
       // Non-vendor pseudo-elements that are frequently written with a single colon in
       // older stylesheets.
       "marker" | "backdrop" => true,
@@ -1664,6 +1667,21 @@ mod tests {
         .parse_pseudo_element(loc, cssparser::CowRcStr::from("footnote-marker"))
         .expect("footnote-marker pseudo"),
       PseudoElement::FootnoteMarker
+    );
+  }
+
+  #[test]
+  fn parses_legacy_single_colon_pseudo_elements() {
+    let list = parse_selector_list("div:before, div:after, p:first-line, p:first-letter");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        "div::before".to_string(),
+        "div::after".to_string(),
+        "p::first-line".to_string(),
+        "p::first-letter".to_string(),
+      ]
     );
   }
 

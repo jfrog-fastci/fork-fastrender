@@ -1,5 +1,5 @@
-use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::dom::DomParseOptions;
+use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::{FastRender, FastRenderConfig};
 
 fn collect_text(fragment: &fastrender::FragmentNode, texts: &mut Vec<String>) {
@@ -44,18 +44,20 @@ fn noscript_content_is_rendered_when_scripting_disabled() {
 
 #[test]
 fn noscript_content_is_not_rendered_when_scripting_enabled() {
-  let config = FastRenderConfig::new().with_dom_scripting_enabled(true);
+  // Ensure rendering follows the DOM's document-level scripting flag (rather than the renderer's
+  // own configuration).
+  let config = FastRenderConfig::new().with_dom_scripting_enabled(false);
   let mut renderer = FastRender::with_config(config).expect("renderer");
-  let dom = renderer
-    .parse_html(
-      r#"
-        <html><body>
-            <noscript><div>noscript text</div></noscript>
-            <div>live text</div>
-        </body></html>
-    "#,
-    )
-    .expect("parse");
+  let dom = fastrender::dom::parse_html_with_options(
+    r#"
+      <html><body>
+          <noscript><div>noscript text</div></noscript>
+          <div>live text</div>
+      </body></html>
+  "#,
+    DomParseOptions::with_scripting_enabled(true),
+  )
+  .expect("parse");
 
   let tree = renderer.layout_document(&dom, 200, 100).expect("layout");
   let mut texts = Vec::new();
@@ -105,3 +107,4 @@ fn noscript_and_scripting_media_queries_are_consistent() {
     "expected <noscript> fallback styled by (scripting: none); got texts: {texts:?}"
   );
 }
+

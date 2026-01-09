@@ -310,7 +310,6 @@ mod tests {
 
   #[test]
   fn noscript_parsing_depends_on_scripting_enabled() {
-    // Place `<noscript>` in the document body so we exercise the InBody rules.
     let html = "<!doctype html><html><body><noscript><p>hi</p></noscript></body></html>";
 
     // With scripting disabled: `<noscript>` contents are parsed as markup.
@@ -322,7 +321,6 @@ mod tests {
       "expected <noscript> to contain a <p> element when scripting is disabled"
     );
 
-    // With scripting enabled: `<noscript>` follows the raw-text rules.
     let mut saw_script = false;
     let dom_enabled = parse_html_with_scripting(html, |_partial_dom, _token| {
       saw_script = true;

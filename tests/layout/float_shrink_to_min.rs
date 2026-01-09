@@ -8,13 +8,8 @@ use fastrender::FormattingContext;
 use fastrender::FormattingContextType;
 use std::sync::Arc;
 
-/// Floats with `width: auto` should use the CSS shrink-to-fit formula and then
-/// honor `min-width`/`max-width` caps. When the available width is smaller than
-/// the authored minimum, the used width must clamp to the min-width instead of
-/// collapsing to the available space.
 #[test]
 fn float_auto_width_honors_min_width() {
-  // Container 100px wide with a single floating child that has only a min-width.
   let container_style = Arc::new(ComputedStyle::default());
 
   let mut float_style = ComputedStyle::default();
@@ -34,7 +29,6 @@ fn float_auto_width_honors_min_width() {
     .layout(&container, &constraints)
     .expect("layout should succeed");
 
-  // The float should clamp up to its min-width even though the available width is smaller.
   assert_eq!(fragment.children.len(), 1);
   let float_fragment = &fragment.children[0];
   assert!((float_fragment.bounds.width() - 150.0).abs() < 0.01);
@@ -76,7 +70,6 @@ fn float_auto_width_with_content_clamps_to_min_width() {
 /// widths exceed the authored max-width, the used width must not overflow it.
 #[test]
 fn float_auto_width_clamps_to_max_width() {
-  // Float with text content and a max-width smaller than its intrinsic size.
   let container_style = Arc::new(ComputedStyle::default());
 
   let mut float_style = ComputedStyle::default();
@@ -186,5 +179,40 @@ fn inherited_float_context_is_scoped_to_containing_block_width() {
     (float_fragment.bounds.x() - 80.0).abs() < 0.5,
     "expected nested float:right to align to 100px containing block (x≈80); got x={:.2}",
     float_fragment.bounds.x()
+  );
+}
+
+#[test]
+fn float_auto_width_includes_floated_children_in_intrinsic_widths() {
+  let container_style = Arc::new(ComputedStyle::default());
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.float = Float::Left;
+  inner_style.width = Some(Length::px(200.0));
+  let inner_box = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(Arc::new(ComputedStyle::default()), "x".to_string())],
+  );
+
+  let mut outer_style = ComputedStyle::default();
+  outer_style.float = Float::Left;
+  let outer_box = BoxNode::new_block(Arc::new(outer_style), FormattingContextType::Block, vec![
+    inner_box,
+  ]);
+
+  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![outer_box]);
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(500.0, 1000.0);
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
+
+  assert_eq!(fragment.children.len(), 1);
+  let outer_fragment = &fragment.children[0];
+  assert!(
+    (outer_fragment.bounds.width() - 200.0).abs() < 0.01,
+    "expected outer float to shrink-to-fit around inner float width"
   );
 }

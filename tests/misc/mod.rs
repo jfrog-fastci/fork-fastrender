@@ -30,6 +30,7 @@ mod data_url_svg;
 mod datalist_hidden;
 mod debug_info_semantics_guard;
 mod debug_snapshot_tests;
+mod device_width_media_query_test;
 mod dl_default_margins;
 mod docs_conformance_presence;
 mod docs_presence;

@@ -14277,6 +14277,43 @@ mod tests {
   }
 
   #[test]
+  fn max_content_intrinsic_width_spans_across_sibling_inline_boxes() {
+    let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let container_style = default_style();
+
+    let mut span_style = ComputedStyle::default();
+    span_style.display = Display::Inline;
+    span_style.font_size = 16.0;
+    let span_style = Arc::new(span_style);
+
+    let make_span = |text: &str| {
+      BoxNode::new_inline(
+        span_style.clone(),
+        vec![BoxNode::new_text(default_style(), text.to_string())],
+      )
+    };
+
+    let children = vec![
+      make_span("MEDIAGAZER"),
+      BoxNode::new_text(default_style(), "\n".to_string()),
+      make_span("MEMEORANDUM"),
+    ];
+
+    let child_refs: Vec<&BoxNode> = children.iter().collect();
+    let (min, max) = ifc
+      .intrinsic_widths_for_children(&container_style, child_refs.as_slice())
+      .expect("intrinsic width for children");
+
+    assert!(
+      max > min + 10.0,
+      "expected max-content {:.2} to exceed min-content {:.2} for sibling inline boxes",
+      max,
+      min
+    );
+  }
+
+  #[test]
   fn layout_inline_block_reuses_factory_caches() {
     let mut style = ComputedStyle::default();
     style.display = Display::InlineBlock;

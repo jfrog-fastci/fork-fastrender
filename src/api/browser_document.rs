@@ -827,7 +827,6 @@ pub(super) fn prepare_dom_inner(
   let previous_dpr = renderer.device_pixel_ratio;
   let artifacts_result = (|| -> Result<super::LayoutArtifacts> {
     renderer.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-    renderer.pending_device_size = Some(resolved_viewport.visual_viewport);
     renderer.layout_document_for_media_with_artifacts(
       dom,
       layout_width,
@@ -847,7 +846,6 @@ pub(super) fn prepare_dom_inner(
   })();
 
   renderer.device_pixel_ratio = previous_dpr;
-  renderer.pending_device_size = None;
   let artifacts = artifacts_result?;
 
   let layout_viewport = artifacts.fragment_tree.viewport_size();

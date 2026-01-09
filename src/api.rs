@@ -215,6 +215,10 @@ use url::Url;
 use std::time::{Duration, Instant};
 pub(crate) const DEFAULT_MAX_IFRAME_DEPTH: usize = 3;
 const MAX_CONTAINER_QUERY_ITERATIONS: usize = 6;
+// Headless Chrome reports a fixed `screen.width`/`screen.height` of 800x600 CSS pixels even when
+// the window/viewport is resized via `--window-size`. Some sites (including Techmeme) gate layout
+// changes on legacy `device-width` media features, so match the baseline environment here.
+const HEADLESS_CHROME_SCREEN_SIZE: Size = Size::new(800.0, 600.0);
 // Re-export Pixmap from tiny-skia for public use
 pub use crate::image_loader::ImageCacheConfig;
 pub use crate::layout::pagination::PageStacking;
@@ -522,9 +526,6 @@ pub struct FastRender {
 
   /// When true, expand the paint canvas to cover the laid-out content bounds.
   fit_canvas_to_content: bool,
-
-  /// Temporary override for device size during media query evaluation.
-  pending_device_size: Option<Size>,
 
   /// Base URL used for resolving links/targets
   base_url: Option<String>,
@@ -856,8 +857,11 @@ impl FastRenderBuilder {
   ///
   /// When enabled, `width`/`height` set the layout viewport used for viewport units
   /// and media queries. `initial-scale` (and optional min/max scale) controls zoom,
-  /// clamped to the 0.1–10 range, and scales the effective device pixel ratio as
-  /// well as the visual viewport used for device media features.
+  /// clamped to the 0.1–10 range, and scales the effective device pixel ratio. The
+  /// derived visual viewport is tracked on [`PreparedDocument`] for debugging and
+  /// consumers that need to reason about page zoom; `device-width`/`device-height`
+  /// media features are evaluated against the emulated screen size instead (see
+  /// `HEADLESS_CHROME_SCREEN_SIZE`).
   pub fn apply_meta_viewport(mut self, enabled: bool) -> Self {
     self.config.apply_meta_viewport = enabled;
     self
@@ -3556,8 +3560,10 @@ impl FastRenderConfig {
   ///
   /// `width`/`height` set the layout viewport. Zoom is driven by `initial-scale`
   /// (or derived from the requested width/height) and clamped by `minimum-scale`/
-  /// `maximum-scale` to the 0.1–10 range, scaling the effective device pixel ratio
-  /// and the visual viewport used for device media features.
+  /// `maximum-scale` to the 0.1–10 range, scaling the effective device pixel ratio.
+  /// The derived visual viewport is tracked for debugging/consumers, but legacy
+  /// `device-width`/`device-height` media features are evaluated against the emulated
+  /// screen size (see `HEADLESS_CHROME_SCREEN_SIZE`).
   pub fn with_meta_viewport(mut self, enabled: bool) -> Self {
     self.apply_meta_viewport = enabled;
     self
@@ -4279,8 +4285,11 @@ struct ResolvedViewport {
   /// The CSS layout viewport (initial containing block). Viewport units (`vw`/`vh`)
   /// and media queries use this size.
   layout_viewport: Size,
-  /// The visual viewport after applying the resolved zoom scale. Device media features
-  /// (`device-width`/`device-height`) use this value.
+  /// The visual viewport after applying the resolved zoom scale.
+  ///
+  /// This is tracked for diagnostics/debugging and for consumers that need to reason about the
+  /// effective page zoom (e.g. for scroll/pagination). Media features like `device-width` are
+  /// evaluated against the emulated screen size instead (see `HEADLESS_CHROME_SCREEN_SIZE`).
   visual_viewport: Size,
   /// Effective device pixel ratio after page zoom. This multiplies the renderer's base DPR.
   device_pixel_ratio: f32,
@@ -5432,7 +5441,6 @@ impl FastRender {
       apply_meta_viewport: config.apply_meta_viewport,
       apply_meta_color_scheme: config.apply_meta_color_scheme,
       fit_canvas_to_content: config.fit_canvas_to_content,
-      pending_device_size: None,
       base_url: config.base_url.clone(),
       document_url: None,
       dom_compat_mode: config.dom_compat_mode,
@@ -6206,7 +6214,6 @@ impl FastRender {
         let previous_dpr = self.device_pixel_ratio;
         let artifacts_result = (|| -> Result<LayoutArtifacts> {
           self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-          self.pending_device_size = Some(resolved_viewport.visual_viewport);
           self.layout_document_for_media_with_artifacts(
             &dom,
             layout_width,
@@ -6226,7 +6233,6 @@ impl FastRender {
         })();
 
         self.device_pixel_ratio = previous_dpr;
-        self.pending_device_size = None;
         let artifacts = artifacts_result?;
 
         let layout_viewport = artifacts.fragment_tree.viewport_size();
@@ -6474,7 +6480,6 @@ impl FastRender {
 
     let result = (|| -> Result<RenderOutputs> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      self.pending_device_size = Some(resolved_viewport.visual_viewport);
       let needs_top_layer_state = needs_top_layer_state(&dom)?;
       let dom_parse_rss_end = memory_sampling_enabled
         .then(crate::memory::current_rss_bytes)
@@ -6600,7 +6605,6 @@ impl FastRender {
           rec.stats.cascade.has_evaluated = Some(has_counters.evaluated);
         }
       }
-      self.pending_device_size = None;
       let LayoutArtifacts {
         styled_tree,
         box_tree,
@@ -7024,7 +7028,6 @@ impl FastRender {
     })();
 
     self.device_pixel_ratio = previous_dpr;
-    self.pending_device_size = None;
 
     result
   }
@@ -7182,7 +7185,6 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      self.pending_device_size = Some(resolved_viewport.visual_viewport);
       self.layout_document_for_media_with_artifacts(
         dom,
         layout_width,
@@ -7202,7 +7204,6 @@ impl FastRender {
     })();
 
     self.device_pixel_ratio = previous_dpr;
-    self.pending_device_size = None;
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
@@ -7475,7 +7476,6 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      self.pending_device_size = Some(resolved_viewport.visual_viewport);
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -7496,7 +7496,6 @@ impl FastRender {
     })();
 
     self.device_pixel_ratio = previous_dpr;
-    self.pending_device_size = None;
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
@@ -7770,7 +7769,6 @@ impl FastRender {
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      self.pending_device_size = Some(resolved_viewport.visual_viewport);
       self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -7791,7 +7789,6 @@ impl FastRender {
     })();
 
     self.device_pixel_ratio = previous_dpr;
-    self.pending_device_size = None;
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
@@ -8709,7 +8706,6 @@ impl FastRender {
 
     let snapshot = (|| -> Result<debug::snapshot::PipelineSnapshot> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
-      self.pending_device_size = Some(resolved_viewport.visual_viewport);
 
       let mut intermediates = self.layout_document_for_media_intermediates(
         &dom,
@@ -8769,7 +8765,6 @@ impl FastRender {
     })();
 
     self.device_pixel_ratio = original_dpr;
-    self.pending_device_size = None;
 
     snapshot
   }
@@ -10063,7 +10058,11 @@ impl FastRender {
       };
       let meta_color_scheme = meta_color_scheme.map(Arc::new);
       let viewport_size = resolved_viewport.layout_viewport;
-      let device_size = resolved_viewport.visual_viewport;
+      let device_size = if matches!(options.media_type, MediaType::Print) {
+        viewport_size
+      } else {
+        HEADLESS_CHROME_SCREEN_SIZE
+      };
       let dom_scripting_enabled = match &dom_for_style.node_type {
         DomNodeType::Document {
           scripting_enabled, ..
@@ -10643,13 +10642,11 @@ impl FastRender {
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
   ) -> Result<LayoutArtifacts> {
-    let preserved_device_size = self.pending_device_size;
     let base_width = width;
     let base_height = height;
 
     // Viewport scrollbars are not relevant in paged media.
     if media_type == MediaType::Print {
-      self.pending_device_size = preserved_device_size;
       return self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
         needs_top_layer_state,
@@ -10671,9 +10668,6 @@ impl FastRender {
     let mut candidate_width = width;
     let mut candidate_height = height;
     for iter_idx in 0..MAX_VIEWPORT_GUTTER_ITERATIONS {
-      // The layout pipeline consumes `pending_device_size` via `take()`; restore it so each pass
-      // sees the same device dimensions (e.g. when `<meta name="viewport">` is enabled).
-      self.pending_device_size = preserved_device_size;
       let artifacts = self.layout_document_for_media_with_artifacts_owned_single_pass(
         dom_with_state,
         needs_top_layer_state,
@@ -10736,7 +10730,6 @@ impl FastRender {
 
     // The loop above should always return once it converges or hits the max iteration count.
     // If `MAX_VIEWPORT_GUTTER_ITERATIONS` is ever configured to 0, fall back to a single pass.
-    self.pending_device_size = preserved_device_size;
     self.layout_document_for_media_with_artifacts_owned_single_pass(
       dom_with_state,
       needs_top_layer_state,
@@ -10809,7 +10802,11 @@ impl FastRender {
     // the root element corresponds to the scrollport (`documentElement.clientWidth/clientHeight`).
     let layout_viewport_size = Size::new(width as f32, height as f32);
     let viewport_size = Size::new(viewport_fixed_width as f32, viewport_fixed_height as f32);
-    let device_size = self.pending_device_size.take().unwrap_or(viewport_size);
+    let device_size = if media_type == MediaType::Print {
+      viewport_size
+    } else {
+      HEADLESS_CHROME_SCREEN_SIZE
+    };
     let dom_scripting_enabled = match &dom_with_state.node_type {
       DomNodeType::Document {
         scripting_enabled, ..
@@ -12626,10 +12623,16 @@ impl FastRender {
     width: f32,
     height: f32,
   ) -> MediaContext {
-    let base = match media_type {
+    let mut base = match media_type {
       MediaType::Print => MediaContext::print(width, height),
       _ => MediaContext::screen(width, height),
     };
+    if !matches!(media_type, MediaType::Print) {
+      base = base.with_device_size(
+        HEADLESS_CHROME_SCREEN_SIZE.width,
+        HEADLESS_CHROME_SCREEN_SIZE.height,
+      );
+    }
 
     base
       .with_scripting(self.effective_scripting())
@@ -18461,7 +18464,6 @@ pub(crate) fn layout_html_with_shared_resources(
     apply_meta_viewport: false,
     apply_meta_color_scheme: false,
     fit_canvas_to_content: false,
-    pending_device_size: None,
     base_url,
     document_url: resource_context
       .as_ref()
@@ -18545,7 +18547,6 @@ pub(crate) fn render_html_with_shared_resources(
     apply_meta_viewport: false,
     apply_meta_color_scheme: false,
     fit_canvas_to_content: false,
-    pending_device_size: None,
     base_url,
     document_url: resource_context
       .as_ref()

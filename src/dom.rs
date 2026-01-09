@@ -14280,9 +14280,10 @@ mod tests {
   }
 
   #[test]
-  fn parse_html_keeps_noscript_content_without_scripting() {
+  fn parse_html_with_scripting_disabled_keeps_noscript_content() {
     let html = "<!doctype html><html><head><noscript><style>.fallback{color:red;}</style></noscript></head><body><noscript><div id='fallback'>hello</div></noscript></body></html>";
-    let dom = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
+    let dom =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
 
     let fallback = find_element_by_id(&dom, "fallback").expect("noscript content parsed into DOM");
     let has_text_child = fallback.children.iter().any(|child| {
@@ -14299,9 +14300,10 @@ mod tests {
   }
 
   #[test]
-  fn parse_html_preserves_head_noscript_children() {
+  fn parse_html_with_scripting_disabled_preserves_head_noscript_children() {
     let html = "<!doctype html><html><head><noscript><style id='fallback-style'>body{color:green;}</style></noscript></head><body></body></html>";
-    let dom = parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
+    let dom =
+      parse_html_with_options(html, DomParseOptions::with_scripting_enabled(false)).expect("parse");
 
     let style = find_element_by_id(&dom, "fallback-style");
     assert!(
@@ -14311,17 +14313,17 @@ mod tests {
   }
 
   #[test]
-  fn parse_html_ignores_noscript_content_with_scripting_enabled() {
+  fn parse_html_defaults_to_scripting_enabled_and_does_not_parse_noscript_children_as_dom() {
     let html = "<!doctype html><html><head><noscript><style id='fallback-style'>.fallback{color:red;}</style></noscript></head><body><noscript><div id='fallback'>hello</div></noscript></body></html>";
-    let dom = parse_html_with_options(html, DomParseOptions::javascript_enabled()).expect("parse");
+    let dom = parse_html(html).expect("parse");
 
     assert!(
       find_element_by_id(&dom, "fallback-style").is_none(),
-      "head <noscript> children should not be parsed when scripting is enabled"
+      "expected head <noscript> children not to be parsed as DOM by default"
     );
     assert!(
       find_element_by_id(&dom, "fallback").is_none(),
-      "body <noscript> children should not be parsed when scripting is enabled"
+      "expected body <noscript> children not to be parsed as DOM by default"
     );
   }
 
