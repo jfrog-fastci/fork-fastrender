@@ -256,11 +256,11 @@ mod tests {
     let dom2 = Dom2Document::from_renderer_dom(&dom);
     let script_id = find_first_script_dom2(&dom2);
     let base_tracker = BaseUrlTracker::new(base_url.as_deref());
-    let mut spec_dom2 =
-      build_parser_inserted_script_element_spec_dom2(&dom2, script_id, &base_tracker);
+    let spec_dom2 = build_parser_inserted_script_element_spec_dom2(&dom2, script_id, &base_tracker);
+
     // `dom2` builders always include a concrete `NodeId` for `currentScript` bookkeeping, while the
     // legacy renderer-DOM builder has no corresponding node handle.
-    spec_dom2.node_id = None;
+    assert_eq!(spec_dom2.node_id, Some(script_id));
 
     // `dom2` script specs carry the originating `NodeId` for later `currentScript` bookkeeping,
     // while the legacy renderer DOM spec builder cannot, so ignore the handle when comparing.
