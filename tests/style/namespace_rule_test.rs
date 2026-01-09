@@ -103,6 +103,22 @@ fn namespace_prefixed_selectors_match_mathml() {
 }
 
 #[test]
+fn namespace_rules_after_layer_statements_are_applied() {
+  let html = r#"<svg><foreignObject id="svg"></foreignObject></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @layer prelude;
+    @namespace svg "http://www.w3.org/2000/svg";
+    svg|foreignObject { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let fo = find_by_id(&styled, "svg").expect("foreignObject");
+  assert_eq!(display(fo), "none");
+}
+
+#[test]
 fn import_rules_after_namespace_rules_are_ignored() {
   let css = r#"
     @namespace svg "http://www.w3.org/2000/svg";
@@ -116,6 +132,33 @@ fn import_rules_after_namespace_rules_are_ignored() {
       .iter()
       .any(|rule| matches!(rule, CssRule::Import(_)))
   );
+}
+
+#[test]
+fn import_rules_after_layer_rules_are_ignored() {
+  let css = r#"
+    @import "first.css";
+    @layer foo;
+    @import "second.css";
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let import_count = stylesheet
+    .rules
+    .iter()
+    .filter(|rule| matches!(rule, CssRule::Import(_)))
+    .count();
+  assert_eq!(import_count, 1);
+}
+
+#[test]
+fn namespace_rules_after_import_and_layer_rules_are_ignored() {
+  let css = r#"
+    @import "first.css";
+    @layer foo;
+    @namespace svg "http://www.w3.org/2000/svg";
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  assert!(stylesheet.namespaces.prefixes.is_empty());
 }
 
 #[test]

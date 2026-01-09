@@ -49,6 +49,7 @@ mod justify_content_normal_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
 mod isolation_case_insensitive_test;
+mod import_layer_supports_test;
 mod layer_important_test;
 mod list_border_outline_case_insensitive_test;
 mod logical_properties_test;

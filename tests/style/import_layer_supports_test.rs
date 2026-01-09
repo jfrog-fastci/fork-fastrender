@@ -142,3 +142,18 @@ fn import_modifiers_are_order_insensitive() {
 
   assert_eq!(target.styles.color, Rgba::rgb(9, 9, 9));
 }
+
+#[test]
+fn layer_statements_can_precede_import_rules() {
+  let loader =
+    MapImportLoader::new().with("https://example.com/display.css", "#t { display: inline; }");
+  let target = styled_target(
+    r#"
+      @layer base;
+      @import "display.css";
+    "#,
+    &loader,
+  );
+
+  assert_eq!(target.styles.display, Display::Inline);
+}

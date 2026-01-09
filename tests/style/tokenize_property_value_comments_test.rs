@@ -1,5 +1,6 @@
 use fastrender::css::properties::parse_property_value;
 use fastrender::css::types::PropertyValue;
+use fastrender::style::color::Color;
 use fastrender::style::color::Rgba;
 use fastrender::style::values::Length;
 
@@ -19,6 +20,5 @@ fn tokenize_property_value_skips_css_comments() {
   assert_eq!(shadow.offset_x, Length::px(1.0));
   assert_eq!(shadow.offset_y, Length::px(2.0));
   assert_eq!(shadow.blur_radius, Length::px(0.0));
-  assert_eq!(shadow.color, Some(Rgba::RED));
+  assert_eq!(shadow.color, Some(Color::Rgba(Rgba::RED)));
 }
-

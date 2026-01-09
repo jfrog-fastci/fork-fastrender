@@ -492,18 +492,89 @@ pub fn parse_stylesheet_with_media_cached_by_url_arc(
 
 #[derive(Debug, Clone)]
 struct NamespaceParseState {
-  imports_allowed: bool,
-  namespaces_allowed: bool,
+  prelude_phase: StylesheetPreludePhase,
   namespaces: CssNamespaces,
+}
+
+/// Tracks where we are in the stylesheet "prelude" where `@import`, `@namespace`, and empty
+/// `@layer` statements have special ordering rules.
+///
+/// Spec refs:
+/// - CSS Cascade 5 § "Declaring Without Styles: the `@layer` statement at-rule"
+/// - CSS Namespaces 3 / CSS Cascade 5 ordering constraints for `@import`/`@namespace`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StylesheetPreludePhase {
+  /// At the start of a stylesheet (after `@charset`, if any). Empty `@layer` statements are
+  /// permitted here without ending the prelude.
+  Start,
+  /// We've seen one or more valid `@import` rules. More `@import` rules may follow consecutively,
+  /// or the `@namespace` group may begin.
+  Imports,
+  /// We've seen one or more valid `@namespace` rules. Additional `@namespace` rules may follow
+  /// consecutively.
+  Namespaces,
+  /// We've seen a rule that ends the prelude. Subsequent `@import`/`@namespace` rules are ignored.
+  Done,
 }
 
 impl Default for NamespaceParseState {
   fn default() -> Self {
     Self {
-      imports_allowed: true,
-      namespaces_allowed: true,
+      prelude_phase: StylesheetPreludePhase::Start,
       namespaces: CssNamespaces::default(),
     }
+  }
+}
+
+impl NamespaceParseState {
+  fn imports_allowed(&self) -> bool {
+    matches!(
+      self.prelude_phase,
+      StylesheetPreludePhase::Start | StylesheetPreludePhase::Imports
+    )
+  }
+
+  fn namespaces_allowed(&self) -> bool {
+    matches!(
+      self.prelude_phase,
+      StylesheetPreludePhase::Start | StylesheetPreludePhase::Imports | StylesheetPreludePhase::Namespaces
+    )
+  }
+
+  fn note_import_rule(&mut self) {
+    if self.imports_allowed() {
+      self.prelude_phase = StylesheetPreludePhase::Imports;
+    }
+  }
+
+  fn note_namespace_rule(&mut self) {
+    if self.namespaces_allowed() {
+      self.prelude_phase = StylesheetPreludePhase::Namespaces;
+    }
+  }
+
+  /// Record that we've seen an `@layer` rule at the top level, and update the prelude state.
+  ///
+  /// Empty `@layer` statements are allowed before `@import`/`@namespace`, but once the `@import`
+  /// or `@namespace` group has started, *any* `@layer` rule ends the prelude and causes subsequent
+  /// `@import`/`@namespace` rules to be ignored.
+  fn note_layer_rule(&mut self, has_block: bool) {
+    if has_block {
+      self.prelude_phase = StylesheetPreludePhase::Done;
+      return;
+    }
+
+    match self.prelude_phase {
+      StylesheetPreludePhase::Start => {}
+      StylesheetPreludePhase::Imports | StylesheetPreludePhase::Namespaces => {
+        self.prelude_phase = StylesheetPreludePhase::Done;
+      }
+      StylesheetPreludePhase::Done => {}
+    }
+  }
+
+  fn end_prelude(&mut self) {
+    self.prelude_phase = StylesheetPreludePhase::Done;
   }
 }
 
@@ -632,27 +703,16 @@ fn parse_rule<'i, 't>(
     };
 
     let kw = kw.as_ref();
-    if is_top_level {
-      // The `@import` rule is only valid in the initial stylesheet prelude (before any rules other
-      // than `@charset`). `@namespace` rules can appear in that prelude, but once we see the first
-      // `@namespace` rule, `@import` rules are no longer valid.
-      if !kw.eq_ignore_ascii_case("import") && !kw.eq_ignore_ascii_case("charset") {
-        namespace_state.imports_allowed = false;
-      }
-      // The `@namespace` rule is only valid before any non-`@import` rules in a stylesheet.
-      if !kw.eq_ignore_ascii_case("import")
-        && !kw.eq_ignore_ascii_case("charset")
-        && !kw.eq_ignore_ascii_case("namespace")
-      {
-        namespace_state.namespaces_allowed = false;
-      }
-    }
     if kw.eq_ignore_ascii_case("import") {
-      if !is_top_level || !namespace_state.imports_allowed {
+      if !is_top_level || !namespace_state.imports_allowed() {
         skip_at_rule(parser);
         return Ok(None);
       }
-      return parse_import_rule(parser);
+      let parsed = parse_import_rule(parser)?;
+      if parsed.is_some() {
+        namespace_state.note_import_rule();
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("charset") {
       skip_at_rule(parser);
@@ -660,6 +720,13 @@ fn parse_rule<'i, 't>(
     }
     if kw.eq_ignore_ascii_case("namespace") {
       return parse_namespace_rule(parser, namespace_state, is_top_level);
+    }
+    if is_top_level {
+      // Any non-`@import`/`@namespace` at-rule ends the prelude, except that empty `@layer`
+      // statements are permitted before the `@import`/`@namespace` group begins.
+      if !kw.eq_ignore_ascii_case("layer") {
+        namespace_state.end_prelude();
+      }
     }
     if kw.eq_ignore_ascii_case("media") {
       return parse_media_rule(
@@ -710,7 +777,7 @@ fn parse_rule<'i, 't>(
       );
     }
     if kw.eq_ignore_ascii_case("layer") {
-      return parse_layer_rule(
+      let parsed = parse_layer_rule(
         parser,
         errors,
         parent_selectors,
@@ -719,7 +786,13 @@ fn parse_rule<'i, 't>(
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
         namespace_state,
-      );
+      )?;
+      if is_top_level {
+        if let Some(CssRule::Layer(layer)) = &parsed {
+          namespace_state.note_layer_rule(layer.has_block);
+        }
+      }
+      return Ok(parsed);
     }
     if kw.eq_ignore_ascii_case("starting-style") {
       return parse_starting_style_rule(
@@ -760,8 +833,7 @@ fn parse_rule<'i, 't>(
   }
 
   if is_top_level {
-    namespace_state.imports_allowed = false;
-    namespace_state.namespaces_allowed = false;
+    namespace_state.end_prelude();
   }
   // Parse style rule
   parse_style_rule(
@@ -858,7 +930,7 @@ fn parse_namespace_rule<'i, 't>(
   is_top_level: bool,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   // Only the initial `@namespace` group in a stylesheet affects parsing.
-  if !is_top_level || !namespace_state.namespaces_allowed {
+  if !is_top_level || !namespace_state.namespaces_allowed() {
     skip_at_rule(parser);
     return Ok(None);
   }
@@ -919,6 +991,8 @@ fn parse_namespace_rule<'i, 't>(
   if url.is_empty() {
     return Ok(None);
   }
+
+  namespace_state.note_namespace_rule();
 
   if let Some(prefix) = prefix {
     let prefix = trim_ascii_whitespace(&prefix);
