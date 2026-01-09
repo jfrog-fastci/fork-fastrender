@@ -1,32 +1,18 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support;
 use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
-
-struct TestRenderDelayGuard;
-
-impl TestRenderDelayGuard {
-  fn set(ms: Option<u64>) -> Self {
-    fastrender::render_control::set_test_render_delay_ms(ms);
-    Self
-  }
-}
-
-impl Drop for TestRenderDelayGuard {
-  fn drop(&mut self) {
-    fastrender::render_control::set_test_render_delay_ms(None);
-  }
-}
 
 #[test]
 fn cancellation_on_new_navigation() {
   let _stage_lock = super::stage_listener_test_lock();
   // Slow down deadline checks so the first navigation stays in-flight long enough for the UI to
   // bump cancellation.
-  let delay_guard = TestRenderDelayGuard::set(Some(2));
+  let delay_guard = support::TestRenderDelayGuard::set(Some(2));
 
   let cancel = CancelGens::new();
   let tab_id = TabId::new();
@@ -35,20 +21,12 @@ fn cancellation_on_new_navigation() {
   let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: cancel.clone(),
-    })
+    .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
     .unwrap();
 
   cancel.bump_paint();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 120),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
 
   let url1 = "about:test-heavy".to_string();
@@ -56,11 +34,11 @@ fn cancellation_on_new_navigation() {
 
   cancel.bump_nav();
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url1.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url1.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   // Ensure the worker picked up the first navigation before we bump cancellation.
@@ -81,11 +59,11 @@ fn cancellation_on_new_navigation() {
   cancel.bump_nav();
   drop(delay_guard);
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url2.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url2.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   let mut saw_commit_url2 = false;
@@ -133,31 +111,23 @@ fn cancellation_on_scroll_drops_stale_frames() {
   let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: cancel.clone(),
-    })
+    .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
     .unwrap();
 
   cancel.bump_paint();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (160, 120),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (160, 120), 1.0))
     .unwrap();
 
   let url = "about:test-heavy".to_string();
 
   cancel.bump_nav();
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   // Wait for the initial navigation to commit and produce a frame.
@@ -186,27 +156,14 @@ fn cancellation_on_scroll_drops_stale_frames() {
   // second scroll. The worker should drop any stale paint output for the first scroll.
   // Drain any straggler stage heartbeats from the navigation so the paint heartbeat below is tied
   // to the first scroll.
-  {
-    let deadline = std::time::Instant::now() + Duration::from_millis(200);
-    while std::time::Instant::now() < deadline {
-      match ui_rx.recv_timeout(Duration::from_millis(10)) {
-        Ok(_) => continue,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-      }
-    }
-  }
+  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
 
   // Slow down deadline checks so the first scroll repaint remains in-flight long enough for the
   // UI to bump paint cancellation.
-  let delay_guard = TestRenderDelayGuard::set(Some(2));
+  let delay_guard = support::TestRenderDelayGuard::set(Some(2));
   cancel.bump_paint();
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 200.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 200.0), None))
     .unwrap();
 
   // Wait until we observe the scroll repaint enter the paint stages so we can cancel it mid-flight.
@@ -231,11 +188,7 @@ fn cancellation_on_scroll_drops_stale_frames() {
 
   cancel.bump_paint();
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 200.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 200.0), None))
     .unwrap();
   // The second scroll can render at full speed; we only needed the artificial delay to keep the
   // first paint busy long enough to trigger cancellation.
