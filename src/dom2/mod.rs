@@ -49,6 +49,17 @@ mod query_tests;
 pub struct NodeId(usize);
 
 impl NodeId {
+  /// Construct a `NodeId` from its raw index.
+  ///
+  /// This is intended for bindings/FFI layers that need to round-trip node handles through an
+  /// integer representation. `NodeId` values are only meaningful within a specific `dom2::Document`
+  /// instance; most `dom2` APIs validate node IDs and return `DomError::NotFoundError` for invalid
+  /// indices.
+  #[inline]
+  pub fn from_index(index: usize) -> Self {
+    Self(index)
+  }
+
   pub fn index(self) -> usize {
     self.0
   }

@@ -4,9 +4,11 @@
 //! observable from JavaScript, such as `document.currentScript`.
 
 use fastrender::dom::HTML_NAMESPACE;
-use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
+use fastrender::dom2::{Document as Dom2Document, DomError, NodeId, NodeKind};
+use fastrender::web::dom::DomException;
 use fastrender::js::CurrentScriptStateHandle;
 use rquickjs::{Ctx, Function, Object, Result as JsResult};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 fn element_id(dom: &Dom2Document, node_id: NodeId) -> String {
@@ -37,7 +39,7 @@ fn element_id(dom: &Dom2Document, node_id: NodeId) -> String {
 pub fn install_dom_bindings<'js>(
   ctx: Ctx<'js>,
   globals: &Object<'js>,
-  dom: Rc<Dom2Document>,
+  dom: Rc<RefCell<Dom2Document>>,
   current_script_state: CurrentScriptStateHandle,
 ) -> JsResult<()> {
   let document = Object::new(ctx.clone())?;
@@ -52,18 +54,19 @@ pub fn install_dom_bindings<'js>(
       return Ok(None);
     };
 
+    let dom = dom_for_getter.borrow();
     // The orchestrator stores `NodeId` handles. If the node is gone (future DOM delete support),
     // surface `null` rather than crashing.
-    if node_id.index() >= dom_for_getter.nodes_len() {
+    if node_id.index() >= dom.nodes_len() {
       return Ok(None);
     }
 
-    if !matches!(&dom_for_getter.node(node_id).kind, NodeKind::Element { .. }) {
+    if !matches!(&dom.node(node_id).kind, NodeKind::Element { .. }) {
       return Ok(None);
     }
 
     let element = Object::new(ctx.clone())?;
-    element.set("id", element_id(dom_for_getter.as_ref(), node_id))?;
+    element.set("id", element_id(&dom, node_id))?;
     Ok(Some(element))
   })?;
 
@@ -71,11 +74,218 @@ pub fn install_dom_bindings<'js>(
   ctx.eval::<(), _>(concat!(
     "Object.defineProperty(document, 'currentScript', {",
     "  get: globalThis.__fastrender_get_current_script,",
-    "});"
-  ))?;
+     "});"
+   ))?;
+
+  install_dom_exceptions_and_minimal_dom(ctx.clone(), globals, dom)?;
 
   Ok(())
 }
+
+fn install_dom_exceptions_and_minimal_dom<'js>(
+  ctx: Ctx<'js>,
+  globals: &Object<'js>,
+  dom: Rc<RefCell<Dom2Document>>,
+) -> JsResult<()> {
+  // Host functions used by the JS shim.
+  globals.set(
+    "__fastrender_dom_create_element",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |tag_name: String| {
+        let mut dom = dom.borrow_mut();
+        let id = dom.create_element(&tag_name, "");
+        Ok::<u32, rquickjs::Error>(id.index() as u32)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_create_text_node",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |data: String| {
+        let mut dom = dom.borrow_mut();
+        let id = dom.create_text(&data);
+        Ok::<u32, rquickjs::Error>(id.index() as u32)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_append_child",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, parent: u32, child: u32| {
+        let mut dom = dom.borrow_mut();
+        let parent = NodeId::from_index(parent as usize);
+        let child = NodeId::from_index(child as usize);
+        match dom.append_child(parent, child) {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_remove_child",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, parent: u32, child: u32| {
+        let mut dom = dom.borrow_mut();
+        let parent = NodeId::from_index(parent as usize);
+        let child = NodeId::from_index(child as usize);
+        match dom.remove_child(parent, child) {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_query_selector",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, selectors: String| {
+        let mut dom = dom.borrow_mut();
+        match dom.query_selector(&selectors, None) {
+          Ok(found) => Ok(found.map(|id| id.index() as u32)),
+          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+        }
+      }
+    })?,
+  )?;
+
+  ctx.eval::<(), _>(DOM_BINDINGS_SHIM)?;
+
+  Ok(())
+}
+
+fn throw_dom_error<'js, T>(ctx: Ctx<'js>, err: DomError) -> JsResult<T> {
+  let globals = ctx.globals();
+  let thrower: Function<'js> = globals.get("__fastrender_throw_dom_exception")?;
+  let name = err.code();
+  match thrower.call::<_, ()>((name, name)) {
+    Ok(_) => unreachable!("thrower must throw"),
+    Err(e) => Err(e),
+  }
+}
+
+fn throw_syntax_error<'js, T>(ctx: Ctx<'js>, message: &str) -> JsResult<T> {
+  let globals = ctx.globals();
+  let thrower: Function<'js> = globals.get("__fastrender_throw_syntax_error")?;
+  match thrower.call::<_, ()>((message,)) {
+    Ok(_) => unreachable!("thrower must throw"),
+    Err(e) => Err(e),
+  }
+}
+
+const DOM_BINDINGS_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+
+  // --- DOMException (minimal but spec-shaped enough for WPT + real scripts) ---
+  if (typeof g.DOMException !== "function") {
+    g.DOMException = class DOMException extends Error {
+      constructor(message, name) {
+        super(message === undefined ? "" : String(message));
+        this.name = name === undefined ? "Error" : String(name);
+      }
+    };
+  }
+
+  // Helpers used by Rust host functions to throw the desired error type.
+  g.__fastrender_throw_dom_exception = function (name, message) {
+    throw new g.DOMException(message, name);
+  };
+  g.__fastrender_throw_syntax_error = function (message) {
+    throw new SyntaxError(message === undefined ? "" : String(message));
+  };
+
+  var doc = g.document;
+  if (!doc) return;
+
+  // Node id -> JS object mapping so selectors can preserve identity.
+  var nodeById = g.__fastrender_node_by_id;
+  if (!nodeById) {
+    nodeById = new Map();
+    g.__fastrender_node_by_id = nodeById;
+  }
+
+  function registerNode(obj, id) {
+    if (!obj) return obj;
+    try {
+      Object.defineProperty(obj, "__node_id", {
+        value: id,
+        writable: true,
+        configurable: true,
+      });
+    } catch (_e) {
+      obj.__node_id = id;
+    }
+    nodeById.set(id, obj);
+    return obj;
+  }
+
+  function ensureNodeApis(obj) {
+    if (!obj) return;
+    if (typeof obj.appendChild !== "function") {
+      obj.appendChild = function (child) {
+        if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+          throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+        }
+        g.__fastrender_dom_append_child(this.__node_id, child.__node_id);
+        if (child && (typeof child === "object" || typeof child === "function")) {
+          child.parentNode = this;
+        }
+        return child;
+      };
+    }
+    if (typeof obj.removeChild !== "function") {
+      obj.removeChild = function (child) {
+        if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+          throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+        }
+        g.__fastrender_dom_remove_child(this.__node_id, child.__node_id);
+        if (child && (typeof child === "object" || typeof child === "function")) {
+          if (child.parentNode === this) child.parentNode = null;
+        }
+        return child;
+      };
+    }
+  }
+
+  // Register the document root as node id 0 (dom2::Document::root()).
+  if (doc.__node_id == null) {
+    registerNode(doc, 0);
+  }
+  ensureNodeApis(doc);
+
+  doc.createElement = function (tagName) {
+    var el = { tagName: String(tagName), parentNode: null };
+    var id = g.__fastrender_dom_create_element(String(tagName));
+    registerNode(el, id);
+    ensureNodeApis(el);
+    return el;
+  };
+
+  doc.createTextNode = function (data) {
+    var text = { data: String(data), parentNode: null };
+    var id = g.__fastrender_dom_create_text_node(String(data));
+    registerNode(text, id);
+    ensureNodeApis(text);
+    return text;
+  };
+
+  doc.querySelector = function (selectors) {
+    var id = g.__fastrender_dom_query_selector(String(selectors));
+    if (id == null) return null;
+    return nodeById.get(id) || null;
+  };
+})();
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -86,6 +296,7 @@ mod tests {
     CurrentScriptHost, CurrentScriptStateHandle, ScriptBlockExecutor, ScriptOrchestrator, ScriptType,
   };
   use rquickjs::{Context, Runtime};
+  use std::cell::RefCell;
   use std::rc::Rc;
 
   #[derive(Default)]
@@ -116,7 +327,10 @@ mod tests {
     panic!("script with id={id} not found")
   }
 
-  fn init_ctx(dom: Rc<Dom2Document>, script_state: CurrentScriptStateHandle) -> (Runtime, Context) {
+  fn init_ctx(
+    dom: Rc<RefCell<Dom2Document>>,
+    script_state: CurrentScriptStateHandle,
+  ) -> (Runtime, Context) {
     let rt = Runtime::new().expect("create QuickJS runtime");
     let ctx = Context::full(&rt).expect("create QuickJS context");
     ctx.with(|ctx| {
@@ -163,9 +377,9 @@ mod tests {
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(Dom2Document::from_renderer_dom(&renderer_dom));
-    let script_a = find_script_by_id(dom.as_ref(), "a");
-    let script_b = find_script_by_id(dom.as_ref(), "b");
+    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let script_a = find_script_by_id(&dom.borrow(), "a");
+    let script_b = find_script_by_id(&dom.borrow(), "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -178,14 +392,14 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      dom.as_ref(),
+      &dom.borrow(),
       script_a,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      dom.as_ref(),
+      &dom.borrow(),
       script_b,
       ScriptType::Classic,
       &mut executor,
@@ -254,9 +468,9 @@ mod tests {
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(Dom2Document::from_renderer_dom(&renderer_dom));
-    let script_a = find_script_by_id(dom.as_ref(), "a");
-    let script_b = find_script_by_id(dom.as_ref(), "b");
+    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let script_a = find_script_by_id(&dom.borrow(), "a");
+    let script_b = find_script_by_id(&dom.borrow(), "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -269,7 +483,7 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      dom.as_ref(),
+      &dom.borrow(),
       script_a,
       ScriptType::Classic,
       &mut executor,
@@ -293,10 +507,10 @@ mod tests {
       "<div id=host><template shadowroot=open><script id=shadow></script></template></div>",
       "<script id=module type=module></script>",
     ))?;
-    let dom = Rc::new(Dom2Document::from_renderer_dom(&renderer_dom));
+    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
 
-    let shadow_script = find_script_by_id(dom.as_ref(), "shadow");
-    let module_script = find_script_by_id(dom.as_ref(), "module");
+    let shadow_script = find_script_by_id(&dom.borrow(), "shadow");
+    let module_script = find_script_by_id(&dom.borrow(), "module");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
@@ -309,20 +523,92 @@ mod tests {
 
     orchestrator.execute_script_element(
       &mut host,
-      dom.as_ref(),
+      &dom.borrow(),
       shadow_script,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      dom.as_ref(),
+      &dom.borrow(),
       module_script,
       ScriptType::Module,
       &mut executor,
     )?;
 
     assert_eq!(read_obs(&executor.ctx), vec![None, None]);
+    Ok(())
+  }
+
+  fn eval_str(ctx: &rquickjs::Ctx<'_>, src: &str) -> String {
+    ctx.eval::<String, _>(src).expect("eval")
+  }
+
+  #[test]
+  fn maps_dom_errors_to_domexception_and_selector_errors_to_syntaxerror() -> Result<()> {
+    let renderer_dom = fastrender::dom::parse_html("<!doctype html>")?;
+    let dom = Rc::new(RefCell::new(Dom2Document::from_renderer_dom(&renderer_dom)));
+    let script_state = CurrentScriptStateHandle::default();
+
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+    ctx.with(|ctx| {
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            const t = document.createTextNode("x");
+            const el = document.createElement("div");
+            t.appendChild(el);
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException);
+          }
+        })()"#,
+      );
+      assert_eq!(out, "HierarchyRequestError|true");
+
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            const parent = document.createElement("div");
+            const child = document.createElement("span");
+            parent.removeChild(child);
+            return "no throw";
+          } catch (e) {
+            return String(e.name);
+          }
+        })()"#,
+      );
+      assert_eq!(out, "NotFoundError");
+
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            document.querySelector("[");
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof SyntaxError);
+          }
+        })()"#,
+      );
+      assert_eq!(out, "SyntaxError|true");
+
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            const el = document.createElement("div");
+            el.appendChild(123);
+            return "no throw";
+          } catch (e) {
+            return String(e.name);
+          }
+        })()"#,
+      );
+      assert_eq!(out, "InvalidNodeType");
+    });
     Ok(())
   }
 }
