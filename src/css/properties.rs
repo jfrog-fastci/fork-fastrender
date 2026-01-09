@@ -3153,7 +3153,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
       };
       stops.push(crate::css::types::ColorStop {
         color,
-        position: Some(0.0),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
       });
       return true;
     }
@@ -3164,7 +3164,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
       };
       stops.push(crate::css::types::ColorStop {
         color,
-        position: Some(1.0),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
       });
       return true;
     }
@@ -3181,7 +3181,7 @@ fn parse_webkit_gradient(inner: &str) -> Option<PropertyValue> {
         return false;
       }
 
-      let position = parse_stop_position(pos_token);
+      let position = parse_stop_position(pos_token, false);
       let Ok(color) = Color::parse(color_token) else {
         return false;
       };
@@ -3284,11 +3284,11 @@ fn parse_linear_gradient(
 
   let mut stops = Vec::new();
   if let Some(stop) = first_stop {
-    let _ = parse_color_stop_segment(stop, &mut stops);
+    let _ = parse_color_stop_segment(stop, &mut stops, true);
   }
-  let _ = parse_color_stop_segment(second, &mut stops);
+  let _ = parse_color_stop_segment(second, &mut stops, true);
   for part in iter {
-    let _ = parse_color_stop_segment(part, &mut stops);
+    let _ = parse_color_stop_segment(part, &mut stops, true);
   }
 
   if stops.len() < 2 {
@@ -3435,16 +3435,16 @@ fn parse_radial_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> 
 
   let mut stops = Vec::new();
   if !looks_like_prelude(first_part) {
-    if !parse_color_stop_segment(first_part, &mut stops) {
+    if !parse_color_stop_segment(first_part, &mut stops, true) {
       parse_prelude(first_part, &mut shape, &mut size, &mut position)?;
     }
   } else {
     parse_prelude(first_part, &mut shape, &mut size, &mut position)?;
   }
 
-  let _ = parse_color_stop_segment(second_part, &mut stops);
+  let _ = parse_color_stop_segment(second_part, &mut stops, true);
   for part in parts {
-    let _ = parse_color_stop_segment(part, &mut stops);
+    let _ = parse_color_stop_segment(part, &mut stops, true);
   }
 
   if stops.len() < 2 {
@@ -3824,15 +3824,15 @@ fn parse_conic_gradient(inner: &str, repeating: bool) -> Option<PropertyValue> {
 
   if looks_like_prelude {
     parse_prelude(prelude, &mut from_angle, &mut position);
-  } else if parse_color_stop_segment(prelude, &mut stops) {
+  } else if parse_color_stop_segment(prelude, &mut stops, false) {
     // No prelude; the first segment is a stop.
   } else {
     parse_prelude(prelude, &mut from_angle, &mut position);
   }
 
-  let _ = parse_color_stop_segment(second_part, &mut stops);
+  let _ = parse_color_stop_segment(second_part, &mut stops, false);
   for part in parts {
-    let _ = parse_color_stop_segment(part, &mut stops);
+    let _ = parse_color_stop_segment(part, &mut stops, false);
   }
   if stops.len() < 2 {
     return None;
@@ -4021,13 +4021,17 @@ fn parse_angle(token: &str) -> Option<f32> {
   }
 }
 
-fn parse_color_stop_segment(token: &str, stops: &mut Vec<crate::css::types::ColorStop>) -> bool {
+fn parse_color_stop_segment(
+  token: &str,
+  stops: &mut Vec<crate::css::types::ColorStop>,
+  allow_length: bool,
+) -> bool {
   let trimmed = trim_css_whitespace(token);
   if trimmed.is_empty() {
     return false;
   }
 
-  let (color_part, first_pos, second_pos) = split_color_and_positions(trimmed);
+  let (color_part, first_pos, second_pos) = split_color_and_positions(trimmed, allow_length);
   let Ok(color) = Color::parse(color_part) else {
     return false;
   };
@@ -4067,7 +4071,14 @@ fn parse_color_stop_segment(token: &str, stops: &mut Vec<crate::css::types::Colo
   true
 }
 
-fn split_color_and_positions(token: &str) -> (&str, Option<f32>, Option<f32>) {
+fn split_color_and_positions(
+  token: &str,
+  allow_length: bool,
+) -> (
+  &str,
+  Option<crate::css::types::ColorStopPosition>,
+  Option<crate::css::types::ColorStopPosition>,
+) {
   fn split_last_segment(input: &str) -> Option<(&str, &str)> {
     // Scan from the end for a top-level whitespace separator (`red 10%` / `red 10% 20%`), keeping
     // parentheses balanced so we don't split inside `rgb(...)` etc.
@@ -4093,13 +4104,13 @@ fn split_color_and_positions(token: &str) -> (&str, Option<f32>, Option<f32>) {
   }
 
   let mut remainder = token;
-  let mut first: Option<f32> = None;
-  let mut second: Option<f32> = None;
+  let mut first: Option<crate::css::types::ColorStopPosition> = None;
+  let mut second: Option<crate::css::types::ColorStopPosition> = None;
   for _ in 0..2 {
     let Some((head, tail)) = split_last_segment(remainder) else {
       break;
     };
-    let Some(pos) = parse_stop_position(tail) else {
+    let Some(pos) = parse_stop_position(tail, allow_length) else {
       break;
     };
     second = first;
@@ -4110,21 +4121,32 @@ fn split_color_and_positions(token: &str) -> (&str, Option<f32>, Option<f32>) {
   (remainder, first, second)
 }
 
-fn parse_stop_position(token: &str) -> Option<f32> {
+fn parse_stop_position(
+  token: &str,
+  allow_length: bool,
+) -> Option<crate::css::types::ColorStopPosition> {
   let t = trim_css_whitespace(token);
   if t.ends_with('%') {
     trim_css_whitespace(&t[..t.len() - 1])
       .parse::<f32>()
       .ok()
-      .map(|p| (p / 100.0).clamp(0.0, 1.0))
+      .map(|p| crate::css::types::ColorStopPosition::Fraction((p / 100.0).clamp(0.0, 1.0)))
   } else if let Some(angle) = parse_stop_angle(t) {
-    Some((angle.rem_euclid(360.0)) / 360.0)
+    Some(crate::css::types::ColorStopPosition::Fraction(
+      (angle.rem_euclid(360.0)) / 360.0,
+    ))
   } else if let Ok(num) = t.parse::<f32>() {
     if num > 1.0 {
-      Some((num / 100.0).clamp(0.0, 1.0))
+      Some(crate::css::types::ColorStopPosition::Fraction(
+        (num / 100.0).clamp(0.0, 1.0),
+      ))
     } else {
-      Some(num.clamp(0.0, 1.0))
+      Some(crate::css::types::ColorStopPosition::Fraction(
+        num.clamp(0.0, 1.0),
+      ))
     }
+  } else if allow_length {
+    parse_length_token(t).map(crate::css::types::ColorStopPosition::Length)
   } else {
     None
   }
@@ -4158,10 +4180,12 @@ fn parse_stop_angle(token: &str) -> Option<f32> {
 mod tests {
   use super::*;
   use crate::css::parser::parse_stylesheet;
+  use crate::css::types::ColorStopPosition;
   use crate::css::types::CssRule;
   use crate::css::value_cache;
   use crate::style::color::Color;
   use crate::style::properties::supported_properties;
+  use crate::style::values::Length;
   use std::collections::BTreeSet;
 
   #[test]
@@ -4454,8 +4478,8 @@ mod tests {
 
     assert!((angle - 45.0).abs() < 0.01);
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert_eq!(stops[1].position, Some(1.0));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(1.0)));
   }
 
   #[test]
@@ -4468,6 +4492,21 @@ mod tests {
     };
     assert!((angle - 270.0).abs() < 0.01);
     assert_eq!(stops.len(), 2);
+  }
+
+  #[test]
+  fn parses_linear_gradient_length_stop_positions() {
+    let value = "linear-gradient(to bottom, #fff 0%, #fff 3.2rem, #57068c 3.2rem)";
+    let PropertyValue::LinearGradient { angle, stops } =
+      parse_property_value("background-image", value).expect("gradient")
+    else {
+      panic!("expected linear gradient");
+    };
+    assert!((angle - 180.0).abs() < 0.01);
+    assert_eq!(stops.len(), 3);
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Length(Length::rem(3.2))));
+    assert_eq!(stops[2].position, Some(ColorStopPosition::Length(Length::rem(3.2))));
   }
 
   #[test]
@@ -4516,8 +4555,8 @@ mod tests {
     };
     assert!((angle - 180.0).abs() < 0.01);
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert_eq!(stops[1].position, Some(1.0));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(1.0)));
   }
 
   #[test]
@@ -4531,9 +4570,9 @@ mod tests {
     };
     assert!((angle - 90.0).abs() < 0.01);
     assert_eq!(stops.len(), 3);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert_eq!(stops[1].position, Some(0.5));
-    assert_eq!(stops[2].position, Some(1.0));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(0.5)));
+    assert_eq!(stops[2].position, Some(ColorStopPosition::Fraction(1.0)));
   }
 
   #[test]
@@ -4547,8 +4586,8 @@ mod tests {
     };
     assert!((angle - 135.0).abs() < 0.01);
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert_eq!(stops[1].position, Some(1.0));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(1.0)));
   }
 
   #[test]
@@ -4619,9 +4658,9 @@ mod tests {
     };
 
     assert_eq!(stops.len(), 3);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert_eq!(stops[1].position, Some(0.5));
-    assert_eq!(stops[2].position, Some(0.5));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(0.5)));
+    assert_eq!(stops[2].position, Some(ColorStopPosition::Fraction(0.5)));
   }
 
   #[test]
@@ -4640,7 +4679,7 @@ mod tests {
     assert!(matches!(size, RadialGradientSize::FarthestCorner));
     assert!((position.x.alignment - 0.5).abs() < 1e-6);
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[1].position, Some(0.75));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(0.75)));
   }
 
   #[test]
@@ -5109,8 +5148,8 @@ mod tests {
     assert!(matches!(size, RadialGradientSize::FarthestCorner));
     assert!((position.y.alignment - 0.5).abs() < 1e-6);
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[0].position, Some(0.10));
-    assert_eq!(stops[1].position, Some(0.60));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.10)));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(0.60)));
   }
 
   #[test]
@@ -5123,7 +5162,7 @@ mod tests {
     };
 
     assert_eq!(stops.len(), 2);
-    assert_eq!(stops[0].position, Some(0.10));
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.10)));
     assert!(matches!(stops[0].color, Color::CurrentColor));
 
     match stops[1].color {
@@ -5136,7 +5175,7 @@ mod tests {
       Color::Mix { .. } => panic!("second stop should not be a mix"),
       _ => panic!("unexpected color variant"),
     }
-    assert_eq!(stops[1].position, Some(0.90));
+    assert_eq!(stops[1].position, Some(ColorStopPosition::Fraction(0.90)));
   }
 
   #[test]
@@ -5173,8 +5212,11 @@ mod tests {
     assert!((position.x.offset.value - 25.0).abs() < 0.01);
     assert_eq!(position.y.offset.unit, LengthUnit::Percent);
     assert!((position.y.offset.value - 75.0).abs() < 0.01);
-    assert_eq!(stops[0].position, Some(0.0));
-    assert!(stops[1].position.unwrap() > 0.49 && stops[1].position.unwrap() < 0.51);
+    assert_eq!(stops[0].position, Some(ColorStopPosition::Fraction(0.0)));
+    let ColorStopPosition::Fraction(p) = stops[1].position.unwrap() else {
+      panic!("expected conic stop to be a fraction");
+    };
+    assert!(p > 0.49 && p < 0.51);
   }
 
   #[test]

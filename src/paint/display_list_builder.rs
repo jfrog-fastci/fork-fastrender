@@ -4107,12 +4107,41 @@ impl DisplayListBuilder {
     out
   }
 
-  fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+  fn normalize_color_stops(
+    stops: &[ColorStop],
+    current_color: Rgba,
+    gradient_length: f32,
+    font_size: f32,
+    root_font_size: f32,
+    viewport: Option<(f32, f32)>,
+  ) -> Vec<(f32, Rgba)> {
     if stops.is_empty() {
       return Vec::new();
     }
 
-    let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+    let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+      gradient_length
+    } else {
+      0.0
+    };
+    let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+
+    let mut positions: Vec<Option<f32>> = stops
+      .iter()
+      .map(|s| match s.position {
+        Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+        Some(crate::css::types::ColorStopPosition::Length(len)) => {
+          if gradient_length <= 0.0 {
+            None
+          } else {
+            len
+              .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+              .map(|px| px / gradient_length)
+          }
+        }
+        None => None,
+      })
+      .collect();
     if positions.iter().all(|p| p.is_none()) {
       if stops.len() == 1 {
         return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -4168,12 +4197,41 @@ impl DisplayListBuilder {
     output
   }
 
-  fn normalize_color_stops_unclamped(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+  fn normalize_color_stops_unclamped(
+    stops: &[ColorStop],
+    current_color: Rgba,
+    gradient_length: f32,
+    font_size: f32,
+    root_font_size: f32,
+    viewport: Option<(f32, f32)>,
+  ) -> Vec<(f32, Rgba)> {
     if stops.is_empty() {
       return Vec::new();
     }
 
-    let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+    let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+      gradient_length
+    } else {
+      0.0
+    };
+    let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+
+    let mut positions: Vec<Option<f32>> = stops
+      .iter()
+      .map(|s| match s.position {
+        Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+        Some(crate::css::types::ColorStopPosition::Length(len)) => {
+          if gradient_length <= 0.0 {
+            None
+          } else {
+            len
+              .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+              .map(|px| px / gradient_length)
+          }
+        }
+        None => None,
+      })
+      .collect();
     if positions.iter().all(|p| p.is_none()) {
       if stops.len() == 1 {
         return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -6580,15 +6638,23 @@ impl DisplayListBuilder {
 
     match bg {
       BackgroundImage::LinearGradient { angle, stops } => {
-        let resolved = Self::normalize_color_stops(stops, style.color);
-        if !resolved.is_empty() {
-          let stops = Self::gradient_stops(&resolved);
-          let rad = angle.to_radians();
-          let dx = rad.sin();
-          let dy = -rad.cos();
+        let rad = angle.to_radians();
+        let dx = rad.sin();
+        let dy = -rad.cos();
 
-          if repeat_both_axes {
-            if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+        if repeat_both_axes {
+          if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+            let resolved = Self::normalize_color_stops(
+              stops,
+              style.color,
+              tile_w * dx.abs() + tile_h * dy.abs(),
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            if !resolved.is_empty() {
+              let stops = Self::gradient_stops(&resolved);
+
               record_pattern_fast_path(tile_w, tile_h, offset_x, offset_y);
 
               let len = 0.5 * (tile_w * dx.abs() + tile_h * dy.abs());
@@ -6609,9 +6675,21 @@ impl DisplayListBuilder {
                 },
               ));
             }
-          } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
-            compute_tiles(0.0, 0.0)
-          {
+          }
+        } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
+          compute_tiles(0.0, 0.0)
+        {
+          let resolved = Self::normalize_color_stops(
+            stops,
+            style.color,
+            tile_w * dx.abs() + tile_h * dy.abs(),
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          if !resolved.is_empty() {
+            let stops = Self::gradient_stops(&resolved);
+
             let max_x = visible_clip.max_x();
             let max_y = visible_clip.max_y();
             let len = 0.5 * (tile_w * dx.abs() + tile_h * dy.abs());
@@ -6636,14 +6714,10 @@ impl DisplayListBuilder {
 
                 let cx = tile_rect.x() + tile_w / 2.0;
                 let cy = tile_rect.y() + tile_h / 2.0;
-                let start = Point::new(
-                  cx - dx * len - intersection.x(),
-                  cy - dy * len - intersection.y(),
-                );
-                let end = Point::new(
-                  cx + dx * len - intersection.x(),
-                  cy + dy * len - intersection.y(),
-                );
+                let start =
+                  Point::new(cx - dx * len - intersection.x(), cy - dy * len - intersection.y());
+                let end =
+                  Point::new(cx + dx * len - intersection.x(), cy + dy * len - intersection.y());
 
                 self.emit_background_tile(DisplayItem::LinearGradient(LinearGradientItem {
                   rect: intersection,
@@ -6658,15 +6732,23 @@ impl DisplayListBuilder {
         }
       }
       BackgroundImage::RepeatingLinearGradient { angle, stops } => {
-        let resolved = Self::normalize_color_stops(stops, style.color);
-        if !resolved.is_empty() {
-          let stops = Self::gradient_stops(&resolved);
-          let rad = angle.to_radians();
-          let dx = rad.sin();
-          let dy = -rad.cos();
+        let rad = angle.to_radians();
+        let dx = rad.sin();
+        let dy = -rad.cos();
 
-          if repeat_both_axes {
-            if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+        if repeat_both_axes {
+          if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+            let resolved = Self::normalize_color_stops(
+              stops,
+              style.color,
+              tile_w * dx.abs() + tile_h * dy.abs(),
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            if !resolved.is_empty() {
+              let stops = Self::gradient_stops(&resolved);
+
               record_pattern_fast_path(tile_w, tile_h, offset_x, offset_y);
 
               let len = 0.5 * (tile_w * dx.abs() + tile_h * dy.abs());
@@ -6687,9 +6769,21 @@ impl DisplayListBuilder {
                 },
               ));
             }
-          } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
-            compute_tiles(0.0, 0.0)
-          {
+          }
+        } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
+          compute_tiles(0.0, 0.0)
+        {
+          let resolved = Self::normalize_color_stops(
+            stops,
+            style.color,
+            tile_w * dx.abs() + tile_h * dy.abs(),
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          if !resolved.is_empty() {
+            let stops = Self::gradient_stops(&resolved);
+
             let max_x = visible_clip.max_x();
             let max_y = visible_clip.max_y();
             let len = 0.5 * (tile_w * dx.abs() + tile_h * dy.abs());
@@ -6714,14 +6808,10 @@ impl DisplayListBuilder {
 
                 let cx = tile_rect.x() + tile_w / 2.0;
                 let cy = tile_rect.y() + tile_h / 2.0;
-                let start = Point::new(
-                  cx - dx * len - intersection.x(),
-                  cy - dy * len - intersection.y(),
-                );
-                let end = Point::new(
-                  cx + dx * len - intersection.x(),
-                  cy + dy * len - intersection.y(),
-                );
+                let start =
+                  Point::new(cx - dx * len - intersection.x(), cy - dy * len - intersection.y());
+                let end =
+                  Point::new(cx + dx * len - intersection.x(), cy + dy * len - intersection.y());
 
                 self.emit_background_tile(DisplayItem::LinearGradient(LinearGradientItem {
                   rect: intersection,
@@ -6740,7 +6830,14 @@ impl DisplayListBuilder {
         position,
         stops,
       } => {
-        let resolved = Self::normalize_color_stops_unclamped(stops, style.color);
+        let resolved = Self::normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          self.viewport,
+        );
         if !resolved.is_empty() {
           let stops = Self::gradient_stops_unclamped(&resolved);
 
@@ -6821,7 +6918,14 @@ impl DisplayListBuilder {
         position,
         stops,
       } => {
-        let resolved = Self::normalize_color_stops_unclamped(stops, style.color);
+        let resolved = Self::normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          self.viewport,
+        );
         if !resolved.is_empty() {
           let stops = Self::gradient_stops_unclamped(&resolved);
 
@@ -6903,23 +7007,29 @@ impl DisplayListBuilder {
         position,
         stops,
       } => {
-        let resolved = Self::normalize_color_stops(stops, style.color);
-        if !resolved.is_empty() {
-          let stops = Self::gradient_stops(&resolved);
+        if repeat_both_axes {
+          if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+            let (cx, cy, radius_x, radius_y) = Self::radial_geometry(
+              Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
+              position,
+              size,
+              *shape,
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            let resolved = Self::normalize_color_stops(
+              stops,
+              style.color,
+              radius_x.max(radius_y),
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            if !resolved.is_empty() {
+              let stops = Self::gradient_stops(&resolved);
 
-          if repeat_both_axes {
-            if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
               record_pattern_fast_path(tile_w, tile_h, offset_x, offset_y);
-
-              let (cx, cy, radius_x, radius_y) = Self::radial_geometry(
-                Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
-                position,
-                size,
-                *shape,
-                style.font_size,
-                style.root_font_size,
-                self.viewport,
-              );
 
               self.list.push(DisplayItem::RadialGradientPattern(
                 RadialGradientPatternItem {
@@ -6933,9 +7043,30 @@ impl DisplayListBuilder {
                 },
               ));
             }
-          } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
-            compute_tiles(0.0, 0.0)
-          {
+          }
+        } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
+          compute_tiles(0.0, 0.0)
+        {
+          let (_cx, _cy, radius_x, radius_y) = Self::radial_geometry(
+            Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
+            position,
+            size,
+            *shape,
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          let resolved = Self::normalize_color_stops(
+            stops,
+            style.color,
+            radius_x.max(radius_y),
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          if !resolved.is_empty() {
+            let stops = Self::gradient_stops(&resolved);
+
             let max_x = visible_clip.max_x();
             let max_y = visible_clip.max_y();
 
@@ -6986,23 +7117,29 @@ impl DisplayListBuilder {
         position,
         stops,
       } => {
-        let resolved = Self::normalize_color_stops(stops, style.color);
-        if !resolved.is_empty() {
-          let stops = Self::gradient_stops(&resolved);
+        if repeat_both_axes {
+          if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
+            let (cx, cy, radius_x, radius_y) = Self::radial_geometry(
+              Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
+              position,
+              size,
+              *shape,
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            let resolved = Self::normalize_color_stops(
+              stops,
+              style.color,
+              radius_x.max(radius_y),
+              style.font_size,
+              style.root_font_size,
+              self.viewport,
+            );
+            if !resolved.is_empty() {
+              let stops = Self::gradient_stops(&resolved);
 
-          if repeat_both_axes {
-            if let Some((tile_w, tile_h, offset_x, offset_y)) = compute_tile_metrics(0.0, 0.0) {
               record_pattern_fast_path(tile_w, tile_h, offset_x, offset_y);
-
-              let (cx, cy, radius_x, radius_y) = Self::radial_geometry(
-                Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
-                position,
-                size,
-                *shape,
-                style.font_size,
-                style.root_font_size,
-                self.viewport,
-              );
 
               self.list.push(DisplayItem::RadialGradientPattern(
                 RadialGradientPatternItem {
@@ -7016,9 +7153,30 @@ impl DisplayListBuilder {
                 },
               ));
             }
-          } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
-            compute_tiles(0.0, 0.0)
-          {
+          }
+        } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
+          compute_tiles(0.0, 0.0)
+        {
+          let (_cx, _cy, radius_x, radius_y) = Self::radial_geometry(
+            Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
+            position,
+            size,
+            *shape,
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          let resolved = Self::normalize_color_stops(
+            stops,
+            style.color,
+            radius_x.max(radius_y),
+            style.font_size,
+            style.root_font_size,
+            self.viewport,
+          );
+          if !resolved.is_empty() {
+            let stops = Self::gradient_stops(&resolved);
+
             let max_x = visible_clip.max_x();
             let max_y = visible_clip.max_y();
 
@@ -13046,11 +13204,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -13088,6 +13246,63 @@ mod tests {
   }
 
   #[test]
+  fn background_linear_gradient_resolves_length_stop_positions() {
+    // Regression test: `<length>` color stop positions in gradients should be resolved relative to
+    // the gradient geometry (rather than treated as invalid and dropping the whole gradient).
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::TRANSPARENT;
+    style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::LinearGradient {
+        angle: 90.0,
+        stops: vec![
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::RED),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
+          },
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::RED),
+            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(2.0))),
+          },
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::BLUE),
+            position: Some(crate::css::types::ColorStopPosition::Length(Length::rem(2.0))),
+          },
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::BLUE),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
+          },
+        ],
+      }),
+      repeat: BackgroundRepeat::no_repeat(),
+      ..BackgroundLayer::default()
+    }]);
+
+    // Root font size defaults to 16px, so 2rem should resolve to 32px. With a 64px-wide element,
+    // the resolved stop positions should land at 0.5.
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 64.0, 10.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::new().build(&fragment);
+    let gradient = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::LinearGradient(item) => Some(item),
+        _ => None,
+      })
+      .expect("expected a linear gradient display item");
+
+    assert_eq!(gradient.stops.len(), 4);
+    assert!((gradient.stops[0].position - 0.0).abs() < 1e-6);
+    assert!((gradient.stops[1].position - 0.5).abs() < 1e-6);
+    assert!((gradient.stops[2].position - 0.5).abs() < 1e-6);
+    assert!((gradient.stops[3].position - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
   fn root_background_extension_preserves_gradient_tile_size() {
     // When the canvas is taller than the root stacking context bounds, we extend the root
     // background paint rect to the viewport. The background image tile size should still be
@@ -13105,11 +13320,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -13166,11 +13381,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -15303,11 +15518,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLACK),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::WHITE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),

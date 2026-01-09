@@ -14437,9 +14437,13 @@ fn hash_color_stop_alpha(
   let rgba = stop.color.to_rgba_with_scheme(current_color, is_dark);
   hash_f32(rgba.a, hasher);
   match stop.position {
-    Some(v) => {
+    Some(crate::css::types::ColorStopPosition::Fraction(v)) => {
       1u8.hash(hasher);
       hash_f32(v, hasher);
+    }
+    Some(crate::css::types::ColorStopPosition::Length(v)) => {
+      2u8.hash(hasher);
+      hash_length(&v, hasher);
     }
     None => 0u8.hash(hasher),
   }

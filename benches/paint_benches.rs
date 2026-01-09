@@ -149,11 +149,11 @@ fn create_background_tiling_fragment_tree(page_height: f32) -> FragmentTree {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLUE),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),

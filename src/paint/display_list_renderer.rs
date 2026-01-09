@@ -14568,12 +14568,41 @@ fn resolve_border_image_outset(
   }
 }
 
-fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
 
-  let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+
+  let mut positions: Vec<Option<f32>> = stops
+    .iter()
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
+    .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -14634,11 +14663,39 @@ fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, 
   output
 }
 
-fn normalize_color_stops_unclamped(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops_unclamped(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
-  let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+  let mut positions: Vec<Option<f32>> = stops
+    .iter()
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
+    .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -14880,13 +14937,15 @@ fn render_generated_border_image_subrect(
   let rect = Rect::from_xywh(0.0, 0.0, full_width as f32, full_height as f32);
   match bg {
     BackgroundImage::LinearGradient { angle, stops } => {
-      let resolved = normalize_color_stops(stops, current_color);
-      if resolved.is_empty() {
-        return None;
-      }
       let rad = angle.to_radians();
       let dx = rad.sin();
       let dy = -rad.cos();
+      let gradient_length = rect.width() * dx.abs() + rect.height() * dy.abs();
+      let resolved =
+        normalize_color_stops(stops, current_color, gradient_length, font_size, root_font_size, viewport);
+      if resolved.is_empty() {
+        return None;
+      }
       let len = 0.5 * (rect.width() * dx.abs() + rect.height() * dy.abs());
       let cx = rect.width() * 0.5;
       let cy = rect.height() * 0.5;
@@ -14908,13 +14967,15 @@ fn render_generated_border_image_subrect(
       .flatten()
     }
     BackgroundImage::RepeatingLinearGradient { angle, stops } => {
-      let resolved = normalize_color_stops(stops, current_color);
-      if resolved.is_empty() {
-        return None;
-      }
       let rad = angle.to_radians();
       let dx = rad.sin();
       let dy = -rad.cos();
+      let gradient_length = rect.width() * dx.abs() + rect.height() * dy.abs();
+      let resolved =
+        normalize_color_stops(stops, current_color, gradient_length, font_size, root_font_size, viewport);
+      if resolved.is_empty() {
+        return None;
+      }
       let len = 0.5 * (rect.width() * dx.abs() + rect.height() * dy.abs());
       let cx = rect.width() * 0.5;
       let cy = rect.height() * 0.5;
@@ -14941,11 +15002,6 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved = normalize_color_stops(stops, current_color);
-      if resolved.is_empty() {
-        return None;
-      }
-      let skia_stops = gradient_stops(&resolved);
       let (cx, cy, radius_x, radius_y) = radial_geometry(
         rect,
         position,
@@ -14955,6 +15011,18 @@ fn render_generated_border_image_subrect(
         root_font_size,
         viewport,
       );
+      let resolved = normalize_color_stops(
+        stops,
+        current_color,
+        radius_x.max(radius_y),
+        font_size,
+        root_font_size,
+        viewport,
+      );
+      if resolved.is_empty() {
+        return None;
+      }
+      let skia_stops = gradient_stops(&resolved);
       let center = Point::new(cx - crop_x, cy - crop_y);
       let radii = Point::new(radius_x, radius_y);
       let key =
@@ -15004,11 +15072,6 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved = normalize_color_stops(stops, current_color);
-      if resolved.is_empty() {
-        return None;
-      }
-      let skia_stops = gradient_stops(&resolved);
       let (cx, cy, radius_x, radius_y) = radial_geometry(
         rect,
         position,
@@ -15018,6 +15081,18 @@ fn render_generated_border_image_subrect(
         root_font_size,
         viewport,
       );
+      let resolved = normalize_color_stops(
+        stops,
+        current_color,
+        radius_x.max(radius_y),
+        font_size,
+        root_font_size,
+        viewport,
+      );
+      if resolved.is_empty() {
+        return None;
+      }
+      let skia_stops = gradient_stops(&resolved);
       let center = Point::new(cx - crop_x, cy - crop_y);
       let radii = Point::new(radius_x, radius_y);
       let key = GradientPixmapCacheKey::radial(
@@ -15072,7 +15147,8 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved = normalize_color_stops_unclamped(stops, current_color);
+      let resolved =
+        normalize_color_stops_unclamped(stops, current_color, 1.0, font_size, root_font_size, viewport);
       if resolved.is_empty() {
         return None;
       }
@@ -15097,7 +15173,8 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved = normalize_color_stops_unclamped(stops, current_color);
+      let resolved =
+        normalize_color_stops_unclamped(stops, current_color, 1.0, font_size, root_font_size, viewport);
       if resolved.is_empty() {
         return None;
       }
@@ -22320,11 +22397,11 @@ mod tests {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(1.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     });
@@ -22391,19 +22468,19 @@ mod tests {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::TRANSPARENT),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::TRANSPARENT),
-          position: Some(1.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     };
@@ -22412,19 +22489,19 @@ mod tests {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::TRANSPARENT),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::TRANSPARENT),
-          position: Some(1.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     };
@@ -22520,15 +22597,15 @@ mod tests {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLACK),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::TRANSPARENT),
-          position: Some(0.5),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
         },
       ],
     };

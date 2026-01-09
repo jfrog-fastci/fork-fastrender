@@ -265,11 +265,11 @@ fn background_attachment_fixed_anchors_to_viewport_in_display_list() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLUE),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -318,11 +318,11 @@ fn background_attachment_local_clips_to_padding_box_in_display_list() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -428,11 +428,11 @@ fn fragment_background_gradient_emits_linear_gradient() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLUE),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -494,11 +494,11 @@ fn display_list_background_layers_paint_top_to_bottom() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::from_rgba8(0, 255, 0, 128)),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::from_rgba8(0, 255, 0, 128)),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -510,11 +510,11 @@ fn display_list_background_layers_paint_top_to_bottom() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::BLUE),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::BLUE),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -560,7 +560,7 @@ fn display_list_background_layers_use_per_layer_clip() {
       angle: 0.0,
       stops: vec![ColorStop {
         color: Color::Rgba(Rgba::GREEN),
-        position: Some(0.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
       }],
     }),
     clip: BackgroundBox::ContentBox,
@@ -571,7 +571,7 @@ fn display_list_background_layers_use_per_layer_clip() {
       angle: 0.0,
       stops: vec![ColorStop {
         color: Color::Rgba(Rgba::BLUE),
-        position: Some(0.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
       }],
     }),
     clip: BackgroundBox::BorderBox,

@@ -2010,11 +2010,11 @@ fn background_attachment_local_clips_to_padding_box_in_display_list() {
       stops: vec![
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::BLUE),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -2075,11 +2075,11 @@ fn display_list_border_image_generated_uniform_color() {
       stops: vec![
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::RED),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     })),
@@ -2191,11 +2191,11 @@ fn display_list_linear_gradient_respects_background_size() {
       stops: vec![
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: fastrender::Color::Rgba(Rgba::RED),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -2539,11 +2539,11 @@ fn background_blend_mode_combines_multiple_layers() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::GREEN),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::GREEN),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -2558,11 +2558,11 @@ fn background_blend_mode_combines_multiple_layers() {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::RED),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),
@@ -3333,7 +3333,7 @@ fn color_mix_background_renders_purple() {
       angle: 0.0,
       stops: vec![ColorStop {
         color: fastrender::Color::parse("color-mix(in srgb, red 50%, blue 50%)").unwrap(),
-        position: Some(0.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
       }],
     }),
     ..Default::default()
@@ -3494,14 +3494,14 @@ fn color_mix_handles_transparent_components() {
             "color-mix(in srgb, rgba(255, 0, 0, 0.0) 50%, rgba(0, 0, 255, 1) 50%)",
           )
           .unwrap(),
-          position: Some(0.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::parse(
             "color-mix(in srgb, rgba(255, 0, 0, 0.0) 50%, rgba(0, 0, 255, 1) 50%)",
           )
           .unwrap(),
-          position: Some(1.0),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     }),

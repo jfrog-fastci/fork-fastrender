@@ -168,11 +168,11 @@ fn image_shape_respects_threshold() {
     stops: vec![
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 0.0)),
-        position: Some(0.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
       },
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 1.0)),
-        position: Some(1.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
       },
     ],
   });
@@ -396,11 +396,11 @@ fn image_shape_threshold_wraps_text() {
     stops: vec![
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 0.0)),
-        position: Some(0.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
       },
       ColorStop {
         color: Color::Rgba(Rgba::new(0, 0, 0, 1.0)),
-        position: Some(1.0),
+        position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
       },
     ],
   });

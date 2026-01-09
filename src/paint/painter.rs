@@ -10058,14 +10058,22 @@ impl Painter {
     let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
     match bg {
       BackgroundImage::LinearGradient { angle, stops } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
         let gradient_rect = rect;
         let rad = angle.to_radians();
         let dx = rad.sin();
         let dy = -rad.cos();
+        let gradient_length = gradient_rect.width() * dx.abs() + gradient_rect.height() * dy.abs();
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          gradient_length,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
         let len = 0.5 * (gradient_rect.width() * dx.abs() + gradient_rect.height() * dy.abs());
         let cx = gradient_rect.x() + gradient_rect.width() / 2.0;
         let cy = gradient_rect.y() + gradient_rect.height() / 2.0;
@@ -10091,14 +10099,22 @@ impl Painter {
         Some(pixmap)
       }
       BackgroundImage::RepeatingLinearGradient { angle, stops } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
         let gradient_rect = rect;
         let rad = angle.to_radians();
         let dx = rad.sin();
         let dy = -rad.cos();
+        let gradient_length = gradient_rect.width() * dx.abs() + gradient_rect.height() * dy.abs();
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          gradient_length,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
         let len = 0.5 * (gradient_rect.width() * dx.abs() + gradient_rect.height() * dy.abs());
         let cx = gradient_rect.x() + gradient_rect.width() / 2.0;
         let cy = gradient_rect.y() + gradient_rect.height() / 2.0;
@@ -10129,11 +10145,6 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
-        let skia_stops = gradient_stops(&resolved);
         let (cx, cy, radius_x, radius_y) = radial_geometry(
           rect,
           position,
@@ -10143,6 +10154,18 @@ impl Painter {
           style.root_font_size,
           (self.css_width, self.css_height),
         );
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          radius_x.max(radius_y),
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
+        let skia_stops = gradient_stops(&resolved);
         let transform = Transform::from_translate(cx, cy).pre_scale(radius_x, radius_y);
         let shader = RadialGradient::new(
           tiny_skia::Point::from_xy(0.0, 0.0),
@@ -10178,11 +10201,6 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
-        let skia_stops = gradient_stops(&resolved);
         let (cx, cy, radius_x, radius_y) = radial_geometry(
           rect,
           position,
@@ -10192,6 +10210,18 @@ impl Painter {
           style.root_font_size,
           (self.css_width, self.css_height),
         );
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          radius_x.max(radius_y),
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
+        let skia_stops = gradient_stops(&resolved);
         let transform = Transform::from_translate(cx, cy).pre_scale(radius_x, radius_y);
         let shader = RadialGradient::new(
           tiny_skia::Point::from_xy(0.0, 0.0),
@@ -10226,7 +10256,14 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops_unclamped(stops, style.color);
+        let resolved = normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
         if resolved.is_empty() {
           return None;
         }
@@ -10261,7 +10298,14 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops_unclamped(stops, style.color);
+        let resolved = normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
         if resolved.is_empty() {
           return None;
         }
@@ -10321,13 +10365,21 @@ impl Painter {
 
     match bg {
       BackgroundImage::LinearGradient { angle, stops } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
         let rad = angle.to_radians();
         let dx = rad.sin();
         let dy = -rad.cos();
+        let gradient_length = full_rect.width() * dx.abs() + full_rect.height() * dy.abs();
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          gradient_length,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
         let len = 0.5 * (full_rect.width() * dx.abs() + full_rect.height() * dy.abs());
         let cx = full_rect.width() / 2.0;
         let cy = full_rect.height() / 2.0;
@@ -10352,13 +10404,21 @@ impl Painter {
         Some(pixmap)
       }
       BackgroundImage::RepeatingLinearGradient { angle, stops } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
         let rad = angle.to_radians();
         let dx = rad.sin();
         let dy = -rad.cos();
+        let gradient_length = full_rect.width() * dx.abs() + full_rect.height() * dy.abs();
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          gradient_length,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
         let len = 0.5 * (full_rect.width() * dx.abs() + full_rect.height() * dy.abs());
         let cx = full_rect.width() / 2.0;
         let cy = full_rect.height() / 2.0;
@@ -10388,11 +10448,6 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
-        let skia_stops = gradient_stops(&resolved);
         let (cx, cy, radius_x, radius_y) = radial_geometry(
           full_rect,
           position,
@@ -10402,6 +10457,18 @@ impl Painter {
           style.root_font_size,
           (self.css_width, self.css_height),
         );
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          radius_x.max(radius_y),
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
+        let skia_stops = gradient_stops(&resolved);
         let cx = cx - offset.x;
         let cy = cy - offset.y;
         let transform = Transform::from_translate(cx, cy).pre_scale(radius_x, radius_y);
@@ -10439,11 +10506,6 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops(stops, style.color);
-        if resolved.is_empty() {
-          return None;
-        }
-        let skia_stops = gradient_stops(&resolved);
         let (cx, cy, radius_x, radius_y) = radial_geometry(
           full_rect,
           position,
@@ -10453,6 +10515,18 @@ impl Painter {
           style.root_font_size,
           (self.css_width, self.css_height),
         );
+        let resolved = normalize_color_stops(
+          stops,
+          style.color,
+          radius_x.max(radius_y),
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
+        if resolved.is_empty() {
+          return None;
+        }
+        let skia_stops = gradient_stops(&resolved);
         let cx = cx - offset.x;
         let cy = cy - offset.y;
         let transform = Transform::from_translate(cx, cy).pre_scale(radius_x, radius_y);
@@ -10489,7 +10563,14 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops_unclamped(stops, style.color);
+        let resolved = normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
         if resolved.is_empty() {
           return None;
         }
@@ -10524,7 +10605,14 @@ impl Painter {
         position,
         stops,
       } => {
-        let resolved = normalize_color_stops_unclamped(stops, style.color);
+        let resolved = normalize_color_stops_unclamped(
+          stops,
+          style.color,
+          1.0,
+          style.font_size,
+          style.root_font_size,
+          (self.css_width, self.css_height),
+        );
         if resolved.is_empty() {
           return None;
         }
@@ -14598,12 +14686,46 @@ fn resolve_background_offset(
   }
 }
 
-fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: (f32, f32),
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
 
-  let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+
+  let mut positions: Vec<Option<f32>> = stops
+    .iter()
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(
+              Some(gradient_length),
+              viewport.0,
+              viewport.1,
+              font_size,
+              root_font_size,
+            )
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
+    .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -14665,11 +14787,44 @@ fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, 
   output
 }
 
-fn normalize_color_stops_unclamped(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops_unclamped(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: (f32, f32),
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
-  let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+  let mut positions: Vec<Option<f32>> = stops
+    .iter()
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(
+              Some(gradient_length),
+              viewport.0,
+              viewport.1,
+              font_size,
+              root_font_size,
+            )
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
+    .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(0.0, stops[0].color.to_rgba(current_color))];
@@ -17983,11 +18138,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18017,7 +18172,7 @@ mod tests {
       },
       ColorStop {
         color: Color::Rgba(Rgba::GREEN),
-        position: Some(0.5),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
       },
       ColorStop {
         color: Color::Rgba(Rgba::BLUE),
@@ -18025,7 +18180,14 @@ mod tests {
       },
     ];
 
-    let resolved = super::normalize_color_stops(&stops, Rgba::WHITE);
+    let resolved = super::normalize_color_stops(
+      &stops,
+      Rgba::WHITE,
+      100.0,
+      16.0,
+      16.0,
+      (100.0, 100.0),
+    );
 
     assert_eq!(resolved.len(), 3);
     assert!((resolved[0].0 - 0.0).abs() < 1e-6);
@@ -18038,14 +18200,21 @@ mod tests {
     let stops = vec![
       crate::css::types::ColorStop {
         color: Color::CurrentColor,
-        position: Some(0.0),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
       },
       crate::css::types::ColorStop {
         color: Color::Rgba(Rgba::BLUE),
-        position: Some(1.0),
+        position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
       },
     ];
-    let resolved = normalize_color_stops(&stops, Rgba::new(10, 20, 30, 1.0));
+    let resolved = normalize_color_stops(
+      &stops,
+      Rgba::new(10, 20, 30, 1.0),
+      100.0,
+      16.0,
+      16.0,
+      (100.0, 100.0),
+    );
     assert_eq!(resolved.len(), 2);
     assert_eq!(resolved[0].1, Rgba::new(10, 20, 30, 1.0));
     assert_eq!(resolved[1].1, Rgba::BLUE);
@@ -18060,11 +18229,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(0.5),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
           },
         ],
       }),
@@ -18115,11 +18284,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18172,11 +18341,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18222,11 +18391,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(0.5),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
           },
         ],
       }),
@@ -18259,11 +18428,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18305,11 +18474,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18754,11 +18923,11 @@ mod tests {
           stops: vec![
             crate::css::types::ColorStop {
               color: Color::Rgba(Rgba::new(255, 255, 0, 1.0)),
-              position: Some(0.0),
+              position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
             },
             crate::css::types::ColorStop {
               color: Color::Rgba(Rgba::new(255, 255, 0, 1.0)),
-              position: Some(1.0),
+              position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
             },
           ],
         }),
@@ -18804,11 +18973,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(200, 0, 0, 255)),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(200, 0, 0, 255)),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18943,11 +19112,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(src.0, src.1, src.2, 255)),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(src.0, src.1, src.2, 255)),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -18995,11 +19164,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(0, 255, 0, 128)),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::from_rgba8(0, 255, 0, 128)),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19011,11 +19180,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19054,11 +19223,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::GREEN),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::GREEN),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19071,11 +19240,11 @@ mod tests {
         stops: vec![
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           crate::css::types::ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19118,11 +19287,11 @@ mod tests {
         stops: vec![
           ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19186,23 +19355,23 @@ mod tests {
         stops: vec![
           ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
           },
           ColorStop {
             color: Color::Rgba(Rgba::GREEN),
-            position: Some(0.25),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.25)),
           },
           ColorStop {
             color: Color::Rgba(Rgba::BLUE),
-            position: Some(0.5),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.5)),
           },
           ColorStop {
             color: Color::Rgba(Rgba::new(255, 255, 0, 1.0)),
-            position: Some(0.75),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.75)),
           },
           ColorStop {
             color: Color::Rgba(Rgba::RED),
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
           },
         ],
       }),
@@ -19982,11 +20151,11 @@ mod tests {
         angle: 180.0,
         stops: vec![
           ColorStop {
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
             color: crate::style::color::Color::Rgba(Rgba::new(255, 0, 0, 1.0)),
           },
           ColorStop {
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
             color: crate::style::color::Color::Rgba(Rgba::new(0, 0, 255, 1.0)),
           },
         ],
@@ -20079,11 +20248,11 @@ mod tests {
         angle: 90.0,
         stops: vec![
           ColorStop {
-            position: Some(0.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
             color: crate::style::color::Color::Rgba(Rgba::new(255, 0, 0, 1.0)),
           },
           ColorStop {
-            position: Some(1.0),
+            position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
             color: crate::style::color::Color::Rgba(Rgba::new(0, 0, 255, 1.0)),
           },
         ],
@@ -20576,11 +20745,11 @@ mod tests {
       stops: vec![
         ColorStop {
           color: Color::Rgba(Rgba::new(0, 0, 0, alpha_start)),
-          position: Some(0.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(0.0)),
         },
         ColorStop {
           color: Color::Rgba(Rgba::new(0, 0, 0, alpha_end)),
-          position: Some(1.0),
+          position: Some(crate::css::types::ColorStopPosition::Fraction(1.0)),
         },
       ],
     });

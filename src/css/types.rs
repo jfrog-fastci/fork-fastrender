@@ -4681,7 +4681,25 @@ pub struct GradientPosition {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColorStop {
   pub color: Color,
-  pub position: Option<f32>,
+  pub position: Option<ColorStopPosition>,
+}
+
+/// A position in a CSS gradient color stop.
+///
+/// For linear/radial gradients, authored stop positions use `<length-percentage>` so we must be
+/// able to represent both relative (percentage) and absolute (length) values.
+///
+/// For conic gradients, authored stop positions use `<angle-percentage>`, which is currently
+/// stored as a normalized fraction via [`ColorStopPosition::Fraction`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ColorStopPosition {
+  /// A normalized fraction in the `[0, 1]` range.
+  ///
+  /// This is used for percentage stops, or stop syntax that is effectively percentage-like (e.g.
+  /// legacy unitless numbers that we treat as percent).
+  Fraction(f32),
+  /// An absolute length that must be resolved relative to the gradient geometry at paint time.
+  Length(Length),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -539,12 +539,30 @@ fn image_mask(
     }
     BackgroundImage::LinearGradient { angle, stops } => {
       let (width, height, origin) = image_size(reference_rect);
-      let pixmap = render_linear_gradient(*angle, stops, style.color, width, height)?;
+      let pixmap = render_linear_gradient(
+        *angle,
+        stops,
+        style.color,
+        width,
+        height,
+        style.font_size,
+        style.root_font_size,
+        viewport,
+      )?;
       Some(alpha_from_pixmap(pixmap, origin))
     }
     BackgroundImage::RepeatingLinearGradient { angle, stops } => {
       let (width, height, origin) = image_size(reference_rect);
-      let pixmap = render_linear_gradient_repeat(*angle, stops, style.color, width, height)?;
+      let pixmap = render_linear_gradient_repeat(
+        *angle,
+        stops,
+        style.color,
+        width,
+        height,
+        style.font_size,
+        style.root_font_size,
+        viewport,
+      )?;
       Some(alpha_from_pixmap(pixmap, origin))
     }
     BackgroundImage::RadialGradient {
@@ -722,16 +740,26 @@ fn render_linear_gradient(
   current_color: Rgba,
   width: u32,
   height: u32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Size,
 ) -> Option<Pixmap> {
-  let resolved = normalize_color_stops(stops, current_color);
-  if resolved.is_empty() {
-    return None;
-  }
-  let sk_stops = gradient_stops(&resolved);
   let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
   let rad = angle.to_radians();
   let dx = rad.sin();
   let dy = -rad.cos();
+  let resolved = normalize_color_stops(
+    stops,
+    current_color,
+    rect.width() * dx.abs() + rect.height() * dy.abs(),
+    font_size,
+    root_font_size,
+    Some((viewport.width, viewport.height)),
+  );
+  if resolved.is_empty() {
+    return None;
+  }
+  let sk_stops = gradient_stops(&resolved);
   let len = 0.5 * (rect.width() * dx.abs() + rect.height() * dy.abs());
   let cx = rect.x() + rect.width() / 2.0;
   let cy = rect.y() + rect.height() / 2.0;
@@ -763,16 +791,26 @@ fn render_linear_gradient_repeat(
   current_color: Rgba,
   width: u32,
   height: u32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Size,
 ) -> Option<Pixmap> {
-  let resolved = normalize_color_stops(stops, current_color);
-  if resolved.is_empty() {
-    return None;
-  }
-  let sk_stops = gradient_stops(&resolved);
   let rect = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
   let rad = angle.to_radians();
   let dx = rad.sin();
   let dy = -rad.cos();
+  let resolved = normalize_color_stops(
+    stops,
+    current_color,
+    rect.width() * dx.abs() + rect.height() * dy.abs(),
+    font_size,
+    root_font_size,
+    Some((viewport.width, viewport.height)),
+  );
+  if resolved.is_empty() {
+    return None;
+  }
+  let sk_stops = gradient_stops(&resolved);
   let len = 0.5 * (rect.width() * dx.abs() + rect.height() * dy.abs());
   let cx = rect.x() + rect.width() / 2.0;
   let cy = rect.y() + rect.height() / 2.0;
@@ -815,11 +853,6 @@ fn render_radial_gradient_image(
   height: u32,
   repeat: bool,
 ) -> Option<Pixmap> {
-  let resolved = normalize_color_stops(stops, style.color);
-  if resolved.is_empty() {
-    return None;
-  }
-  let sk_stops = gradient_stops(&resolved);
   let spread = if repeat {
     SpreadMode::Repeat
   } else {
@@ -835,6 +868,18 @@ fn render_radial_gradient_image(
     style.root_font_size,
     Some((viewport.width, viewport.height)),
   );
+  let resolved = normalize_color_stops(
+    stops,
+    style.color,
+    radius_x.max(radius_y),
+    style.font_size,
+    style.root_font_size,
+    Some((viewport.width, viewport.height)),
+  );
+  if resolved.is_empty() {
+    return None;
+  }
+  let sk_stops = gradient_stops(&resolved);
   if radius_x <= 0.0 || radius_y <= 0.0 {
     return None;
   }
@@ -878,7 +923,14 @@ fn render_conic_gradient_alpha(
   reference_rect: Rect,
   repeating: bool,
 ) -> Option<AlphaBitmap> {
-  let resolved = normalize_color_stops_unclamped(stops, style.color);
+  let resolved = normalize_color_stops_unclamped(
+    stops,
+    style.color,
+    1.0,
+    style.font_size,
+    style.root_font_size,
+    Some((viewport.width, viewport.height)),
+  );
   if resolved.is_empty() {
     return None;
   }
@@ -937,49 +989,93 @@ fn render_conic_gradient_alpha(
   })
 }
 
-fn normalize_color_stops(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
-  let mut resolved: Vec<(Option<f32>, Rgba)> = stops
+
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+
+  let mut positions: Vec<Option<f32>> = stops
     .iter()
-    .map(|s| (s.position, s.color.to_rgba(current_color)))
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
     .collect();
-  if resolved.first().map(|(p, _)| p.is_none()).unwrap_or(false) {
-    resolved[0].0 = Some(0.0);
+  if positions.iter().all(|p| p.is_none()) {
+    if stops.len() == 1 {
+      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+    }
+    let denom = (stops.len() - 1) as f32;
+    return stops
+      .iter()
+      .enumerate()
+      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .collect();
   }
-  if let Some(last) = resolved.last_mut() {
-    if last.0.is_none() {
-      last.0 = Some(1.0);
+
+  if positions.first().and_then(|p| *p).is_none() {
+    positions[0] = Some(0.0);
+  }
+  if positions.last().and_then(|p| *p).is_none() {
+    if let Some(last) = positions.last_mut() {
+      *last = Some(1.0);
     }
   }
 
-  let len = resolved.len();
-  let mut i = 0;
-  while i < len {
-    if resolved[i].0.is_some() {
-      i += 1;
-      continue;
+  let mut last_known: Option<(usize, f32)> = None;
+  for i in 0..positions.len() {
+    if let Some(pos) = positions[i] {
+      if let Some((start_idx, start_pos)) = last_known {
+        let gap = i.saturating_sub(start_idx + 1);
+        if gap > 0 {
+          let step = (pos - start_pos) / (gap as f32 + 1.0);
+          for (offset, slot) in positions[start_idx + 1..i].iter_mut().enumerate() {
+            *slot = Some((start_pos + step * (offset + 1) as f32).max(start_pos));
+          }
+        }
+      } else if i > 0 {
+        let gap = i;
+        let step = pos / gap as f32;
+        for (j, slot) in positions.iter_mut().take(i).enumerate() {
+          *slot = Some(step * j as f32);
+        }
+      }
+      last_known = Some((i, pos));
     }
-    let start = i - 1;
-    let mut end = i;
-    while end < len && resolved[end].0.is_none() {
-      end += 1;
-    }
-    let start_pos = resolved[start].0.unwrap_or(0.0);
-    let end_pos = resolved.get(end).and_then(|(p, _)| *p).unwrap_or(1.0);
-    let count = end - start;
-    for j in 0..(count - 1) {
-      let pos = start_pos + (end_pos - start_pos) * ((j + 1) as f32 / count as f32);
-      resolved[start + j + 1].0 = Some(pos);
-    }
-    i = end;
   }
 
-  resolved
-    .into_iter()
-    .map(|(p, c)| (p.unwrap_or(0.0).clamp(0.0, 1.0), c))
-    .collect()
+  let mut output = Vec::with_capacity(stops.len());
+  let mut prev = 0.0;
+  for (idx, pos_opt) in positions.into_iter().enumerate() {
+    let pos = pos_opt.unwrap_or(prev);
+    let clamped = pos.max(prev).clamp(0.0, 1.0);
+    prev = clamped;
+    output.push((clamped, stops[idx].color.to_rgba(current_color)));
+  }
+  output
 }
 
 fn gradient_stops(stops: &[(f32, Rgba)]) -> Vec<tiny_skia::GradientStop> {
@@ -994,12 +1090,41 @@ fn gradient_stops(stops: &[(f32, Rgba)]) -> Vec<tiny_skia::GradientStop> {
     .collect()
 }
 
-fn normalize_color_stops_unclamped(stops: &[ColorStop], current_color: Rgba) -> Vec<(f32, Rgba)> {
+fn normalize_color_stops_unclamped(
+  stops: &[ColorStop],
+  current_color: Rgba,
+  gradient_length: f32,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
   }
 
-  let mut positions: Vec<Option<f32>> = stops.iter().map(|s| s.position).collect();
+  let gradient_length = if gradient_length.is_finite() && gradient_length > 0.0 {
+    gradient_length
+  } else {
+    0.0
+  };
+  let (vw, vh) = viewport.unwrap_or((0.0, 0.0));
+
+  let mut positions: Vec<Option<f32>> = stops
+    .iter()
+    .map(|s| match s.position {
+      Some(crate::css::types::ColorStopPosition::Fraction(v)) => Some(v),
+      Some(crate::css::types::ColorStopPosition::Length(len)) => {
+        if gradient_length <= 0.0 {
+          None
+        } else {
+          len
+            .resolve_with_context(Some(gradient_length), vw, vh, font_size, root_font_size)
+            .map(|px| px / gradient_length)
+        }
+      }
+      None => None,
+    })
+    .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
       return vec![(0.0, stops[0].color.to_rgba(current_color))];
