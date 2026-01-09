@@ -10883,7 +10883,7 @@ impl FastRender {
     self.font_context.clear_web_fonts();
     let css_metadata_timer = stats.as_deref().and_then(|rec| rec.timer());
     let crate::css::types::CollectedCssMetadata {
-      font_faces,
+      mut font_faces,
       keyframes,
       has_container_rules: _,
       needs_container_pass,
@@ -11000,6 +11000,20 @@ impl FastRender {
     // Best-effort loading; rendering should continue even if a web font fails.
     let load_webfonts_timer = stats.as_deref().and_then(|rec| rec.timer());
     if !font_faces.is_empty() {
+      if font_faces.iter().any(|face| face.display.is_none()) {
+        let registry = &styled_tree.styles.font_feature_values;
+        for face in &mut font_faces {
+          if face.display.is_some() {
+            continue;
+          }
+          let family = face.family.as_deref().unwrap_or("");
+          face.display = Some(
+            registry
+              .display_for_family(family)
+              .unwrap_or(crate::css::types::FontDisplay::Auto),
+          );
+        }
+      }
       let _ = self.font_context.load_web_fonts(
         &font_faces,
         self.base_url.as_deref(),

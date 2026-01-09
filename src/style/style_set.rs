@@ -1,4 +1,5 @@
 use crate::css::types::{CollectedCssMetadata, FontFaceRule, KeyframesRule, StyleSheet};
+use crate::style::font_feature_values::FontFeatureValuesRegistry;
 use crate::style::media::{MediaContext, MediaQueryCache};
 use std::collections::HashMap;
 
@@ -125,6 +126,32 @@ impl StyleSet {
       sheet.collect_css_metadata_with_cache_into(media_ctx, cache.as_deref_mut(), &mut result);
     }
     result
+  }
+
+  /// Build a `@font-feature-values` registry for the author stylesheets in this style set.
+  ///
+  /// Rules are processed in deterministic cascade order (document first, then shadow roots sorted
+  /// by host id) and within each stylesheet respect cascade-layer ordering.
+  pub fn register_font_feature_values_all_scopes_with_cache(
+    &self,
+    registry: &mut FontFeatureValuesRegistry,
+    media_ctx: &MediaContext,
+    cache: Option<&mut MediaQueryCache>,
+  ) {
+    let mut cache = cache;
+    for sheet in self.sheets_in_cascade_order() {
+      let mut collected =
+        sheet.collect_font_feature_values_rules_with_cache(media_ctx, cache.as_deref_mut());
+      collected.sort_by(|a, b| {
+        a.layer_order
+          .as_ref()
+          .cmp(b.layer_order.as_ref())
+          .then(a.order.cmp(&b.order))
+      });
+      for rule in collected {
+        registry.register(rule.rule.clone());
+      }
+    }
   }
 }
 

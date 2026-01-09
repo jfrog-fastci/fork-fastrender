@@ -101,7 +101,7 @@ fn font_display_block_waits_for_policy_timeout() {
     sources: vec![FontFaceSource::url(
       "http://example.com/slow.ttf".to_string(),
     )],
-    display: FontDisplay::Block,
+    display: Some(FontDisplay::Block),
     ..Default::default()
   };
 
@@ -165,7 +165,7 @@ fn font_display_swap_returns_immediately() {
     sources: vec![FontFaceSource::url(
       "http://example.com/swap.ttf".to_string(),
     )],
-    display: FontDisplay::Swap,
+    display: Some(FontDisplay::Swap),
     ..Default::default()
   };
 

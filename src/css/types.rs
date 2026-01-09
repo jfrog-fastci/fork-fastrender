@@ -3915,7 +3915,11 @@ pub struct FontFaceRule {
   /// Style descriptor (normal/italic/oblique with optional angle range).
   pub style: FontFaceStyle,
   /// Font display strategy (auto/block/swap/fallback/optional).
-  pub display: FontDisplay,
+  ///
+  /// `None` means the descriptor was omitted. Callers should resolve it to an effective
+  /// [`FontDisplay`] using the CSS Fonts 4 defaults (including any `@font-feature-values`
+  /// `font-display` family default) before using it for font loading.
+  pub display: Option<FontDisplay>,
   /// Weight range expressed in CSS absolute weights.
   pub weight: (u16, u16),
   /// Stretch range in percentages.
@@ -3971,7 +3975,7 @@ impl Default for FontFaceRule {
       family: None,
       sources: Vec::new(),
       style: FontFaceStyle::Normal,
-      display: FontDisplay::Auto,
+      display: None,
       weight: (400, 400),
       stretch: (100.0, 100.0),
       unicode_ranges: vec![(0, 0x10ffff)],
@@ -4063,6 +4067,8 @@ impl FontFeatureValueType {
 pub struct FontFeatureValuesRule {
   pub font_families: Vec<String>,
   pub groups: FxHashMap<FontFeatureValueType, FxHashMap<String, Vec<u32>>>,
+  /// Optional CSS Fonts 4 `font-display` descriptor.
+  pub display: Option<FontDisplay>,
 }
 
 impl FontFeatureValuesRule {
@@ -4070,6 +4076,7 @@ impl FontFeatureValuesRule {
     Self {
       font_families,
       groups: FxHashMap::default(),
+      display: None,
     }
   }
 }

@@ -1306,6 +1306,7 @@ impl FontContext {
         Some(f) => f.clone(),
         None => continue,
       };
+      let display = face.display.unwrap_or(FontDisplay::Auto);
       self.declare_web_family(&family);
       let selected = selected_iter.peek().copied() == Some(order);
 
@@ -1316,7 +1317,7 @@ impl FontContext {
       {
         record_font_event(
           &events,
-          FontLoadEvent::skipped(&family, None, face.display, "unicode-range filtered"),
+          FontLoadEvent::skipped(&family, None, display, "unicode-range filtered"),
         );
         if selected {
           selected_iter.next();
@@ -1339,7 +1340,7 @@ impl FontContext {
       {
         record_font_event(
           &events,
-          FontLoadEvent::skipped(&family, None, face.display, "remote font loading disabled"),
+          FontLoadEvent::skipped(&family, None, display, "remote font loading disabled"),
         );
         if selected {
           selected_iter.next();
@@ -1352,7 +1353,7 @@ impl FontContext {
       }
       selected_iter.next();
 
-      let display_block = display_deadlines(face.display).0;
+      let display_block = display_deadlines(display).0;
       let should_block = display_block > Duration::ZERO && policy_deadline.is_some();
       let job_id = started_count;
       let block_deadline = if let Some(policy_deadline) = policy_deadline {
@@ -1363,7 +1364,7 @@ impl FontContext {
       started_count += 1;
 
       if let Some(deadline) = block_deadline {
-        blocking_jobs.push((job_id, deadline, family.clone(), face.display));
+        blocking_jobs.push((job_id, deadline, family.clone(), display));
 
         let face_clone = face.clone();
         let family_clone = family.clone();
@@ -1385,7 +1386,7 @@ impl FontContext {
             if !timed_out {
               record_font_event(
                 &events,
-                FontLoadEvent::skipped(&family_clone, None, face_clone.display, "render cancelled"),
+                FontLoadEvent::skipped(&family_clone, None, display, "render cancelled"),
               );
             }
             let _ = done_tx.send(job_id);
@@ -1436,12 +1437,13 @@ impl FontContext {
       let events = Arc::clone(&events);
       let render_deadline = render_deadline.clone();
       std::thread::spawn(move || {
+        let display = face.display.unwrap_or(FontDisplay::Auto);
         let _pending = guard;
         let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
         if render_control::check_active(RenderStage::Css).is_err() {
           record_font_event(
             &events,
-            FontLoadEvent::skipped(&family, None, face.display, "render cancelled"),
+            FontLoadEvent::skipped(&family, None, display, "render cancelled"),
           );
           return;
         }
@@ -1723,21 +1725,22 @@ impl FontContext {
     start: Instant,
     allow_remote: bool,
   ) -> FontLoadEvent {
+    let display = face.display.unwrap_or(FontDisplay::Auto);
     if render_control::check_active(RenderStage::Css).is_err() {
-      return FontLoadEvent::skipped(family, None, face.display, "render cancelled");
+      return FontLoadEvent::skipped(family, None, display, "render cancelled");
     }
     let mut last_error: Option<String> = None;
     let mut last_source: Option<String> = None;
     for source in ordered_sources(&face.sources) {
       if render_control::check_active(RenderStage::Css).is_err() {
-        return FontLoadEvent::skipped(family, last_source.clone(), face.display, "render cancelled");
+        return FontLoadEvent::skipped(family, last_source.clone(), display, "render cancelled");
       }
       match source {
         FontFaceSource::Local(name) => {
           last_source = Some(format!("local({})", name));
           match self.load_local_face(family, name, face, order, start) {
             Ok(LoadOutcome::Loaded) => {
-              return FontLoadEvent::loaded(family, last_source.clone(), face.display)
+              return FontLoadEvent::loaded(family, last_source.clone(), display)
             }
             Ok(LoadOutcome::Skipped) => {
               last_error = Some("swap period elapsed".to_string());
@@ -1754,7 +1757,7 @@ impl FontContext {
           last_source = Some(resolved.clone());
           match self.load_remote_face(family, &resolved, face, order, start, base_url) {
             Ok(LoadOutcome::Loaded) => {
-              return FontLoadEvent::loaded(family, last_source.clone(), face.display)
+              return FontLoadEvent::loaded(family, last_source.clone(), display)
             }
             Ok(LoadOutcome::Skipped) => {
               last_error = Some("swap period elapsed".to_string());
@@ -1764,16 +1767,16 @@ impl FontContext {
         }
       };
       if render_control::check_active(RenderStage::Css).is_err() {
-        return FontLoadEvent::skipped(family, last_source.clone(), face.display, "render cancelled");
+        return FontLoadEvent::skipped(family, last_source.clone(), display, "render cancelled");
       }
     }
 
     if render_control::check_active(RenderStage::Css).is_err() {
-      return FontLoadEvent::skipped(family, last_source, face.display, "render cancelled");
+      return FontLoadEvent::skipped(family, last_source, display, "render cancelled");
     }
     match last_error {
-      Some(reason) => FontLoadEvent::failed(family, last_source, face.display, reason),
-      None => FontLoadEvent::skipped(family, None, face.display, "no usable sources"),
+      Some(reason) => FontLoadEvent::failed(family, last_source, display, reason),
+      None => FontLoadEvent::skipped(family, None, display, "no usable sources"),
     }
   }
 
@@ -1805,7 +1808,7 @@ impl FontContext {
     if let Some(id) = id {
       if let Some(font) = self.db.load_font(id) {
         render_control::check_active(RenderStage::Css)?;
-        if display_allows_use(face.display, start.elapsed()) {
+        if display_allows_use(face.display.unwrap_or(FontDisplay::Auto), start.elapsed()) {
           self.register_web_font(
             family.to_string(),
             Arc::clone(&font.data),
@@ -1934,7 +1937,7 @@ impl FontContext {
       }
     };
     render_control::check_active(RenderStage::Css)?;
-    if !display_allows_use(face.display, start.elapsed()) {
+    if !display_allows_use(face.display.unwrap_or(FontDisplay::Auto), start.elapsed()) {
       return Ok(LoadOutcome::Skipped);
     }
     let decoded_len = decoded.len();
@@ -2035,7 +2038,7 @@ impl FontContext {
         font_language_override: face.font_language_override.clone(),
       },
       style: face.style.clone(),
-      display: face.display,
+      display: face.display.unwrap_or(FontDisplay::Auto),
       weight,
       stretch: face.stretch,
       order,
@@ -3624,7 +3627,7 @@ mod tests {
       family: Some("LocalPsTest".to_string()),
       sources: vec![FontFaceSource::local(post_script_name)],
       style: style.clone(),
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       weight: (weight, weight),
       stretch: (100.0, 100.0),
       ..Default::default()
@@ -3686,7 +3689,7 @@ mod tests {
       family: Some("LocalFullNameTest".to_string()),
       sources: vec![FontFaceSource::local(full_name)],
       style: style.clone(),
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       weight: (weight, weight),
       stretch: (100.0, 100.0),
       ..Default::default()
@@ -3733,7 +3736,7 @@ mod tests {
       family: Some("LocalFamilyTest".to_string()),
       sources: vec![FontFaceSource::local(family_name)],
       style: style.clone(),
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       weight: (weight, weight),
       stretch: (100.0, 100.0),
       ..Default::default()
@@ -3935,7 +3938,7 @@ mod tests {
     let face = FontFaceRule {
       family: Some("CorsFont".to_string()),
       sources: vec![FontFaceSource::url(font_url)],
-      display: FontDisplay::Swap,
+      display: Some(FontDisplay::Swap),
       ..Default::default()
     };
 
@@ -4350,7 +4353,7 @@ mod tests {
     let face = FontFaceRule {
       family: Some("DeadlineFont".to_string()),
       sources: vec![FontFaceSource::url(url.clone())],
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       ..Default::default()
     };
 
@@ -4459,7 +4462,7 @@ mod tests {
     let face = FontFaceRule {
       family: Some("CancelledFont".to_string()),
       sources: vec![FontFaceSource::url(url.clone())],
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       ..Default::default()
     };
 
@@ -4551,7 +4554,7 @@ mod tests {
     let face = FontFaceRule {
       family: Some("CancelledWebFont".to_string()),
       sources: vec![FontFaceSource::url(url)],
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       ..Default::default()
     };
 
@@ -4616,6 +4619,123 @@ mod tests {
     let families = vec!["WebFont".to_string()];
     let loaded = ctx.get_font_full(&families, 400, FontStyle::Normal, FontStretch::Normal);
     assert!(loaded.is_some());
+  }
+
+  #[test]
+  fn font_feature_values_font_display_defaults_apply_to_font_face() {
+    let Some((font_data, _family)) = system_font_for_char('A') else {
+      return;
+    };
+    let data_url = format!("data:font/ttf;base64,{}", BASE64_STANDARD.encode(font_data));
+    let css = format!(
+      r#"
+        @font-feature-values "WebFont" {{ font-display: optional; }}
+        @font-face {{ font-family: "WebFont"; src: url("{data_url}"); }}
+      "#
+    );
+    let sheet = crate::css::parser::parse_stylesheet(&css).expect("stylesheet should parse");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut faces = sheet.collect_font_face_rules(&media_ctx);
+    assert_eq!(faces.len(), 1);
+    assert!(
+      faces[0].display.is_none(),
+      "expected @font-face to omit font-display"
+    );
+
+    let mut registry = crate::style::font_feature_values::FontFeatureValuesRegistry::default();
+    let mut values = sheet.collect_font_feature_values_rules(&media_ctx);
+    values.sort_by(|a, b| {
+      a.layer_order
+        .as_ref()
+        .cmp(b.layer_order.as_ref())
+        .then(a.order.cmp(&b.order))
+    });
+    for rule in values {
+      registry.register(rule.rule.clone());
+    }
+    for face in &mut faces {
+      if face.display.is_none() {
+        let family = face.family.as_deref().unwrap_or("");
+        face.display = Some(
+          registry
+            .display_for_family(family)
+            .unwrap_or(FontDisplay::Auto),
+        );
+      }
+    }
+
+    let ctx = FontContext::empty();
+    let report = ctx
+      .load_web_fonts_with_options(&faces, None, None, WebFontLoadOptions::default())
+      .expect("load web font");
+    assert!(
+      report
+        .events
+        .iter()
+        .any(|e| e.family == "WebFont" && e.display == FontDisplay::Optional),
+      "expected the resolved face to use font-display: optional (events={:?})",
+      report.events
+    );
+  }
+
+  #[test]
+  fn font_feature_values_font_display_does_not_override_explicit_font_face_value() {
+    let Some((font_data, _family)) = system_font_for_char('A') else {
+      return;
+    };
+    let data_url = format!("data:font/ttf;base64,{}", BASE64_STANDARD.encode(font_data));
+    let css = format!(
+      r#"
+        @font-feature-values "WebFont" {{ font-display: swap; }}
+        @font-face {{ font-family: "WebFont"; src: url("{data_url}"); font-display: auto; }}
+      "#
+    );
+    let sheet = crate::css::parser::parse_stylesheet(&css).expect("stylesheet should parse");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut faces = sheet.collect_font_face_rules(&media_ctx);
+    assert_eq!(faces.len(), 1);
+    assert_eq!(
+      faces[0].display,
+      Some(FontDisplay::Auto),
+      "expected @font-face to explicitly set font-display: auto"
+    );
+
+    let mut registry = crate::style::font_feature_values::FontFeatureValuesRegistry::default();
+    let mut values = sheet.collect_font_feature_values_rules(&media_ctx);
+    values.sort_by(|a, b| {
+      a.layer_order
+        .as_ref()
+        .cmp(b.layer_order.as_ref())
+        .then(a.order.cmp(&b.order))
+    });
+    for rule in values {
+      registry.register(rule.rule.clone());
+    }
+    for face in &mut faces {
+      if face.display.is_none() {
+        let family = face.family.as_deref().unwrap_or("");
+        face.display = Some(
+          registry
+            .display_for_family(family)
+            .unwrap_or(FontDisplay::Auto),
+        );
+      }
+    }
+
+    let ctx = FontContext::empty();
+    let report = ctx
+      .load_web_fonts_with_options(&faces, None, None, WebFontLoadOptions::default())
+      .expect("load web font");
+    assert!(
+      report
+        .events
+        .iter()
+        .any(|e| e.family == "WebFont" && e.display == FontDisplay::Auto),
+      "expected explicit @font-face font-display:auto to override feature-values (events={:?})",
+      report.events
+    );
   }
 
   #[test]
@@ -4841,7 +4961,7 @@ mod tests {
     );
     let face = FontFaceRule {
       family: Some("MetaFamily".to_string()),
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       ..Default::default()
     };
 
@@ -5076,7 +5196,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Optional,
+      display: Some(FontDisplay::Optional),
       ..Default::default()
     };
     ctx
@@ -5117,7 +5237,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Fallback,
+      display: Some(FontDisplay::Fallback),
       ..Default::default()
     };
     ctx
@@ -5153,7 +5273,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Block,
+      display: Some(FontDisplay::Block),
       ..Default::default()
     };
     ctx
@@ -5185,13 +5305,13 @@ mod tests {
       FontFaceRule {
         family: Some("SwapDuringBlock".to_string()),
         sources: vec![FontFaceSource::url(fast_url)],
-        display: FontDisplay::Swap,
+        display: Some(FontDisplay::Swap),
         ..Default::default()
       },
       FontFaceRule {
         family: Some("BlockingFace".to_string()),
         sources: vec![FontFaceSource::url(slow_url)],
-        display: FontDisplay::Block,
+        display: Some(FontDisplay::Block),
         ..Default::default()
       },
     ];
@@ -5272,7 +5392,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Swap,
+      display: Some(FontDisplay::Swap),
       ..Default::default()
     };
     ctx
@@ -5317,7 +5437,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Swap,
+      display: Some(FontDisplay::Swap),
       ..Default::default()
     };
     ctx
@@ -5348,7 +5468,7 @@ mod tests {
       sources: vec![FontFaceSource::url(
         "http://example.com/font.ttf".to_string(),
       )],
-      display: FontDisplay::Swap,
+      display: Some(FontDisplay::Swap),
       ..Default::default()
     };
     ctx

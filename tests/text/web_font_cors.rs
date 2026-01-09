@@ -66,7 +66,7 @@ fn web_font_cors_enforcement_is_runtime_gated() {
   let face = FontFaceRule {
     family: Some("CorsFace".to_string()),
     sources: vec![FontFaceSource::url("https://b.test/font.ttf".to_string())],
-    display: FontDisplay::Block,
+    display: Some(FontDisplay::Block),
     ..Default::default()
   };
 
@@ -157,7 +157,7 @@ fn web_font_cors_enforcement_is_enabled_by_default() {
   let face = FontFaceRule {
     family: Some("CorsDefault".to_string()),
     sources: vec![FontFaceSource::url("https://b.test/font.ttf".to_string())],
-    display: FontDisplay::Block,
+    display: Some(FontDisplay::Block),
     ..Default::default()
   };
 

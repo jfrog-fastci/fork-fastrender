@@ -1,4 +1,4 @@
-use crate::css::types::{FontFeatureValueType, FontFeatureValuesRule};
+use crate::css::types::{FontDisplay, FontFeatureValueType, FontFeatureValuesRule};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -10,6 +10,7 @@ struct FontFeatureValuesFamily {
   swash: HashMap<String, Vec<u32>>,
   ornaments: HashMap<String, Vec<u32>>,
   annotation: HashMap<String, Vec<u32>>,
+  display: Option<FontDisplay>,
 }
 
 impl FontFeatureValuesFamily {
@@ -61,15 +62,20 @@ impl FontFeatureValuesRegistry {
     let FontFeatureValuesRule {
       font_families,
       groups,
+      display,
     } = rule;
 
-    if font_families.is_empty() || groups.is_empty() {
+    if font_families.is_empty() || (groups.is_empty() && display.is_none()) {
       return;
     }
 
     for family in font_families {
       let key = family.to_ascii_lowercase();
       let family_entry = self.families.entry(key).or_default();
+
+      if let Some(display) = display {
+        family_entry.display = Some(display);
+      }
 
       for (ty, feature_map) in &groups {
         let ty_entry = family_entry.map_mut(*ty);
@@ -92,6 +98,15 @@ impl FontFeatureValuesRegistry {
     let key = family.to_ascii_lowercase();
     let family = self.families.get(&key)?;
     family.map(ty).get(name).map(|values| values.as_slice())
+  }
+
+  /// Lookup a CSS Fonts 4 `font-display` family default set via `@font-feature-values`.
+  ///
+  /// Font family names are matched case-insensitively (ASCII).
+  #[inline]
+  pub fn display_for_family(&self, family: &str) -> Option<FontDisplay> {
+    let key = family.to_ascii_lowercase();
+    self.families.get(&key)?.display
   }
 }
 
@@ -180,6 +195,43 @@ mod tests {
         "disambiguation"
       ),
       Some([2u32].as_slice())
+    );
+  }
+
+  #[test]
+  fn font_display_respects_cascade_layer_order() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+    use crate::style::cascade::apply_styles;
+
+    let css = r#"
+      @layer a, b;
+
+      @layer a {
+        @font-feature-values "Inter" { font-display: swap; }
+      }
+
+      @layer b {
+        @font-feature-values "Inter" { font-display: optional; }
+      }
+    "#;
+    let sheet = parse_stylesheet(css).expect("stylesheet should parse");
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled = apply_styles(&dom, &sheet);
+
+    assert_eq!(
+      styled
+        .styles
+        .font_feature_values
+        .display_for_family("inter"),
+      Some(FontDisplay::Optional)
     );
   }
 }

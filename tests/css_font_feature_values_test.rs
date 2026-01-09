@@ -1,5 +1,5 @@
 use fastrender::css::parser::parse_stylesheet;
-use fastrender::css::types::{CssRule, FontFeatureValueType};
+use fastrender::css::types::{CssRule, FontDisplay, FontFeatureValueType};
 
 #[test]
 fn font_feature_values_parses_mdn_minified_form() {
@@ -56,4 +56,21 @@ fn font_feature_values_ignores_unknown_nested_at_rules() {
     .get(&FontFeatureValueType::Styleset)
     .expect("expected @styleset group");
   assert_eq!(styleset.get("b"), Some(&vec![2u32]));
+}
+
+#[test]
+fn font_feature_values_parses_font_display_descriptor() {
+  let css =
+    r#"@font-feature-values "Inter" { font-display: swap; @styleset { disambiguation: 2; } }"#;
+  let sheet = parse_stylesheet(css).expect("parse_stylesheet");
+  let rule = sheet
+    .rules
+    .iter()
+    .find_map(|rule| match rule {
+      CssRule::FontFeatureValues(rule) => Some(rule),
+      _ => None,
+    })
+    .expect("expected @font-feature-values rule");
+
+  assert_eq!(rule.display, Some(FontDisplay::Swap));
 }

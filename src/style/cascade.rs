@@ -3913,7 +3913,7 @@ pub fn capture_cascade_profile() -> CascadeProfileStats {
   }
 }
 
-fn user_agent_stylesheet() -> &'static StyleSheet {
+pub(crate) fn user_agent_stylesheet() -> &'static StyleSheet {
   UA_STYLESHEET
     .get_or_init(|| parse_stylesheet(USER_AGENT_STYLESHEET).unwrap_or_else(|_| StyleSheet::new()))
 }

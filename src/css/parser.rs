@@ -3182,7 +3182,7 @@ fn parse_font_face_descriptors<'i, 't>(
       }
       "font-display" => {
         if let Some(display) = parse_font_display(trimmed_value) {
-          face.display = display;
+          face.display = Some(display);
         }
       }
       "unicode-range" => {
@@ -3754,6 +3754,56 @@ fn parse_font_feature_values_rule<'i, 't>(
             }
           }
         }
+        Ok(Token::Ident(property)) => {
+          let mut property = property.to_string();
+          nested.skip_whitespace();
+          if nested.expect_colon().is_err() {
+            skip_to_semicolon(nested);
+            continue;
+          }
+
+          let value_start = nested.position();
+          let mut important = false;
+          loop {
+            if !css_deadline_allows_progress() {
+              break;
+            }
+            match nested.next() {
+              Ok(Token::Semicolon) | Err(_) => break,
+              Ok(Token::Delim('!')) => {
+                if nested
+                  .try_parse(|p| p.expect_ident_matching("important"))
+                  .is_ok()
+                {
+                  important = true;
+                  skip_to_semicolon(nested);
+                  break;
+                }
+              }
+              _ => {}
+            }
+          }
+
+          let full_value = nested.slice_from(value_start);
+          let trimmed_value = if important {
+            full_value
+              .rsplit_once("!important")
+              .map(|(before, _)| trim_ascii_whitespace(before.trim_end_matches(';')))
+              .unwrap_or_else(|| trim_ascii_whitespace(full_value.trim_end_matches(';')))
+          } else {
+            trim_ascii_whitespace(full_value.trim_end_matches(';'))
+          };
+
+          property.make_ascii_lowercase();
+          match property.as_str() {
+            "font-display" => {
+              if let Some(display) = parse_font_display(trimmed_value) {
+                rule.display = Some(display);
+              }
+            }
+            _ => {}
+          }
+        }
         Ok(Token::CurlyBracketBlock)
         | Ok(Token::ParenthesisBlock)
         | Ok(Token::SquareBracketBlock)
@@ -3766,7 +3816,7 @@ fn parse_font_feature_values_rule<'i, 't>(
       }
     }
 
-    if rule.groups.is_empty() {
+    if rule.groups.is_empty() && rule.display.is_none() {
       Ok(None)
     } else {
       Ok(Some(rule))
