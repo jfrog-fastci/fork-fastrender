@@ -45,6 +45,8 @@ struct EventWrapper {
   keys: EventKeys,
   active_events: ActiveEventMap,
   next_event_id: u64,
+  window_target: Value,
+  document_target: Value,
 }
 
 impl EventWrapper {
@@ -94,6 +96,16 @@ impl EventWrapper {
         }
       }
     }
+
+    // Stable JS-visible sentinels for non-node event targets.
+    //
+    // `vm-js` string values are not interned, so allocating `"document"`/`"window"` on every event
+    // wrapper allocation would produce distinct `GcString` ids and unnecessary GC pressure. We
+    // pre-allocate + root these once per `JsDomEvents` runtime.
+    let window_target = rt.alloc_string_value("window")?;
+    rt.heap_mut().add_root(window_target);
+    let document_target = rt.alloc_string_value("document")?;
+    rt.heap_mut().add_root(document_target);
 
     // Prototype with methods/getters that mutate the active Rust `Event`.
     let prototype = rt.alloc_object_value()?;
@@ -159,6 +171,8 @@ impl EventWrapper {
       keys,
       active_events,
       next_event_id: 1,
+      window_target,
+      document_target,
     })
   }
 
@@ -182,10 +196,10 @@ impl EventWrapper {
     let type_ = rt.alloc_string_value(&event.type_)?;
     rt.define_data_property(obj, self.keys.type_, type_, true)?;
 
-    let target = js_value_for_target(rt, event.target)?;
+    let target = self.js_value_for_target(event.target);
     rt.define_data_property(obj, self.keys.target, target, true)?;
 
-    let current_target = js_value_for_target(rt, event.current_target)?;
+    let current_target = self.js_value_for_target(event.current_target);
     rt.define_data_property(obj, self.keys.current_target, current_target, true)?;
 
     rt.define_data_property(
@@ -197,6 +211,15 @@ impl EventWrapper {
 
     Ok(obj)
   }
+
+  fn js_value_for_target(&self, target: Option<EventTargetId>) -> Value {
+    match target {
+      None => Value::Null,
+      Some(EventTargetId::Window) => self.window_target,
+      Some(EventTargetId::Document) => self.document_target,
+      Some(EventTargetId::Node(node_id)) => Value::Number(node_id.index() as f64),
+    }
+  }
 }
 
 fn js_value_for_phase(phase: EventPhase) -> Value {
@@ -207,18 +230,6 @@ fn js_value_for_phase(phase: EventPhase) -> Value {
     EventPhase::Capturing => 1.0,
     EventPhase::AtTarget => 2.0,
     EventPhase::Bubbling => 3.0,
-  })
-}
-
-fn js_value_for_target(
-  rt: &mut VmJsRuntime,
-  target: Option<EventTargetId>,
-) -> std::result::Result<Value, VmError> {
-  Ok(match target {
-    None => Value::Null,
-    Some(EventTargetId::Window) => rt.alloc_string_value("window")?,
-    Some(EventTargetId::Document) => rt.alloc_string_value("document")?,
-    Some(EventTargetId::Node(node_id)) => Value::Number(node_id.index() as f64),
   })
 }
 

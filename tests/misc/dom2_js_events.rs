@@ -30,6 +30,15 @@ fn as_utf8_lossy(rt: &fastrender::js::webidl::VmJsRuntime, v: Value) -> String {
   rt.heap().get_string(s).unwrap().to_utf8_lossy()
 }
 
+fn assert_js_value_eq(rt: &fastrender::js::webidl::VmJsRuntime, got: Value, expected: Value) {
+  match (got, expected) {
+    (Value::String(_), Value::String(_)) => {
+      assert_eq!(as_utf8_lossy(rt, got), as_utf8_lossy(rt, expected));
+    }
+    _ => assert_eq!(got, expected),
+  }
+}
+
 fn make_listener(
   js: &mut JsDomEvents,
   log: Rc<RefCell<Vec<&'static str>>>,
@@ -46,10 +55,10 @@ fn make_listener(
       let got_type = rt.get(event, keys.type_)?;
       assert_eq!(as_utf8_lossy(rt, got_type), "test");
       let got_target = rt.get(event, keys.target)?;
-      assert_eq!(got_target, keys.expected_target);
+      assert_js_value_eq(rt, got_target, keys.expected_target);
 
       let got_current = rt.get(event, keys.current_target)?;
-      assert_eq!(got_current, keys.expected_current_target);
+      assert_js_value_eq(rt, got_current, keys.expected_current_target);
 
       let got_phase = rt.get(event, keys.event_phase)?;
       assert_eq!(got_phase, Value::Number(keys.expected_phase));
