@@ -8,7 +8,7 @@
 use crate::render_control::RenderDeadline;
 use parse_js::ast::expr::lit::{LitNumExpr, LitStrExpr};
 use parse_js::ast::expr::{BinaryExpr, CallExpr, Expr, IdExpr};
-use parse_js::ast::node::Node;
+use parse_js::ast::node::{literal_string_code_units, Node};
 use parse_js::ast::stmt::{BlockStmt, Stmt, ThrowStmt, WhileStmt};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::HashMap;
@@ -494,7 +494,7 @@ impl Evaluator<'_> {
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => Ok(Value::Bool(node.stx.value)),
       Expr::LitNull(_) => Ok(Value::Null),
-      Expr::LitStr(node) => self.eval_lit_str(scope, &node.stx),
+      Expr::LitStr(node) => self.eval_lit_str(scope, node),
       Expr::Id(node) => self.eval_id(scope, &node.stx).map_err(|msg| ScriptError::Runtime {
         message: msg,
         stack_trace: self.stack_trace_at_loc(expr.loc),
@@ -512,8 +512,18 @@ impl Evaluator<'_> {
     Ok(Value::Number(expr.value.0))
   }
 
-  fn eval_lit_str(&self, scope: &mut Scope<'_>, expr: &LitStrExpr) -> Result<Value, ScriptError> {
-    let s = scope.alloc_string(&expr.value).map_err(vm_error_to_runtime)?;
+  fn eval_lit_str(
+    &self,
+    scope: &mut Scope<'_>,
+    node: &Node<LitStrExpr>,
+  ) -> Result<Value, ScriptError> {
+    // Prefer parser-recorded UTF-16 code units so lone surrogates survive.
+    let s = if let Some(units) = literal_string_code_units(&node.assoc) {
+      scope.alloc_string_from_code_units(units)
+    } else {
+      scope.alloc_string(&node.stx.value)
+    }
+    .map_err(vm_error_to_runtime)?;
     Ok(Value::String(s))
   }
 
@@ -672,6 +682,67 @@ mod tests {
   use super::*;
   use crate::render_control::RenderDeadline;
 
+  fn eval_raw_value(
+    realm: &mut VmJsScriptRealm,
+    source_name: &str,
+    source: &str,
+  ) -> Result<Value, ScriptError> {
+    // Mirror `VmJsScriptRealm::eval_script_with_budget`, but return the raw vm-js `Value` so tests
+    // can inspect heap-backed strings without lossy UTF-8 conversion.
+    let budget = realm.derive_budget(None, &ScriptBudgetOverride::default());
+    realm.vm.set_budget(budget);
+
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    };
+    let top = parse_with_options(source, opts).map_err(|err| ScriptError::Syntax {
+      message: err.to_string(),
+    })?;
+
+    let source_text = SourceText::new(source_name, source);
+
+    // Push a frame so errors/terminations surface at least one stack frame.
+    let (line, col) = source_text.line_col(0);
+    realm
+      .vm
+      .push_frame(StackFrame {
+        function: None,
+        source: source_text.name.clone(),
+        line,
+        col,
+      })
+      .map_err(|err| match err {
+        VmError::Termination(t) => ScriptError::Termination {
+          reason: t.reason.into(),
+          stack_trace: format_stack_trace(&t.stack),
+        },
+        other => ScriptError::Runtime {
+          message: other.to_string(),
+          stack_trace: String::new(),
+        },
+      })?;
+
+    let vm = &mut realm.vm;
+    let heap = &mut realm.heap;
+    let env = &mut realm.env;
+    let host_functions = &mut realm.host_functions;
+    let interrupt_flag = realm.interrupt_flag.clone();
+
+    let mut scope = heap.scope();
+    let mut evaluator = Evaluator {
+      vm,
+      env,
+      host_functions,
+      interrupt_flag,
+      render_deadline: None,
+      source: &source_text,
+    };
+    let result = evaluator.exec_stmt_list(&mut scope, &top.stx.body);
+    evaluator.vm.pop_frame();
+    result
+  }
+
   #[test]
   fn evals_trivial_expression() {
     let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
@@ -766,5 +837,32 @@ mod tests {
         ..
       }
     ));
+  }
+
+  #[test]
+  fn string_literals_preserve_utf16_code_units() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    let value = eval_raw_value(&mut realm, "string.js", r#""\uD800""#).unwrap();
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
+    };
+    assert_eq!(realm.heap.get_string(s).unwrap().as_code_units(), &[0xD800]);
+
+    let value = eval_raw_value(&mut realm, "string.js", r#""a\uD800b""#).unwrap();
+    let Value::String(s) = value else {
+      panic!("expected string value, got {value:?}");
+    };
+    assert_eq!(
+      realm.heap.get_string(s).unwrap().as_code_units(),
+      &[0x0061, 0xD800, 0x0062]
+    );
   }
 }
