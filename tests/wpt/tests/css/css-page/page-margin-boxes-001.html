@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-page: margin boxes paint backgrounds</title>
+    <style>
+      @page {
+        size: 80px 60px;
+        margin: 10px;
+        background: white;
+
+        @top-left-corner {
+          content: "";
+          background: rgb(255, 0, 0);
+        }
+
+        @top-right-corner {
+          content: "";
+          background: rgb(0, 255, 0);
+        }
+
+        @bottom-left-corner {
+          content: "";
+          background: rgb(0, 0, 255);
+        }
+
+        @bottom-right-corner {
+          content: "";
+          background: rgb(255, 255, 0);
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      .content {
+        width: 60px;
+        height: 40px;
+        background: rgb(128, 128, 128);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="content"></div>
+  </body>
+</html>
+

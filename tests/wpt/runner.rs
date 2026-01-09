@@ -154,8 +154,10 @@ struct ManifestEntry {
   disabled: Option<String>,
   #[serde(default)]
   dpr: Option<f32>,
-  #[serde(default)]
+  #[serde(default, alias = "media_type", alias = "media-type")]
   media: Option<String>,
+  #[serde(default)]
+  fit_canvas_to_content: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -172,6 +174,7 @@ struct IniMetadata {
   viewport: Option<(u32, u32)>,
   dpr: Option<f32>,
   media_type: Option<MediaType>,
+  fit_canvas_to_content: Option<bool>,
   test_type: Option<TestType>,
   reference: Option<PathBuf>,
   reftest_expectation: Option<ReftestExpectation>,
@@ -185,6 +188,7 @@ impl IniMetadata {
       && self.viewport.is_none()
       && self.dpr.is_none()
       && self.media_type.is_none()
+      && self.fit_canvas_to_content.is_none()
       && self.test_type.is_none()
       && self.reference.is_none()
       && self.reftest_expectation.is_none()
@@ -588,6 +592,9 @@ impl WptRunner {
     if let Some(media) = entry.media.and_then(|raw| Self::parse_media_type(&raw)) {
       metadata.media_type = media;
     }
+    if let Some(enabled) = entry.fit_canvas_to_content {
+      metadata.fit_canvas_to_content = enabled;
+    }
 
     if let Some(viewport) = entry.viewport {
       metadata.viewport_width = viewport.width;
@@ -788,6 +795,11 @@ impl WptRunner {
         "media" | "media-type" | "media_type" => {
           ini.media_type = Self::parse_media_type(raw_value);
         }
+        "fit_canvas" | "fit_canvas_to_content" => {
+          if let Some(value) = Self::parse_bool(raw_value) {
+            ini.fit_canvas_to_content = Some(value);
+          }
+        }
         "type" | "test_type" => {
           ini.test_type = Some(Self::parse_test_type_from_manifest(
             raw_value,
@@ -837,6 +849,9 @@ impl WptRunner {
     if let Some(media_type) = ini.media_type {
       metadata.media_type = media_type;
     }
+    if let Some(enabled) = ini.fit_canvas_to_content {
+      metadata.fit_canvas_to_content = enabled;
+    }
     if let Some(kind) = ini.test_type {
       metadata.test_type = kind;
     }
@@ -857,6 +872,14 @@ impl WptRunner {
     let width = parts.get(0)?.trim().parse().ok()?;
     let height = parts.get(1)?.trim().parse().ok()?;
     Some((width, height))
+  }
+
+  fn parse_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+      "1" | "true" | "yes" | "on" => Some(true),
+      "0" | "false" | "no" | "off" => Some(false),
+      _ => None,
+    }
   }
 
   fn discover_reference_from_html(test_path: &Path) -> Option<(PathBuf, ReftestExpectation)> {
@@ -1057,6 +1080,7 @@ impl WptRunner {
       metadata.viewport_width,
       metadata.viewport_height,
       metadata.media_type,
+      metadata.fit_canvas_to_content,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1076,6 +1100,7 @@ impl WptRunner {
       metadata.viewport_width,
       metadata.viewport_height,
       metadata.media_type,
+      metadata.fit_canvas_to_content,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1143,6 +1168,7 @@ impl WptRunner {
       metadata.viewport_width,
       metadata.viewport_height,
       metadata.media_type,
+      metadata.fit_canvas_to_content,
     ) {
       Ok(img) => img,
       Err(e) => {
@@ -1215,6 +1241,7 @@ impl WptRunner {
       metadata.viewport_width,
       metadata.viewport_height,
       metadata.media_type,
+      metadata.fit_canvas_to_content,
     ) {
       Ok(rendered) => {
         let mut result = TestResult::pass(metadata.clone(), start.elapsed())
@@ -1247,6 +1274,7 @@ impl WptRunner {
     viewport_width: u32,
     viewport_height: u32,
     media_type: MediaType,
+    fit_canvas_to_content: bool,
   ) -> Result<Vec<u8>, String> {
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let base_url = Url::from_file_path(&canonical)
@@ -1258,6 +1286,7 @@ impl WptRunner {
         fastrender::RenderOptions {
           viewport: Some((viewport_width, viewport_height)),
           media_type,
+          fit_canvas_to_content: Some(fit_canvas_to_content),
           ..fastrender::RenderOptions::default()
         },
       )

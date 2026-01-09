@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-page: @page selectors (:first/:left/:right/:blank)</title>
+    <style>
+      @page {
+        size: 80px 40px;
+        margin: 0;
+        background: rgb(200, 200, 200);
+      }
+
+      @page :left {
+        background: rgb(0, 255, 0);
+      }
+
+      @page :right {
+        background: rgb(0, 0, 255);
+      }
+
+      @page :first {
+        background: rgb(255, 0, 0);
+      }
+
+      @page :blank {
+        background: rgb(255, 255, 0);
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      .page {
+        height: 1px;
+      }
+
+      .break {
+        break-after: page;
+      }
+
+      .force-right {
+        break-before: right;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Page 1 (first) -->
+    <div class="page break"></div>
+    <!-- Page 2 (left) -->
+    <div class="page break"></div>
+    <!-- Page 3 (right) -->
+    <div class="page"></div>
+    <!-- Force the next content to start on a right page, inserting a blank page -->
+    <div class="page force-right"></div>
+  </body>
+</html>
+

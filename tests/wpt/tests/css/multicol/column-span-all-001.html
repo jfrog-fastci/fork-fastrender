@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>multicol: column-span:all splits column sets</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: white;
+      }
+
+      #multicol {
+        width: 100px;
+        height: 90px;
+        column-count: 2;
+        column-gap: 0;
+        column-fill: balance;
+      }
+
+      .item {
+        width: 100%;
+        height: 20px;
+      }
+
+      .before-left {
+        background: rgb(255, 0, 0);
+      }
+
+      .before-right {
+        background: rgb(0, 255, 0);
+      }
+
+      .span {
+        column-span: all;
+        height: 10px;
+        background: rgb(0, 0, 0);
+      }
+
+      .after-left {
+        background: rgb(0, 0, 255);
+      }
+
+      .after-right {
+        background: rgb(255, 255, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="multicol">
+      <div class="item before-left"></div>
+      <div class="item before-right"></div>
+      <div class="span"></div>
+      <div class="item after-left"></div>
+      <div class="item after-right"></div>
+    </div>
+  </body>
+</html>
+

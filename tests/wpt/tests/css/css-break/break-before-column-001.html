@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-break: break-before: column forces a new column</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: white;
+      }
+
+      #columns {
+        width: 100px;
+        height: 50px;
+        column-count: 2;
+        column-gap: 0;
+      }
+
+      .block {
+        width: 100%;
+        height: 20px;
+      }
+
+      .red {
+        background: rgb(255, 0, 0);
+      }
+
+      .blue {
+        background: rgb(0, 0, 255);
+        break-before: column;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="columns">
+      <div class="block red"></div>
+      <div class="block blue"></div>
+    </div>
+  </body>
+</html>
+

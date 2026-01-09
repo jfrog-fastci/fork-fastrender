@@ -5,6 +5,8 @@
 # - `reftest = "match" | "mismatch"` controls the expected comparison (defaults to `"match"`).
 # - `media = "screen" | "print"` configures the media type used for evaluating media queries
 #   (defaults to `"screen"`).
+# - `fit_canvas_to_content = true` expands the output canvas to fit all laid-out content (useful
+#   for paged media tests where multiple pages are stacked in the fragment tree).
 
 [[tests]]
 id = "columns/multicol-001"
@@ -83,6 +85,151 @@ media = "print"
 [tests.viewport]
 width = 60
 height = 60
+
+[[tests]]
+id = "css/css-break/break-before-page-001"
+path = "css/css-break/break-before-page-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 100
+height = 60
+
+[[tests]]
+id = "css/css-break/break-after-page-001"
+path = "css/css-break/break-after-page-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 100
+height = 60
+
+[[tests]]
+id = "css/css-break/break-inside-avoid-page-001"
+path = "css/css-break/break-inside-avoid-page-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 100
+height = 60
+
+[[tests]]
+id = "css/css-break/break-before-column-001"
+path = "css/css-break/break-before-column-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 50
+
+[[tests]]
+id = "css/css-break/break-inside-avoid-column-001"
+path = "css/css-break/break-inside-avoid-column-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 50
+
+[[tests]]
+id = "css/css-break/widows-orphans-001"
+path = "css/css-break/widows-orphans-001.html"
+reference = "css/css-break/widows-orphans-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 80
+height = 30
+
+[[tests]]
+id = "css/css-page/page-selectors-001"
+path = "css/css-page/page-selectors-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 80
+height = 40
+
+[[tests]]
+id = "css/css-page/page-margin-boxes-001"
+path = "css/css-page/page-margin-boxes-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+media = "print"
+fit_canvas_to_content = true
+
+[tests.viewport]
+width = 80
+height = 60
+
+[[tests]]
+id = "css/multicol/column-fill-auto-001"
+path = "css/multicol/column-fill-auto-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 100
+
+[[tests]]
+id = "css/multicol/column-fill-balance-001"
+path = "css/multicol/column-fill-balance-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 20000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 100
+
+[[tests]]
+id = "css/multicol/column-span-all-001"
+path = "css/multicol/column-span-all-001.html"
+test_type = "visual"
+expected = "fail"
+timeout_ms = 20000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 90
 
 [[tests]]
 id = "css/tables/fixed-layout-first-row-width-hint-001"

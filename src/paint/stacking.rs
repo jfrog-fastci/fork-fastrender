@@ -38,13 +38,14 @@
 //! 9. Mix-blend-mode (except normal)
 //! 10. Isolation: isolate
 //! 11. Perspective property (except none)
-//! 12. Backdrop-filter property (except none)
-//! 13. Containment properties (contain: layout|paint|strict|content)
-//! 14. Flex items with z-index (child of flex container with z-index)
-//! 15. Grid items with z-index (child of grid container with z-index)
-//! 16. Will-change set to property that creates stacking context
-//! 17. Container type (size or inline-size)
-//! 18. Top layer elements (fullscreen, popover, dialog)
+//! 12. Backface-visibility: hidden
+//! 13. Backdrop-filter property (except none)
+//! 14. Containment properties (contain: layout|paint|strict|content)
+//! 15. Flex items with z-index (child of flex container with z-index)
+//! 16. Grid items with z-index (child of grid container with z-index)
+//! 17. Will-change set to property that creates stacking context
+//! 18. Container type (size or inline-size)
+//! 19. Top layer elements (fullscreen, popover, dialog)
 //!
 //! # Usage
 //!
@@ -280,9 +281,7 @@ pub enum StackingContextReason {
   /// Has backdrop-filter
   BackdropFilter,
 
-  /// Backface-visibility: hidden. This does not create a CSS stacking context, but is tracked to
-  /// ensure the display list can re-establish the correct backface-visibility chain when fragments
-  /// are promoted out of non-stacking ancestors.
+  /// Backface-visibility: hidden.
   BackfaceVisibility,
 
   /// CSS containment (layout, paint, etc.)
@@ -826,6 +825,14 @@ pub fn creates_stacking_context(
     return true;
   }
 
+  // Backface-visibility: hidden creates a stacking context.
+  if matches!(
+    style.backface_visibility,
+    crate::style::types::BackfaceVisibility::Hidden
+  ) {
+    return true;
+  }
+
   // 6b. Has CSS filter (filter list is non-empty)
   if !style.filter.is_empty() {
     return true;
@@ -931,6 +938,13 @@ pub fn get_stacking_context_reason(
 
   if style.perspective.is_some() {
     return Some(StackingContextReason::Perspective);
+  }
+
+  if matches!(
+    style.backface_visibility,
+    crate::style::types::BackfaceVisibility::Hidden
+  ) {
+    return Some(StackingContextReason::BackfaceVisibility);
   }
 
   if !style.filter.is_empty() {
@@ -2267,11 +2281,14 @@ mod tests {
   }
 
   #[test]
-  fn test_backface_visibility_hidden_does_not_create_stacking_context() {
+  fn test_backface_visibility_hidden_creates_stacking_context() {
     let mut style = ComputedStyle::default();
     style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
-    assert!(!creates_stacking_context(&style, None, false));
-    assert_eq!(get_stacking_context_reason(&style, None, false), None);
+    assert!(creates_stacking_context(&style, None, false));
+    assert_eq!(
+      get_stacking_context_reason(&style, None, false),
+      Some(StackingContextReason::BackfaceVisibility)
+    );
   }
 
   #[test]

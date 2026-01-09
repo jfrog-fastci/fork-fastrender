@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-break: widows and orphans constrain line fragmentation</title>
+    <link rel="match" href="widows-orphans-001-ref.html" />
+    <style>
+      @page {
+        size: 80px 30px;
+        margin: 0;
+        background: white;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      p {
+        margin: 0;
+        font-size: 0;
+        line-height: 10px;
+        widows: 2;
+        orphans: 2;
+      }
+
+      .line {
+        display: inline-block;
+        width: 80px;
+        height: 10px;
+        vertical-align: top;
+      }
+
+      .l1 {
+        background: rgb(255, 0, 0);
+      }
+
+      .l2 {
+        background: rgb(0, 255, 0);
+      }
+
+      .l3 {
+        background: rgb(0, 0, 255);
+      }
+
+      .l4 {
+        background: rgb(255, 255, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <p>
+      <span class="line l1"></span><br />
+      <span class="line l2"></span><br />
+      <span class="line l3"></span><br />
+      <span class="line l4"></span>
+    </p>
+  </body>
+</html>
+

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-break: break-inside: avoid keeps a block together across pages</title>
+    <style>
+      @page {
+        size: 100px 60px;
+        margin: 0;
+        background: white;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      .row {
+        width: 100px;
+      }
+
+      #pre {
+        height: 30px;
+        background: rgb(255, 0, 0);
+      }
+
+      #avoid {
+        break-inside: avoid;
+      }
+
+      #avoid > div {
+        height: 20px;
+      }
+
+      .blue {
+        background: rgb(0, 0, 255);
+      }
+
+      .green {
+        background: rgb(0, 255, 0);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pre" class="row"></div>
+    <div id="avoid" class="row">
+      <div class="blue"></div>
+      <div class="green"></div>
+    </div>
+  </body>
+</html>
+

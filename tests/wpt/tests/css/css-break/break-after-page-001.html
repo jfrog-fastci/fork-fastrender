@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>css-break: break-after: page forces a new page</title>
+    <style>
+      @page {
+        size: 100px 60px;
+        margin: 0;
+        background: white;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+      }
+
+      .block {
+        width: 100px;
+        height: 20px;
+      }
+
+      .red {
+        background: rgb(255, 0, 0);
+        break-after: page;
+      }
+
+      .blue {
+        background: rgb(0, 0, 255);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="block red"></div>
+    <div class="block blue"></div>
+  </body>
+</html>
+

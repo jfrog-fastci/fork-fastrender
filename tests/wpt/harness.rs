@@ -194,6 +194,11 @@ pub struct TestMetadata {
   pub device_pixel_ratio: f32,
   /// Media type used for evaluating media queries.
   pub media_type: MediaType,
+  /// When true, expand the output canvas to fit all laid-out content.
+  ///
+  /// This is commonly needed for paged media tests where multiple pages are stacked in the
+  /// fragment tree but the viewport size remains the single-page size.
+  pub fit_canvas_to_content: bool,
 }
 
 impl TestMetadata {
@@ -232,6 +237,7 @@ impl TestMetadata {
       viewport_height: 600,
       device_pixel_ratio: 1.0,
       media_type: MediaType::Screen,
+      fit_canvas_to_content: false,
     }
   }
 
@@ -280,6 +286,12 @@ impl TestMetadata {
   /// Creates a new test metadata with custom media type.
   pub fn with_media_type(mut self, media_type: MediaType) -> Self {
     self.media_type = media_type;
+    self
+  }
+
+  /// Enables or disables expanding the paint canvas to fit all content.
+  pub fn with_fit_canvas_to_content(mut self, enabled: bool) -> Self {
+    self.fit_canvas_to_content = enabled;
     self
   }
 
@@ -947,6 +959,7 @@ mod tests {
     assert!(!metadata.disabled);
     assert!((metadata.device_pixel_ratio - 1.0).abs() < f32::EPSILON);
     assert_eq!(metadata.media_type, MediaType::Screen);
+    assert!(!metadata.fit_canvas_to_content);
   }
 
   #[test]
@@ -973,6 +986,13 @@ mod tests {
     let metadata =
       TestMetadata::from_path(PathBuf::from("test.html")).with_media_type(MediaType::Print);
     assert_eq!(metadata.media_type, MediaType::Print);
+  }
+
+  #[test]
+  fn test_test_metadata_with_fit_canvas_to_content() {
+    let metadata =
+      TestMetadata::from_path(PathBuf::from("test.html")).with_fit_canvas_to_content(true);
+    assert!(metadata.fit_canvas_to_content);
   }
 
   #[test]
