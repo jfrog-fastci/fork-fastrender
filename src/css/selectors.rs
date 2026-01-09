@@ -24,7 +24,7 @@ use selectors::parser::{
   RelativeSelectorMatchHint,
 };
 use selectors::OpaqueElement;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -750,6 +750,52 @@ impl ToCss for PseudoElement {
 // Pseudo-class parser
 // ============================================================================
 
+/// Namespace declarations parsed from `@namespace` rules.
+///
+/// This is stored in thread-local storage so selector parsing (which happens in many places,
+/// including stylesheet parsing and DOM APIs) can access the current stylesheet's namespace
+/// mappings without threading state through every selectors-crate callback.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct NamespaceContext {
+  pub default: Option<CssString>,
+  pub prefixes: HashMap<CssString, CssString>,
+}
+
+thread_local! {
+  static NAMESPACE_CONTEXT: RefCell<NamespaceContext> = RefCell::new(NamespaceContext::default());
+}
+
+/// RAII guard that sets up a fresh namespace context for a stylesheet parse and restores the
+/// previous context when dropped.
+pub(crate) struct NamespaceContextGuard {
+  previous: NamespaceContext,
+}
+
+impl NamespaceContextGuard {
+  pub(crate) fn new() -> Self {
+    let previous = NAMESPACE_CONTEXT.with(|ctx| ctx.replace(NamespaceContext::default()));
+    Self { previous }
+  }
+}
+
+impl Drop for NamespaceContextGuard {
+  fn drop(&mut self) {
+    let previous = self.previous.clone();
+    NAMESPACE_CONTEXT.with(|ctx| *ctx.borrow_mut() = previous);
+  }
+}
+
+pub(crate) fn namespace_context_set_default(url: CssString) {
+  NAMESPACE_CONTEXT.with(|ctx| ctx.borrow_mut().default = Some(url));
+}
+
+pub(crate) fn namespace_context_set_prefix(prefix: &str, url: CssString) {
+  let key = CssString::from(prefix.to_ascii_lowercase());
+  NAMESPACE_CONTEXT.with(|ctx| {
+    ctx.borrow_mut().prefixes.insert(key, url);
+  });
+}
+
 /// Custom parser for pseudo-classes
 /// Public parser entrypoint for selector parsing.
 ///
@@ -790,6 +836,26 @@ impl Drop for HasArgumentScope {
 impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
   type Error = SelectorParseErrorKind<'i>;
   type Impl = FastRenderSelectorImpl;
+
+  fn default_namespace(&self) -> Option<<Self::Impl as SelectorImpl>::NamespaceUrl> {
+    NAMESPACE_CONTEXT.with(|ctx| ctx.borrow().default.clone())
+  }
+
+  fn namespace_for_prefix(
+    &self,
+    prefix: &<Self::Impl as SelectorImpl>::NamespacePrefix,
+  ) -> Option<<Self::Impl as SelectorImpl>::NamespaceUrl> {
+    let prefix = prefix.as_str();
+    NAMESPACE_CONTEXT.with(|ctx| {
+      let ctx = ctx.borrow();
+      if prefix.bytes().any(|b| b.is_ascii_uppercase()) {
+        let lower = prefix.to_ascii_lowercase();
+        ctx.prefixes.get(lower.as_str()).cloned()
+      } else {
+        ctx.prefixes.get(prefix).cloned()
+      }
+    })
+  }
 
   fn parse_nth_child_of(&self) -> bool {
     true
@@ -1076,11 +1142,15 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       // `::file-selector-button` is the standards-track spelling; accept the WebKit vendor alias
       // and canonicalize to the standard name so selector lists containing vendor variants do not
       // invalidate the rule.
-      "file-selector-button" | "-webkit-file-upload-button" => Ok(PseudoElement::FileSelectorButton),
+      "file-selector-button" | "-webkit-file-upload-button" => {
+        Ok(PseudoElement::FileSelectorButton)
+      }
       "-moz-focus-inner" => Ok(PseudoElement::MozFocusInner),
       "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
-      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
+      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
+        Ok(PseudoElement::SliderTrack)
+      }
       s if s.starts_with("-webkit-")
         || s.starts_with("-moz-")
         || s.starts_with("-ms-")
@@ -1289,14 +1359,15 @@ fn parse_part_pseudo_element<'i, 't>(
   // identifier list.
   parser.skip_whitespace();
   let mut idents: Vec<CssString> = Vec::new();
-  let first = match parser.expect_ident() {
-    Ok(first) => CssString::from(first.as_ref()),
-    Err(_) => {
-      return Err(parser.new_custom_error(
-        SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
-      ))
-    }
-  };
+  let first =
+    match parser.expect_ident() {
+      Ok(first) => CssString::from(first.as_ref()),
+      Err(_) => {
+        return Err(parser.new_custom_error(
+          SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name.clone()),
+        ))
+      }
+    };
   idents.push(first);
 
   loop {
@@ -1397,8 +1468,8 @@ mod tests {
   use cssparser::ToCss;
   use precomputed_hash::PrecomputedHash;
   use selectors::context::QuirksMode;
-  use selectors::parser::ParseRelative;
   use selectors::parser::NonTSPseudoClass;
+  use selectors::parser::ParseRelative;
   use selectors::parser::Parser as SelectorParser;
 
   fn parse(expr: &str) -> (i32, i32) {
@@ -1657,7 +1728,11 @@ mod tests {
       );
     }
 
-    for name in ["-moz-list-bullet", "-moz-list-number", "-webkit-details-marker"] {
+    for name in [
+      "-moz-list-bullet",
+      "-moz-list-number",
+      "-webkit-details-marker",
+    ] {
       assert_eq!(
         parser
           .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
@@ -1726,7 +1801,11 @@ mod tests {
       );
     }
 
-    for name in ["-webkit-slider-runnable-track", "-moz-range-track", "-ms-track"] {
+    for name in [
+      "-webkit-slider-runnable-track",
+      "-moz-range-track",
+      "-ms-track",
+    ] {
       assert_eq!(
         parser
           .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
@@ -1738,7 +1817,10 @@ mod tests {
 
     assert_eq!(
       parser
-        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-webkit-search-cancel-button"))
+        .parse_pseudo_element(
+          loc,
+          cssparser::CowRcStr::from("-webkit-search-cancel-button")
+        )
         .unwrap(),
       PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button"))
     );
@@ -1752,7 +1834,8 @@ mod tests {
     );
 
     // `::-webkit-file-upload-button` should behave like an alias and serialize to the standard form.
-    let list = parse_selector_list("input::-webkit-file-upload-button, input::file-selector-button");
+    let list =
+      parse_selector_list("input::-webkit-file-upload-button, input::file-selector-button");
     let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
     assert_eq!(
       selectors,
@@ -1898,13 +1981,11 @@ mod tests {
   fn parses_selector_list_mixing_vendor_and_standard_placeholder_pseudos() {
     let mut input = ParserInput::new(".a:not(:-moz-placeholder), .a:not(:placeholder-shown) {}");
     let mut parser = Parser::new(&mut input);
-    assert!(
-      parser
-        .parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |nested| {
-          SelectorList::parse(&PseudoClassParser, nested, ParseRelative::No)
-        })
-        .is_ok()
-    );
+    assert!(parser
+      .parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |nested| {
+        SelectorList::parse(&PseudoClassParser, nested, ParseRelative::No)
+      })
+      .is_ok());
   }
 
   #[test]
@@ -1966,9 +2047,15 @@ mod tests {
       PseudoClass::MsInputPlaceholder.to_css_string(),
       ":-ms-input-placeholder"
     );
-    assert_eq!(PseudoClass::MozPlaceholder.to_css_string(), ":-moz-placeholder");
+    assert_eq!(
+      PseudoClass::MozPlaceholder.to_css_string(),
+      ":-moz-placeholder"
+    );
     assert_eq!(PseudoClass::Autofill.to_css_string(), ":autofill");
-    assert_eq!(PseudoClass::MozUiInvalid.to_css_string(), ":-moz-ui-invalid");
+    assert_eq!(
+      PseudoClass::MozUiInvalid.to_css_string(),
+      ":-moz-ui-invalid"
+    );
     assert_eq!(PseudoClass::MozFocusring.to_css_string(), ":-moz-focusring");
     assert_eq!(
       PseudoClass::Vendor(CssString::from("-moz-broken")).to_css_string(),
@@ -2049,7 +2136,10 @@ mod tests {
     let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
     assert_eq!(
       selectors,
-      vec!["video:fullscreen".to_string(), "video:fullscreen".to_string()]
+      vec![
+        "video:fullscreen".to_string(),
+        "video:fullscreen".to_string()
+      ]
     );
   }
 
@@ -2154,7 +2244,8 @@ mod tests {
     }
 
     // Legacy spellings should behave like aliases and serialize to `:is(...)`.
-    let list = parse_selector_list("div:matches(.a, #b), div:-webkit-any(.a, #b), div:-moz-any(.a, #b)");
+    let list =
+      parse_selector_list("div:matches(.a, #b), div:-webkit-any(.a, #b), div:-moz-any(.a, #b)");
     let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
     assert_eq!(
       selectors,
@@ -2259,7 +2350,9 @@ mod tests {
     let selector = list.slice().first().expect("one selector");
     assert_eq!(
       selector.pseudo_element(),
-      Some(&PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button")))
+      Some(&PseudoElement::Vendor(CssString::from(
+        "-webkit-search-cancel-button"
+      )))
     );
     assert_eq!(
       selector.to_css_string(),
@@ -2271,7 +2364,10 @@ mod tests {
     let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
     assert_eq!(
       selectors,
-      vec!["dialog::backdrop".to_string(), "dialog::backdrop".to_string()]
+      vec![
+        "dialog::backdrop".to_string(),
+        "dialog::backdrop".to_string()
+      ]
     );
   }
 
@@ -2355,12 +2451,18 @@ mod tests {
       "::file-selector-button"
     );
     assert_eq!(PseudoElement::Selection.to_css_string(), "::selection");
-    assert_eq!(PseudoElement::SliderThumb.to_css_string(), "::-webkit-slider-thumb");
+    assert_eq!(
+      PseudoElement::SliderThumb.to_css_string(),
+      "::-webkit-slider-thumb"
+    );
     assert_eq!(
       PseudoElement::SliderTrack.to_css_string(),
       "::-webkit-slider-runnable-track"
     );
-    assert_eq!(PseudoElement::MozFocusOuter.to_css_string(), "::-moz-focus-outer");
+    assert_eq!(
+      PseudoElement::MozFocusOuter.to_css_string(),
+      "::-moz-focus-outer"
+    );
     assert_eq!(
       PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button")).to_css_string(),
       "::-webkit-search-cancel-button"
@@ -2433,7 +2535,10 @@ mod tests {
 
     for (selector_text, canonical) in [
       ("input:file-selector-button", "input::file-selector-button"),
-      ("input:-webkit-file-upload-button", "input::file-selector-button"),
+      (
+        "input:-webkit-file-upload-button",
+        "input::file-selector-button",
+      ),
     ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);
@@ -2482,7 +2587,10 @@ mod tests {
       );
     }
 
-    for selector_text in ["input:file-selector-button", "input:-webkit-file-upload-button"] {
+    for selector_text in [
+      "input:file-selector-button",
+      "input:-webkit-file-upload-button",
+    ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);
       let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
@@ -2532,7 +2640,11 @@ mod tests {
 
     for (selector_text, canonical, pseudo) in [
       ("li:marker", "li::marker", PseudoElement::Marker),
-      ("dialog:backdrop", "dialog::backdrop", PseudoElement::Backdrop),
+      (
+        "dialog:backdrop",
+        "dialog::backdrop",
+        PseudoElement::Backdrop,
+      ),
     ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);
@@ -2552,7 +2664,10 @@ mod tests {
     let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
       .expect("parse part selector");
     let selector = list.slice().first().expect("one selector");
-    assert!(matches!(selector.pseudo_element(), Some(PseudoElement::Part(_))));
+    assert!(matches!(
+      selector.pseudo_element(),
+      Some(PseudoElement::Part(_))
+    ));
     assert_eq!(selector.to_css_string(), "div::part(foo)");
 
     let mut input = ParserInput::new("slot:slotted(span)");

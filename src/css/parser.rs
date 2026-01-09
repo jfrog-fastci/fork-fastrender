@@ -12,6 +12,7 @@ use super::properties::parse_property_value_in_context_known_property;
 use super::properties::vendor_prefixed_property_alias;
 use super::properties::DeclarationContext;
 use super::selectors::FastRenderSelectorImpl;
+use super::selectors::NamespaceContextGuard;
 use super::selectors::PseudoClassParser;
 use super::types::ContainerCondition;
 use super::types::ContainerQuery;
@@ -20,6 +21,7 @@ use super::types::ContainerSizeQuery;
 use super::types::CssParseError;
 use super::types::CssParseResult;
 use super::types::CssRule;
+use super::types::CssString;
 use super::types::Declaration;
 use super::types::FontDisplay;
 use super::types::FontFaceRule;
@@ -48,19 +50,19 @@ use super::types::PropertyRule;
 use super::types::PropertyValue;
 use super::types::ScopeRule;
 use super::types::StartingStyleRule;
-use super::types::StyleRule;
-use super::types::StyleSheet;
 use super::types::StyleQueryExpr;
 use super::types::StyleQueryFeature;
 use super::types::StyleRange;
 use super::types::StyleRangeOp;
 use super::types::StyleRangeValue;
+use super::types::StyleRule;
+use super::types::StyleSheet;
 use super::types::SupportsCondition;
 use super::types::SupportsRule;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::resource::{CorsMode, ReferrerPolicy};
 use crate::render_control::{check_active, check_active_periodic};
+use crate::resource::{CorsMode, ReferrerPolicy};
 use crate::style::color::Color;
 use crate::style::counter_styles::{CounterStyleRule, CounterSystem, SpeakAs};
 use crate::style::media::{MediaContext, MediaContextFingerprint, MediaQuery, MediaQueryCache};
@@ -187,8 +189,7 @@ fn parsed_stylesheet_cache() -> &'static Mutex<LruCache<ParsedStylesheetCacheKey
 {
   PARSED_STYLESHEET_CACHE.get_or_init(|| {
     Mutex::new(LruCache::new(
-      NonZeroUsize::new(PARSED_STYLESHEET_CACHE_CAPACITY)
-        .unwrap_or(NonZeroUsize::MIN),
+      NonZeroUsize::new(PARSED_STYLESHEET_CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
     ))
   })
 }
@@ -279,6 +280,7 @@ fn parse_stylesheet_internal(
   media_query_cache: Option<&mut MediaQueryCache>,
   mode: ParseMode,
 ) -> Result<(StyleSheet, Option<Vec<CssParseError>>)> {
+  let _namespace_ctx = NamespaceContextGuard::new();
   reset_css_deadline_state();
   let mut input = ParserInput::new(css);
   let mut parser = Parser::new(&mut input);
@@ -287,6 +289,7 @@ fn parse_stylesheet_internal(
     ParseMode::CollectErrors => Some(Vec::new()),
   };
   let mut parsed_media_query_list_cache = FxHashMap::default();
+  let mut namespace_state = NamespaceParseState::default();
 
   let rules = {
     let mut collector = CssErrorCollector::new(errors.as_mut());
@@ -298,6 +301,8 @@ fn parse_stylesheet_internal(
       media_ctx,
       media_query_cache,
       &mut parsed_media_query_list_cache,
+      &mut namespace_state,
+      true,
     )
   };
 
@@ -474,6 +479,20 @@ pub fn parse_stylesheet_with_media_cached_by_url_arc(
 ) -> Result<Arc<StyleSheet>> {
   parse_stylesheet_with_media_cached_by_url_shared(css, stylesheet_url, media_ctx, cache)
 }
+
+#[derive(Debug, Clone, Copy)]
+struct NamespaceParseState {
+  namespaces_allowed: bool,
+}
+
+impl Default for NamespaceParseState {
+  fn default() -> Self {
+    Self {
+      namespaces_allowed: true,
+    }
+  }
+}
+
 /// Parse a list of CSS rules, collecting errors
 fn parse_rule_list_collecting<'i, 't>(
   parser: &mut Parser<'i, 't>,
@@ -483,6 +502,8 @@ fn parse_rule_list_collecting<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
+  is_top_level: bool,
 ) -> Vec<CssRule> {
   let mut rules = Vec::new();
   let mut media_query_cache = media_query_cache;
@@ -504,6 +525,8 @@ fn parse_rule_list_collecting<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
+      is_top_level,
     ) {
       Ok(Some(rule)) => {
         rules.push(rule);
@@ -532,6 +555,7 @@ fn parse_rule_list_with_context<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> Vec<CssRule> {
   parse_rule_list_collecting(
     parser,
@@ -541,6 +565,8 @@ fn parse_rule_list_with_context<'i, 't>(
     media_ctx,
     media_query_cache,
     parsed_media_query_list_cache,
+    namespace_state,
+    false,
   )
 }
 
@@ -572,6 +598,8 @@ fn parse_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
+  is_top_level: bool,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   parser.skip_whitespace();
   let mut media_query_cache = media_query_cache;
@@ -590,8 +618,22 @@ fn parse_rule<'i, 't>(
     };
 
     let kw = kw.as_ref();
+    if is_top_level
+      && !kw.eq_ignore_ascii_case("import")
+      && !kw.eq_ignore_ascii_case("charset")
+      && !kw.eq_ignore_ascii_case("namespace")
+    {
+      namespace_state.namespaces_allowed = false;
+    }
     if kw.eq_ignore_ascii_case("import") {
       return parse_import_rule(parser);
+    }
+    if kw.eq_ignore_ascii_case("charset") {
+      skip_at_rule(parser);
+      return Ok(None);
+    }
+    if kw.eq_ignore_ascii_case("namespace") {
+      return parse_namespace_rule(parser, namespace_state, is_top_level);
     }
     if kw.eq_ignore_ascii_case("media") {
       return parse_media_rule(
@@ -602,6 +644,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("container") {
@@ -613,6 +656,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("scope") {
@@ -624,6 +668,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("supports") {
@@ -635,6 +680,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("layer") {
@@ -646,6 +692,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("starting-style") {
@@ -657,6 +704,7 @@ fn parse_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       );
     }
     if kw.eq_ignore_ascii_case("page") {
@@ -682,6 +730,9 @@ fn parse_rule<'i, 't>(
     return Ok(None);
   }
 
+  if is_top_level {
+    namespace_state.namespaces_allowed = false;
+  }
   // Parse style rule
   parse_style_rule(
     parser,
@@ -691,6 +742,7 @@ fn parse_rule<'i, 't>(
     media_ctx,
     media_query_cache.as_deref_mut(),
     parsed_media_query_list_cache,
+    namespace_state,
   )
   .map(|opt| opt.map(CssRule::Style))
 }
@@ -764,6 +816,90 @@ fn parse_import_rule<'i, 't>(
     layer,
     supports,
   })))
+}
+
+/// Parse an `@namespace` rule and update the current selector namespace context.
+///
+/// Invalid `@namespace` rules are ignored per spec; this function always returns `Ok(None)` and
+/// never aborts stylesheet parsing.
+fn parse_namespace_rule<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  namespace_state: &mut NamespaceParseState,
+  is_top_level: bool,
+) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
+  // Only the initial `@namespace` group in a stylesheet affects parsing.
+  if !is_top_level || !namespace_state.namespaces_allowed {
+    skip_at_rule(parser);
+    return Ok(None);
+  }
+
+  fn parse_url_value<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+  ) -> std::result::Result<String, ParseError<'i, ()>> {
+    parser.skip_whitespace();
+    match parser.next_including_whitespace()? {
+      Token::QuotedString(s) => Ok(s.to_string()),
+      Token::Function(f) if f.as_ref().eq_ignore_ascii_case("url") => {
+        parser.parse_nested_block(|nested| {
+          nested.skip_whitespace();
+          match nested.next_including_whitespace()? {
+            Token::QuotedString(s) | Token::Ident(s) | Token::UnquotedUrl(s) => Ok(s.to_string()),
+            _ => Err(nested.new_custom_error(())),
+          }
+        })
+      }
+      _ => Err(parser.new_custom_error(())),
+    }
+  }
+
+  let start_state = parser.state();
+  let parsed: std::result::Result<(Option<String>, String), ParseError<'i, ()>> = (|| {
+    parser.skip_whitespace();
+    let prefix_state = parser.state();
+    let prefix = match parser.next_including_whitespace()? {
+      Token::Ident(ident) => Some(ident.to_string()),
+      _ => {
+        parser.reset(&prefix_state);
+        None
+      }
+    };
+
+    let url = parse_url_value(parser)?;
+    parser.skip_whitespace();
+
+    // `@namespace` rules are terminated by semicolon.
+    match parser.next_including_whitespace()? {
+      Token::Semicolon => {}
+      _ => return Err(parser.new_custom_error(())),
+    }
+
+    Ok((prefix, url))
+  })();
+
+  let (prefix, url) = match parsed {
+    Ok(parsed) => parsed,
+    Err(_) => {
+      parser.reset(&start_state);
+      skip_at_rule(parser);
+      return Ok(None);
+    }
+  };
+
+  let url = trim_ascii_whitespace(&url);
+  if url.is_empty() {
+    return Ok(None);
+  }
+
+  if let Some(prefix) = prefix {
+    let prefix = trim_ascii_whitespace(&prefix);
+    if !prefix.is_empty() {
+      super::selectors::namespace_context_set_prefix(prefix, CssString::from(url));
+    }
+  } else {
+    super::selectors::namespace_context_set_default(CssString::from(url));
+  }
+
+  Ok(None)
 }
 
 fn parse_import_modifiers_and_media(
@@ -901,6 +1037,7 @@ fn parse_media_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let start = parser.position();
   parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
@@ -960,6 +1097,7 @@ fn parse_media_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ))
   })?;
 
@@ -978,6 +1116,7 @@ fn parse_container_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let start = parser.position();
   parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
@@ -1006,6 +1145,7 @@ fn parse_container_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ))
   })?;
 
@@ -1402,7 +1542,8 @@ fn stringify_nested_tokens_with_size_query_var_placeholders<'i, 't, E>(
       }
       Token::Function(f) => {
         let name = f.to_string();
-        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        let inner =
+          parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
         parts.push(format!("{name}({inner})"));
       }
       Token::ParenthesisBlock => {
@@ -1434,9 +1575,7 @@ fn stringify_nested_tokens_with_size_query_var_placeholders<'i, 't, E>(
                   }
                 }
               }
-              Token::Function(_)
-              | Token::SquareBracketBlock
-              | Token::CurlyBracketBlock => {
+              Token::Function(_) | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
                 nested.parse_nested_block(consume_nested_tokens)?;
               }
               _ => {}
@@ -1454,11 +1593,13 @@ fn stringify_nested_tokens_with_size_query_var_placeholders<'i, 't, E>(
         parts.push(format!("({inner})"));
       }
       Token::SquareBracketBlock => {
-        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        let inner =
+          parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
         parts.push(format!("[{inner}]"));
       }
       Token::CurlyBracketBlock => {
-        let inner = parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
+        let inner =
+          parser.parse_nested_block(stringify_nested_tokens_with_size_query_var_placeholders)?;
         parts.push(format!("{{{inner}}}"));
       }
       other => parts.push(other.to_css_string()),
@@ -1770,6 +1911,7 @@ fn parse_starting_style_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   parser.expect_curly_bracket_block()?;
   let mut media_query_cache = media_query_cache;
@@ -1782,6 +1924,7 @@ fn parse_starting_style_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ))
   })?;
 
@@ -1799,6 +1942,7 @@ fn parse_scope_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   fn parse_selector_list<'i, 't>(
     parser: &mut Parser<'i, 't>,
@@ -1871,6 +2015,7 @@ fn parse_scope_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ))
   })?;
 
@@ -1890,6 +2035,7 @@ fn parse_supports_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let start = parser.position();
   parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
@@ -1924,6 +2070,7 @@ fn parse_supports_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ))
   })?;
   Ok(Some(CssRule::Supports(SupportsRule { condition, rules })))
@@ -2455,6 +2602,7 @@ fn parse_layer_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let mut names: Vec<Vec<String>> = Vec::new();
   let mut current: Vec<String> = Vec::new();
@@ -2499,6 +2647,7 @@ fn parse_layer_rule<'i, 't>(
         media_ctx,
         media_query_cache.as_deref_mut(),
         parsed_media_query_list_cache,
+        namespace_state,
       ))
     })?
   } else {
@@ -3115,8 +3264,9 @@ fn parse_font_palette_values_rule<'i, 't>(
     parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("expected {".into()))
   })?;
 
-  let rule = parser
-    .parse_nested_block(|nested| parse_font_palette_descriptors(nested, trim_ascii_whitespace(&name), css_source))?;
+  let rule = parser.parse_nested_block(|nested| {
+    parse_font_palette_descriptors(nested, trim_ascii_whitespace(&name), css_source)
+  })?;
   Ok(rule.map(CssRule::FontPaletteValues))
 }
 
@@ -4601,6 +4751,7 @@ fn parse_nested_at_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   parser.skip_whitespace();
   let kw = match parser.next() {
@@ -4617,6 +4768,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
   if kw.eq_ignore_ascii_case("supports") {
@@ -4628,6 +4780,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
   if kw.eq_ignore_ascii_case("container") {
@@ -4639,6 +4792,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
   if kw.eq_ignore_ascii_case("layer") {
@@ -4650,6 +4804,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
   if kw.eq_ignore_ascii_case("starting-style") {
@@ -4661,6 +4816,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
   if kw.eq_ignore_ascii_case("nest") {
@@ -4672,6 +4828,7 @@ fn parse_nested_at_rule<'i, 't>(
       media_ctx,
       media_query_cache,
       parsed_media_query_list_cache,
+      namespace_state,
     );
   }
 
@@ -4687,6 +4844,7 @@ fn parse_style_block<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<(Vec<Declaration>, Vec<CssRule>), ParseError<'i, SelectorParseErrorKind<'i>>>
 {
   let mut declarations = Vec::new();
@@ -4715,6 +4873,7 @@ fn parse_style_block<'i, 't>(
           media_ctx,
           media_query_cache.as_deref_mut(),
           parsed_media_query_list_cache,
+          namespace_state,
         ) {
           Ok(Some(rule)) => nested_rules.push(rule),
           Ok(None) => {}
@@ -4747,6 +4906,7 @@ fn parse_style_block<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     ) {
       Ok(Some(rule)) => nested_rules.push(CssRule::Style(rule)),
       Ok(None) => {}
@@ -4769,6 +4929,7 @@ fn parse_style_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<StyleRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let mut media_query_cache = media_query_cache;
   let selectors = if let Some(parent) = parent_selectors {
@@ -4820,6 +4981,7 @@ fn parse_style_rule<'i, 't>(
             media_ctx,
             media_query_cache.as_deref_mut(),
             parsed_media_query_list_cache,
+            namespace_state,
           ))
         });
       }
@@ -4859,6 +5021,7 @@ fn parse_style_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     )
     .map_err(|_| {
       parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
@@ -4882,6 +5045,7 @@ fn parse_nest_rule<'i, 't>(
   media_ctx: Option<&MediaContext>,
   media_query_cache: Option<&mut MediaQueryCache>,
   parsed_media_query_list_cache: &mut ParsedMediaQueryListCache<'i>,
+  namespace_state: &mut NamespaceParseState,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
   let mut media_query_cache = media_query_cache;
   let start = parser.position();
@@ -4912,6 +5076,7 @@ fn parse_nest_rule<'i, 't>(
           media_ctx,
           media_query_cache.as_deref_mut(),
           parsed_media_query_list_cache,
+          namespace_state,
         ))
       });
     }
@@ -4931,6 +5096,7 @@ fn parse_nest_rule<'i, 't>(
       media_ctx,
       media_query_cache.as_deref_mut(),
       parsed_media_query_list_cache,
+      namespace_state,
     )
     .map_err(|_| {
       nested.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
@@ -5636,6 +5802,7 @@ mod tests {
     assert!(!parser.is_exhausted(), "parser should see input tokens");
     let mut collector = CssErrorCollector::new(None);
     let mut parsed_media_query_list_cache = FxHashMap::default();
+    let mut namespace_state = NamespaceParseState::default();
     let rule = parse_rule(
       &mut parser,
       &mut collector,
@@ -5644,6 +5811,8 @@ mod tests {
       None,
       None,
       &mut parsed_media_query_list_cache,
+      &mut namespace_state,
+      true,
     )
     .expect("parse_rule");
     assert!(
@@ -5657,6 +5826,7 @@ mod tests {
     let mut errors = Vec::new();
     let mut collector = CssErrorCollector::new(Some(&mut errors));
     let mut parsed_media_query_list_cache = FxHashMap::default();
+    let mut namespace_state = NamespaceParseState::default();
     let rules = parse_rule_list_collecting(
       &mut parser,
       &mut collector,
@@ -5665,6 +5835,8 @@ mod tests {
       None,
       None,
       &mut parsed_media_query_list_cache,
+      &mut namespace_state,
+      true,
     );
     assert!(
       errors.is_empty(),
@@ -5700,8 +5872,8 @@ mod tests {
 
   #[test]
   fn user_agent_stylesheet_parses_without_errors() {
-    let result = parse_stylesheet_with_errors(include_str!("../user_agent.css"))
-      .expect("parse UA stylesheet");
+    let result =
+      parse_stylesheet_with_errors(include_str!("../user_agent.css")).expect("parse UA stylesheet");
     assert!(
       result.is_ok(),
       "expected UA stylesheet to parse without errors, got {:?}",
@@ -5885,7 +6057,10 @@ mod tests {
       .collect();
     assert_eq!(
       serialized,
-      vec!["input::placeholder".to_string(), "input::placeholder".to_string()]
+      vec![
+        "input::placeholder".to_string(),
+        "input::placeholder".to_string()
+      ]
     );
   }
 
@@ -6228,7 +6403,6 @@ mod tests {
     assert_eq!(face.descent_override, None);
     assert_eq!(face.line_gap_override, None);
   }
-
 
   #[test]
   fn resolve_imports_inlines_before_other_rules() {
