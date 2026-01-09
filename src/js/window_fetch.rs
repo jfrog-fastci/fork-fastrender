@@ -16,7 +16,7 @@ use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
-  execute_web_fetch, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
+  execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
   WebFetchExecutionContext, WebFetchError,
 };
 use crate::resource::{origin_from_url, DocumentOrigin, FetchDestination, ReferrerPolicy, ResourceFetcher};
@@ -1123,6 +1123,20 @@ fn request_ctor_construct(
     if !matches!(headers_val, Value::Undefined | Value::Null) {
       fill_headers_from_init(vm, scope, host_hooks, env_id, &mut request.headers, headers_val)?;
     }
+
+    let body_key = alloc_key(scope, "body")?;
+    let body_val = vm.get(scope, init_obj, body_key)?;
+    if !matches!(body_val, Value::Undefined | Value::Null) {
+      let bytes = to_rust_string(scope.heap_mut(), body_val)?.into_bytes();
+      let body = Body::new(bytes).map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      request.body = Some(body);
+    }
+  }
+
+  if request.method.eq_ignore_ascii_case("GET") || request.method.eq_ignore_ascii_case("HEAD") {
+    if request.body.is_some() {
+      return Err(throw_type_error(vm, scope, host_hooks, "Request body is not allowed for GET/HEAD"));
+    }
   }
 
   let request_id = with_env_state_mut(env_id, |state| {
@@ -1496,6 +1510,14 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
       fill_headers_from_init(vm, scope, host_hooks, env_id, &mut request.headers, headers_val)?;
+    }
+
+    let body_key = alloc_key(scope, "body")?;
+    let body_val = vm.get(scope, init_obj, body_key)?;
+    if !matches!(body_val, Value::Undefined | Value::Null) {
+      let bytes = to_rust_string(scope.heap_mut(), body_val)?.into_bytes();
+      let body = Body::new(bytes).map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+      request.body = Some(body);
     }
   }
 

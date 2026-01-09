@@ -398,6 +398,7 @@ struct StubResponse {
 struct InMemoryFetcher {
   routes: HashMap<String, StubResponse>,
   last_request_headers: Mutex<Vec<(String, String)>>,
+  last_request_body: Mutex<Option<Vec<u8>>>,
 }
 
 impl InMemoryFetcher {
@@ -405,6 +406,7 @@ impl InMemoryFetcher {
     Self {
       routes: HashMap::new(),
       last_request_headers: Mutex::new(Vec::new()),
+      last_request_body: Mutex::new(None),
     }
   }
 
@@ -434,6 +436,14 @@ impl InMemoryFetcher {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .clone()
   }
+
+  fn last_request_body(&self) -> Option<Vec<u8>> {
+    self
+      .last_request_body
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone()
+  }
 }
 
 impl Default for InMemoryFetcher {
@@ -455,6 +465,13 @@ impl ResourceFetcher for InMemoryFetcher {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
       *lock = req.headers.to_vec();
+    }
+    {
+      let mut lock = self
+        .last_request_body
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      *lock = req.body.map(|body| body.to_vec());
     }
 
     let stub = self.lookup(req.fetch.url)?;
@@ -693,6 +710,89 @@ fn window_request_constructor_clones_request_input() -> Result<()> {
       .iter()
       .any(|(name, value)| name == "x-test" && value == "2"),
     "expected Request cloned from Request(input) to forward updated x-test: 2"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_forwards_request_body() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ fetch("https://example.com/submit", { method: "POST", body: "payload" }).then(() => {});
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.last_request_body(),
+    Some(b"payload".to_vec()),
+    "expected fetch init body to reach the ResourceFetcher"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/submit", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ const req = new Request("https://example.com/submit", { method: "POST", body: "payload" });
+ fetch(req).then(() => {});
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.last_request_body(),
+    Some(b"payload".to_vec()),
+    "expected Request body to reach the ResourceFetcher when passed to fetch()"
   );
   Ok(())
 }
