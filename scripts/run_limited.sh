@@ -114,6 +114,23 @@ fi
 
 cmd=("$@")
 
+# Windows (Git Bash / MSYS / Cygwin) note:
+#
+# This repo primarily relies on Linux/macOS resource limits (RLIMIT_AS via prlimit/ulimit) to keep
+# hostile inputs from exhausting RAM. The POSIX `ulimit` knobs are not reliably supported when
+# running under Windows shells (Git Bash / MSYS / Cygwin); attempting to set them can fail with
+# "invalid argument" and break workflows that shell out through this script (including
+# `scripts/cargo_agent.sh`).
+#
+# When running on Windows, treat this script as a no-op wrapper and run the command without
+# applying limits.
+uname_s="$(uname -s 2>/dev/null || echo "")"
+case "${uname_s}" in
+  MINGW*|MSYS*|CYGWIN*)
+    exec "${cmd[@]}"
+    ;;
+esac
+
 any_limit=false
 if [[ -n "${AS}" && "${AS}" != "0" && "${AS}" != "unlimited" ]]; then any_limit=true; fi
 if [[ -n "${RSS}" && "${RSS}" != "0" ]]; then any_limit=true; fi
