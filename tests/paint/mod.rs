@@ -107,6 +107,7 @@ mod preserve_3d_parallel_determinism;
 mod preserve_3d_projective_backdrop_filter;
 mod preserve_3d_root_backdrop_filter;
 mod preserve_3d_root_filter;
+mod preserve_3d_root_mask;
 mod preserve_3d_text_clip_projected;
 mod preserve_3d_test;
 mod preserve_3d_warp;
