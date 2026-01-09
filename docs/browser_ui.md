@@ -44,6 +44,8 @@ The `browser` binary also supports an in-process, best-effort address-space cap 
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
   - Render worker wrapper + large-stack thread spawn:
     [`src/ui/worker.rs`](../src/ui/worker.rs)
+    - Note: this module also contains a headless “UI worker loop” (`spawn_ui_worker`) that
+      processes `UiToWorker` messages and emits `WorkerToUi` events (frames/navigation/etc.).
   - Synchronous “navigate + render a frame” helper used by the worker: [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
   - Headless UI worker loop used by browser UI integration tests: [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)

@@ -52,9 +52,16 @@ The `browser` window UI is still intentionally minimal (early-stage wiring):
 - Content area currently shows a dummy checkerboard pixmap.
 - Clicking in the page prints the local click position to stdout.
 
-The repository contains additional browser UI building blocks (tab history, URL normalization,
-interaction engine, etc.) under [`src/ui/`](../src/ui/) that are intended to be wired into the
-windowed UI; see [browser_ui.md](browser_ui.md) for details.
+The repository contains additional browser UI building blocks under [`src/ui/`](../src/ui/) that are
+intended to be wired into the windowed UI:
+
+- a headless “UI worker loop” (`spawn_ui_worker`) that already supports navigation/scroll/pointer
+  events and basic form interactions (used by integration tests),
+- tab history helpers (`TabHistory`),
+- address bar URL normalization (`normalize_user_url`),
+- about pages (`about:*`) helpers.
+
+See [browser_ui.md](browser_ui.md) for implementation details.
 
 ## Environment variables / resource limits
 
