@@ -36,6 +36,7 @@ mod form_validity_pseudo_test;
 mod font_variation_settings_calc_test;
 mod forgiving_selector_list_test;
 mod grid_property_test;
+mod justify_content_normal_test;
 mod has_selector_quirks_bloom_test;
 mod has_selector_test;
 mod layer_important_test;

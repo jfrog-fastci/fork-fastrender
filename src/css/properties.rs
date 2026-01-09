@@ -2684,6 +2684,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
           "self-start",
           "self-end",
           "baseline",
+          "normal",
           "stretch",
           "space-between",
           "space-around",
