@@ -104,7 +104,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/cargo_agent.sh check -p fastrender --lib
+          bash scripts/cargo_agent.sh check -p fastrender --lib --locked
 
   # ===========================================================================
   # Test Job - Run all tests across multiple platforms and Rust versions
