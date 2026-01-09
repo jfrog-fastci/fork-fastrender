@@ -176,6 +176,11 @@ impl TypeContext {
       self.flattened_dictionary_members_inner(parent, visited, out);
     }
 
-    out.extend(dict.members.iter().cloned());
+    // WebIDL dictionary algorithms iterate members in lexicographical order within each dictionary:
+    // <https://webidl.spec.whatwg.org/#js-to-dictionary>
+    // <https://webidl.spec.whatwg.org/#dictionary-to-js>
+    let mut members = dict.members.clone();
+    members.sort_by(|a, b| a.name.cmp(&b.name));
+    out.extend(members);
   }
 }

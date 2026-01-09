@@ -487,8 +487,8 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   }
 
   let obj = rt.alloc_object()?;
-  // Define properties in schema declaration order (including inherited members), which gives the
-  // most spec-shaped and deterministic property insertion order.
+  // Define properties in WebIDL dictionary serialization order: inherited dictionaries from least
+  // to most derived, and members in lexicographical order.
   for member in &schema {
     let v = if let Some(v) = members.get(&member.name) {
       Some(std::borrow::Cow::Borrowed(v))
