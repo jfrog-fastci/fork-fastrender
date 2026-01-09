@@ -17,64 +17,6 @@ use super::event_loop::{EventLoop, TimerId};
 use super::script_scheduler::ScriptExecutor;
 use super::ScriptElementSpec;
 
-/// Host-aware variant of `vm-js` `Scope::ordinary_get`.
-///
-/// Upstream `vm-js` removed `ordinary_get_with_host`; FastRender still needs host hooks so that
-/// accessor getters run with the same Promise job queue / microtask integration as normal JS calls
-/// (`Vm::call_with_host`).
-trait OrdinaryGetWithHostExt {
-  fn ordinary_get_with_host(
-    &mut self,
-    vm: &mut Vm,
-    hooks: &mut dyn VmHostHooks,
-    obj: vm_js::GcObject,
-    key: vm_js::PropertyKey,
-    receiver: Value,
-  ) -> std::result::Result<Value, VmError>;
-}
-
-impl<'a> OrdinaryGetWithHostExt for Scope<'a> {
-  fn ordinary_get_with_host(
-    &mut self,
-    vm: &mut Vm,
-    hooks: &mut dyn VmHostHooks,
-    obj: vm_js::GcObject,
-    key: vm_js::PropertyKey,
-    receiver: Value,
-  ) -> std::result::Result<Value, VmError> {
-    // Root inputs across any allocation/GC triggered by accessor calls.
-    self.push_root(Value::Object(obj))?;
-    match key {
-      vm_js::PropertyKey::String(s) => {
-        self.push_root(Value::String(s))?;
-      }
-      vm_js::PropertyKey::Symbol(s) => {
-        self.push_root(Value::Symbol(s))?;
-      }
-    }
-    self.push_root(receiver)?;
-
-    let Some(desc) = self.heap().get_property(obj, &key)? else {
-      return Ok(Value::Undefined);
-    };
-
-    match desc.kind {
-      vm_js::PropertyKind::Data { value, .. } => Ok(value),
-      vm_js::PropertyKind::Accessor { get, .. } => {
-        if matches!(get, Value::Undefined) {
-          Ok(Value::Undefined)
-        } else {
-          if !self.heap().is_callable(get)? {
-            return Err(VmError::TypeError("accessor getter is not callable"));
-          }
-          self.push_root(get)?;
-          vm.call_with_host(self, hooks, get, receiver, &[])
-        }
-      }
-    }
-  }
-}
-
 /// FastRender embedding of `ecma-rs`'s `vm-js` primitives.
 ///
 /// This is an MVP JS host/runtime that:
@@ -398,7 +340,10 @@ impl Evaluator<'_> {
           return Err(VmError::Unimplemented("unbound identifier"));
         }
 
-        child.ordinary_get(self.vm, global_obj, key, self.global_this)
+        // Use `ordinary_get_with_host` so accessor getters run via `Vm::call_with_host` and can
+        // enqueue Promise jobs through the FastRender host hooks (instead of `vm-js`'s internal
+        // microtask queue used by `Vm::call`).
+        child.ordinary_get_with_host(self.vm, self.hooks, global_obj, key, self.global_this)
       }
       Expr::This(_) => Ok(self.global_this),
       Expr::Member(node) => self.eval_member_expr(scope, &node.stx),
@@ -428,7 +373,7 @@ impl Evaluator<'_> {
     let key_s = child.alloc_string(&expr.right)?;
     child.push_root(Value::String(key_s))?;
     let key = vm_js::PropertyKey::String(key_s);
-    child.ordinary_get(self.vm, obj, key, obj_value)
+    child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)
   }
 
   fn eval_call_expr(
@@ -453,7 +398,7 @@ impl Evaluator<'_> {
         let key_s = child.alloc_string(&member.stx.right)?;
         child.push_root(Value::String(key_s))?;
         let key = vm_js::PropertyKey::String(key_s);
-        let func = child.ordinary_get(self.vm, obj, key, obj_value)?;
+        let func = child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)?;
         (func, obj_value)
       }
       _ => {
