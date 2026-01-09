@@ -150,6 +150,12 @@ impl BrowserDocument {
     self.document_url.as_deref()
   }
 
+  /// Returns the effective base URL used for resolving relative links, reflecting `<base href>`
+  /// after the most recent prepare/layout pass.
+  pub fn base_url(&self) -> Option<&str> {
+    self.renderer.base_url.as_deref()
+  }
+
   /// Returns a mutable reference to the live DOM tree, marking the document dirty.
   pub fn dom_mut(&mut self) -> &mut DomNode {
     self.invalidate_all();
@@ -246,6 +252,23 @@ impl BrowserDocument {
     }
   }
 
+  /// Updates the cooperative cancellation callback used during prepare/layout.
+  ///
+  /// This is a control knob (e.g. for UI-level cancellation) and does not mark the document dirty.
+  pub fn set_cancel_callback(
+    &mut self,
+    cb: Option<std::sync::Arc<crate::render_control::CancelCallback>>,
+  ) {
+    self.options.cancel_callback = cb;
+  }
+
+  /// Updates the hard timeout used during prepare/layout.
+  ///
+  /// This is a control knob (e.g. for UI-level cancellation) and does not mark the document dirty.
+  pub fn set_timeout(&mut self, timeout: Option<std::time::Duration>) {
+    self.options.timeout = timeout;
+  }
+
   /// Returns the current scroll state used by this document.
   pub fn scroll_state(&self) -> ScrollState {
     ScrollState::from_parts(
@@ -281,11 +304,14 @@ impl BrowserDocument {
     Ok(self.render_frame_with_scroll_state()?.pixmap)
   }
 
-  /// Renders one frame, returning the pixmap plus the effective scroll state used during painting.
+  /// Renders one frame, applying an optional deadline to the *paint* phase.
   ///
-  /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
-  /// cached layout artifacts.
-  pub fn render_frame_with_scroll_state(&mut self) -> Result<super::PaintedFrame> {
+  /// When layout is required, prepare/layout is executed using the currently configured
+  /// `RenderOptions::{timeout,cancel_callback}`, then painting proceeds under `paint_deadline`.
+  pub fn render_frame_with_deadlines(
+    &mut self,
+    paint_deadline: Option<&crate::render_control::RenderDeadline>,
+  ) -> Result<super::PaintedFrame> {
     // If we haven't rendered before, force a full pipeline run even if the flags were cleared.
     if self.prepared.is_none() {
       self.invalidate_all();
@@ -297,7 +323,7 @@ impl BrowserDocument {
       self.prepared = Some(prepared);
     }
 
-    let frame = self.paint_from_cache_frame_with_deadline(None)?;
+    let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
@@ -305,6 +331,14 @@ impl BrowserDocument {
     }
 
     Ok(frame)
+  }
+
+  /// Renders one frame, returning the pixmap plus the effective scroll state used during painting.
+  ///
+  /// If the document is dirty, this triggers a full pipeline run. Otherwise, it repaints from
+  /// cached layout artifacts.
+  pub fn render_frame_with_scroll_state(&mut self) -> Result<super::PaintedFrame> {
+    self.render_frame_with_deadlines(None)
   }
 
   /// Paints the most recently laid-out document without re-running style/layout.
@@ -436,6 +470,10 @@ pub(super) fn prepare_dom_inner(
 
   let deadline = crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
   let _deadline_guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+
+  // Ensure cooperative cancellation is observable even if the subsequent stage preamble (base URL
+  // / referrer policy extraction) finishes quickly without checking the deadline.
+  crate::render_control::check_active(RenderStage::DomParse).map_err(Error::Render)?;
 
   renderer.update_base_url_from_dom(dom);
   if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
@@ -633,6 +671,97 @@ mod tests {
       matches!(err, Error::Render(RenderError::Timeout { stage: RenderStage::Paint, .. })),
       "expected paint timeout error, got {err:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn render_frame_with_deadlines_cancels_layout_via_cancel_callback() -> Result<()> {
+    let options = RenderOptions::default().with_viewport(32, 32);
+    let mut document = BrowserDocument::from_html("<div>hi</div>", options)?;
+
+    let cb: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    document.set_cancel_callback(Some(cb));
+
+    let err = match document.render_frame_with_deadlines(None) {
+      Ok(_) => panic!("expected cancellation error"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => {
+        assert_eq!(stage, RenderStage::DomParse);
+      }
+      other => panic!("expected RenderError::Timeout; got {other:?}"),
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn render_frame_with_deadlines_cancels_paint_via_paint_deadline() -> Result<()> {
+    let options = RenderOptions::default().with_viewport(32, 32);
+    let mut document = BrowserDocument::from_html("<div>hi</div>", options)?;
+
+    // Prime the layout cache.
+    let _ = document.render_frame_with_deadlines(None)?;
+
+    // Mark paint dirty.
+    document.set_scroll(1.0, 0.0);
+
+    let cb: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    let paint_deadline = RenderDeadline::new(None, Some(cb));
+    let err = match document.render_frame_with_deadlines(Some(&paint_deadline)) {
+      Ok(_) => panic!("expected cancellation error"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => {
+        assert_eq!(stage, RenderStage::Paint);
+      }
+      other => panic!("expected RenderError::Timeout; got {other:?}"),
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn base_url_reflects_base_href_after_prepare() -> Result<()> {
+    fn set_base_href(dom: &mut DomNode, href: &str) -> bool {
+      let mut stack = vec![dom];
+      while let Some(node) = stack.pop() {
+        if let crate::dom::DomNodeType::Element {
+          tag_name,
+          attributes,
+          ..
+        } = &mut node.node_type
+        {
+          if tag_name.eq_ignore_ascii_case("base") {
+            if let Some((_, value)) = attributes
+              .iter_mut()
+              .find(|(name, _)| name.eq_ignore_ascii_case("href"))
+            {
+              *value = href.to_string();
+            } else {
+              attributes.push(("href".to_string(), href.to_string()));
+            }
+            return true;
+          }
+        }
+        for child in node.children.iter_mut() {
+          stack.push(child);
+        }
+      }
+      false
+    }
+
+    let options = RenderOptions::default().with_viewport(32, 32);
+    let html = r#"<!doctype html><html><head><base href="https://example.com/base/"></head><body><a href="x">x</a></body></html>"#;
+    let mut document = BrowserDocument::from_html(html, options)?;
+    let _ = document.render_frame_with_deadlines(None)?;
+    assert_eq!(document.base_url(), Some("https://example.com/base/"));
+
+    let changed = document.mutate_dom(|dom| set_base_href(dom, "https://example.com/next/"));
+    assert!(changed, "expected DOM mutation to update <base href>");
+
+    let _ = document.render_frame_with_deadlines(None)?;
+    assert_eq!(document.base_url(), Some("https://example.com/next/"));
     Ok(())
   }
 }
