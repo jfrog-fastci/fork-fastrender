@@ -8579,7 +8579,11 @@ impl Painter {
           .unwrap_or(default_knob_diameter);
 
         let knob_travel = (padding_rect.width() - knob_width).max(0.0);
-        let knob_center_x = padding_rect.x() + knob_width / 2.0 + clamped * knob_travel;
+        let knob_center_x = if style.direction == crate::style::types::Direction::Rtl {
+          padding_rect.max_x() - knob_width / 2.0 - clamped * knob_travel
+        } else {
+          padding_rect.x() + knob_width / 2.0 + clamped * knob_travel
+        };
         let mut knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
         if let Some(thumb_style) = thumb_style {
           if let Some(margin_top) = thumb_style.margin_top {
@@ -8741,12 +8745,21 @@ impl Painter {
           }
 
           if !appearance_none {
-            let filled_rect = Rect::from_xywh(
-              track_rect.x(),
-              track_rect.y(),
-              (knob_center_x - track_rect.x()).max(0.0),
-              track_rect.height(),
-            );
+            let filled_rect = if style.direction == crate::style::types::Direction::Rtl {
+              Rect::from_xywh(
+                knob_center_x,
+                track_rect.y(),
+                (track_rect.max_x() - knob_center_x).max(0.0),
+                track_rect.height(),
+              )
+            } else {
+              Rect::from_xywh(
+                track_rect.x(),
+                track_rect.y(),
+                (knob_center_x - track_rect.x()).max(0.0),
+                track_rect.height(),
+              )
+            };
             if filled_rect.width() > 0.0 {
               let radii = BorderRadii::uniform(track_height / 2.0)
                 .clamped(filled_rect.width(), filled_rect.height());
