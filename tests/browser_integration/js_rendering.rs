@@ -93,7 +93,9 @@ impl FixtureHost {
           match target {
             DocumentAccess::Parsing(parser) => {
               let parser = parser.borrow();
-              let mut doc = parser.document_mut();
+              let Some(mut doc) = parser.document_mut() else {
+                return;
+              };
               let Some(node) = doc.get_element_by_id(&id) else {
                 return;
               };
@@ -132,7 +134,9 @@ impl FixtureHost {
     match &*self.dom.borrow() {
       DocumentAccess::Parsing(parser) => {
         let parser = parser.borrow();
-        let doc = parser.document();
+        let doc = parser
+          .document()
+          .expect("streaming parser should expose a document while parsing");
         doc.to_renderer_dom()
       }
       DocumentAccess::Final(doc) => doc.borrow().to_renderer_dom(),
@@ -152,7 +156,9 @@ impl FixtureHost {
     match &*self.dom.borrow() {
       DocumentAccess::Parsing(parser) => {
         let parser = parser.borrow();
-        let doc = parser.document();
+        let doc = parser
+          .document()
+          .expect("streaming parser should expose a document while parsing");
         read(&doc)
       }
       DocumentAccess::Final(doc) => read(&doc.borrow()),
@@ -263,7 +269,9 @@ impl JsFixtureHarness {
         } => {
           let spec = {
             let parser = self.parser.borrow();
-            let doc = parser.document();
+            let doc = parser
+              .document()
+              .expect("streaming parser should expose a document while parsing");
             let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
             build_parser_inserted_script_element_spec_dom2(&doc, script, &base)
           };
