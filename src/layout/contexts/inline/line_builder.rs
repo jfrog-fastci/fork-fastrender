@@ -5121,6 +5121,23 @@ mod tests {
   }
 
   #[test]
+  fn line_fitting_allows_small_subpixel_overflow_to_avoid_unexpected_wraps() {
+    // Regresses: `LineBuilder` compared shaped run widths against the available line width without
+    // any tolerance. We often snap container sizes to whole pixels while text advances remain
+    // subpixel. The accumulated rounding loss can cause near-boundary text like "My Visit"
+    // (si.edu header) to wrap unexpectedly.
+    let mut builder = make_builder(100.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("My Visit", 100.5)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    let line_text: String = lines[0].items.iter().map(|p| flatten_text(&p.item)).collect();
+    assert_eq!(line_text, "My Visit");
+  }
+
+  #[test]
   fn add_breaks_at_clusters_preserves_existing_hyphen_breaks() {
     use crate::text::line_break::{BreakOpportunity, BreakType};
 
