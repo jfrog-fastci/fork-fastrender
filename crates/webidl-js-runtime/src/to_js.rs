@@ -126,9 +126,15 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
         }
         Ok(v)
       }
-      _ => Err(rt.throw_type_error(
-        "`object` return values require a platform object handle",
-      )),
+      _ => {
+        // `object` return values must be JavaScript objects, but allow callers to provide any
+        // structured WebIDL value that converts to an object (e.g. dictionaries/records/sequences).
+        let v = to_js_any(rt, ctx, value, limits, typedef_stack)?;
+        if !rt.is_object(v) {
+          return Err(rt.throw_type_error("expected an object value"));
+        }
+        Ok(v)
+      }
     },
     IdlType::Symbol => match value {
       WebIdlValue::PlatformObject(obj) => {
@@ -1004,6 +1010,59 @@ mod tests {
     assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
     assert!(
       msg.contains("platform object is not an object"),
+      "expected objectness error message, got {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn object_return_accepts_dictionary_value() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "Foo".to_string(),
+      inherits: None,
+      members: vec![DictionaryMemberSchema {
+        name: "x".to_string(),
+        required: false,
+        ty: parse_idl_type_complete("long")?,
+        default: None,
+      }],
+    });
+
+    let ty = parse_idl_type_complete("object")?;
+    let value = WebIdlValue::Dictionary {
+      name: "Foo".to_string(),
+      members: BTreeMap::from([("x".to_string(), WebIdlValue::Long(1))]),
+    };
+
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(out));
+    let key = rt.property_key_from_str("x")?;
+    let got = rt.get(out, key)?;
+    assert_eq!(rt.to_number(got)?, 1.0);
+    Ok(())
+  }
+
+  #[test]
+  fn object_return_rejects_primitive_values() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("object")?;
+    let err = to_js(&mut rt, &ctx, &ty, &WebIdlValue::Long(1)).unwrap_err();
+
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("expected an object"),
       "expected objectness error message, got {msg:?}"
     );
     Ok(())
