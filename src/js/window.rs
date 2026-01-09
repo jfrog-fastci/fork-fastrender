@@ -2,6 +2,7 @@ use crate::dom2;
 use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
+use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_timers_bindings, DomHost, EventLoop,
@@ -63,6 +64,23 @@ impl WindowHost {
 
   pub fn run_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
     self.event_loop.run_until_idle(&mut self.host, limits)
+  }
+
+  /// Execute a classic script in this window's JS realm.
+  ///
+  /// This installs the accompanying [`EventLoop`] as the thread-local "current event loop" so Web
+  /// APIs like `queueMicrotask`, `setTimeout`, and `requestAnimationFrame` can schedule work.
+  ///
+  /// Note: this does **not** automatically run a microtask checkpoint. Call
+  /// [`WindowHost::perform_microtask_checkpoint`] or drive the event loop as needed.
+  pub fn exec_script(&mut self, source: &str) -> Result<vm_js::Value> {
+    let (host, event_loop) = (&mut self.host, &mut self.event_loop);
+    with_event_loop(event_loop, || {
+      host
+        .window_mut()
+        .exec_script(source)
+        .map_err(|e| Error::Other(e.to_string()))
+    })
   }
 }
 
@@ -159,5 +177,50 @@ impl CurrentScriptHost for WindowHostState {
 impl WindowRealmHost for WindowHostState {
   fn window_realm(&mut self) -> &mut WindowRealm {
     &mut self.window
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use selectors::context::QuirksMode;
+  use vm_js::{PropertyKey, Value};
+
+  fn get_global_prop(host: &mut WindowHost, name: &str) -> Value {
+    let window = host.host_mut().window_mut();
+    let (_vm, realm, heap) = window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+    let global = realm.global_object();
+    scope
+      .push_root(Value::Object(global))
+      .expect("push root global");
+    let key_s = scope.alloc_string(name).expect("alloc prop name");
+    scope
+      .push_root(Value::String(key_s))
+      .expect("push root prop name");
+    let key = PropertyKey::from_string(key_s);
+    scope
+      .heap()
+      .object_get_own_data_property_value(global, &key)
+      .expect("get prop")
+      .unwrap_or(Value::Undefined)
+  }
+
+  #[test]
+  fn exec_script_installs_event_loop_for_queue_microtask() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script(
+      "var g = this; g.__x = 0; g.queueMicrotask(function () { g.__x = 1; });",
+    )?;
+
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 0.0));
+
+    host.perform_microtask_checkpoint()?;
+
+    assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 1.0));
+    Ok(())
   }
 }
