@@ -100,6 +100,10 @@ impl VmJsRuntime {
     &mut self.heap
   }
 
+  pub fn set_webidl_limits(&mut self, limits: WebIdlLimits) {
+    self.webidl_limits = limits;
+  }
+
   fn intern_string(&mut self, s: &str) -> Result<GcString, VmError> {
     if let Some(existing) = self.interned_strings.get(s).copied() {
       return Ok(existing);

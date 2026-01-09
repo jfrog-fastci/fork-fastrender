@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 /// Opaque host value carried through WebIDL conversion layers.
 ///
-/// This is primarily used as a placeholder for interface return values: bindings can embed a
+/// This is primarily used as a placeholder for interface/object return values: bindings can embed a
 /// runtime-specific handle (e.g. a JS object reference) inside a [`WebIdlValue`] and let the
 /// runtime convert it back into an ECMAScript value.
 #[derive(Clone)]

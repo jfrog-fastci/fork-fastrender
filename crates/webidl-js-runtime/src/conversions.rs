@@ -373,7 +373,7 @@ fn convert_to_string<R: WebIdlJsRuntime>(
   }
 
   let string_val = rt.to_string(v)?;
-  let s = rt.string_to_utf8_lossy(string_val)?;
+  let s = string_to_rust_string_with_limits(rt, string_val)?;
 
   match string_type {
     StringType::DomString => Ok(ConvertedValue::String(s)),
@@ -391,6 +391,20 @@ fn convert_to_string<R: WebIdlJsRuntime>(
   }
 }
 
+fn string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  string: R::JsValue,
+) -> Result<String, R::Error> {
+  let max_units = rt.limits().max_string_code_units;
+  let result = rt.with_string_code_units(string, |units| {
+    if units.len() > max_units {
+      return Err(WebIdlException::range_error("string exceeds maximum length"));
+    }
+    Ok(String::from_utf16_lossy(units))
+  })?;
+  result.map_err(|e| throw_webidl_exception(rt, e))
+}
+
 fn convert_to_enum<R: WebIdlJsRuntime>(
   rt: &mut R,
   v: R::JsValue,
@@ -402,7 +416,7 @@ fn convert_to_enum<R: WebIdlJsRuntime>(
     .get(enum_name)
     .ok_or_else(|| rt.throw_type_error(&format!("Unknown enum `{enum_name}`")))?;
   let s = rt.to_string(v)?;
-  let s = rt.string_to_utf8_lossy(s)?;
+  let s = string_to_rust_string_with_limits(rt, s)?;
   if !values.contains(&s) {
     return Err(rt.throw_type_error(&format!(
       "Value is not a valid member of the `{enum_name}` enum"
@@ -888,6 +902,9 @@ fn create_sequence_from_iterable<R: WebIdlJsRuntime>(
   let mut iterator_record = rt.get_iterator_from_method(iterable, method)?;
   let mut values = Vec::<ConvertedValue<R::JsValue>>::new();
   while let Some(next) = rt.iterator_step_value(&mut iterator_record)? {
+    if values.len() >= rt.limits().max_sequence_length {
+      return Err(rt.throw_range_error("sequence exceeds maximum length"));
+    }
     let converted = convert_to_idl_inner(
       rt,
       next,
@@ -929,6 +946,13 @@ fn convert_to_record<R: WebIdlJsRuntime>(
     };
     if !desc.enumerable {
       continue;
+    }
+    if rt.property_key_is_symbol(key) {
+      continue;
+    }
+
+    if entries.len() >= rt.limits().max_record_entries {
+      return Err(rt.throw_range_error("record exceeds maximum entry count"));
     }
 
     let key_value = rt.property_key_to_js_string(key)?;
