@@ -1,15 +1,25 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::web::dom::DomException;
 use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::QuirksMode as HtmlQuirksMode;
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::{parse_fragment, ParseOpts};
 use markup5ever::{LocalName, Namespace, QualName};
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
+use selectors::context::QuirksMode;
 
 use super::{Document, NodeId, NodeKind};
 
 fn is_html_namespace(namespace: &str) -> bool {
   namespace.is_empty() || namespace == HTML_NAMESPACE
+}
+
+fn map_quirks_mode_to_html(mode: QuirksMode) -> HtmlQuirksMode {
+  match mode {
+    QuirksMode::Quirks => HtmlQuirksMode::Quirks,
+    QuirksMode::LimitedQuirks => HtmlQuirksMode::LimitedQuirks,
+    QuirksMode::NoQuirks => HtmlQuirksMode::NoQuirks,
+  }
 }
 
 fn context_qual_name(doc: &Document, context: NodeId) -> Result<QualName, DomException> {
@@ -95,10 +105,16 @@ pub(super) fn parse_html_fragment(
 ) -> Result<Vec<NodeId>, DomException> {
   let context_name = context_qual_name(doc, context)?;
 
+  let document_quirks_mode = match &doc.nodes.get(doc.root().index()).map(|node| &node.kind) {
+    Some(NodeKind::Document { quirks_mode }) => *quirks_mode,
+    _ => QuirksMode::NoQuirks,
+  };
+  let scripting_enabled = doc.scripting_enabled;
+
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
-      // FastRender defaults to "scripting disabled" parsing semantics for static rendering.
-      scripting_enabled: false,
+      scripting_enabled,
+      quirks_mode: map_quirks_mode_to_html(document_quirks_mode),
       ..TreeBuilderOpts::default()
     },
     ..ParseOpts::default()
@@ -108,7 +124,7 @@ pub(super) fn parse_html_fragment(
   // (it only affects the tokenizer initial state when the context element is `<noscript>`).
   // Keep it in sync with the tree builder scripting flag so `innerHTML`/`outerHTML` parsing matches
   // `parse_html_with_options`.
-  let context_element_allows_scripting = opts.tree_builder.scripting_enabled;
+  let context_element_allows_scripting = scripting_enabled;
   let rcdom: RcDom =
     parse_fragment(
       RcDom::default(),

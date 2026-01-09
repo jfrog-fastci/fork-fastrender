@@ -4,6 +4,7 @@ use crate::error::RenderStage;
 use crate::error::Result;
 use html5ever::parse_fragment;
 use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::QuirksMode as HtmlQuirksMode;
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
 use markup5ever::LocalName;
@@ -21,6 +22,14 @@ use super::DomParseOptions;
 use super::QuirksMode;
 use super::HTML_NAMESPACE;
 
+fn map_quirks_mode_to_html(mode: QuirksMode) -> HtmlQuirksMode {
+  match mode {
+    QuirksMode::Quirks => HtmlQuirksMode::Quirks,
+    QuirksMode::LimitedQuirks => HtmlQuirksMode::LimitedQuirks,
+    QuirksMode::NoQuirks => HtmlQuirksMode::NoQuirks,
+  }
+}
+
 /// Parse an HTML fragment (per HTML fragment parsing) in a given element context.
 ///
 /// This is the canonical fragment parser for `Element.innerHTML` / `outerHTML` semantics. Unlike
@@ -36,6 +45,7 @@ pub fn parse_html_fragment(
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
       scripting_enabled: options.scripting_enabled,
+      quirks_mode: map_quirks_mode_to_html(document_quirks),
       ..Default::default()
     },
     ..Default::default()
@@ -484,5 +494,64 @@ mod tests {
       DomNodeType::Element { tag_name, .. } => assert_eq!(tag_name, "span"),
       other => panic!("expected element parsing in noscript context, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn parse_fragment_respects_document_quirks_mode() {
+    // html5ever's tree builder behavior for some tags depends on quirks mode. In particular,
+    // when a `<table>` start tag is seen in the "in body" insertion mode, a `<p>` element is only
+    // implicitly closed when the document is *not* in quirks mode.
+    //
+    // This affects `innerHTML` on quirks-mode documents.
+    let html = "<p>one<table><tr><td>x</td></tr></table>two";
+
+    let nodes_no_quirks = parse_html_fragment(
+      html,
+      "div",
+      HTML_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment no quirks");
+    assert_eq!(
+      nodes_no_quirks.len(),
+      3,
+      "expected <p>, <table>, and trailing text nodes in no-quirks mode"
+    );
+    assert!(matches!(
+      &nodes_no_quirks[0].node_type,
+      DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p")
+    ));
+    assert!(matches!(
+      &nodes_no_quirks[1].node_type,
+      DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("table")
+    ));
+    assert!(matches!(
+      &nodes_no_quirks[2].node_type,
+      DomNodeType::Text { content } if content == "two"
+    ));
+
+    let nodes_quirks = parse_html_fragment(
+      html,
+      "div",
+      HTML_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::Quirks,
+    )
+    .expect("parse fragment quirks");
+    assert_eq!(
+      nodes_quirks.len(),
+      1,
+      "expected a single <p> root node in quirks mode (table stays inside <p>)"
+    );
+    assert!(matches!(
+      &nodes_quirks[0].node_type,
+      DomNodeType::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("p")
+    ));
+    let tags = collect_preorder_tags_from_roots(&nodes_quirks);
+    assert!(
+      tags.iter().any(|t| t == "table"),
+      "expected quirks-mode <p> to contain a <table> descendant; got tags {tags:?}"
+    );
   }
 }
