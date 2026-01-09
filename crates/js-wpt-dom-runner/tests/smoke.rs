@@ -46,6 +46,22 @@ fn runs_any_js_in_window_realm() {
 }
 
 #[test]
+fn runs_eventtarget_window_js_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "events/eventtarget.window.js")
+    .expect("missing events/eventtarget.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   let corpus_root = corpus_root();
   let tests_root = tests_root();

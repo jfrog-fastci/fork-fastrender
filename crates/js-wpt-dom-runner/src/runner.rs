@@ -130,6 +130,11 @@ impl Runner {
       let globals = ctx.globals();
       install_window_shims(ctx.clone(), &globals, &test_url)?;
 
+      // Minimal DOM Events shims: `Event`, `addEventListener`, `dispatchEvent`, etc.
+      ctx
+        .eval::<(), _>(EVENT_TARGET_SHIM)
+        .map_err(|e| RunError::Js(e.to_string()))?;
+
       // Provide basic timer shims required by our vendored `testharness.js` subset.
       ctx
         .eval::<(), _>(TIMER_SHIM)
@@ -375,6 +380,269 @@ const TIMER_SHIM: &str = r#"
     }
     return due_ids.length;
   };
+})();
+"#;
+
+const EVENT_TARGET_SHIM: &str = r#"
+// Minimal DOM Events (`EventTarget` + `Event`) shims for the QuickJS-based DOM WPT runner.
+//
+// Why this exists:
+// - Many real-world scripts (and WPT harness code) unconditionally call
+//   `window.addEventListener(...)` / `document.addEventListener(...)`.
+// - FastRender's JS workstream only needs a spec-shaped subset for bootstrap scripts to run.
+//
+// Intentional limitations:
+// - No Shadow DOM composed paths / retargeting.
+// - No `stopPropagation`/`stopImmediatePropagation` yet.
+// - No `once`/`passive` semantics.
+// - Only bubbling over a simple parent chain: Window → Document → Node ancestors → target.
+(function () {
+  "use strict";
+
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+
+  function normalizeCapture(options) {
+    if (typeof options === "boolean") return options;
+    if (options && typeof options === "object" && "capture" in options) {
+      return !!options.capture;
+    }
+    return false;
+  }
+
+  // Basic `Event` constructor (spec-shaped subset).
+  function Event(type, init) {
+    if (!(this instanceof Event)) {
+      throw new TypeError("Event constructor must be called with 'new'");
+    }
+    this.type = String(type);
+
+    var bubbles = false;
+    var cancelable = false;
+    if (init && typeof init === "object") {
+      if ("bubbles" in init) bubbles = !!init.bubbles;
+      if ("cancelable" in init) cancelable = !!init.cancelable;
+    }
+
+    this.bubbles = bubbles;
+    this.cancelable = cancelable;
+    this.target = null;
+    this.currentTarget = null;
+    this.defaultPrevented = false;
+  }
+
+  Event.prototype.preventDefault = function () {
+    if (!this.cancelable) return;
+    this.defaultPrevented = true;
+  };
+
+  // Listener storage:
+  // target -> type -> [{ callback, capture }]
+  //
+  // Prefer WeakMap so listeners do not keep arbitrary targets alive in longer runs.
+  var TargetMap = typeof WeakMap === "function" ? WeakMap : Map;
+  var listenersByTarget = new TargetMap();
+
+  function getOrCreateByType(target) {
+    var byType = listenersByTarget.get(target);
+    if (!byType) {
+      byType = new Map();
+      listenersByTarget.set(target, byType);
+    }
+    return byType;
+  }
+
+  function getListeners(target, type) {
+    var byType = listenersByTarget.get(target);
+    if (!byType) return null;
+    return byType.get(type) || null;
+  }
+
+  function snapshotPhaseListeners(target, type, capture) {
+    var list = getListeners(target, type);
+    if (!list) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i];
+      if (!!entry.capture === !!capture) out.push(entry);
+    }
+    return out;
+  }
+
+  function invokeCallback(cb, event, currentTarget) {
+    if (typeof cb === "function") {
+      cb.call(currentTarget, event);
+      return;
+    }
+    // Callback objects (`{ handleEvent() {} }`).
+    if (cb && typeof cb === "object" && typeof cb.handleEvent === "function") {
+      cb.handleEvent.call(cb, event);
+    }
+  }
+
+  function getParentTarget(target) {
+    if (!target) return null;
+    if (target === g) return null;
+    if (typeof target !== "object" && typeof target !== "function") return null;
+
+    // Nodes/Elements use `parentNode`; Document uses `__eventTargetParent` to point to Window.
+    if ("parentNode" in target && target.parentNode) return target.parentNode;
+    if ("__eventTargetParent" in target && target.__eventTargetParent) {
+      return target.__eventTargetParent;
+    }
+    return null;
+  }
+
+  function invokeTargetListeners(target, event, capture) {
+    var type = String(event.type);
+    var snapshot = snapshotPhaseListeners(target, type, capture);
+    for (var i = 0; i < snapshot.length; i++) {
+      event.currentTarget = target;
+      invokeCallback(snapshot[i].callback, event, target);
+    }
+  }
+
+  function EventTarget() {}
+
+  EventTarget.prototype.addEventListener = function (type, callback, options) {
+    if (callback === null || callback === undefined) return;
+    type = String(type);
+    var capture = normalizeCapture(options);
+
+    var byType = getOrCreateByType(this);
+    var list = byType.get(type);
+    if (!list) {
+      list = [];
+      byType.set(type, list);
+    }
+
+    // No duplicates: same (type, callback, capture).
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i];
+      if (entry.callback === callback && !!entry.capture === !!capture) return;
+    }
+
+    list.push({ callback: callback, capture: capture });
+  };
+
+  EventTarget.prototype.removeEventListener = function (type, callback, options) {
+    if (callback === null || callback === undefined) return;
+    type = String(type);
+    var capture = normalizeCapture(options);
+
+    var list = getListeners(this, type);
+    if (!list) return;
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i];
+      if (entry.callback === callback && !!entry.capture === !!capture) {
+        list.splice(i, 1);
+        return;
+      }
+    }
+  };
+
+  EventTarget.prototype.dispatchEvent = function (event) {
+    if (!event || (typeof event !== "object" && typeof event !== "function")) {
+      throw new TypeError("dispatchEvent expects an Event object");
+    }
+    if (!("type" in event)) {
+      throw new TypeError("Event object missing 'type'");
+    }
+
+    // Build the event path (root -> ... -> target).
+    var path = [];
+    var current = this;
+    while (current) {
+      path.push(current);
+      current = getParentTarget(current);
+    }
+    path.reverse();
+
+    var targetIndex = path.length - 1;
+    event.target = this;
+
+    // Capturing phase: Window -> ... -> parent
+    for (var i = 0; i < targetIndex; i++) {
+      invokeTargetListeners(path[i], event, /* capture */ true);
+    }
+
+    // At-target: capture listeners then bubble listeners.
+    invokeTargetListeners(this, event, /* capture */ true);
+    invokeTargetListeners(this, event, /* capture */ false);
+
+    // Bubbling phase: parent -> ... -> Window (only if bubbles)
+    if (event.bubbles) {
+      for (var i = targetIndex - 1; i >= 0; i--) {
+        invokeTargetListeners(path[i], event, /* capture */ false);
+      }
+    }
+
+    event.currentTarget = null;
+    return !event.defaultPrevented;
+  };
+
+  function Document() {}
+  Document.prototype = Object.create(EventTarget.prototype);
+  Document.prototype.constructor = Document;
+  Document.prototype.createElement = function (tagName) {
+    var el = new Element(tagName);
+    el.ownerDocument = this;
+    return el;
+  };
+  Document.prototype.appendChild = function (child) {
+    if (child && (typeof child === "object" || typeof child === "function")) {
+      child.parentNode = this;
+    }
+    return child;
+  };
+
+  function Element(tagName) {
+    this.tagName = tagName ? String(tagName) : "";
+    this.parentNode = null;
+    this.ownerDocument = null;
+  }
+  Element.prototype = Object.create(EventTarget.prototype);
+  Element.prototype.constructor = Element;
+  Element.prototype.appendChild = function (child) {
+    if (child && (typeof child === "object" || typeof child === "function")) {
+      child.parentNode = this;
+    }
+    return child;
+  };
+
+  // Expose constructors (but don't overwrite if a host already provided them).
+  if (typeof g.Event !== "function") g.Event = Event;
+  if (typeof g.EventTarget !== "function") g.EventTarget = EventTarget;
+  if (typeof g.Document !== "function") g.Document = Document;
+  if (typeof g.Element !== "function") g.Element = Element;
+
+  // Patch the host-provided `document` object.
+  if (!g.document) {
+    g.document = new Document();
+  }
+  try {
+    Object.setPrototypeOf(g.document, Document.prototype);
+  } catch (_e) {
+    // Ignore; we'll still attach methods directly below.
+  }
+  if (typeof g.document.createElement !== "function") {
+    g.document.createElement = Document.prototype.createElement;
+  }
+  if (typeof g.document.appendChild !== "function") {
+    g.document.appendChild = Document.prototype.appendChild;
+  }
+  // DOM event path expects Window -> Document -> ...
+  g.document.__eventTargetParent = g;
+
+  // Treat the global object as `Window` for our `.window.js` realm.
+  if (typeof g.addEventListener !== "function") {
+    g.addEventListener = EventTarget.prototype.addEventListener;
+  }
+  if (typeof g.removeEventListener !== "function") {
+    g.removeEventListener = EventTarget.prototype.removeEventListener;
+  }
+  if (typeof g.dispatchEvent !== "function") {
+    g.dispatchEvent = EventTarget.prototype.dispatchEvent;
+  }
 })();
 "#;
 
