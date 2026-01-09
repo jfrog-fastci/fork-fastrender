@@ -365,7 +365,7 @@ fn eval_default_string_literal(
     StringType::ByteString => {
       if value.chars().any(|c| c as u32 > 0xFF) {
         return Err(WebIdlException::type_error(
-          "ByteString default contains code point > 0xFF",
+          "ByteString value must only contain code units in range 0..=255",
         ));
       }
       Ok(WebIdlValue::String(value.to_string()))

@@ -19,6 +19,9 @@ use webidl_ir::{
   NumericType, PlatformObject, StringType, TypeAnnotation, TypeContext, WebIdlException, WebIdlValue,
 };
 
+const BYTESTRING_INVALID_CODE_UNITS: &str =
+  "ByteString value must only contain code units in range 0..=255";
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConvertedValue<V> {
   Undefined,
@@ -384,7 +387,7 @@ fn convert_to_string<R: WebIdlJsRuntime>(
     }
     StringType::ByteString => {
       if s.chars().any(|c| (c as u32) > 0xFF) {
-        return Err(rt.throw_type_error("ByteString contains code point > 0xFF"));
+        return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
       }
       Ok(ConvertedValue::String(s))
     }
