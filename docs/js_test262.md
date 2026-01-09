@@ -86,3 +86,31 @@ regressions:
 
 If a test was previously marked `xfail` but now matches the expected outcome (an “xpass”), consider
 removing or narrowing the corresponding manifest entry so future regressions aren’t hidden.
+
+## Updating `tests/js/test262_manifest.toml`
+
+When the JS engine behavior changes, update the expectations manifest so the default
+`--fail-on new` mode continues to:
+
+- fail on **regressions** (previously-green tests that now mismatch), and
+- avoid failing on **known gaps** (still-incomplete semantics).
+
+Recommended workflow:
+
+1. Generate a fresh JSON report without failing the command:
+
+   ```bash
+   bash scripts/cargo_agent.sh xtask js test262 --fail-on none
+   ```
+
+2. Inspect `target/js/test262.json` and update `tests/js/test262_manifest.toml`:
+   - Prefer **exact `id`** entries when promoting newly-green tests to `pass` (keeps regressions
+     unexpected).
+   - Prefer `glob` over `regex` when you must classify a broad set of known failures.
+   - Always include a short `reason` (and add `tracking_issue` when you have a link).
+
+3. Re-run the suite with the default behavior to confirm there are no unexpected mismatches:
+
+   ```bash
+   bash scripts/cargo_agent.sh xtask js test262
+   ```
