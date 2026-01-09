@@ -13440,6 +13440,54 @@ mod tests {
   }
 
   #[test]
+  fn clip_path_url_establishes_backdrop_root_even_when_unresolved() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let child_bounds = Rect::from_xywh(1.0, 1.0, 2.0, 2.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.clip_path = ClipPath::Url("#missing".into(), None);
+    let child_style = Arc::new(child_style);
+
+    let child = FragmentNode::new_block_styled(child_bounds, vec![], child_style);
+    let root =
+      FragmentNode::new_block_styled(bounds, vec![child], Arc::new(ComputedStyle::default()));
+
+    // Without an image cache (and without an in-document SVG id definition), the clip-path cannot
+    // be resolved for painting. Even so, the element still establishes a Backdrop Root boundary
+    // because the trigger is based on property presence (filter-effects-2), not resolved clips.
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&root);
+
+    let child_context = list.items().iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(ctx) if ctx.bounds == child_bounds => Some(ctx),
+      _ => None,
+    });
+    let child_context = child_context.expect("expected a stacking context for clip-path:url()");
+
+    assert!(
+      child_context.has_clip_path,
+      "clip-path:url() should set StackingContextItem.has_clip_path even when the URL cannot be resolved"
+    );
+    assert!(
+      child_context.establishes_backdrop_root,
+      "clip-path:url() should establish a backdrop root even when the URL cannot be resolved"
+    );
+    assert!(
+      child_context.mask.is_none(),
+      "unresolved clip-path:url(#missing) should not resolve to any paint-time mask"
+    );
+
+    assert!(
+      !list.items().iter().any(|item| matches!(
+        item,
+        DisplayItem::PushClip(ClipItem {
+          shape: ClipShape::Path { .. }
+        })
+      )),
+      "expected url clip-path to omit PushClip(Path) emission"
+    );
+  }
+
+  #[test]
   fn paint_build_skips_clip_radii_when_border_radius_is_zero() {
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
       ("FASTR_PAINT_BUILD_BREAKDOWN".to_string(), "1".to_string()),

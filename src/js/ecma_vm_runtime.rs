@@ -1182,7 +1182,7 @@ mod tests {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     _host: &mut dyn VmHost,
-    host: &mut dyn VmHostHooks,
+    hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     args: &[Value],
@@ -1192,7 +1192,7 @@ mod tests {
     });
 
     let resolve = args.get(0).copied().unwrap_or(Value::Undefined);
-    vm.call_with_host(scope, host, resolve, Value::Undefined, &[])?;
+    vm.call_with_host(scope, hooks, resolve, Value::Undefined, &[])?;
     Ok(Value::Undefined)
   }
 
@@ -1384,7 +1384,7 @@ mod tests {
       vm: &mut Vm,
       scope: &mut Scope<'_>,
       _host: &mut dyn VmHost,
-      host: &mut dyn VmHostHooks,
+      hooks: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       _args: &[Value],
@@ -1412,7 +1412,7 @@ mod tests {
         scope.push_root(Value::String(key_s))?;
         let func =
           scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
-        vm.call_with_host(scope, host, func, global_value, &[Value::Number(id as f64)])?;
+        vm.call_with_host(scope, hooks, func, global_value, &[Value::Number(id as f64)])?;
       }
 
       Ok(Value::Undefined)

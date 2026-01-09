@@ -234,6 +234,8 @@ pub(crate) fn resolve_clip_path(
 ) -> Result<Option<ResolvedClipPath>, RenderError> {
   match &style.clip_path {
     ClipPath::None => Ok(None),
+    // `clip-path: url(#id)` is applied via a rasterized SVG clipPath mask in the display-list
+    // backend. Path-based clipping here only supports basic shapes and reference boxes.
     ClipPath::Url(_, _) => Ok(None),
     ClipPath::Box(reference) => {
       let boxes = reference_boxes(style, bounds, viewport, font_ctx);

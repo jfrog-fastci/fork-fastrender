@@ -1382,6 +1382,7 @@ fn resolve_clip_path(
 ) -> Option<ResolvedClipPath> {
   match path {
     ClipPath::None => Some(ResolvedClipPath::None),
+    // SVG clip paths are not interpolable; treat as discrete.
     ClipPath::Url(_, _) => None,
     ClipPath::Box(b) => Some(ResolvedClipPath::Box(*b)),
     ClipPath::BasicShape(shape, reference_override) => {

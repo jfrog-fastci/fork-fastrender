@@ -1506,3 +1506,37 @@ fn degenerate_clip_path_triggers_backdrop_root_even_when_resolved_none() {
   assert_eq!(pixel(&pixmap, 11, 25), (0, 255, 0, 255));
   assert_eq!(pixel(&pixmap, 15, 15), (255, 0, 0, 255));
 }
+
+#[test]
+fn clip_path_url_triggers_backdrop_root_even_when_unresolved() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        /* The clip-path cannot be resolved, but per filter-effects-2 the property presence still
+           establishes a Backdrop Root boundary. */
+        clip-path: url(#missing);
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // The unresolved clip-path does not affect output, but it must still stop backdrop-filter
+  // sampling at `#parent`.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
