@@ -33,6 +33,7 @@ const TIMER_RECORD_ARG_PREFIX: &str = "__arg";
 
 const DEFAULT_CALLBACK_FUEL: u64 = 1_000_000;
 const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
+#[cfg(test)]
 const SYMBOL_TO_NUMBER_ERROR: &str = "Cannot convert a Symbol value to a number";
 
 fn callback_budget_from_render_deadline() -> Budget {
@@ -77,41 +78,11 @@ fn throw_error(scope: &mut Scope<'_>, message: &str) -> VmError {
   }
 }
 
-fn value_to_number(heap: &Heap, value: Value) -> Result<f64, VmError> {
-  Ok(match value {
-    Value::Undefined => f64::NAN,
-    Value::Null => 0.0,
-    Value::Bool(b) => {
-      if b {
-        1.0
-      } else {
-        0.0
-      }
-    }
-    Value::Number(n) => n,
-    Value::String(s) => match heap.get_string(s) {
-      Ok(js) => {
-        let text = js.to_utf8_lossy();
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-          0.0
-        } else if trimmed == "Infinity" || trimmed == "+Infinity" {
-          f64::INFINITY
-        } else if trimmed == "-Infinity" {
-          f64::NEG_INFINITY
-        } else {
-          trimmed.parse::<f64>().unwrap_or(f64::NAN)
-        }
-      }
-      Err(_) => f64::NAN,
-    },
-    // Full `ToNumber` for objects requires ToPrimitive (not implemented yet).
-    Value::Object(_) => f64::NAN,
-    Value::Symbol(_) => return Err(throw_type_error(SYMBOL_TO_NUMBER_ERROR)),
-  })
+fn value_to_number(heap: &mut Heap, value: Value) -> Result<f64, VmError> {
+  heap.to_number(value)
 }
 
-fn normalize_delay_ms(heap: &Heap, value: Value) -> Result<u64, VmError> {
+fn normalize_delay_ms(heap: &mut Heap, value: Value) -> Result<u64, VmError> {
   let mut n = value_to_number(heap, value)?;
   if !n.is_finite() || n.is_nan() {
     n = 0.0;
@@ -128,7 +99,7 @@ fn normalize_delay_ms(heap: &Heap, value: Value) -> Result<u64, VmError> {
   }
 }
 
-fn normalize_timer_id(heap: &Heap, value: Value) -> Result<TimerId, VmError> {
+fn normalize_timer_id(heap: &mut Heap, value: Value) -> Result<TimerId, VmError> {
   let mut n = value_to_number(heap, value)?;
   if !n.is_finite() || n.is_nan() {
     n = 0.0;
@@ -231,7 +202,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let delay_ms = normalize_delay_ms(scope.heap(), delay_value)?;
+  let delay_ms = normalize_delay_ms(scope.heap_mut(), delay_value)?;
   let delay = Duration::from_millis(delay_ms);
   let extra_args: Vec<Value> = if args.len() > 2 {
     args[2..].to_vec()
@@ -312,7 +283,7 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let id = normalize_timer_id(scope.heap(), id_value)?;
+  let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("clearTimeout called with invalid this value"));
@@ -347,7 +318,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   }
 
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
-  let interval_ms = normalize_delay_ms(scope.heap(), delay_value)?;
+  let interval_ms = normalize_delay_ms(scope.heap_mut(), delay_value)?;
   let interval = Duration::from_millis(interval_ms);
   let extra_args: Vec<Value> = if args.len() > 2 {
     args[2..].to_vec()
@@ -426,7 +397,7 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
   args: &[Value],
 ) -> Result<Value, VmError> {
   let id_value = args.get(0).copied().unwrap_or(Value::Number(0.0));
-  let id = normalize_timer_id(scope.heap(), id_value)?;
+  let id = normalize_timer_id(scope.heap_mut(), id_value)?;
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("clearInterval called with invalid this value"));
@@ -927,6 +898,27 @@ mod tests {
       panic!("expected clearTimeout to throw a TypeError for Symbol handle");
     };
     assert_eq!(msg, SYMBOL_TO_NUMBER_ERROR);
+    Ok(())
+  }
+
+  #[test]
+  fn normalize_delay_ms_parses_ecmascript_string_numeric_literals() -> Result<(), VmError> {
+    let mut host = Host::new();
+    let (_vm, _realm, heap) = host.window.vm_realm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    for (input, expected) in [
+      ("0x10", 16u64),
+      ("0b101", 5),
+      ("0o10", 8),
+      ("\u{FEFF}1\u{FEFF}", 1),
+    ] {
+      let s = scope.alloc_string(input)?;
+      scope.push_root(Value::String(s))?;
+      let ms = normalize_delay_ms(scope.heap_mut(), Value::String(s))?;
+      assert_eq!(ms, expected, "input={input:?}");
+    }
+
     Ok(())
   }
 
