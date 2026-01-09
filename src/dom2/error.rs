@@ -12,6 +12,8 @@ pub enum DomError {
   NotFoundError,
   #[error("InvalidNodeType")]
   InvalidNodeType,
+  #[error("SyntaxError")]
+  SyntaxError,
 }
 
 impl DomError {
@@ -20,9 +22,9 @@ impl DomError {
       Self::HierarchyRequestError => "HierarchyRequestError",
       Self::NotFoundError => "NotFoundError",
       Self::InvalidNodeType => "InvalidNodeType",
+      Self::SyntaxError => "SyntaxError",
     }
   }
 }
 
 pub type Result<T> = std::result::Result<T, DomError>;
-

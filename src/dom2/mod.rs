@@ -5,9 +5,17 @@ use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
 
+mod attrs;
+mod class_list;
+mod error;
 pub mod import;
 pub mod events;
 mod traversal;
+
+pub use error::DomError;
+
+#[cfg(test)]
+mod class_list_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
