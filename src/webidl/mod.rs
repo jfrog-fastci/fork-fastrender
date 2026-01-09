@@ -345,4 +345,16 @@ mod tests {
       .typedef_("TimerHandler")
       .expect("generated world should include TimerHandler typedef");
   }
+
+  #[test]
+  fn generated_world_includes_prelude_typedefs() {
+    assert!(
+      WORLD.typedef_("DOMHighResTimeStamp").is_some(),
+      "expected generated world to include DOMHighResTimeStamp typedef from WebIDL prelude"
+    );
+    assert!(
+      WORLD.typedef_("DOMTimeStamp").is_some(),
+      "expected generated world to include DOMTimeStamp typedef from WebIDL prelude"
+    );
+  }
 }
