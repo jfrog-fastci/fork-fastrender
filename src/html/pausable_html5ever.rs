@@ -103,6 +103,21 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
       .sink
   }
 
+  /// Mutably borrow the underlying tree sink.
+  ///
+  /// # Panics
+  /// Panics if called after the parser has finished (after `pump` returned
+  /// [`Html5everPump::Finished`]).
+  pub fn sink_mut(&mut self) -> &mut Sink {
+    &mut self
+      .parser
+      .as_mut()
+      .expect("sink_mut called after parser finished")
+      .tokenizer
+      .sink
+      .sink
+  }
+
   /// Run the tokenizer/tree-builder until it either needs a script, needs more
   /// input, or finishes.
   pub fn pump(&mut self) -> Html5everPump<Sink::Handle, Sink::Output> {
@@ -195,12 +210,13 @@ mod tests {
       _ => panic!("expected first pump to yield Script"),
     };
 
-    parser.with_sink(|sink| {
+    {
+      let sink = parser.sink();
       assert!(
         contains_handle(&sink.document, &h1),
         "expected yielded script handle to be present in the in-progress DOM"
       );
-    });
+    }
 
     let h2 = match parser.pump() {
       Html5everPump::Script(h) => h,
@@ -260,5 +276,51 @@ mod tests {
     };
 
     parser.with_sink(|_| {});
+  }
+
+  #[test]
+  #[should_panic(expected = "sink called after parser finished")]
+  fn sink_panics_after_finished() {
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+
+    let mut parser = PausableHtml5everParser::new_document(RcDom::default(), opts);
+    parser.push_str("<!doctype html><p>x</p>");
+    parser.set_eof();
+
+    match parser.pump() {
+      Html5everPump::Finished(_) => {}
+      _ => panic!("expected parser to finish without yielding Script"),
+    };
+
+    let _ = parser.sink();
+  }
+
+  #[test]
+  #[should_panic(expected = "sink_mut called after parser finished")]
+  fn sink_mut_panics_after_finished() {
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+
+    let mut parser = PausableHtml5everParser::new_document(RcDom::default(), opts);
+    parser.push_str("<!doctype html><p>x</p>");
+    parser.set_eof();
+
+    match parser.pump() {
+      Html5everPump::Finished(_) => {}
+      _ => panic!("expected parser to finish without yielding Script"),
+    };
+
+    let _ = parser.sink_mut();
   }
 }
