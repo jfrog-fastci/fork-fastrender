@@ -16,6 +16,7 @@ use crate::text::font_db::{FontStretch, FontStyle, LoadedFont, ScaledMetrics};
 use crate::text::font_loader::{FontContext, MathConstants, MathKernSide};
 use crate::text::pipeline::{Direction as TextDirection, ShapedRun, ShapingPipeline};
 use rustybuzz::ttf_parser;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 const SCRIPT_SCALE: f32 = 0.71;
@@ -50,30 +51,220 @@ pub enum MathVariant {
 }
 
 impl MathVariant {
-  fn is_italic(self) -> bool {
+  fn uses_unicode_math_alphanumerics(self) -> bool {
     matches!(
       self,
-      MathVariant::Italic
-        | MathVariant::BoldItalic
+      MathVariant::DoubleStruck
         | MathVariant::Script
         | MathVariant::BoldScript
         | MathVariant::Fraktur
         | MathVariant::BoldFraktur
+        | MathVariant::SansSerif
+        | MathVariant::SansSerifBold
         | MathVariant::SansSerifItalic
         | MathVariant::SansSerifBoldItalic
+        | MathVariant::Monospace
     )
   }
 
+  fn is_italic(self) -> bool {
+    // Variants such as script/fraktur/sans-serif-italic are implemented via code point remapping to
+    // Unicode Mathematical Alphanumeric Symbols; applying CSS italics would synthesize a slant on
+    // top of already-styled glyphs (or trigger font fallback). Only apply CSS italics for the
+    // weight/slant-only variants.
+    matches!(self, MathVariant::Italic | MathVariant::BoldItalic)
+  }
+
   fn is_bold(self) -> bool {
-    matches!(
-      self,
-      MathVariant::Bold
-        | MathVariant::BoldItalic
-        | MathVariant::BoldScript
-        | MathVariant::BoldFraktur
-        | MathVariant::SansSerifBold
-        | MathVariant::SansSerifBoldItalic
-    )
+    // Similar to italics above: bold script/fraktur/etc are represented by dedicated code points
+    // and should not request synthetic weight.
+    matches!(self, MathVariant::Bold | MathVariant::BoldItalic)
+  }
+}
+
+// Unicode Mathematical Alphanumeric Symbols mapping tables.
+//
+// Some MathML variants map to a contiguous range of code points, while others have gaps where
+// legacy Letterlike Symbols were encoded prior to the Mathematical Alphanumeric Symbols block.
+// For those variants (script/fraktur), we keep explicit tables matching MathML Core practice.
+const SCRIPT_UPPER_MAP: [char; 26] = [
+  '\u{1D49C}', // A
+  '\u{212C}',  // B (ℬ)
+  '\u{1D49E}', // C
+  '\u{1D49F}', // D
+  '\u{2130}',  // E (ℰ)
+  '\u{2131}',  // F (ℱ)
+  '\u{1D4A2}', // G
+  '\u{210B}',  // H (ℋ)
+  '\u{2110}',  // I (ℐ)
+  '\u{1D4A5}', // J
+  '\u{1D4A6}', // K
+  '\u{2112}',  // L (ℒ)
+  '\u{2133}',  // M (ℳ)
+  '\u{1D4A9}', // N
+  '\u{1D4AA}', // O
+  '\u{1D4AB}', // P
+  '\u{1D4AC}', // Q
+  '\u{211B}',  // R (ℛ)
+  '\u{1D4AE}', // S
+  '\u{1D4AF}', // T
+  '\u{1D4B0}', // U
+  '\u{1D4B1}', // V
+  '\u{1D4B2}', // W
+  '\u{1D4B3}', // X
+  '\u{1D4B4}', // Y
+  '\u{1D4B5}', // Z
+];
+
+const SCRIPT_LOWER_MAP: [char; 26] = [
+  '\u{1D4B6}', // a
+  '\u{1D4B7}', // b
+  '\u{1D4B8}', // c
+  '\u{1D4B9}', // d
+  '\u{212F}',  // e (ℯ)
+  '\u{1D4BB}', // f
+  '\u{210A}',  // g (ℊ)
+  '\u{1D4BD}', // h
+  '\u{1D4BE}', // i
+  '\u{1D4BF}', // j
+  '\u{1D4C0}', // k
+  '\u{1D4C1}', // l
+  '\u{1D4C2}', // m
+  '\u{1D4C3}', // n
+  '\u{2134}',  // o (ℴ)
+  '\u{1D4C5}', // p
+  '\u{1D4C6}', // q
+  '\u{1D4C7}', // r
+  '\u{1D4C8}', // s
+  '\u{1D4C9}', // t
+  '\u{1D4CA}', // u
+  '\u{1D4CB}', // v
+  '\u{1D4CC}', // w
+  '\u{1D4CD}', // x
+  '\u{1D4CE}', // y
+  '\u{1D4CF}', // z
+];
+
+const FRAKTUR_UPPER_MAP: [char; 26] = [
+  '\u{1D504}', // A
+  '\u{1D505}', // B
+  '\u{212D}',  // C (ℭ)
+  '\u{1D507}', // D
+  '\u{1D508}', // E
+  '\u{1D509}', // F
+  '\u{1D50A}', // G
+  '\u{210C}',  // H (ℌ)
+  '\u{2111}',  // I (ℑ)
+  '\u{1D50D}', // J
+  '\u{1D50E}', // K
+  '\u{1D50F}', // L
+  '\u{1D510}', // M
+  '\u{1D511}', // N
+  '\u{1D512}', // O
+  '\u{1D513}', // P
+  '\u{1D514}', // Q
+  '\u{211C}',  // R (ℜ)
+  '\u{1D516}', // S
+  '\u{1D517}', // T
+  '\u{1D518}', // U
+  '\u{1D519}', // V
+  '\u{1D51A}', // W
+  '\u{1D51B}', // X
+  '\u{1D51C}', // Y
+  '\u{2128}',  // Z (ℨ)
+];
+
+fn map_math_alphanumeric_char(ch: char, variant: MathVariant) -> Option<char> {
+  fn map_contiguous_letter(ch: char, start: u32, base: u32) -> char {
+    let offset = (ch as u32).saturating_sub(start);
+    // Safe: all targets are valid Unicode scalar values; assignment is handled by caller.
+    char::from_u32(base + offset).unwrap_or(ch)
+  }
+
+  match variant {
+    MathVariant::DoubleStruck => match ch {
+      'C' => Some('\u{2102}'), // ℂ
+      'H' => Some('\u{210D}'), // ℍ
+      'N' => Some('\u{2115}'), // ℕ
+      'P' => Some('\u{2119}'), // ℙ
+      'Q' => Some('\u{211A}'), // ℚ
+      'R' => Some('\u{211D}'), // ℝ
+      'Z' => Some('\u{2124}'), // ℤ
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D538)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D552)),
+      '0'..='9' => Some(map_contiguous_letter(ch, '0' as u32, 0x1D7D8)),
+      _ => None,
+    },
+    MathVariant::Script => match ch {
+      'A'..='Z' => Some(SCRIPT_UPPER_MAP[(ch as u8 - b'A') as usize]),
+      'a'..='z' => Some(SCRIPT_LOWER_MAP[(ch as u8 - b'a') as usize]),
+      _ => None,
+    },
+    MathVariant::BoldScript => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D4D0)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D4EA)),
+      _ => None,
+    },
+    MathVariant::Fraktur => match ch {
+      'A'..='Z' => Some(FRAKTUR_UPPER_MAP[(ch as u8 - b'A') as usize]),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D51E)),
+      _ => None,
+    },
+    MathVariant::BoldFraktur => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D56C)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D586)),
+      _ => None,
+    },
+    MathVariant::SansSerif => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D5A0)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D5BA)),
+      '0'..='9' => Some(map_contiguous_letter(ch, '0' as u32, 0x1D7E2)),
+      _ => None,
+    },
+    MathVariant::SansSerifBold => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D5D4)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D5EE)),
+      '0'..='9' => Some(map_contiguous_letter(ch, '0' as u32, 0x1D7EC)),
+      _ => None,
+    },
+    MathVariant::SansSerifItalic => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D608)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D622)),
+      _ => None,
+    },
+    MathVariant::SansSerifBoldItalic => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D63C)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D656)),
+      _ => None,
+    },
+    MathVariant::Monospace => match ch {
+      'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D670)),
+      'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D68A)),
+      '0'..='9' => Some(map_contiguous_letter(ch, '0' as u32, 0x1D7F6)),
+      _ => None,
+    },
+    _ => None,
+  }
+}
+
+fn map_math_alphanumerics(text: &str, variant: MathVariant) -> Cow<'_, str> {
+  if !variant.uses_unicode_math_alphanumerics() || text.is_empty() {
+    return Cow::Borrowed(text);
+  }
+  let mut out = String::with_capacity(text.len());
+  let mut changed = false;
+  for ch in text.chars() {
+    if let Some(mapped) = map_math_alphanumeric_char(ch, variant) {
+      changed |= mapped != ch;
+      out.push(mapped);
+    } else {
+      out.push(ch);
+    }
+  }
+  if changed {
+    Cow::Owned(out)
+  } else {
+    Cow::Borrowed(text)
   }
 }
 
@@ -2015,6 +2206,8 @@ impl MathLayoutContext {
     math_style: &MathStyle,
     variant: MathVariant,
   ) -> (Vec<ShapedRun>, ScaledMetrics) {
+    let mapped_text = map_math_alphanumerics(text, variant);
+    let text = mapped_text.as_ref();
     let mut style = base_style.clone();
     style.font_size = math_style.font_size;
     style.font_family = self
@@ -3792,6 +3985,16 @@ mod tests {
       .expect("expected at least one glyph fragment")
   }
 
+  fn concat_glyph_text(layout: &MathLayout) -> String {
+    let mut out = String::new();
+    for frag in &layout.fragments {
+      if let MathFragment::Glyph { run, .. } = frag {
+        out.push_str(&run.text);
+      }
+    }
+    out
+  }
+
   #[test]
   fn mspace_zero_height_produces_zero_height_layout() {
     let style = ComputedStyle::default();
@@ -3926,6 +4129,77 @@ mod tests {
     assert!(
       base_run.features.iter().all(|f| f.tag.to_bytes() != *b"ssty"),
       "base run should not set ssty"
+    );
+  }
+
+  #[test]
+  fn mathvariant_double_struck_maps_to_unicode_math_alphanumerics() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><mi mathvariant=\"double-struck\">AB</mi></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let shaped_text = concat_glyph_text(&layout);
+    assert!(
+      shaped_text.contains('\u{1D538}') && shaped_text.contains('\u{1D539}'),
+      "expected double-struck A/B (U+1D538/U+1D539) in shaped text, got {shaped_text:?}"
+    );
+  }
+
+  #[test]
+  fn mathvariant_script_maps_to_unicode_math_alphanumerics() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><mi mathvariant=\"script\">Az</mi></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let shaped_text = concat_glyph_text(&layout);
+    assert!(
+      shaped_text.contains('\u{1D49C}') && shaped_text.contains('\u{1D4CF}'),
+      "expected script A/z (U+1D49C/U+1D4CF) in shaped text, got {shaped_text:?}"
+    );
+  }
+
+  #[test]
+  fn mathvariant_fraktur_maps_to_unicode_math_alphanumerics() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><mi mathvariant=\"fraktur\">Az</mi></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let shaped_text = concat_glyph_text(&layout);
+    assert!(
+      shaped_text.contains('\u{1D504}') && shaped_text.contains('\u{1D537}'),
+      "expected fraktur A/z (U+1D504/U+1D537) in shaped text, got {shaped_text:?}"
+    );
+  }
+
+  #[test]
+  fn mathvariant_mapping_shapes_to_nonempty_runs() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html(
+      "<math><mrow><mi mathvariant=\"double-struck\">A</mi><mi mathvariant=\"monospace\">B</mi></mrow></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+    assert!(layout.width > 0.0);
+    assert!(layout.height > 0.0);
+    let total_glyphs: usize = layout
+      .fragments
+      .iter()
+      .filter_map(|frag| match frag {
+        MathFragment::Glyph { run, .. } => Some(run.glyphs.len()),
+        _ => None,
+      })
+      .sum();
+    assert!(
+      total_glyphs > 0,
+      "expected shaped glyphs (non-empty runs) for mapped variants"
     );
   }
 

@@ -369,6 +369,19 @@ fn math_scriptlevel_matches_golden() {
 }
 
 #[test]
+fn math_mathvariant_alphanumerics_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_mathvariant_alphanumerics"))
+      .expect("load math_mathvariant_alphanumerics");
+    let png = renderer
+      .render_to_png(&html, 560, 240)
+      .expect("render math mathvariant alphanumerics");
+    compare_golden("math_mathvariant_alphanumerics", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_displaystyle_limits_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
