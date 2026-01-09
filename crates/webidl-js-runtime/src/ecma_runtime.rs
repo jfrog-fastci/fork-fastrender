@@ -1064,12 +1064,10 @@ impl JsRuntime for VmJsRuntime {
             JsBigInt::zero()
           }
         }
+        Value::Number(n) => number_to_bigint(rt, n)?,
         Value::String(s) => string_to_bigint(rt, s)?,
         Value::Undefined | Value::Null => {
           return Err(rt.throw_type_error("Cannot convert null or undefined to a BigInt"));
-        }
-        Value::Number(_) => {
-          return Err(rt.throw_type_error("Cannot convert a Number value to a BigInt"));
         }
         Value::Symbol(_) => {
           return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
@@ -1085,8 +1083,8 @@ impl JsRuntime for VmJsRuntime {
             } else {
               JsBigInt::zero()
             }
-          } else if rt.number_object_data(obj)?.is_some() {
-            return Err(rt.throw_type_error("Cannot convert a Number value to a BigInt"));
+          } else if let Some(number_data) = rt.number_object_data(obj)? {
+            number_to_bigint(rt, number_data)?
           } else if rt.symbol_object_data(obj)?.is_some() {
             return Err(rt.throw_type_error("Cannot convert a Symbol value to a BigInt"));
           } else {
@@ -1386,6 +1384,28 @@ impl WebIdlJsRuntime for VmJsRuntime {
   fn throw_range_error(&mut self, message: &str) -> VmError {
     VmError::Throw(self.create_error_object("RangeError", message))
   }
+}
+
+fn number_to_bigint(rt: &mut VmJsRuntime, n: f64) -> Result<JsBigInt, VmError> {
+  if !n.is_finite() {
+    return Err(rt.throw_range_error("Cannot convert a non-finite number to a BigInt"));
+  }
+  if n.fract() != 0.0 {
+    return Err(rt.throw_range_error("Cannot convert a non-integer number to a BigInt"));
+  }
+
+  let negative = n.is_sign_negative();
+  let abs = n.abs();
+  if abs > (u128::MAX as f64) {
+    return Err(rt.throw_range_error("BigInt conversion overflow"));
+  }
+
+  let mag = abs as u128;
+  let mut out = JsBigInt::from_u128(mag);
+  if negative {
+    out = out.negate();
+  }
+  Ok(out)
 }
 
 fn string_to_bigint(rt: &mut VmJsRuntime, s: GcString) -> Result<JsBigInt, VmError> {
