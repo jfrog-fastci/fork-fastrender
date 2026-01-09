@@ -277,6 +277,40 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
     support::format_messages(&captured)
   );
 
+  // Back navigation should restore the pre-fragment viewport position and URL without reloading.
+  let _ = support::drain_for(&worker.rx, Duration::from_millis(50));
+  worker
+    .tx
+    .send(UiToWorker::GoBack { tab_id })
+    .expect("go back");
+  let msg = next_navigation_committed(&worker.rx, tab_id);
+  let (back_url, can_go_back, can_go_forward) = match msg {
+    WorkerToUi::NavigationCommitted {
+      url,
+      can_go_back,
+      can_go_forward,
+      ..
+    } => (url, can_go_back, can_go_forward),
+    WorkerToUi::NavigationFailed { url, error, .. } => panic!("back navigation failed for {url}: {error}"),
+    other => panic!("unexpected WorkerToUi message after back: {other:?}"),
+  };
+  assert_eq!(back_url, url, "expected back navigation URL to match initial page");
+  assert!(
+    !can_go_back && can_go_forward,
+    "expected can_go_back=false and can_go_forward=true after back, got back={can_go_back} forward={can_go_forward}"
+  );
+  let back_frame = next_frame_ready(&worker.rx, tab_id);
+  assert!(
+    back_frame.scroll_state.viewport.y.abs() < 1.0,
+    "expected viewport scroll to return to top after back, got {:?}",
+    back_frame.scroll_state.viewport
+  );
+  assert_eq!(
+    support::rgba_at(&back_frame.pixmap, 10, 10),
+    [255, 0, 0, 255],
+    "expected top pixel to show the link background after back navigation"
+  );
+
   drop(worker.tx);
   worker.join.join().expect("worker join");
 }

@@ -539,12 +539,15 @@ impl BrowserRuntime {
           if let Some(target_url) = same_document_fragment_target(current, &url) {
             let url_string = target_url.to_string();
 
-            // Persist current scroll position for the previous history entry before pushing a new
-            // entry for the fragment navigation.
-            tab
-              .history
-              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
             if push_history {
+              // Persist current scroll position for the previous history entry before pushing a
+              // new entry for the fragment navigation.
+              //
+              // Note: for back/forward navigations, the history index has already been moved by
+              // the caller, so updating scroll here would corrupt the target entry.
+              tab
+                .history
+                .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
               tab.history.push(url_string.clone());
             }
 
