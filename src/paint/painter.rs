@@ -15932,10 +15932,20 @@ mod tests {
         "data:image/png;base64,abc",
         0,
         Rect::from_xywh(foreign.x, foreign.y, foreign.width, foreign.height),
-      )
+    )
       .expect("foreignObject image tag");
     assert!(output.contains("<g clip-path=\"url(#foo)\">"));
-    assert!(output.contains("<image clip-path=\"url(#fastr-fo-0)\""));
+    let clip_prefix = "<clipPath id=\"";
+    let clip_start = output
+      .find(clip_prefix)
+      .expect("clipPath start")
+      + clip_prefix.len();
+    let clip_end = clip_start + output[clip_start..].find('"').expect("clipPath id end");
+    let clip_id = &output[clip_start..clip_end];
+    assert!(
+      output.contains(&format!("<image clip-path=\"url(#{clip_id})\"")),
+      "expected injected <image> to reference generated clipPath id {clip_id:?}, got {output:?}"
+    );
     assert_eq!(output.match_indices("url(#foo)").count(), 1);
     assert_eq!(output.match_indices("clip-path=").count(), 2);
     let image_tag = output
