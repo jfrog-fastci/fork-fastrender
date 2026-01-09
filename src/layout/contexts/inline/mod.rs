@@ -4626,8 +4626,23 @@ impl InlineFormattingContext {
         // using the CSS replaced-element default of "bottom edge".
         let half_leading = (line_height - (font_ascent + font_descent)) / 2.0;
         let text_baseline_from_content_top = font_ascent + half_leading;
+        let centers_text_vertically = matches!(
+          &control.control,
+          FormControlKind::Text { .. }
+            | FormControlKind::Button { .. }
+            | FormControlKind::Unknown { label: Some(_) }
+        );
+        let vertical_offset = if centers_text_vertically
+          && size.height.is_finite()
+          && line_height.is_finite()
+        {
+          ((size.height - line_height) / 2.0).max(0.0)
+        } else {
+          0.0
+        };
+
         let baseline_offset_from_box_top =
-          (border_top + padding_top + text_baseline_from_content_top).max(0.0);
+          (border_top + padding_top + vertical_offset + text_baseline_from_content_top).max(0.0);
         let baseline_offset_from_box_top = baseline_offset_from_box_top.min(box_height);
         let descent = (box_height - baseline_offset_from_box_top).max(0.0);
 

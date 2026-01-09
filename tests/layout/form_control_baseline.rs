@@ -99,6 +99,42 @@ fn baseline_and_control_bottom(
   (baseline, control_fragment.bounds.max_y())
 }
 
+fn baseline_and_line_height_for_text_only() -> (f32, f32) {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+
+  let mut inline_style = root_style.clone();
+  inline_style.font_size = 16.0;
+
+  let text_style = Arc::new(inline_style.clone());
+
+  let text = BoxNode::new_text(text_style, "X".to_string());
+
+  let inline_fc = BoxNode::new_block(
+    Arc::new(inline_style),
+    FormattingContextType::Inline,
+    vec![text],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![inline_fc],
+  );
+  let tree = BoxTree::new(root);
+
+  let config = LayoutConfig::for_viewport(Size::new(400.0, 200.0));
+  let font_context = FontContext::with_config(FontConfig::bundled_only());
+  let engine = LayoutEngine::with_font_context(config, font_context);
+  let fragments = engine.layout_tree(&tree).expect("layout tree");
+
+  let line_fragment = find_first_line(&fragments.root).expect("expected a line fragment");
+  let FragmentContent::Line { baseline } = line_fragment.content else {
+    unreachable!();
+  };
+
+  (baseline, line_fragment.bounds.height())
+}
+
 #[test]
 fn inline_text_like_form_controls_use_text_baseline() {
   let epsilon = 0.01;
@@ -194,4 +230,67 @@ fn inline_unknown_form_control_without_label_keeps_replaced_baseline() {
     (control_bottom_y - baseline_y).abs() <= epsilon,
     "expected unknown-without-label baseline to be bottom edge: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
   );
+}
+
+#[test]
+fn inline_baseline_accounts_for_centered_form_control_text() {
+  let epsilon = 0.01;
+  let (text_baseline, line_height) = baseline_and_line_height_for_text_only();
+  assert!(line_height.is_finite() && line_height > 0.0);
+
+  // Use a content-box height larger than the line-height so the control's native painting centers
+  // its internal text vertically.
+  let content_height = line_height + 20.0;
+  let intrinsic = Size::new(100.0, content_height);
+  let vertical_offset = ((content_height - line_height) / 2.0).max(0.0);
+  let expected = text_baseline + vertical_offset;
+
+  let centered_cases = [
+    (
+      "input[type=text]",
+      FormControlKind::Text {
+        value: String::new(),
+        placeholder: None,
+        placeholder_style: None,
+        size_attr: None,
+        kind: TextControlKind::Plain,
+      },
+    ),
+    ("input-button", FormControlKind::Button { label: "Ok".to_string() }),
+    (
+      "unknown-with-label",
+      FormControlKind::Unknown {
+        label: Some("Unknown".to_string()),
+      },
+    ),
+  ];
+
+  for (label, kind) in centered_cases {
+    let (baseline_y, _) = baseline_and_control_bottom(kind, intrinsic);
+    assert!(
+      (baseline_y - expected).abs() <= epsilon,
+      "expected {label} baseline to include vertical centering offset: got={baseline_y:.3} expected={expected:.3}",
+    );
+  }
+
+  // Controls that do not center their text in native painting should keep the baseline at the
+  // content's line-height position.
+  let non_centered_cases = [(
+    "textarea",
+    FormControlKind::TextArea {
+      value: String::new(),
+      placeholder: None,
+      placeholder_style: None,
+      rows: None,
+      cols: None,
+    },
+  )];
+
+  for (label, kind) in non_centered_cases {
+    let (baseline_y, _) = baseline_and_control_bottom(kind, intrinsic);
+    assert!(
+      (baseline_y - text_baseline).abs() <= epsilon,
+      "expected {label} baseline to ignore vertical centering offset: got={baseline_y:.3} expected={text_baseline:.3}",
+    );
+  }
 }
