@@ -1,4 +1,6 @@
-use vm_js::{Heap, HeapLimits, JobCallback, PromiseReaction, PromiseReactionType, Value, VmError};
+use vm_js::{
+  Heap, HeapLimits, JobCallback, PromiseHandler, PromiseReaction, PromiseReactionType, Value, VmError,
+};
 
 // This is a lightweight integration-smoke test for `vm-js`'s Promise heap object
 // representation (internal slots + reaction lists).
@@ -55,8 +57,8 @@ fn promise_reaction_lists_are_cleared_on_settlement() -> Result<(), VmError> {
       promise,
       PromiseReaction {
         capability: None,
-        type_: PromiseReactionType::Fulfill,
-        handler: Some(JobCallback::new(handler)),
+        reaction_type: PromiseReactionType::Fulfill,
+        handler: Some(PromiseHandler::JobCallback(JobCallback::new(handler))),
       },
     )?;
 
