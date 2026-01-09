@@ -14,6 +14,8 @@ pub enum ShortcutAction {
   Back,
   Forward,
   Reload,
+  /// Activate a tab by its 1-based index (9 = last tab), matching typical browser shortcuts.
+  ActivateTabNumber(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,6 +42,15 @@ pub enum Key {
   Right,
   R,
   F5,
+  Num1,
+  Num2,
+  Num3,
+  Num4,
+  Num5,
+  Num6,
+  Num7,
+  Num8,
+  Num9,
 }
 
 /// Map a simplified key event to a browser action.
@@ -65,6 +76,16 @@ pub fn map_shortcut(key: Key, modifiers: Modifiers) -> Option<ShortcutAction> {
     (Key::R, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::Reload),
     // F5 should reload even without modifiers. Ignore Ctrl+F5 / Alt+F5 for now.
     (Key::F5, Modifiers { ctrl: false, alt: false, .. }) => Some(ShortcutAction::Reload),
+    // Ctrl+1..9 switches tabs (9 = last tab).
+    (Key::Num1, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(1)),
+    (Key::Num2, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(2)),
+    (Key::Num3, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(3)),
+    (Key::Num4, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(4)),
+    (Key::Num5, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(5)),
+    (Key::Num6, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(6)),
+    (Key::Num7, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(7)),
+    (Key::Num8, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(8)),
+    (Key::Num9, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::ActivateTabNumber(9)),
     _ => None,
   }
 }
@@ -86,6 +107,14 @@ mod tests {
     assert_eq!(
       map_shortcut(Key::K, Modifiers::new(true, false, false)),
       Some(ShortcutAction::FocusAddressBar)
+    );
+  }
+
+  #[test]
+  fn ctrl_1_selects_first_tab() {
+    assert_eq!(
+      map_shortcut(Key::Num1, Modifiers::new(true, false, false)),
+      Some(ShortcutAction::ActivateTabNumber(1))
     );
   }
 
