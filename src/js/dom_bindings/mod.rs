@@ -763,6 +763,32 @@ fn install_constructors(
       // Persist updated event state after dispatch.
       events_map_for_dispatch.borrow_mut().insert(event_id, event);
 
+      // `events::dispatch_event` may remove listeners during dispatch (e.g. `{ once: true }`).
+      //
+      // Our callback map roots listener callbacks so they survive GC, but it must not keep callbacks
+      // alive after the registry no longer references them. Clean up any callback roots for listener
+      // IDs that are now unreferenced.
+      //
+      // This is intentionally opportunistic: it is only invoked on dispatch (and on explicit
+      // `removeEventListener`). It's sufficient for the MVP and keeps long-running realms from
+      // leaking callbacks when using `once`.
+      {
+        let stale_ids: Vec<events::ListenerId> = listener_callbacks_for_dispatch
+          .borrow()
+          .keys()
+          .copied()
+          .filter(|id| !event_listeners_for_dispatch.contains_listener_id(*id))
+          .collect();
+        if !stale_ids.is_empty() {
+          let mut callbacks = listener_callbacks_for_dispatch.borrow_mut();
+          for id in stale_ids {
+            if let Some(entry) = callbacks.remove(&id) {
+              rt.heap_mut().remove_root(entry.callback_root);
+            }
+          }
+        }
+      }
+
       match result {
         Ok(not_canceled) => Ok(Value::Bool(not_canceled)),
         Err(err) => Err(rt.throw_type_error(&err.to_string())),
@@ -1685,5 +1711,91 @@ mod tests {
 
     assert_eq!(capture_phase_seen.get(), 1, "capturing listener should observe phase=1");
     assert_eq!(bubble_phase_seen.get(), 3, "bubbling listener should observe phase=3");
+  }
+
+  #[test]
+  fn once_listener_is_removed_and_callback_is_unrooted_after_dispatch() {
+    use vm_js::WeakGcObject;
+
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    // Create a target node and attach it.
+    let document = realm.document();
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let target = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[target])
+      .unwrap();
+
+    let calls = Rc::new(Cell::new(0u32));
+    let calls_for_cb = calls.clone();
+    let cb = realm
+      .rt
+      .alloc_function_value(move |_rt, _this, _args| {
+        calls_for_cb.set(calls_for_cb.get() + 1);
+        Ok(Value::Undefined)
+      })
+      .unwrap();
+
+    let Value::Object(cb_obj) = cb else {
+      panic!("expected callback to be an object");
+    };
+    let cb_weak = WeakGcObject::from(cb_obj);
+
+    // Add a once listener.
+    let opts = realm.rt.alloc_object_value().unwrap();
+    define_data_property_str(&mut realm.rt, opts, "once", Value::Bool(true), true).unwrap();
+    let add_key = pk(&mut realm.rt, "addEventListener");
+    let add = realm.rt.get(target, add_key).unwrap();
+    let type_x = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(add, target, &[type_x, cb, opts])
+      .unwrap();
+    assert_eq!(realm.listener_callbacks.borrow().len(), 1);
+
+    // Create an Event and dispatch twice.
+    let event_key = pk(&mut realm.rt, "Event");
+    let event_ctor = realm.rt.get(realm.window(), event_key).unwrap();
+    let type_x2 = realm.rt.alloc_string_value("x").unwrap();
+    let event = realm
+      .rt
+      .call_function(event_ctor, Value::Undefined, &[type_x2])
+      .unwrap();
+
+    let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
+    let dispatch = realm.rt.get(target, dispatch_key).unwrap();
+    let dispatched = realm
+      .rt
+      .call_function(dispatch, target, &[event])
+      .unwrap();
+    assert_eq!(dispatched, Value::Bool(true));
+    assert_eq!(calls.get(), 1);
+
+    // `once` should remove the listener registration, and the bindings should drop the rooted
+    // callback entry.
+    assert!(realm.listener_callbacks.borrow().is_empty());
+
+    // The callback object should now be collectable since nothing else references it.
+    realm.rt.heap_mut().collect_garbage();
+    assert!(cb_weak.upgrade(realm.rt.heap()).is_none());
+
+    // Dispatching again should not invoke the callback.
+    let dispatched_again = realm
+      .rt
+      .call_function(dispatch, target, &[event])
+      .unwrap();
+    assert_eq!(dispatched_again, Value::Bool(true));
+    assert_eq!(calls.get(), 1);
   }
 }
