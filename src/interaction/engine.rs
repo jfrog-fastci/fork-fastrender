@@ -226,6 +226,32 @@ fn is_anchor_with_href(node: &DomNode) -> bool {
     })
 }
 
+fn is_focusable_anchor(node: &DomNode) -> bool {
+  if !node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("a"))
+  {
+    return false;
+  }
+  let Some(href) = node.get_attribute_ref("href") else {
+    return false;
+  };
+  let href = trim_ascii_whitespace(href);
+  if href.is_empty() {
+    return false;
+  }
+  // The browser UI doesn't execute JS, so `javascript:` URLs aren't meaningful navigation targets
+  // and should not appear in the Tab sequence.
+  if href
+    .as_bytes()
+    .get(.."javascript:".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+  {
+    return false;
+  }
+  true
+}
+
 fn is_label(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -261,6 +287,7 @@ fn is_button(node: &DomNode) -> bool {
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
+
 fn input_type(node: &DomNode) -> &str {
   trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or("text"))
 }
@@ -411,6 +438,90 @@ fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
     node_id = *index.parent.get(node_id).unwrap_or(&0);
   }
   false
+}
+
+fn node_self_is_tab_inert(node: &DomNode) -> bool {
+  // `<template>` contents are inert and should not be reachable via Tab.
+  node.template_contents_are_inert() || node_is_inert_like(node)
+}
+
+fn parse_tabindex(node: &DomNode) -> Option<i32> {
+  let raw = node.get_attribute_ref("tabindex")?;
+  let raw = trim_ascii_whitespace(raw);
+  if raw.is_empty() {
+    return None;
+  }
+  raw.parse::<i32>().ok()
+}
+
+fn collect_inert_subtree_flags(index: &DomIndexMut) -> Vec<bool> {
+  // Stack-safe derived state: `inert[id]` is true if this node is in an inert subtree, driven by
+  // `inert`/`data-fastr-inert=true` or a `<template>` ancestor.
+  let mut inert = vec![false; index.id_to_node.len()];
+  for node_id in 1..index.id_to_node.len() {
+    let parent_id = index.parent.get(node_id).copied().unwrap_or(0);
+    let parent_inert = inert.get(parent_id).copied().unwrap_or(false);
+    let self_inert = index.node(node_id).is_some_and(node_self_is_tab_inert);
+    inert[node_id] = parent_inert || self_inert;
+  }
+  inert
+}
+
+fn is_tab_focusable(index: &DomIndexMut, inert: &[bool], node_id: usize) -> bool {
+  if inert.get(node_id).copied().unwrap_or(true) {
+    return false;
+  }
+  let Some(node) = index.node(node_id) else {
+    return false;
+  };
+  if !node.is_element() {
+    return false;
+  }
+  if node.get_attribute_ref("disabled").is_some() {
+    return false;
+  }
+  if is_input(node) && input_type(node).eq_ignore_ascii_case("hidden") {
+    return false;
+  }
+
+  // MVP tabindex support:
+  // - `tabindex < 0` => skipped
+  // - `tabindex >= 0` => focusable (but we intentionally *ignore* the positive ordering rules and
+  //   keep DOM tree order).
+  // - parse failure => ignored (treated as unset)
+  if let Some(tabindex) = parse_tabindex(node) {
+    return tabindex >= 0;
+  }
+
+  is_focusable_anchor(node)
+    || is_input(node)
+    || is_textarea(node)
+    || is_select(node)
+    || is_button(node)
+}
+
+fn collect_tab_focusables(index: &DomIndexMut) -> Vec<usize> {
+  let inert = collect_inert_subtree_flags(index);
+  let mut focusables = Vec::new();
+  for node_id in 1..index.id_to_node.len() {
+    if is_tab_focusable(index, &inert, node_id) {
+      focusables.push(node_id);
+    }
+  }
+  focusables
+}
+
+fn next_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize> {
+  if focusables.is_empty() {
+    return None;
+  }
+  let Some(current) = current else {
+    return Some(focusables[0]);
+  };
+  let Some(pos) = focusables.iter().position(|id| *id == current) else {
+    return Some(focusables[0]);
+  };
+  Some(focusables[(pos + 1) % focusables.len()])
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
@@ -1439,6 +1550,15 @@ impl InteractionEngine {
   /// - Tab (optional focus traversal stub)
   pub fn key_action(&mut self, dom: &mut DomNode, key: KeyAction) -> bool {
     self.modality = InputModality::Keyboard;
+    if key == KeyAction::Tab {
+      let mut index = DomIndexMut::new(dom);
+      let focusables = collect_tab_focusables(&index);
+      let Some(next_focus) = next_tab_focus(self.focused, &focusables) else {
+        return false;
+      };
+      return self.set_focus(&mut index, Some(next_focus), true);
+    }
+
     let Some(focused) = self.focused else {
       return false;
     };
@@ -1537,7 +1657,7 @@ impl InteractionEngine {
         // `InteractionEngine::key_activate`.
       }
       KeyAction::Tab => {
-        // Focus traversal is intentionally left as a stub for MVP.
+        unreachable!("handled above")
       }
     }
 

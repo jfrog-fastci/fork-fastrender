@@ -1894,3 +1894,159 @@ fn range_click_focuses_input() {
     "pointer focus should not set focus-visible"
   );
 }
+
+#[test]
+fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_tabindex_negative() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("input", vec![("id", "first")], vec![]),
+        el("textarea", vec![("id", "ta")], vec![]),
+        el("a", vec![("id", "link"), ("href", "/")], vec![]),
+        el("button", vec![("id", "skip"), ("tabindex", "-1")], vec![]),
+        el("input", vec![("id", "disabled"), ("disabled", "")], vec![]),
+        el(
+          "div",
+          vec![("id", "inert"), ("data-fastr-inert", "true")],
+          vec![el("input", vec![("id", "inert-input")], vec![])],
+        ),
+        el("div", vec![("id", "tabbed"), ("tabindex", "0")], vec![]),
+        el("button", vec![("id", "last")], vec![]),
+      ],
+    )],
+  )]);
+
+  // Click to focus the first input (pointer focus doesn't set focus-visible).
+  let first_dom_id = node_id(&dom, "first");
+  let mut first_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  first_box.styled_node_id = Some(first_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![first_box],
+  ));
+
+  let first_box_id = find_box_id_for_styled_node(&box_tree, first_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      first_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (changed, _) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(
+    attr_value(&dom, "first", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert!(
+    !has_attr(&dom, "first", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+
+  // Tab sequence: first -> textarea -> link -> tabindex=0 div -> last button -> wrap to first.
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "ta", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "ta", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  assert!(
+    engine.key_action(&mut dom, KeyAction::Tab),
+    "should skip tabindex=-1, disabled and inert descendants"
+  );
+  assert_eq!(
+    attr_value(&dom, "tabbed", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert!(!has_attr(&dom, "skip", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "disabled", "data-fastr-focus"));
+  assert!(!has_attr(&dom, "inert-input", "data-fastr-focus"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "last", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "last", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "first", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "first", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn tab_focuses_first_focusable_element_when_nothing_focused() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("div", vec![("id", "plain")], vec![]),
+        el("button", vec![("id", "btn")], vec![]),
+        el("input", vec![("id", "inp")], vec![]),
+      ],
+    )],
+  )]);
+
+  let mut engine = InteractionEngine::new();
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "btn", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+}
