@@ -1341,15 +1341,20 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             .get_attribute_ref("close")
             .map(|s| s.to_string())
             .unwrap_or_else(|| ")".to_string());
-          let separators = node
-            .get_attribute_ref("separators")
-            .map(|s| {
-              s.chars()
-                .filter(|c| *c != ' ' && *c != '\t')
-                .collect::<Vec<char>>()
-            })
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| vec![',']);
+          let separators = match node.get_attribute_ref("separators") {
+            None => Some(vec![',']),
+            Some(raw) => {
+              let parsed: Vec<char> = raw
+                .chars()
+                .filter(|c| !is_ascii_whitespace_mathml(*c))
+                .collect();
+              if parsed.is_empty() {
+                None
+              } else {
+                Some(parsed)
+              }
+            }
+          };
           let inner = parse_children(node);
           if inner.is_empty() {
             None
@@ -1365,19 +1370,21 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             });
             for (idx, child) in inner.into_iter().enumerate() {
               if idx > 0 {
-                let sep = separators
-                  .get(idx - 1)
-                  .or_else(|| separators.last())
-                  .copied()
-                  .unwrap_or(',');
-                row.push(MathNode::Operator {
-                  text: sep.to_string(),
-                  form: None,
-                  stretchy: Some(false),
-                  lspace: None,
-                  rspace: None,
-                  variant: Some(MathVariant::Normal),
-                });
+                if let Some(separators) = &separators {
+                  let sep = separators
+                    .get(idx - 1)
+                    .or_else(|| separators.last())
+                    .copied()
+                    .unwrap_or(',');
+                  row.push(MathNode::Operator {
+                    text: sep.to_string(),
+                    form: None,
+                    stretchy: Some(false),
+                    lspace: None,
+                    rspace: None,
+                    variant: Some(MathVariant::Normal),
+                  });
+                }
               }
               row.push(child);
             }
@@ -4911,6 +4918,50 @@ mod tests {
       MathLength::Em(0.0),
       "NBSP must not be treated as HTML/MathML whitespace when parsing length attributes"
     );
+  }
+
+  #[test]
+  fn mfenced_empty_separators_suppresses_default_commas() {
+    let parsed =
+      parse_math_from_html("<math><mfenced separators=\"\"><mi>a</mi><mi>b</mi></mfenced></math>");
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Row(row) = &children[0] else {
+      panic!("expected mfenced to parse to a row");
+    };
+    assert_eq!(row.len(), 4, "expected no separator operators to be inserted");
+    assert!(matches!(&row[0], MathNode::Operator { text, .. } if text == "("));
+    assert!(matches!(&row[1], MathNode::Identifier { text, .. } if text == "a"));
+    assert!(matches!(&row[2], MathNode::Identifier { text, .. } if text == "b"));
+    assert!(matches!(&row[3], MathNode::Operator { text, .. } if text == ")"));
+    assert!(
+      !row
+        .iter()
+        .any(|node| matches!(node, MathNode::Operator { text, .. } if text == ",")),
+      "no comma operator should be inserted when separators is explicitly empty"
+    );
+  }
+
+  #[test]
+  fn mfenced_default_separators_inserts_commas() {
+    let parsed = parse_math_from_html("<math><mfenced><mi>a</mi><mi>b</mi></mfenced></math>");
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Row(row) = &children[0] else {
+      panic!("expected mfenced to parse to a row");
+    };
+    assert_eq!(
+      row.len(),
+      5,
+      "expected a single comma separator to be inserted by default"
+    );
+    assert!(matches!(&row[0], MathNode::Operator { text, .. } if text == "("));
+    assert!(matches!(&row[1], MathNode::Identifier { text, .. } if text == "a"));
+    assert!(matches!(&row[2], MathNode::Operator { text, .. } if text == ","));
+    assert!(matches!(&row[3], MathNode::Identifier { text, .. } if text == "b"));
+    assert!(matches!(&row[4], MathNode::Operator { text, .. } if text == ")"));
   }
 
   #[test]

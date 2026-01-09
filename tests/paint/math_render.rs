@@ -373,6 +373,19 @@ fn math_operator_dictionary_defaults_match_golden() {
 }
 
 #[test]
+fn math_mfenced_separators_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_mfenced_separators"))
+      .expect("load math_mfenced_separators");
+    let png = renderer
+      .render_to_png(&html, 360, 200)
+      .expect("render mfenced separators");
+    compare_golden("math_mfenced_separators", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_scriptlevel_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
