@@ -1599,19 +1599,15 @@ impl JsWptRuntime {
 
   fn value_to_string_lossy(&mut self, value: Value) -> String {
     match value {
-      Value::Undefined => "undefined".to_string(),
-      Value::Null => "null".to_string(),
-      Value::Bool(true) => "true".to_string(),
-      Value::Bool(false) => "false".to_string(),
-      Value::Number(n) => n.to_string(),
-      Value::BigInt(b) => b.to_decimal_string(),
-      Value::String(s) => self
-        .heap
-        .get_string(s)
-        .map(|s| s.to_utf8_lossy())
-        .unwrap_or_else(|_| "<invalid string>".to_string()),
       Value::Symbol(_) => "[symbol]".to_string(),
       Value::Object(_) => "[object]".to_string(),
+      _ => {
+        self
+          .heap
+          .to_string(value)
+          .and_then(|s| self.heap.get_string(s).map(|s| s.to_utf8_lossy()))
+          .unwrap_or_else(|_| "<invalid string>".to_string())
+      }
     }
   }
 }
@@ -1969,5 +1965,19 @@ mod tests {
     };
     let rendered = rt.heap.get_string(s).expect("property key string");
     assert_eq!(rendered.to_utf8_lossy(), "1.5");
+  }
+
+  #[test]
+  fn value_to_string_lossy_formats_numbers_like_ecmascript() {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut rt = JsWptRuntime::new("https://example.com/", deadline);
+
+    assert_eq!(rt.value_to_string_lossy(Value::Number(f64::INFINITY)), "Infinity");
+    assert_eq!(
+      rt.value_to_string_lossy(Value::Number(f64::NEG_INFINITY)),
+      "-Infinity"
+    );
+    // ECMAScript `ToString(-0)` is `"0"`.
+    assert_eq!(rt.value_to_string_lossy(Value::Number(-0.0)), "0");
   }
 }
