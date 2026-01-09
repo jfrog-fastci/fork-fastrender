@@ -115,8 +115,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let worker = fastrender::ui::spawn_ui_worker("fastr-browser-ui-worker")?;
-  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) = worker.split();
+  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
 
   let mut app = pollster::block_on(App::new(
     window,
@@ -269,8 +269,8 @@ fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
 
-  let worker = fastrender::ui::spawn_ui_worker("fastr-browser-headless-smoke-worker")?;
-  let (ui_to_worker_tx, worker_to_ui_rx, join) = worker.split();
+  let (ui_to_worker_tx, worker_to_ui_rx, join) =
+    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {

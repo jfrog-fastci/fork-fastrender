@@ -65,11 +65,10 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
   - Spawns the production browser worker thread via
-    [`spawn_browser_worker`](../src/ui/render_worker.rs) (large stack), which handles
-    navigation/history, scrolling, and DOM interaction and produces `WorkerToUi` updates.
+    [`spawn_browser_ui_worker`](../src/ui/render_worker.rs) (large stack; std::io-friendly wrapper),
+    which handles navigation/history, scrolling, and DOM interaction and produces `WorkerToUi`
+    updates.
     - The worker owns navigation history; the windowed chrome sends `UiToWorker::{GoBack,GoForward,Reload}`.
-    - A std::io-friendly wrapper exists as [`spawn_browser_ui_worker`](../src/ui/render_worker.rs)
-      for CLI-style callers.
   - Renders a small egui popup for `<select>` dropdowns. Workers can request a popup via:
     - `WorkerToUi::OpenSelectDropdown` (legacy cursor-anchored message)
     - `WorkerToUi::SelectDropdownOpened` (preferred; includes an explicit `anchor_css` rect)
