@@ -301,7 +301,9 @@ pub(crate) fn with_target_fragment<R, F: FnOnce() -> R>(target: Option<&str>, f:
       let decoded = percent_encoding::percent_decode_str(without_hash)
         .decode_utf8_lossy()
         .into_owned();
-      *slot.borrow_mut() = Some(decoded);
+      if !decoded.is_empty() {
+        *slot.borrow_mut() = Some(decoded);
+      }
     }
     let result = f();
     *slot.borrow_mut() = previous;
@@ -14096,6 +14098,20 @@ mod tests {
     });
     with_target_fragment(Some("other"), || {
       assert!(!matches(&target, &[], &PseudoClass::Target));
+    });
+
+    let empty_id_target = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "".to_string())],
+      },
+      children: vec![],
+    };
+    // An empty fragment identifier (`#`) should not produce a :target match, even if an element has
+    // an empty `id` attribute (invalid HTML but can appear in the wild).
+    with_target_fragment(Some("#"), || {
+      assert!(!matches(&empty_id_target, &[], &PseudoClass::Target));
     });
 
     let unicode_target = DomNode {
