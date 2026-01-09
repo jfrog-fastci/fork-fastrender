@@ -651,8 +651,7 @@ impl ResourceFetcher for BundledFetcher {
         )));
       }
       let request = FetchRequest::new(bucket.canonical_url.as_str(), destination);
-      let Some(vary_key) =
-        super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
+      let Some(vary_key) = super::compute_vary_key_for_request(self, request, bucket.vary.as_deref())
       else {
         return Err(Error::Other(format!(
           "Resource not cacheable in bundle (unknown Vary headers): {}",
@@ -661,6 +660,15 @@ impl ResourceFetcher for BundledFetcher {
       };
       if let Some(resource) = bucket.variants.get(&vary_key) {
         return resource.as_fetched();
+      }
+      if let Some(legacy_key) =
+        super::compute_vary_key_for_request_legacy(self, request, bucket.vary.as_deref())
+      {
+        if legacy_key != vary_key {
+          if let Some(resource) = bucket.variants.get(&legacy_key) {
+            return resource.as_fetched();
+          }
+        }
       }
       // Back-compat: older bundles may include a single Vary entry without the `vary` field.
       if bucket.vary.is_none() && bucket.variants.len() == 1 {
@@ -843,6 +851,15 @@ impl ResourceFetcher for BundledFetcher {
       };
       if let Some(resource) = bucket.variants.get(&vary_key) {
         return resource.as_fetched();
+      }
+      if let Some(legacy_key) =
+        super::compute_vary_key_for_request_legacy(self, canonical, bucket.vary.as_deref())
+      {
+        if legacy_key != vary_key {
+          if let Some(resource) = bucket.variants.get(&legacy_key) {
+            return resource.as_fetched();
+          }
+        }
       }
       if bucket.vary.is_none() && bucket.variants.len() == 1 {
         if let Some(resource) = bucket.variants.values().next() {
@@ -2369,5 +2386,89 @@ mod tests {
 
     let b = fetcher.fetch_with_request(req_b).expect("fetch origin B");
     assert_eq!(b.bytes, b"b");
+  }
+
+  #[test]
+  fn bundled_fetcher_selects_vary_variants_when_vary_casing_or_order_differs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("font.woff2"), b"ok").expect("write font");
+
+    let url = "https://cdn.example/font.woff2";
+    let http = crate::resource::HttpFetcher::new();
+    let req =
+      FetchRequest::new(url, FetchDestination::Font).with_referrer_url("https://a.test/page.html");
+
+    // Compute the manifest vary-key from one representation of the vary list...
+    let vary_key = super::super::compute_vary_key_for_request(
+      &http,
+      req,
+      Some("origin, accept-language"),
+    )
+    .expect("vary key");
+    let key = vary_partitioned_resource_key(url, &vary_key);
+
+    // ...but store a semantically equivalent vary value with different casing + ordering. Bundle
+    // replay should still select the correct variant deterministically.
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(
+        key,
+        BundledResourceInfo {
+          path: "font.woff2".to_string(),
+          content_type: Some("font/woff2".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some(url.to_string()),
+          etag: None,
+          last_modified: None,
+          response_referrer_policy: None,
+          vary: Some("Accept-Language, Origin".to_string()),
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+    let res = fetcher.fetch_with_request(req).expect("fetch bundle");
+    assert_eq!(res.bytes, b"ok");
   }
 }

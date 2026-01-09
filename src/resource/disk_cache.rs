@@ -660,6 +660,98 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
   }
 
+  fn migrate_legacy_vary_variant_if_possible(
+    &self,
+    base_key: &str,
+    vary: Option<&str>,
+    canonical_vary_key: &str,
+    legacy_vary_key: &str,
+  ) {
+    if canonical_vary_key == legacy_vary_key {
+      return;
+    }
+    if self.disk_writeback_disabled_for_len(0) {
+      return;
+    }
+    if !self.deadline_allows_disk_writeback() {
+      return;
+    }
+
+    let canonical_vary = super::canonicalize_vary_header_value(vary).unwrap_or_default();
+    let legacy_key = self.variant_key_for_base_key(base_key, legacy_vary_key);
+    let canonical_key = self.variant_key_for_base_key(base_key, canonical_vary_key);
+    if legacy_key == canonical_key {
+      self.persist_vary_for_base_key(base_key, Some(&canonical_vary));
+      return;
+    }
+
+    let legacy_data_path = self.data_path_for_key(&legacy_key);
+    let legacy_meta_path = self.meta_path_for_data(&legacy_data_path);
+    let canonical_data_path = self.data_path_for_key(&canonical_key);
+    let canonical_meta_path = self.meta_path_for_data(&canonical_data_path);
+
+    if canonical_data_path.exists() || canonical_meta_path.exists() {
+      // Another process already created (or is still creating) the canonical entry. We only reach
+      // this path after failing to read the canonical key, so avoid rewriting the base `.vary`
+      // file here: doing so could make the legacy variant unreachable if the canonical write
+      // doesn't fully complete (e.g. a crash mid-write).
+      return;
+    }
+
+    if let Some(parent) = canonical_data_path.parent() {
+      let _ = fs::create_dir_all(parent);
+    }
+
+    // Acquire locks for both the legacy and canonical variant keys so readers don't observe a
+    // transient state while we rename the on-disk files.
+    let Some(_canonical_lock) = self.acquire_lock(&canonical_data_path) else {
+      return;
+    };
+    let Some(_legacy_lock) = self.acquire_lock(&legacy_data_path) else {
+      return;
+    };
+    if !self.deadline_allows_disk_writeback() {
+      return;
+    }
+
+    let (stored_at, len) = read_path_prefix_with_deadline(
+      &legacy_meta_path,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_META_MAX_BYTES,
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<StoredMetadata>(&bytes).ok())
+    .map(|meta| (meta.stored_at, meta.len as u64))
+    .unwrap_or_else(|| {
+      let len = fs::metadata(&legacy_data_path).map(|m| m.len()).unwrap_or(0);
+      (now_seconds(), len)
+    });
+
+    if fs::rename(&legacy_data_path, &canonical_data_path).is_err() {
+      return;
+    }
+    if fs::rename(&legacy_meta_path, &canonical_meta_path).is_err() {
+      let _ = fs::rename(&canonical_data_path, &legacy_data_path);
+      return;
+    }
+
+    // Best-effort: keep the eviction journal in sync so future writers don't leak bytes.
+    self
+      .index
+      .record_removal(&legacy_key, &legacy_data_path, &legacy_meta_path);
+    self.index.record_insert(
+      &canonical_key,
+      stored_at,
+      len,
+      &canonical_data_path,
+      &canonical_meta_path,
+    );
+
+    // Rewrite the base `.vary` file so subsequent lookups derive the canonical variant key.
+    self.persist_vary_for_base_key(base_key, Some(&canonical_vary));
+  }
+
   fn read_vary_for_base_key(&self, base_key: &str) -> Option<Cow<'static, str>> {
     let path = self.vary_metadata_path_for_base_key(base_key);
     let mut file = match fs::File::open(&path) {
@@ -708,7 +800,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
     let path = self.vary_metadata_path_for_base_key(base_key);
     let tmp = tmp_path(&path);
-    let value = vary.unwrap_or("");
+    let value = super::canonicalize_vary_header_value(vary).unwrap_or_default();
     if fs::write(&tmp, value.as_bytes()).is_ok() {
       let _ = fs::rename(&tmp, &path);
     } else {
@@ -798,9 +890,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     request: FetchRequest<'_>,
     artifact: CacheArtifactKind,
     origin_key: Option<&str>,
-    credentials_mode: super::FetchCredentialsMode,
+    credentials_partition: super::CacheCredentialsPartition,
   ) -> Option<u64> {
-    let base_key = self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_mode);
+    let base_key =
+      self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_partition);
     let vary = self.read_vary_for_base_key(&base_key);
     let request = FetchRequest {
       url,
@@ -808,22 +901,39 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
-    let vary_key =
-      super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+    let vary_key = super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+
+    let stored_at_for_key = |key: &str| -> Option<u64> {
+      let data_path = self.data_path_for_key(key);
+      let meta_path = self.meta_path_for_data(&data_path);
+      let meta_bytes = read_path_prefix_with_deadline(
+        &meta_path,
+        DISK_META_READ_STAGE,
+        DISK_META_READ_CHUNK_SIZE,
+        DISK_META_MAX_BYTES,
+      )
+      .ok()?;
+      let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
+      Some(meta.stored_at)
+    };
+
     let key = self.variant_key_for_base_key(&base_key, &vary_key);
-    let data_path = self.data_path_for_key(&key);
-    let meta_path = self.meta_path_for_data(&data_path);
-    let meta_bytes = read_path_prefix_with_deadline(
-      &meta_path,
-      DISK_META_READ_STAGE,
-      DISK_META_READ_CHUNK_SIZE,
-      DISK_META_MAX_BYTES,
-    )
-    .ok()?;
-    let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
-    Some(meta.stored_at)
+    if let Some(stored_at) = stored_at_for_key(&key) {
+      return Some(stored_at);
+    }
+
+    let legacy_vary_key =
+      super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())?;
+    if legacy_vary_key != vary_key {
+      let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+      if let Some(stored_at) = stored_at_for_key(&legacy_key) {
+        return Some(stored_at);
+      }
+    }
+
+    None
   }
 
   fn data_path(&self, kind: FetchContextKind, url: &str) -> PathBuf {
@@ -1193,29 +1303,67 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         continue;
       };
 
-      let key = self.variant_key_for_base_key(&base_key, &vary_key);
-      let data_path = self.data_path_for_key(&key);
-      let meta_path = self.meta_path_for_data(&data_path);
-
-      match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
-        SnapshotRead::Hit(snapshot) => {
-          if let super::CacheValue::Resource(res) = &snapshot.value {
-            if let Some(vary) = res.vary.as_deref() {
-              let allow_unhandled =
-                self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-              if super::vary_contains_star(vary)
-                || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
-              {
-                self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-                self.remove_alias_for(kind, url, origin_key, credentials_partition);
-                super::record_disk_cache_miss();
-                super::finish_disk_cache_diagnostics(disk_timer.take());
-                return Ok(None);
- 
+      let read_snapshot_candidate =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf| -> Result<Option<CachedSnapshot>> {
+          match self.try_read_snapshot(key, &current, data_path, meta_path) {
+            SnapshotRead::Hit(snapshot) => Ok(Some(snapshot)),
+            SnapshotRead::Timeout(err) => Err(Error::Render(err)),
+            SnapshotRead::Locked => {
+              let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
+              if !max_wait.is_zero() {
+                let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
+                let unlocked = self.wait_for_unlock(data_path, max_wait);
+                super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
+                if unlocked {
+                  match self.try_read_snapshot(key, &current, data_path, meta_path) {
+                    SnapshotRead::Hit(snapshot) => return Ok(Some(snapshot)),
+                    SnapshotRead::Timeout(err) => return Err(Error::Render(err)),
+                    _ => {}
+                  }
+                }
               }
+              Ok(None)
+            }
+            SnapshotRead::Miss => Ok(None),
+          }
+        };
+
+      let validate_snapshot = |key: &str,
+                               data_path: &PathBuf,
+                               meta_path: &PathBuf,
+                               snapshot: &CachedSnapshot|
+       -> Option<()> {
+        if let super::CacheValue::Resource(res) = &snapshot.value {
+          if let Some(vary) = res.vary.as_deref() {
+            let allow_unhandled =
+              self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
+            if super::vary_contains_star(vary)
+              || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
+            {
+              self.remove_entry_files_best_effort_if_unlocked(key, data_path, meta_path);
+              self.remove_alias_for(kind, url, origin_key, credentials_partition);
+              return None;
             }
           }
+        }
+        Some(())
+      };
 
+      let canonical_key = self.variant_key_for_base_key(&base_key, &vary_key);
+      let canonical_data_path = self.data_path_for_key(&canonical_key);
+      let canonical_meta_path = self.meta_path_for_data(&canonical_data_path);
+
+      if let Some(snapshot) =
+        read_snapshot_candidate(&canonical_key, &canonical_data_path, &canonical_meta_path)?
+      {
+        if validate_snapshot(
+          &canonical_key,
+          &canonical_data_path,
+          &canonical_meta_path,
+          &snapshot,
+        )
+        .is_some()
+        {
           let payload_bytes = match &snapshot.value {
             super::CacheValue::Resource(res) => res.bytes.len(),
             super::CacheValue::Error(_) => 0,
@@ -1225,57 +1373,45 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(Some((current, snapshot)));
         }
-        SnapshotRead::Timeout(err) => {
-          super::finish_disk_cache_diagnostics(disk_timer.take());
-          return Err(Error::Render(err));
-        }
-        SnapshotRead::Locked => {
-          let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
-          if !max_wait.is_zero() {
-            let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
-            let unlocked = self.wait_for_unlock(&data_path, max_wait);
-            super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
-            if unlocked {
-              match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
-                SnapshotRead::Hit(snapshot) => {
-                  if let super::CacheValue::Resource(res) = &snapshot.value {
-                    if let Some(vary) = res.vary.as_deref() {
-                      let allow_unhandled =
-                        self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                      if super::vary_contains_star(vary)
-                        || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
-                      {
-                        self.remove_entry_files_best_effort_if_unlocked(
-                          &key, &data_path, &meta_path,
-                        );
-                        self.remove_alias_for(kind, url, origin_key, credentials_partition);
-                        super::record_disk_cache_miss();
-                        super::finish_disk_cache_diagnostics(disk_timer.take());
-                        return Ok(None);
- 
-                      }
-                    }
-                  }
+        super::record_disk_cache_miss();
+        super::finish_disk_cache_diagnostics(disk_timer.take());
+        return Ok(None);
+      }
 
-                  let payload_bytes = match &snapshot.value {
-                    super::CacheValue::Resource(res) => res.bytes.len(),
-                    super::CacheValue::Error(_) => 0,
-                  };
-                  super::record_disk_cache_hit();
-                  super::record_disk_cache_bytes(payload_bytes);
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Ok(Some((current, snapshot)));
-                }
-                SnapshotRead::Timeout(err) => {
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Err(Error::Render(err));
-                }
-                _ => {}
-              }
+      if let Some(legacy_vary_key) =
+        super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())
+      {
+        if legacy_vary_key != vary_key {
+          let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+          let legacy_data_path = self.data_path_for_key(&legacy_key);
+          let legacy_meta_path = self.meta_path_for_data(&legacy_data_path);
+          if let Some(snapshot) =
+            read_snapshot_candidate(&legacy_key, &legacy_data_path, &legacy_meta_path)?
+          {
+            if validate_snapshot(&legacy_key, &legacy_data_path, &legacy_meta_path, &snapshot)
+              .is_some()
+            {
+              let payload_bytes = match &snapshot.value {
+                super::CacheValue::Resource(res) => res.bytes.len(),
+                super::CacheValue::Error(_) => 0,
+              };
+              super::record_disk_cache_hit();
+              super::record_disk_cache_bytes(payload_bytes);
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+
+              self.migrate_legacy_vary_variant_if_possible(
+                &base_key,
+                vary.as_deref(),
+                &vary_key,
+                &legacy_vary_key,
+              );
+              return Ok(Some((current, snapshot)));
             }
+            super::record_disk_cache_miss();
+            super::finish_disk_cache_diagnostics(disk_timer.take());
+            return Ok(None);
           }
         }
-        SnapshotRead::Miss => {}
       }
 
       let Some(next) =
@@ -1391,97 +1527,133 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         continue;
       };
 
-      let key = self.variant_key_for_base_key(&base_key, &vary_key);
-      let data_path = self.data_path_for_key(&key);
-      let meta_path = self.meta_path_for_data(&data_path);
+      enum PrefixCandidate {
+        Hit(FetchedResource),
+        Error(Error),
+        Miss,
+      }
 
-      match self.try_read_resource_prefix(
-        &key,
-        &current,
-        &data_path,
-        &meta_path,
-        max_bytes,
-      ) {
-        SnapshotPrefixRead::Hit(resource) => {
-          if let Some(vary) = resource.vary.as_deref() {
-            let allow_unhandled =
-              self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-            if super::vary_contains_star(vary)
-              || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
-            {
-              self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-              self.remove_alias_for(kind, url, origin_key, credentials_partition);
-              super::record_disk_cache_miss();
-              super::finish_disk_cache_diagnostics(disk_timer.take());
-              return Ok(None);
+      let read_prefix_candidate = |key: &str,
+                                   data_path: &PathBuf,
+                                   meta_path: &PathBuf|
+       -> Result<PrefixCandidate> {
+        let attempt = |key: &str| {
+          self.try_read_resource_prefix(key, &current, data_path, meta_path, max_bytes)
+        };
+
+        match attempt(key) {
+          SnapshotPrefixRead::Hit(resource) => Ok(PrefixCandidate::Hit(resource)),
+          SnapshotPrefixRead::Error(err) => Ok(PrefixCandidate::Error(err)),
+          SnapshotPrefixRead::Timeout(err) => Err(Error::Render(err)),
+          SnapshotPrefixRead::Miss => Ok(PrefixCandidate::Miss),
+          SnapshotPrefixRead::Locked => {
+            let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
+            if !max_wait.is_zero() {
+              let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
+              let unlocked = self.wait_for_unlock(data_path, max_wait);
+              super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
+              if unlocked {
+                match attempt(key) {
+                  SnapshotPrefixRead::Hit(resource) => return Ok(PrefixCandidate::Hit(resource)),
+                  SnapshotPrefixRead::Error(err) => return Ok(PrefixCandidate::Error(err)),
+                  SnapshotPrefixRead::Timeout(err) => return Err(Error::Render(err)),
+                  _ => {}
+                }
+              }
             }
+            Ok(PrefixCandidate::Miss)
           }
-
-          super::record_disk_cache_hit();
-          super::record_disk_cache_bytes(resource.bytes.len());
-          super::finish_disk_cache_diagnostics(disk_timer.take());
-          return Ok(Some((current, resource)));
         }
-        SnapshotPrefixRead::Error(err) => {
+      };
+
+      let validate_resource = |key: &str,
+                               data_path: &PathBuf,
+                               meta_path: &PathBuf,
+                               resource: &FetchedResource|
+       -> Option<()> {
+        if let Some(vary) = resource.vary.as_deref() {
+          let allow_unhandled =
+            self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
+          if super::vary_contains_star(vary)
+            || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
+          {
+            self.remove_entry_files_best_effort_if_unlocked(key, data_path, meta_path);
+            self.remove_alias_for(kind, url, origin_key, credentials_partition);
+            return None;
+          }
+        }
+        Some(())
+      };
+
+      let canonical_key = self.variant_key_for_base_key(&base_key, &vary_key);
+      let canonical_data_path = self.data_path_for_key(&canonical_key);
+      let canonical_meta_path = self.meta_path_for_data(&canonical_data_path);
+
+      match read_prefix_candidate(&canonical_key, &canonical_data_path, &canonical_meta_path)? {
+        PrefixCandidate::Hit(resource) => {
+          if validate_resource(
+            &canonical_key,
+            &canonical_data_path,
+            &canonical_meta_path,
+            &resource,
+          )
+          .is_some()
+          {
+            super::record_disk_cache_hit();
+            super::record_disk_cache_bytes(resource.bytes.len());
+            super::finish_disk_cache_diagnostics(disk_timer.take());
+            return Ok(Some((current, resource)));
+          }
+          super::record_disk_cache_miss();
+          super::finish_disk_cache_diagnostics(disk_timer.take());
+          return Ok(None);
+        }
+        PrefixCandidate::Error(err) => {
           super::record_disk_cache_hit();
           super::record_disk_cache_bytes(0);
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Err(err);
         }
-        SnapshotPrefixRead::Timeout(err) => {
-          super::finish_disk_cache_diagnostics(disk_timer.take());
-          return Err(Error::Render(err));
-        }
-        SnapshotPrefixRead::Locked => {
-          let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
-          if !max_wait.is_zero() {
-            let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
-            let unlocked = self.wait_for_unlock(&data_path, max_wait);
-            super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
-            if unlocked {
-              match self.try_read_resource_prefix(
-                &key,
-                &current,
-                &data_path,
-                &meta_path,
-                max_bytes,
-              ) {
-                SnapshotPrefixRead::Hit(resource) => {
-                  if let Some(vary) = resource.vary.as_deref() {
-                    let allow_unhandled =
-                      self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                    if super::vary_contains_star(vary)
-                      || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
-                    {
-                      self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
-                      self.remove_alias_for(kind, url, origin_key, credentials_partition);
-                      super::record_disk_cache_miss();
-                      super::finish_disk_cache_diagnostics(disk_timer.take());
-                      return Ok(None);
-                    }
-                  }
+        PrefixCandidate::Miss => {}
+      }
 
-                  super::record_disk_cache_hit();
-                  super::record_disk_cache_bytes(resource.bytes.len());
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Ok(Some((current, resource)));
-                }
-                SnapshotPrefixRead::Error(err) => {
-                  super::record_disk_cache_hit();
-                  super::record_disk_cache_bytes(0);
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Err(err);
-                }
-                SnapshotPrefixRead::Timeout(err) => {
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Err(Error::Render(err));
-                }
-                _ => {}
+      if let Some(legacy_vary_key) =
+        super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())
+      {
+        if legacy_vary_key != vary_key {
+          let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+          let legacy_data_path = self.data_path_for_key(&legacy_key);
+          let legacy_meta_path = self.meta_path_for_data(&legacy_data_path);
+
+          match read_prefix_candidate(&legacy_key, &legacy_data_path, &legacy_meta_path)? {
+            PrefixCandidate::Hit(resource) => {
+              if validate_resource(&legacy_key, &legacy_data_path, &legacy_meta_path, &resource)
+                .is_some()
+              {
+                super::record_disk_cache_hit();
+                super::record_disk_cache_bytes(resource.bytes.len());
+                super::finish_disk_cache_diagnostics(disk_timer.take());
+                self.migrate_legacy_vary_variant_if_possible(
+                  &base_key,
+                  vary.as_deref(),
+                  &vary_key,
+                  &legacy_vary_key,
+                );
+                return Ok(Some((current, resource)));
               }
+              super::record_disk_cache_miss();
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+              return Ok(None);
             }
+            PrefixCandidate::Error(err) => {
+              super::record_disk_cache_hit();
+              super::record_disk_cache_bytes(0);
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+              return Err(err);
+            }
+            PrefixCandidate::Miss => {}
           }
         }
-        SnapshotPrefixRead::Miss => {}
       }
 
       let Some(next) =
@@ -1629,7 +1801,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.status = meta.status;
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
-    resource.vary = meta.vary.clone();
+    resource.vary = super::canonicalize_vary_header_value(meta.vary.as_deref());
     resource.response_referrer_policy = meta
       .response_referrer_policy
       .as_deref()
@@ -1763,7 +1935,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.status = meta.status;
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
-    resource.vary = meta.vary.clone();
+    resource.vary = super::canonicalize_vary_header_value(meta.vary.as_deref());
     resource.response_referrer_policy = meta
       .response_referrer_policy
       .as_deref()
@@ -2099,7 +2271,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         .response_referrer_policy
         .map(|policy| policy.as_str().to_string()),
       final_url: resource.final_url.clone().or_else(|| Some(url.to_string())),
-      vary: resource.vary.clone(),
+      vary: super::canonicalize_vary_header_value(resource.vary.as_deref()),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
       timing_allow_origin: resource.timing_allow_origin.clone(),
       access_control_allow_credentials: resource.access_control_allow_credentials,
@@ -2516,17 +2688,33 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         continue;
       };
 
-      let key = self.variant_key_for_base_key(&base_key, &vary_key);
-      let data_path = self.data_path_for_key(&key);
-      let meta_path = self.meta_path_for_data(&data_path);
+      let read_snapshot_candidate =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf| -> Result<Option<CachedSnapshot>> {
+          match self.try_read_snapshot(key, &current, data_path, meta_path) {
+            SnapshotRead::Hit(snapshot) => Ok(Some(snapshot)),
+            SnapshotRead::Timeout(err) => Err(Error::Render(err)),
+            SnapshotRead::Locked => {
+              let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
+              if !max_wait.is_zero() {
+                let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
+                let unlocked = self.wait_for_unlock(data_path, max_wait);
+                super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
+                if unlocked {
+                  match self.try_read_snapshot(key, &current, data_path, meta_path) {
+                    SnapshotRead::Hit(snapshot) => return Ok(Some(snapshot)),
+                    SnapshotRead::Timeout(err) => return Err(Error::Render(err)),
+                    _ => {}
+                  }
+                }
+              }
+              Ok(None)
+            }
+            SnapshotRead::Miss => Ok(None),
+          }
+        };
 
-      match self.try_read_snapshot(
-        &key,
-        &current,
-        &data_path,
-        &meta_path,
-      ) {
-        SnapshotRead::Hit(snapshot) => {
+      let validate_snapshot =
+        |key: &str, data_path: &PathBuf, meta_path: &PathBuf, snapshot: &CachedSnapshot| {
           if let super::CacheValue::Resource(res) = &snapshot.value {
             if let Some(vary) = res.vary.as_deref() {
               let allow_unhandled =
@@ -2534,73 +2722,69 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               if super::vary_contains_star(vary)
                 || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
               {
-                self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
+                self.remove_entry_files_best_effort_if_unlocked(key, data_path, meta_path);
                 self.remove_alias_for(kind, url, origin_key, credentials_partition);
-                super::record_disk_cache_miss();
-                super::finish_disk_cache_diagnostics(disk_timer.take());
-                return Ok(None);
- 
+                return None;
               }
             }
           }
+          Some(())
+        };
 
+      let canonical_key = self.variant_key_for_base_key(&base_key, &vary_key);
+      let canonical_data_path = self.data_path_for_key(&canonical_key);
+      let canonical_meta_path = self.meta_path_for_data(&canonical_data_path);
+
+      if let Some(snapshot) =
+        read_snapshot_candidate(&canonical_key, &canonical_data_path, &canonical_meta_path)?
+      {
+        if validate_snapshot(
+          &canonical_key,
+          &canonical_data_path,
+          &canonical_meta_path,
+          &snapshot,
+        )
+        .is_some()
+        {
           super::record_disk_cache_hit();
           super::record_disk_cache_bytes(snapshot.value.size());
           super::finish_disk_cache_diagnostics(disk_timer.take());
           return Ok(Some((current, snapshot)));
         }
-        SnapshotRead::Timeout(err) => {
-          super::finish_disk_cache_diagnostics(disk_timer.take());
-          return Err(Error::Render(err));
-        }
-        SnapshotRead::Locked => {
-          let max_wait = self.deadline_aware_lock_wait(READ_LOCK_WAIT_TIMEOUT);
-          if !max_wait.is_zero() {
-            let lock_wait_timer = super::start_disk_cache_lock_wait_diagnostics();
-            let unlocked = self.wait_for_unlock(&data_path, max_wait);
-            super::finish_disk_cache_lock_wait_diagnostics(lock_wait_timer);
-            if unlocked {
-              match self.try_read_snapshot(
-                &key,
-                &current,
-                &data_path,
-                &meta_path,
-              ) {
-                SnapshotRead::Hit(snapshot) => {
-                  if let super::CacheValue::Resource(res) = &snapshot.value {
-                    if let Some(vary) = res.vary.as_deref() {
-                      let allow_unhandled =
-                        self.disk_config.allow_unhandled_vary || super::allow_unhandled_vary_env();
-                      if super::vary_contains_star(vary)
-                        || (!allow_unhandled && !super::vary_is_cacheable(vary, kind, origin_key))
-                      {
-                        self.remove_entry_files_best_effort_if_unlocked(
-                          &key, &data_path, &meta_path,
-                        );
-                        self.remove_alias_for(kind, url, origin_key, credentials_partition);
-                        super::record_disk_cache_miss();
-                        super::finish_disk_cache_diagnostics(disk_timer.take());
-                        return Ok(None);
- 
-                      }
-                    }
-                  }
+        super::record_disk_cache_miss();
+        super::finish_disk_cache_diagnostics(disk_timer.take());
+        return Ok(None);
+      }
 
-                  super::record_disk_cache_hit();
-                  super::record_disk_cache_bytes(snapshot.value.size());
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Ok(Some((current, snapshot)));
-                }
-                SnapshotRead::Timeout(err) => {
-                  super::finish_disk_cache_diagnostics(disk_timer.take());
-                  return Err(Error::Render(err));
-                }
-                _ => {}
-              }
+      if let Some(legacy_vary_key) =
+        super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())
+      {
+        if legacy_vary_key != vary_key {
+          let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+          let legacy_data_path = self.data_path_for_key(&legacy_key);
+          let legacy_meta_path = self.meta_path_for_data(&legacy_data_path);
+          if let Some(snapshot) =
+            read_snapshot_candidate(&legacy_key, &legacy_data_path, &legacy_meta_path)?
+          {
+            if validate_snapshot(&legacy_key, &legacy_data_path, &legacy_meta_path, &snapshot)
+              .is_some()
+            {
+              super::record_disk_cache_hit();
+              super::record_disk_cache_bytes(snapshot.value.size());
+              super::finish_disk_cache_diagnostics(disk_timer.take());
+              self.migrate_legacy_vary_variant_if_possible(
+                &base_key,
+                vary.as_deref(),
+                &vary_key,
+                &legacy_vary_key,
+              );
+              return Ok(Some((current, snapshot)));
             }
+            super::record_disk_cache_miss();
+            super::finish_disk_cache_diagnostics(disk_timer.take());
+            return Ok(None);
           }
         }
-        SnapshotRead::Miss => {}
       }
 
       let Some(next) =
@@ -2799,7 +2983,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       // URL here as well so callers consuming the cached artifact can still enforce final-URL
       // policies without hitting the network.
       final_url: Some(canonical.clone()),
-      vary: resource.vary.clone(),
+      vary: super::canonicalize_vary_header_value(resource.vary.as_deref()),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
       timing_allow_origin: resource.timing_allow_origin.clone(),
       access_control_allow_credentials: resource.access_control_allow_credentials,
@@ -3858,7 +4042,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       referrer_url: request.referrer_url,
       client_origin: request.client_origin,
       referrer_policy: request.referrer_policy,
-      credentials_mode: default_credentials_mode,
+      credentials_mode: request.credentials_mode,
     };
     let artifact_stored_at = snapshot
       .http_cache
@@ -3871,7 +4055,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
           canonical_request,
           artifact,
           None,
-          default_credentials_mode,
+          default_credentials_partition,
         )
       });
     let resource_stored_at = self.stored_at_for_cached_entry(
@@ -3879,14 +4063,14 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       &canonical,
       canonical_request,
       None,
-      default_credentials_mode,
+      default_credentials_partition,
     );
     if resource_stored_at.is_none()
       || artifact_stored_at.is_none()
       || resource_stored_at != artifact_stored_at
     {
       let base_key =
-        self.artifact_key_with_partition(kind, &canonical, artifact, None, default_credentials_mode);
+        self.artifact_key_with_partition(kind, &canonical, artifact, None, default_credentials_partition);
       self.remove_entry_family_files_best_effort(&base_key);
       return None;
     }
@@ -3908,6 +4092,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
   ) -> Option<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
     let origin_key = super::cors_cache_partition_key(&req);
+    let credentials_partition = super::CacheCredentialsPartition::for_request(&req);
     let snapshot = self
       .read_disk_artifact(
         kind,
@@ -3915,7 +4100,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
         req,
         artifact,
         origin_key.as_deref(),
-        super::CacheCredentialsPartition::for_request(&req),
+        credentials_partition,
       )
       .ok()
       .flatten();
@@ -3939,7 +4124,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
           canonical_request,
           artifact,
           origin_key.as_deref(),
-          req.credentials_mode,
+          credentials_partition,
         )
       });
     let resource_stored_at = self.stored_at_for_cached_entry(
@@ -3947,7 +4132,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       &canonical,
       canonical_request,
       origin_key.as_deref(),
-      req.credentials_mode,
+      credentials_partition,
     );
     if resource_stored_at.is_none()
       || artifact_stored_at.is_none()
@@ -3958,7 +4143,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
         &canonical,
         artifact,
         origin_key.as_deref(),
-        req.credentials_mode,
+        credentials_partition,
       );
       self.remove_entry_family_files_best_effort(&base_key);
       return None;
@@ -4315,6 +4500,88 @@ mod tests {
       disk.read_vary_for_base_key(&base_key).as_deref(),
       Some("\u{00A0}"),
       "NBSP must not be treated as HTTP whitespace when loading persisted Vary metadata"
+    );
+  }
+
+  #[test]
+  fn disk_cache_reads_legacy_vary_variant_keys_and_migrates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let url = "https://example.com/legacy_vary";
+
+    // Simulate an older on-disk entry whose `.vary` content (and therefore variant filename) used
+    // raw casing + ordering rather than the canonicalized algorithm.
+    let legacy_vary = "Origin, Accept-Language";
+
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let base_key = disk.cache_key(TEST_KIND, url);
+    fs::write(
+      disk.vary_metadata_path_for_base_key(&base_key),
+      legacy_vary.as_bytes(),
+    )
+    .expect("write legacy vary");
+
+    let request = FetchRequest::new(url, TEST_KIND.into());
+    let legacy_vary_key = super::super::compute_vary_key_for_request_legacy(
+      &PanicFetcher,
+      request,
+      Some(legacy_vary),
+    )
+    .expect("legacy vary key");
+
+    let key = disk.variant_key_for_base_key(&base_key, &legacy_vary_key);
+    let data_path = disk.data_path_for_key(&key);
+    let meta_path = disk.meta_path_for_data(&data_path);
+
+    let body = b"cached";
+    fs::write(&data_path, body).expect("write data");
+    let meta = StoredMetadata {
+      url: url.to_string(),
+      status: Some(200),
+      content_type: Some("text/plain".to_string()),
+      nosniff: false,
+      content_encoding: None,
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      final_url: Some(url.to_string()),
+      vary: Some(legacy_vary.to_string()),
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+      stored_at: now_seconds(),
+      len: body.len(),
+      cache: None,
+      error: None,
+    };
+    fs::write(&meta_path, serde_json::to_vec(&meta).expect("serialize meta"))
+      .expect("write meta");
+
+    // "Restart" by constructing a new disk cache instance that should hit the on-disk files
+    // without calling the inner fetcher.
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let fetched = disk.fetch(url).expect("disk fetch");
+    assert_eq!(fetched.bytes, body);
+
+    // The read should self-heal by rewriting `.vary` to the canonical value and migrating the
+    // variant filename to the canonical hash.
+    let canonical_vary_path = disk.vary_metadata_path_for_base_key(&base_key);
+    let canonical_vary = fs::read_to_string(&canonical_vary_path).expect("read canonical vary");
+    assert_eq!(canonical_vary, "accept-language, origin");
+
+    let canonical_vary_key = super::super::compute_vary_key_for_request(
+      &PanicFetcher,
+      request,
+      Some(legacy_vary),
+    )
+    .expect("canonical vary key");
+    let canonical_key = disk.variant_key_for_base_key(&base_key, &canonical_vary_key);
+    assert!(
+      disk.data_path_for_key(&canonical_key).exists(),
+      "expected canonical variant data to exist"
+    );
+    assert!(
+      disk.meta_path_for_data(&disk.data_path_for_key(&canonical_key)).exists(),
+      "expected canonical variant meta to exist"
     );
   }
 
@@ -5765,6 +6032,8 @@ mod tests {
       // validation check.
       let origin_a = super::super::cors_cache_partition_key(&req_a);
       let origin_b = super::super::cors_cache_partition_key(&req_b);
+      let creds_a = super::super::CacheCredentialsPartition::for_request(&req_a);
+      let creds_b = super::super::CacheCredentialsPartition::for_request(&req_b);
       let mut seeded = FetchedResource::new(b"seed".to_vec(), Some("image/png".to_string()));
       seeded.status = Some(200);
       seeded.final_url = Some(url.to_string());
@@ -5777,7 +6046,7 @@ mod tests {
         None,
         None,
         origin_a.as_deref(),
-        req_a.credentials_mode,
+        creds_a,
       );
       disk.persist_resource_with_partition(
         FetchContextKind::ImageCors,
@@ -5788,7 +6057,7 @@ mod tests {
         None,
         None,
         origin_b.as_deref(),
-        req_b.credentials_mode,
+        creds_b,
       );
 
       let mut source_a = FetchedResource::new(
@@ -8042,7 +8311,7 @@ mod tests {
         alias_url,
         &canonical,
         None,
-        FetchCredentialsMode::Include,
+        super::super::CacheCredentialsPartition::Include,
         &request_sig,
       );
     }
@@ -8065,7 +8334,7 @@ mod tests {
           TEST_KIND,
           alias_url,
           None,
-          FetchCredentialsMode::Include,
+          super::super::CacheCredentialsPartition::Include,
           &request_sig,
         )
         .as_deref(),
@@ -8080,7 +8349,7 @@ mod tests {
         TEST_KIND,
         alias_url,
         None,
-        FetchCredentialsMode::Include,
+        super::super::CacheCredentialsPartition::Include,
         &evicted_sig,
       ),
       None,
@@ -8102,7 +8371,7 @@ mod tests {
         alias_url,
         canonical,
         None,
-        FetchCredentialsMode::Include,
+        super::super::CacheCredentialsPartition::Include,
         &request_sig,
       );
     }
@@ -8124,7 +8393,7 @@ mod tests {
         TEST_KIND,
         alias_url,
         None,
-        FetchCredentialsMode::Include,
+        super::super::CacheCredentialsPartition::Include,
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       )
       .as_deref(),
@@ -8149,7 +8418,7 @@ mod tests {
       alias_url,
       canonical,
       None,
-      FetchCredentialsMode::Include,
+      super::super::CacheCredentialsPartition::Include,
       request_sig,
     );
 
@@ -8165,7 +8434,7 @@ mod tests {
         TEST_KIND,
         alias_url,
         None,
-        FetchCredentialsMode::Include,
+        super::super::CacheCredentialsPartition::Include,
         request_sig,
       )
       .as_deref(),

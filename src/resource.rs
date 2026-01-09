@@ -8332,6 +8332,59 @@ const VARY_KEY_EMPTY: &str = "";
 const INFLIGHT_VARY_SIGNATURE_HEADERS: &str =
   "accept-encoding, accept-language, origin, referer, user-agent";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VaryKeyFields {
+  /// No usable `Vary` field-names were provided.
+  Empty,
+  /// `Vary: *` (or an equivalent value containing `*`) which must be treated as uncacheable.
+  Star,
+  /// Canonicalized field-name list: lowercased, sorted lexicographically, and deduplicated.
+  Fields(Vec<String>),
+}
+
+impl VaryKeyFields {
+  fn parse(vary: Option<&str>) -> Self {
+    let Some(vary) = vary else {
+      return Self::Empty;
+    };
+    let vary = trim_http_whitespace(vary);
+    if vary.is_empty() {
+      return Self::Empty;
+    }
+
+    let mut fields: Vec<String> = Vec::new();
+    for token in vary.split(',') {
+      let token = trim_http_whitespace(token);
+      if token.is_empty() {
+        continue;
+      }
+      if token == "*" {
+        return Self::Star;
+      }
+      fields.push(token.to_ascii_lowercase());
+    }
+    fields.sort();
+    fields.dedup();
+    if fields.is_empty() {
+      Self::Empty
+    } else {
+      Self::Fields(fields)
+    }
+  }
+
+  fn canonical_string(&self) -> Option<String> {
+    match self {
+      Self::Empty => None,
+      Self::Star => Some("*".to_string()),
+      Self::Fields(fields) => Some(fields.join(", ")),
+    }
+  }
+}
+
+fn canonicalize_vary_header_value(vary: Option<&str>) -> Option<String> {
+  VaryKeyFields::parse(vary).canonical_string()
+}
+
 fn inflight_signature_for_request<F: ResourceFetcher>(
   fetcher: &F,
   request: FetchRequest<'_>,
@@ -8354,12 +8407,43 @@ pub fn compute_vary_key_for_request(
   req: FetchRequest<'_>,
   vary: Option<&str>,
 ) -> Option<String> {
+  match VaryKeyFields::parse(vary) {
+    VaryKeyFields::Empty => Some(VARY_KEY_EMPTY.to_string()),
+    VaryKeyFields::Star => None,
+    VaryKeyFields::Fields(fields) => {
+      let mut hasher = Sha256::new();
+      for name in fields {
+        let value = fetcher.request_header_value(req, &name)?;
+        hasher.update(name.as_bytes());
+        hasher.update(b"\n");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\n");
+      }
+
+      let digest = hasher.finalize();
+      const HEX: &[u8; 16] = b"0123456789abcdef";
+      let mut out = String::with_capacity(64);
+      for &b in digest.iter() {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+      }
+      Some(out)
+    }
+  }
+}
+
+/// Legacy `Vary` variant key computation.
+///
+/// Older cache entries (disk cache + bundles) hashed the raw `Vary` field-name tokens (including
+/// their original casing and order). We keep this helper for backwards-compatible lookups.
+fn compute_vary_key_for_request_legacy<F: ResourceFetcher>(
+  fetcher: &F,
+  req: FetchRequest<'_>,
+  vary: Option<&str>,
+) -> Option<String> {
   let Some(vary) = vary.filter(|v| !trim_http_whitespace(v).is_empty()) else {
     return Some(VARY_KEY_EMPTY.to_string());
   };
-  if trim_http_whitespace(vary) == "*" {
-    return None;
-  }
 
   let mut hasher = Sha256::new();
   let mut saw_field = false;
@@ -8367,6 +8451,9 @@ pub fn compute_vary_key_for_request(
     let name = trim_http_whitespace(field);
     if name.is_empty() {
       continue;
+    }
+    if name == "*" {
+      return None;
     }
     saw_field = true;
     let value = fetcher.request_header_value(req, name)?;
@@ -8949,6 +9036,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     entry: CacheEntry,
     final_url: Option<&str>,
   ) -> CacheKey {
+    let vary = canonicalize_vary_header_value(vary.as_deref());
     let canonical_url = self.canonical_url(&requested.url, final_url);
     let canonical_request = FetchRequest {
       url: &canonical_url,
@@ -10115,29 +10203,8 @@ fn header_has_nosniff(headers: &HeaderMap) -> bool {
 /// - Multiple `Vary` headers and comma-separated values are coalesced.
 /// - Returns `Some("*")` when `Vary: *` is present.
 fn parse_vary_headers(headers: &HeaderMap) -> Option<String> {
-  let mut out: Vec<String> = Vec::new();
-  for value in headers.get_all("vary").iter() {
-    let Ok(value) = value.to_str() else {
-      continue;
-    };
-    for token in value.split(',') {
-      let token = trim_http_whitespace(token);
-      if token.is_empty() {
-        continue;
-      }
-      if token == "*" {
-        return Some("*".to_string());
-      }
-      out.push(token.to_ascii_lowercase());
-    }
-  }
-  out.sort();
-  out.dedup();
-  if out.is_empty() {
-    None
-  } else {
-    Some(out.join(", "))
-  }
+  let raw = header_values_joined(headers, "vary")?;
+  canonicalize_vary_header_value(Some(&raw))
 }
 
 fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
@@ -20923,6 +20990,88 @@ mod tests {
     headers.append(header::VARY, http::HeaderValue::from_static("Origin"));
     headers.append(header::VARY, http::HeaderValue::from_static("*"));
     assert_eq!(parse_vary_headers(&headers).as_deref(), Some("*"));
+  }
+
+  #[test]
+  fn compute_vary_key_normalizes_field_name_casing() {
+    #[derive(Clone)]
+    struct HeaderValueFetcher;
+
+    impl ResourceFetcher for HeaderValueFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("not used by vary-key tests")
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, _header_name: &str) -> Option<String> {
+        Some("value".to_string())
+      }
+    }
+
+    let fetcher = HeaderValueFetcher;
+    let req = FetchRequest::new("https://example.com/", FetchDestination::Other);
+    let a = compute_vary_key_for_request(&fetcher, req, Some("Origin")).expect("vary key a");
+    let b = compute_vary_key_for_request(&fetcher, req, Some("origin")).expect("vary key b");
+    assert_eq!(a, b);
+  }
+
+  #[test]
+  fn compute_vary_key_normalizes_field_name_order_and_deduplicates() {
+    #[derive(Clone)]
+    struct HeaderValueFetcher;
+
+    impl ResourceFetcher for HeaderValueFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("not used by vary-key tests")
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, _header_name: &str) -> Option<String> {
+        Some("value".to_string())
+      }
+    }
+
+    let fetcher = HeaderValueFetcher;
+    let req = FetchRequest::new("https://example.com/", FetchDestination::Other);
+
+    let a = compute_vary_key_for_request(&fetcher, req, Some("origin, accept-language"))
+      .expect("vary key a");
+    let b = compute_vary_key_for_request(&fetcher, req, Some("accept-language,origin"))
+      .expect("vary key b");
+    let c = compute_vary_key_for_request(&fetcher, req, Some("Origin, origin, accept-language"))
+      .expect("vary key c");
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+  }
+
+  #[test]
+  fn vary_normalization_trims_only_http_ows() {
+    #[derive(Clone)]
+    struct HeaderValueFetcher;
+
+    impl ResourceFetcher for HeaderValueFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("not used by vary-key tests")
+      }
+
+      fn request_header_value(&self, _req: FetchRequest<'_>, _header_name: &str) -> Option<String> {
+        Some("value".to_string())
+      }
+    }
+
+    let fetcher = HeaderValueFetcher;
+    let req = FetchRequest::new("https://example.com/", FetchDestination::Other);
+
+    let canonical = canonicalize_vary_header_value(Some(" \torigin\t ")).expect("canonical vary");
+    assert_eq!(canonical, "origin");
+
+    // NBSP must not be treated as HTTP OWS, so it must remain part of the field-name.
+    let nbsp_name = "\u{00A0}origin";
+    let nbsp = canonicalize_vary_header_value(Some(nbsp_name)).expect("canonical vary nbsp");
+    assert_eq!(nbsp, nbsp_name);
+
+    let key_origin =
+      compute_vary_key_for_request(&fetcher, req, Some("origin")).expect("vary key origin");
+    let key_nbsp = compute_vary_key_for_request(&fetcher, req, Some(nbsp_name)).expect("vary key");
+    assert_ne!(key_origin, key_nbsp);
   }
 
   #[test]
