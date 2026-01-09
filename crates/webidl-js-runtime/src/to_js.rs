@@ -6,7 +6,10 @@
 
 use crate::runtime::WebIdlJsRuntime;
 
-use webidl_ir::{DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind, NumericType, TypeContext, WebIdlValue};
+use webidl_ir::{
+  DictionaryMemberSchema, IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext,
+  WebIdlValue,
+};
 
 /// Limits applied while converting WebIDL values back into JavaScript.
 ///
@@ -99,11 +102,11 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
     }
 
     IdlType::AsyncSequence(_) => Err(rt.throw_type_error("async sequence return values are not supported")),
-    IdlType::Record(_key_ty, value_ty) => {
+    IdlType::Record(key_ty, value_ty) => {
       let WebIdlValue::Record { entries, .. } = value else {
         return Err(rt.throw_type_error("expected a record value"));
       };
-      to_js_record(rt, ctx, value_ty, entries, limits)
+      to_js_record(rt, ctx, key_ty, value_ty, entries, limits)
     }
     IdlType::Promise(_) => Err(rt.throw_type_error("promise return values are not supported yet")),
   }
@@ -139,10 +142,10 @@ fn to_js_any<R: WebIdlJsRuntime>(
     WebIdlValue::String(s) | WebIdlValue::Enum(s) => to_js_string(rt, s, limits),
     WebIdlValue::Sequence { elem_ty, values } => to_js_sequence(rt, ctx, elem_ty, values, limits),
     WebIdlValue::Record {
-      key_ty: _,
+      key_ty,
       value_ty,
       entries,
-    } => to_js_record(rt, ctx, value_ty, entries, limits),
+    } => to_js_record(rt, ctx, key_ty, value_ty, entries, limits),
     WebIdlValue::Dictionary { name, members } => {
       // Convert as if the return type was that dictionary.
       to_js_dictionary(rt, ctx, name, members, limits)
@@ -358,6 +361,7 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
 fn to_js_record<R: WebIdlJsRuntime>(
   rt: &mut R,
   ctx: &TypeContext,
+  key_ty: &IdlType,
   value_ty: &IdlType,
   entries: &std::collections::BTreeMap<String, WebIdlValue>,
   limits: ToJsLimits,
@@ -366,16 +370,54 @@ fn to_js_record<R: WebIdlJsRuntime>(
     return Err(rt.throw_range_error("record exceeds maximum entry count"));
   }
 
+  let string_type = record_key_string_type(ctx, key_ty).ok_or_else(|| {
+    rt.throw_type_error("record key type is not supported (expected a string type)")
+  })?;
+
   let obj = rt.alloc_object()?;
   for (key, v) in entries {
     if key.len() > limits.max_string_bytes {
       return Err(rt.throw_range_error("record key exceeds maximum length"));
+    }
+    if string_type == StringType::ByteString && key.chars().any(|c| (c as u32) > 0xFF) {
+      return Err(rt.throw_type_error("record ByteString keys must only contain code points <= 0xFF"));
     }
     let js_value = to_js_with_limits(rt, ctx, value_ty, v, limits)?;
     let prop_key = rt.property_key_from_str(key)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
   Ok(obj)
+}
+
+fn record_key_string_type(ctx: &TypeContext, ty: &IdlType) -> Option<StringType> {
+  record_key_string_type_inner(ctx, ty, &mut std::collections::BTreeSet::<String>::new())
+}
+
+fn record_key_string_type_inner(
+  ctx: &TypeContext,
+  ty: &IdlType,
+  visited_typedefs: &mut std::collections::BTreeSet<String>,
+) -> Option<StringType> {
+  match ty.innermost_type() {
+    IdlType::String(s) => Some(*s),
+    IdlType::Named(NamedType { name, kind }) => {
+      let resolved = match kind {
+        NamedTypeKind::Unresolved => resolve_named_kind(ctx, name)?,
+        other => other.clone(),
+      };
+      match resolved {
+        NamedTypeKind::Typedef => {
+          if !visited_typedefs.insert(name.clone()) {
+            return None;
+          }
+          let inner = ctx.typedefs.get(name)?;
+          record_key_string_type_inner(ctx, inner, visited_typedefs)
+        }
+        _ => None,
+      }
+    }
+    _ => None,
+  }
 }
 
 #[cfg(test)]
@@ -624,6 +666,39 @@ mod tests {
       "expected TypeError, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn record_bytestring_keys_validate_code_points() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("record<ByteString, long>")?;
+    let key_ty = parse_idl_type_complete("ByteString")?;
+    let value_ty = parse_idl_type_complete("long")?;
+
+    let mut entries = BTreeMap::new();
+    entries.insert("\u{0100}".to_string(), WebIdlValue::Long(1));
+    let value = WebIdlValue::Record {
+      key_ty: Box::new(key_ty),
+      value_ty: Box::new(value_ty),
+      entries,
+    };
+
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
     Ok(())
   }
 }
