@@ -61,6 +61,8 @@ impl BrowserTabJsExecutor for QueuedMutationExecutor {
 
 #[test]
 fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>

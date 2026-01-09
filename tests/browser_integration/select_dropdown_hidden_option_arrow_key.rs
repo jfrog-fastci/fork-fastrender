@@ -46,6 +46,8 @@ fn selected_option_indices(dom: &fastrender::dom::DomNode) -> Vec<usize> {
 
 #[test]
 fn select_dropdown_arrow_keys_skip_hidden_options_when_box_tree_is_available() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>

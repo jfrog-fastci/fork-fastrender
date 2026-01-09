@@ -237,6 +237,8 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
 
 #[test]
 fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_overrides_base_url() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html><html><head>
     <base href="https://cdn.example/">
     <style>#t:target { background-color: rgb(1,2,3); }</style>
@@ -267,6 +269,8 @@ fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_over
 
 #[test]
 fn base_href_does_not_override_target_fragment() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   // Regression test: `:target` must be based on the document URL fragment, not the effective base
   // URL after applying `<base href>`.
   let html = r#"<!doctype html><html><head>
@@ -298,6 +302,8 @@ fn base_href_does_not_override_target_fragment() -> Result<()> {
 
 #[test]
 fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -331,6 +337,8 @@ fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
 
 #[test]
 fn browser_document2_cached_paint_respects_cancel_callback() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   use std::sync::atomic::{AtomicBool, Ordering};
 
   let html = r#"<!doctype html>

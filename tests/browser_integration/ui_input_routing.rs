@@ -248,6 +248,7 @@ fn browser_tab_controller_routes_basic_inputs() -> Result<()> {
 
 #[test]
 fn browser_tab_controller_select_listbox_scroll_then_click_selects_scrolled_row() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
   let tab_id = TabId(1);
   let viewport_css = (200, 200);
   let url = "https://example.com/index.html";

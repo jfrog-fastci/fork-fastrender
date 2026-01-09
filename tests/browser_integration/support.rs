@@ -371,6 +371,7 @@ mod tests {
 
   #[test]
   fn create_tab_sets_expected_fields_and_default_cancel() {
+    let _lock = crate::browser_integration::stage_listener_test_lock();
     let tab_id = TabId(123);
     let msg = create_tab(tab_id, Some("about:blank"));
 
@@ -393,6 +394,7 @@ mod tests {
 
   #[test]
   fn create_tab_preserves_none_initial_url() {
+    let _lock = crate::browser_integration::stage_listener_test_lock();
     let tab_id = TabId(7);
     let msg = create_tab(tab_id, None);
 

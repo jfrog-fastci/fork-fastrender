@@ -331,6 +331,7 @@ fn history_back_forward_emits_committed_urls() {
 
 #[test]
 fn reload_preserves_scroll_offset() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
   std::fs::write(

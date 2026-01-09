@@ -6,6 +6,8 @@ use std::rc::Rc;
 
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
   let html_a = r#"
     <html>
@@ -78,6 +80,8 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
 
 #[test]
 fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
 
   let renderer = FastRender::builder()
@@ -144,6 +148,8 @@ fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
 
 #[test]
 fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() -> Result<()> {
+  #[cfg(feature = "browser_ui")]
+  let _lock = super::stage_listener_test_lock();
   let options = RenderOptions::new().with_viewport(64, 64);
   let renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
