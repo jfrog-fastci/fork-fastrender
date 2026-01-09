@@ -1557,6 +1557,28 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   }
 
+  if let Some(color) = style.svg_stop_color {
+    if parent.and_then(|p| p.svg_stop_color) != Some(color) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stop-color: ");
+      let _ = write!(
+        &mut out,
+        "rgba({},{},{},{:.3})",
+        color.r,
+        color.g,
+        color.b,
+        color.a.clamp(0.0, 1.0)
+      );
+    }
+  }
+
+  if let Some(opacity) = style.svg_stop_opacity {
+    if parent.and_then(|p| p.svg_stop_opacity) != Some(opacity) {
+      start_decl(&mut out, &mut any);
+      let _ = write!(&mut out, "stop-opacity: {:.3}", opacity);
+    }
+  }
+
   if let Some(marker) = style.svg_marker_start.as_ref() {
     if parent.and_then(|p| p.svg_marker_start.as_ref()) != Some(marker) {
       start_decl(&mut out, &mut any);

@@ -6635,6 +6635,8 @@ pub(crate) fn apply_property_from_source(
     "stroke-dashoffset" => styles.svg_stroke_dashoffset = source.svg_stroke_dashoffset,
     "fill-opacity" => styles.svg_fill_opacity = source.svg_fill_opacity,
     "stroke-opacity" => styles.svg_stroke_opacity = source.svg_stroke_opacity,
+    "stop-color" => styles.svg_stop_color = source.svg_stop_color,
+    "stop-opacity" => styles.svg_stop_opacity = source.svg_stop_opacity,
     "marker-start" => styles.svg_marker_start = source.svg_marker_start.clone(),
     "marker-mid" => styles.svg_marker_mid = source.svg_marker_mid.clone(),
     "marker-end" => styles.svg_marker_end = source.svg_marker_end.clone(),
@@ -6910,6 +6912,14 @@ fn apply_global_keyword(
       }
       "stroke-opacity" => {
         styles.svg_stroke_opacity = Some(1.0);
+        return true;
+      }
+      "stop-color" => {
+        styles.svg_stop_color = Some(Rgba::BLACK);
+        return true;
+      }
+      "stop-opacity" => {
+        styles.svg_stop_opacity = Some(1.0);
         return true;
       }
       "marker-start" => {
@@ -8706,6 +8716,24 @@ fn apply_declaration_with_base_internal_with_order(
             return Some(ColorOrNone::Color(
               color.to_rgba_with_scheme(styles.color, is_dark_color_scheme),
             ));
+          }
+        }
+        None
+      }
+    }
+  };
+
+  let resolve_svg_stop_color = |value: &PropertyValue| -> Option<Rgba> {
+    match value {
+      // `none` isn't meaningful for SVG stop-color, but allow it anyway and treat it as transparent.
+      PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(Rgba::TRANSPARENT),
+      _ => {
+        if let Some(rgba) = resolve_color_value(value) {
+          return Some(rgba);
+        }
+        if let PropertyValue::Keyword(kw) = value {
+          if let Ok(color) = Color::parse(kw) {
+            return Some(color.to_rgba_with_scheme(styles.color, is_dark_color_scheme));
           }
         }
         None
@@ -13713,6 +13741,16 @@ fn apply_declaration_with_base_internal_with_order(
     "stroke-opacity" => {
       if let Some(value) = resolve_svg_opacity(resolved_value) {
         styles.svg_stroke_opacity = Some(value);
+      }
+    }
+    "stop-color" => {
+      if let Some(value) = resolve_svg_stop_color(resolved_value) {
+        styles.svg_stop_color = Some(value);
+      }
+    }
+    "stop-opacity" => {
+      if let Some(value) = resolve_svg_opacity(resolved_value) {
+        styles.svg_stop_opacity = Some(value);
       }
     }
     "marker-start" => {

@@ -523,6 +523,8 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "visibility",
   "white-space",
   "width",
+  "stop-color",
+  "stop-opacity",
   "stroke",
   "stroke-dasharray",
   "stroke-dashoffset",

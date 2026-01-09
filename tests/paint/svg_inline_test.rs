@@ -565,6 +565,47 @@ fn inline_svg_renders_gradients_with_clip_and_mask() {
 }
 
 #[test]
+fn inline_svg_preserves_stop_color_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        .shape { fill: url(#g); }
+        stop:first-child { stop-color: rgb(255, 0, 0); }
+        stop:last-child { stop-color: rgb(0, 0, 255); }
+      </style>
+      <svg width="100" height="20" viewBox="0 0 100 20">
+        <defs>
+          <linearGradient id="g" x1="0" x2="1" y1="0" y2="0"><stop offset="0%" /><stop offset="100%" /></linearGradient>
+        </defs>
+        <rect class="shape" width="100" height="20" />
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 120, 30);
+
+      let left = pixel(&pixmap, 1, 10);
+      assert!(
+        left[0] > 230 && left[1] < 30 && left[2] < 30 && left[3] == 255,
+        "expected left side to be red, got {left:?}"
+      );
+
+      let right = pixel(&pixmap, 98, 10);
+      assert!(
+        right[2] > 230 && right[0] < 30 && right[1] < 30 && right[3] == 255,
+        "expected right side to be blue, got {right:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_renders_foreign_object_html() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
