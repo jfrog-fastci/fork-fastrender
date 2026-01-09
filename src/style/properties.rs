@@ -7876,6 +7876,63 @@ impl ComputedStyle {
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
     self.font_size_pending = None;
   }
+
+  /// Recomputes properties whose winning declarations depended on `currentColor`.
+  ///
+  /// This is used after mutating `color` at paint time (for example via animations/transitions, or
+  /// by inheriting an updated `color` from an ancestor) so `currentColor`-dependent computed values
+  /// stay in sync.
+  pub fn recompute_current_color_dependent_properties(
+    &mut self,
+    parent_styles: &ComputedStyle,
+    viewport: Size,
+  ) {
+    if self.current_color_dependent_declarations.is_empty() {
+      return;
+    }
+
+    let mut declarations: Vec<(&'static str, crate::style::CurrentColorDependentDeclaration)> = self
+      .current_color_dependent_declarations
+      .iter()
+      .map(|(property, entry)| (*property, entry.clone()))
+      .collect();
+
+    // Preserve cascade ordering so properties that are applied in a particular order continue to
+    // see the same already-applied state when they resolve `currentColor`.
+    declarations.sort_unstable_by_key(|(_, entry)| entry.order);
+
+    for (property, entry) in declarations {
+      let decl = Declaration {
+        property: property.into(),
+        value: entry.value,
+        raw_value: String::new(),
+        important: false,
+        contains_var: entry.contains_var,
+      };
+
+      apply_declaration_with_base_internal_with_order(
+        self,
+        &decl,
+        parent_styles,
+        default_computed_style(),
+        None,
+        None,
+        parent_styles.font_size,
+        self.root_font_size,
+        viewport,
+        false,
+        self.used_dark_color_scheme,
+        entry.order,
+      );
+    }
+
+    // Mirror cascade finalization so logical properties and absolute lengths stay consistent.
+    resolve_pending_logical_properties(self);
+    apply_content_visibility_implied_containment(self);
+    crate::style::cascade::resolve_line_height_length(self, viewport);
+    crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
+    self.font_size_pending = None;
+  }
 }
 
 #[cfg(test)]
@@ -8443,6 +8500,44 @@ fn apply_declaration_with_base_internal_with_order(
     None
   };
   let resolved_value = resolved_value_owned.as_ref().unwrap_or(&decl.value);
+
+  if record_var_dependent_declarations {
+    fn value_depends_on_current_color(value: &PropertyValue) -> bool {
+      match value {
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => true,
+        PropertyValue::Color(color) => color.depends_on_current_color(),
+        PropertyValue::LinearGradient { stops, .. }
+        | PropertyValue::RepeatingLinearGradient { stops, .. }
+        | PropertyValue::ConicGradient { stops, .. }
+        | PropertyValue::RepeatingConicGradient { stops, .. } => stops
+          .iter()
+          .any(|stop| stop.color.depends_on_current_color()),
+        PropertyValue::RadialGradient { stops, .. }
+        | PropertyValue::RepeatingRadialGradient { stops, .. } => stops
+          .iter()
+          .any(|stop| stop.color.depends_on_current_color()),
+        PropertyValue::Multiple(values) => values.iter().any(value_depends_on_current_color),
+        _ => false,
+      }
+    }
+
+    if value_depends_on_current_color(resolved_value) {
+      Arc::make_mut(&mut styles.current_color_dependent_declarations).insert(
+        property,
+        crate::style::CurrentColorDependentDeclaration {
+          order,
+          value: decl.value.clone(),
+          contains_var: decl.contains_var,
+        },
+      );
+    } else if styles
+      .current_color_dependent_declarations
+      .contains_key(property)
+    {
+      Arc::make_mut(&mut styles.current_color_dependent_declarations).remove(property);
+    }
+  }
+
   if let Some(global) = global_keyword(resolved_value) {
     if apply_global_keyword(
       styles,
@@ -8454,6 +8549,9 @@ fn apply_declaration_with_base_internal_with_order(
       global,
       order,
     ) {
+      if property == "color" {
+        styles.color_is_inherited = matches!(global, GlobalKeyword::Inherit | GlobalKeyword::Unset);
+      }
       return;
     }
   }
@@ -8707,6 +8805,7 @@ fn apply_declaration_with_base_internal_with_order(
       styles.custom_property_declarations = prev_custom_property_declarations;
       styles.custom_property_revert_base = prev_custom_property_revert_base;
       styles.var_dependent_declarations = Arc::new(HashMap::new());
+      styles.current_color_dependent_declarations = Arc::new(HashMap::new());
       styles.logical.reset();
       set_all_logical_orders(&mut styles.logical, order, next_order);
       return;

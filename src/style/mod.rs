@@ -740,6 +740,24 @@ pub struct VarDependentDeclaration {
   pub value: PropertyValue,
 }
 
+/// Winning, non-custom declaration whose specified value depended on `currentColor`.
+///
+/// Stores the pre-resolution value so dependent properties can be recomputed at paint time when the
+/// element's used `color` value changes (for example via transitions/animations).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurrentColorDependentDeclaration {
+  /// Cascade order of the declaration.
+  pub order: i32,
+  /// Specified value before `currentColor` resolution.
+  pub value: PropertyValue,
+  /// Whether the declaration contained a `var()` reference.
+  ///
+  /// Some declarations become `currentColor`-dependent only after resolving `var()` (e.g.
+  /// `border-top-color: var(--c)` where `--c` is `currentColor`). When recomputing these
+  /// declarations at paint time, we must rerun var() substitution before resolving `currentColor`.
+  pub contains_var: bool,
+}
+
 /// Winning custom-property declaration for this element.
 ///
 /// Stores the specified value (pre-`var()` resolution) so inherited custom properties can be
@@ -1123,8 +1141,13 @@ pub struct ComputedStyle {
   pub caret_color: CaretColor,
   pub accent_color: AccentColor,
   pub color: Rgba,
-  /// Whether `color` was inherited from the parent (no specified value, or specified
-  /// `inherit`/`unset`).
+  /// Whether this element's computed `color` value is inherited from its parent.
+  ///
+  /// This is true when `color` has no specified value, or was specified as `inherit`/`unset`.
+  ///
+  /// FastRender applies transitions/animations at paint time by mutating computed styles. When an
+  /// ancestor animates `color`, descendants that didn't specify `color` must inherit the updated
+  /// value so `currentColor`-dependent properties stay correct.
   pub color_is_inherited: bool,
   pub webkit_text_fill_color: Color,
 
@@ -1242,6 +1265,11 @@ pub struct ComputedStyle {
   /// This stores the pre-var-resolution value so dependent properties can be recomputed after
   /// custom properties change (e.g. from animations).
   pub var_dependent_declarations: Arc<HashMap<&'static str, VarDependentDeclaration>>,
+  /// Winning, non-custom declarations whose specified value depended on `currentColor`.
+  ///
+  /// This stores the pre-resolution value so dependent properties can be recomputed after paint
+  /// time mutations to `color` (e.g. transitions/animations, inherited color updates).
+  pub current_color_dependent_declarations: Arc<HashMap<&'static str, CurrentColorDependentDeclaration>>,
 
   // Generated content (for ::before and ::after pseudo-elements)
   pub content: String,
@@ -1619,6 +1647,7 @@ impl Default for ComputedStyle {
       custom_property_declarations: Arc::new(HashMap::new()),
       custom_property_revert_base: CustomPropertyStore::default(),
       var_dependent_declarations: Arc::new(HashMap::new()),
+      current_color_dependent_declarations: Arc::new(HashMap::new()),
 
       content: String::new(),
       content_value: crate::style::content::ContentValue::Normal,

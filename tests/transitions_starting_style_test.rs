@@ -720,6 +720,90 @@ fn transitions_interpolate_filter_from_none() {
 }
 
 #[test]
+fn transitions_recompute_currentcolor_dependent_border_color_when_color_transitions() {
+  let html = r#"
+    <style>
+      @starting-style { #parent { color: rgb(255, 0, 0); } }
+      #parent { color: rgb(0, 0, 255); transition: color 1000ms linear; }
+      #child { width: 10px; height: 10px; border-top: 1px solid currentColor; }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "child").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_border_top_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
+}
+
+#[test]
+fn transitions_recompute_currentcolor_dependent_border_color_through_var_when_color_transitions() {
+  let html = r#"
+    <style>
+      @starting-style { #parent { color: rgb(255, 0, 0); } }
+      #parent { color: rgb(0, 0, 255); transition: color 1000ms linear; }
+      #child {
+        --c: currentColor;
+        width: 10px;
+        height: 10px;
+        border-top-width: 1px;
+        border-top-style: solid;
+        border-top-color: var(--c);
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "child").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_border_top_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
+}
+
+#[test]
+fn transitions_do_not_recompute_border_color_without_currentcolor_dependency() {
+  let html = r#"
+    <style>
+      @starting-style { #box { color: rgb(255, 0, 0); } }
+      #box {
+        width: 10px;
+        height: 10px;
+        border-top: 1px solid rgb(0, 255, 0);
+        color: rgb(0, 0, 255);
+        transition: color 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert_eq!(fragment_color(&mid, box_id), fastrender::Rgba::new(128, 0, 128, 1.0));
+  assert_eq!(
+    fragment_border_top_color(&mid, box_id),
+    fastrender::Rgba::new(0, 255, 0, 1.0)
+  );
+}
+
+#[test]
 fn transitions_interpolate_outline_color_over_time() {
   let html = r#"
     <style>

@@ -7135,6 +7135,7 @@ fn apply_animations_to_node_scoped(
       let ranges_list = &style_arc.animation_ranges;
 
       let mut animated = (*style_arc).clone();
+      let original_color = style_arc.color;
       let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
       let mut changed = false;
       let mut custom_properties_changed = false;
@@ -7476,6 +7477,33 @@ fn apply_animations_to_node_scoped(
         }
       }
 
+      if animated.color != original_color {
+        // Recompute `currentColor`-dependent cascade values against the new used color. This can
+        // overwrite animated values (including via shorthands), so rebuild the animated style on
+        // top of the recomputed base rather than applying the recomputation in-place (which could
+        // also double-apply additive compositions).
+        if !animated.current_color_dependent_declarations.is_empty() {
+          let mut recomputed = (*style_arc).clone();
+          if custom_properties_changed {
+            recomputed.custom_properties = animated.custom_properties.clone();
+            recomputed.recompute_var_dependent_properties(parent_styles, viewport_size);
+          }
+          recomputed.color = animated.color;
+          recomputed.recompute_current_color_dependent_properties(parent_styles, viewport_size);
+          animated = recomputed;
+          for (composition, values) in &applied_value_sets {
+            apply_animated_properties_with_composition(
+              &mut animated,
+              values,
+              *composition,
+              &resolve_ctx,
+            );
+          }
+        } else {
+          animated.recompute_current_color_dependent_properties(parent_styles, viewport_size);
+        }
+      }
+
       if changed {
         node.style = Some(Arc::new(animated));
       }
@@ -7499,7 +7527,13 @@ fn apply_animations_to_node_scoped(
     if let Some(child_style_arc) = child.style.as_mut() {
       let child_style = Arc::make_mut(child_style_arc);
       child_style.recompute_inherited_custom_properties(parent_for_children);
+      if child_style.color_is_inherited {
+        child_style.color = parent_for_children.color;
+      }
       child_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
+      if child_style.color_is_inherited {
+        child_style.recompute_current_color_dependent_properties(parent_for_children, viewport_size);
+      }
     }
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
       apply_animations_to_node_scoped(
@@ -7528,7 +7562,16 @@ fn apply_animations_to_node_scoped(
     if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
       let snapshot_style = Arc::make_mut(snapshot_style_arc);
       snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.color = parent_for_children.color;
+      }
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.recompute_current_color_dependent_properties(
+          parent_for_children,
+          viewport_size,
+        );
+      }
     }
     let snapshot_offset = Point::new(
       origin.x + snapshot_node.bounds.x(),
@@ -8364,6 +8407,7 @@ fn apply_transitions_to_fragment(
 
       if !updates.is_empty() || !custom_updates.is_empty() {
         let color_changed = updates.iter().any(|(name, _)| name == "color");
+        let original_color = style_arc.color;
         let mut updated_style = (*style_arc).clone();
         apply_animated_properties_ordered(&mut updated_style, &updates);
         let mut custom_properties_changed = false;
@@ -8385,6 +8429,15 @@ fn apply_transitions_to_fragment(
         if custom_properties_changed || color_changed {
           let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
           updated_style.recompute_var_dependent_properties(parent_styles, viewport);
+          apply_animated_properties_ordered(&mut updated_style, &updates);
+        }
+
+        if updated_style.color != original_color {
+          let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
+          updated_style.recompute_current_color_dependent_properties(parent_styles, viewport);
+          // `recompute_current_color_dependent_properties` reapplies cached cascade declarations,
+          // which can touch properties that are also being transitioned. Reapply transition updates
+          // afterward so the transition layer continues to win over the underlying cascade.
           apply_animated_properties_ordered(&mut updated_style, &updates);
         }
         fragment.style = Some(Arc::new(updated_style));
@@ -8409,7 +8462,13 @@ fn apply_transitions_to_fragment(
         child_style.visibility = parent_for_children.visibility;
       }
       child_style.recompute_inherited_custom_properties(parent_for_children);
+      if child_style.color_is_inherited {
+        child_style.color = parent_for_children.color;
+      }
       child_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      if child_style.color_is_inherited {
+        child_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+      }
     }
     apply_transitions_to_fragment(
       child,
@@ -8432,7 +8491,13 @@ fn apply_transitions_to_fragment(
         snapshot_style.visibility = parent_for_children.visibility;
       }
       snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.color = parent_for_children.color;
+      }
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+      }
     }
     apply_transitions_to_fragment(
       snapshot_node,

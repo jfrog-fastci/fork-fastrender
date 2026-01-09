@@ -1020,6 +1020,28 @@ impl Color {
     matches!(self, Color::CurrentColor)
   }
 
+  /// Returns true if this color value depends on the used value of the `color` property
+  /// (`currentColor`).
+  pub fn depends_on_current_color(&self) -> bool {
+    match self {
+      Color::CurrentColor => true,
+      Color::Rgba(_) | Color::Hsla(_) => false,
+      Color::Mix { components, .. } => components
+        .iter()
+        .any(|(component, _)| component.depends_on_current_color()),
+      Color::Contrast { against, options } => {
+        against
+          .as_deref()
+          .is_some_and(|color| color.depends_on_current_color())
+          || options.iter().any(|color| color.depends_on_current_color())
+      }
+      Color::Relative(relative) => relative.base.depends_on_current_color(),
+      Color::LightDark { light, dark } => {
+        light.depends_on_current_color() || dark.depends_on_current_color()
+      }
+    }
+  }
+
   /// Returns the transparent color
   pub const fn transparent() -> Self {
     Color::Rgba(Rgba::TRANSPARENT)
