@@ -144,10 +144,11 @@ where
     }
 
     // External script.
-    let src_url = spec
-      .src
-      .as_deref()
-      .expect("src was checked to be Some above");
+    let Some(src_url) = spec.src.as_deref() else {
+      return Err(Error::Other(
+        "internal error: external script spec missing src URL".to_string(),
+      ));
+    };
 
     // Async takes priority over defer. Also: non-parser-inserted external scripts are (roughly)
     // async by default; defer is only meaningful for parser-inserted scripts.
@@ -206,10 +207,11 @@ where
         continue;
       }
       if let Some(idx) = self.defer_by_handle.remove(&handle) {
-        let entry = self
-          .defer_scripts
-          .get_mut(idx)
-          .expect("defer_by_handle indices must refer to existing entries");
+        let entry = self.defer_scripts.get_mut(idx).ok_or_else(|| {
+          Error::Other(format!(
+            "internal error: defer_by_handle index out of bounds (idx={idx})"
+          ))
+        })?;
         entry.source = Some(source);
         continue;
       }
@@ -223,7 +225,11 @@ where
   }
 
   /// Hook for "parsing finished" to allow deferred scripts to run.
-  pub fn finish_parsing(&mut self, host: &mut Host, event_loop: &mut EventLoop<Host>) -> Result<()> {
+  pub fn finish_parsing(
+    &mut self,
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+  ) -> Result<()> {
     self.parsing_finished = true;
     self.poll(host, event_loop)
   }
@@ -244,7 +250,7 @@ where
       let spec = entry
         .spec
         .take()
-        .expect("deferred script should have a spec until it is queued");
+        .ok_or_else(|| Error::Other("internal error: deferred script missing spec".to_string()))?;
       self.next_defer_to_queue += 1;
       Self::queue_script_task(event_loop, spec, source)?;
     }
@@ -479,10 +485,9 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
         }
         entry.queued_for_execution = true;
         let node_id = entry.node_id;
-        let source_text = entry
-          .source_text
-          .take()
-          .expect("source text must be present after fetch_completed");
+        let source_text = entry.source_text.take().ok_or_else(|| {
+          Error::Other("internal error: missing source text after fetch_completed".to_string())
+        })?;
         Ok(vec![ScriptSchedulerAction::ExecuteNow {
           script_id,
           node_id,
@@ -495,10 +500,9 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
         }
         entry.queued_for_execution = true;
         let node_id = entry.node_id;
-        let source_text = entry
-          .source_text
-          .take()
-          .expect("source text must be present after fetch_completed");
+        let source_text = entry.source_text.take().ok_or_else(|| {
+          Error::Other("internal error: missing source text after fetch_completed".to_string())
+        })?;
         Ok(vec![ScriptSchedulerAction::QueueTask {
           script_id,
           node_id,
@@ -541,10 +545,11 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
 
       entry.queued_for_execution = true;
       let node_id = entry.node_id;
-      let source_text = entry
-        .source_text
-        .take()
-        .expect("source text must be present when queueing defer scripts");
+      let source_text = entry.source_text.take().ok_or_else(|| {
+        Error::Other(
+          "internal error: missing source text when queueing deferred scripts".to_string(),
+        )
+      })?;
       actions.push(ScriptSchedulerAction::QueueTask {
         script_id,
         node_id,
@@ -690,8 +695,16 @@ mod tests {
     let mut event_loop = EventLoop::<TestHost>::new();
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
 
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("d1", false, true))?;
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("d2", false, true))?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("d1", false, true),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("d2", false, true),
+    )?;
 
     // Complete downloads out-of-order: d2 finishes before d1.
     host.loader.complete_url("d2", "d2");
@@ -710,8 +723,16 @@ mod tests {
     let mut event_loop = EventLoop::<TestHost>::new();
     let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
 
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("a1", true, false))?;
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("a2", true, false))?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("a1", true, false),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("a2", true, false),
+    )?;
 
     // Complete downloads out-of-order: a2 finishes before a1.
     host.loader.complete_url("a2", "a2");
@@ -738,8 +759,16 @@ mod tests {
       vec!["A".to_string(), "microtask-after-A".to_string()]
     );
 
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("a1", true, false))?;
-    scheduler.handle_script(&mut host, &mut event_loop, external_script("a2", true, false))?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("a1", true, false),
+    )?;
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      external_script("a2", true, false),
+    )?;
     host.loader.complete_url("a1", "a1");
     host.loader.complete_url("a2", "a2");
 
@@ -810,7 +839,11 @@ mod state_machine_tests {
     log: Vec<String>,
   }
 
-  fn execute_fake_script(host: &mut Host, event_loop: &mut EventLoop<Host>, source_text: &str) -> Result<()> {
+  fn execute_fake_script(
+    host: &mut Host,
+    event_loop: &mut EventLoop<Host>,
+    source_text: &str,
+  ) -> Result<()> {
     host.log.push(format!("script:{source_text}"));
     let micro = format!("microtask:{source_text}");
     event_loop.queue_microtask(move |host, _| {
@@ -882,7 +915,9 @@ mod state_machine_tests {
             source_text,
           } => {
             execute_fake_script(&mut self.host, &mut self.event_loop, &source_text)?;
-            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+            self
+              .event_loop
+              .perform_microtask_checkpoint(&mut self.host)?;
             if self.blocked_parser_on == Some(script_id) {
               self.blocked_parser_on = None;
             }
@@ -892,9 +927,11 @@ mod state_machine_tests {
             node_id: _,
             source_text,
           } => {
-            self.event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-              execute_fake_script(host, event_loop, &source_text)
-            })?;
+            self
+              .event_loop
+              .queue_task(TaskSource::Script, move |host, event_loop| {
+                execute_fake_script(host, event_loop, &source_text)
+              })?;
           }
         }
       }
@@ -903,9 +940,7 @@ mod state_machine_tests {
 
     fn discover(&mut self, element: ScriptElementSpec) -> Result<ScriptId> {
       let discovered = self.scheduler.discovered_parser_script(
-        element,
-        /* node_id */ 1,
-        /* base_url_at_discovery */ None,
+        element, /* node_id */ 1, /* base_url_at_discovery */ None,
       )?;
       let id = discovered.id;
       self.apply_actions(discovered.actions)?;

@@ -1,5 +1,5 @@
 use crate::dom2::{Document, NodeId, NodeKind};
-use crate::error::{RenderStage, Result};
+use crate::error::{Error, RenderStage, Result};
 use crate::js::ScriptType;
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
 use serde::{Deserialize, Serialize};
@@ -47,17 +47,23 @@ impl CurrentScriptStateHandle {
 }
 
 impl CurrentScriptState {
-  fn push(&mut self, script: Option<NodeId>) {
+  fn push(&mut self, script: Option<NodeId>) -> Result<()> {
+    self
+      .previous_current_script
+      .try_reserve(1)
+      .map_err(|err| Error::Other(format!("currentScript stack allocation failed: {err}")))?;
     self.previous_current_script.push(self.current_script);
     self.current_script = script;
+    Ok(())
   }
 
-  fn pop(&mut self) {
+  fn pop(&mut self) -> Result<()> {
     let previous = self
       .previous_current_script
       .pop()
-      .expect("currentScript stack underflow");
+      .ok_or_else(|| Error::Other("currentScript stack underflow".to_string()))?;
     self.current_script = previous;
+    Ok(())
   }
 
   #[cfg(test)]
@@ -197,7 +203,7 @@ impl ScriptOrchestrator {
     host
       .current_script_state()
       .borrow_mut()
-      .push(new_current_script);
+      .push(new_current_script)?;
     if let Some(log) = host.script_execution_log_mut() {
       log.record(ScriptExecutionLogEntry {
         script_id: script.index(),
@@ -210,8 +216,16 @@ impl ScriptOrchestrator {
       record_stage(StageHeartbeat::Script);
       executor.execute_script(host, self, dom, script, script_type)
     };
-    host.current_script_state().borrow_mut().pop();
-    result
+    let pop_result = host.current_script_state().borrow_mut().pop();
+
+    match (result, pop_result) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(err), Ok(())) => Err(err),
+      (Ok(()), Err(pop_err)) => Err(pop_err),
+      (Err(err), Err(pop_err)) => Err(Error::Other(format!(
+        "script execution failed ({err}); additionally failed to restore Document.currentScript ({pop_err})"
+      ))),
+    }
   }
 }
 

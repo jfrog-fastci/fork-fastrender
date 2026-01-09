@@ -20,8 +20,7 @@ pub enum TaskSource {
   Timer,
 }
 
-type Runnable<Host> =
-  Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+type Runnable<Host> = Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
 
 /// A single runnable unit of work (task or microtask).
 pub struct Task<Host: 'static> {
@@ -137,8 +136,7 @@ pub enum SpinOutcome {
 /// without lossy conversions.
 pub type TimerId = i32;
 
-type TimerCallback<Host> =
-  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+type TimerCallback<Host> = Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
@@ -252,11 +250,11 @@ impl<Host: 'static> EventLoop<Host> {
     }
     let seq = self.next_task_seq;
     self.next_task_seq = self.next_task_seq.wrapping_add(1);
-    self
-      .task_queues
-      .entry(source)
-      .or_default()
-      .push_back(Task::new_with_seq(source, seq, runnable));
+    let queue = self.task_queues.entry(source).or_default();
+    queue
+      .try_reserve(1)
+      .map_err(|err| Error::Other(format!("EventLoop task queue allocation failed: {err}")))?;
+    queue.push_back(Task::new_with_seq(source, seq, runnable));
     Ok(())
   }
 
@@ -272,6 +270,11 @@ impl<Host: 'static> EventLoop<Host> {
     }
     let seq = self.next_task_seq;
     self.next_task_seq = self.next_task_seq.wrapping_add(1);
+    self.microtask_queue.try_reserve(1).map_err(|err| {
+      Error::Other(format!(
+        "EventLoop microtask queue allocation failed: {err}"
+      ))
+    })?;
     self
       .microtask_queue
       .push_back(Task::new_with_seq(TaskSource::Microtask, seq, runnable));
@@ -290,7 +293,7 @@ impl<Host: 'static> EventLoop<Host> {
     let callback: TimerCallback<Host> = Box::new(move |host, event_loop| {
       let runnable = maybe
         .take()
-        .expect("setTimeout callback invoked more than once");
+        .ok_or_else(|| Error::Other("setTimeout callback invoked more than once".to_string()))?;
       runnable(host, event_loop)
     });
     Ok(self.add_timer(TimerKind::Timeout, delay, None, callback)?)
@@ -325,9 +328,9 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(());
     }
 
-    let _stage_guard =
-      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
-    if render_control::active_stage().is_none() {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
       record_stage(StageHeartbeat::Script);
     }
 
@@ -336,10 +339,11 @@ impl<Host: 'static> EventLoop<Host> {
 
     let result = (|| {
       while !self.microtask_queue.is_empty() {
-        let task = self
-          .microtask_queue
-          .pop_front()
-          .expect("microtask queue must be non-empty");
+        let Some(task) = self.microtask_queue.pop_front() else {
+          // The emptiness check above and the `VecDeque` API guarantee this can't happen, but avoid
+          // panicking if an invariant is ever violated.
+          break;
+        };
         self.currently_running_task = Some(RunningTask {
           source: task.source,
           is_microtask: true,
@@ -359,9 +363,9 @@ impl<Host: 'static> EventLoop<Host> {
   /// Returns `Ok(true)` when a task was executed, `Ok(false)` when the task queue was empty.
   /// After executing a task, a microtask checkpoint is performed.
   pub fn run_next_task(&mut self, host: &mut Host) -> Result<bool> {
-    let _stage_guard =
-      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
-    if render_control::active_stage().is_none() {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
       record_stage(StageHeartbeat::Script);
     }
 
@@ -391,10 +395,14 @@ impl<Host: 'static> EventLoop<Host> {
     Ok(true)
   }
 
-  pub fn run_until_idle(&mut self, host: &mut Host, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    let _stage_guard =
-      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
-    if render_control::active_stage().is_none() {
+  pub fn run_until_idle(
+    &mut self,
+    host: &mut Host,
+    limits: RunLimits,
+  ) -> Result<RunUntilIdleOutcome> {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
       record_stage(StageHeartbeat::Script);
     }
 
@@ -441,9 +449,7 @@ impl<Host: 'static> EventLoop<Host> {
       self.queue_due_timers().map_err(RunStepError::Error)?;
 
       if !self.microtask_queue.is_empty() {
-        self
-          .perform_microtask_checkpoint_limited(host, run_state)
-          ?;
+        self.perform_microtask_checkpoint_limited(host, run_state)?;
         continue;
       }
 
@@ -507,9 +513,9 @@ impl<Host: 'static> EventLoop<Host> {
     });
     let task_result = task.run(host, self);
     self.currently_running_task = None;
-    let task_result = task_result.map_err(RunStepError::Error).and_then(|()| {
-      self.perform_microtask_checkpoint_limited(host, run_state)
-    });
+    let task_result = task_result
+      .map_err(RunStepError::Error)
+      .and_then(|()| self.perform_microtask_checkpoint_limited(host, run_state));
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
     task_result?;
@@ -567,9 +573,9 @@ impl<Host: 'static> EventLoop<Host> {
       return Ok(());
     }
 
-    let _stage_guard =
-      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
-    if render_control::active_stage().is_none() {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
       record_stage(StageHeartbeat::Script);
     }
 
@@ -581,10 +587,9 @@ impl<Host: 'static> EventLoop<Host> {
         run_state.check_deadline()?;
         run_state.before_microtask()?;
 
-        let task = self
-          .microtask_queue
-          .pop_front()
-          .expect("microtask queue must be non-empty");
+        let Some(task) = self.microtask_queue.pop_front() else {
+          break;
+        };
         self.currently_running_task = Some(RunningTask {
           source: task.source,
           is_microtask: true,
@@ -620,10 +625,9 @@ impl<Host: 'static> EventLoop<Host> {
         run_state.check_deadline()?;
         run_state.before_microtask()?;
 
-        let task = self
-          .microtask_queue
-          .pop_front()
-          .expect("microtask queue must be non-empty");
+        let Some(task) = self.microtask_queue.pop_front() else {
+          break;
+        };
         self.currently_running_task = Some(RunningTask {
           source: task.source,
           is_microtask: true,
@@ -644,6 +648,31 @@ impl<Host: 'static> EventLoop<Host> {
     self.task_queues.values().map(VecDeque::len).sum()
   }
 
+  fn maybe_compact_timer_queue(&mut self) {
+    // `timer_queue` can contain stale entries for cleared timers (and for interval timers that have
+    // since been rescheduled). Since `BinaryHeap` does not support removal-by-key, those stale
+    // entries would otherwise accumulate unboundedly if attacker-controlled JS repeatedly
+    // schedules/cancels timers (especially with long delays).
+    //
+    // Compact opportunistically when the heap grows noticeably larger than the set of live timers.
+    let live = self.timers.len();
+    let heap_len = self.timer_queue.len();
+    let should_compact = heap_len > self.queue_limits.max_pending_timers
+      || heap_len > live.saturating_mul(2).max(64);
+    if !should_compact {
+      return;
+    }
+
+    let mut entries = std::mem::take(&mut self.timer_queue).into_vec();
+    entries.retain(|Reverse((_due, schedule_seq, id))| {
+      self
+        .timers
+        .get(id)
+        .is_some_and(|timer| timer.schedule_seq == *schedule_seq)
+    });
+    self.timer_queue = BinaryHeap::from(entries);
+  }
+
   fn pop_next_task(&mut self) -> Option<Task<Host>> {
     let mut chosen_source: Option<TaskSource> = None;
     let mut chosen_seq: u64 = u64::MAX;
@@ -656,14 +685,16 @@ impl<Host: 'static> EventLoop<Host> {
       }
     }
     let source = chosen_source?;
-    let (task, empty) = {
-      let queue = self
-        .task_queues
-        .get_mut(&source)
-        .expect("task queue should exist for selected source");
-      let task = queue.pop_front();
-      let empty = queue.is_empty();
-      (task, empty)
+    let (task, empty) = match self.task_queues.get_mut(&source) {
+      Some(queue) => {
+        let task = queue.pop_front();
+        let empty = queue.is_empty();
+        (task, empty)
+      }
+      None => {
+        debug_assert!(false, "task queue missing for selected source");
+        return None;
+      }
     };
     if empty {
       self.task_queues.remove(&source);
@@ -678,6 +709,7 @@ impl<Host: 'static> EventLoop<Host> {
     interval: Option<Duration>,
     callback: TimerCallback<Host>,
   ) -> Result<TimerId> {
+    self.maybe_compact_timer_queue();
     if self.timers.len() >= self.queue_limits.max_pending_timers {
       return Err(Error::Other(format!(
         "EventLoop exceeded max pending timers (limit={})",
@@ -705,6 +737,14 @@ impl<Host: 'static> EventLoop<Host> {
     let schedule_seq = self.next_timer_seq;
     self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
 
+    self
+      .timers
+      .try_reserve(1)
+      .map_err(|err| Error::Other(format!("EventLoop timers allocation failed: {err}")))?;
+    self
+      .timer_queue
+      .try_reserve(1)
+      .map_err(|err| Error::Other(format!("EventLoop timer queue allocation failed: {err}")))?;
     self.timers.insert(
       id,
       TimerState {
@@ -756,18 +796,19 @@ impl<Host: 'static> EventLoop<Host> {
   fn fire_timer(&mut self, host: &mut Host, id: TimerId, generation: u64) -> Result<()> {
     // Execution-time validation: the timer might have been cleared after it became due (or the ID
     // could have been reused). In either case, abort without invoking the callback.
-    let (kind, interval, nesting_level, mut callback) = {
-      let Some(timer) = self.timers.get_mut(&id) else {
-        return Ok(());
-      };
-      if timer.schedule_seq != generation {
-        return Ok(());
-      }
-      let callback = timer
-        .callback
-        .take()
-        .expect("Timer callback should always be present while active");
-      (timer.kind, timer.interval, timer.nesting_level, callback)
+    let Some(timer) = self.timers.get_mut(&id) else {
+      return Ok(());
+    };
+    if timer.schedule_seq != generation {
+      return Ok(());
+    }
+    let kind = timer.kind;
+    let interval = timer.interval;
+    let nesting_level = timer.nesting_level;
+    let Some(mut callback) = timer.callback.take() else {
+      return Err(Error::Other(
+        "Timer callback missing while timer is active".to_string(),
+      ));
     };
 
     // Update nesting level for the duration of this task (including the microtask checkpoint that
@@ -793,7 +834,9 @@ impl<Host: 'static> EventLoop<Host> {
       }
       TimerKind::Interval => {
         let Some(interval) = interval else {
-          return Err(Error::Other("Interval timer missing interval duration".to_string()));
+          return Err(Error::Other(
+            "Interval timer missing interval duration".to_string(),
+          ));
         };
         let now = self.clock.now();
         let delay = self.clamp_timer_delay(interval);
@@ -814,6 +857,10 @@ impl<Host: 'static> EventLoop<Host> {
         timer.due = due;
         timer.nesting_level = nesting_level;
         timer.schedule_seq = schedule_seq;
+        self
+          .timer_queue
+          .try_reserve(1)
+          .map_err(|err| Error::Other(format!("EventLoop timer queue allocation failed: {err}")))?;
         self.timer_queue.push(Reverse((due, schedule_seq, id)));
       }
     }
@@ -827,9 +874,9 @@ impl<Host: 'static> EventLoop<Host> {
     limits: RunLimits,
     mut condition: impl FnMut(&Host) -> bool,
   ) -> Result<SpinOutcome> {
-    let _stage_guard =
-      StageGuard::install(render_control::active_stage().or(Some(RenderStage::Script)));
-    if render_control::active_stage().is_none() {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
       record_stage(StageHeartbeat::Script);
     }
 
@@ -893,8 +940,7 @@ impl RunState {
   fn check_deadline(&self) -> RunStepResult<()> {
     // Integrate renderer-level cancellation/deadlines.
     let stage = render_control::active_stage().unwrap_or(self.default_deadline_stage);
-    render_control::check_active(stage)
-      .map_err(|err| RunStepError::Error(err.into()))?;
+    render_control::check_active(stage).map_err(|err| RunStepError::Error(err.into()))?;
 
     let Some(max_wall_time) = self.limits.max_wall_time else {
       return Ok(());
@@ -1037,7 +1083,10 @@ mod tests {
     Ok(())
   }
 
-  fn self_requeue_microtask(host: &mut TestHost, event_loop: &mut EventLoop<TestHost>) -> Result<()> {
+  fn self_requeue_microtask(
+    host: &mut TestHost,
+    event_loop: &mut EventLoop<TestHost>,
+  ) -> Result<()> {
     host.count += 1;
     event_loop.queue_microtask(self_requeue_microtask)?;
     Ok(())
@@ -1061,7 +1110,9 @@ mod tests {
     );
     assert!(matches!(
       result,
-      Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxMicrotasks { .. }))
+      Ok(RunUntilIdleOutcome::Stopped(
+        RunUntilIdleStopReason::MaxMicrotasks { .. }
+      ))
     ));
     assert_eq!(host.count, 5);
   }
@@ -1121,9 +1172,11 @@ mod tests {
 
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
-    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| {
-      Err(Error::Other("boom".to_string()))
-    }).unwrap();
+    event_loop
+      .queue_task(TaskSource::Script, |_host, _event_loop| {
+        Err(Error::Other("boom".to_string()))
+      })
+      .unwrap();
 
     let mut host = Host;
     let err = event_loop
@@ -1192,7 +1245,58 @@ mod tests {
   }
 
   #[test]
-  fn interval_cleared_after_first_firing_but_before_queued_second_firing_cancels_second() -> Result<()> {
+  fn clearing_timers_does_not_leak_timer_queue_entries() -> Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+
+    let mut ids = Vec::new();
+    for _ in 0..100 {
+      ids.push(event_loop.set_timeout(Duration::from_secs(60), |_host, _event_loop| Ok(()))?);
+    }
+    for id in ids {
+      event_loop.clear_timeout(id);
+    }
+
+    assert_eq!(event_loop.timers.len(), 0);
+    assert_eq!(event_loop.timer_queue.len(), 100);
+
+    let _ = event_loop.set_timeout(Duration::from_secs(60), |_host, _event_loop| Ok(()))?;
+    assert_eq!(event_loop.timers.len(), 1);
+    assert_eq!(event_loop.timer_queue.len(), 1);
+    Ok(())
+  }
+
+  #[test]
+  fn set_timeout_callback_invoked_twice_returns_error_not_panic() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+
+    let id = event_loop.set_timeout(Duration::from_millis(0), |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+
+    // Simulate an internal bug by invoking the timer callback twice directly.
+    let mut callback = event_loop
+      .timers
+      .get_mut(&id)
+      .and_then(|timer| timer.callback.take())
+      .expect("timer callback should exist");
+
+    callback(&mut host, &mut event_loop)?;
+    assert_eq!(host.count, 1);
+
+    let err = callback(&mut host, &mut event_loop).expect_err("second invocation should fail");
+    assert!(
+      matches!(err, Error::Other(msg) if msg.contains("setTimeout callback invoked more than once"))
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn interval_cleared_after_first_firing_but_before_queued_second_firing_cancels_second(
+  ) -> Result<()> {
     let mut host = TestHost::default();
     let clock = Arc::new(VirtualClock::new());
     let clock_for_loop: Arc<dyn Clock> = clock.clone();
