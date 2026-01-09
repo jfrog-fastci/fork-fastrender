@@ -494,55 +494,6 @@ impl Document {
     id
   }
 
-  pub fn document_element(&self) -> Option<NodeId> {
-    let root = self.root();
-    let node = self.nodes.get(root.index())?;
-    node.children.iter().copied().find(|&child| {
-      self
-        .nodes
-        .get(child.index())
-        .is_some_and(|node| matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }))
-    })
-  }
-
-  pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
-    if id.is_empty() {
-      return None;
-    }
-
-    // "getElementById" must not traverse into inert template contents.
-    let mut stack: Vec<NodeId> = vec![self.root()];
-    while let Some(node_id) = stack.pop() {
-      let Some(node) = self.nodes.get(node_id.index()) else {
-        continue;
-      };
-
-      let attributes: &[(String, String)] = match &node.kind {
-        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => {
-          attributes.as_slice()
-        }
-        _ => &[],
-      };
-      if attributes
-        .iter()
-        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
-      {
-        return Some(node_id);
-      }
-
-      if node.inert_subtree {
-        continue;
-      }
-
-      // Push in reverse to traverse in tree order.
-      for &child in node.children.iter().rev() {
-        stack.push(child);
-      }
-    }
-
-    None
-  }
-
   /// Snapshot this `dom2` document back into the renderer's immutable [`DomNode`] representation.
   ///
   /// This is used for tests and incremental adoption (e.g. import into `dom2`, mutate, then render
