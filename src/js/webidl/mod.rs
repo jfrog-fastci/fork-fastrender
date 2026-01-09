@@ -12,7 +12,7 @@ pub use webidl_vm_js::VmJsWebIdlCx;
 
 // FastRender-specific VM/runtime scaffolding used by generated bindings and host shims.
 pub use webidl_js_runtime::{
-  JsOwnPropertyDescriptor, JsPropertyKind, NativeHostFunction, VmJsRuntime, WebIdlBindingsRuntime,
+  NativeHostFunction, VmJsRuntime, WebIdlBindingsRuntime,
 };
 
 #[cfg(test)]

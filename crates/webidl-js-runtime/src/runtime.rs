@@ -5,6 +5,7 @@
 //! embedded JS engine.
 
 pub use webidl::{InterfaceId, WebIdlHooks, WebIdlLimits};
+pub use webidl::{JsOwnPropertyDescriptor, JsPropertyKind};
 
 /// Derive a stable [`InterfaceId`] from an interface name.
 ///
@@ -18,22 +19,6 @@ pub fn interface_id_from_name(name: &str) -> InterfaceId {
     hash = hash.wrapping_mul(0x0100_0193);
   }
   InterfaceId(hash)
-}
-
-/// A concrete own-property descriptor returned by [`JsRuntime::get_own_property`].
-///
-/// Web IDL currently only requires the `[[Enumerable]]` flag, but we expose the "shape" of a
-/// descriptor so future binding code can reuse it without expanding the runtime surface again.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct JsOwnPropertyDescriptor<V> {
-  pub enumerable: bool,
-  pub kind: JsPropertyKind<V>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum JsPropertyKind<V> {
-  Data { value: V },
-  Accessor { get: V, set: V },
 }
 
 /// ECMAScript "IteratorRecord" (ECMA-262).
