@@ -2,7 +2,7 @@
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
 use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::ui::worker_loop::spawn_ui_worker as spawn_ui_worker_loop;
