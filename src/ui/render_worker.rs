@@ -411,8 +411,41 @@ impl BrowserRuntime {
   }
 
   fn drain_messages(&mut self) {
+    // Coalesce pointer-move bursts so we only do one hit-test per tab before the next paint job.
+    //
+    // Pointer-move can arrive at a very high frequency (especially with high polling-rate mice).
+    // The renderer only needs the *latest* pointer position before repainting, so collapsing
+    // back-to-back moves avoids redundant DOM hit-testing work.
+    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton)> = HashMap::new();
+
     while let Ok(msg) = self.ui_rx.try_recv() {
-      self.handle_message(msg);
+      match msg {
+        UiToWorker::PointerMove {
+          tab_id,
+          pos_css,
+          button,
+        } => {
+          pending_pointer_moves.insert(tab_id, (pos_css, button));
+        }
+        other => {
+          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+            self.handle_message(UiToWorker::PointerMove {
+              tab_id,
+              pos_css,
+              button,
+            });
+          }
+          self.handle_message(other);
+        }
+      }
+    }
+
+    for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+      self.handle_message(UiToWorker::PointerMove {
+        tab_id,
+        pos_css,
+        button,
+      });
     }
   }
 
