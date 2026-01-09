@@ -33,9 +33,13 @@ type ActiveEventMap = Rc<RefCell<HashMap<u64, NonNull<Event>>>>;
 struct EventKeys {
   event_id: PropertyKey,
   type_: PropertyKey,
+  bubbles: PropertyKey,
+  cancelable: PropertyKey,
+  composed: PropertyKey,
   target: PropertyKey,
   current_target: PropertyKey,
   event_phase: PropertyKey,
+  is_trusted: PropertyKey,
   default_prevented: PropertyKey,
   stop_propagation: PropertyKey,
   stop_immediate_propagation: PropertyKey,
@@ -64,9 +68,13 @@ impl EventWrapper {
       // dispatch.
       event_id: Self::intern_key(rt, "__fastrender_event_id")?,
       type_: Self::intern_key(rt, "type")?,
+      bubbles: Self::intern_key(rt, "bubbles")?,
+      cancelable: Self::intern_key(rt, "cancelable")?,
+      composed: Self::intern_key(rt, "composed")?,
       target: Self::intern_key(rt, "target")?,
       current_target: Self::intern_key(rt, "currentTarget")?,
       event_phase: Self::intern_key(rt, "eventPhase")?,
+      is_trusted: Self::intern_key(rt, "isTrusted")?,
       default_prevented: Self::intern_key(rt, "defaultPrevented")?,
       stop_propagation: Self::intern_key(rt, "stopPropagation")?,
       stop_immediate_propagation: Self::intern_key(rt, "stopImmediatePropagation")?,
@@ -81,9 +89,13 @@ impl EventWrapper {
     for key in [
       keys.event_id,
       keys.type_,
+      keys.bubbles,
+      keys.cancelable,
+      keys.composed,
       keys.target,
       keys.current_target,
       keys.event_phase,
+      keys.is_trusted,
       keys.default_prevented,
       keys.stop_propagation,
       keys.stop_immediate_propagation,
@@ -203,6 +215,15 @@ impl EventWrapper {
     let type_ = rt.alloc_string_value(&event.type_)?;
     rt.define_data_property(obj, self.keys.type_, type_, true)?;
 
+    rt.define_data_property(obj, self.keys.bubbles, Value::Bool(event.bubbles), true)?;
+    rt.define_data_property(
+      obj,
+      self.keys.cancelable,
+      Value::Bool(event.cancelable),
+      true,
+    )?;
+    rt.define_data_property(obj, self.keys.composed, Value::Bool(event.composed), true)?;
+
     let target = self.js_value_for_target(event.target);
     rt.define_data_property(obj, self.keys.target, target, true)?;
 
@@ -215,6 +236,8 @@ impl EventWrapper {
       js_value_for_phase(event.event_phase),
       true,
     )?;
+
+    rt.define_data_property(obj, self.keys.is_trusted, Value::Bool(event.is_trusted), true)?;
 
     Ok(obj)
   }

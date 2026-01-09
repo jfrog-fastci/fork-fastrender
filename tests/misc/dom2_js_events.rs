@@ -54,6 +54,7 @@ fn make_listener(
       // Basic Event wrapper smoke: read a few properties.
       let got_type = rt.get(event, keys.type_)?;
       assert_eq!(as_utf8_lossy(rt, got_type), "test");
+
       let got_target = rt.get(event, keys.target)?;
       assert_js_value_eq(rt, got_target, keys.expected_target);
 
@@ -64,6 +65,15 @@ fn make_listener(
 
       let got_phase = rt.get(event, keys.event_phase)?;
       assert_eq!(got_phase, Value::Number(keys.expected_phase));
+
+      let bubbles = rt.get(event, keys.bubbles)?;
+      assert_eq!(bubbles, Value::Bool(keys.expected_bubbles));
+      let cancelable = rt.get(event, keys.cancelable)?;
+      assert_eq!(cancelable, Value::Bool(keys.expected_cancelable));
+      let composed = rt.get(event, keys.composed)?;
+      assert_eq!(composed, Value::Bool(keys.expected_composed));
+      let is_trusted = rt.get(event, keys.is_trusted)?;
+      assert_eq!(is_trusted, Value::Bool(keys.expected_is_trusted));
 
       match action {
         Action::None => {}
@@ -88,15 +98,23 @@ fn make_listener(
 #[derive(Clone, Copy)]
 struct ListenerKeys {
   type_: PropertyKey,
+  bubbles: PropertyKey,
+  cancelable: PropertyKey,
+  composed: PropertyKey,
   target: PropertyKey,
   current_target: PropertyKey,
   event_phase: PropertyKey,
+  is_trusted: PropertyKey,
   stop_propagation: PropertyKey,
   stop_immediate_propagation: PropertyKey,
   prevent_default: PropertyKey,
   expected_target: Value,
   expected_current_target: Value,
   expected_phase: f64,
+  expected_bubbles: bool,
+  expected_cancelable: bool,
+  expected_composed: bool,
+  expected_is_trusted: bool,
 }
 
 fn build_doc() -> (dom2::Document, dom2::NodeId, dom2::NodeId) {
@@ -115,9 +133,13 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
   let mut js = JsDomEvents::new()?;
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
   let key_stop_propagation = key(js.runtime_mut(), "stopPropagation");
   let key_stop_immediate_propagation = key(js.runtime_mut(), "stopImmediatePropagation");
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
@@ -138,15 +160,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
     Action::None,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: doc_value,
       expected_phase: 1.0,
+      expected_bubbles: true,
+      expected_cancelable: false,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
   let parent_capture = make_listener(
@@ -158,15 +188,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       expected_current_target: parent_value,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: parent_value,
         expected_phase: 1.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -181,15 +219,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       expected_phase: 2.0,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: Value::Number(target.index() as f64),
         expected_phase: 2.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -204,15 +250,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       expected_phase: 2.0,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: Value::Number(target.index() as f64),
         expected_phase: 2.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -227,15 +281,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       expected_phase: 3.0,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: parent_value,
         expected_phase: 3.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -250,15 +312,23 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       expected_phase: 3.0,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: doc_value,
         expected_phase: 3.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -342,9 +412,13 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
   let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
   let key_stop_propagation = key(js.runtime_mut(), "stopPropagation");
   let key_stop_immediate_propagation = key(js.runtime_mut(), "stopImmediatePropagation");
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
@@ -358,15 +432,23 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
     Action::StopPropagation,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: target_value,
       expected_phase: 2.0,
+      expected_bubbles: true,
+      expected_cancelable: false,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
 
@@ -380,15 +462,23 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
       expected_phase: 3.0,
       ..ListenerKeys {
         type_: key_type,
+        bubbles: key_bubbles,
+        cancelable: key_cancelable,
+        composed: key_composed,
         target: key_target,
         current_target: key_current_target,
         event_phase: key_event_phase,
+        is_trusted: key_is_trusted,
         stop_propagation: key_stop_propagation,
         stop_immediate_propagation: key_stop_immediate_propagation,
         prevent_default: key_prevent_default,
         expected_target: target_value,
         expected_current_target: Value::Number(parent.index() as f64),
         expected_phase: 3.0,
+        expected_bubbles: true,
+        expected_cancelable: false,
+        expected_composed: false,
+        expected_is_trusted: false,
       }
     },
   );
@@ -427,9 +517,13 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
   let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
   let key_stop_propagation = key(js.runtime_mut(), "stopPropagation");
   let key_stop_immediate_propagation = key(js.runtime_mut(), "stopImmediatePropagation");
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
@@ -443,15 +537,23 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     Action::StopImmediatePropagation,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: target_value,
       expected_phase: 2.0,
+      expected_bubbles: true,
+      expected_cancelable: false,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
 
@@ -462,15 +564,23 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     Action::None,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: target_value,
       expected_phase: 2.0,
+      expected_bubbles: true,
+      expected_cancelable: false,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
 
@@ -508,9 +618,13 @@ fn js_once_listener_runs_only_once() -> Result<()> {
   let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
   let key_stop_propagation = key(js.runtime_mut(), "stopPropagation");
   let key_stop_immediate_propagation = key(js.runtime_mut(), "stopImmediatePropagation");
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
@@ -524,15 +638,23 @@ fn js_once_listener_runs_only_once() -> Result<()> {
     Action::None,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: target_value,
       expected_phase: 2.0,
+      expected_bubbles: true,
+      expected_cancelable: false,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
 
@@ -576,9 +698,13 @@ fn js_passive_listener_cannot_prevent_default() -> Result<()> {
   let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
   let key_stop_propagation = key(js.runtime_mut(), "stopPropagation");
   let key_stop_immediate_propagation = key(js.runtime_mut(), "stopImmediatePropagation");
   let key_prevent_default = key(js.runtime_mut(), "preventDefault");
@@ -592,15 +718,23 @@ fn js_passive_listener_cannot_prevent_default() -> Result<()> {
     Action::PreventDefault,
     ListenerKeys {
       type_: key_type,
+      bubbles: key_bubbles,
+      cancelable: key_cancelable,
+      composed: key_composed,
       target: key_target,
       current_target: key_current_target,
       event_phase: key_event_phase,
+      is_trusted: key_is_trusted,
       stop_propagation: key_stop_propagation,
       stop_immediate_propagation: key_stop_immediate_propagation,
       prevent_default: key_prevent_default,
       expected_target: target_value,
       expected_current_target: target_value,
       expected_phase: 2.0,
+      expected_bubbles: true,
+      expected_cancelable: true,
+      expected_composed: false,
+      expected_is_trusted: false,
     },
   );
 
@@ -696,9 +830,13 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
   let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
 
   let key_type = key(js.runtime_mut(), "type");
+  let key_bubbles = key(js.runtime_mut(), "bubbles");
+  let key_cancelable = key(js.runtime_mut(), "cancelable");
+  let key_composed = key(js.runtime_mut(), "composed");
   let key_target = key(js.runtime_mut(), "target");
   let key_current_target = key(js.runtime_mut(), "currentTarget");
   let key_event_phase = key(js.runtime_mut(), "eventPhase");
+  let key_is_trusted = key(js.runtime_mut(), "isTrusted");
 
   let target_value = Value::Number(target.index() as f64);
 
@@ -710,9 +848,13 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
 
   let keys = ListenerKeys {
     type_: key_type,
+    bubbles: key_bubbles,
+    cancelable: key_cancelable,
+    composed: key_composed,
     target: key_target,
     current_target: key_current_target,
     event_phase: key_event_phase,
+    is_trusted: key_is_trusted,
     // Unused for this test, but required by the struct.
     stop_propagation: key(js.runtime_mut(), "stopPropagation"),
     stop_immediate_propagation: key(js.runtime_mut(), "stopImmediatePropagation"),
@@ -720,6 +862,10 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
     expected_target: target_value,
     expected_current_target: target_value,
     expected_phase: 2.0,
+    expected_bubbles: true,
+    expected_cancelable: false,
+    expected_composed: false,
+    expected_is_trusted: false,
   };
 
   let handle_event = js
@@ -739,6 +885,15 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
       assert_eq!(got_current, keys.expected_current_target);
       let got_phase = rt.get(event, keys.event_phase)?;
       assert_eq!(got_phase, Value::Number(keys.expected_phase));
+
+      let bubbles = rt.get(event, keys.bubbles)?;
+      assert_eq!(bubbles, Value::Bool(keys.expected_bubbles));
+      let cancelable = rt.get(event, keys.cancelable)?;
+      assert_eq!(cancelable, Value::Bool(keys.expected_cancelable));
+      let composed = rt.get(event, keys.composed)?;
+      assert_eq!(composed, Value::Bool(keys.expected_composed));
+      let is_trusted = rt.get(event, keys.is_trusted)?;
+      assert_eq!(is_trusted, Value::Bool(keys.expected_is_trusted));
 
       Ok(Value::Undefined)
     })
