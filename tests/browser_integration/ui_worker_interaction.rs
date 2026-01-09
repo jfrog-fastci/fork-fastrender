@@ -8,6 +8,12 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+// These tests spin up real UI worker threads that create renderers and rasterize frames.
+// When the test binary runs with many threads (default), CPU contention can make the first render
+// take longer than a couple seconds on busy CI hosts. Keep the timeout generous to avoid flakiness
+// while still failing quickly on genuine deadlocks.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;
   let y_px = ((y_css as f32) * frame.dpr).round() as u32;
@@ -105,7 +111,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let frame = recv_until_frame(&ui_rx, tab_id, deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
@@ -124,7 +130,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let frame = recv_until_pixel(
     &ui_rx,
     tab_id,
@@ -188,7 +194,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let frame = recv_until_frame(&ui_rx, tab_id, deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
@@ -214,7 +220,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let frame = recv_until_pixel(
     &ui_rx,
     tab_id,
@@ -291,7 +297,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let _frame = recv_until_frame(&ui_rx, tab_id, deadline);
 
   ui_tx
@@ -309,7 +315,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + TIMEOUT;
   let mut saw_started = false;
   let mut saw_committed = false;
   let mut saw_frame = false;

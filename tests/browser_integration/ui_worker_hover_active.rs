@@ -8,7 +8,7 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-// Rendering + worker startup can take a few seconds under load when tests run in parallel.
+// Rendering + worker startup can take a few seconds under load when tests run in parallel (CI).
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn fixture() -> (support::TempSite, String) {
@@ -77,6 +77,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
 
 #[test]
 fn pointer_move_sets_hover_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
   let (_site, url) = fixture();
 
   let worker = spawn_ui_worker("fastr-ui-worker-hover-active-a").expect("spawn ui worker");
@@ -136,6 +137,7 @@ fn pointer_move_sets_hover_and_repaints() {
 
 #[test]
 fn pointer_down_sets_active_until_pointer_up() {
+  let _lock = super::stage_listener_test_lock();
   let (_site, url) = fixture();
 
   let worker = spawn_ui_worker("fastr-ui-worker-hover-active-b").expect("spawn ui worker");

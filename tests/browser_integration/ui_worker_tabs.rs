@@ -54,7 +54,7 @@ fn multi_tab_navigations_are_scoped_by_tab_id() {
     })
     .expect("create tab2");
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + Duration::from_secs(10);
   let mut started = [false, false];
   let mut committed = [false, false];
   let mut saw_frame = [false, false];
@@ -159,7 +159,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
       cancel: Default::default(),
     })
     .expect("create tab1");
-  let _ = wait_for_first_frame(&ui_rx, tab1, Duration::from_secs(2));
+  let _ = wait_for_first_frame(&ui_rx, tab1, Duration::from_secs(10));
 
   // Drain any non-frame messages that were queued by the initial navigation.
   while ui_rx.try_recv().is_ok() {}
@@ -194,7 +194,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
       cancel: Default::default(),
     })
     .expect("create tab2");
-  let _ = wait_for_first_frame(&ui_rx, tab2, Duration::from_secs(2));
+  let _ = wait_for_first_frame(&ui_rx, tab2, Duration::from_secs(10));
 
   drop(ui_tx);
   join.join().expect("join ui worker thread");

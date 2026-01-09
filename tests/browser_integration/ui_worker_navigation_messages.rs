@@ -77,6 +77,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("create tab");
   handle
@@ -175,4 +176,3 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
 
   handle.join().expect("worker join");
 }
-

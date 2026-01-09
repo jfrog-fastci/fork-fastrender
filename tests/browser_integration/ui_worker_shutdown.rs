@@ -20,6 +20,7 @@ fn join_with_timeout(
 
 #[test]
 fn dropping_handle_shuts_down_worker_thread() {
+  let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-shutdown-drop").expect("spawn ui worker");
 
   let join = std::thread::spawn(move || handle.shutdown());
@@ -28,6 +29,7 @@ fn dropping_handle_shuts_down_worker_thread() {
 
 #[test]
 fn dropping_ui_receiver_does_not_panic_worker() {
+  let _lock = super::stage_listener_test_lock();
   let handle = spawn_ui_worker("fastr-ui-worker-shutdown-drop-ui-rx").expect("spawn ui worker");
   let (ui_tx, ui_rx, join_handle) = handle.split();
 
