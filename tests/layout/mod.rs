@@ -76,6 +76,7 @@ mod grid_writing_mode_in_block;
 mod inline_float_min_width;
 mod inline_replaced_in_block;
 mod inline_shaping_fallback;
+mod text_justify_inter_word_no_fragment_churn;
 mod intrinsic_sizing_keywords;
 mod legend_shrink_to_fit;
 mod line_height_normal_metrics;

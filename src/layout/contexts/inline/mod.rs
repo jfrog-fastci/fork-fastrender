@@ -5533,11 +5533,7 @@ impl InlineFormattingContext {
 
     let should_justify =
       is_justify_align(line_align) && !matches!(resolved_justify, TextJustify::None);
-    let mut items: Vec<PositionedItem> = if should_justify {
-      self.expand_items_for_justification(&line.items, resolved_justify)
-    } else {
-      line.items.clone()
-    };
+    let mut items: Vec<PositionedItem> = line.items.clone();
     let rtl = matches!(direction, crate::style::types::Direction::Rtl);
     if rtl {
       items.reverse();
@@ -5567,8 +5563,8 @@ impl InlineFormattingContext {
     let (lead, gap_extra) = match line_align {
       TextAlign::Right => (extra_space, 0.0),
       TextAlign::Center => (extra_space * 0.5, 0.0),
-      TextAlign::Justify | TextAlign::JustifyAll if should_justify && items.len() > 1 => {
-        let gap_count = Self::count_justifiable_gaps(&items, resolved_justify);
+      TextAlign::Justify | TextAlign::JustifyAll if should_justify => {
+        let gap_count = Self::count_justify_opportunities(&items, resolved_justify);
         if gap_count > 0 {
           (0.0, extra_space / gap_count as f32)
         } else {
@@ -5577,6 +5573,12 @@ impl InlineFormattingContext {
       }
       _ => (0.0, 0.0),
     };
+
+    if should_justify && gap_extra > 0.0 {
+      for positioned in &mut items {
+        Self::apply_internal_justification(&mut positioned.item, resolved_justify, gap_extra);
+      }
+    }
 
     let mut cursor = if rtl {
       indent_offset + lead + total_width
@@ -5721,16 +5723,64 @@ impl InlineFormattingContext {
     FragmentNode::new_line(bounds, line.baseline, children)
   }
 
-  fn is_justifiable_boundary(prev: &InlineItem, next: &InlineItem) -> bool {
-    if matches!(prev, InlineItem::StaticPositionAnchor(_))
-      || matches!(next, InlineItem::StaticPositionAnchor(_))
-    {
-      return false;
+  fn count_internal_justify_opportunities(item: &InlineItem, mode: TextJustify) -> usize {
+    match item {
+      InlineItem::Text(t) => match mode {
+        TextJustify::InterCharacter | TextJustify::Distribute => {
+          t.count_inter_character_justify_opportunities()
+        }
+        _ => t.count_inter_word_justify_opportunities(),
+      },
+      InlineItem::InlineBox(b) => b
+        .children
+        .iter()
+        .map(|c| Self::count_internal_justify_opportunities(c, mode))
+        .sum(),
+      // Ruby layout caches widths for segments; changing nested text advances without updating those
+      // caches would desync painting and layout. Keep justification behavior unchanged for now.
+      InlineItem::Ruby(_) => 0,
+      InlineItem::SoftBreak
+      | InlineItem::Tab(_)
+      | InlineItem::HardBreak
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => 0,
     }
-    let prev_last = last_char_of_item(prev);
-    let next_first = first_char_of_item(next);
-    matches!((prev_last, next_first),
-            (Some(p), Some(n)) if is_expandable_space(p) && !is_expandable_space(n))
+  }
+
+  fn apply_internal_justification(item: &mut InlineItem, mode: TextJustify, gap_extra: f32) {
+    match item {
+      InlineItem::Text(t) => match mode {
+        TextJustify::InterCharacter | TextJustify::Distribute => {
+          t.apply_inter_character_justification(gap_extra);
+        }
+        _ => {
+          t.apply_inter_word_justification(gap_extra);
+        }
+      },
+      InlineItem::InlineBox(b) => {
+        for child in &mut b.children {
+          Self::apply_internal_justification(child, mode, gap_extra);
+        }
+      }
+      InlineItem::Ruby(_) => {}
+      InlineItem::SoftBreak
+      | InlineItem::Tab(_)
+      | InlineItem::HardBreak
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => {}
+    }
+  }
+
+  fn count_justify_opportunities(items: &[PositionedItem], mode: TextJustify) -> usize {
+    let internal: usize = items
+      .iter()
+      .map(|p| Self::count_internal_justify_opportunities(&p.item, mode))
+      .sum();
+    internal + Self::count_justifiable_gaps(items, mode)
   }
 
   fn count_justifiable_gaps(items: &[PositionedItem], mode: TextJustify) -> usize {
@@ -5745,7 +5795,7 @@ impl InlineFormattingContext {
       .filter(|pair| {
         let prev = &pair[0].item;
         let next = &pair[1].item;
-        Self::is_justifiable_boundary(prev, next)
+        is_space_boundary_between(prev, next)
       })
       .count()
   }
@@ -5759,120 +5809,7 @@ impl InlineFormattingContext {
     }
     let prev = &items[index].item;
     let next = &items[index + 1].item;
-    Self::is_justifiable_boundary(prev, next)
-  }
-
-  fn expand_items_for_justification(
-    &self,
-    items: &[PositionedItem],
-    mode: TextJustify,
-  ) -> Vec<PositionedItem> {
-    let mut expanded = Vec::new();
-    for positioned in items {
-      match &positioned.item {
-        InlineItem::Text(text) => {
-          let segments = self.split_text_item_for_justify(text, mode);
-          let mut local_x = positioned.x;
-          for segment in segments {
-            let width = segment.advance;
-            expanded.push(PositionedItem {
-              item: InlineItem::Text(segment),
-              x: local_x,
-              baseline_offset: positioned.baseline_offset,
-            });
-            local_x += width;
-          }
-        }
-        _ => expanded.push(positioned.clone()),
-      }
-    }
-    expanded
-  }
-
-  fn split_text_item_for_justify(&self, item: &TextItem, mode: TextJustify) -> Vec<TextItem> {
-    let mut segments = Vec::new();
-    let mut remaining = item.clone();
-    let mut consumed = 0usize;
-    let mut reshape_cache = ReshapeCache::default();
-    let mut break_offsets: Vec<usize> = match mode {
-      TextJustify::InterCharacter | TextJustify::Distribute => {
-        let mut offsets: Vec<usize> = item
-          .cluster_byte_offsets()
-          .into_iter()
-          .filter(|o| *o > 0 && *o < item.text.len())
-          .collect();
-        if offsets.is_empty() {
-          offsets = segment_grapheme_clusters(&item.text)
-            .into_iter()
-            .filter(|o| *o > 0 && *o < item.text.len())
-            .collect();
-        }
-        offsets.sort_unstable();
-        offsets.dedup();
-        offsets
-      }
-      _ => item
-        .break_opportunities
-        .iter()
-        .filter(|b| matches!(b.break_type, crate::text::line_break::BreakType::Allowed))
-        .filter_map(|b| {
-          let off = b.byte_offset;
-          if off == 0 || off >= item.text.len() {
-            return None;
-          }
-          let prev = item.text[..off].chars().next_back();
-          let next = item.text[off..].chars().next();
-          let is_space_boundary = prev.map(is_expandable_space).unwrap_or(false)
-            && next.map(|c| !is_expandable_space(c)).unwrap_or(false);
-          let is_cjk_boundary = prev.map(is_cjk_character).unwrap_or(false)
-            || next.map(is_cjk_character).unwrap_or(false);
-          if is_space_boundary || is_cjk_boundary {
-            Some(off)
-          } else {
-            None
-          }
-        })
-        .collect(),
-    };
-
-    if break_offsets.is_empty() && matches!(mode, TextJustify::InterWord) {
-      // Fallback: split on explicit spaces when break opportunities didn't flag them.
-      let mut prev_is_space = false;
-      for (idx, ch) in item.text.char_indices() {
-        if idx == 0 {
-          prev_is_space = is_expandable_space(ch);
-          continue;
-        }
-        let is_space = is_expandable_space(ch);
-        if prev_is_space && !is_space {
-          break_offsets.push(idx);
-        }
-        prev_is_space = is_space;
-      }
-    }
-
-    for target in break_offsets {
-      if target <= consumed {
-        continue;
-      }
-      let local = target - consumed;
-      if let Some((before, after)) = remaining.split_at(
-        local,
-        false,
-        &self.pipeline,
-        &self.font_context,
-        &mut reshape_cache,
-      ) {
-        consumed = target;
-        segments.push(before);
-        remaining = after;
-      } else {
-        break;
-      }
-    }
-
-    segments.push(remaining);
-    segments
+    is_space_boundary_between(prev, next)
   }
 
   /// Creates a fragment for an inline item in block/inline coordinates.
@@ -12421,10 +12358,7 @@ fn item_has_interchar_opportunity(item: &InlineItem) -> bool {
       if t.is_marker {
         return false;
       }
-      let chars: Vec<char> = t.text.chars().collect();
-      chars
-        .windows(2)
-        .any(|pair| allows_inter_character_expansion(pair.first().copied(), pair.get(1).copied()))
+      t.count_inter_character_justify_opportunities() > 0
     }
     InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b.children.iter().any(item_has_interchar_opportunity),
@@ -16411,11 +16345,11 @@ mod tests {
     let first = lines.first().expect("first line");
     let resolved = resolve_auto_text_justify(TextJustify::Auto, &first.items);
     assert_eq!(resolved, TextJustify::InterCharacter);
-    let expanded = ifc.expand_items_for_justification(&first.items, resolved);
+    let base_width: f32 = first.items.iter().map(|p| p.item.width()).sum();
+    let extra_space = first.available_width - base_width;
     assert!(
-      expanded.len() >= 4,
-      "expanded items should split per cluster; got {}",
-      expanded.len()
+      extra_space > 1.0,
+      "expected extra space to distribute; extra={extra_space} base_width={base_width}"
     );
 
     let fragment = ifc.layout(&root, &constraints).expect("layout");
@@ -16426,15 +16360,21 @@ mod tests {
     let first_line = fragment.children.first().expect("first line");
     let count = first_line.children.len();
     assert!(
-      count >= 4,
-      "inter-character justify should split CJK into per-cluster items; count={count}"
+      count <= 2,
+      "inter-character justify should not split CJK into per-cluster fragments; count={count}"
     );
-    let a = &first_line.children[0];
-    let b = &first_line.children[1];
-    let gap = b.bounds.x() - (a.bounds.x() + a.bounds.width());
+
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    for child in &first_line.children {
+      min_x = min_x.min(child.bounds.min_x());
+      max_x = max_x.max(child.bounds.max_x());
+    }
+    let span = max_x - min_x;
     assert!(
-      gap > 0.5,
-      "justify should expand gaps between CJK clusters; gap={gap}, count={count}"
+      (span - first_line.bounds.width()).abs() < 0.5,
+      "justified line should fill its line box (span={span:.2} box={:.2})",
+      first_line.bounds.width()
     );
   }
 
@@ -16711,13 +16651,11 @@ mod tests {
       crate::style::types::Direction::Ltr,
     );
 
-    let segments = ctx.split_text_item_for_justify(&item, TextJustify::InterCharacter);
+    let gaps = item.count_inter_character_justify_opportunities();
     assert_eq!(
-      segments.len(),
-      1,
-      "combining marks should not be split from their base character"
+      gaps, 0,
+      "combining marks should not expose inter-character gaps"
     );
-    assert_eq!(segments[0].text, "a\u{0301}");
   }
 
   #[test]
@@ -16738,9 +16676,9 @@ mod tests {
       crate::style::types::Direction::Ltr,
     );
 
-    let segments = ctx.split_text_item_for_justify(&item, TextJustify::InterCharacter);
-    assert_eq!(segments.len(), 1, "emoji ZWJ sequences should not be split");
-    assert_eq!(segments[0].text, text);
+    let segments = item.count_inter_character_justify_opportunities();
+    assert_eq!(segments, 0, "emoji ZWJ sequences should not expose inter-character gaps");
+    assert_eq!(item.text, text);
   }
 
   #[test]

@@ -52,6 +52,7 @@ use crate::style::types::WordBreak;
 use crate::style::values::{Length, LengthUnit};
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
+use crate::text::justify::allows_inter_character_expansion;
 use crate::text::justify::InlineAxis;
 use crate::text::line_break::BreakOpportunity;
 use crate::text::line_break::BreakOpportunityKind;
@@ -1275,6 +1276,251 @@ impl TextItem {
 
       run.advance = new_advance;
     }
+  }
+
+  fn is_expandable_space_for_justify(ch: char) -> bool {
+    matches!(ch, ' ' | '\t')
+  }
+
+  /// Counts internal justification opportunities for `text-justify: inter-word`.
+  ///
+  /// A word-boundary opportunity is counted after an **expandable space** cluster (`' '` or `'\t'`)
+  /// when the next cluster/character is **not** an expandable space.
+  ///
+  /// Trailing spaces are not counted (no "next" character).
+  pub fn count_inter_word_justify_opportunities(&self) -> usize {
+    if self.text.is_empty() {
+      return 0;
+    }
+
+    self
+      .cluster_advances
+      .iter()
+      .filter_map(|b| {
+        let offset = b.byte_offset;
+        if offset == 0 || offset >= self.text.len() {
+          return None;
+        }
+        // `cluster_advances` byte offsets are aligned to UTF-8 char boundaries.
+        let prev = self.text[..offset].chars().next_back()?;
+        let next = self.text[offset..].chars().next()?;
+        Some((prev, next))
+      })
+      .filter(|(prev, next)| {
+        Self::is_expandable_space_for_justify(*prev) && !Self::is_expandable_space_for_justify(*next)
+      })
+      .count()
+  }
+
+  /// Counts internal justification opportunities for `text-justify: inter-character|distribute`.
+  ///
+  /// Opportunities are evaluated at shaped cluster boundaries so we do not split grapheme clusters
+  /// (combining marks, ZWJ emoji sequences, etc).
+  pub fn count_inter_character_justify_opportunities(&self) -> usize {
+    if self.text.is_empty() || self.is_marker {
+      return 0;
+    }
+
+    self
+      .cluster_advances
+      .iter()
+      .filter_map(|b| {
+        let offset = b.byte_offset;
+        if offset == 0 || offset >= self.text.len() {
+          return None;
+        }
+        // `cluster_advances` byte offsets are aligned to UTF-8 char boundaries.
+        let prev = self.text[..offset].chars().next_back()?;
+        let next = self.text[offset..].chars().next()?;
+        Some((prev, next))
+      })
+      .filter(|(prev, next)| allows_inter_character_expansion(Some(*prev), Some(*next)))
+      .count()
+  }
+
+  /// Applies in-place `text-justify: inter-word` expansion inside a single shaped `TextItem`.
+  ///
+  /// Returns the number of opportunities expanded.
+  pub fn apply_inter_word_justification(&mut self, gap_extra: f32) -> usize {
+    self.apply_internal_justification(gap_extra, |prev, next| {
+      Self::is_expandable_space_for_justify(prev) && !Self::is_expandable_space_for_justify(next)
+    })
+  }
+
+  /// Applies in-place `text-justify: inter-character|distribute` expansion inside a single shaped
+  /// `TextItem`.
+  ///
+  /// Returns the number of opportunities expanded.
+  pub fn apply_inter_character_justification(&mut self, gap_extra: f32) -> usize {
+    if self.is_marker {
+      return 0;
+    }
+    self.apply_internal_justification(gap_extra, |prev, next| {
+      allows_inter_character_expansion(Some(prev), Some(next))
+    })
+  }
+
+  fn apply_internal_justification(
+    &mut self,
+    gap_extra: f32,
+    mut is_opportunity: impl FnMut(char, char) -> bool,
+  ) -> usize {
+    if gap_extra == 0.0 || self.text.is_empty() {
+      return 0;
+    }
+
+    let outside_marker = self.is_marker && self.advance_for_layout.abs() <= f32::EPSILON;
+    let marker_gap = (self.is_marker && !outside_marker)
+      .then(|| (self.advance_for_layout - self.advance).max(0.0))
+      .unwrap_or(0.0);
+
+    // Fast path for synthetic items used in tests that don't carry shaped runs.
+    if self.runs.is_empty() {
+      let mut count = 0usize;
+      let mut cumulative = 0.0;
+
+      for boundary in &mut self.cluster_advances {
+        let offset = boundary.byte_offset;
+        if offset == 0 || offset >= self.text.len() {
+          boundary.advance += cumulative;
+          boundary.run_advance += cumulative;
+          continue;
+        }
+        let Some(prev) = self.text[..offset].chars().next_back() else {
+          boundary.advance += cumulative;
+          boundary.run_advance += cumulative;
+          continue;
+        };
+        let Some(next) = self.text[offset..].chars().next() else {
+          boundary.advance += cumulative;
+          boundary.run_advance += cumulative;
+          continue;
+        };
+
+        if is_opportunity(prev, next) {
+          count += 1;
+          cumulative += gap_extra;
+        }
+
+        boundary.advance += cumulative;
+        boundary.run_advance += cumulative;
+      }
+
+      if count == 0 {
+        return 0;
+      }
+
+      self.advance += gap_extra * count as f32;
+      if self.is_marker {
+        if outside_marker {
+          self.advance_for_layout = 0.0;
+        } else {
+          self.advance_for_layout = self.advance + marker_gap;
+        }
+      } else {
+        self.advance_for_layout = self.advance;
+      }
+
+      return count;
+    }
+
+    let mut run_glyph_extras: Vec<Vec<(usize, f32)>> = vec![Vec::new(); self.runs.len()];
+    let mut run_end_extras: Vec<f32> = vec![0.0; self.runs.len()];
+    let mut count = 0usize;
+
+    for boundary in &self.cluster_advances {
+      let offset = boundary.byte_offset;
+      if offset == 0 || offset >= self.text.len() {
+        continue;
+      }
+
+      let Some(prev) = self.text[..offset].chars().next_back() else {
+        continue;
+      };
+      let Some(next) = self.text[offset..].chars().next() else {
+        continue;
+      };
+
+      if !is_opportunity(prev, next) {
+        continue;
+      }
+
+      count += 1;
+
+      let Some(run_idx) = boundary.run_index else {
+        continue;
+      };
+      if let Some(glyph_end) = boundary.glyph_end {
+        let last_glyph = glyph_end.saturating_sub(1);
+        run_glyph_extras[run_idx].push((last_glyph, gap_extra));
+      } else {
+        run_end_extras[run_idx] += gap_extra;
+      }
+    }
+
+    if count == 0 {
+      return 0;
+    }
+
+    for (run_idx, run) in self.runs.iter_mut().enumerate() {
+      if run.glyphs.is_empty() {
+        let extra = run_end_extras.get(run_idx).copied().unwrap_or(0.0);
+        if extra != 0.0 {
+          run.advance += extra;
+        }
+        continue;
+      }
+
+      let axis = run_inline_axis(run);
+      let mut extra_by_glyph = vec![0.0; run.glyphs.len()];
+      for (glyph_idx, extra) in run_glyph_extras
+        .get(run_idx)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[])
+      {
+        if *glyph_idx < extra_by_glyph.len() {
+          extra_by_glyph[*glyph_idx] += *extra;
+        }
+      }
+
+      let mut cumulative_shift = 0.0;
+      let mut new_advance = 0.0;
+
+      for (idx, glyph) in run.glyphs.iter_mut().enumerate() {
+        let extra = extra_by_glyph[idx];
+        match axis {
+          InlineAxis::Horizontal => glyph.x_offset += cumulative_shift,
+          InlineAxis::Vertical => glyph.y_offset += cumulative_shift,
+        }
+        if extra != 0.0 {
+          add_inline_advance(glyph, axis, extra);
+        }
+        cumulative_shift += extra;
+        new_advance += glyph_inline_advance(glyph, axis);
+      }
+
+      run.advance = new_advance;
+    }
+
+    self.cluster_advances = Self::compute_cluster_advances(&self.runs, &self.text, self.font_size);
+    let new_advance = self
+      .cluster_advances
+      .last()
+      .map(|c| c.advance)
+      .unwrap_or_else(|| self.runs.iter().map(|r| r.advance).sum());
+    self.advance = new_advance;
+
+    if self.is_marker {
+      if outside_marker {
+        self.advance_for_layout = 0.0;
+      } else {
+        self.advance_for_layout = self.advance + marker_gap;
+      }
+    } else {
+      self.advance_for_layout = self.advance;
+    }
+
+    count
   }
 
   /// Gets the horizontal advance at a given byte offset
