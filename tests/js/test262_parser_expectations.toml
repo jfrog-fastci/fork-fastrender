@@ -1,0 +1,16 @@
+# Expectations manifest for the test262 *parser* harness.
+#
+# This file is consumed by `cargo xtask js test262-parser` (a wrapper over the
+# ecma-rs `test262` parser runner).
+#
+# Format (TOML):
+#
+# [[expectations]]
+# id = "pass/some_case.js"
+# status = "xfail" # pass | skip | xfail | flaky
+# reason = "known parse recovery gap"
+# tracking_issue = "https://github.com/…"
+#
+# Matchers:
+# - `id` (exact), `glob`, or `regex` (exact > glob > regex; first match wins).
+

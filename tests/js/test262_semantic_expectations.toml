@@ -1,0 +1,16 @@
+# Expectations manifest for the curated test262 *semantics* suite.
+#
+# This file is consumed by `cargo xtask js test262` (a wrapper over the ecma-rs
+# `test262-semantic` runner).
+#
+# Format (TOML):
+#
+# [[expectations]]
+# id = "language/expressions/addition/S11.6.1_A2.1_T1.js"
+# status = "xfail" # pass | skip | xfail | flaky
+# reason = "known VM gap"
+# tracking_issue = "https://github.com/…"
+#
+# Matchers:
+# - `id` (exact), `glob`, or `regex` (exact > glob > regex; first match wins).
+
