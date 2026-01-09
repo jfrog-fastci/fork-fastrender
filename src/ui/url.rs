@@ -1,9 +1,13 @@
+use std::path::{Path, PathBuf};
 use url::Url;
 
 /// Normalize a user-provided address bar input into a canonical URL string.
 ///
 /// This function intentionally performs *minimal* normalization; see
 /// `normalize_user_url`'s unit tests for the expected behavior.
+///
+/// Special-cases:
+/// - Filesystem-looking paths are converted to `file://` URLs.
 ///
 /// Note: `url::Url` accepts opaque/non-hierarchical schemes like `javascript:`.
 /// We currently treat those as valid URLs and return them successfully; callers
@@ -12,6 +16,11 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
   let input = trim_ascii_whitespace(input);
   if input.is_empty() {
     return Err("empty URL".to_string());
+  }
+
+  if looks_like_file_path(input) {
+    return file_url_from_user_input(input)
+      .ok_or_else(|| format!("failed to convert path to file:// URL: {input:?}"));
   }
 
   match Url::parse(input) {
@@ -28,6 +37,28 @@ pub fn normalize_user_url(input: &str) -> Result<String, String> {
       }
     }
   }
+}
+
+fn looks_like_file_path(input: &str) -> bool {
+  input.starts_with('/') || input.starts_with("./") || input.starts_with("../") || looks_like_windows_drive_path(input)
+}
+
+fn looks_like_windows_drive_path(input: &str) -> bool {
+  let bytes = input.as_bytes();
+  if bytes.len() < 3 {
+    return false;
+  }
+  bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+fn file_url_from_user_input(input: &str) -> Option<String> {
+  let path = Path::new(input);
+  let abs = if path.is_absolute() {
+    PathBuf::from(path)
+  } else {
+    std::env::current_dir().ok()?.join(path)
+  };
+  Url::from_file_path(abs).ok().map(|url| url.to_string())
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -67,6 +98,20 @@ mod tests {
     assert_eq!(
       normalize_user_url("javascript:alert(1)").unwrap(),
       "javascript:alert(1)"
+    );
+  }
+
+  #[test]
+  fn about_urls_are_preserved() {
+    assert_eq!(normalize_user_url("about:blank").unwrap(), "about:blank");
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn posix_paths_are_converted_to_file_urls() {
+    assert_eq!(
+      normalize_user_url("/tmp/a.html").unwrap(),
+      "file:///tmp/a.html"
     );
   }
 }

@@ -1,3 +1,5 @@
+pub mod about_pages;
+pub mod browser_worker;
 pub mod cancel;
 pub mod history;
 pub mod messages;

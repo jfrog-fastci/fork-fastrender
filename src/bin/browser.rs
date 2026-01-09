@@ -216,7 +216,7 @@ impl App {
       egui_state,
       egui_renderer,
       pixels_per_point,
-      address_bar: "https://example.com/".to_owned(),
+      address_bar: "about:newtab".to_owned(),
       page_texture: None,
       page_pixmap: None,
       page_size_px: [0, 0],
