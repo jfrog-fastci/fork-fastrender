@@ -123,6 +123,7 @@ fn scroll_without_pointer_updates_viewport_scroll() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("CreateTab");
   ui_tx
@@ -181,6 +182,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("CreateTab");
   ui_tx
@@ -243,6 +245,7 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("CreateTab");
   ui_tx
@@ -326,6 +329,7 @@ fn scroll_clamps_to_zero() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("CreateTab");
   ui_tx

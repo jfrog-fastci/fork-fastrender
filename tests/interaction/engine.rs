@@ -1451,16 +1451,16 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
   )]);
 
   let select_dom_id = node_id(&dom, "s");
-  let option_1_dom_id = node_id(&dom, "o1");
-  let option_2_dom_id = node_id(&dom, "o2");
-  let option_3_dom_id = node_id(&dom, "o3");
+  let o1_dom_id = node_id(&dom, "o1");
+  let o2_dom_id = node_id(&dom, "o2");
+  let o3_dom_id = node_id(&dom, "o3");
 
   let control = FormControlKind::Select(SelectControl {
     multiple: false,
     size: 3,
     items: Arc::new(vec![
       SelectItem::Option {
-        node_id: option_1_dom_id,
+        node_id: o1_dom_id,
         label: "One".to_string(),
         value: "1".to_string(),
         selected: true,
@@ -1468,7 +1468,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         in_optgroup: false,
       },
       SelectItem::Option {
-        node_id: option_2_dom_id,
+        node_id: o2_dom_id,
         label: "Two".to_string(),
         value: "2".to_string(),
         selected: false,
@@ -1476,7 +1476,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         in_optgroup: false,
       },
       SelectItem::Option {
-        node_id: option_3_dom_id,
+        node_id: o3_dom_id,
         label: "Three".to_string(),
         value: "3".to_string(),
         selected: false,

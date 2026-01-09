@@ -136,6 +136,7 @@ fn click_after_scroll_hits_link() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("CreateTab");
   // Keep the viewport height <= the link height so scrolling to y=500 is possible even when the

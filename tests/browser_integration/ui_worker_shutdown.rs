@@ -38,6 +38,7 @@ fn dropping_ui_receiver_does_not_panic_worker() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("send CreateTab");
   ui_tx

@@ -38,6 +38,7 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   worker
@@ -105,6 +106,7 @@ fn same_document_fragment_click_scrolls_without_full_navigation() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   worker

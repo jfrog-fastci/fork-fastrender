@@ -153,6 +153,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   tx.send(UiToWorker::CreateTab {
     tab_id,
     initial_url: None,
+    cancel: Default::default(),
   })
   .unwrap();
   tx.send(UiToWorker::ViewportChanged {
@@ -228,6 +229,7 @@ fn reload_does_not_create_new_history_entry() {
   tx.send(UiToWorker::CreateTab {
     tab_id,
     initial_url: None,
+    cancel: Default::default(),
   })
   .unwrap();
   tx.send(UiToWorker::ViewportChanged {
@@ -282,6 +284,7 @@ fn scroll_is_restored_when_going_back() {
   tx.send(UiToWorker::CreateTab {
     tab_id,
     initial_url: None,
+    cancel: Default::default(),
   })
   .unwrap();
   tx.send(UiToWorker::ViewportChanged {

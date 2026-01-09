@@ -87,6 +87,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   ui_tx
@@ -169,6 +170,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   ui_tx
@@ -271,6 +273,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   ui_tx

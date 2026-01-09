@@ -385,7 +385,6 @@ impl BrowserDocument {
   pub fn needs_layout(&self) -> bool {
     self.prepared.is_none() || self.style_dirty || self.layout_dirty
   }
-
   /// Updates the viewport scroll offset (in CSS px), marking paint dirty.
   pub fn set_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     if self.options.scroll_x != scroll_x || self.options.scroll_y != scroll_y {

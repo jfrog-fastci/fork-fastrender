@@ -1,6 +1,7 @@
 pub mod about_pages;
 pub mod app_state;
 pub mod browser_app;
+pub mod browser_tab_controller;
 pub mod browser_thread;
 pub mod browser_worker;
 pub mod cancel;
@@ -31,6 +32,7 @@ pub mod input_mapping;
 #[cfg(feature = "browser_ui")]
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 
+pub use browser_tab_controller::BrowserTabController;
 pub use browser_thread::{spawn_browser_worker, BrowserWorkerHandle};
 
 // `pixmap_texture` depends on the optional egui stack, so keep it behind the

@@ -12,6 +12,10 @@ pub struct ScrollWheelInput {
   pub delta_y: f32,
 }
 
+fn sanitize_delta(delta: f32) -> f32 {
+  if delta.is_finite() { delta } else { 0.0 }
+}
+
 /// Computes the vertical scroll overflow height for listbox `<select>` controls.
 ///
 /// Listbox selects are painted from their `SelectControl` model (not from laid-out `<option>`

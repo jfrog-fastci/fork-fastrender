@@ -86,6 +86,7 @@ fn pointer_move_sets_hover_and_repaints() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   worker
@@ -144,6 +145,7 @@ fn pointer_down_sets_active_until_pointer_up() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .unwrap();
   worker

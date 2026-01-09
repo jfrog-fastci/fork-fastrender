@@ -38,6 +38,7 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("create tab");
   ui_tx
@@ -137,6 +138,7 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
+      cancel: Default::default(),
     })
     .expect("create tab");
 

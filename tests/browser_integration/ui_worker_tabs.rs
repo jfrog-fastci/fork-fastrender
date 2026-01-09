@@ -43,12 +43,14 @@ fn multi_tab_navigations_are_scoped_by_tab_id() {
     .send(UiToWorker::CreateTab {
       tab_id: tab1,
       initial_url: Some("about:blank".to_string()),
+      cancel: Default::default(),
     })
     .expect("create tab1");
   ui_tx
     .send(UiToWorker::CreateTab {
       tab_id: tab2,
       initial_url: Some("about:newtab".to_string()),
+      cancel: Default::default(),
     })
     .expect("create tab2");
 
@@ -154,6 +156,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
     .send(UiToWorker::CreateTab {
       tab_id: tab1,
       initial_url: Some("about:newtab".to_string()),
+      cancel: Default::default(),
     })
     .expect("create tab1");
   let _ = wait_for_first_frame(&ui_rx, tab1, Duration::from_secs(2));
@@ -188,6 +191,7 @@ fn close_tab_prevents_future_frames_for_that_tab() {
     .send(UiToWorker::CreateTab {
       tab_id: tab2,
       initial_url: Some("about:blank".to_string()),
+      cancel: Default::default(),
     })
     .expect("create tab2");
   let _ = wait_for_first_frame(&ui_rx, tab2, Duration::from_secs(2));
