@@ -5565,10 +5565,14 @@ impl InlineFormattingContext {
       TextAlign::Center => (extra_space * 0.5, 0.0),
       TextAlign::Justify | TextAlign::JustifyAll if should_justify => {
         let gap_count = Self::count_justify_opportunities(&items, resolved_justify);
+        // For RTL lines, `cursor` starts at the line's inline end and walks backwards as we place
+        // items. When justifying we still want the line's *end edge* to stay anchored at
+        // `usable_width` while distributing the extra space between opportunities.
+        let lead = if rtl { extra_space } else { 0.0 };
         if gap_count > 0 {
-          (0.0, extra_space / gap_count as f32)
+          (lead, extra_space / gap_count as f32)
         } else {
-          (0.0, 0.0)
+          (lead, 0.0)
         }
       }
       _ => (0.0, 0.0),
@@ -10471,7 +10475,10 @@ impl InlineFormattingContext {
             &mut use_first_line_width,
             &mut line_offset,
             &mut lines,
-            float_ctx.as_deref().or(local_float_ctx.as_ref()),
+            float_ctx
+              .as_deref()
+              .filter(|ctx| !ctx.is_empty())
+              .or(local_float_ctx.as_ref()),
             &mut flow_order,
             &mut line_clamp_truncated,
           )?;
@@ -10506,7 +10513,10 @@ impl InlineFormattingContext {
     }
 
     // Flush any remaining content
-    let final_ctx = float_ctx.as_deref().or(local_float_ctx.as_ref());
+    let final_ctx = float_ctx
+      .as_deref()
+      .filter(|ctx| !ctx.is_empty())
+      .or(local_float_ctx.as_ref());
     flush_pending(
       &mut pending,
       &mut use_first_line_width,

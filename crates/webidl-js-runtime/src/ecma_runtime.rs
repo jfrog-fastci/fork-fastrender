@@ -108,12 +108,20 @@ impl VmJsRuntime {
     roots: impl IntoIterator<Item = Value>,
     f: impl FnOnce(&mut Self) -> Result<R, VmError>,
   ) -> Result<R, VmError> {
-    let len = self.heap.stack_root_len();
+    // `vm-js` removed the old `Heap::{push_stack_root,truncate_stack_roots}` API in favour of
+    // `Scope`-based rooting. We can't hold a `Scope` across `f(self)` because `f` needs mutable
+    // access to the heap (and may create its own scopes).
+    //
+    // Instead, emulate stack roots using persistent roots that we remove immediately after `f`
+    // returns.
+    let mut root_ids = Vec::new();
     for v in roots {
-      self.heap.push_stack_root(v);
+      root_ids.push(self.heap.add_root(v));
     }
     let result = f(self);
-    self.heap.truncate_stack_roots(len);
+    for id in root_ids {
+      self.heap.remove_root(id);
+    }
     result
   }
 
