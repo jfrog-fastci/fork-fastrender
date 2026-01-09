@@ -11,25 +11,25 @@ body {
 
 /* Links */
 a:link {
-    color: rgb(0, 0, 238);
+    color: LinkText;
     text-decoration: underline;
     cursor: pointer;
 }
 
 a:visited {
-    color: rgb(85, 26, 139);
+    color: VisitedText;
 }
 
 a:active {
-    color: rgb(255, 0, 0);
+    color: ActiveText;
 }
 
 a:hover {
-    color: rgb(255, 0, 0);
+    color: ActiveText;
 }
 
 a:focus {
-    outline: 1px dotted rgb(0, 0, 0);
+    outline: 1px dotted CanvasText;
     outline-offset: 2px;
 }
 
@@ -337,7 +337,6 @@ abbr[title], acronym[title] {
 }
 
 a[href] {
-    color: rgb(0, 0, 238);
     text-decoration: underline;
     cursor: pointer;
 }

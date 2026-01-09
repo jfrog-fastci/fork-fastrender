@@ -12847,7 +12847,7 @@ fn ua_default_rules(
           specificity,
           order: base_order + 1,
           layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_VISITED_DECLS, "color: rgb(85, 26, 139);"),
+          declarations: cached_declarations(&UA_LINK_VISITED_DECLS, "color: VisitedText;"),
           starting_style: false,
         });
       }
@@ -12858,7 +12858,7 @@ fn ua_default_rules(
           specificity,
           order: base_order + 2,
           layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_ACTIVE_DECLS, "color: rgb(255, 0, 0);"),
+          declarations: cached_declarations(&UA_LINK_ACTIVE_DECLS, "color: ActiveText;"),
           starting_style: false,
         });
       }
@@ -12869,7 +12869,7 @@ fn ua_default_rules(
           specificity,
           order: base_order + 3,
           layer_order: layer_order.clone(),
-          declarations: cached_declarations(&UA_LINK_HOVER_DECLS, "color: rgb(255, 0, 0);"),
+          declarations: cached_declarations(&UA_LINK_HOVER_DECLS, "color: ActiveText;"),
           starting_style: false,
         });
       }
@@ -12882,7 +12882,7 @@ fn ua_default_rules(
           layer_order: layer_order.clone(),
           declarations: cached_declarations(
             &UA_LINK_FOCUS_DECLS,
-            "outline: 1px dotted rgb(0, 0, 0); outline-offset: 2px;",
+            "outline: 1px dotted CanvasText; outline-offset: 2px;",
           ),
           starting_style: false,
         });

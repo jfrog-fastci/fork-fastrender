@@ -33,6 +33,17 @@ fn styled_with_forced_colors(css: &str, forced: bool) -> StyledNode {
   )
 }
 
+fn styled_with_forced_colors_html(html: &str, css: &str, forced: bool) -> StyledNode {
+  let dom = dom::parse_html(html).expect("parse html");
+  let stylesheet = parse_stylesheet(css).expect("parse stylesheet");
+  let media = MediaContext::screen(800.0, 600.0)
+    .with_color_scheme(ColorScheme::Light)
+    .with_forced_colors(forced);
+  apply_styles_with_media_target_and_imports(
+    &dom, &stylesheet, &media, None, None, None, None, None, None,
+  )
+}
+
 #[test]
 fn forced_colors_media_query_toggles_rules() {
   let css = r#"
@@ -205,4 +216,12 @@ fn system_colors_in_filter_drop_shadow_use_forced_palette() {
     }
     other => panic!("expected drop-shadow, got {other:?}"),
   }
+}
+
+#[test]
+fn ua_link_default_color_uses_system_palette_in_forced_colors_mode() {
+  let html = r#"<a id="t" href="https://example.com">link</a>"#;
+  let styled = styled_with_forced_colors_html(html, "", true);
+  let node = find_by_id(&styled, "t").expect("node");
+  assert_eq!(node.styles.color, SystemColor::LinkText.to_rgba(false, true));
 }
