@@ -10558,4 +10558,48 @@ mod tests {
       "border-right-width should still be owned by border"
     );
   }
+
+  #[test]
+  fn transition_pairs_shorthand_overrides_earlier_longhand() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::Name("border-top-width".to_string()),
+      TransitionProperty::Name("border".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    let idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-top-width")
+      .expect("border-top-width present")
+      .1;
+    assert_eq!(idx, 1, "border should override earlier border-top-width");
+  }
+
+  #[test]
+  fn transition_pairs_shorthand_overrides_earlier_longhand_outline() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::Name("outline-width".to_string()),
+      TransitionProperty::Name("outline".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    let idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "outline-width")
+      .expect("outline-width present")
+      .1;
+    assert_eq!(idx, 1, "outline should override earlier outline-width");
+  }
 }
