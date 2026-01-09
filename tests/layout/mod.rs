@@ -55,6 +55,7 @@ mod fragmentation;
 mod fragmentation_widows_orphans;
 mod grid_abspos_static_position;
 mod grid_auto_placement_dense;
+mod grid_auto_min_size_compressible_replaced;
 mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
 mod grid_box_sizing_test;

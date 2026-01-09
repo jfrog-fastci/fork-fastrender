@@ -2255,6 +2255,7 @@ impl GridFormattingContext {
             Some(root_axis_style),
             false,
             false,
+            child.is_replaced(),
           ))));
         }
         let simple_grid = !has_positioned_children
@@ -2265,6 +2266,7 @@ impl GridFormattingContext {
           None,
           simple_grid,
           true,
+          box_node.is_replaced(),
         )));
         let template = std::sync::Arc::new(CachedTaffyTemplate {
           root_style,
@@ -2347,8 +2349,14 @@ impl GridFormattingContext {
     // scanning their children here; their full subtree will be laid out later when we re-run the
     // child formatting context with the definite sizes resolved by Taffy.
     if !is_grid_container && !is_root {
-      let mut taffy_style =
-        self.convert_style(style, containing_grid, containing_grid_axis, false, false);
+      let mut taffy_style = self.convert_style(
+        style,
+        containing_grid,
+        containing_grid_axis,
+        false,
+        false,
+        box_node.is_replaced(),
+      );
       self.apply_grid_intrinsic_size_keywords(box_node, false, &mut taffy_style)?;
       return taffy
         .new_leaf_with_context(taffy_style, box_node as *const BoxNode)
@@ -2427,6 +2435,7 @@ impl GridFormattingContext {
       containing_grid_axis,
       simple_grid,
       include_children,
+      box_node.is_replaced(),
     );
     self.apply_grid_intrinsic_size_keywords(box_node, is_root, &mut taffy_style)?;
 
@@ -2483,8 +2492,10 @@ impl GridFormattingContext {
     containing_grid_axis: Option<GridAxisStyle>,
     simple_grid: bool,
     is_grid_node: bool,
+    item_is_replaced: bool,
   ) -> TaffyStyle {
     let mut taffy_style = TaffyStyle::default();
+    taffy_style.item_is_replaced = item_is_replaced;
     let is_grid = is_grid_node && !simple_grid;
     let container_axis_style = if is_grid {
       GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
@@ -6067,7 +6078,14 @@ impl GridFormattingContext {
       });
       let simple_grid = !has_positioned_children
         && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
-      let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
+      let override_taffy_style = self.convert_style(
+        style_override,
+        None,
+        None,
+        simple_grid,
+        true,
+        box_node.is_replaced(),
+      );
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -7140,14 +7158,15 @@ fn grid_child_fingerprint(
   children.len().hash(&mut h);
   for child in children {
     check_layout_deadline(deadline_counter)?;
-    // The cached Taffy template stores converted styles only; box type/formatting context affects
-    // measurement/layout callbacks, not the style conversion output. Hash only style fingerprints so
-    // we maximize template reuse across repeated component trees.
+    // The cached Taffy template stores converted styles; most conversion output depends only on
+    // `ComputedStyle`, but some bits (such as whether the node is a replaced element) come from the
+    // BoxNode metadata. Include those so we don't reuse templates across incompatible leaf styles.
     let child_style_override = style_override_for(child.id);
     let child_style: &ComputedStyle = child_style_override
       .as_deref()
       .unwrap_or_else(|| child.style.as_ref());
     taffy_grid_item_style_fingerprint(child_style).hash(&mut h);
+    child.is_replaced().hash(&mut h);
   }
   Ok(h.finish())
 }
@@ -8276,7 +8295,14 @@ impl FormattingContext for GridFormattingContext {
       let mut style_deadline_counter = 0usize;
       let simple_grid = positioned_children.is_empty()
         && ctx.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
-      let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
+      let override_taffy_style = self.convert_style(
+        style_override,
+        None,
+        None,
+        simple_grid,
+        true,
+        box_node.is_replaced(),
+      );
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -9812,7 +9838,14 @@ impl FormattingContext for GridFormattingContext {
       });
       let simple_grid = !has_positioned_children
         && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
-      let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
+      let override_taffy_style = self.convert_style(
+        style_override,
+        None,
+        None,
+        simple_grid,
+        true,
+        box_node.is_replaced(),
+      );
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -11576,6 +11609,30 @@ mod tests {
   }
 
   #[test]
+  fn grid_child_fingerprint_includes_replacedness() {
+    use crate::tree::box_tree::ReplacedType;
+
+    let shared_style = Arc::new(ComputedStyle::default());
+    let normal = BoxNode::new_block(shared_style.clone(), FormattingContextType::Block, vec![]);
+    let replaced = BoxNode::new_replaced(shared_style, ReplacedType::Canvas, None, None);
+
+    let children_normal: Vec<&BoxNode> = vec![&normal];
+    let children_replaced: Vec<&BoxNode> = vec![&replaced];
+
+    let mut deadline_counter = 0usize;
+    let normal_fp =
+      super::grid_child_fingerprint(&children_normal, &mut deadline_counter).expect("fingerprint");
+    let mut deadline_counter = 0usize;
+    let replaced_fp = super::grid_child_fingerprint(&children_replaced, &mut deadline_counter)
+      .expect("fingerprint");
+
+    assert_ne!(
+      normal_fp, replaced_fp,
+      "grid template fingerprints should differ for replaced vs non-replaced leaves"
+    );
+  }
+
+  #[test]
   fn grid_tree_build_times_out_via_deadline_checks() {
     use crate::render_control::{DeadlineGuard, RenderDeadline};
     use std::time::Duration;
@@ -12529,7 +12586,7 @@ mod tests {
 
     let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
     let gc = GridFormattingContext::new();
-    let taffy_style = gc.convert_style(&node.style, None, None, false, true);
+    let taffy_style = gc.convert_style(&node.style, None, None, false, true, node.is_replaced());
 
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
     assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
@@ -12546,14 +12603,14 @@ mod tests {
     style.display = CssDisplay::Grid;
 
     style.writing_mode = WritingMode::HorizontalTb;
-    let taffy_style = gc.convert_style(&style, None, None, false, true);
+    let taffy_style = gc.convert_style(&style, None, None, false, true, false);
     assert!(
       !taffy_style.axes_swapped,
       "horizontal-tb should not transpose inline/block axes"
     );
 
     style.writing_mode = WritingMode::VerticalRl;
-    let taffy_style = gc.convert_style(&style, None, None, false, true);
+    let taffy_style = gc.convert_style(&style, None, None, false, true, false);
     assert!(
       taffy_style.axes_swapped,
       "vertical writing-modes should transpose inline/block axes into physical axes"
@@ -12580,6 +12637,7 @@ mod tests {
       Some(parent_axis),
       false,
       true,
+      false,
     );
     assert!(
       !taffy_style.axes_swapped,
@@ -12595,6 +12653,7 @@ mod tests {
       Some(parent_axis),
       false,
       true,
+      false,
     );
     assert!(
       taffy_style.axes_swapped,
@@ -12635,7 +12694,7 @@ mod tests {
       )
       .expect("grid conversion");
     // If the fast path is taken, the parent container style should have been converted to block.
-    let taffy_style = gc.convert_style(&parent.style, None, None, true, true);
+    let taffy_style = gc.convert_style(&parent.style, None, None, true, true, parent.is_replaced());
     assert_eq!(taffy_style.display, Display::Block);
   }
 
