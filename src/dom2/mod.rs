@@ -55,11 +55,10 @@ pub enum NodeKind {
   Document {
     quirks_mode: QuirksMode,
   },
-  /// A detached node used for batched insertion.
+  /// A detached container for child nodes.
   ///
-  /// When passed as `new_child` to `append_child`/`insert_before`/`replace_child`, the fragment
-  /// itself is not inserted. Instead, its children are inserted (in order) and the fragment is
-  /// emptied.
+  /// Document fragments are never inserted directly into the tree; callers implement DOM's special
+  /// insertion semantics by moving the fragment's children into the target parent.
   DocumentFragment,
   /// An HTML comment node.
   ///
@@ -550,9 +549,14 @@ impl Document {
           // semantics when snapshotting back to the renderer DOM.
           scripting_enabled: true,
         },
-        NodeKind::DocumentFragment => unreachable!(
-          "DocumentFragment nodes should never appear in the renderer snapshot tree; fragments must remain detached/empty"
-        ),
+        NodeKind::DocumentFragment => {
+          // The renderer DOM snapshot format does not have a first-class DocumentFragment node
+          // type. Fragments should never be connected (insertion is rejected in dom2), but map them
+          // defensively to a plain document node to avoid panics if an invalid tree is constructed.
+          DomNodeType::Document {
+            quirks_mode: QuirksMode::NoQuirks,
+          }
+        }
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,

@@ -19,6 +19,10 @@ impl Document {
       return Err(DomError::InvalidNodeType);
     }
 
+    if matches!(child_kind, NodeKind::DocumentFragment) {
+      return Err(DomError::HierarchyRequestError);
+    }
+
     // Leaf nodes cannot accept children.
     if matches!(
       parent_kind,

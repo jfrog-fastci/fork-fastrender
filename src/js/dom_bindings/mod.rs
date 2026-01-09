@@ -1133,8 +1133,7 @@ fn install_constructors(
         NodeKind::Comment { .. } => 8,
         NodeKind::Document { .. } => 9,
         NodeKind::Doctype { .. } => 10,
-        NodeKind::DocumentFragment => 11,
-        NodeKind::ShadowRoot { .. } => 11,
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => 11,
       };
       Ok(Value::Number(node_type as f64))
     })?;
@@ -1154,9 +1153,7 @@ fn install_constructors(
         NodeKind::Text { .. } => "#text".to_string(),
         NodeKind::Comment { .. } => "#comment".to_string(),
         NodeKind::ProcessingInstruction { target, .. } => target.clone(),
-        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
-          "#document-fragment".to_string()
-        }
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
       };
       rt.alloc_string_value(&name)
     })?;

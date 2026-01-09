@@ -74,6 +74,33 @@ fn create_comment_is_a_leaf_node_and_can_be_inserted() {
 }
 
 #[test]
+fn create_document_fragment_is_parentless() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let frag = doc.create_document_fragment();
+  assert_eq!(doc.parent(frag).unwrap(), None);
+  assert_eq!(doc.children(frag).unwrap(), &[]);
+}
+
+#[test]
+fn inserting_document_fragment_errors() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let frag = doc.create_document_fragment();
+  assert_eq!(
+    doc.append_child(root, frag),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(
+    doc.append_child(parent, frag),
+    Err(DomError::HierarchyRequestError)
+  );
+}
+
+#[test]
 fn append_child_sets_parent_and_updates_children() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
