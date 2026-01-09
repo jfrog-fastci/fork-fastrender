@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  NavigationReason, PointerButton, RepaintReason, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -190,6 +190,153 @@ fn select_listbox_click_accounts_for_scroll_offset() {
       break;
     }
   }
+
+  worker.join().expect("join worker");
+}
+
+#[test]
+fn select_listbox_click_on_scrollbar_does_not_select_option() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0,0,0); }
+          #lb {
+            display: block;
+            background: rgb(0,0,0);
+            color: rgba(0,0,0,0);
+            accent-color: rgb(255,0,0);
+            line-height: 20px;
+            font-size: 16px;
+            border: 0;
+            padding: 0;
+            width: 160px;
+            height: 60px; /* 3 rows */
+            overflow-y: auto;
+            overflow-x: hidden;
+          }
+          #marker { width: 64px; height: 64px; background: rgb(255,0,0); }
+          /* React to option[selected] mutation via :has so we can assert via pixels. */
+          #lb:has(option#opt11[selected]) + #marker { background: rgb(0,255,0); }
+        </style>
+      </head>
+      <body>
+        <select id="lb" size="3">
+          <option id="opt1">Option 1</option>
+          <option id="opt2">Option 2</option>
+          <option id="opt3">Option 3</option>
+          <option id="opt4">Option 4</option>
+          <option id="opt5">Option 5</option>
+          <option id="opt6">Option 6</option>
+          <option id="opt7">Option 7</option>
+          <option id="opt8">Option 8</option>
+          <option id="opt9">Option 9</option>
+          <option id="opt10">Option 10</option>
+          <option id="opt11">Option 11</option>
+          <option id="opt12">Option 12</option>
+          <option id="opt13">Option 13</option>
+          <option id="opt14">Option 14</option>
+          <option id="opt15">Option 15</option>
+          <option id="opt16">Option 16</option>
+          <option id="opt17">Option 17</option>
+          <option id="opt18">Option 18</option>
+          <option id="opt19">Option 19</option>
+          <option id="opt20">Option 20</option>
+        </select>
+        <div id="marker"></div>
+      </body>
+    </html>
+  "#;
+  let url = site.write("index.html", html);
+
+  let worker =
+    spawn_ui_worker("fastr-ui-worker-select-listbox-click-scrollbar").expect("spawn ui worker");
+
+  let tab_id = TabId::new();
+  worker
+    .ui_tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: None,
+      cancel: Default::default(),
+    })
+    .expect("CreateTab");
+  worker
+    .ui_tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 200),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+  worker
+    .ui_tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("Navigate");
+
+  let frame = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 80),
+    [255, 0, 0, 255],
+    "expected marker to start red"
+  );
+
+  // Scroll the listbox so option 11 is in view (and would be selected by a click).
+  worker
+    .ui_tx
+    .send(UiToWorker::Scroll {
+      tab_id,
+      delta_css: (0.0, 200.0),
+      pointer_css: Some((10.0, 10.0)),
+    })
+    .expect("Scroll");
+  let frame_after_scroll = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);
+  assert_eq!(
+    support::rgba_at(&frame_after_scroll.pixmap, 10, 80),
+    [255, 0, 0, 255],
+    "expected marker to remain red after scrolling"
+  );
+
+  // Click within the vertical scrollbar track. This should *not* select an option (hit-testing
+  // should match the painted text viewport width).
+  let click_pos = (159.0_f32, 10.0_f32);
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: click_pos,
+      button: PointerButton::Primary,
+    })
+    .expect("PointerDown");
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: click_pos,
+      button: PointerButton::Primary,
+    })
+    .expect("PointerUp");
+  worker
+    .ui_tx
+    .send(UiToWorker::RequestRepaint {
+      tab_id,
+      reason: RepaintReason::Input,
+    })
+    .expect("RequestRepaint");
+
+  let frame_after_click = recv_frame(&worker.ui_rx, tab_id, TIMEOUT);
+  assert_eq!(
+    support::rgba_at(&frame_after_click.pixmap, 10, 80),
+    [255, 0, 0, 255],
+    "expected scrollbar click to be a no-op (marker should remain red)"
+  );
 
   worker.join().expect("join worker");
 }

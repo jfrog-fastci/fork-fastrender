@@ -901,6 +901,7 @@ fn apply_select_listbox_click(
   }
 
   let viewport_height = content_rect.height().max(0.0);
+  let viewport_width = content_rect.width().max(0.0);
   let size_rows = control.size.max(1) as f32;
   let stretched_row_height = viewport_height / size_rows;
   if stretched_row_height.is_finite() && stretched_row_height > 0.0 {
@@ -921,6 +922,23 @@ fn apply_select_listbox_click(
     scroll_y = 0.0;
   }
   scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+
+  // Mirror the painter's behavior: when a vertical scrollbar is present, only the text area is
+  // clickable (clicking the scrollbar itself should not select an option).
+  let scrollbar_width = if max_scroll_y > 0.0 {
+    crate::layout::utils::resolve_scrollbar_width(style).min(viewport_width)
+  } else {
+    0.0
+  };
+  let text_width = (viewport_width - scrollbar_width).max(0.0);
+
+  let local_x = page_point.x - content_rect.x();
+  if !local_x.is_finite() {
+    return false;
+  }
+  if local_x < 0.0 || local_x >= text_width {
+    return false;
+  }
 
   let local_y = page_point.y - content_rect.y();
   if !local_y.is_finite() {
