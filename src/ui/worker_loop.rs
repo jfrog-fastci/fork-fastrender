@@ -1,10 +1,13 @@
-use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions, RenderOptions};
+use crate::api::{BrowserDocument, FastRender, RenderOptions};
 use crate::geometry::Point;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
+use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
-use crate::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use crate::ui::messages::{
+  NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
+};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
@@ -50,12 +53,13 @@ impl Drop for UiWorkerHandle {
 }
 
 struct TabState {
-  renderer: FastRender,
+  document: BrowserDocument,
   viewport_css: (u32, u32),
   dpr: f32,
   url: Option<String>,
-  document: Option<PreparedDocument>,
+  base_url: Option<String>,
   scroll: ScrollState,
+  interaction: InteractionEngine,
 }
 
 fn sanitize_delta(v: f32) -> f32 {
@@ -66,79 +70,116 @@ fn sanitize_pointer(v: (f32, f32)) -> Option<(f32, f32)> {
   (v.0.is_finite() && v.1.is_finite()).then_some(v)
 }
 
-fn paint_document(
-  tab_id: TabId,
-  tab: &TabState,
-  doc: &PreparedDocument,
-  ui_tx: &Sender<WorkerToUi>,
-  scroll_state: ScrollState,
-) -> Option<ScrollState> {
-  let painted = doc
-    .paint_with_options_frame(
-      PreparedPaintOptions::new()
-        .with_scroll_state(scroll_state)
-        .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
-    )
-    .ok()?;
+fn page_point_for(tab: &TabState, pos_css: (f32, f32)) -> Point {
+  Point::new(
+    pos_css.0 + tab.scroll.viewport.x,
+    pos_css.1 + tab.scroll.viewport.y,
+  )
+}
 
-  let scroll_state = painted.scroll_state;
+fn effective_base_url(tab: &TabState) -> &str {
+  tab
+    .base_url
+    .as_deref()
+    .or_else(|| tab.url.as_deref())
+    .unwrap_or("")
+}
+
+fn render_options_for_navigation(tab: &TabState) -> RenderOptions {
+  RenderOptions::new()
+    .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
+    .with_device_pixel_ratio(tab.dpr)
+}
+
+fn emit_frame(
+  tab_id: TabId,
+  tab: &mut TabState,
+  ui_tx: &Sender<WorkerToUi>,
+  pixmap: tiny_skia::Pixmap,
+  scroll_state: ScrollState,
+) {
+  tab.scroll = scroll_state.clone();
+  let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
+    tab_id,
+    scroll: scroll_state.clone(),
+  });
   let _ = ui_tx.send(WorkerToUi::FrameReady {
     tab_id,
     frame: RenderedFrame {
-      pixmap: painted.pixmap,
+      pixmap,
       viewport_css: tab.viewport_css,
       dpr: tab.dpr,
-      scroll_state: scroll_state.clone(),
+      scroll_state,
     },
   });
-  Some(scroll_state)
 }
 
-fn navigate_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>, url: String) {
+fn repaint_if_needed(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
+  let painted = match tab.document.render_if_needed_with_scroll_state() {
+    Ok(Some(frame)) => frame,
+    Ok(None) => return,
+    Err(err) => {
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("render_if_needed failed: {err}"),
+      });
+      return;
+    }
+  };
+  emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
+}
+
+fn repaint_force(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) {
+  let painted = match tab.document.render_frame_with_scroll_state() {
+    Ok(frame) => frame,
+    Err(err) => {
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("render_frame failed: {err}"),
+      });
+      return;
+    }
+  };
+  emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
+}
+
+fn navigate_tab(
+  tab_id: TabId,
+  tab: &mut TabState,
+  ui_tx: &Sender<WorkerToUi>,
+  url: String,
+  _reason: NavigationReason,
+) {
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url.clone(),
   });
 
-  tab.url = Some(url.clone());
   tab.scroll = ScrollState::default();
+  tab.interaction = InteractionEngine::new();
 
-  let options = RenderOptions::new()
-    .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
-    .with_device_pixel_ratio(tab.dpr)
-    .with_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y)
-    .with_element_scroll_offsets(tab.scroll.elements.clone());
+  let options = render_options_for_navigation(tab);
 
-  let report = if about_pages::is_about_url(&url) {
+  let (committed_url, base_url) = if about_pages::is_about_url(&url) {
     let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
       about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
     });
-    tab.renderer.set_base_url(about_pages::ABOUT_BASE_URL);
-    let dom = match tab.renderer.parse_html(&html) {
-      Ok(dom) => dom,
-      Err(err) => {
-        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
-          tab_id,
-          url,
-          error: err.to_string(),
-        });
-        return;
-      }
-    };
-    match tab.renderer.prepare_dom_with_options(dom, Some(&url), options) {
-      Ok(report) => report,
-      Err(err) => {
-        let _ = ui_tx.send(WorkerToUi::NavigationFailed {
-          tab_id,
-          url,
-          error: err.to_string(),
-        });
-        return;
-      }
+    tab
+      .document
+      .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
+    tab.document.set_document_url(Some(url.clone()));
+    if let Err(err) = tab.document.reset_with_html(&html, options) {
+      let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+        tab_id,
+        url,
+        error: err.to_string(),
+      });
+      return;
     }
+    (url.clone(), about_pages::ABOUT_BASE_URL.to_string())
   } else {
-    match tab.renderer.prepare_url(&url, options) {
-      Ok(report) => report,
+    match tab.document.navigate_url_with_options(&url, options) {
+      Ok((committed, base)) => (committed, base),
       Err(err) => {
         let _ = ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
@@ -150,26 +191,38 @@ fn navigate_tab(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>, u
     }
   };
 
-  let committed_url = report.final_url.clone().unwrap_or_else(|| url.clone());
-  let doc = report.document;
-  let scroll = paint_document(tab_id, tab, &doc, ui_tx, tab.scroll.clone());
-  if let Some(scroll) = scroll {
-    tab.scroll = scroll;
-    let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
-      tab_id,
-      url: committed_url,
-      title: None,
-      can_go_back: false,
-      can_go_forward: false,
-    });
-  }
-  tab.document = Some(doc);
+  tab.url = Some(committed_url.clone());
+  tab.base_url = Some(base_url);
+  tab.document.set_scroll_state(tab.scroll.clone());
+
+  let painted = match tab.document.render_frame_with_scroll_state() {
+    Ok(frame) => frame,
+    Err(err) => {
+      let _ = ui_tx.send(WorkerToUi::NavigationFailed {
+        tab_id,
+        url: committed_url,
+        error: err.to_string(),
+      });
+      return;
+    }
+  };
+
+  let title = crate::html::title::find_document_title(tab.document.dom());
+  let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
+    tab_id,
+    url: committed_url,
+    title,
+    can_go_back: false,
+    can_go_forward: false,
+  });
+
+  emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
 }
 
 /// Spawns a headless UI worker loop used by the browser UI integration tests.
 ///
-/// This worker owns per-tab `FastRender` instances and processes [`UiToWorker`] messages, emitting
-/// [`WorkerToUi`] events over standard mpsc channels.
+/// This worker owns per-tab [`BrowserDocument`] instances and processes [`UiToWorker`] messages,
+/// emitting [`WorkerToUi`] events over standard mpsc channels.
 pub fn spawn_ui_worker(name: impl Into<String>) -> std::io::Result<UiWorkerHandle> {
   let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (to_ui_tx, to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
@@ -203,19 +256,34 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           }
         };
 
+        let options = RenderOptions::new()
+          .with_viewport(800, 600)
+          .with_device_pixel_ratio(1.0);
+        let document = match BrowserDocument::new(renderer, "<!doctype html><html></html>", options) {
+          Ok(doc) => doc,
+          Err(err) => {
+            let _ = ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("failed to create BrowserDocument: {err}"),
+            });
+            continue;
+          }
+        };
+
         let tab = TabState {
-          renderer,
+          document,
           viewport_css: (800, 600),
           dpr: 1.0,
           url: None,
-          document: None,
+          base_url: None,
           scroll: ScrollState::default(),
+          interaction: InteractionEngine::new(),
         };
         tabs.insert(tab_id, tab);
 
         if let Some(url) = initial_url {
           if let Some(tab) = tabs.get_mut(&tab_id) {
-            navigate_tab(tab_id, tab, &ui_tx, url);
+            navigate_tab(tab_id, tab, &ui_tx, url, NavigationReason::TypedUrl);
           }
         }
       }
@@ -231,17 +299,18 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         if let Some(tab) = tabs.get_mut(&tab_id) {
           tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
           tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+          tab.document.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
         }
       }
       UiToWorker::Navigate {
         tab_id,
         url,
-        reason: _,
+        reason,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        navigate_tab(tab_id, tab, &ui_tx, url);
+        navigate_tab(tab_id, tab, &ui_tx, url, reason);
       }
       UiToWorker::Scroll {
         tab_id,
@@ -249,9 +318,6 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         pointer_css,
       } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
-          continue;
-        };
-        let Some(doc) = tab.document.as_ref() else {
           continue;
         };
 
@@ -269,9 +335,12 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
             ScrollState::from_parts(viewport, current.elements)
           }
           Some((x, y)) => {
+            let Some(prepared) = tab.document.prepared() else {
+              continue;
+            };
             let page_point = Point::new(x + current.viewport.x, y + current.viewport.y);
             apply_wheel_scroll_at_point(
-              doc.fragment_tree(),
+              prepared.fragment_tree(),
               &current,
               page_point,
               ScrollWheelInput {
@@ -282,13 +351,10 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           }
         };
 
-        let painted = doc.paint_with_options_frame(
-          PreparedPaintOptions::new()
-            .with_scroll_state(next)
-            .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
-        );
-        let painted = match painted {
-          Ok(painted) => painted,
+        tab.document.set_scroll_state(next);
+        let painted = match tab.document.render_if_needed_with_scroll_state() {
+          Ok(Some(frame)) => frame,
+          Ok(None) => continue,
           Err(err) => {
             let _ = ui_tx.send(WorkerToUi::DebugLog {
               tab_id,
@@ -299,37 +365,94 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
 
         if painted.scroll_state != tab.scroll {
-          tab.scroll = painted.scroll_state.clone();
-          let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
-            tab_id,
-            scroll: painted.scroll_state.clone(),
-          });
-          let _ = ui_tx.send(WorkerToUi::FrameReady {
-            tab_id,
-            frame: RenderedFrame {
-              pixmap: painted.pixmap,
-              viewport_css: tab.viewport_css,
-              dpr: tab.dpr,
-              scroll_state: painted.scroll_state,
-            },
-          });
+          emit_frame(tab_id, tab, &ui_tx, painted.pixmap, painted.scroll_state);
         }
       }
-      UiToWorker::PointerMove { .. }
-      | UiToWorker::PointerDown { .. }
-      | UiToWorker::PointerUp { .. }
-      | UiToWorker::TextInput { .. }
-      | UiToWorker::KeyAction { .. } => {}
+      UiToWorker::PointerMove { tab_id, pos_css, .. } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let page_point = page_point_for(tab, pos_css);
+        let engine = &mut tab.interaction;
+
+        let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let changed = engine.pointer_move(dom, box_tree, fragment_tree, page_point);
+          (changed, ())
+        });
+        repaint_if_needed(tab_id, tab, &ui_tx);
+      }
+      UiToWorker::PointerDown {
+        tab_id,
+        pos_css,
+        button,
+      } => {
+        if button != PointerButton::Primary {
+          continue;
+        }
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let page_point = page_point_for(tab, pos_css);
+        let engine = &mut tab.interaction;
+
+        let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let changed = engine.pointer_down(dom, box_tree, fragment_tree, page_point);
+          (changed, ())
+        });
+        repaint_if_needed(tab_id, tab, &ui_tx);
+      }
+      UiToWorker::PointerUp {
+        tab_id,
+        pos_css,
+        button,
+      } => {
+        if button != PointerButton::Primary {
+          continue;
+        }
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let base_url = effective_base_url(tab).to_string();
+        let page_point = page_point_for(tab, pos_css);
+        let engine = &mut tab.interaction;
+
+        let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          engine.pointer_up(dom, box_tree, fragment_tree, page_point, &base_url)
+        }) {
+          Ok(action) => action,
+          Err(_) => continue,
+        };
+
+        match action {
+          InteractionAction::Navigate { href } => {
+            navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+          }
+          _ => {
+            repaint_if_needed(tab_id, tab, &ui_tx);
+          }
+        }
+      }
+      UiToWorker::TextInput { tab_id, text } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let engine = &mut tab.interaction;
+        let _ = tab.document.mutate_dom(|dom| engine.text_input(dom, &text));
+        repaint_if_needed(tab_id, tab, &ui_tx);
+      }
+      UiToWorker::KeyAction { tab_id, key } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let engine = &mut tab.interaction;
+        let _ = tab.document.mutate_dom(|dom| engine.key_action(dom, key));
+        repaint_if_needed(tab_id, tab, &ui_tx);
+      }
       UiToWorker::RequestRepaint { tab_id, reason: _ } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let Some(doc) = tab.document.as_ref() else {
-          continue;
-        };
-        if let Some(scroll) = paint_document(tab_id, tab, doc, &ui_tx, tab.scroll.clone()) {
-          tab.scroll = scroll;
-        }
+        repaint_force(tab_id, tab, &ui_tx);
       }
     }
   }

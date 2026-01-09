@@ -118,6 +118,41 @@ impl BrowserDocument {
     Ok(())
   }
 
+  /// Navigates this document to a URL using the internal renderer and installs the prepared cache.
+  ///
+  /// This is intended for browser-UI integrations that want to keep a stable renderer instance per
+  /// tab (sharing caches/fetcher) while swapping out the live DOM on navigation.
+  ///
+  /// Returns `(committed_url, base_url)` where:
+  /// - `committed_url` is the final URL after redirects when available (falls back to the input).
+  /// - `base_url` is the effective base used for resolving relative URLs (falls back to
+  ///   `committed_url` when absent).
+  pub fn navigate_url_with_options(
+    &mut self,
+    url: &str,
+    options: RenderOptions,
+  ) -> Result<(String, String)> {
+    let report = self.renderer.prepare_url(url, options.clone())?;
+
+    let committed_url = report.final_url.clone().unwrap_or_else(|| url.to_string());
+    let base_url = report
+      .base_url
+      .clone()
+      .filter(|base| !super::trim_ascii_whitespace(base).is_empty())
+      .unwrap_or_else(|| committed_url.clone());
+
+    // Update our stable document URL hint (used for origin/referrer semantics) and the renderer's
+    // navigation URL hints for relative URL resolution.
+    self.document_url = (!super::trim_ascii_whitespace(&committed_url).is_empty()).then_some(committed_url.clone());
+    self.set_navigation_urls(Some(committed_url.clone()), Some(base_url.clone()));
+
+    // Install the prepared layout result and mark paint dirty so the next render call produces a
+    // frame without re-running layout.
+    self.reset_with_prepared(report.document, options);
+
+    Ok((committed_url, base_url))
+  }
+
   /// Returns an immutable reference to the live DOM tree.
   pub fn dom(&self) -> &DomNode {
     &self.dom

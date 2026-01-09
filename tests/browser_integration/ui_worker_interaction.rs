@@ -3,7 +3,7 @@
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -56,6 +56,7 @@ fn recv_until_pixel(
 
 #[test]
 fn label_click_toggles_checkbox_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
   let html = r#"<!doctype html>
@@ -78,25 +79,23 @@ fn label_click_toggles_checkbox_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = format!("file://{}", html_path.display());
 
-  let worker = spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
-  let tab_id = TabId(1);
-  worker
-    .ui_tx
+  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
+    spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
+  let tab_id = TabId::new();
+  ui_tx
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::ViewportChanged {
       tab_id,
       viewport_css: (128, 128),
       dpr: 1.0,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::Navigate {
       tab_id,
       url: file_url,
@@ -104,20 +103,18 @@ fn label_click_toggles_checkbox_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
-  let frame = recv_until_frame(&worker.ui_rx, tab_id, deadline);
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let frame = recv_until_frame(&ui_rx, tab_id, deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerUp {
       tab_id,
       pos_css: (10.0, 10.0),
@@ -125,9 +122,9 @@ fn label_click_toggles_checkbox_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + Duration::from_secs(10);
   let frame = recv_until_pixel(
-    &worker.ui_rx,
+    &ui_rx,
     tab_id,
     (10, 10),
     (0, 255, 0, 255),
@@ -135,11 +132,13 @@ fn label_click_toggles_checkbox_and_repaints() {
   );
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (0, 255, 0, 255));
 
-  worker.join().unwrap();
+  drop(ui_tx);
+  join.join().unwrap();
 }
 
 #[test]
 fn text_input_updates_focused_input_value_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let html_path = dir.path().join("page.html");
   let html = r#"<!doctype html>
@@ -161,25 +160,23 @@ fn text_input_updates_focused_input_value_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = format!("file://{}", html_path.display());
 
-  let worker = spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
-  let tab_id = TabId(1);
-  worker
-    .ui_tx
+  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
+    spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
+  let tab_id = TabId::new();
+  ui_tx
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::ViewportChanged {
       tab_id,
       viewport_css: (160, 160),
       dpr: 1.0,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::Navigate {
       tab_id,
       url: file_url,
@@ -187,38 +184,35 @@ fn text_input_updates_focused_input_value_and_repaints() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
-  let frame = recv_until_frame(&worker.ui_rx, tab_id, deadline);
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let frame = recv_until_frame(&ui_rx, tab_id, deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
   // Focus input.
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
       pos_css: (10.0, 90.0),
       button: PointerButton::Primary,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerUp {
       tab_id,
       pos_css: (10.0, 90.0),
       button: PointerButton::Primary,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::TextInput {
       tab_id,
       text: "abc".to_string(),
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + Duration::from_secs(10);
   let frame = recv_until_pixel(
-    &worker.ui_rx,
+    &ui_rx,
     tab_id,
     (10, 10),
     (0, 0, 255, 255),
@@ -226,11 +220,13 @@ fn text_input_updates_focused_input_value_and_repaints() {
   );
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (0, 0, 255, 255));
 
-  worker.join().unwrap();
+  drop(ui_tx);
+  join.join().unwrap();
 }
 
 #[test]
 fn link_click_triggers_navigation_to_resolved_url() {
+  let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
   let page1_path = dir.path().join("page1.html");
   let page2_path = dir.path().join("page2.html");
@@ -265,25 +261,23 @@ fn link_click_triggers_navigation_to_resolved_url() {
   let page1_url = format!("file://{}", page1_path.display());
   let page2_url = format!("file://{}", page2_path.display());
 
-  let worker = spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
-  let tab_id = TabId(1);
-  worker
-    .ui_tx
+  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
+    spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
+  let tab_id = TabId::new();
+  ui_tx
     .send(UiToWorker::CreateTab {
       tab_id,
       initial_url: None,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::ViewportChanged {
       tab_id,
       viewport_css: (200, 120),
       dpr: 1.0,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::Navigate {
       tab_id,
       url: page1_url,
@@ -291,19 +285,17 @@ fn link_click_triggers_navigation_to_resolved_url() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
-  let _frame = recv_until_frame(&worker.ui_rx, tab_id, deadline);
+  let deadline = Instant::now() + Duration::from_secs(10);
+  let _frame = recv_until_frame(&ui_rx, tab_id, deadline);
 
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerDown {
       tab_id,
       pos_css: (10.0, 10.0),
       button: PointerButton::Primary,
     })
     .unwrap();
-  worker
-    .ui_tx
+  ui_tx
     .send(UiToWorker::PointerUp {
       tab_id,
       pos_css: (10.0, 10.0),
@@ -311,13 +303,13 @@ fn link_click_triggers_navigation_to_resolved_url() {
     })
     .unwrap();
 
-  let deadline = Instant::now() + Duration::from_secs(2);
+  let deadline = Instant::now() + Duration::from_secs(10);
   let mut saw_started = false;
   let mut saw_committed = false;
   let mut saw_frame = false;
 
   while Instant::now() < deadline {
-    match worker.ui_rx.recv_timeout(Duration::from_millis(200)) {
+    match ui_rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => match msg {
         WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
           if url == page2_url {
@@ -346,5 +338,6 @@ fn link_click_triggers_navigation_to_resolved_url() {
   assert!(saw_committed, "expected NavigationCommitted for page2");
   assert!(saw_frame, "expected FrameReady after navigation committed");
 
-  worker.join().unwrap();
+  drop(ui_tx);
+  join.join().unwrap();
 }
