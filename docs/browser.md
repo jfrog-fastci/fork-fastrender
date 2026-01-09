@@ -43,22 +43,14 @@ end-to-end:
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
-- **Pointer/keyboard routing**: the window UI forwards pointer and keyboard events to the render
-  worker (see `UiToWorker` in [`src/ui/messages.rs`](../src/ui/messages.rs)).
+- **Pointer/keyboard routing**: basic input events are forwarded to the render worker.
 
-Basic hit-testing/link navigation and non-JS form interactions are implemented in the headless UI
-worker loop under [`src/ui/worker.rs`](../src/ui/worker.rs) (and exercised by integration tests),
-including:
+**Not yet wired in the windowed UI (in progress):**
 
-- clicking links (hit-test fragments → navigate)
-- basic focus + text input for `<input>` / `<textarea>`
-- checkbox/radio toggling
+- hit-testing / link clicking (`<a href=...>`)
+- basic non-JS form interactions (text inputs, checkboxes, radios)
 
-In the current windowed `browser` app, pointer/keyboard events are forwarded to the worker, but
-link clicking / DOM interaction is not yet applied by the in-binary worker implementation. Wiring
-these interactions into the windowed `browser` app is ongoing.
-
-See [browser_ui.md](browser_ui.md) for implementation details.
+See [browser_ui.md](browser_ui.md) for implementation details and current status.
 
 ## Environment variables / resource limits
 
