@@ -389,6 +389,10 @@ fn vm_error_to_runtime(err: VmError) -> ScriptError {
       reason: term.reason.into(),
       stack_trace: format_stack_trace(&term.stack),
     },
+    VmError::OutOfMemory => ScriptError::Termination {
+      reason: ScriptTerminationReason::OutOfMemory,
+      stack_trace: String::new(),
+    },
     other => ScriptError::Runtime {
       message: other.to_string(),
       stack_trace: String::new(),
