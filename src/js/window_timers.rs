@@ -230,10 +230,11 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_timeout(delay, move |host, event_loop| {
       let id = id_cell_for_cb.get();
-      let (vm, heap) = host.window_realm().vm_and_heap_mut();
+      let window_realm = host.window_realm();
+      window_realm.reset_interrupt();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
 
       let result = with_event_loop(event_loop, || {
-        vm.reset_interrupt();
         vm.set_budget(callback_budget_from_render_deadline());
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
@@ -336,10 +337,11 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let id = event_loop
     .set_interval(interval, move |host, event_loop| {
       let id = id_cell_for_cb.get();
-      let (vm, heap) = host.window_realm().vm_and_heap_mut();
+      let window_realm = host.window_realm();
+      window_realm.reset_interrupt();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
 
       let result = with_event_loop(event_loop, || {
-        vm.reset_interrupt();
         vm.set_budget(callback_budget_from_render_deadline());
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
@@ -430,11 +432,12 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   let root = scope.heap_mut().add_root(callback)?;
   event_loop
     .queue_microtask(move |host, event_loop| {
-      let (vm, heap) = host.window_realm().vm_and_heap_mut();
+      let window_realm = host.window_realm();
+      window_realm.reset_interrupt();
+      let (vm, heap) = window_realm.vm_and_heap_mut();
       let callback = heap.get_root(root).unwrap_or(Value::Undefined);
 
       let result = with_event_loop(event_loop, || {
-        vm.reset_interrupt();
         vm.set_budget(callback_budget_from_render_deadline());
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {

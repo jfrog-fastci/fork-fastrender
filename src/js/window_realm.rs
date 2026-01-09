@@ -1,6 +1,6 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
@@ -41,11 +41,15 @@ pub struct WindowRealm {
   heap: Heap,
   realm: Realm,
   console_sink_id: Option<u64>,
+  interrupt_flag: Arc<AtomicBool>,
 }
 
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
-    let mut vm = Vm::new(VmOptions::default());
+    let interrupt_flag = Arc::new(AtomicBool::new(false));
+    let mut vm_options = VmOptions::default();
+    vm_options.interrupt_flag = Some(interrupt_flag.clone());
+    let mut vm = Vm::new(vm_options);
     let mut heap = Heap::new(config.heap_limits);
     let mut realm = Realm::new(&mut vm, &mut heap)?;
     let console_sink_id = match init_window_globals(&mut vm, &mut heap, &realm, &config) {
@@ -63,7 +67,12 @@ impl WindowRealm {
       heap,
       realm,
       console_sink_id,
+      interrupt_flag,
     })
+  }
+
+  pub fn reset_interrupt(&self) {
+    self.interrupt_flag.store(false, Ordering::Relaxed);
   }
 
   pub fn heap(&self) -> &Heap {
