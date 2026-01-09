@@ -3215,6 +3215,7 @@ impl<'a> LineBuilder<'a> {
       if self.current_line.is_empty() {
         let required_width = match &resolved {
           InlineItem::Text(text) => self.min_required_width_for_text_item(text),
+          InlineItem::InlineBox(inline_box) => self.min_required_width_for_inline_box_item(inline_box),
           _ => item_width,
         };
         if self.reposition_empty_line_for_floats(required_width) {
@@ -3264,6 +3265,108 @@ impl<'a> LineBuilder<'a> {
     }
 
     item.advance_for_layout
+  }
+
+  fn inline_item_can_fragment_for_float_reposition(&self, item: &InlineItem) -> bool {
+    match item {
+      InlineItem::Text(text) => {
+        if !allows_soft_wrap(text.style.as_ref()) {
+          return false;
+        }
+
+        // If the text has any break opportunity that would split it into a non-empty remainder,
+        // treat it as fragmentable.
+        if text
+          .break_opportunities
+          .iter()
+          .any(|brk| brk.byte_offset > 0 && brk.byte_offset < text.text.len())
+        {
+          return true;
+        }
+
+        // When `overflow-wrap`/`word-break` permits emergency breaking, a multi-character run can
+        // still be fragmented even if the normal break scan yields no opportunities.
+        (matches!(
+          text.style.word_break,
+          WordBreak::BreakWord | WordBreak::Anywhere
+        ) || matches!(
+          text.style.overflow_wrap,
+          OverflowWrap::BreakWord | OverflowWrap::Anywhere
+        )) && text.text.chars().count() > 1
+      }
+      InlineItem::InlineBox(inline_box) => {
+        if !allows_soft_wrap(inline_box.style.as_ref()) {
+          return false;
+        }
+
+        let mut iter = inline_box.children.iter().filter(|child| {
+          !matches!(child, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_))
+        });
+        let first = iter.next();
+        if iter.next().is_some() {
+          return true;
+        }
+        first.is_some_and(|child| self.inline_item_can_fragment_for_float_reposition(child))
+      }
+      InlineItem::SoftBreak | InlineItem::HardBreak => true,
+      InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
+      InlineItem::Tab(_) | InlineItem::InlineBlock(_) | InlineItem::Ruby(_) | InlineItem::Replaced(_) => false,
+    }
+  }
+
+  fn min_required_width_for_inline_item_for_float_reposition(&self, item: &InlineItem) -> f32 {
+    match item {
+      InlineItem::Text(text) => self.min_required_width_for_text_item(text),
+      InlineItem::InlineBox(inline_box) => {
+        if !allows_soft_wrap(inline_box.style.as_ref()) {
+          return inline_box.width();
+        }
+        self.min_required_width_for_inline_box_item(inline_box)
+      }
+      other => other.width(),
+    }
+  }
+
+  fn min_required_width_for_inline_box_item(&self, inline_box: &InlineBoxItem) -> f32 {
+    if !allows_soft_wrap(inline_box.style.as_ref()) {
+      return inline_box.width();
+    }
+
+    // Inline boxes can be fragmented across lines. When floats shorten a line box so the *entire*
+    // inline box doesn't fit, we still want to keep the line next to the float if we can place a
+    // fragment of the inline box there (e.g. the first word of a long `<strong>`).
+    //
+    // Use the minimum width needed to place the first fragmentable chunk at the start of the line
+    // instead of the inline box's full width, otherwise `reposition_empty_line_for_floats` can
+    // spuriously "clear" below floats even though the inline box would wrap.
+    let start_edge = inline_box.start_edge.max(0.0);
+    let end_edge = inline_box.end_edge.max(0.0);
+
+    let mut iter = inline_box.children.iter().filter(|child| {
+      !matches!(child, InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_))
+    });
+    let first_child = iter.next();
+    let has_multiple_children = iter.next().is_some();
+
+    let mut required = start_edge;
+    if let Some(first_child) = first_child {
+      required += self.min_required_width_for_inline_item_for_float_reposition(first_child);
+    }
+
+    // If this inline box can't be fragmented at all, its first (and only) fragment must include
+    // the closing edge as well.
+    let can_fragment = if has_multiple_children {
+      true
+    } else if let Some(first_child) = first_child {
+      self.inline_item_can_fragment_for_float_reposition(first_child)
+    } else {
+      false
+    };
+    if !can_fragment {
+      required += end_edge;
+    }
+
+    required
   }
 
   /// Adds a breakable item (text or inline box), handling line breaking

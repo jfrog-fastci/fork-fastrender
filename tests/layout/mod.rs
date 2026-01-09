@@ -89,6 +89,7 @@ mod flex_item_used_border_box_width;
 mod flex_width_calc_percentage;
 mod flex_zero_main_size;
 mod float_line_box_intrusion;
+mod float_line_boxes_do_not_spurious_clear;
 mod float_logical_sides;
 mod float_external_context_width;
 mod float_shrink_to_min;
