@@ -1519,7 +1519,9 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
         if !ch.is_ascii_hexdigit() {
           break;
         }
-        let digit = ch.to_digit(16).unwrap();
+        let Some(digit) = ch.to_digit(16) else {
+          break;
+        };
         value = (value << 4) | digit;
         digits += 1;
         chars.next();
@@ -1539,18 +1541,27 @@ fn parse_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<Stri
 
     // Legacy convenience escapes (used by existing tests).
     if matches!(next, 'n' | 't' | 'r') {
-      let c = chars.next().unwrap();
+      let Some(c) = chars.next() else {
+        result.push(char::REPLACEMENT_CHARACTER);
+        break;
+      };
       result.push(match c {
         'n' => '\n',
         't' => '\t',
         'r' => '\r',
-        _ => unreachable!(),
+        other => other,
       });
       continue;
     }
 
     // Default: escape the next character.
-    result.push(chars.next().unwrap());
+    match chars.next() {
+      Some(c) => result.push(c),
+      None => {
+        result.push(char::REPLACEMENT_CHARACTER);
+        break;
+      }
+    }
   }
 
   // Unterminated string

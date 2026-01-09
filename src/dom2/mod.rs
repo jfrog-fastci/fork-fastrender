@@ -1424,7 +1424,7 @@ pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
 pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
   doc
     .set_attribute(node, name, value)
-    .unwrap_or_else(|err| panic!("dom2::set_attribute failed: {err}"))
+    .unwrap_or(false)
 }
 
 #[cfg(test)]
