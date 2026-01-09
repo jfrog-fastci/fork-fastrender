@@ -1,6 +1,6 @@
 use fastrender::style::display::Display;
 use fastrender::style::float::Float;
-use fastrender::tree::box_tree::{CrossOriginAttribute, ReplacedType};
+use fastrender::tree::box_tree::{CrossOriginAttribute, ImageDecodingAttribute, ReplacedType};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size,
@@ -38,6 +38,7 @@ fn floated_replaced_inside_inline_box_creates_fragment() {
     ReplacedType::Image {
       src: "float.png".to_string(),
       alt: None,
+      decoding: ImageDecodingAttribute::Auto,
       crossorigin: CrossOriginAttribute::None,
       referrer_policy: None,
       srcset: Vec::new(),
