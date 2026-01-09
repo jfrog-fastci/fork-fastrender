@@ -37,6 +37,7 @@ mod flex_align_content_multiline;
 mod flex_align_items_flex_start_axis_polarity;
 mod flex_alignment_order_test;
 mod flex_auto_min_and_intrinsics;
+mod flex_auto_min_height_definite_cross_size;
 mod flex_auto_min_size_aspect_ratio_transferred;
 mod flex_auto_min_size_column_single_line;
 mod flex_auto_min_size_overflow_clip;
