@@ -43,33 +43,33 @@ end-to-end:
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
-- **Pointer/keyboard routing**: basic input events are forwarded to the render worker.
+- **Page input routing**: pointer + keyboard events over the page area are forwarded to the render
+  worker.
+
+### DOM interaction (non-JS)
+
+FastRender also has a small DOM interaction layer intended to support basic “no-JS” browsing:
+
+- hit-testing + link activation (`<a href=...>`, including same-document `#fragment` scrolling)
+- basic form interactions (text inputs, checkboxes, radios; limited keyboard activation via
+  `Enter`/`Space`)
+
+These interactions are currently exercised by the headless UI workers used by integration tests;
+**wiring them into the windowed `browser` app is still in progress**. See [browser_ui.md](browser_ui.md)
+for implementation details and current status.
 
 Note: the window currently starts by navigating to `about:newtab`, but `about:` URLs are not yet
 supported by the windowed UI’s current render worker (it currently expects `http(s)://` or
 `file://` URLs), so you may see a navigation error on startup. Type a URL into the address bar and
 press Enter to navigate.
 
-**Not yet wired in the windowed UI (in progress):**
-
-- hit-testing / link clicking (`<a href=...>`)
-- basic non-JS form interactions (text inputs, checkboxes, radios)
-
-These interactions are implemented in the browser UI interaction engine and exercised by integration
-tests, but are not yet hooked up in the windowed app.
-
-See [browser_ui.md](browser_ui.md) for implementation details and current status.
-
 ## Environment variables / resource limits
 
-Browser-related environment variables live in [env-vars.md](env-vars.md). Notably:
+Browser-related environment variables live in [env-vars.md](env-vars.md) (see “Browser UI (`browser`
+binary)”). Notably:
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the
   `browser` process. This is applied at process start (and may be unsupported on some platforms).
-- **Test-only headless hooks** (used by integration tests / CI):
-  - `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – exit successfully before creating a window.
-  - `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` – run a minimal end-to-end UI↔worker headless smoke test and
-    print `HEADLESS_SMOKE_OK` on success (no winit/wgpu init).
 
 When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
 (see [browser_ui.md](browser_ui.md)).

@@ -41,10 +41,6 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
-Note: the windowed `browser` app currently starts by navigating to `about:newtab`, but `about:`
-URLs are not yet supported by the in-binary worker (`spawn_default_render_worker`), so this may show
-an error until you navigate to a `http(s)://` or `file://` URL.
-
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
@@ -57,21 +53,25 @@ an error until you navigate to a `http(s)://` or `file://` URL.
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
   - egui chrome widgets (tabs row, nav buttons, address bar): [`src/ui/chrome.rs`](../src/ui/chrome.rs)
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - These are currently used by the synchronous `BrowserWorker` helper (see below) and the
-      `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode. The windowed UI's in-binary worker does not yet
-      special-case `about:` URLs.
+    - Used by the headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs))
+      and the synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE`
+      test mode). The windowed UI's in-binary worker does not yet special-case `about:` URLs.
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
   - Headless UI worker loop (`spawn_ui_worker`) that implements navigation + scroll + pointer +
     basic non-JS form interactions: [`src/ui/worker.rs`](../src/ui/worker.rs)
-    - Exercised by `tests/browser_integration/ui_worker_interaction.rs`.
+    - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
+      `tests/browser_integration/ui_worker_navigation_messages.rs`,
+      `tests/browser_integration/ui_worker_hover_active.rs`, and
+      `tests/browser_integration/ui_worker_navigation_errors.rs`.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode.
   - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
-    wheel scrolling): [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
-    - Exercised by `tests/browser_integration/ui_worker_scroll.rs`.
+    wheel scrolling) and some interaction tests: [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
+    - Exercised by `tests/browser_integration/ui_worker_scroll.rs` and
+      `tests/browser_integration/ui_worker_interaction.rs`.
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
     - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
