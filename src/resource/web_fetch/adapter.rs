@@ -312,8 +312,59 @@ pub fn execute_web_fetch<'a>(
     }
     RequestRedirect::Manual => {
       if redirect_detected {
+        if request.mode == RequestMode::SameOrigin {
+          let Some(client_origin) = client_origin else {
+            return Err(Error::Other(
+              "web fetch same-origin mode requires a client origin; blocking request".to_string(),
+            ));
+          };
+          let Some(target_origin) = origin_from_url(final_url) else {
+            return Err(Error::Other(format!(
+              "web fetch same-origin mode requires a parseable URL origin; blocking request to {final_url:?}"
+            )));
+          };
+          if !client_origin.same_origin(&target_origin) {
+            return Err(Error::Other(format!(
+              "web fetch same-origin mode blocked cross-origin redirect from {client_origin} to {final_url}"
+            )));
+          }
+        }
+        if let Some(csp) = ctx.csp {
+          let parsed = Url::parse(final_url).map_err(|_| {
+            Error::Other(format!(
+              "Blocked by Content-Security-Policy ({}) for final URL (invalid URL): {}",
+              CspDirective::ConnectSrc.as_str(),
+              final_url
+            ))
+          })?;
+          if !csp.allows_url(CspDirective::ConnectSrc, client_origin, &parsed) {
+            return Err(Error::Other(format!(
+              "Blocked by Content-Security-Policy ({}) for final URL: {}",
+              CspDirective::ConnectSrc.as_str(),
+              parsed.as_str()
+            )));
+          }
+        }
         return Ok(opaque_response(ResponseType::OpaqueRedirect));
       }
+    }
+  }
+
+  if request.mode == RequestMode::SameOrigin {
+    let Some(client_origin) = client_origin else {
+      return Err(Error::Other(
+        "web fetch same-origin mode requires a client origin; blocking request".to_string(),
+      ));
+    };
+    let Some(target_origin) = origin_from_url(final_url) else {
+      return Err(Error::Other(format!(
+        "web fetch same-origin mode requires a parseable URL origin; blocking request to {final_url:?}"
+      )));
+    };
+    if !client_origin.same_origin(&target_origin) {
+      return Err(Error::Other(format!(
+        "web fetch same-origin mode blocked cross-origin redirect from {client_origin} to {final_url}"
+      )));
     }
   }
 
@@ -1753,6 +1804,50 @@ mod tests {
   }
 
   #[test]
+  fn same_origin_blocks_cross_origin_final_url_after_redirect() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingFetcher {
+      hits: AtomicUsize,
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.resource.clone())
+      }
+
+      fn fetch_with_request(&self, _req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.resource.clone())
+      }
+    }
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://other.example/res".to_string());
+    let fetcher = CountingFetcher {
+      hits: AtomicUsize::new(0),
+      resource,
+    };
+
+    let mut request = Request::new("GET", "https://client.example/res");
+    request.set_mode(RequestMode::SameOrigin);
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected error");
+    assert_eq!(fetcher.hits.load(Ordering::SeqCst), 1);
+    assert!(matches!(err, Error::Other(_)));
+    let message = err.to_string();
+    assert!(message.contains("same-origin mode"));
+    assert!(message.contains("blocked cross-origin"));
+    assert!(message.contains("other.example"));
+  }
+
+  #[test]
   fn web_fetch_resolves_relative_url_against_referrer_url() {
     struct UrlAssertingFetcher;
 
@@ -1888,6 +1983,45 @@ mod tests {
     resource.access_control_allow_origin = Some("https://client.example".to_string());
     let fetcher = StaticFetcher { resource };
     let request = Request::new("GET", "https://client.example/res");
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let csp = CspPolicy::from_values(["connect-src 'self'"]).expect("csp");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      csp: Some(&csp),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected CSP block");
+    assert!(matches!(err, Error::Other(_)));
+    let message = err.to_string();
+    assert!(message.contains("Content-Security-Policy"));
+    assert!(message.contains("connect-src"));
+    assert!(message.contains("final URL"));
+    assert!(message.contains("other.example"));
+  }
+
+  #[test]
+  fn csp_connect_src_self_blocks_cross_origin_final_url_for_redirect_manual() {
+    struct FollowedRedirectFetcher {
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for FollowedRedirectFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request")
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        Ok(self.resource.clone())
+      }
+    }
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://other.example/res".to_string());
+    let fetcher = FollowedRedirectFetcher { resource };
+
+    let mut request = Request::new("GET", "https://client.example/res");
+    request.redirect = RequestRedirect::Manual;
     let origin = origin_from_url("https://client.example/").expect("origin");
     let csp = CspPolicy::from_values(["connect-src 'self'"]).expect("csp");
     let ctx = WebFetchExecutionContext {
