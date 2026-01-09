@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 // `about:test-heavy` intentionally does significant layout/paint work, and the UI worker runs in
 // debug mode for these integration tests. Some CI environments can take >10s to reach the paint
 // stages, so keep this generous to avoid flakes while still bounding the test.
-const TIMEOUT: Duration = Duration::from_secs(60);
+const TIMEOUT: Duration = Duration::from_secs(90);
 
 #[test]
 fn paint_cancellation_during_navigation_does_not_surface_error_page() {

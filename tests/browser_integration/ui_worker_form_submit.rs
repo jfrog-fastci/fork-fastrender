@@ -1,8 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{KeyAction, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::spawn_ui_worker;
+use fastrender::ui::messages::{
+  KeyAction, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
+};
+use fastrender::ui::worker::spawn_ui_worker;
 use std::time::Duration;
 use url::Url;
 

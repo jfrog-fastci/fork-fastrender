@@ -4,14 +4,15 @@ use super::support::{
   create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg,
 };
 use fastrender::render_control::StageHeartbeat;
+use fastrender::scroll::ScrollState;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::scroll::ScrollState;
 use fastrender::ui::spawn_ui_worker_for_test;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
+
 fn pixmap_is_uniform_rgba(pixmap: &tiny_skia::Pixmap) -> bool {
   let data = pixmap.data();
   let Some(first) = data.get(0..4) else {
@@ -88,7 +89,6 @@ fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame()
 
   // Bumping nav cancels both prepare and paint for the in-flight navigation.
   cancel.bump_nav();
-  fastrender::render_control::set_test_render_delay_ms(None);
   ui_tx
     .send(navigate_msg(
       tab_id,
@@ -185,10 +185,9 @@ fn rapid_navigation_cancels_stale_navigation() {
   let url_b = format!("file://{}/b.html", dir.path().display());
 
   let cancel_gens = CancelGens::new();
-  let (ui_tx, ui_rx, join) =
-    spawn_ui_worker_for_test("fastr-ui-worker-cancel-nav", Some(10))
-      .expect("spawn ui worker")
-      .split();
+  let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-nav", Some(10))
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId(1);
 
   ui_tx
@@ -231,11 +230,11 @@ fn rapid_navigation_cancels_stale_navigation() {
     match ui_rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => {
         match &msg {
-          WorkerToUi::NavigationCommitted {
-            tab_id: msg_tab,
-            url,
-            ..
-          } if *msg_tab == tab_id && url == &url_b => committed_b = true,
+          WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. }
+            if *msg_tab == tab_id && url == &url_b =>
+          {
+            committed_b = true;
+          }
           WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id => {
             saw_b_frame = true;
           }
@@ -323,10 +322,10 @@ fn rapid_scroll_cancels_stale_paint() {
 
   let url = format!("file://{}/scroll.html", dir.path().display());
 
-  let handle =
-    spawn_ui_worker_for_test("fastr-ui-worker-cancel-scroll", Some(50)).expect("spawn ui worker");
   let cancel_gens = CancelGens::new();
-  let (ui_tx, ui_rx, join) = handle.split();
+  let (ui_tx, ui_rx, join) = spawn_ui_worker_for_test("fastr-ui-worker-cancel-scroll", Some(50))
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId(1);
 
   ui_tx
@@ -372,31 +371,34 @@ fn rapid_scroll_cancels_stale_paint() {
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .unwrap();
 
-  let mut latest_scroll: Option<ScrollState> = None;
+  // `FrameReady` is emitted before `ScrollStateUpdated`. Some straggler scroll updates (e.g. from
+  // the initial navigation) can arrive after we start this test, so wait specifically for the
+  // scroll update that matches the latest painted frame.
+  let mut expected_scroll: Option<ScrollState> = None;
+  let mut matching_scroll_update: Option<ScrollState> = None;
   let mut frames: Vec<ScrollState> = Vec::new();
 
   let start = Instant::now();
-  while start.elapsed() < MAX_WAIT {
+  while start.elapsed() < MAX_WAIT && (frames.is_empty() || matching_scroll_update.is_none()) {
     match ui_rx.recv_timeout(Duration::from_millis(50)) {
       Ok(msg) => match msg {
         WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, scroll } if msg_tab == tab_id => {
-          latest_scroll = Some(scroll);
+          if let Some(expected) = expected_scroll.as_ref() {
+            if scroll.viewport == expected.viewport {
+              matching_scroll_update = Some(scroll);
+            }
+          }
         }
         WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => {
           frames.push(frame.scroll_state.clone());
+          if frames.len() == 1 {
+            expected_scroll = Some(frame.scroll_state.clone());
+          }
         }
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-    }
-
-    // The worker emits `FrameReady` before `ScrollStateUpdated` (the UI needs a frame to clamp
-    // scroll). Wait until we've seen both for the painted frame.
-    if let (Some(frame_scroll), Some(latest)) = (frames.last(), latest_scroll.as_ref()) {
-      if frame_scroll.viewport == latest.viewport {
-        break;
-      }
     }
   }
 
@@ -412,8 +414,8 @@ fn rapid_scroll_cancels_stale_paint() {
     frame_scroll.viewport
   );
 
-  let Some(latest) = latest_scroll else {
-    panic!("expected ScrollStateUpdated for painted scroll frame");
+  let Some(latest) = matching_scroll_update else {
+    panic!("expected ScrollStateUpdated message matching the scroll frame");
   };
   assert_eq!(
     latest.viewport, frame_scroll.viewport,

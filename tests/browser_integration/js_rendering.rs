@@ -90,17 +90,17 @@ impl FixtureHost {
         let dom_for_fn = Rc::clone(&dom);
         let set_class = JsFunction::new(ctx.clone(), move |id: String, class_name: String| {
           let target = dom_for_fn.borrow().clone();
-           match target {
-             DocumentAccess::Parsing(parser) => {
-               let parser = parser.borrow();
-               let Some(mut doc) = parser.document_mut() else {
-                 return;
-               };
-               let Some(node) = doc.get_element_by_id(&id) else {
-                 return;
-               };
-               let _ = doc.set_attribute(node, "class", &class_name);
-             }
+          match target {
+            DocumentAccess::Parsing(parser) => {
+              let parser = parser.borrow();
+              let Some(mut doc) = parser.document_mut() else {
+                return;
+              };
+              let Some(node) = doc.get_element_by_id(&id) else {
+                return;
+              };
+              let _ = doc.set_attribute(node, "class", &class_name);
+            }
             DocumentAccess::Final(doc) => {
               let mut doc = doc.borrow_mut();
               let Some(node) = doc.get_element_by_id(&id) else {

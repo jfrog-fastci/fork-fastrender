@@ -7,9 +7,9 @@
 use crate::api::{FastRender, PreparedDocument, PreparedPaintOptions};
 use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
-use crate::ui::messages::{TabId, WorkerToUi};
+use crate::ui::messages::{TabId, UiToWorker, WorkerToUi};
 use crate::{Pixmap, RenderOptions, Result};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
 fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> StageListenerGuard {
@@ -72,4 +72,30 @@ pub fn spawn_render_worker_thread<T: Send + 'static>(
       let worker = RenderWorker::new(renderer, ui_tx);
       f(worker)
     })
+}
+
+// ---------------------------------------------------------------------------
+// Back-compat wrappers
+// ---------------------------------------------------------------------------
+//
+// Historically the browser integration tests imported the headless worker from `ui::worker`.
+// The canonical worker implementation now lives in `ui::render_worker`; re-export the spawn
+// helpers here so older call sites continue to compile without reintroducing a second worker loop.
+
+pub use crate::ui::render_worker::{
+  spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory, UiWorkerHandle,
+};
+
+impl UiWorkerHandle {
+  /// Shut down the worker loop and join its thread.
+  ///
+  /// Alias for [`Self::join`]; kept for backwards compatibility with older browser integration
+  /// tests.
+  pub fn shutdown(self) -> std::thread::Result<()> {
+    self.join()
+  }
+
+  pub fn into_parts(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+    self.split()
+  }
 }

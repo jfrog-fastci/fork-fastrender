@@ -140,17 +140,23 @@ fn cancellation_on_scroll_drops_stale_frames() {
       {
         assert_eq!(committed_url, url);
         committed = true;
+        if saw_initial_frame {
+          break;
+        }
       }
       WorkerToUi::FrameReady { tab_id: msg_id, .. } if msg_id == tab_id => {
+        saw_initial_frame = true;
         if committed {
-          saw_initial_frame = true;
           break;
         }
       }
       _ => {}
     }
   }
-  assert!(saw_initial_frame, "expected initial frame after navigation commit");
+  assert!(
+    committed && saw_initial_frame,
+    "expected initial navigation to commit and produce a frame"
+  );
 
   // Trigger a scroll repaint, then cancel it mid-flight by bumping paint generation and sending a
   // second scroll. The worker should drop any stale paint output for the first scroll.
