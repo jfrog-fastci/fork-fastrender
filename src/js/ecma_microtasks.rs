@@ -41,7 +41,8 @@ pub trait VmJsEngineHost {
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
 ///
 /// `vm-js` models job execution via [`vm_js::VmJobContext`], which provides:
-/// - `call` / `construct` for invoking JavaScript values, and
+/// - `call` / `construct` for invoking JavaScript values (threading host hooks through so nested
+///   Promise jobs are scheduled correctly), and
 /// - `add_root` / `remove_root` for keeping GC handles alive while queued.
 ///
 /// The embedding supplies the underlying [`vm_js::Vm`] + [`vm_js::Heap`] via [`VmJsEngineHost`].
