@@ -305,8 +305,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   }
 }
 
-  #[cfg(test)]
-  mod tests {
+#[cfg(test)]
+mod tests {
   use super::*;
   use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::{RunLimits, WindowRealm, WindowRealmConfig};
@@ -462,11 +462,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     _args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let heap_ptr = scope.heap() as *const vm_js::Heap as usize;
-    let log = current_realm_logs()
-      .lock()
-      .unwrap()
-      .get(&heap_ptr)
-      .cloned();
+    let log = current_realm_logs().lock().unwrap().get(&heap_ptr).cloned();
     if let Some(log) = log {
       *log.lock().unwrap() = Some(vm.current_realm());
     }
@@ -971,7 +967,9 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     let callback_func = {
       let mut scope = host.heap.scope();
       let name = scope.alloc_string("recordRealm").map_err(vm_err)?;
-      scope.push_root(vm_js::Value::String(name)).map_err(vm_err)?;
+      scope
+        .push_root(vm_js::Value::String(name))
+        .map_err(vm_err)?;
       scope
         .alloc_native_function(call_id, None, name, 0)
         .map_err(vm_err)?
@@ -1050,7 +1048,9 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     let callback_func = {
       let mut scope = host.heap.scope();
       let name = scope.alloc_string("recordRealmSeq").map_err(vm_err)?;
-      scope.push_root(vm_js::Value::String(name)).map_err(vm_err)?;
+      scope
+        .push_root(vm_js::Value::String(name))
+        .map_err(vm_err)?;
       scope
         .alloc_native_function(call_id, None, name, 0)
         .map_err(vm_err)?
@@ -1106,10 +1106,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
 
     event_loop.perform_microtask_checkpoint(&mut host)?;
 
-    assert_eq!(
-      *observed.lock().unwrap(),
-      vec![Some(realm1), Some(realm2)]
-    );
+    assert_eq!(*observed.lock().unwrap(), vec![Some(realm1), Some(realm2)]);
     assert_eq!(
       host.vm.current_realm(),
       None,
@@ -1123,11 +1120,9 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
 
     let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
-    let mut host = WindowRealm::new(
-      WindowRealmConfig::new("https://example.com")
-        .with_heap_limits(limits),
-    )
-    .map_err(vm_err)?;
+    let mut host =
+      WindowRealm::new(WindowRealmConfig::new("https://example.com").with_heap_limits(limits))
+        .map_err(vm_err)?;
     let mut event_loop = EventLoop::<WindowRealm>::new();
 
     let call_id = host.vm_mut().register_native_call(noop).map_err(vm_err)?;
@@ -1160,15 +1155,12 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
         handler: Some(job_callback),
       };
 
-      let realm = fulfill_reaction
-        .handler
-        .as_ref()
-        .and_then(|cb| cb.realm());
+      let current_realm = fulfill_reaction.handler.as_ref().and_then(|cb| cb.realm());
       let (job, realm) = vm_js::new_promise_reaction_job(
         scope.heap_mut(),
         fulfill_reaction,
         argument,
-        realm,
+        current_realm,
       )
       .map_err(vm_err)?;
       hooks.host_enqueue_promise_job(job, realm);

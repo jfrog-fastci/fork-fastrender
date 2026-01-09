@@ -153,7 +153,9 @@ fn timer_global_from_callee(
     .unwrap_or(Value::Undefined);
   match slot {
     Value::Object(obj) => Ok(obj),
-    _ => Err(VmError::Unimplemented("timer function missing global binding")),
+    _ => Err(VmError::Unimplemented(
+      "timer function missing global binding",
+    )),
   }
 }
 
@@ -293,8 +295,14 @@ struct WindowRealmJobContext<'a> {
 }
 
 impl<'a> WindowRealmJobContext<'a> {
-  fn new(window_realm: &'a mut crate::js::window_realm::WindowRealm, realm: Option<RealmId>) -> Self {
-    Self { window_realm, realm }
+  fn new(
+    window_realm: &'a mut crate::js::window_realm::WindowRealm,
+    realm: Option<RealmId>,
+  ) -> Self {
+    Self {
+      window_realm,
+      realm,
+    }
   }
 }
 
@@ -870,14 +878,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let clear_interval_id = vm.register_native_call(clear_interval_native::<Host>)?;
   let clear_interval_name = scope.alloc_string("clearInterval")?;
   scope.push_root(Value::String(clear_interval_name))?;
-  let clear_interval =
-    scope.alloc_native_function_with_slots(
-      clear_interval_id,
-      None,
-      clear_interval_name,
-      1,
-      &global_slots,
-    )?;
+  let clear_interval = scope.alloc_native_function_with_slots(
+    clear_interval_id,
+    None,
+    clear_interval_name,
+    1,
+    &global_slots,
+  )?;
   scope.heap_mut().object_set_prototype(
     clear_interval,
     Some(realm.intrinsics().function_prototype()),
@@ -887,14 +894,13 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>)?;
   let queue_microtask_name = scope.alloc_string("queueMicrotask")?;
   scope.push_root(Value::String(queue_microtask_name))?;
-  let queue_microtask =
-    scope.alloc_native_function_with_slots(
-      queue_microtask_id,
-      None,
-      queue_microtask_name,
-      1,
-      &global_slots,
-    )?;
+  let queue_microtask = scope.alloc_native_function_with_slots(
+    queue_microtask_id,
+    None,
+    queue_microtask_name,
+    1,
+    &global_slots,
+  )?;
   scope.heap_mut().object_set_prototype(
     queue_microtask,
     Some(realm.intrinsics().function_prototype()),
@@ -962,10 +968,7 @@ mod tests {
 
   impl Drop for HeapPromiseJobLogGuard {
     fn drop(&mut self) {
-      promise_job_logs()
-        .lock()
-        .unwrap()
-        .remove(&self.heap_ptr);
+      promise_job_logs().lock().unwrap().remove(&self.heap_ptr);
     }
   }
 
@@ -974,19 +977,12 @@ mod tests {
     log: Arc<Mutex<Vec<&'static str>>>,
   ) -> HeapPromiseJobLogGuard {
     let heap_ptr = heap as *const Heap as usize;
-    promise_job_logs()
-      .lock()
-      .unwrap()
-      .insert(heap_ptr, log);
+    promise_job_logs().lock().unwrap().insert(heap_ptr, log);
     HeapPromiseJobLogGuard { heap_ptr }
   }
 
   fn record_promise_job_log(heap_ptr: usize, label: &'static str) {
-    let log = promise_job_logs()
-      .lock()
-      .unwrap()
-      .get(&heap_ptr)
-      .cloned();
+    let log = promise_job_logs().lock().unwrap().get(&heap_ptr).cloned();
     if let Some(log) = log {
       log.lock().unwrap().push(label);
     }
@@ -1599,7 +1595,10 @@ mod tests {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       read_log(heap, realm)
     };
-    assert!(log.is_empty(), "expected no timeout before advancing clock, got {log:?}");
+    assert!(
+      log.is_empty(),
+      "expected no timeout before advancing clock, got {log:?}"
+    );
 
     clock.advance(Duration::from_millis(15));
     assert_eq!(
@@ -1627,8 +1626,8 @@ mod tests {
   }
 
   #[test]
-  fn promise_jobs_enqueued_by_timer_callbacks_run_in_microtask_checkpoint() -> crate::error::Result<()>
-  {
+  fn promise_jobs_enqueued_by_timer_callbacks_run_in_microtask_checkpoint(
+  ) -> crate::error::Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<Host>::with_clock(clock);
     let mut host = Host::new();
@@ -2004,7 +2003,7 @@ mod tests {
           Value::Undefined,
           &[Value::Object(cb)],
         )
-          .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
       })
     })?;
@@ -2133,7 +2132,8 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
 
-        let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
+        let timeout_cb =
+          make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
 
         vm.call_without_host(
           &mut scope,
@@ -2152,7 +2152,10 @@ mod tests {
       RunUntilIdleOutcome::Idle
     );
 
-    assert_eq!(&*job_log.lock().unwrap(), &["timeout", "timeout_end", "job"]);
+    assert_eq!(
+      &*job_log.lock().unwrap(),
+      &["timeout", "timeout_end", "job"]
+    );
 
     let budget = host.window.vm().budget();
     assert!(

@@ -193,7 +193,9 @@ mod tests {
     let text = doc.create_text("console.log('inert');");
     doc.append_child(script, text).expect("append_child");
     doc.append_child(template, script).expect("append_child");
-    doc.append_child(doc.root(), template).expect("append_child");
+    doc
+      .append_child(doc.root(), template)
+      .expect("append_child");
 
     let base = BaseUrlTracker::new(Some("https://example.com/dir/page.html"));
     let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
@@ -260,6 +262,10 @@ mod tests {
     // legacy renderer-DOM builder has no corresponding node handle.
     spec_dom2.node_id = None;
 
-    assert_eq!(spec_dom2, spec_dom);
+    // `dom2` script specs carry the originating `NodeId` for later `currentScript` bookkeeping,
+    // while the legacy renderer DOM spec builder cannot, so ignore the handle when comparing.
+    let mut spec_dom2_normalized = spec_dom2;
+    spec_dom2_normalized.node_id = None;
+    assert_eq!(spec_dom2_normalized, spec_dom);
   }
 }

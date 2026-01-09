@@ -20,8 +20,8 @@ use super::event_loop::{EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
 use super::script_scheduler::{ScriptId, ScriptLoader, ScriptScheduler, ScriptSchedulerAction};
 use super::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
-use super::{DomHost, ScriptExecutionLog};
 use super::ScriptType;
+use super::{DomHost, ScriptExecutionLog};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -161,8 +161,7 @@ impl<'a, Host> DomHost for RcDomHost<'a, Host> {
 
 struct ScriptRunnerExecutor<'a, Host: 'static, Runner>
 where
-  Runner:
-    Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>,
 {
   runner: Rc<Runner>,
   event_loop: &'a mut EventLoop<Host>,
@@ -208,8 +207,8 @@ fn execute_now<Host, Runner, HostWrapper>(
 ) -> Result<()>
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
-  Runner:
-    Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
+    + 'static,
 {
   // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
   // parser-inserted script when the JS execution context stack is empty.
@@ -251,8 +250,8 @@ fn apply_actions<Host, HostWrapper, Loader, Runner>(
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
   Loader: ScriptLoader,
-  Runner:
-    Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
+    + 'static,
 {
   let mut start_fetches: Vec<(ScriptId, String)> = Vec::new();
   let mut blocking: HashSet<ScriptId> = HashSet::new();
@@ -330,8 +329,8 @@ fn poll_fetch_completions<Host, HostWrapper, Loader, Runner>(
 where
   HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
   Loader: ScriptLoader,
-  Runner:
-    Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
+    + 'static,
 {
   while let Some((handle, source_text)) = loader.poll_complete()? {
     let Some(script_id) = pending_fetches.remove(&handle) else {
@@ -377,7 +376,8 @@ pub fn parse_html_with_classic_script_processing<Host, Loader, Runner>(
 where
   Host: CurrentScriptHost + 'static,
   Loader: ScriptLoader,
-  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
+  Runner: Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()>
+    + 'static,
 {
   let runner = Rc::new(runner);
   let mut parser = StreamingHtmlParser::new(document_url);
@@ -477,19 +477,18 @@ where
     let runner = Rc::clone(&runner);
     let js_execution_depth = Rc::clone(&js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
-      let dom_for_host = Rc::clone(&dom);
       let mut host_wrapper = RcDomHost {
         inner: host,
-        dom: dom_for_host,
+        dom: Rc::clone(&dom),
       };
-      let mut orchestrator = ScriptOrchestrator::new();
-      let mut exec = ScriptRunnerExecutor {
-        runner,
+      execute_now(
+        &mut host_wrapper,
+        node_id,
+        &source_text,
         event_loop,
-        source_text: &source_text,
-      };
-      let _guard = JsExecutionGuard::enter(&js_execution_depth);
-      orchestrator.execute_script_element(&mut host_wrapper, node_id, ScriptType::Classic, &mut exec)?;
+        runner,
+        &js_execution_depth,
+      )?;
       Ok(())
     })?;
   }
@@ -536,7 +535,9 @@ mod tests {
   impl ManualLoader {
     fn with_sources(mut self, sources: &[(&str, &str)]) -> Self {
       for (url, source) in sources {
-        self.sources.insert((*url).to_string(), (*source).to_string());
+        self
+          .sources
+          .insert((*url).to_string(), (*source).to_string());
       }
       self
     }
@@ -558,8 +559,7 @@ mod tests {
     fn load_blocking(&mut self, url: &str) -> Result<String> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {
-        log.borrow_mut()
-          .push(format!("load_blocking:{url}"));
+        log.borrow_mut().push(format!("load_blocking:{url}"));
       }
       self
         .sources
@@ -571,8 +571,7 @@ mod tests {
     fn start_load(&mut self, url: &str) -> Result<Self::Handle> {
       self.started.push(url.to_string());
       if let Some(log) = &self.call_log {
-        log.borrow_mut()
-          .push(format!("start_load:{url}"));
+        log.borrow_mut().push(format!("start_load:{url}"));
       }
       let handle = self.next_handle;
       self.next_handle += 1;
@@ -687,10 +686,9 @@ mod tests {
     let runner = Rc::clone(&runner);
     let js_execution_depth_for_task = Rc::clone(&js_execution_depth);
     event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      let dom_for_host = Rc::clone(&dom_for_task);
       let mut host_wrapper = RcDomHost {
         inner: host,
-        dom: dom_for_host,
+        dom: Rc::clone(&dom_for_task),
       };
       execute_now(
         &mut host_wrapper,
@@ -763,10 +761,9 @@ mod tests {
 
           // Nested script execution should not run microtasks even if it invokes `execute_now`.
           {
-            let dom_for_host = Rc::clone(&dom);
             let mut host_wrapper = RcDomHost {
               inner: host,
-              dom: dom_for_host,
+              dom: Rc::clone(&dom),
             };
             execute_now(
               &mut host_wrapper,
@@ -786,10 +783,9 @@ mod tests {
 
     let mut host = Host::default();
     let mut event_loop = EventLoop::<Host>::new();
-    let dom_for_host = Rc::clone(&dom);
     let mut host_wrapper = RcDomHost {
       inner: &mut host,
-      dom: dom_for_host,
+      dom: Rc::clone(&dom),
     };
     execute_now(
       &mut host_wrapper,
@@ -847,7 +843,8 @@ mod tests {
 
   #[test]
   fn blocking_external_script_executes_before_later_inline_script() -> Result<()> {
-    let html = "<!doctype html><script src=\"https://example.com/a.js\"></script><script>b</script>";
+    let html =
+      "<!doctype html><script src=\"https://example.com/a.js\"></script><script>b</script>";
     let mut loader = ManualLoader::default().with_sources(&[("https://example.com/a.js", "ext-a")]);
     let mut host = Host::default();
 
@@ -904,7 +901,8 @@ mod tests {
   }
 
   #[test]
-  fn microtasks_run_before_starting_blocking_external_script_fetch_at_script_end_boundary() -> Result<()> {
+  fn microtasks_run_before_starting_blocking_external_script_fetch_at_script_end_boundary(
+  ) -> Result<()> {
     let html = "<!doctype html><script src=\"https://example.com/a.js\"></script>";
     let call_log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
     let mut loader = ManualLoader::default()
