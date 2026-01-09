@@ -225,6 +225,24 @@ fn map_math_alphanumeric_char(ch: char, variant: MathVariant) -> Option<char> {
       'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D5D4)),
       'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D5EE)),
       '0'..='9' => Some(map_contiguous_letter(ch, '0' as u32, 0x1D7EC)),
+      // Mathematical Sans-Serif Bold Greek (Unicode Mathematical Alphanumeric Symbols).
+      //
+      // This range is not a simple `U+0391..U+03A9` remap due to the legacy gap at U+03A2 and
+      // the insertion of `CAPITAL THETA SYMBOL` and `NABLA` in the target block.
+      '\u{0391}'..='\u{03A1}' => Some(map_contiguous_letter(ch, 0x0391, 0x1D756)),
+      '\u{03A3}'..='\u{03A9}' => Some(map_contiguous_letter(ch, 0x03A3, 0x1D768)),
+      '\u{03B1}'..='\u{03C1}' => Some(map_contiguous_letter(ch, 0x03B1, 0x1D770)),
+      '\u{03C2}' => Some('\u{1D781}'), // final sigma
+      '\u{03C3}'..='\u{03C9}' => Some(map_contiguous_letter(ch, 0x03C3, 0x1D782)),
+      '\u{03F4}' => Some('\u{1D767}'), // capital theta symbol (ϴ)
+      '\u{2207}' => Some('\u{1D76F}'), // nabla (∇)
+      '\u{2202}' => Some('\u{1D789}'), // partial differential (∂)
+      '\u{03F5}' => Some('\u{1D78A}'), // epsilon symbol (ϵ)
+      '\u{03D1}' => Some('\u{1D78B}'), // theta symbol (ϑ)
+      '\u{03F0}' => Some('\u{1D78C}'), // kappa symbol (ϰ)
+      '\u{03D5}' => Some('\u{1D78D}'), // phi symbol (ϕ)
+      '\u{03F1}' => Some('\u{1D78E}'), // rho symbol (ϱ)
+      '\u{03D6}' => Some('\u{1D78F}'), // pi symbol (ϖ)
       _ => None,
     },
     MathVariant::SansSerifItalic => match ch {
@@ -235,6 +253,21 @@ fn map_math_alphanumeric_char(ch: char, variant: MathVariant) -> Option<char> {
     MathVariant::SansSerifBoldItalic => match ch {
       'A'..='Z' => Some(map_contiguous_letter(ch, 'A' as u32, 0x1D63C)),
       'a'..='z' => Some(map_contiguous_letter(ch, 'a' as u32, 0x1D656)),
+      // Mathematical Sans-Serif Bold Italic Greek.
+      '\u{0391}'..='\u{03A1}' => Some(map_contiguous_letter(ch, 0x0391, 0x1D790)),
+      '\u{03A3}'..='\u{03A9}' => Some(map_contiguous_letter(ch, 0x03A3, 0x1D7A2)),
+      '\u{03B1}'..='\u{03C1}' => Some(map_contiguous_letter(ch, 0x03B1, 0x1D7AA)),
+      '\u{03C2}' => Some('\u{1D7BB}'), // final sigma
+      '\u{03C3}'..='\u{03C9}' => Some(map_contiguous_letter(ch, 0x03C3, 0x1D7BC)),
+      '\u{03F4}' => Some('\u{1D7A1}'), // capital theta symbol (ϴ)
+      '\u{2207}' => Some('\u{1D7A9}'), // nabla (∇)
+      '\u{2202}' => Some('\u{1D7C3}'), // partial differential (∂)
+      '\u{03F5}' => Some('\u{1D7C4}'), // epsilon symbol (ϵ)
+      '\u{03D1}' => Some('\u{1D7C5}'), // theta symbol (ϑ)
+      '\u{03F0}' => Some('\u{1D7C6}'), // kappa symbol (ϰ)
+      '\u{03D5}' => Some('\u{1D7C7}'), // phi symbol (ϕ)
+      '\u{03F1}' => Some('\u{1D7C8}'), // rho symbol (ϱ)
+      '\u{03D6}' => Some('\u{1D7C9}'), // pi symbol (ϖ)
       _ => None,
     },
     MathVariant::Monospace => match ch {
@@ -4321,6 +4354,40 @@ mod tests {
     assert!(
       shaped_text.contains('\u{1D504}') && shaped_text.contains('\u{1D537}'),
       "expected fraktur A/z (U+1D504/U+1D537) in shaped text, got {shaped_text:?}"
+    );
+  }
+
+  #[test]
+  fn mathvariant_sans_serif_bold_maps_greek_to_unicode_math_alphanumerics() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html(
+      "<math><mi mathvariant=\"sans-serif-bold\">&#x391;&#x3B2;</mi></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+    let shaped_text = concat_glyph_text(&layout);
+    assert!(
+      shaped_text.contains('\u{1D756}') && shaped_text.contains('\u{1D771}'),
+      "expected sans-serif bold Greek Α/β (U+1D756/U+1D771) in shaped text, got {shaped_text:?}"
+    );
+  }
+
+  #[test]
+  fn mathvariant_sans_serif_bold_italic_maps_greek_to_unicode_math_alphanumerics() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html(
+      "<math><mi mathvariant=\"sans-serif-bold-italic\">&#x391;&#x3B2;</mi></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+    let shaped_text = concat_glyph_text(&layout);
+    assert!(
+      shaped_text.contains('\u{1D790}') && shaped_text.contains('\u{1D7AB}'),
+      "expected sans-serif bold italic Greek Α/β (U+1D790/U+1D7AB) in shaped text, got {shaped_text:?}"
     );
   }
 
