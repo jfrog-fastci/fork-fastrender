@@ -201,6 +201,20 @@ mod tests {
   }
 
   #[test]
+  fn body_text_utf8_replaces_invalid_sequences() {
+    let mut body = Body::new(vec![0xff, b'a']).unwrap();
+    let text = body.text_utf8().unwrap();
+    assert_eq!(text, "\u{FFFD}a");
+  }
+
+  #[test]
+  fn body_text_utf8_strips_utf8_bom() {
+    let mut body = Body::new(vec![0xEF, 0xBB, 0xBF, b'h', b'i']).unwrap();
+    let text = body.text_utf8().unwrap();
+    assert_eq!(text, "hi");
+  }
+
+  #[test]
   fn body_clone_is_unconsumed() {
     let mut body = Body::new(b"hello".to_vec()).unwrap();
     let _ = body.consume_bytes().unwrap();

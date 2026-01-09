@@ -82,8 +82,17 @@ impl Body {
 
   /// Consume the body as UTF-8 text.
   pub fn text_utf8(&mut self) -> Result<String> {
-    let bytes = self.consume_bytes()?;
-    Ok(String::from_utf8(bytes)?)
+    // The Fetch spec's `Body.text()` uses the Encoding Standard's "UTF-8 decode" algorithm, which
+    // replaces invalid sequences (it must never reject solely due to invalid UTF-8).
+    let mut bytes = self.consume_bytes()?;
+    // "UTF-8 decode" strips a leading UTF-8 BOM.
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+      bytes.drain(..3);
+    }
+    match String::from_utf8(bytes) {
+      Ok(s) => Ok(s),
+      Err(err) => Ok(String::from_utf8_lossy(&err.into_bytes()).into_owned()),
+    }
   }
 
   /// Consume the body as JSON.
