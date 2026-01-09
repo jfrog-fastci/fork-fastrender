@@ -7611,10 +7611,12 @@ impl ComputedStyle {
     }
   }
 
-  /// Recomputes properties whose winning declarations depended on `var()`.
+  /// Recomputes properties whose winning declarations depend on custom properties.
   ///
   /// This is used after mutating `custom_properties` (for example via animations) so dependent
-  /// computed values stay in sync.
+  /// computed values stay in sync. In addition to declarations that directly contain `var()`, we
+  /// also track declarations whose computed value depends on other var-driven state (for example
+  /// `fill: currentColor` must be re-resolved when `color` changes via `var()`).
   pub fn recompute_var_dependent_properties(
     &mut self,
     parent_styles: &ComputedStyle,
@@ -7751,6 +7753,48 @@ mod light_dark_resolution_tests {
 
     styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
     assert_eq!(styles.color, Rgba::RED);
+  }
+
+  #[test]
+  fn recompute_var_dependent_properties_recomputes_svg_fill_current_color() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls = parse_declarations("--c: rgb(0,0,255); color: var(--c); fill: currentColor;");
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert_eq!(styles.color, Rgba::BLUE);
+    assert_eq!(styles.svg_fill, Some(ColorOrNone::Color(Rgba::BLUE)));
+    assert!(styles.var_dependent_declarations.contains_key("fill"));
+
+    let decls = parse_declarations("--c: rgb(255,0,0);");
+    apply_declaration_with_base(
+      &mut styles,
+      &decls[0],
+      &parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+
+    styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
+    assert_eq!(styles.color, Rgba::RED);
+    assert_eq!(styles.svg_fill, Some(ColorOrNone::Color(Rgba::RED)));
   }
 }
 
@@ -8010,7 +8054,13 @@ fn apply_declaration_with_base_internal_with_order(
   };
 
   if record_var_dependent_declarations {
-    if decl.contains_var {
+    let value_is_current_color = match &decl.value {
+      PropertyValue::Keyword(kw) => kw.eq_ignore_ascii_case("currentcolor"),
+      PropertyValue::Color(Color::CurrentColor) => true,
+      _ => false,
+    };
+    let depends_on_current_color = value_is_current_color && matches!(property, "fill" | "stroke");
+    if decl.contains_var || depends_on_current_color {
       Arc::make_mut(&mut styles.var_dependent_declarations).insert(
         property,
         crate::style::VarDependentDeclaration {

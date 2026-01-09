@@ -748,10 +748,14 @@ impl LogicalState {
   }
 }
 
-/// Winning, non-custom declaration whose specified value depended on `var()`.
+/// Winning, non-custom declaration that must be recomputed after custom properties change.
 ///
-/// Stores the pre-var-resolution value so dependent properties can be recomputed after custom
-/// properties change (for example via animations).
+/// Most entries are declarations whose specified value contained `var()`. We also track
+/// declarations whose computed value depends on other var-driven state (e.g. `fill: currentColor`
+/// depends on `color`, which may itself come from `var()`).
+///
+/// Stores the specified value before `var()` substitution so dependent properties can be
+/// recomputed after custom properties change (for example via animations).
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarDependentDeclaration {
   /// Cascade order of the declaration.
