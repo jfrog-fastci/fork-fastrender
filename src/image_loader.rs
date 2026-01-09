@@ -4959,9 +4959,6 @@ impl ImageCache {
     svg_content: &str,
     url_hint: &str,
   ) -> Result<CachedImageMetadata> {
-    const DEFAULT_WIDTH: f32 = 300.0;
-    const DEFAULT_HEIGHT: f32 = 150.0;
-
     self.enforce_svg_resource_policy(svg_content, url_hint)?;
 
     let svg_with_fragment = apply_svg_url_fragment(svg_content, url_hint);
@@ -4971,19 +4968,8 @@ impl ImageCache {
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
 
     let ratio = meta_ratio.filter(|r| *r > 0.0);
-    let (target_width, target_height) = match (
-      meta_width.filter(|w| *w > 0.0),
-      meta_height.filter(|h| *h > 0.0),
-      ratio,
-    ) {
-      (Some(w), Some(h), _) => (w, h),
-      (Some(w), None, Some(r)) => (w, (w / r).max(1.0)),
-      (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
-      (Some(w), None, None) => (w, DEFAULT_HEIGHT),
-      (None, Some(h), None) => (DEFAULT_WIDTH, h),
-      (None, None, Some(_)) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-      (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-    };
+    let (target_width, target_height) =
+      svg_intrinsic_target_dimensions(meta_width, meta_height, ratio);
 
     let width = target_width.max(1.0).round() as u32;
     let height = target_height.max(1.0).round() as u32;
@@ -6338,9 +6324,6 @@ impl ImageCache {
   ) -> Result<(DynamicImage, Option<f32>, bool)> {
     use resvg::usvg;
 
-    const DEFAULT_WIDTH: f32 = 300.0;
-    const DEFAULT_HEIGHT: f32 = 150.0;
-
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
@@ -6402,19 +6385,8 @@ impl ImageCache {
     }
 
     let ratio = meta_ratio.filter(|r| *r > 0.0);
-    let (target_width, target_height) = match (
-      meta_width.filter(|w| *w > 0.0),
-      meta_height.filter(|h| *h > 0.0),
-      ratio,
-    ) {
-      (Some(w), Some(h), _) => (w, h),
-      (Some(w), None, Some(r)) => (w, (w / r).max(1.0)),
-      (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
-      (Some(w), None, None) => (w, DEFAULT_HEIGHT),
-      (None, Some(h), None) => (DEFAULT_WIDTH, h),
-      (None, None, Some(_)) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-      (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
-    };
+    let (target_width, target_height) =
+      svg_intrinsic_target_dimensions(meta_width, meta_height, ratio);
 
     let render_width = target_width.max(1.0).round() as u32;
     let render_height = target_height.max(1.0).round() as u32;
@@ -6482,6 +6454,32 @@ impl ImageCache {
       ratio,
       aspect_ratio_none,
     ))
+  }
+}
+
+fn svg_intrinsic_target_dimensions(
+  meta_width: Option<f32>,
+  meta_height: Option<f32>,
+  intrinsic_ratio: Option<f32>,
+) -> (f32, f32) {
+  const DEFAULT_WIDTH: f32 = 300.0;
+  const DEFAULT_HEIGHT: f32 = 150.0;
+
+  let width = meta_width.filter(|w| *w > 0.0);
+  let height = meta_height.filter(|h| *h > 0.0);
+  let ratio = intrinsic_ratio.filter(|r| *r > 0.0);
+
+  match (width, height, ratio) {
+    (Some(w), Some(h), _) => (w, h),
+    (Some(w), None, Some(r)) => (w, (w / r).max(1.0)),
+    (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
+    (Some(w), None, None) => (w, DEFAULT_HEIGHT),
+    (None, Some(h), None) => (DEFAULT_WIDTH, h),
+    // When the SVG root doesn't specify an absolute intrinsic size (missing or percentage
+    // widths/heights), HTML/CSS replaced elements default to 300x150 regardless of viewBox ratio.
+    // Keep the ratio separately (see `intrinsic_ratio`) so layout can still infer the correct
+    // aspect ratio.
+    (None, None, _) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
   }
 }
 
@@ -9143,6 +9141,81 @@ mod tests {
   }
 
   #[test]
+  fn render_svg_to_image_viewbox_only_defaults_to_300x150() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='red'/></svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg");
+
+    assert_eq!((image.width(), image.height()), (300, 150));
+
+    let rgba = image.to_rgba8();
+    assert_eq!(rgba.get_pixel(150, 75).0, [255, 0, 0, 255]);
+    assert_eq!(rgba.get_pixel(10, 75).0[3], 0, "left padding should be transparent");
+    assert_eq!(
+      rgba.get_pixel(290, 75).0[3],
+      0,
+      "right padding should be transparent"
+    );
+  }
+
+  #[test]
+  fn probe_svg_content_viewbox_only_defaults_to_300x150() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='red'/></svg>";
+
+    let meta = cache
+      .probe_svg_content(svg, "test://svg")
+      .expect("probe svg content");
+    assert_eq!(meta.width, 300);
+    assert_eq!(meta.height, 150);
+    assert_eq!(meta.intrinsic_ratio, Some(1.0));
+  }
+
+  #[test]
+  fn render_svg_to_image_preserve_aspect_ratio_alignment_respected() {
+    let cache = ImageCache::new();
+
+    let svg_min = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='150' viewBox='0 0 100 100' preserveAspectRatio='xMinYMin meet'><rect width='100' height='100' fill='red'/></svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg_min).expect("render svg xMin");
+    let rgba = image.to_rgba8();
+    assert_eq!(rgba.get_pixel(10, 75).0, [255, 0, 0, 255]);
+    assert_eq!(rgba.get_pixel(290, 75).0[3], 0);
+
+    let svg_max = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='150' viewBox='0 0 100 100' preserveAspectRatio='xMaxYMin meet'><rect width='100' height='100' fill='red'/></svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg_max).expect("render svg xMax");
+    let rgba = image.to_rgba8();
+    assert_eq!(rgba.get_pixel(10, 75).0[3], 0);
+    assert_eq!(rgba.get_pixel(290, 75).0, [255, 0, 0, 255]);
+  }
+
+  #[test]
+  fn render_svg_to_image_preserve_aspect_ratio_slice_respected() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='150' viewBox='0 0 100 100' preserveAspectRatio='xMidYMid slice'>\
+      <rect x='0' y='0' width='100' height='10' fill='red'/>\
+      <rect x='0' y='45' width='100' height='10' fill='blue'/>\
+      <rect x='0' y='90' width='100' height='10' fill='green'/>\
+    </svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg slice");
+    let rgba = image.to_rgba8();
+
+    assert_eq!(rgba.get_pixel(150, 5).0[3], 0);
+    assert_eq!(rgba.get_pixel(150, 75).0, [0, 0, 255, 255]);
+    assert_eq!(rgba.get_pixel(150, 145).0[3], 0);
+  }
+
+  #[test]
+  fn render_svg_to_image_viewbox_min_xy_translation_respected() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='100' height='100' viewBox='50 50 100 100'>\
+      <rect x='50' y='50' width='100' height='100' fill='red'/>\
+    </svg>";
+    let (image, _, _) = cache.render_svg_to_image(svg).expect("render svg");
+    let rgba = image.to_rgba8();
+    assert_eq!(rgba.get_pixel(10, 10).0, [255, 0, 0, 255]);
+  }
+
+  #[test]
   fn svg_preserve_aspect_ratio_none_disables_ratio() {
     let cache = ImageCache::new();
     let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 50' preserveAspectRatio='none'></svg>";
@@ -9265,11 +9338,7 @@ mod tests {
 
     assert_eq!((image.width(), image.height()), (200, 200));
     let rgba = image.to_rgba8();
-    let padding_pixel = rgba.get_pixel(100, 10).0;
-    assert_eq!(
-      padding_pixel[3], 0,
-      "preserveAspectRatio='xMidYMid meet' should leave top padding transparent"
-    );
+    assert_eq!(rgba.get_pixel(100, 10).0, [255, 0, 0, 255]);
     assert_eq!(rgba.get_pixel(100, 100).0, [255, 0, 0, 255]);
   }
 
@@ -9305,11 +9374,7 @@ mod tests {
 
     assert_eq!((image.width(), image.height()), (200, 200));
     let rgba = image.to_rgba8();
-    let padding_pixel = rgba.get_pixel(10, 100).0;
-    assert_eq!(
-      padding_pixel[3], 0,
-      "preserveAspectRatio='xMidYMid meet' should leave left padding transparent"
-    );
+    assert_eq!(rgba.get_pixel(10, 100).0, [255, 0, 0, 255]);
     assert_eq!(rgba.get_pixel(100, 100).0, [255, 0, 0, 255]);
   }
 
