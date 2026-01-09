@@ -8,11 +8,12 @@ use fastrender::{
   BoxNode, BoxTree, FormattingContextType, LayoutConfig, LayoutEngine, LayoutParallelism,
   RenderArtifactRequest, Size,
 };
+use super::test_locks::layout_parallel_debug_lock;
 use std::fmt::Write;
 
 #[test]
 fn parallel_layout_matches_serial_and_uses_threads() {
-  let _guard = super::layout_parallel_debug_lock();
+  let _guard = layout_parallel_debug_lock();
   let mut html = String::from(
     "<!DOCTYPE html><style>.item{padding:4px;margin:2px;border:1px solid #000;}</style><body>",
   );

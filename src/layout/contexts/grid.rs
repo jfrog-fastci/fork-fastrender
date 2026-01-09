@@ -4159,125 +4159,245 @@ impl GridFormattingContext {
 
     let deadline = active_deadline();
     let stage = active_stage();
-    let child_results = indices_to_layout
-      .par_iter()
-      .map(|&idx| {
-        with_deadline(deadline.as_ref(), || {
-          let _stage_guard = StageGuard::install(stage);
-          factory.debug_record_parallel_work();
+    let should_parallelize_children = self.parallelism.should_parallelize(indices_to_layout.len());
+    let child_results = if should_parallelize_children {
+      indices_to_layout
+        .par_iter()
+        .map(|&idx| {
+          with_deadline(deadline.as_ref(), || {
+            let _stage_guard = StageGuard::install(stage);
+            factory.debug_record_parallel_work();
 
-          let child = in_flow_children[idx];
-          let bounds = child_bounds[idx];
-          let continuation_available = child_continuation_available[idx];
-          let fc_type = child
-            .formatting_context()
-            .unwrap_or(FormattingContextType::Block);
-          let child_factory =
-            factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
-          let fc: std::sync::Arc<dyn FormattingContext> =
-            if matches!(fc_type, FormattingContextType::Block) {
-              std::sync::Arc::new(
-                BlockFormattingContext::for_independent_context_root_with_factory(
-                  child_factory.clone(),
-                ),
-              )
-            } else {
-              child_factory.get(fc_type)
-            };
+            let child = in_flow_children[idx];
+            let bounds = child_bounds[idx];
+            let continuation_available = child_continuation_available[idx];
+            let fc_type = child
+              .formatting_context()
+              .unwrap_or(FormattingContextType::Block);
+            let child_factory =
+              factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
+            let fc: std::sync::Arc<dyn FormattingContext> =
+              if matches!(fc_type, FormattingContextType::Block) {
+                std::sync::Arc::new(
+                  BlockFormattingContext::for_independent_context_root_with_factory(
+                    child_factory.clone(),
+                  ),
+                )
+              } else {
+                child_factory.get(fc_type)
+              };
 
-          let available_height = continuation_available.unwrap_or(bounds.height());
-          let child_constraints = LayoutConstraints::new(
-            CrateAvailableSpace::Definite(bounds.width()),
-            CrateAvailableSpace::Definite(available_height),
-          )
-          .with_inline_percentage_base(
-            constraints
-              .inline_percentage_base
-              .or_else(|| Some(bounds.width())),
-          );
-
-          let supports_used_border_box = matches!(
-            fc_type,
-            FormattingContextType::Block
-              | FormattingContextType::Flex
-              | FormattingContextType::Grid
-              | FormattingContextType::Inline
-              | FormattingContextType::Table
-          );
-
-          let force_height = continuation_available
-            .map(|available| available + 0.01 >= bounds.height())
-            .unwrap_or(true);
-
-          let mut laid_out = if supports_used_border_box {
-            let child_constraints = child_constraints.with_used_border_box_size(
-              Some(bounds.width()),
-              force_height.then_some(bounds.height()),
+            let available_height = continuation_available.unwrap_or(bounds.height());
+            let child_constraints = LayoutConstraints::new(
+              CrateAvailableSpace::Definite(bounds.width()),
+              CrateAvailableSpace::Definite(available_height),
+            )
+            .with_inline_percentage_base(
+              constraints
+                .inline_percentage_base
+                .or_else(|| Some(bounds.width())),
             );
-            if continuation_available.is_some() {
+
+            let supports_used_border_box = matches!(
+              fc_type,
+              FormattingContextType::Block
+                | FormattingContextType::Flex
+                | FormattingContextType::Grid
+                | FormattingContextType::Inline
+                | FormattingContextType::Table
+            );
+
+            let force_height = continuation_available
+              .map(|available| available + 0.01 >= bounds.height())
+              .unwrap_or(true);
+
+            let mut laid_out = if supports_used_border_box {
+              let child_constraints = child_constraints.with_used_border_box_size(
+                Some(bounds.width()),
+                force_height.then_some(bounds.height()),
+              );
+              if continuation_available.is_some() {
+                crate::layout::style_override::with_style_override(
+                  child.id,
+                  child.style.clone(),
+                  || fc.layout(child, &child_constraints),
+                )?
+              } else {
+                fc.layout(child, &child_constraints)?
+              }
+            } else if matches!(
+              fc_type,
+              FormattingContextType::Flex | FormattingContextType::Grid
+            ) {
+              let mut layout_style = (*child.style).clone();
+              layout_style.width = Some(Length::px(bounds.width()));
+              if force_height {
+                layout_style.height = Some(Length::px(bounds.height()));
+              }
+              layout_style.width_keyword = None;
+              if force_height {
+                layout_style.height_keyword = None;
+              }
               crate::layout::style_override::with_style_override(
                 child.id,
-                child.style.clone(),
+                Arc::new(layout_style),
                 || fc.layout(child, &child_constraints),
               )?
             } else {
-              fc.layout(child, &child_constraints)?
-            }
-          } else if matches!(
-            fc_type,
-            FormattingContextType::Flex | FormattingContextType::Grid
-          ) {
-            let mut layout_style = (*child.style).clone();
-            layout_style.width = Some(Length::px(bounds.width()));
-            if force_height {
-              layout_style.height = Some(Length::px(bounds.height()));
-            }
-            layout_style.width_keyword = None;
-            if force_height {
-              layout_style.height_keyword = None;
-            }
-            crate::layout::style_override::with_style_override(
-              child.id,
-              Arc::new(layout_style),
-              || fc.layout(child, &child_constraints),
-            )?
-          } else {
-            let mut layout_style = (*child.style).clone();
-            layout_style.width = Some(Length::px(bounds.width()));
-            if force_height {
-              layout_style.height = Some(Length::px(bounds.height()));
-            }
-            layout_style.width_keyword = None;
-            if force_height {
-              layout_style.height_keyword = None;
-            }
-            let layout_style = Arc::new(layout_style);
-            if child.id != 0 {
-              crate::layout::style_override::with_style_override(child.id, layout_style, || {
-                fc.layout(child, &child_constraints)
-              })?
-            } else {
-              let mut layout_child = (*child).clone();
-              layout_child.style = layout_style;
-              fc.layout(&layout_child, &child_constraints)?
-            }
-          };
+              let mut layout_style = (*child.style).clone();
+              layout_style.width = Some(Length::px(bounds.width()));
+              if force_height {
+                layout_style.height = Some(Length::px(bounds.height()));
+              }
+              layout_style.width_keyword = None;
+              if force_height {
+                layout_style.height_keyword = None;
+              }
+              let layout_style = Arc::new(layout_style);
+              if child.id != 0 {
+                crate::layout::style_override::with_style_override(child.id, layout_style, || {
+                  fc.layout(child, &child_constraints)
+                })?
+              } else {
+                let mut layout_child = (*child).clone();
+                layout_child.style = layout_style;
+                fc.layout(&layout_child, &child_constraints)?
+              }
+            };
 
-          let mut translate_deadline_counter = 0usize;
-          translate_fragment_tree(
-            &mut laid_out,
-            Point::new(bounds.x(), bounds.y()),
-            &mut translate_deadline_counter,
-          )?;
-          laid_out.content = FragmentContent::Block {
-            box_id: Some(child.id),
-          };
-          laid_out.style = Some(child.style.clone());
-          Ok((idx, laid_out))
+            let mut translate_deadline_counter = 0usize;
+            translate_fragment_tree(
+              &mut laid_out,
+              Point::new(bounds.x(), bounds.y()),
+              &mut translate_deadline_counter,
+            )?;
+            laid_out.content = FragmentContent::Block {
+              box_id: Some(child.id),
+            };
+            laid_out.style = Some(child.style.clone());
+            Ok((idx, laid_out))
+          })
         })
-      })
-      .collect::<Result<Vec<_>, LayoutError>>();
+        .collect::<Result<Vec<_>, LayoutError>>()
+    } else {
+      indices_to_layout
+        .iter()
+        .map(|&idx| {
+          with_deadline(deadline.as_ref(), || {
+            let _stage_guard = StageGuard::install(stage);
 
+            let child = in_flow_children[idx];
+            let bounds = child_bounds[idx];
+            let continuation_available = child_continuation_available[idx];
+            let fc_type = child
+              .formatting_context()
+              .unwrap_or(FormattingContextType::Block);
+            let child_factory =
+              factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
+            let fc: std::sync::Arc<dyn FormattingContext> =
+              if matches!(fc_type, FormattingContextType::Block) {
+                std::sync::Arc::new(
+                  BlockFormattingContext::for_independent_context_root_with_factory(
+                    child_factory.clone(),
+                  ),
+                )
+              } else {
+                child_factory.get(fc_type)
+              };
+
+            let available_height = continuation_available.unwrap_or(bounds.height());
+            let child_constraints = LayoutConstraints::new(
+              CrateAvailableSpace::Definite(bounds.width()),
+              CrateAvailableSpace::Definite(available_height),
+            )
+            .with_inline_percentage_base(
+              constraints
+                .inline_percentage_base
+                .or_else(|| Some(bounds.width())),
+            );
+
+            let supports_used_border_box = matches!(
+              fc_type,
+              FormattingContextType::Block
+                | FormattingContextType::Flex
+                | FormattingContextType::Grid
+                | FormattingContextType::Inline
+                | FormattingContextType::Table
+            );
+
+            let force_height = continuation_available
+              .map(|available| available + 0.01 >= bounds.height())
+              .unwrap_or(true);
+
+            let mut laid_out = if supports_used_border_box {
+              let child_constraints = child_constraints.with_used_border_box_size(
+                Some(bounds.width()),
+                force_height.then_some(bounds.height()),
+              );
+              if continuation_available.is_some() {
+                crate::layout::style_override::with_style_override(
+                  child.id,
+                  child.style.clone(),
+                  || fc.layout(child, &child_constraints),
+                )?
+              } else {
+                fc.layout(child, &child_constraints)?
+              }
+            } else if matches!(
+              fc_type,
+              FormattingContextType::Flex | FormattingContextType::Grid
+            ) {
+              let mut layout_style = (*child.style).clone();
+              layout_style.width = Some(Length::px(bounds.width()));
+              if force_height {
+                layout_style.height = Some(Length::px(bounds.height()));
+              }
+              layout_style.width_keyword = None;
+              if force_height {
+                layout_style.height_keyword = None;
+              }
+              crate::layout::style_override::with_style_override(
+                child.id,
+                Arc::new(layout_style),
+                || fc.layout(child, &child_constraints),
+              )?
+            } else {
+              let mut layout_style = (*child.style).clone();
+              layout_style.width = Some(Length::px(bounds.width()));
+              if force_height {
+                layout_style.height = Some(Length::px(bounds.height()));
+              }
+              layout_style.width_keyword = None;
+              if force_height {
+                layout_style.height_keyword = None;
+              }
+              let layout_style = Arc::new(layout_style);
+              if child.id != 0 {
+                crate::layout::style_override::with_style_override(child.id, layout_style, || {
+                  fc.layout(child, &child_constraints)
+                })?
+              } else {
+                let mut layout_child = (*child).clone();
+                layout_child.style = layout_style;
+                fc.layout(&layout_child, &child_constraints)?
+              }
+            };
+
+            let mut translate_deadline_counter = 0usize;
+            translate_fragment_tree(
+              &mut laid_out,
+              Point::new(bounds.x(), bounds.y()),
+              &mut translate_deadline_counter,
+            )?;
+            laid_out.content = FragmentContent::Block {
+              box_id: Some(child.id),
+            };
+            laid_out.style = Some(child.style.clone());
+            Ok((idx, laid_out))
+          })
+        })
+        .collect::<Result<Vec<_>, LayoutError>>()
+    };
     let mut child_results = match child_results {
       Ok(results) => results,
       Err(err) => return Some(Err(err)),

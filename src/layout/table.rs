@@ -7032,6 +7032,7 @@ impl FormattingContext for TableFormattingContext {
     let outcomes: Vec<CellOutcome> = if should_parallelize_cells {
       let deadline = active_deadline();
       let stage = active_stage();
+      let record_parallel_work = self.parallelism.is_active();
       let layout_cells = || {
         structure
           .cells
@@ -7039,7 +7040,9 @@ impl FormattingContext for TableFormattingContext {
           .map(|cell| {
             with_deadline(deadline.as_ref(), || {
               let _stage_guard = StageGuard::install(stage);
-              self.factory.debug_record_parallel_work();
+              if record_parallel_work {
+                self.factory.debug_record_parallel_work();
+              }
               layout_single_cell(cell)
             })
           })

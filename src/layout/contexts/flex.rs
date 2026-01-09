@@ -332,38 +332,31 @@ fn translate_fragment_tree(
   Ok(())
 }
 
-fn subtree_contains_content_visibility_auto(
+#[derive(Clone, Copy, Debug, Default)]
+struct SubtreeSensitivity {
+  has_content_visibility_auto: bool,
+  has_out_of_flow_positioned: bool,
+}
+
+fn subtree_sensitivity(
   root: &BoxNode,
   deadline_counter: &mut usize,
-) -> Result<bool, LayoutError> {
+) -> Result<SubtreeSensitivity, LayoutError> {
   let mut stack: Vec<&BoxNode> = vec![root];
+  let mut flags = SubtreeSensitivity::default();
   while let Some(node) = stack.pop() {
     check_layout_deadline(deadline_counter)?;
     if matches!(
       node.style.content_visibility,
       crate::style::types::ContentVisibility::Auto
     ) {
-      return Ok(true);
+      flags.has_content_visibility_auto = true;
     }
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
-    for child in node.children.iter() {
-      stack.push(child);
-    }
-  }
-  Ok(false)
-}
-
-fn subtree_contains_out_of_flow_positioned(
-  root: &BoxNode,
-  deadline_counter: &mut usize,
-) -> Result<bool, LayoutError> {
-  let mut stack: Vec<&BoxNode> = vec![root];
-  while let Some(node) = stack.pop() {
-    check_layout_deadline(deadline_counter)?;
     if matches!(node.style.position, Position::Absolute | Position::Fixed) {
-      return Ok(true);
+      flags.has_out_of_flow_positioned = true;
+    }
+    if flags.has_content_visibility_auto && flags.has_out_of_flow_positioned {
+      return Ok(flags);
     }
     for child in node.children.iter() {
       stack.push(child);
@@ -372,7 +365,7 @@ fn subtree_contains_out_of_flow_positioned(
       stack.push(body);
     }
   }
-  Ok(false)
+  Ok(flags)
 }
 
 fn normalize_fragment_origin(
@@ -1201,10 +1194,11 @@ impl FormattingContext for FlexFormattingContext {
     let mut scroll_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
     let mut positioned_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
     for child in in_flow_children.iter() {
-      if subtree_contains_content_visibility_auto(child, &mut deadline_counter)? {
+      let sensitivity = subtree_sensitivity(child, &mut deadline_counter)?;
+      if sensitivity.has_content_visibility_auto {
         scroll_sensitive_items.insert(*child as *const BoxNode);
       }
-      if subtree_contains_out_of_flow_positioned(child, &mut deadline_counter)? {
+      if sensitivity.has_out_of_flow_positioned {
         positioned_sensitive_items.insert(*child as *const BoxNode);
       }
     }
@@ -5125,7 +5119,13 @@ impl FormattingContext for FlexFormattingContext {
       // Note: percentage gaps depend on the container size; resolve against 0px here to keep the
       // intrinsic fast path deterministic. (Most real-world uses, including MDN, use absolute
       // lengths like `rem`.)
-      let gap = self.resolve_length_for_width(style.grid_column_gap, 0.0, style);
+      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+      let gap_len = if inline_is_horizontal {
+        style.grid_column_gap
+      } else {
+        style.grid_row_gap
+      };
+      let gap = self.resolve_length_for_width(gap_len, 0.0, style);
       if gap.is_finite() && gap > 0.0 {
         contribution += gap * (in_flow_items as f32 - 1.0);
       }
@@ -8867,7 +8867,7 @@ impl FlexFormattingContext {
       if !needs_intrinsic_main {
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
         let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
-        let cache_key = if is_scroll_sensitive {
+        let cache_key = if is_scroll_sensitive || is_positioned_sensitive {
           flex_cache_key_with_scroll(child_box, child_scroll)
         } else {
           flex_cache_key(child_box)
@@ -9037,24 +9037,26 @@ impl FlexFormattingContext {
       let run_layout = |deadline_counter: &mut usize,
                          work: &ChildLayoutWorkItem<'_>|
        -> Result<(usize, ChildLayoutWorkOutput), LayoutError> {
+        // Translate viewport-relative state into the child's coordinate system so nested formatting
+        // contexts can correctly decide which `content-visibility:auto` descendants intersect the
+        // viewport and so absolute/fixed positioning resolves against the correct containing
+        // blocks.
+        //
+        // Most flex items do not contain viewport-relative layout features (such as
+        // `content-visibility:auto` or absolute/fixed descendants), so avoid constructing a
+        // per-child factory (which resets cached formatting contexts) unless the subtree is
+        // sensitive to translated viewport/containing-block state.
+        //
+        // The flex container receives state already translated into its own coordinate space by its
+        // parent (block/grid/flex); do the same for each child formatting context using the child's
+        // placement origin.
         let fc: Arc<dyn FormattingContext> = if work.needs_translated_factory {
-          // Translate viewport-relative state into the child's coordinate system so nested
-          // formatting contexts can correctly decide which `content-visibility:auto` descendants
-          // intersect the viewport and so absolute/fixed positioning resolves against the correct
-          // containing blocks.
-          //
-          // Translating the factory resets its cached formatting contexts; avoid doing so unless the
-          // subtree actually needs viewport/cb translation.
-          //
-          // The flex container receives state already translated into its own coordinate space by
-          // its parent (block/grid/flex); do the same for each child formatting context using the
-          // Taffy placement origin.
           let child_factory = factory.translated_for_child(work.origin);
+          // Flex items establish an independent formatting context. Block flex items need the
+          // flex-item block formatting context so:
+          // - auto margins resolve per flexbox rules, and
+          // - parent/child margin collapsing is prevented (flex items behave like a BFC).
           if matches!(work.fc_type, FormattingContextType::Block) {
-            // Flex items establish an independent formatting context. Block flex items need the
-            // flex-item block formatting context so:
-            // - auto margins resolve per flexbox rules, and
-            // - parent/child margin collapsing is prevented (flex items behave like a BFC).
             Arc::new(
               BlockFormattingContext::for_flex_item_with_factory(child_factory.clone())
                 .with_parallelism(self.parallelism),

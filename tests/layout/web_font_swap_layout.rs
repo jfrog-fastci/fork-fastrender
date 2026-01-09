@@ -158,7 +158,7 @@ fn local_web_fonts_are_not_capped_by_max_web_fonts() {
       .map(|i| FontFaceRule {
         family: Some(format!("LocalWebFamily{}", i)),
         sources: vec![FontFaceSource::url(font_url.clone())],
-        display: FontDisplay::Swap,
+        display: Some(FontDisplay::Swap),
         ..Default::default()
       })
       .collect();

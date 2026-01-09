@@ -1529,6 +1529,25 @@ pub fn paginate_fragment_tree(
         Some((_next_start, tok)) => continuation.unwrap_or(tok),
         None => continuation.unwrap_or(BreakToken::End),
       };
+
+      // Ensure the continuation token actually advances pagination. If it doesn't, fall back to a
+      // geometry-based continuation at the page boundary so we never enter an infinite pagination
+      // loop (which would otherwise eventually OOM).
+      if !matches!(next_token, BreakToken::End) {
+        let next_start = flow_start_for_token_in_layout(
+          &layout.root,
+          &next_token,
+          0.0,
+          root_block_size,
+          &axis,
+        )
+        .unwrap_or(total_height);
+        if next_start <= start + EPSILON {
+          next_token =
+            continuation_token_for_pos(&layout.root, end, 0.0, root_block_size, &axis)
+              .unwrap_or(BreakToken::End);
+        }
+      }
       }
     }
 

@@ -160,13 +160,6 @@ fn is_ignorable_whitespace(node: &BoxNode) -> bool {
   }
 }
 
-fn subtree_contains_float(node: &BoxNode) -> bool {
-  if node.style.float.is_floating() {
-    return true;
-  }
-  node.children.iter().any(subtree_contains_float)
-}
-
 #[derive(Clone)]
 struct PositionedCandidate {
   node: BoxNode,
@@ -2531,27 +2524,30 @@ impl BlockFormattingContext {
     }
   }
 
-  fn can_parallelize_block_children(parent: &BoxNode) -> bool {
-    let mut has_any = false;
-    for child in &parent.children {
+  fn parallel_block_child_indices(parent: &BoxNode) -> Option<Vec<usize>> {
+    if parent.children.is_empty() {
+      return None;
+    }
+    let mut indices = Vec::with_capacity(parent.children.len());
+    for (idx, child) in parent.children.iter().enumerate() {
       if is_ignorable_whitespace(child) {
         continue;
       }
-      has_any = true;
-      if !child.is_block_level()
-        || child.style.float.is_floating()
-        || child.style.clear != Clear::None
-        || child.style.running_position.is_some()
-        || !matches!(
+      if !(child.is_block_level()
+        && !child.style.float.is_floating()
+        && child.style.clear == Clear::None
+        && child.style.running_position.is_none()
+        && matches!(
           child.style.content_visibility,
           crate::style::types::ContentVisibility::Visible
         )
-        || !matches!(child.style.position, Position::Static | Position::Relative)
+        && matches!(child.style.position, Position::Static | Position::Relative))
       {
-        return false;
+        return None;
       }
+      indices.push(idx);
     }
-    has_any
+    (!indices.is_empty()).then_some(indices)
   }
 
   fn subtree_contains_floats(node: &BoxNode) -> bool {
@@ -2735,40 +2731,30 @@ impl BlockFormattingContext {
     float_ctx_empty: bool,
     paint_viewport: Rect,
   ) -> Option<Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError>> {
-    let layout_children = parent
-      .children
-      .iter()
-      .filter(|child| !is_ignorable_whitespace(child))
-      .count();
-    if !self.parallelism.should_parallelize(layout_children)
-      || !float_ctx_empty
-      || !Self::can_parallelize_block_children(parent)
-      || Self::subtree_contains_floats(parent)
-      || Self::subtree_contains_content_visibility_auto(parent)
-      || Self::is_multicol_container(&parent.style)
-    {
+    if !float_ctx_empty || Self::is_multicol_container(&parent.style) {
       return None;
     }
-    if parent
-      .children
-      .iter()
-      .filter(|child| !is_ignorable_whitespace(child))
-      .any(subtree_contains_float)
+    // Most HTML documents include ignorable whitespace-only text nodes between block elements.
+    // Serial block layout explicitly skips these nodes (CSS 2.1 §16.6). Treat them as non-existent
+    // for parallel fan-out so we can still parallelize wide sibling lists from real markup.
+    let child_indices = Self::parallel_block_child_indices(parent)?;
+    if !self.parallelism.should_parallelize(child_indices.len())
+      || Self::subtree_contains_floats(parent)
+      || Self::subtree_contains_content_visibility_auto(parent)
     {
       return None;
     }
     let deadline = active_deadline();
     let stage = active_stage();
-    let parallel_results = parent
-      .children
+    let child_layout_ctx = self.clone();
+    let parallel_results = child_indices
       .par_iter()
-      .enumerate()
-      .filter(|(_, child)| !is_ignorable_whitespace(child))
-      .map(|(idx, child)| {
+      .map(|idx| {
+        let child = &parent.children[*idx];
         with_deadline(deadline.as_ref(), || {
           let _stage_guard = StageGuard::install(stage);
-          self.factory.debug_record_parallel_work();
-          let fragment = self.layout_block_child(
+          child_layout_ctx.factory.debug_record_parallel_work();
+          let fragment = child_layout_ctx.layout_block_child(
             parent,
             child,
             containing_width,
@@ -2785,7 +2771,7 @@ impl BlockFormattingContext {
               "Block fragment missing metadata for parallel layout".into(),
             )
           })?;
-          Ok((idx, fragment, meta))
+          Ok((*idx, fragment, meta))
         })
       })
       .collect::<Result<Vec<_>, LayoutError>>();
@@ -2794,9 +2780,9 @@ impl BlockFormattingContext {
       Ok(results) => results,
       Err(err) => return Some(Err(err)),
     };
-    // `par_iter().enumerate()` should produce results in order, but `collect` through `Result`
-    // doesn't strictly guarantee it. Avoid paying an unconditional stable `sort_by_key` (which
-    // allocates and caches keys) unless the collected results are actually out of order.
+    // `child_indices` is collected in DOM order, and Rayon will usually preserve that order when
+    // collecting into a Vec. Avoid paying an unconditional stable `sort_by_key` (which allocates
+    // and caches keys) unless the collected results are actually out of order.
     let mut ordered = true;
     let mut prev_idx: Option<usize> = None;
     for (idx, _, _) in &parallel_results {

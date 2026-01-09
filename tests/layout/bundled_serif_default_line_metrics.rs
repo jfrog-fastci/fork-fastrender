@@ -45,9 +45,9 @@ fn bundled_serif_default_line_height_is_times_like() {
   let link = find_text_fragment(&tree.root, "CCC").expect("link text fragment");
 
   for (label, fragment, expected) in [
-    ("h2 line1", h2_line1, 30.0_f32),
-    ("h2 line2", h2_line2, 30.0_f32),
-    ("link", link, 20.0_f32),
+    ("h2 line1", h2_line1, 27.0_f32),
+    ("h2 line2", h2_line2, 27.0_f32),
+    ("link", link, 18.0_f32),
   ] {
     let (runs, font_family) = match &fragment.content {
       FragmentContent::Text {

@@ -4720,9 +4720,12 @@ fn apply_counter_properties_from_style(
     return;
   }
 
-  // Counters are evaluated as part of box generation, so elements that do not generate boxes must
-  // not reset/set/increment counters.
-  if matches!(styled.styles.display, Display::None | Display::Contents) {
+  // Elements that do not participate in rendering must not affect counters.
+  //
+  // Note: `display: contents` suppresses box generation for the element itself, but its descendants
+  // still participate in layout/paint. Counters are defined over the element tree (not the box
+  // tree), so counter-reset/set/increment must still apply for `display: contents` elements.
+  if styled.styles.display == Display::None {
     return;
   }
 
@@ -9576,7 +9579,7 @@ mod tests {
   }
 
   #[test]
-  fn display_contents_nodes_do_not_affect_counters() {
+  fn display_contents_nodes_affect_counters() {
     use crate::dom::DomNodeType;
     use crate::style::content::ContentItem;
     use crate::style::content::ContentValue;
@@ -9699,8 +9702,8 @@ mod tests {
     let tree = generate_box_tree(&root);
     assert_eq!(
       pseudo_text(&tree.root, 2, GeneratedPseudoElement::Before),
-      "0",
-      "display:contents elements must not apply counter-increment"
+      "1",
+      "display:contents elements must still apply counter-increment"
     );
   }
 

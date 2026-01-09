@@ -653,7 +653,7 @@ impl FormattingContextFactory {
 }
 
 #[cfg(any(test, debug_assertions))]
-impl FormattingContextFactory {
+  impl FormattingContextFactory {
   #[doc(hidden)]
   pub fn debug_with_font_context_viewport_and_cb_call_count() -> usize {
     FACTORY_WITH_FONT_CONTEXT_VIEWPORT_AND_CB_CALLS.with(|calls| calls.get())
