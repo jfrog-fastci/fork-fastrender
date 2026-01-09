@@ -352,7 +352,7 @@ impl BrowserDocument2 {
     let toggles = renderer.resolve_runtime_toggles(&options);
     let _toggles_guard =
       super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
-    crate::debug::runtime::with_runtime_toggles(toggles, || {
+    crate::debug::runtime::with_thread_runtime_toggles(toggles, || {
       let trace = super::TraceSession::from_options(Some(&options));
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("browser_document2_prepare", "pipeline");

@@ -487,19 +487,19 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         if button != PointerButton::Primary {
           continue;
         }
-        let Some(tab) = tabs.get_mut(&tab_id) else {
-          continue;
-        };
-        let viewport_point = Point::new(pos_css.0, pos_css.1);
-        let scroll = &tab.scroll_state;
-        // Avoid borrowing from `tab` across the DOM mutation call below (we need mutable borrows for
-        // `tab.document` and `tab.interaction`).
-        let document_url = tab.current_url.as_deref().unwrap_or("").to_string();
-        let base_url = tab.effective_base_url().unwrap_or("").to_string();
-        let engine = &mut tab.interaction;
-        let Some(doc) = tab.document.as_mut() else {
-          continue;
-        };
+         let Some(tab) = tabs.get_mut(&tab_id) else {
+           continue;
+         };
+         let viewport_point = Point::new(pos_css.0, pos_css.1);
+         let scroll = &tab.scroll_state;
+         // Avoid borrowing from `tab` across the DOM mutation call below (we need mutable borrows for
+         // `tab.document` and `tab.interaction`).
+         let document_url = tab.current_url.as_deref().unwrap_or("").to_string();
+         let base_url = tab.effective_base_url().unwrap_or("").to_string();
+         let engine = &mut tab.interaction;
+         let Some(doc) = tab.document.as_mut() else {
+           continue;
+         };
 
         let action = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
           engine.pointer_up(

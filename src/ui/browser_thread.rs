@@ -1442,6 +1442,15 @@ impl BrowserRuntime {
 ///
 /// The returned handle can be used from a headless caller (no winit/egui required).
 pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
+  spawn_browser_worker_with_name("browser_worker")
+}
+
+/// Spawn the browser worker thread with an explicit thread name.
+///
+/// Keeping a named entrypoint allows the desktop `browser` binary to name its worker thread
+/// (`fastr-browser-ui-worker`), while preserving a stable default name for tests that don't care.
+pub fn spawn_browser_worker_with_name(name: impl Into<String>) -> crate::Result<BrowserWorkerHandle> {
+  let name = name.into();
   let factory = FastRenderFactory::new()?;
   // `spawn_render_worker_thread` requires a renderer instance even though this runtime builds its
   // own per-navigation renderers from the factory. Build one from the same factory to ensure we do
@@ -1455,7 +1464,7 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
   let worker_to_ui_tx_for_thread = worker_to_ui_tx.clone();
 
   let join = spawn_render_worker_thread(
-    "browser_worker",
+    name,
     renderer,
     worker_to_ui_tx,
     move |_render_worker| {
@@ -1476,13 +1485,13 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 /// The desktop `browser` binary is written around `std::io::Result`, so this wrapper converts
 /// FastRender's internal `Error` into an `io::Error` and returns the raw channel endpoints.
 pub fn spawn_browser_ui_worker(
-  _name: impl Into<String>,
+  name: impl Into<String>,
 ) -> std::io::Result<(
   std::sync::mpsc::Sender<UiToWorker>,
   std::sync::mpsc::Receiver<WorkerToUi>,
   std::thread::JoinHandle<()>,
 )> {
-  let handle = spawn_browser_worker()
+  let handle = spawn_browser_worker_with_name(name)
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
   Ok((handle.tx, handle.rx, handle.join))
 }
