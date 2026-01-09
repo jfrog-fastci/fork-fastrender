@@ -9735,4 +9735,110 @@ mod tests {
       assert_eq!(idx, 1, "{side} should use the border-color list index");
     }
   }
+
+  #[test]
+  fn transition_pairs_expands_border_against_all() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::All,
+      TransitionProperty::Name("border".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border"),
+      "expected shorthands to be expanded away"
+    );
+
+    // The `border` entry is last, so it should own the expanded longhands.
+    for name in [
+      "border-top-width",
+      "border-right-width",
+      "border-bottom-width",
+      "border-left-width",
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+      "border-top-style",
+      "border-right-style",
+      "border-bottom-style",
+      "border-left-style",
+    ] {
+      let idx = pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .1;
+      assert_eq!(idx, 1, "{name} should use the border list index");
+    }
+  }
+
+  #[test]
+  fn transition_pairs_expands_outline_against_all() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::All,
+      TransitionProperty::Name("outline".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "outline"),
+      "expected shorthands to be expanded away"
+    );
+
+    for name in ["outline-color", "outline-style", "outline-width"] {
+      let idx = pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .1;
+      assert_eq!(idx, 1, "{name} should use the outline list index");
+    }
+  }
+
+  #[test]
+  fn transition_pairs_expands_border_radius_against_all() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::All,
+      TransitionProperty::Name("border-radius".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border-radius"),
+      "expected shorthands to be expanded away"
+    );
+
+    for name in [
+      "border-top-left-radius",
+      "border-top-right-radius",
+      "border-bottom-right-radius",
+      "border-bottom-left-radius",
+    ] {
+      let idx = pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .1;
+      assert_eq!(idx, 1, "{name} should use the border-radius list index");
+    }
+  }
 }
