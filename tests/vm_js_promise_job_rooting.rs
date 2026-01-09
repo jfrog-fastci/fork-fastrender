@@ -135,7 +135,7 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
   assert!(weak_reject.upgrade(&heap).is_some());
 
   let mut ctx = RootingContext { heap: &mut heap };
-  job.discard(&mut ctx);
+  job.0.discard(&mut ctx);
 
   ctx.heap.collect_garbage();
   assert!(weak_then_action.upgrade(&*ctx.heap).is_none());
@@ -196,7 +196,10 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
 
   let mut ctx = RootingContext { heap: &mut heap };
 
-  let err = job.run(&mut ctx, &mut host).expect_err("host should return error");
+  let err = job
+    .0
+    .run(&mut ctx, &mut host)
+    .expect_err("host should return error");
   assert!(matches!(
     err,
     VmError::Unimplemented("host_call_job_callback failed")
