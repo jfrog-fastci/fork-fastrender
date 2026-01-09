@@ -108,6 +108,50 @@ const DOM_SHIM: &str = r##"
     return makeNode(Element.prototype, id, String(tag).toUpperCase());
   }
 
+  function nodeFromId(id) {
+    id = Number(id);
+    if (id === 0) return g.document;
+    var t = g.__fastrender_dom_get_node_type(id);
+    if (t === Node.ELEMENT_NODE) return elementFromId(id);
+    if (t === Node.TEXT_NODE) return makeNode(Text.prototype, id);
+    if (t === Node.DOCUMENT_FRAGMENT_NODE) return makeNode(DocumentFragment.prototype, id);
+    if (t === Node.DOCUMENT_NODE) return g.document;
+    return makeNode(Node.prototype, id);
+  }
+
+  function syncTree(root) {
+    var seen = new Set();
+    var stack = [root];
+
+    while (stack.length) {
+      var node = stack.pop();
+      var nodeId = nodeIdFromThis(node);
+      if (seen.has(nodeId)) continue;
+      seen.add(nodeId);
+
+      var childIds = g.__fastrender_dom_get_child_nodes(nodeId);
+      var nodes = ensureArray(node, "childNodes");
+      for (var i = 0; i < nodes.length; i++) {
+        var old = nodes[i];
+        if (old && typeof old === "object") old.parentNode = null;
+      }
+      nodes.length = 0;
+
+      for (var j = 0; j < childIds.length; j++) {
+        var child = nodeFromId(childIds[j]);
+        nodes.push(child);
+        child.parentNode = node;
+      }
+
+      for (var k = nodes.length - 1; k >= 0; k--) {
+        var c = nodes[k];
+        if (c instanceof Element || c instanceof DocumentFragment || c === g.document) {
+          stack.push(c);
+        }
+      }
+    }
+  }
+
   function isArrayIndex(prop) {
     if (typeof prop !== "string") return false;
     if (prop === "") return false;
@@ -183,8 +227,7 @@ const DOM_SHIM: &str = r##"
     },
     set: function (html) {
       g.__fastrender_dom_set_inner_html(nodeIdFromThis(this), String(html));
-      // Best-effort: we don't create JS wrappers for parsed children yet, so clear any cached list.
-      if (this.childNodes) this.childNodes.length = 0;
+      syncTree(this);
     },
     configurable: true,
   });
@@ -239,9 +282,13 @@ const DOM_SHIM: &str = r##"
       return g.__fastrender_dom_get_outer_html(nodeIdFromThis(this));
     },
     set: function (html) {
-      g.__fastrender_dom_set_outer_html(nodeIdFromThis(this), String(html));
-      // The node has been replaced in its parent; best-effort detach in JS-land.
-      detachFromParent(this);
+      var id = nodeIdFromThis(this);
+      var parentId = g.__fastrender_dom_get_parent_node(id);
+      g.__fastrender_dom_set_outer_html(id, String(html));
+      if (typeof parentId === "number") {
+        syncTree(nodeFromId(parentId));
+      }
+      this.parentNode = null;
     },
     configurable: true,
   });
@@ -778,6 +825,25 @@ impl Dom {
 
   fn has_child_nodes(&self, node: NodeId) -> Result<bool, DomShimError> {
     Ok(!self.node_checked(node)?.children.is_empty())
+  }
+
+  fn get_node_type(&self, node: NodeId) -> Result<i32, DomShimError> {
+    self.node_checked(node)?;
+    let value = match &self.nodes[node.0].kind {
+      NodeKind::Document => 9,
+      NodeKind::DocumentFragment => 11,
+      NodeKind::Element { .. } => 1,
+      NodeKind::Text { .. } => 3,
+    };
+    Ok(value)
+  }
+
+  fn get_parent_node(&self, node: NodeId) -> Result<Option<NodeId>, DomShimError> {
+    Ok(self.node_checked(node)?.parent)
+  }
+
+  fn get_child_nodes(&self, node: NodeId) -> Result<Vec<NodeId>, DomShimError> {
+    Ok(self.node_checked(node)?.children.clone())
   }
 
   fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), DomShimError> {
@@ -1867,6 +1933,47 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let get_node_type = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<i32> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_node_type(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let get_parent_node = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<Option<i32>> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_parent_node(NodeId(node_id as usize))
+        .map(|id| id.map(|id| id.0 as i32))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let get_child_nodes = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<Vec<i32>> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      let ids = dom
+        .borrow()
+        .get_child_nodes(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)?;
+      Ok(ids.into_iter().map(|id| id.0 as i32).collect())
+    }
+  })?;
+
   let get_tag_name = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32| -> JsResult<String> {
@@ -1959,6 +2066,9 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_replace_child", replace_child)?;
   globals.set("__fastrender_dom_remove_child", remove_child)?;
   globals.set("__fastrender_dom_has_child_nodes", has_child_nodes)?;
+  globals.set("__fastrender_dom_get_node_type", get_node_type)?;
+  globals.set("__fastrender_dom_get_parent_node", get_parent_node)?;
+  globals.set("__fastrender_dom_get_child_nodes", get_child_nodes)?;
   globals.set("__fastrender_dom_get_tag_name", get_tag_name)?;
   globals.set("__fastrender_dom_get_elements_by_tag_name", get_elements_by_tag_name)?;
   globals.set(

@@ -19,6 +19,17 @@ test(() => {
     '<div id="root" class="a b"><span id="x" class="y">hi</span></div>'
   );
 
+  assert_equals(el.childNodes.length, 1, "innerHTML should populate Element.childNodes");
+  const span = el.childNodes[0];
+  assert_true(span instanceof Element);
+  assert_equals(span.tagName, "SPAN");
+  assert_equals(span.id, "x");
+  assert_equals(span.className, "y");
+  assert_equals(span.childNodes.length, 1);
+  const text = span.childNodes[0];
+  assert_true(text instanceof Text);
+  assert_equals(text.data, "hi");
+
   el.removeAttribute("id");
   assert_equals(el.id, "");
 }, "createElement + Element.innerHTML/outerHTML");
