@@ -21,6 +21,7 @@ pub struct BrowserDocumentDom2 {
   dom: crate::dom2::Document,
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
+  last_dom_mapping: Option<crate::dom2::RendererDomMapping>,
   animation_state_store: crate::animation::AnimationStateStore,
   style_dirty: bool,
   layout_dirty: bool,
@@ -45,6 +46,7 @@ impl BrowserDocumentDom2 {
       dom,
       options,
       prepared: None,
+      last_dom_mapping: None,
       animation_state_store: crate::animation::AnimationStateStore::new(),
       // First frame needs a full pipeline run.
       style_dirty: true,
@@ -131,6 +133,7 @@ impl BrowserDocumentDom2 {
     self.dom = dom;
     self.options = options;
     self.prepared = None;
+    self.last_dom_mapping = None;
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.animation_timeline_origin = None;
     self.invalidate_all();
@@ -144,6 +147,7 @@ impl BrowserDocumentDom2 {
     self.dom = crate::dom2::Document::from_renderer_dom(&prepared.dom);
     self.options = options;
     self.prepared = Some(prepared);
+    self.last_dom_mapping = Some(self.dom.to_renderer_dom_with_mapping().mapping);
     self.animation_state_store = crate::animation::AnimationStateStore::new();
     self.style_dirty = false;
     self.layout_dirty = false;
@@ -233,6 +237,26 @@ impl BrowserDocumentDom2 {
   /// Convenience wrapper for [`BrowserDocumentDom2::set_animation_time`] with a concrete timestamp.
   pub fn set_animation_time_ms(&mut self, time_ms: f32) {
     self.set_animation_time(Some(time_ms));
+  }
+
+  /// Returns the mapping produced for the most recently prepared renderer DOM snapshot, if
+  /// available.
+  pub fn last_dom_mapping(&self) -> Option<&crate::dom2::RendererDomMapping> {
+    self.last_dom_mapping.as_ref()
+  }
+
+  /// Translate a renderer/cascade 1-based preorder id (see `crate::dom::enumerate_dom_ids`) back to
+  /// a stable `dom2` node id.
+  pub fn dom2_node_for_renderer_preorder(&self, preorder_id: usize) -> Option<crate::dom2::NodeId> {
+    self.last_dom_mapping()?.node_id_for_preorder(preorder_id)
+  }
+
+  /// Translate a hit-test result back to a stable `dom2` node id.
+  pub fn dom2_node_for_hit_test(
+    &self,
+    hit: &crate::interaction::HitTestResult,
+  ) -> Option<crate::dom2::NodeId> {
+    self.dom2_node_for_renderer_preorder(hit.dom_node_id)
   }
 
   /// Renders a new frame if anything has been invalidated since the last successful frame.
@@ -392,37 +416,45 @@ impl BrowserDocumentDom2 {
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
-    let renderer_dom = self.dom.to_renderer_dom();
+    let snapshot = self.dom.to_renderer_dom_with_mapping();
+    let renderer_dom = snapshot.dom;
+    let mapping = snapshot.mapping;
     let renderer_dom_ref = &renderer_dom;
-    let renderer = &mut self.renderer;
 
-    let toggles = renderer.resolve_runtime_toggles(&options);
-    let _toggles_guard =
-      super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
-    crate::debug::runtime::with_runtime_toggles(toggles, || {
-      let trace = super::TraceSession::from_options(Some(&options));
-      let trace_handle = trace.handle();
-      let _root_span = trace_handle.span("browser_document_dom2_prepare", "pipeline");
+    let prepared = {
+      let renderer = &mut self.renderer;
 
-      let shared_diagnostics =
-        renderer
-          .diagnostics
-          .as_ref()
-          .map(|diag| super::SharedRenderDiagnostics {
-            inner: std::sync::Arc::clone(diag),
-          });
-      let context = Some(renderer.build_resource_context(
-        renderer.document_url_hint(),
-        shared_diagnostics,
-        ReferrerPolicy::default(),
-      ));
-      let (prev_self, prev_image, prev_layout_image, prev_font) =
-        renderer.push_resource_context(context);
-      let result = prepare_dom_inner(renderer, renderer_dom_ref, options.clone(), trace_handle);
-      renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
-      drop(_root_span);
-      trace.finalize(result)
-    })
+      let toggles = renderer.resolve_runtime_toggles(&options);
+      let _toggles_guard =
+        super::RuntimeTogglesSwap::new(&mut renderer.runtime_toggles, toggles.clone());
+      crate::debug::runtime::with_runtime_toggles(toggles, || {
+        let trace = super::TraceSession::from_options(Some(&options));
+        let trace_handle = trace.handle();
+        let _root_span = trace_handle.span("browser_document_dom2_prepare", "pipeline");
+
+        let shared_diagnostics =
+          renderer
+            .diagnostics
+            .as_ref()
+            .map(|diag| super::SharedRenderDiagnostics {
+              inner: std::sync::Arc::clone(diag),
+            });
+        let context = Some(renderer.build_resource_context(
+          renderer.document_url_hint(),
+          shared_diagnostics,
+          ReferrerPolicy::default(),
+        ));
+        let (prev_self, prev_image, prev_layout_image, prev_font) =
+          renderer.push_resource_context(context);
+        let result = prepare_dom_inner(renderer, renderer_dom_ref, options.clone(), trace_handle);
+        renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+        drop(_root_span);
+        trace.finalize(result)
+      })?
+    };
+
+    self.last_dom_mapping = Some(mapping);
+    Ok(prepared)
   }
 
   #[inline]
@@ -501,6 +533,22 @@ mod tests {
         return Some(id);
       }
       for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    None
+  }
+
+  fn find_renderer_element_by_id<'a>(
+    root: &'a crate::dom::DomNode,
+    id_value: &str,
+  ) -> Option<&'a crate::dom::DomNode> {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+      if node.is_element() && node.get_attribute_ref("id") == Some(id_value) {
+        return Some(node);
+      }
+      for child in node.children.iter().rev() {
         stack.push(child);
       }
     }
@@ -704,5 +752,85 @@ mod tests {
     assert_pixel_gray_approx(&frame1000, 77, 5);
 
     Ok(())
+  }
+
+  #[test]
+  fn dom_mapping_translates_renderer_preorder_to_dom2_node_id() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><div id=target>Hello</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+
+    doc.render_frame().expect("render");
+    assert!(doc.last_dom_mapping().is_some(), "expected dom2↔renderer mapping");
+
+    let prepared = doc.prepared.as_ref().expect("prepared layout");
+    let ids = crate::dom::enumerate_dom_ids(prepared.dom());
+    let target =
+      find_renderer_element_by_id(prepared.dom(), "target").expect("target element in renderer DOM");
+    let preorder_id = *ids
+      .get(&(target as *const crate::dom::DomNode))
+      .expect("renderer preorder id for target");
+
+    let dom2_id = doc
+      .dom2_node_for_renderer_preorder(preorder_id)
+      .expect("dom2 id for preorder");
+    match &doc.dom().node(dom2_id).kind {
+      crate::dom2::NodeKind::Element {
+        tag_name,
+        attributes,
+        ..
+      } => {
+        assert!(tag_name.eq_ignore_ascii_case("div"));
+        let id_attr = attributes
+          .iter()
+          .find(|(name, _)| name.eq_ignore_ascii_case("id"))
+          .map(|(_, value)| value.as_str());
+        assert_eq!(id_attr, Some("target"));
+      }
+      other => panic!("expected mapped dom2 node to be an element, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn dom_mapping_handles_template_contents_without_shifting_following_nodes() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body><template><span>in</span></template><div id=after>After</div></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+
+    doc.render_frame().expect("render");
+    let prepared = doc.prepared.as_ref().expect("prepared layout");
+    let ids = crate::dom::enumerate_dom_ids(prepared.dom());
+    let after = find_renderer_element_by_id(prepared.dom(), "after")
+      .expect("after element in renderer DOM");
+    let preorder_id = *ids
+      .get(&(after as *const crate::dom::DomNode))
+      .expect("renderer preorder id for after element");
+
+    let dom2_id = doc
+      .dom2_node_for_renderer_preorder(preorder_id)
+      .expect("dom2 id for after preorder");
+    match &doc.dom().node(dom2_id).kind {
+      crate::dom2::NodeKind::Element {
+        tag_name,
+        attributes,
+        ..
+      } => {
+        assert!(tag_name.eq_ignore_ascii_case("div"));
+        let id_attr = attributes
+          .iter()
+          .find(|(name, _)| name.eq_ignore_ascii_case("id"))
+          .map(|(_, value)| value.as_str());
+        assert_eq!(id_attr, Some("after"));
+      }
+      other => panic!("expected mapped dom2 node to be an element, got {other:?}"),
+    }
   }
 }
