@@ -4,6 +4,7 @@ use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
+use fastrender::style::types::BorderStyle;
 use fastrender::style::types::Overflow;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -47,3 +48,50 @@ fn flex_auto_min_size_percent_width_clamps_to_preferred_size() {
   );
 }
 
+#[test]
+fn flex_auto_min_size_percent_width_clamps_even_when_container_width_auto() {
+  // Container has width:auto but definite available width.
+  // Add padding+border so the percent base must be the *content box* width:
+  // - available border box width: 200
+  // - padding L/R: 10, border L/R: 5 => content width base: 170
+  // - child width 50% => 85
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_right = Length::px(10.0);
+  container_style.border_left_width = Length::px(5.0);
+  container_style.border_right_width = Length::px(5.0);
+  container_style.border_left_style = BorderStyle::Solid;
+  container_style.border_right_style = BorderStyle::Solid;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::percent(50.0));
+  child_style.overflow_x = Overflow::Visible;
+  child_style.overflow_y = Overflow::Visible;
+
+  let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "X".repeat(200));
+  let child_box =
+    BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![text]);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child_box],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+    )
+    .expect("layout should succeed");
+
+  let child = fragment.children.first().expect("child fragment");
+  let width = child.bounds.width();
+  assert!(
+    (width - 85.0).abs() < 0.5,
+    "expected flex item percent width to clamp auto min-size using container content-box base (got {width})"
+  );
+}

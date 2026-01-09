@@ -1229,6 +1229,7 @@ impl FormattingContext for FlexFormattingContext {
             child,
             false,
             Some(style),
+            container_inner_main_size,
             skip_contents,
             &mut resolved_style,
           )?;
@@ -3124,6 +3125,7 @@ impl FormattingContext for FlexFormattingContext {
           child,
           false,
           Some(style),
+          container_inner_main_size,
           skip_contents,
           &mut resolved_style,
         )?;
@@ -5130,6 +5132,7 @@ impl FlexFormattingContext {
         child,
         false,
         Some(root_style),
+        container_inner_main_size,
         skip_contents,
         &mut resolved_style,
       )?;
@@ -5271,6 +5274,7 @@ impl FlexFormattingContext {
       box_node,
       is_root,
       containing_flex,
+      None,
       skip_contents,
       &mut style,
     )?;
@@ -6511,6 +6515,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     is_root: bool,
     containing_flex: Option<&ComputedStyle>,
+    container_inner_main_size: Option<f32>,
     skip_contents: bool,
     taffy_style: &mut taffy::style::Style,
   ) -> Result<(), LayoutError> {
@@ -6547,7 +6552,10 @@ impl FlexFormattingContext {
       if taffy_style.min_size.width == Dimension::AUTO
         && matches!(style.overflow_x, CssOverflow::Visible | CssOverflow::Clip)
       {
-        let container_content_width_base = container.width.as_ref().and_then(|len| {
+        let container_content_width_base = container
+          .width
+          .as_ref()
+          .and_then(|len| {
           // Percentages on the flex item resolve against the flex container's inner size.
           // Only treat the container inline size as definite when it resolves without percentages
           // (so we don't accidentally resolve a percentage against an unknown base).
@@ -6563,7 +6571,8 @@ impl FlexFormattingContext {
             content = (content - self.horizontal_edges_px(container)?).max(0.0);
           }
           Some(content.max(0.0))
-        });
+        })
+          .or(container_inner_main_size);
         // The flex auto-min-size algorithm computes a used *border-box* size (CSS Flexbox §4.5).
         // Convert that to the authored box for Taffy (content-box vs border-box) when writing it
         // into `Style::min_size`.
@@ -6634,7 +6643,15 @@ impl FlexFormattingContext {
           _ => None,
         };
         let max_main_size = style.max_width.as_ref().and_then(|len| {
-          let px = self.resolve_length_px(len, style)?;
+          let px = if len.has_percentage() {
+            let base = container_content_width_base?;
+            Some(self.resolve_length_for_width(*len, base, style))
+          } else {
+            self.resolve_length_px(len, style).or_else(|| {
+              (!len.has_percentage())
+                .then(|| self.resolve_length_for_width(*len, self.viewport_size.width, style))
+            })
+          }?;
           if !px.is_finite() {
             return None;
           }
@@ -6815,7 +6832,8 @@ impl FlexFormattingContext {
           content = (content - self.vertical_edges_px(container)?).max(0.0);
         }
         Some(content.max(0.0))
-      });
+      })
+      .or(container_inner_main_size);
       let specified_size_suggestion = style.height.as_ref().and_then(|len| {
         let px = if len.has_percentage() {
           let base = container_content_height_base?;
@@ -6862,7 +6880,15 @@ impl FlexFormattingContext {
         _ => None,
       };
       let max_main_size = style.max_height.as_ref().and_then(|len| {
-        let px = self.resolve_length_px(len, style)?;
+        let px = if len.has_percentage() {
+          let base = container_content_height_base?;
+          Some(self.resolve_length_for_width(*len, base, style))
+        } else {
+          self.resolve_length_px(len, style).or_else(|| {
+            (!len.has_percentage())
+              .then(|| self.resolve_length_for_width(*len, self.viewport_size.height, style))
+          })
+        }?;
         if !px.is_finite() {
           return None;
         }
