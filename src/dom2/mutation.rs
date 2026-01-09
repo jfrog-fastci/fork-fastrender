@@ -30,6 +30,11 @@ impl Document {
       return Err(DomError::HierarchyRequestError);
     }
 
+    if matches!(parent_kind, NodeKind::Document { .. }) && matches!(child_kind, NodeKind::Text { .. })
+    {
+      return Err(DomError::HierarchyRequestError);
+    }
+
     match child_kind {
       NodeKind::Doctype { .. } => match parent_kind {
         NodeKind::Document { .. } => {}
@@ -43,6 +48,142 @@ impl Document {
         NodeKind::Element { .. } => {}
         _ => return Err(DomError::HierarchyRequestError),
       },
+      _ => {}
+    }
+
+    Ok(())
+  }
+
+  fn validate_document_insertion(
+    &self,
+    parent: NodeId,
+    new_child: NodeId,
+    reference: Option<NodeId>,
+    insertion_idx: usize,
+  ) -> Result<(), DomError> {
+    let parent_kind = &self.node_checked(parent)?.kind;
+    if !matches!(parent_kind, NodeKind::Document { .. }) {
+      return Ok(());
+    }
+
+    fn is_element_child(kind: &NodeKind) -> bool {
+      matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+    }
+
+    let children = self.node_checked(parent)?.children.as_slice();
+    let has_element_child = children.iter().any(|&id| {
+      self
+        .nodes
+        .get(id.index())
+        .is_some_and(|node| is_element_child(&node.kind))
+    });
+    let has_doctype_child = children.iter().any(|&id| {
+      self
+        .nodes
+        .get(id.index())
+        .is_some_and(|node| matches!(node.kind, NodeKind::Doctype { .. }))
+    });
+
+    let new_kind = &self.node_checked(new_child)?.kind;
+    match new_kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+        if has_element_child {
+          return Err(DomError::HierarchyRequestError);
+        }
+
+        if reference.is_some()
+          && children[insertion_idx..].iter().any(|&id| {
+            self
+              .nodes
+              .get(id.index())
+              .is_some_and(|node| matches!(node.kind, NodeKind::Doctype { .. }))
+          })
+        {
+          return Err(DomError::HierarchyRequestError);
+        }
+      }
+      NodeKind::Doctype { .. } => {
+        if has_doctype_child {
+          return Err(DomError::HierarchyRequestError);
+        }
+
+        if reference.is_some() {
+          if children[..insertion_idx].iter().any(|&id| {
+            self
+              .nodes
+              .get(id.index())
+              .is_some_and(|node| is_element_child(&node.kind))
+          }) {
+            return Err(DomError::HierarchyRequestError);
+          }
+        } else if has_element_child {
+          return Err(DomError::HierarchyRequestError);
+        }
+      }
+      _ => {}
+    }
+
+    Ok(())
+  }
+
+  fn validate_document_replacement(
+    &self,
+    parent: NodeId,
+    new_child: NodeId,
+    old_child: NodeId,
+    old_child_idx: usize,
+  ) -> Result<(), DomError> {
+    let parent_kind = &self.node_checked(parent)?.kind;
+    if !matches!(parent_kind, NodeKind::Document { .. }) {
+      return Ok(());
+    }
+
+    fn is_element_child(kind: &NodeKind) -> bool {
+      matches!(kind, NodeKind::Element { .. } | NodeKind::Slot { .. })
+    }
+
+    let children = self.node_checked(parent)?.children.as_slice();
+    let new_kind = &self.node_checked(new_child)?.kind;
+
+    match new_kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+        if children.iter().any(|&id| {
+          id != old_child
+            && self
+              .node_checked(id)
+              .is_ok_and(|node| is_element_child(&node.kind))
+        }) {
+          return Err(DomError::HierarchyRequestError);
+        }
+
+        if old_child_idx + 1 < children.len()
+          && children[old_child_idx + 1..].iter().any(|&id| {
+            self
+              .node_checked(id)
+              .is_ok_and(|node| matches!(node.kind, NodeKind::Doctype { .. }))
+          })
+        {
+          return Err(DomError::HierarchyRequestError);
+        }
+      }
+      NodeKind::Doctype { .. } => {
+        if children.iter().any(|&id| {
+          id != old_child
+            && self
+              .node_checked(id)
+              .is_ok_and(|node| matches!(node.kind, NodeKind::Doctype { .. }))
+        }) {
+          return Err(DomError::HierarchyRequestError);
+        }
+
+        if children[..old_child_idx].iter().any(|&id| {
+          self
+            .node_checked(id)
+            .is_ok_and(|node| is_element_child(&node.kind))
+        }) {
+          return Err(DomError::HierarchyRequestError);
+        }
+      }
       _ => {}
     }
 
@@ -215,6 +356,8 @@ impl Document {
       None => self.nodes[parent.index()].children.len(),
     };
 
+    self.validate_document_insertion(parent, new_child, reference, insertion_idx)?;
+
     let current_parent = self.nodes[new_child.index()].parent;
 
     if current_parent == Some(parent) {
@@ -285,9 +428,11 @@ impl Document {
     if self.nodes[old_child.index()].parent != Some(parent) {
       return Err(DomError::NotFoundError);
     }
-    self
+    let mut old_child_idx = self
       .index_of_child_internal(parent, old_child)?
       .ok_or(DomError::NotFoundError)?;
+
+    self.validate_document_replacement(parent, new_child, old_child, old_child_idx)?;
 
     let current_parent = self.nodes[new_child.index()].parent;
     if current_parent == Some(parent) {
@@ -296,19 +441,19 @@ impl Document {
         .index_of_child_internal(parent, new_child)?
         .ok_or(DomError::NotFoundError)?;
       self.nodes[parent.index()].children.remove(idx);
+      if idx < old_child_idx {
+        old_child_idx -= 1;
+      }
     } else if current_parent.is_some() {
       self.detach_from_parent(new_child)?;
     }
 
-    let replacement_idx = self
-      .index_of_child_internal(parent, old_child)?
-      .ok_or(DomError::NotFoundError)?;
-    self.nodes[parent.index()].children.remove(replacement_idx);
+    self.nodes[parent.index()].children.remove(old_child_idx);
     self.nodes[old_child.index()].parent = None;
 
     self.nodes[parent.index()]
       .children
-      .insert(replacement_idx, new_child);
+      .insert(old_child_idx, new_child);
     self.nodes[new_child.index()].parent = Some(parent);
     Ok(true)
   }

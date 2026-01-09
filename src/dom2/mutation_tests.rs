@@ -123,12 +123,14 @@ fn remove_child_with_wrong_parent_returns_not_found() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
 
+  let container = doc.create_element("div", "");
   let p1 = doc.create_element("div", "");
   let p2 = doc.create_element("div", "");
   let child = doc.create_element("span", "");
 
-  doc.append_child(root, p1).unwrap();
-  doc.append_child(root, p2).unwrap();
+  doc.append_child(root, container).unwrap();
+  doc.append_child(container, p1).unwrap();
+  doc.append_child(container, p2).unwrap();
   doc.append_child(p1, child).unwrap();
 
   assert_eq!(doc.remove_child(p2, child), Err(DomError::NotFoundError));
@@ -181,12 +183,14 @@ fn moving_across_parents_detaches_from_old_parent() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
 
+  let container = doc.create_element("div", "");
   let p1 = doc.create_element("div", "");
   let p2 = doc.create_element("div", "");
   let child = doc.create_text("x");
 
-  doc.append_child(root, p1).unwrap();
-  doc.append_child(root, p2).unwrap();
+  doc.append_child(root, container).unwrap();
+  doc.append_child(container, p1).unwrap();
+  doc.append_child(container, p2).unwrap();
   doc.append_child(p1, child).unwrap();
 
   assert_eq!(doc.append_child(p2, child).unwrap(), true);
@@ -312,6 +316,284 @@ fn doctype_nodes_can_only_be_inserted_under_document() {
     Err(DomError::HierarchyRequestError)
   );
   assert_eq!(doc.parent(doctype).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_text_node_children() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let text = doc.create_text("hi");
+  assert_eq!(
+    doc.append_child(root, text),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(text).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_multiple_element_children() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let a = doc.create_element("html", "");
+  let b = doc.create_element("div", "");
+  doc.append_child(root, a).unwrap();
+  assert_eq!(
+    doc.append_child(root, b),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(b).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_multiple_doctypes() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let a = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  let b = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+
+  doc.append_child(root, a).unwrap();
+  assert_eq!(
+    doc.append_child(root, b),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(b).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_element_insertion_before_doctype() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(root, doctype).unwrap();
+
+  let element = doc.create_element("html", "");
+  assert_eq!(
+    doc.insert_before(root, element, Some(doctype)),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(element).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn doctype_can_be_inserted_before_the_first_element_child() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+
+  doc.insert_before(root, doctype, Some(element)).unwrap();
+  assert_eq!(doc.children(root).unwrap(), &[doctype, element]);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_doctype_insertion_after_an_element() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  assert_eq!(
+    doc.append_child(root, doctype),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(doctype).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn document_rejects_doctype_insertion_between_element_and_comment() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let comment = doc.push_node(
+    NodeKind::Comment {
+      content: "hi".to_string(),
+    },
+    Some(root),
+    /* inert_subtree */ false,
+  );
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  assert_eq!(
+    doc.insert_before(root, doctype, Some(comment)),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(doctype).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn replace_child_enforces_document_element_and_doctype_constraints() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(root, doctype).unwrap();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let replacement_doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc
+    .replace_child(root, replacement_doctype, doctype)
+    .unwrap();
+  assert_eq!(doc.children(root).unwrap(), &[replacement_doctype, element]);
+  assert_eq!(doc.parent(doctype).unwrap(), None);
+
+  let replacement_element = doc.create_element("svg", "");
+  doc
+    .replace_child(root, replacement_element, element)
+    .unwrap();
+  assert_eq!(
+    doc.children(root).unwrap(),
+    &[replacement_doctype, replacement_element]
+  );
+  assert_eq!(doc.parent(element).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn replace_child_rejects_replacing_doctype_with_element_when_element_exists() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(root, doctype).unwrap();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let replacement = doc.create_element("svg", "");
+  assert_eq!(
+    doc.replace_child(root, replacement, doctype),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(replacement).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn replace_child_rejects_replacing_element_with_doctype_when_doctype_exists() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  doc.append_child(root, doctype).unwrap();
+
+  let element = doc.create_element("html", "");
+  doc.append_child(root, element).unwrap();
+
+  let replacement = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+  assert_eq!(
+    doc.replace_child(root, replacement, element),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(replacement).unwrap(), None);
   assert_parent_child_invariants(&doc);
 }
 
