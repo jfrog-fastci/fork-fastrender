@@ -727,12 +727,23 @@ impl<Host: 'static> EventLoop<Host> {
   ) -> RunStepResult<bool> {
     self.queue_due_timers().map_err(RunStepError::Error)?;
 
-    let Some(task) = self.pop_next_task() else {
+    // IMPORTANT: enforce run limits *before* popping a task off the queue.
+    //
+    // `run_until_idle` is used for bounded execution. If we pop first and then hit `MaxTasks`,
+    // we'd effectively drop the task from the queue, which is incorrect (and can break
+    // determinism/correctness for embeddings that resume the event loop later).
+    if self.task_queues.is_empty() {
       return Ok(false);
-    };
+    }
 
     run_state.check_deadline()?;
     run_state.before_task()?;
+
+    let Some(task) = self.pop_next_task() else {
+      // A task queue existed but no task was available. This should be unreachable, but avoid
+      // panicking if invariants are violated.
+      return Ok(false);
+    };
 
     let mut trace_span = self.trace.span("js.task.run", "js");
     trace_span.arg_str("source", task_source_name(task.source));
@@ -770,12 +781,17 @@ impl<Host: 'static> EventLoop<Host> {
   {
     self.queue_due_timers().map_err(RunStepError::Error)?;
 
-    let Some(task) = self.pop_next_task() else {
+    // Same reasoning as `run_next_task_limited`: don't drop tasks when we hit `MaxTasks`.
+    if self.task_queues.is_empty() {
       return Ok(false);
-    };
+    }
 
     run_state.check_deadline()?;
     run_state.before_task()?;
+
+    let Some(task) = self.pop_next_task() else {
+      return Ok(false);
+    };
 
     let previous_timer_nesting_level = self.timer_nesting_level;
     if task.source != TaskSource::Timer {
@@ -1658,6 +1674,97 @@ mod tests {
       ))
     ));
     assert_eq!(host.count, 5);
+  }
+
+  #[test]
+  fn run_until_idle_max_tasks_does_not_drop_next_task() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::default();
+
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task1");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task2");
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 1,
+          max_microtasks: usize::MAX,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks {
+        executed: 1,
+        limit: 1
+      })
+    );
+    assert_eq!(host.log, vec!["task1"]);
+
+    // Remaining tasks should still be queued for the next run.
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 1,
+          max_microtasks: usize::MAX,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["task1", "task2"]);
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_with_zero_task_limit_drains_microtasks_without_dropping_tasks() -> Result<()> {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask");
+      Ok(())
+    })?;
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.log.push("task");
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(
+        &mut host,
+        RunLimits {
+          max_tasks: 0,
+          max_microtasks: usize::MAX,
+          max_wall_time: None,
+        },
+      )?,
+      RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks {
+        executed: 0,
+        limit: 0
+      })
+    );
+    assert_eq!(host.log, vec!["microtask"]);
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.log, vec!["microtask", "task"]);
+    Ok(())
   }
 
   #[test]
