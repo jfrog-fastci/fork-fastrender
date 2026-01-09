@@ -116,6 +116,9 @@ pub trait WebIdlJsRuntime: JsRuntime {
   /// `%Symbol.asyncIterator%`.
   fn symbol_async_iterator(&mut self) -> Result<Self::JsValue, Self::Error>;
 
+  /// Returns true if the value is a platform object that implements the given WebIDL interface.
+  fn implements_interface(&self, value: Self::JsValue, interface: &str) -> bool;
+
   /// Returns true if the value is a String object (has `[[StringData]]`).
   fn is_string_object(&self, value: Self::JsValue) -> bool;
 

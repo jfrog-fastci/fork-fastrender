@@ -11,6 +11,11 @@ type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmEr
 #[derive(Clone)]
 enum HostObjectKind {
   Ordinary,
+  PlatformObject {
+    primary_interface: &'static str,
+    implements: &'static [&'static str],
+    opaque: u64,
+  },
   Function(HostFn),
   StringObject { string_data: GcString },
   Error { name: &'static str, message: GcString },
@@ -120,6 +125,73 @@ impl VmJsRuntime {
       },
     );
     Ok(Value::Object(obj))
+  }
+
+  pub fn alloc_platform_object_value(
+    &mut self,
+    primary_interface: &'static str,
+    implements: &'static [&'static str],
+    opaque: u64,
+  ) -> Result<Value, VmError> {
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    root_value(&mut self.heap, Value::Object(obj));
+    self.objects.insert(
+      obj,
+      HostObject {
+        kind: HostObjectKind::PlatformObject {
+          primary_interface,
+          implements,
+          opaque,
+        },
+        prototype: None,
+        properties: Vec::new(),
+      },
+    );
+    Ok(Value::Object(obj))
+  }
+
+  pub fn platform_object_opaque(&self, v: Value) -> Option<u64> {
+    let Value::Object(obj) = v else {
+      return None;
+    };
+    let host = self.objects.get(&obj)?;
+    match &host.kind {
+      HostObjectKind::PlatformObject { opaque, .. } => Some(*opaque),
+      _ => None,
+    }
+  }
+
+  pub fn platform_object_primary_interface(&self, v: Value) -> Option<&'static str> {
+    let Value::Object(obj) = v else {
+      return None;
+    };
+    let host = self.objects.get(&obj)?;
+    match &host.kind {
+      HostObjectKind::PlatformObject {
+        primary_interface, ..
+      } => Some(*primary_interface),
+      _ => None,
+    }
+  }
+
+  pub fn implements_interface(&self, v: Value, interface: &str) -> bool {
+    let Value::Object(obj) = v else {
+      return false;
+    };
+    let Some(host) = self.objects.get(&obj) else {
+      return false;
+    };
+    match &host.kind {
+      HostObjectKind::PlatformObject {
+        primary_interface,
+        implements,
+        ..
+      } => *primary_interface == interface || implements.iter().any(|i| *i == interface),
+      _ => false,
+    }
   }
 
   pub fn alloc_string_object_value(&mut self, s: &str) -> Result<Value, VmError> {
@@ -749,6 +821,10 @@ impl WebIdlJsRuntime for VmJsRuntime {
     root_value(&mut self.heap, Value::Symbol(sym));
     self.well_known_async_iterator = Some(sym);
     Ok(Value::Symbol(sym))
+  }
+
+  fn implements_interface(&self, value: Value, interface: &str) -> bool {
+    VmJsRuntime::implements_interface(self, value, interface)
   }
 
   fn is_string_object(&self, value: Value) -> bool {
