@@ -19,6 +19,17 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
 
+/// Create a deterministic `FastRender` instance for UI integration tests.
+///
+/// The browser UI worker tests should not depend on system-installed fonts, so always use the
+/// bundled font set.
+pub fn deterministic_renderer() -> fastrender::FastRender {
+  fastrender::FastRender::builder()
+    .font_sources(fastrender::text::font_db::FontConfig::bundled_only())
+    .build()
+    .expect("build deterministic renderer")
+}
+
 /// Receive from `rx` until `pred` returns `true`, or the timeout elapses.
 ///
 /// This repeatedly calls `recv_timeout` in small slices so tests are responsive and don't get stuck

@@ -42,7 +42,8 @@ fn wait_for_navigation_committed(
 #[test]
 fn about_newtab_navigation_committed_includes_title() {
   let _lock = super::stage_listener_test_lock();
-  let handle = spawn_ui_worker("ui_worker_title_about_newtab").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("ui_worker_title_about_newtab").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
@@ -78,7 +79,8 @@ fn file_page_navigation_committed_includes_title_and_trims_ascii_whitespace() {
     .expect("file url")
     .to_string();
 
-  let handle = spawn_ui_worker("ui_worker_title_file").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("ui_worker_title_file").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();
@@ -111,7 +113,8 @@ fn missing_title_results_in_none() {
     .expect("file url")
     .to_string();
 
-  let handle = spawn_ui_worker("ui_worker_title_missing_title").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("ui_worker_title_missing_title").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab = TabId::new();

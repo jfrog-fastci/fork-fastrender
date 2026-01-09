@@ -51,7 +51,8 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
     .expect("file URL")
     .to_string();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-loop-missing-file-test").expect("spawn worker loop");
+  let handle = spawn_ui_worker("fastr-ui-worker-loop-missing-file-test")
+    .expect("spawn worker loop");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId(1);

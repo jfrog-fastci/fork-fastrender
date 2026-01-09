@@ -11722,6 +11722,52 @@ impl FastRender {
     }
   }
 
+  /// Creates a new renderer instance that shares this renderer's expensive immutable resources.
+  ///
+  /// This is a lightweight alternative to rebuilding a `FastRender` from scratch when a caller
+  /// needs one renderer per tab/thread. The cloned renderer:
+  /// - shares the resource fetcher, font context, and image cache backing stores,
+  /// - copies basic configuration knobs (viewport defaults, DPR, base URL, etc.),
+  /// - starts with a fresh set of per-render caches.
+  pub(crate) fn clone_for_worker(&self) -> Result<Self> {
+    // `FastRender` does not currently retain the full `FastRenderConfig`, so this reconstructs a
+    // best-effort config snapshot from the current renderer state. Resource policy limits are
+    // enforced by the already-configured fetcher, so the `ResourcePolicy` struct itself can be the
+    // default.
+    let config = FastRenderConfig {
+      background_color: self.background_color,
+      default_width: self.default_width,
+      default_height: self.default_height,
+      device_pixel_ratio: self.device_pixel_ratio,
+      base_url: self.base_url.clone(),
+      resource_cache: None,
+      resource_policy: ResourcePolicy::default(),
+      max_iframe_depth: self.max_iframe_depth,
+      allow_file_from_http: self.resource_policy.allow_file_from_http,
+      block_mixed_content: self.resource_policy.block_mixed_content,
+      same_origin_subresources: self.resource_policy.same_origin_only,
+      allowed_subresource_origins: self.resource_policy.allowed_origins.clone(),
+      compat_profile: self.compat_profile,
+      dom_compat_mode: self.dom_compat_mode,
+      dom_scripting_enabled: self.dom_scripting_enabled,
+      apply_meta_viewport: self.apply_meta_viewport,
+      fragmentation: self.fragmentation,
+      fit_canvas_to_content: self.fit_canvas_to_content,
+      // `from_parts` uses the provided `FontContext`, so the font discovery config is irrelevant
+      // here.
+      font_config: FontConfig::default(),
+      runtime_toggles: Arc::clone(&self.runtime_toggles),
+      paint_parallelism: self.paint_parallelism,
+      layout_parallelism: self.layout_parallelism,
+    };
+    Self::from_parts(
+      config,
+      Arc::clone(&self.fetcher),
+      self.font_context.clone(),
+      self.image_cache.clone(),
+    )
+  }
+
   /// Clears any configured base URL, leaving relative resources unresolved.
   pub fn clear_base_url(&mut self) {
     self.image_cache.clear_base_url();

@@ -40,6 +40,7 @@ mod ui_worker_robustness;
 mod ui_worker_viewport_changed;
 mod worker_harness;
 mod worker_runtime;
+mod ui_worker_protocol_smoke;
 
 // `GlobalStageListenerGuard` (used by stage heartbeat forwarding) is process-global. While it is
 // installed, *all* renders in the process will invoke the listener, which can leak stage messages

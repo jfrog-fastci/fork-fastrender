@@ -144,7 +144,8 @@ fn scroll_without_pointer_updates_viewport_scroll() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
@@ -187,7 +188,8 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
@@ -298,7 +300,8 @@ fn scroll_clamps_to_zero() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx

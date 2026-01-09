@@ -130,7 +130,8 @@ fn click_after_scroll_hits_link() {
     .expect("resolve page2 url")
     .to_string();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-scroll-hit-test").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-scroll-hit-test").expect("spawn ui worker scroll hit test");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();

@@ -117,9 +117,9 @@ fn backspace_edits_focused_input_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-keyboard-backspace")
-    .expect("spawn ui worker")
-    .split();
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-backspace").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
     .send(create_tab_msg(tab_id, None))
@@ -172,9 +172,9 @@ fn key_action_sets_focus_visible() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
-  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-keyboard-focus-visible")
-    .expect("spawn ui worker")
-    .split();
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-keyboard-focus-visible").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
     .send(create_tab_msg(tab_id, None))

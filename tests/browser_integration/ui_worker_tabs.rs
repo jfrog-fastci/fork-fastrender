@@ -37,7 +37,8 @@ fn pixmap_is_uniform_rgba(pixmap: &tiny_skia::Pixmap) -> bool {
 #[test]
 fn multi_tab_navigations_are_scoped_by_tab_id() {
   let _lock = super::stage_listener_test_lock();
-  let handle = spawn_ui_worker("fastr-ui-worker-tabs-test").expect("spawn ui worker");
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-tabs-test").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab1 = TabId::new();
@@ -144,7 +145,8 @@ fn multi_tab_navigations_are_scoped_by_tab_id() {
 #[test]
 fn close_tab_prevents_future_frames_for_that_tab() {
   let _lock = super::stage_listener_test_lock();
-  let handle = spawn_ui_worker("fastr-ui-worker-close-tab-test").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-close-tab-test")
+    .expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab1 = TabId::new();
