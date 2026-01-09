@@ -270,7 +270,8 @@ fn position_try_rules_follow_layer_ordering() {
         @position-try --flip { left: 1px; }
       }
       @layer b {
-        @position-try --flip { left: 2px; }
+        /* Disallowed properties and !important declarations should be ignored. */
+        @position-try --flip { left: 2px; color: rgb(9, 9, 9); margin-left: 5px !important; }
       }
     "#,
   );
@@ -286,4 +287,36 @@ fn position_try_rules_follow_layer_ordering() {
     PropertyValue::Length(len) => assert_eq!(*len, Length::px(2.0)),
     other => panic!("expected left: <length>, got {other:?}"),
   }
+}
+
+#[test]
+fn position_try_rules_keep_only_positioning_related_properties() {
+  let target = styled_target(
+    r#"
+      @position-try --ok {
+        /* accepted */
+        top: 1px;
+        position-anchor: --a;
+        margin-left: 2px;
+        width: 3px;
+        /* rejected */
+        color: rgb(1, 2, 3);
+        background: red;
+      }
+    "#,
+  );
+
+  let decls = target
+    .styles
+    .position_try_registry
+    .get("--ok")
+    .expect("expected @position-try rule to be collected");
+  assert!(
+    decls.iter().all(|decl| decl.property.as_ref() != "color" && decl.property.as_ref() != "background"),
+    "unexpected non-positioning properties in @position-try registry: {decls:?}"
+  );
+  assert!(decls.iter().any(|decl| decl.property.as_ref() == "top"));
+  assert!(decls.iter().any(|decl| decl.property.as_ref() == "position-anchor"));
+  assert!(decls.iter().any(|decl| decl.property.as_ref() == "margin-left"));
+  assert!(decls.iter().any(|decl| decl.property.as_ref() == "width"));
 }
