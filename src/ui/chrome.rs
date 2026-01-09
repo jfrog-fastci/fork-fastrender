@@ -151,13 +151,19 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
     ChromeShortcuts::default()
   } else {
     ctx.input(|i| ChromeShortcuts {
-      new_tab: i.modifiers.command && i.key_pressed(egui::Key::T),
-      close_tab: i.modifiers.command && i.key_pressed(egui::Key::W),
-      reload: i.modifiers.command && i.key_pressed(egui::Key::R),
+      new_tab: i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::T),
+      close_tab: i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::W),
+      reload: i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::R),
       back: i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft),
       forward: i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
-      next_tab: i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Tab),
-      prev_tab: i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Tab),
+      next_tab: i.modifiers.command
+        && !i.modifiers.alt
+        && !i.modifiers.shift
+        && i.key_pressed(egui::Key::Tab),
+      prev_tab: i.modifiers.command
+        && !i.modifiers.alt
+        && i.modifiers.shift
+        && i.key_pressed(egui::Key::Tab),
     })
   };
 

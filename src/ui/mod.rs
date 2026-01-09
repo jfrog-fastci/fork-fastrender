@@ -10,6 +10,7 @@ pub mod messages;
 pub mod render_thread;
 pub mod tab_engine;
 pub mod ui_worker;
+pub mod shortcuts;
 pub mod worker_runtime;
 pub mod worker;
 pub mod worker_loop;
