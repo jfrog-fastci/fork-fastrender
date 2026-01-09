@@ -1253,7 +1253,30 @@ fn parse_aria_role_attr(node: &DomNode) -> Option<ParsedRole> {
 fn has_global_aria_attributes(node: &DomNode) -> bool {
   node.attributes_iter().any(|(name, _)| {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with("aria-") && lower != "aria-hidden"
+    matches!(
+      lower.as_str(),
+      // ARIA global states/properties (excluding aria-hidden). These prevent the author from
+      // stripping semantics via role="presentation"/"none" per the ARIA-in-HTML processing rules.
+      "aria-atomic"
+        | "aria-busy"
+        | "aria-controls"
+        | "aria-current"
+        | "aria-describedby"
+        | "aria-details"
+        | "aria-disabled"
+        | "aria-dropeffect"
+        | "aria-errormessage"
+        | "aria-flowto"
+        | "aria-grabbed"
+        | "aria-haspopup"
+        | "aria-keyshortcuts"
+        | "aria-label"
+        | "aria-labelledby"
+        | "aria-live"
+        | "aria-owns"
+        | "aria-relevant"
+        | "aria-roledescription"
+    )
   })
 }
 

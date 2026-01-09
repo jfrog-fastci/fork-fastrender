@@ -408,6 +408,49 @@ fn accessibility_option_role_presentation_disallowed_falls_back_to_option() {
 }
 
 #[test]
+fn accessibility_presentational_role_honored_with_only_non_global_aria_attributes() {
+  let html = r##"
+    <html>
+      <body>
+        <div id="parent">
+          <div id="x" role="presentation" aria-checked="true">Text</div>
+        </div>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+
+  assert!(
+    find_json_node(&tree, "x").is_none(),
+    "aria-checked is not a global ARIA attribute, so role=presentation should be honored"
+  );
+
+  let subset = snapshot_subset(&tree, &["parent"]);
+  assert_eq!(
+    subset,
+    json!({
+      "parent": {
+        "role": "generic",
+        "name": "Text",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "div",
+        "states": {
+          "focusable": false,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_details_expanded_state() {
   let html = r##"
     <html>
