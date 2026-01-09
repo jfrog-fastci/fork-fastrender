@@ -1327,6 +1327,11 @@ impl App {
             tab_id,
             reason: RepaintReason::Explicit,
           });
+
+          // Match typical browser UX: after opening a new tab, focus the address bar so the user
+          // can immediately type a URL.
+          self.focus_address_bar_select_all();
+          self.window.request_redraw();
         }
         ChromeAction::CloseTab(tab_id) => {
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
@@ -1360,6 +1365,11 @@ impl App {
               tab_id: created_tab,
               reason: RepaintReason::Explicit,
             });
+
+            // Closing the last tab creates a fresh new-tab page; focus the address bar for quick
+            // navigation.
+            self.focus_address_bar_select_all();
+            self.window.request_redraw();
           } else if let Some(new_active) = close_result.new_active {
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
