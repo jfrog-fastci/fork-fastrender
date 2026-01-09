@@ -287,6 +287,33 @@ const DOM_SHIM: &str = r##"
     configurable: true,
   });
 
+  Object.defineProperty(Node.prototype, "textContent", {
+    get: function () {
+      var v = g.__fastrender_dom_get_text_content(nodeIdFromThis(this));
+      // Align with DOM: Document.textContent is null. Also treat `undefined` as null in case the
+      // host hook returns it.
+      if (v === undefined) return null;
+      return v;
+    },
+    set: function (value) {
+      nodeIdFromThis(this);
+      if (this === g.document) return;
+      var created = g.__fastrender_dom_set_text_content(nodeIdFromThis(this), String(value));
+      if (!this.childNodes) this.childNodes = [];
+      for (var i = 0; i < this.childNodes.length; i++) {
+        var n = this.childNodes[i];
+        if (n && typeof n === "object") n.parentNode = null;
+      }
+      this.childNodes.length = 0;
+      if (typeof created === "number") {
+        var text = makeNode(Text.prototype, created);
+        text.parentNode = this;
+        this.childNodes.push(text);
+      }
+    },
+    configurable: true,
+  });
+
   // Provide `document.head`/`document.body` for smoke tests.
   if (typeof g.__fastrender_dom_head_id === "number") {
     g.document.head = makeNode(Element.prototype, g.__fastrender_dom_head_id, "HEAD");
@@ -496,14 +523,46 @@ impl Dom {
     }
   }
 
+  fn validate_no_cycles(&self, parent: NodeId, child: NodeId) -> Result<(), DomShimError> {
+    if parent == child {
+      return Err(DomShimError::HierarchyRequestError);
+    }
+    // Walk up from `parent` and ensure we never reach `child` (which would make `parent` a
+    // descendant of `child`).
+    let mut current = Some(parent);
+    for _ in 0..=self.nodes.len() {
+      let Some(id) = current else {
+        return Ok(());
+      };
+      if id == child {
+        return Err(DomShimError::HierarchyRequestError);
+      }
+      current = self.nodes.get(id.0).and_then(|node| node.parent);
+    }
+    // If we exceed `nodes.len()` steps we likely have a pre-existing cycle; reject insertion.
+    Err(DomShimError::HierarchyRequestError)
+  }
+
   fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), DomShimError> {
     self.node_checked(parent)?;
     self.node_checked(child)?;
     self.validate_parent_can_have_children(parent)?;
 
+    if matches!(self.node_checked(child)?.kind, NodeKind::Document) {
+      return Err(DomShimError::InvalidNodeType);
+    }
+
     if matches!(self.node_checked(child)?.kind, NodeKind::DocumentFragment) {
       // DocumentFragment insertion semantics: move its children into `parent` and empty the
       // fragment.
+      let fragment_children = self.node_checked(child)?.children.clone();
+      for &moved in &fragment_children {
+        if matches!(self.node_checked(moved)?.kind, NodeKind::Document) {
+          return Err(DomShimError::InvalidNodeType);
+        }
+        self.validate_no_cycles(parent, moved)?;
+      }
+
       let fragment_children = std::mem::take(&mut self.node_checked_mut(child)?.children);
       for moved in fragment_children {
         self.node_checked_mut(moved)?.parent = Some(parent);
@@ -513,6 +572,8 @@ impl Dom {
       self.node_checked_mut(child)?.parent = None;
       return Ok(());
     }
+
+    self.validate_no_cycles(parent, child)?;
 
     if self.node_checked(child)?.parent.is_some() {
       self.detach_from_parent(child)?;
@@ -680,6 +741,61 @@ impl Dom {
     content.clear();
     content.push_str(data);
     Ok(())
+  }
+
+  fn clear_children(&mut self, parent: NodeId) -> Result<(), DomShimError> {
+    self.node_checked(parent)?;
+    let old_children = std::mem::take(&mut self.node_checked_mut(parent)?.children);
+    for child in old_children {
+      if child.0 < self.nodes.len() {
+        self.node_checked_mut(child)?.parent = None;
+      }
+    }
+    Ok(())
+  }
+
+  fn get_text_content(&self, node: NodeId) -> Result<Option<String>, DomShimError> {
+    self.node_checked(node)?;
+    match &self.nodes[node.0].kind {
+      NodeKind::Document => return Ok(None),
+      NodeKind::Text { content } => return Ok(Some(content.clone())),
+      NodeKind::Element { .. } | NodeKind::DocumentFragment => {}
+    }
+
+    let mut out = String::new();
+    let mut stack: Vec<NodeId> = self.nodes[node.0].children.iter().copied().rev().collect();
+    while let Some(id) = stack.pop() {
+      let node = self.node_checked(id)?;
+      match &node.kind {
+        NodeKind::Text { content } => out.push_str(content),
+        NodeKind::Element { .. } | NodeKind::DocumentFragment | NodeKind::Document => {
+          for &child in node.children.iter().rev() {
+            stack.push(child);
+          }
+        }
+      }
+    }
+
+    Ok(Some(out))
+  }
+
+  fn set_text_content(&mut self, node: NodeId, data: &str) -> Result<Option<NodeId>, DomShimError> {
+    self.node_checked(node)?;
+    match &self.nodes[node.0].kind {
+      NodeKind::Document => return Ok(None),
+      NodeKind::Text { .. } => {
+        self.set_text_data(node, data)?;
+        return Ok(None);
+      }
+      NodeKind::Element { .. } | NodeKind::DocumentFragment => {}
+    }
+
+    self.clear_children(node)?;
+    if data.is_empty() {
+      return Ok(None);
+    }
+    let text = self.create_text(data, Some(node));
+    Ok(Some(text))
   }
 
   fn serialize_node(&self, root: NodeId, out: &mut String) -> Result<(), DomShimError> {
@@ -991,6 +1107,33 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let get_text_content = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<Option<String>> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .get_text_content(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
+  let set_text_content = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32, data: String| -> JsResult<Option<i32>> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow_mut()
+        .set_text_content(NodeId(node_id as usize), &data)
+        .map(|id| id.map(|id| id.0 as i32))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
   let get_attribute = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |node_id: i32, name: String| -> JsResult<Option<String>> {
@@ -1111,6 +1254,8 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_set_inner_html", set_inner_html)?;
   globals.set("__fastrender_dom_get_text_data", get_text_data)?;
   globals.set("__fastrender_dom_set_text_data", set_text_data)?;
+  globals.set("__fastrender_dom_get_text_content", get_text_content)?;
+  globals.set("__fastrender_dom_set_text_content", set_text_content)?;
   globals.set("__fastrender_dom_get_attribute", get_attribute)?;
   globals.set("__fastrender_dom_set_attribute", set_attribute)?;
   globals.set("__fastrender_dom_remove_attribute", remove_attribute)?;

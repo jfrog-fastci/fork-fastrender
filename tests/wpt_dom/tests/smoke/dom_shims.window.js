@@ -53,6 +53,23 @@ test(() => {
 }, "document.createTextNode + Text.data");
 
 test(() => {
+  assert_equals(document.textContent, null, "Document.textContent should be null");
+
+  const el = document.createElement("div");
+  assert_equals(el.textContent, "");
+  el.innerHTML = "<span>hi</span><span>there</span>";
+  assert_equals(el.textContent, "hithere");
+
+  el.textContent = "a&b<>";
+  assert_equals(el.innerHTML, "a&amp;b&lt;&gt;");
+  assert_equals(el.textContent, "a&b<>");
+
+  const text = document.createTextNode("x");
+  text.textContent = "y";
+  assert_equals(text.data, "y");
+}, "Node.textContent shims");
+
+test(() => {
   assert_equals(document.nodeType, Node.DOCUMENT_NODE);
   assert_equals(document.nodeName, "#document");
   assert_equals(document.ownerDocument, null);
