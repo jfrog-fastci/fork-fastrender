@@ -308,9 +308,12 @@ Parser blocking is represented explicitly via `ScriptSchedulerAction::BlockParse
 
 **Checkpoint points we must honor for correctness:**
 
-1. after running any script (parser-blocking, async, deferred),
-2. after running any event loop task (already handled by `run_next_task()`),
-3. at “end of parsing” milestones (after running deferred scripts; before ready-state changes later).
+1. **before preparing/executing a parser-inserted script** at a `</script>` boundary when the
+   JavaScript execution context stack is empty (this allows already-queued microtasks to run before
+   the next parser-inserted script),
+2. after running any script (parser-blocking, async, deferred),
+3. after running any event loop task (already handled by `run_next_task()`),
+4. at “end of parsing” milestones (after running deferred scripts; before ready-state changes later).
 
 ---
 
