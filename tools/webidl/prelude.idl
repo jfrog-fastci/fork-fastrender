@@ -1,0 +1,8 @@
+// WebIDL prelude for FastRender bindings/codegen.
+//
+// Our vendored spec set (DOM/HTML/URL/Fetch) references some typedefs that are defined in other
+// specs we do not vendor (e.g. High Resolution Time). This file provides those shared definitions
+// so type resolution/conversion can behave correctly without editing spec submodules.
+
+typedef double DOMHighResTimeStamp;
+typedef double DOMTimeStamp;

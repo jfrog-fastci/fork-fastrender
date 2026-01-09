@@ -14,6 +14,8 @@ use super::{
   ExtendedAttribute, ParsedCallback, ParsedDefinition, ParsedDictionary, ParsedEnum, ParsedIncludes,
   ParsedInterface, ParsedInterfaceMixin, ParsedMember, ParsedTypedef, ParsedWebIdlWorld,
 };
+use super::{ast::IdlType, parse_idl_type};
+use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -69,6 +71,62 @@ impl ResolvedWebIdlWorld {
 
   pub fn dictionary(&self, name: &str) -> Option<&ResolvedDictionary> {
     self.dictionaries.get(name)
+  }
+
+  /// Resolve a `typedef` name to its fully expanded (canonicalized) type.
+  ///
+  /// This follows typedef chains recursively and errors on cycles.
+  pub fn resolve_typedef(&self, name: &str) -> Result<IdlType> {
+    #[derive(Default)]
+    struct Ctx {
+      in_progress: BTreeSet<String>,
+      stack: Vec<String>,
+      cache: BTreeMap<String, IdlType>,
+    }
+
+    fn inner(world: &ResolvedWebIdlWorld, name: &str, ctx: &mut Ctx) -> Result<IdlType> {
+      if let Some(cached) = ctx.cache.get(name) {
+        return Ok(cached.clone());
+      }
+
+      let td = world
+        .typedefs
+        .get(name)
+        .with_context(|| format!("unknown typedef `{name}`"))?;
+
+      if !ctx.in_progress.insert(name.to_string()) {
+        let start = ctx
+          .stack
+          .iter()
+          .position(|n| n == name)
+          .unwrap_or(0);
+        let mut cycle: Vec<String> = ctx.stack[start..].to_vec();
+        cycle.push(name.to_string());
+        bail!("typedef cycle detected: {}", cycle.join(" -> "));
+      }
+
+      ctx.stack.push(name.to_string());
+
+      let parsed =
+        parse_idl_type(&td.type_).with_context(|| format!("parse typedef `{name}` = `{}`", td.type_))?;
+
+      // Canonicalize the typedef body, recursively expanding any referenced typedefs.
+      let resolved = parsed.canonicalize_with(&mut |ref_name| {
+        if world.typedefs.contains_key(ref_name) {
+          Ok(Some(inner(world, ref_name, ctx)?))
+        } else {
+          Ok(None)
+        }
+      })?;
+
+      ctx.stack.pop();
+      ctx.in_progress.remove(name);
+      ctx.cache.insert(name.to_string(), resolved.clone());
+      Ok(resolved)
+    }
+
+    let mut ctx = Ctx::default();
+    inner(self, name, &mut ctx)
   }
 
   /// Returns a shallowly filtered world for the given target environment.
@@ -230,13 +288,13 @@ pub fn resolve_webidl_world(parsed: &ParsedWebIdlWorld) -> ResolvedWebIdlWorld {
         }
       }
       ParsedDefinition::Enum(e) => {
-        enums.entry(e.name.clone()).or_insert(e.clone());
+        enums.insert(e.name.clone(), e.clone());
       }
       ParsedDefinition::Typedef(td) => {
-        typedefs.entry(td.name.clone()).or_insert(td.clone());
+        typedefs.insert(td.name.clone(), td.clone());
       }
       ParsedDefinition::Callback(cb) => {
-        callbacks.entry(cb.name.clone()).or_insert(cb.clone());
+        callbacks.insert(cb.name.clone(), cb.clone());
       }
       ParsedDefinition::Other { .. } => {}
     }
@@ -497,4 +555,3 @@ pub fn exposure_from_ext_attrs(attrs: &[ExtendedAttribute]) -> Exposure {
     Exposure::Named(names)
   }
 }
-

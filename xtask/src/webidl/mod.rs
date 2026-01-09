@@ -10,6 +10,7 @@ use anyhow::Result;
 
 pub mod analyze;
 pub mod ast;
+pub mod load;
 pub mod overload;
 pub mod parse;
 pub mod resolve;

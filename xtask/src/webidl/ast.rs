@@ -3,6 +3,7 @@
 //! The top-level Bikeshed WebIDL extractor/parser in [`super`] intentionally stays forgiving and
 //! stores interface members as raw strings. This AST is a *second* typed layer used by codegen.
 
+use anyhow::Result;
 use std::fmt;
 
 /// A WebIDL type expression.
@@ -23,6 +24,48 @@ pub enum IdlType {
     key: Box<IdlType>,
     value: Box<IdlType>,
   },
+}
+
+impl IdlType {
+  /// Canonicalize this type by expanding any referenced typedefs.
+  pub fn canonicalize(&self, world: &super::resolve::ResolvedWebIdlWorld) -> Result<IdlType> {
+    self.canonicalize_with(&mut |name| {
+      if world.typedefs.contains_key(name) {
+        Ok(Some(world.resolve_typedef(name)?))
+      } else {
+        Ok(None)
+      }
+    })
+  }
+
+  pub(crate) fn canonicalize_with<F>(&self, resolve_named: &mut F) -> Result<IdlType>
+  where
+    F: FnMut(&str) -> Result<Option<IdlType>>,
+  {
+    Ok(match self {
+      IdlType::Builtin(b) => IdlType::Builtin(*b),
+      IdlType::Named(name) => resolve_named(name)?.unwrap_or_else(|| IdlType::Named(name.clone())),
+      IdlType::Nullable(inner) => IdlType::Nullable(Box::new(inner.canonicalize_with(resolve_named)?)),
+      IdlType::Union(members) => {
+        let mut out = Vec::with_capacity(members.len());
+        for m in members {
+          out.push(m.canonicalize_with(resolve_named)?);
+        }
+        IdlType::Union(out)
+      }
+      IdlType::Sequence(inner) => {
+        IdlType::Sequence(Box::new(inner.canonicalize_with(resolve_named)?))
+      }
+      IdlType::FrozenArray(inner) => {
+        IdlType::FrozenArray(Box::new(inner.canonicalize_with(resolve_named)?))
+      }
+      IdlType::Promise(inner) => IdlType::Promise(Box::new(inner.canonicalize_with(resolve_named)?)),
+      IdlType::Record { key, value } => IdlType::Record {
+        key: Box::new(key.canonicalize_with(resolve_named)?),
+        value: Box::new(value.canonicalize_with(resolve_named)?),
+      },
+    })
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -138,4 +181,3 @@ pub enum InterfaceMember {
   },
   Unparsed { raw: String },
 }
-
