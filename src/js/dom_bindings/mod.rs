@@ -272,6 +272,60 @@ fn to_rust_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
   Ok(rt.heap().get_string(s)?.to_utf8_lossy())
 }
 
+fn get_text_content(dom: &dom2::Document, root: NodeId) -> String {
+  match &dom.node(root).kind {
+    NodeKind::Text { content } => return content.clone(),
+    NodeKind::Comment { content } => return content.clone(),
+    NodeKind::ProcessingInstruction { data, .. } => return data.clone(),
+    _ => {}
+  }
+
+  let mut out = String::new();
+  for id in dom.subtree_preorder(root) {
+    if let NodeKind::Text { content } = &dom.node(id).kind {
+      out.push_str(content);
+    }
+  }
+  out
+}
+
+fn set_text_content(dom: &mut dom2::Document, node: NodeId, value: &str) -> Result<(), dom2::DomError> {
+  match &mut dom.node_mut(node).kind {
+    NodeKind::Text { content } | NodeKind::Comment { content } => {
+      content.clear();
+      content.push_str(value);
+      return Ok(());
+    }
+    NodeKind::ProcessingInstruction { data, .. } => {
+      data.clear();
+      data.push_str(value);
+      return Ok(());
+    }
+    NodeKind::Doctype { .. } => {
+      // `DocumentType.textContent` is `null` in the DOM spec; setting it is a no-op.
+      return Ok(());
+    }
+    NodeKind::Document { .. }
+    | NodeKind::Element { .. }
+    | NodeKind::Slot { .. }
+    | NodeKind::ShadowRoot { .. } => {
+      // Replace children.
+    }
+  }
+
+  let children: Vec<NodeId> = dom.children(node)?.to_vec();
+  for child in children {
+    dom.remove_child(node, child)?;
+  }
+
+  if !value.is_empty() {
+    let text = dom.create_text(value);
+    dom.append_child(node, text)?;
+  }
+
+  Ok(())
+}
+
 fn parse_add_event_listener_options(rt: &mut VmJsRuntime, options: Value) -> Result<events::AddEventListenerOptions, VmError> {
   if matches!(options, Value::Undefined) {
     return Ok(events::AddEventListenerOptions::default());
@@ -462,6 +516,10 @@ fn wrap_node(
 ) -> Result<Value, VmError> {
   if node_id == document_node_id {
     return Ok(document);
+  }
+
+  if node_id.index() >= dom.borrow().nodes_len() {
+    return Err(rt.throw_type_error("NotFoundError"));
   }
 
   if let Some(existing) = node_wrapper_cache.borrow().get(&node_id).copied() {
@@ -945,6 +1003,36 @@ fn install_constructors(
       }
     })?;
     define_accessor(rt, prototypes.node, "nextSibling", next_sibling_get, Value::Undefined)?;
+
+    // textContent
+    let dom_for_text_content_get = dom.clone();
+    let platform_objects_for_text_content_get = platform_objects.clone();
+    let text_content_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_text_content_get, this)?;
+      let dom_ref = dom_for_text_content_get.borrow();
+      if matches!(&dom_ref.node(node_id).kind, NodeKind::Doctype { .. }) {
+        return Ok(Value::Null);
+      }
+      let text = get_text_content(&dom_ref, node_id);
+      rt.alloc_string_value(&text)
+    })?;
+
+    let dom_for_text_content_set = dom.clone();
+    let platform_objects_for_text_content_set = platform_objects.clone();
+    let text_content_set = rt.alloc_function_value(move |rt, this, args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_text_content_set, this)?;
+      let v = args.get(0).copied().unwrap_or(Value::Undefined);
+      let text = if matches!(v, Value::Null) {
+        String::new()
+      } else {
+        to_rust_string(rt, v)?
+      };
+      set_text_content(&mut dom_for_text_content_set.borrow_mut(), node_id, &text)
+        .map_err(|e| rt.throw_type_error(&format!("textContent: {e}")))?;
+      Ok(Value::Undefined)
+    })?;
+
+    define_accessor(rt, prototypes.node, "textContent", text_content_get, text_content_set)?;
   }
 
   // Element.prototype
@@ -1160,6 +1248,48 @@ fn install_constructors(
       document_element_get,
       Value::Undefined,
     )?;
+
+    let dom_for_head = dom.clone();
+    let platform_objects_for_head = platform_objects.clone();
+    let node_wrapper_cache_for_head = node_wrapper_cache.clone();
+    let head_get = rt.alloc_function_value(move |rt, this, _args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_head, this)?;
+      match dom_for_head.borrow().head() {
+        Some(node_id) => wrap_node(
+          rt,
+          &dom_for_head,
+          &platform_objects_for_head,
+          &node_wrapper_cache_for_head,
+          document_node_id,
+          document,
+          prototypes,
+          node_id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(rt, prototypes.document, "head", head_get, Value::Undefined)?;
+
+    let dom_for_body = dom.clone();
+    let platform_objects_for_body = platform_objects.clone();
+    let node_wrapper_cache_for_body = node_wrapper_cache.clone();
+    let body_get = rt.alloc_function_value(move |rt, this, _args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_body, this)?;
+      match dom_for_body.borrow().body() {
+        Some(node_id) => wrap_node(
+          rt,
+          &dom_for_body,
+          &platform_objects_for_body,
+          &node_wrapper_cache_for_body,
+          document_node_id,
+          document,
+          prototypes,
+          node_id,
+        ),
+        None => Ok(Value::Null),
+      }
+    })?;
+    define_accessor(rt, prototypes.document, "body", body_get, Value::Undefined)?;
 
     let current_script_get = {
       let current_script_state = current_script_state.clone();
@@ -1797,5 +1927,118 @@ mod tests {
       .unwrap();
     assert_eq!(dispatched_again, Value::Bool(true));
     assert_eq!(calls.get(), 1);
+  }
+
+  #[test]
+  fn document_head_and_body_reflect_html_children() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+
+    let html_tag = realm.rt.alloc_string_value("html").unwrap();
+    let html = realm
+      .rt
+      .call_function(create_element, document, &[html_tag])
+      .unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[html])
+      .unwrap();
+
+    let head_tag = realm.rt.alloc_string_value("head").unwrap();
+    let head = realm
+      .rt
+      .call_function(create_element, document, &[head_tag])
+      .unwrap();
+    let body_tag = realm.rt.alloc_string_value("body").unwrap();
+    let body = realm
+      .rt
+      .call_function(create_element, document, &[body_tag])
+      .unwrap();
+
+    let html_append_child = realm.rt.get(html, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(html_append_child, html, &[head])
+      .unwrap();
+    realm
+      .rt
+      .call_function(html_append_child, html, &[body])
+      .unwrap();
+
+    let head_key = pk(&mut realm.rt, "head");
+    let got_head = realm.rt.get(document, head_key).unwrap();
+    assert_eq!(got_head, head);
+
+    let body_key = pk(&mut realm.rt, "body");
+    let got_body = realm.rt.get(document, body_key).unwrap();
+    assert_eq!(got_body, body);
+  }
+
+  #[test]
+  fn node_text_content_get_and_set_mutates_dom2_tree() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let div_id = realm.dom.borrow_mut().create_element("div", "");
+    let text_id = realm.dom.borrow_mut().create_text("hello");
+    realm
+      .dom
+      .borrow_mut()
+      .append_child(div_id, text_id)
+      .unwrap();
+    let div = realm.wrap_node(div_id).unwrap();
+
+    let text_content_key = pk(&mut realm.rt, "textContent");
+    let got = realm.rt.get(div, text_content_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "hello");
+
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.node, text_content_key)
+      .unwrap()
+      .expect("expected Node.prototype.textContent");
+    let set = match desc.kind {
+      crate::js::webidl::JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+
+    // Null clears children.
+    realm.rt.call_function(set, div, &[Value::Null]).unwrap();
+    assert_eq!(realm.dom.borrow().children(div_id).unwrap().len(), 0);
+    let got = realm.rt.get(div, text_content_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "");
+
+    // String replaces children with a single Text node.
+    let x = realm.rt.alloc_string_value("x").unwrap();
+    realm.rt.call_function(set, div, &[x]).unwrap();
+    let dom_ref = realm.dom.borrow();
+    let children = dom_ref.children(div_id).unwrap();
+    assert_eq!(children.len(), 1);
+    let child = children[0];
+    assert_eq!(dom_ref.text_data(child).unwrap(), "x");
+    let got = realm.rt.get(div, text_content_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "x");
+  }
+
+  #[test]
+  fn wrap_node_rejects_node_id_from_other_document() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let small_len = realm.dom.borrow().nodes_len();
+
+    let mut other = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut node_id = other.root();
+    while node_id.index() <= small_len + 4 {
+      node_id = other.create_element("div", "");
+    }
+
+    let err = realm.wrap_node(node_id).unwrap_err();
+    assert!(matches!(err, VmError::Throw(_)));
   }
 }
