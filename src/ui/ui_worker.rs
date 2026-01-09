@@ -3,6 +3,7 @@ use crate::geometry::{Point, Size};
 use crate::interaction::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::scroll::ScrollState;
+use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::{RenderOptions, Result};
@@ -219,32 +220,79 @@ impl UiWorker {
         tab_id,
         url: nav_url.clone(),
       });
+      let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+        tab_id,
+        loading: true,
+      });
 
       let options = RenderOptions::new()
         .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
         .with_device_pixel_ratio(tab.dpr)
         .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
 
-      let report = match self.renderer.prepare_url(&nav_url, options) {
-        Ok(report) => report,
-        Err(err) => {
-          let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
-            tab_id,
-            url: nav_url.clone(),
-            error: err.to_string(),
-          });
-          return Ok(());
+      let mut should_commit = true;
+      let report = if about_pages::is_about_url(&nav_url) {
+        match prepare_about_url(&mut self.renderer, &nav_url, options.clone()) {
+          Ok(report) => report,
+          Err(err) => {
+            let err = err.to_string();
+            let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+              tab_id,
+              url: nav_url.clone(),
+              error: err.clone(),
+            });
+            should_commit = false;
+
+            let html = about_pages::error_page_html("Navigation failed", &err);
+            match prepare_about_html(&mut self.renderer, about_pages::ABOUT_ERROR, &html, options) {
+              Ok(report) => report,
+              Err(_) => {
+                // Best-effort: if even the error page fails to render, make sure the UI stops
+                // showing the loading indicator.
+                let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+                  tab_id,
+                  loading: false,
+                });
+                return Ok(());
+              }
+            }
+          }
+        }
+      } else {
+        match self.renderer.prepare_url(&nav_url, options.clone()) {
+          Ok(report) => report,
+          Err(err) => {
+            let err = err.to_string();
+            let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+              tab_id,
+              url: nav_url.clone(),
+              error: err.clone(),
+            });
+            should_commit = false;
+
+            let html = about_pages::error_page_html("Navigation failed", &err);
+            match prepare_about_html(&mut self.renderer, about_pages::ABOUT_ERROR, &html, options) {
+              Ok(report) => report,
+              Err(_) => {
+                let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+                  tab_id,
+                  loading: false,
+                });
+                return Ok(());
+              }
+            }
+          }
         }
       };
 
       let final_url = report.final_url.as_deref().unwrap_or(&nav_url).to_string();
-      tab
-        .history
-        .commit_navigation(&nav_url, report.final_url.as_deref());
-      nav_url = final_url;
-
       tab.document = Some(report.document);
       tab.title = None;
+
+      if should_commit {
+        tab.history.commit_navigation(&nav_url, report.final_url.as_deref());
+        nav_url = final_url;
+      }
 
       if let Ok(parsed) = Url::parse(&nav_url) {
         if let Some(fragment) = parsed.fragment().filter(|frag| !frag.is_empty()) {
@@ -263,13 +311,15 @@ impl UiWorker {
         }
       }
 
-      let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
-        tab_id,
-        url: nav_url,
-        title: tab.title.clone(),
-        can_go_back: tab.history.can_go_back(),
-        can_go_forward: tab.history.can_go_forward(),
-      });
+      if should_commit {
+        let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+          tab_id,
+          url: nav_url,
+          title: tab.title.clone(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
+        });
+      }
     }
     self.paint_current(tab_id, true)?;
 
@@ -362,4 +412,26 @@ impl UiWorker {
 
     Ok(())
   }
+}
+
+fn prepare_about_url(
+  renderer: &mut FastRender,
+  url: &str,
+  options: RenderOptions,
+) -> Result<crate::PreparedDocumentReport> {
+  let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
+    about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
+  });
+  prepare_about_html(renderer, url, &html, options)
+}
+
+fn prepare_about_html(
+  renderer: &mut FastRender,
+  document_url: &str,
+  html: &str,
+  options: RenderOptions,
+) -> Result<crate::PreparedDocumentReport> {
+  renderer.set_base_url(about_pages::ABOUT_BASE_URL);
+  let dom = renderer.parse_html(html)?;
+  renderer.prepare_dom_with_options(dom, Some(document_url), options)
 }
