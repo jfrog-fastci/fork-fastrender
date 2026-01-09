@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::Path;
@@ -146,6 +146,8 @@ const DISK_META_READ_CHUNK_SIZE: usize = 8 * 1024;
 const DISK_META_MAX_BYTES: usize = 256 * 1024;
 const DISK_LOCK_MAX_BYTES: usize = 8 * 1024;
 const DISK_ALIAS_MAX_BYTES: usize = 8 * 1024;
+const DISK_ALIAS_MAX_TARGET_ENTRIES: usize = 32;
+const DISK_ALIAS_COLLAPSE_MIN_TARGET_ENTRIES: usize = DISK_ALIAS_MAX_TARGET_ENTRIES;
 const DISK_VARY_MAX_BYTES: usize = 8 * 1024;
 const DISK_META_READ_STAGE: RenderStage = RenderStage::Paint;
 
@@ -1688,21 +1690,90 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     .ok()
     .and_then(|bytes| serde_json::from_slice::<StoredAlias>(&bytes).ok())
     .unwrap_or_default();
+
+    if stored.targets.is_empty()
+      && !stored.varies_by_sig
+      && stored.target.as_deref() == Some(canonical)
+    {
+      return;
+    }
+
+    stored.recompute_varies_by_sig();
+    if stored.targets.values().any(|value| value != canonical) {
+      stored.varies_by_sig = true;
+    }
+    if stored.target.as_deref().is_some_and(|value| value != canonical) {
+      stored.varies_by_sig = true;
+    }
+
     stored.target = None;
+    stored.normalize_order();
     stored
       .targets
       .insert(request_sig.to_string(), canonical.to_string());
-    match serde_json::to_vec(&stored) {
-      Ok(serialized)
-        if !self.disk_writeback_disabled_for_len(serialized.len())
-          && fs::write(&tmp, &serialized).is_ok() =>
-      {
-        let _ = fs::rename(&tmp, &alias_path);
-      }
-      _ => {
-        let _ = fs::remove_file(&tmp);
+    stored.order.retain(|sig| sig != request_sig);
+    stored.order.push(request_sig.to_string());
+
+    stored.collapse_to_legacy_target_if_identical();
+
+    if !stored.targets.is_empty() {
+      while stored.targets.len() > DISK_ALIAS_MAX_TARGET_ENTRIES {
+        if !stored.evict_oldest_target(request_sig) {
+          break;
+        }
       }
     }
+
+    let mut serialized = match serde_json::to_vec(&stored) {
+      Ok(serialized) => serialized,
+      Err(_) => {
+        let _ = fs::remove_file(&tmp);
+        return;
+      }
+    };
+
+    while serialized.len() > DISK_ALIAS_MAX_BYTES && stored.targets.len() > 1 {
+      if !stored.evict_oldest_target(request_sig) {
+        break;
+      }
+      stored.collapse_to_legacy_target_if_identical();
+      serialized = match serde_json::to_vec(&stored) {
+        Ok(serialized) => serialized,
+        Err(_) => {
+          let _ = fs::remove_file(&tmp);
+          return;
+        }
+      };
+    }
+
+    if serialized.len() > DISK_ALIAS_MAX_BYTES {
+      let fallback = StoredAlias {
+        target: Some(canonical.to_string()),
+        ..Default::default()
+      };
+      if let Ok(compact) = serde_json::to_vec(&fallback) {
+        if compact.len() <= DISK_ALIAS_MAX_BYTES {
+          serialized = compact;
+        } else {
+          let _ = fs::remove_file(&tmp);
+          let _ = fs::remove_file(&alias_path);
+          return;
+        }
+      } else {
+        let _ = fs::remove_file(&tmp);
+        return;
+      }
+    }
+
+    if self.disk_writeback_disabled_for_len(serialized.len()) {
+      return;
+    }
+
+    if fs::write(&tmp, &serialized).is_ok() {
+      let _ = fs::rename(&tmp, &alias_path);
+      return;
+    }
+    let _ = fs::remove_file(&tmp);
   }
 
   fn persist_snapshot(
@@ -3610,6 +3681,10 @@ struct StoredAlias {
   target: Option<String>,
   #[serde(default, skip_serializing_if = "HashMap::is_empty")]
   targets: HashMap<String, String>,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  order: Vec<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  varies_by_sig: bool,
 }
 
 impl StoredAlias {
@@ -3618,6 +3693,90 @@ impl StoredAlias {
       return self.targets.get(request_sig).map(String::as_str);
     }
     self.target.as_deref()
+  }
+
+  fn recompute_varies_by_sig(&mut self) {
+    if self.varies_by_sig || self.targets.len() < 2 {
+      return;
+    }
+    let mut values = self.targets.values();
+    let Some(first) = values.next() else {
+      return;
+    };
+    if values.any(|value| value != first) {
+      self.varies_by_sig = true;
+    }
+  }
+
+  fn normalize_order(&mut self) {
+    if self.targets.is_empty() {
+      self.order.clear();
+      return;
+    }
+
+    let mut seen = HashSet::new();
+    self
+      .order
+      .retain(|sig| self.targets.contains_key(sig) && seen.insert(sig.clone()));
+
+    if self.order.len() == self.targets.len() {
+      return;
+    }
+
+    let mut missing: Vec<String> = self
+      .targets
+      .keys()
+      .filter(|sig| !seen.contains(*sig))
+      .cloned()
+      .collect();
+    missing.sort();
+    missing.extend(self.order.drain(..));
+    self.order = missing;
+  }
+
+  fn evict_oldest_target(&mut self, keep_sig: &str) -> bool {
+    self.normalize_order();
+
+    while let Some(oldest) = self.order.first().cloned() {
+      self.order.remove(0);
+      if oldest == keep_sig {
+        self.order.push(oldest);
+        continue;
+      }
+      self.targets.remove(&oldest);
+      return true;
+    }
+
+    if self.targets.len() <= 1 {
+      return false;
+    }
+
+    let candidate = self
+      .targets
+      .keys()
+      .find(|sig| sig.as_str() != keep_sig)
+      .cloned();
+    let Some(sig) = candidate else {
+      return false;
+    };
+    self.targets.remove(&sig);
+    self.order.retain(|entry| entry != &sig);
+    true
+  }
+
+  fn collapse_to_legacy_target_if_identical(&mut self) {
+    if self.varies_by_sig || self.targets.len() < DISK_ALIAS_COLLAPSE_MIN_TARGET_ENTRIES {
+      return;
+    }
+    let mut values = self.targets.values();
+    let Some(first) = values.next() else {
+      return;
+    };
+    if values.all(|value| value == first) {
+      self.target = Some(first.clone());
+      self.targets.clear();
+      self.order.clear();
+    }
   }
 }
 
@@ -7128,6 +7287,151 @@ mod tests {
       fetcher.call_count(),
       2,
       "third request should hit cached entry keyed by its request signature",
+    );
+  }
+
+  #[test]
+  fn disk_cache_persist_alias_bounds_file_size_and_keeps_recent_targets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+
+    let alias_url = "https://example.com/alias";
+    for i in 0..(DISK_ALIAS_MAX_TARGET_ENTRIES * 8) {
+      let request_sig = format!("{i:064x}");
+      let canonical = format!("https://example.com/canonical/{i}");
+      disk.persist_alias(
+        TEST_KIND,
+        alias_url,
+        &canonical,
+        None,
+        FetchCredentialsMode::Include,
+        &request_sig,
+      );
+    }
+
+    let alias_path = disk.alias_path(TEST_KIND, alias_url);
+    let meta = fs::metadata(&alias_path).expect("alias should be written");
+    assert!(
+      meta.len() <= DISK_ALIAS_MAX_BYTES as u64,
+      "alias file should remain readable under capped reads",
+    );
+
+    let alias_bytes = fs::read(&alias_path).expect("read alias");
+    serde_json::from_slice::<serde_json::Value>(&alias_bytes).expect("alias json should be valid");
+
+    for i in ((DISK_ALIAS_MAX_TARGET_ENTRIES * 8) - 8)..(DISK_ALIAS_MAX_TARGET_ENTRIES * 8) {
+      let request_sig = format!("{i:064x}");
+      let canonical = format!("https://example.com/canonical/{i}");
+      assert_eq!(
+        disk.read_alias_target(
+          TEST_KIND,
+          alias_url,
+          None,
+          FetchCredentialsMode::Include,
+          &request_sig,
+        )
+        .as_deref(),
+        Some(canonical.as_str()),
+        "expected alias to retain recently written targets",
+      );
+    }
+
+    let evicted_sig = format!("{:064x}", 0);
+    assert_eq!(
+      disk.read_alias_target(
+        TEST_KIND,
+        alias_url,
+        None,
+        FetchCredentialsMode::Include,
+        &evicted_sig,
+      ),
+      None,
+      "expected older signature aliases to be evicted once bounded",
+    );
+  }
+
+  #[test]
+  fn disk_cache_persist_alias_collapses_identical_targets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+
+    let alias_url = "https://example.com/alias_identical";
+    let canonical = "https://example.com/canonical";
+    for i in 0..128usize {
+      let request_sig = format!("{i:064x}");
+      disk.persist_alias(
+        TEST_KIND,
+        alias_url,
+        canonical,
+        None,
+        FetchCredentialsMode::Include,
+        &request_sig,
+      );
+    }
+
+    let alias_path = disk.alias_path(TEST_KIND, alias_url);
+    let meta = fs::metadata(&alias_path).expect("alias should be written");
+    assert!(
+      meta.len() <= DISK_ALIAS_MAX_BYTES as u64,
+      "collapsed alias file should remain within parseable budget",
+    );
+
+    let alias_bytes = fs::read(&alias_path).expect("read alias");
+    let stored: StoredAlias = serde_json::from_slice(&alias_bytes).expect("valid alias json");
+    assert_eq!(stored.target.as_deref(), Some(canonical));
+    assert!(stored.targets.is_empty());
+
+    assert_eq!(
+      disk.read_alias_target(
+        TEST_KIND,
+        alias_url,
+        None,
+        FetchCredentialsMode::Include,
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      )
+      .as_deref(),
+      Some(canonical),
+      "collapsed alias should behave like a legacy signature-invariant alias",
+    );
+  }
+
+  #[test]
+  fn disk_cache_persist_alias_recovers_from_oversize_or_corrupt_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+
+    let alias_url = "https://example.com/corrupt";
+    let alias_path = disk.alias_path(TEST_KIND, alias_url);
+    fs::write(&alias_path, vec![b'x'; DISK_ALIAS_MAX_BYTES + 512]).expect("seed corrupt alias");
+
+    let canonical = "https://example.com/canonical";
+    let request_sig = "0000000000000000000000000000000000000000000000000000000000000000";
+    disk.persist_alias(
+      TEST_KIND,
+      alias_url,
+      canonical,
+      None,
+      FetchCredentialsMode::Include,
+      request_sig,
+    );
+
+    let meta = fs::metadata(&alias_path).expect("alias should be rewritten");
+    assert!(
+      meta.len() <= DISK_ALIAS_MAX_BYTES as u64,
+      "alias file should be rewritten within the read cap",
+    );
+    let alias_bytes = fs::read(&alias_path).expect("read rewritten alias");
+    serde_json::from_slice::<serde_json::Value>(&alias_bytes).expect("rewritten alias json");
+    assert_eq!(
+      disk.read_alias_target(
+        TEST_KIND,
+        alias_url,
+        None,
+        FetchCredentialsMode::Include,
+        request_sig,
+      )
+      .as_deref(),
+      Some(canonical),
     );
   }
 
