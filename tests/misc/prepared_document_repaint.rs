@@ -103,6 +103,37 @@ fn repaint_with_different_animation_times_changes_pixels() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_offset_distance_animation_moves_pixels() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255,255,255); }
+      #box {
+        position: absolute;
+        left: 0; top: 0;
+        width: 20px; height: 20px;
+        background: rgb(255,0,0);
+        offset-path: ray(0deg);
+        offset-distance: 0px;
+        animation: move 1000ms linear forwards;
+      }
+      @keyframes move { from { offset-distance: 0px; } to { offset-distance: 100px; } }
+    </style>
+    <div id="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(150, 50))?;
+
+  let start = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(0.0))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1000.0))?;
+
+  assert_eq!(pixel(&start, 5, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&start, 105, 5), (255, 255, 255, 255));
+  assert_eq!(pixel(&end, 5, 5), (255, 255, 255, 255));
+  assert_eq!(pixel(&end, 105, 5), (255, 0, 0, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_add_combines_transforms() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"

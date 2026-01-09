@@ -51,6 +51,7 @@ use std::sync::Arc;
 use types::AccentColor;
 use types::AlignContent;
 use types::AlignItems;
+use types::AnchorScope;
 use types::AnimationComposition;
 use types::AnimationDirection;
 use types::AnimationFillMode;
@@ -122,6 +123,7 @@ use types::HyphensMode;
 use types::ImageOrientation;
 use types::ImageRendering;
 use types::ImageResolution;
+use types::InsetValue;
 use types::IntrinsicSizeKeyword;
 use types::Isolation;
 use types::JustifyContent;
@@ -149,11 +151,9 @@ use types::Overflow;
 use types::OverflowAnchor;
 use types::OverflowWrap;
 use types::AnchorSizeFunction;
-use types::AnchorScope;
-use types::InsetValue;
-use types::PositionAnchor;
 use types::OverscrollBehavior;
 use types::PointerEvents;
+use types::PositionAnchor;
 use types::Resize;
 use types::RubyAlign;
 use types::RubyMerge;
@@ -368,9 +368,7 @@ pub(crate) fn resolve_text_emphasis_block_side(
   } else {
     let mark_on_block_start = matches!(
       position,
-      TextEmphasisPosition::Over
-        | TextEmphasisPosition::OverLeft
-        | TextEmphasisPosition::OverRight
+      TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight
     );
     if mark_on_block_start {
       BlockSide::Start
@@ -436,21 +434,7 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
   // compatibility mapping in real pages (fullwidth ASCII punctuation).
   let allowlisted = matches!(
     ch,
-    '#'
-      | '%'
-      | '‰'
-      | '‱'
-      | '٪'
-      | '؉'
-      | '؊'
-      | '&'
-      | '⁊'
-      | '@'
-      | '§'
-      | '¶'
-      | '⁋'
-      | '⁓'
-      | '〽'
+    '#' | '%' | '‰' | '‱' | '٪' | '؉' | '؊' | '&' | '⁊' | '@' | '§' | '¶' | '⁋' | '⁓' | '〽'
   );
 
   if allowlisted {
@@ -495,7 +479,10 @@ pub(crate) fn should_skip_text_emphasis_mark(ch: char, skip: TextEmphasisSkip) -
   }
 
   let category = get_general_category(ch);
-  if matches!(category, GeneralCategory::Format | GeneralCategory::Unassigned) {
+  if matches!(
+    category,
+    GeneralCategory::Format | GeneralCategory::Unassigned
+  ) {
     return true;
   }
 
@@ -508,8 +495,7 @@ pub(crate) fn should_skip_text_emphasis_mark(ch: char, skip: TextEmphasisSkip) -
   let nfkd_symbol = {
     let code = ch as u32;
     if (0xFF01..=0xFF5E).contains(&code) {
-      char::from_u32(code - 0xFEE0)
-        .is_some_and(|mapped| matches!(mapped, '#' | '%' | '&' | '@'))
+      char::from_u32(code - 0xFEE0).is_some_and(|mapped| matches!(mapped, '#' | '%' | '&' | '@'))
     } else {
       matches!(
         ch,
@@ -530,21 +516,7 @@ pub(crate) fn should_skip_text_emphasis_mark(ch: char, skip: TextEmphasisSkip) -
   ) || nfkd_symbol
     || matches!(
       ch,
-      '#'
-        | '%'
-        | '‰'
-        | '‱'
-        | '٪'
-        | '؉'
-        | '؊'
-        | '&'
-        | '⁊'
-        | '@'
-        | '§'
-        | '¶'
-        | '⁋'
-        | '⁓'
-        | '〽'
+      '#' | '%' | '‰' | '‱' | '٪' | '؉' | '؊' | '&' | '⁊' | '@' | '§' | '¶' | '⁋' | '⁓' | '〽'
     );
 
   if skip.contains(TextEmphasisSkip::SYMBOLS) && is_symbol {
@@ -1701,6 +1673,7 @@ impl ComputedStyle {
       || !matches!(self.translate, TranslateValue::None)
       || !matches!(self.rotate, RotateValue::None)
       || !matches!(self.scale, ScaleValue::None)
+      || !matches!(self.offset_path, OffsetPath::None)
   }
 
   pub fn establishes_abs_containing_block(&self) -> bool {
@@ -2012,7 +1985,10 @@ mod tests {
   #[test]
   fn non_ascii_whitespace_normalize_language_tag_does_not_trim_nbsp() {
     let nbsp = "\u{00A0}";
-    assert_eq!(normalize_language_tag(&format!("{nbsp}En-US")), format!("{nbsp}en-us"));
+    assert_eq!(
+      normalize_language_tag(&format!("{nbsp}En-US")),
+      format!("{nbsp}en-us")
+    );
   }
 
   #[test]

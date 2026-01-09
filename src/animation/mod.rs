@@ -51,6 +51,8 @@ use crate::style::types::Direction;
 use crate::style::types::FillRule;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
+use crate::style::types::OffsetAnchor;
+use crate::style::types::OffsetRotate;
 use crate::style::types::OutlineColor;
 use crate::style::types::OutlineStyle;
 use crate::style::types::Overflow;
@@ -93,6 +95,9 @@ pub enum AnimatedValue {
   Visibility(Visibility),
   Color(Rgba),
   Length(Length),
+  OffsetDistance(Length),
+  OffsetAnchor { x: f32, y: f32 },
+  OffsetRotate(OffsetRotate),
   OutlineColor(OutlineColor),
   OutlineStyle(OutlineStyle),
   Outline(OutlineColor, OutlineStyle, Length),
@@ -167,6 +172,83 @@ fn clamp_color_channel_i128(value: i128) -> u8 {
   value.clamp(0, 255) as u8
 }
 
+fn length_percentage_components(
+  len: &Length,
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> (f32, f32) {
+  // The computed value type for `<length-percentage>` can be expressed as a linear combination of
+  // percentage + absolute length. Convert any non-percent units into px so interpolation can
+  // produce a canonical computed value.
+  let mut pct = 0.0f32;
+  let mut px = 0.0f32;
+
+  if let Some(calc) = len.calc.as_ref() {
+    for term in calc.terms() {
+      if term.unit == LengthUnit::Percent {
+        pct += term.value;
+        continue;
+      }
+      let term_len = Length::new(term.value, term.unit);
+      px += resolve_length_px(&term_len, None, style, ctx);
+    }
+    return (pct, px);
+  }
+
+  if len.unit == LengthUnit::Percent {
+    pct += len.value;
+  } else {
+    px += resolve_length_px(len, None, style, ctx);
+  }
+  (pct, px)
+}
+
+fn length_percentage_components_no_context(len: &Length) -> (f32, f32) {
+  let mut pct = 0.0f32;
+  let mut px = 0.0f32;
+
+  if let Some(calc) = len.calc.as_ref() {
+    for term in calc.terms() {
+      if term.unit == LengthUnit::Percent {
+        pct += term.value;
+      } else {
+        px += Length::new(term.value, term.unit).to_px();
+      }
+    }
+    return (pct, px);
+  }
+
+  if len.unit == LengthUnit::Percent {
+    pct += len.value;
+  } else {
+    px += len.to_px();
+  }
+  (pct, px)
+}
+
+fn build_length_from_components(px: f32, pct: f32) -> Option<Length> {
+  if !px.is_finite() || !pct.is_finite() {
+    return None;
+  }
+
+  let px = if px.abs() <= 1e-6 { 0.0 } else { px };
+  let pct = if pct.abs() <= 1e-6 { 0.0 } else { pct };
+
+  if pct == 0.0 {
+    return Some(Length::px(px));
+  }
+  if px == 0.0 {
+    return Some(Length::percent(pct));
+  }
+
+  let calc = CalcLength::single(LengthUnit::Px, px)
+    .add_scaled(&CalcLength::single(LengthUnit::Percent, pct), 1.0)?;
+  if let Some(term) = calc.single_term() {
+    return Some(Length::new(term.value, term.unit));
+  }
+  Some(Length::calc(calc))
+}
+
 fn interpolate_custom_property(
   from: &CustomPropertyValue,
   to: &CustomPropertyValue,
@@ -177,60 +259,6 @@ fn interpolate_custom_property(
 ) -> Option<CustomPropertyValue> {
   let from_typed = from.typed.as_ref()?;
   let to_typed = to.typed.as_ref()?;
-
-  fn length_components(
-    len: &Length,
-    style: &ComputedStyle,
-    ctx: &AnimationResolveContext,
-  ) -> (f32, f32) {
-    // The computed value type for `<length-percentage>` can be expressed as a linear combination
-    // of percentage + absolute length. Convert any non-percent units into px so interpolation can
-    // produce a canonical value string that `parse_length()` can reparse later.
-    let mut pct = 0.0f32;
-    let mut px = 0.0f32;
-
-    if let Some(calc) = len.calc.as_ref() {
-      for term in calc.terms() {
-        if term.unit == LengthUnit::Percent {
-          pct += term.value;
-          continue;
-        }
-        let term_len = Length::new(term.value, term.unit);
-        px += resolve_length_px(&term_len, None, style, ctx);
-      }
-      return (pct, px);
-    }
-
-    if len.unit == LengthUnit::Percent {
-      pct += len.value;
-    } else {
-      px += resolve_length_px(len, None, style, ctx);
-    }
-    (pct, px)
-  }
-
-  fn build_length_from_components(px: f32, pct: f32) -> Option<Length> {
-    if !px.is_finite() || !pct.is_finite() {
-      return None;
-    }
-
-    let px = if px.abs() <= 1e-6 { 0.0 } else { px };
-    let pct = if pct.abs() <= 1e-6 { 0.0 } else { pct };
-
-    if pct == 0.0 {
-      return Some(Length::px(px));
-    }
-    if px == 0.0 {
-      return Some(Length::percent(pct));
-    }
-
-    let calc = CalcLength::single(LengthUnit::Px, px)
-      .add_scaled(&CalcLength::single(LengthUnit::Percent, pct), 1.0)?;
-    if let Some(term) = calc.single_term() {
-      return Some(Length::new(term.value, term.unit));
-    }
-    Some(Length::calc(calc))
-  }
 
   let typed = match (from_typed, to_typed) {
     (CustomPropertyTypedValue::Number(a), CustomPropertyTypedValue::Number(b)) => {
@@ -249,8 +277,8 @@ fn interpolate_custom_property(
       CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
     }
     (CustomPropertyTypedValue::Length(a), CustomPropertyTypedValue::Length(b)) => {
-      let (a_pct, a_px) = length_components(a, from_style, ctx);
-      let (b_pct, b_px) = length_components(b, to_style, ctx);
+      let (a_pct, a_px) = length_percentage_components(a, from_style, ctx);
+      let (b_pct, b_px) = length_percentage_components(b, to_style, ctx);
       let pct = lerp(a_pct, b_pct, t);
       let px = lerp(a_px, b_px, t);
       let len = build_length_from_components(px, pct)?;
@@ -1656,6 +1684,13 @@ fn interpolate_clip_paths(
 }
 
 fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
+  let normalize_reference = |reference: Option<ReferenceBox>| match reference {
+    // `border-box` is the computed default for clip-path reference boxes. Store it as `None` so we
+    // preserve the canonical representation for "unspecified" in interpolated values.
+    Some(ReferenceBox::BorderBox) => None,
+    other => other,
+  };
+
   match resolved {
     ResolvedClipPath::None => ClipPath::None,
     ResolvedClipPath::Box(b) => ClipPath::Box(*b),
@@ -1681,7 +1716,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
           left: Length::px(*left),
           border_radius,
         }),
-        *reference,
+        normalize_reference(*reference),
       )
     }
     ResolvedClipPath::Circle {
@@ -1702,7 +1737,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
           },
         },
       }),
-      *reference,
+      normalize_reference(*reference),
     ),
     ResolvedClipPath::Ellipse {
       radius_x,
@@ -1724,7 +1759,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
           },
         },
       }),
-      *reference,
+      normalize_reference(*reference),
     ),
     ResolvedClipPath::Polygon {
       fill,
@@ -1738,7 +1773,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
           .map(|(x, y)| (Length::px(*x), Length::px(*y)))
           .collect(),
       }),
-      *reference,
+      normalize_reference(*reference),
     ),
     ResolvedClipPath::Path {
       fill,
@@ -1749,7 +1784,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
         fill: *fill,
         data: Arc::clone(data),
       }),
-      *reference,
+      normalize_reference(*reference),
     ),
   }
 }
@@ -2186,6 +2221,128 @@ fn interpolate_scale_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opti
 fn apply_scale(style: &mut ComputedStyle, value: &AnimatedValue) {
   if let AnimatedValue::Scale(v) = value {
     style.scale = *v;
+  }
+}
+
+fn extract_offset_distance(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  let (pct, px) = length_percentage_components(&style.offset_distance, style, ctx);
+  let len = build_length_from_components(px, pct)?;
+  Some(AnimatedValue::OffsetDistance(len))
+}
+
+fn interpolate_offset_distance_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::OffsetDistance(la), AnimatedValue::OffsetDistance(lb)) = (a, b) else {
+    return None;
+  };
+  let (a_pct, a_px) = length_percentage_components_no_context(la);
+  let (b_pct, b_px) = length_percentage_components_no_context(lb);
+  let pct = lerp(a_pct, b_pct, t);
+  let px = lerp(a_px, b_px, t);
+  let len = build_length_from_components(px, pct)?;
+  Some(AnimatedValue::OffsetDistance(len))
+}
+
+fn apply_offset_distance(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::OffsetDistance(v) = value {
+    style.offset_distance = *v;
+  }
+}
+
+fn extract_offset_anchor(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  let width = ctx.element_size.width;
+  let height = ctx.element_size.height;
+  let (x_len, y_len) = match style.offset_anchor {
+    OffsetAnchor::Auto => (Length::percent(50.0), Length::percent(50.0)),
+    OffsetAnchor::Position { x, y } => (x, y),
+  };
+  let x = resolve_length_px(&x_len, Some(width), style, ctx);
+  let y = resolve_length_px(&y_len, Some(height), style, ctx);
+  if !x.is_finite() || !y.is_finite() {
+    return None;
+  }
+  Some(AnimatedValue::OffsetAnchor { x, y })
+}
+
+fn interpolate_offset_anchor_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::OffsetAnchor { x: ax, y: ay }, AnimatedValue::OffsetAnchor { x: bx, y: by }) =
+    (a, b)
+  else {
+    return None;
+  };
+  Some(AnimatedValue::OffsetAnchor {
+    x: lerp(*ax, *bx, t),
+    y: lerp(*ay, *by, t),
+  })
+}
+
+fn apply_offset_anchor(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::OffsetAnchor { x, y } = value {
+    style.offset_anchor = OffsetAnchor::Position {
+      x: Length::px(*x),
+      y: Length::px(*y),
+    };
+  }
+}
+
+fn extract_offset_rotate(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::OffsetRotate(style.offset_rotate))
+}
+
+fn interpolate_offset_rotate_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::OffsetRotate(ra), AnimatedValue::OffsetRotate(rb)) = (a, b) else {
+    return None;
+  };
+  if t <= f32::EPSILON {
+    return Some(AnimatedValue::OffsetRotate(*ra));
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(AnimatedValue::OffsetRotate(*rb));
+  }
+  match (ra, rb) {
+    (OffsetRotate::Angle(a), OffsetRotate::Angle(b)) => Some(AnimatedValue::OffsetRotate(
+      OffsetRotate::Angle(lerp(*a, *b, t)),
+    )),
+    (
+      OffsetRotate::Auto {
+        angle: a,
+        reverse: rev_a,
+      },
+      OffsetRotate::Auto {
+        angle: b,
+        reverse: rev_b,
+      },
+    ) if rev_a == rev_b => Some(AnimatedValue::OffsetRotate(OffsetRotate::Auto {
+      angle: lerp(*a, *b, t),
+      reverse: *rev_a,
+    })),
+    _ => None,
+  }
+}
+
+fn apply_offset_rotate(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::OffsetRotate(v) = value {
+    style.offset_rotate = *v;
   }
 }
 
@@ -3336,6 +3493,24 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_scale,
       interpolate: interpolate_scale_value,
       apply: apply_scale,
+    },
+    PropertyInterpolator {
+      name: "offset-distance",
+      extract: extract_offset_distance,
+      interpolate: interpolate_offset_distance_value,
+      apply: apply_offset_distance,
+    },
+    PropertyInterpolator {
+      name: "offset-anchor",
+      extract: extract_offset_anchor,
+      interpolate: interpolate_offset_anchor_value,
+      apply: apply_offset_anchor,
+    },
+    PropertyInterpolator {
+      name: "offset-rotate",
+      extract: extract_offset_rotate,
+      interpolate: interpolate_offset_rotate_value,
+      apply: apply_offset_rotate,
     },
     PropertyInterpolator {
       name: "filter",
