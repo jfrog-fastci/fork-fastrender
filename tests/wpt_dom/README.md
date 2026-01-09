@@ -16,10 +16,15 @@ tests/wpt_dom/
     testharness.js
     testharnessreport.js
     fastrender_testharness_report.js
+    eventtarget_shim.js    # Temporary polyfill for the QuickJS backend
     LICENSE
   tests/                   # Served as /... in WPT
     smoke/                 # Tiny synthetic tests for harness bring-up
       *.html
+    event_loop/            # Curated event loop ordering tests
+      *.window.js
+    events/                # Curated EventTarget/Event semantics tests
+      *.window.js
 ```
 
 ## URL mapping (WPT origin → filesystem)

@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Optional backend that runs tests on FastRender's in-tree JS runtime integration (vm-js + EventLoop).
+#
+# This is feature-gated so CI can keep building the QuickJS backend while the vm-js embedding is
+# still in flux.
+backend_vmjs = ["dep:fastrender", "dep:vm-js"]
+
 [dependencies]
 anyhow = "1"
 conformance-harness = { path = "../../engines/ecma-rs/conformance-harness" }
@@ -17,3 +24,5 @@ walkdir = "2"
 rquickjs = "0.9"
 html5ever = "0.35"
 markup5ever_rcdom = "0.35"
+fastrender = { path = "../..", optional = true }
+vm-js = { path = "../../engines/ecma-rs/vm-js", optional = true }

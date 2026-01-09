@@ -12,6 +12,9 @@
 //! heavyweight external harness.
 
 mod discover;
+mod backend;
+mod backend_quickjs;
+mod backend_vmjs;
 mod meta;
 mod timer_event_loop;
 mod runner;
@@ -19,6 +22,7 @@ mod suite;
 pub mod wpt_fs;
 mod wpt_report;
 
+pub use backend::{BackendKind, BackendSelection};
 pub use discover::{discover_tests, TestCase, TestKind};
 pub use meta::{MetaDirective, MetaParseResult};
 pub use runner::{RunError, RunOutcome, RunResult, Runner, RunnerConfig};
