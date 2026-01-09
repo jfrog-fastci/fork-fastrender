@@ -4228,6 +4228,16 @@ mod tests {
       .call_function(append_child, document, &[target])
       .unwrap();
 
+    // Keep the target wrapper alive across the GC cycle below.
+    //
+    // Node wrappers are weakly cached, so they can be collected when there are no JS-visible
+    // references even if the underlying `dom2` node is still connected to the document.
+    let keep_alive_key = pk(&mut realm.rt, "__fastrender_test_keep_alive");
+    realm
+      .rt
+      .define_data_property(realm.window(), keep_alive_key, target, /* enumerable */ true)
+      .unwrap();
+
     let calls = Rc::new(Cell::new(0u32));
     let calls_for_cb = calls.clone();
     let cb = realm

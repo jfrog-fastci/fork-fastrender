@@ -307,20 +307,30 @@ By default it writes a JSON report to `target/js/wpt_dom.json` and classifies kn
 `tests/wpt_dom/expectations.toml`. Use `--filter` and `--shard` to run smaller subsets while
 iterating.
 
-### (Future) `fetch_and_render --js` (page execution)
+### `fetch_and_render --js` (experimental page execution)
 
-FastRender’s CLI tools currently render without executing author `<script>` content.
+`fetch_and_render` can optionally execute a **best-effort subset** of author `<script>` elements when
+`--js` is provided.
 
-Once JS execution is integrated into the renderer, the intended CLI shape is:
+Current behavior (intentionally limited / not spec-correct):
+
+- Executes **inline classic scripts** discovered by scanning the fully-parsed DOM in document order.
+  - This is not the HTML script processing model (no parser pausing, async/defer ordering, base URL
+    timing, etc.).
+- Does **not** fetch external scripts (`<script src=...>` is skipped).
+- Exposes a minimal `window` realm (`window`/`self`/`document`/`location`) and a small DOM shim
+  surface used by real pages (for example: `document.documentElement.className`).
+- Runs scripts under the renderer's JS execution budgets (`JsExecutionArgs` + render deadlines).
+
+Example:
 
 ```bash
-# planned:
 bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --js <url> out.png
 ```
 
-Until that lands, use `fetch_and_render` for HTML/CSS rendering only and use `xtask js test262` for
-JS language conformance.
+For spec-correct script processing and richer Web APIs, use the library embedding (`BrowserTab`) and
+the parse-time script scheduler described in [`docs/html_script_processing.md`](html_script_processing.md).
 
 ---
 

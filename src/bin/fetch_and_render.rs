@@ -24,11 +24,13 @@ use common::render_pipeline::{
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
 use fastrender::dom::DomParseOptions;
-use fastrender::dom2::{Document as Dom2Document, NodeId as Dom2NodeId, NodeKind as Dom2NodeKind};
+use fastrender::dom2::{Document as Dom2Document, NodeKind as Dom2NodeKind};
 use fastrender::image_output::encode_image;
 use fastrender::js::{
-  EventLoop, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, TaskSource,
+  determine_script_type_dom2, CurrentScriptHost, EventLoop, RunLimits, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, ScriptType, TaskSource, WindowHostState,
 };
+use fastrender::js::runtime::with_event_loop;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::resource::normalize_user_agent_for_log;
 use fastrender::resource::url_to_filename;
@@ -43,15 +45,14 @@ use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
 use fastrender::OutputFormat;
 use fastrender::Result;
-use regex::Regex;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use vm_js::Budget;
 const DEFAULT_ASSET_CACHE_DIR: &str = "fetches/assets";
 const DEFAULT_JS_MAX_TASKS: usize = 1024;
 const DEFAULT_JS_MAX_MICROTASKS: usize = 4096;
@@ -77,164 +78,26 @@ impl JsCliConfig {
   }
 }
 
-#[derive(Debug)]
-struct JsHost {
-  dom: Dom2Document,
-  diagnostics: Vec<String>,
-}
+const DEFAULT_JS_FUEL: u64 = 5_000_000;
+const DEFAULT_JS_CHECK_TIME_EVERY: u32 = 100;
 
-impl JsHost {
-  fn new(dom: Dom2Document) -> Self {
-    Self {
-      dom,
-      diagnostics: Vec::new(),
-    }
-  }
-}
+fn js_budget_for_script(run_limits: RunLimits) -> Budget {
+  let render_remaining = fastrender::render_control::root_deadline()
+    .and_then(|deadline| deadline.remaining_timeout());
 
-fn apply_js_stub(host: &mut JsHost, script_text: &str) {
-  let Some(class_name) = extract_document_element_class_name(script_text) else {
-    let preview = script_text.trim().chars().take(120).collect::<String>();
-    if !preview.is_empty() {
-      host
-        .diagnostics
-        .push(format!("ignored unsupported script: {preview}"));
-    }
-    return;
+  let deadline_duration = match (run_limits.max_wall_time, render_remaining) {
+    (Some(a), Some(b)) => Some(a.min(b)),
+    (Some(a), None) => Some(a),
+    (None, Some(b)) => Some(b),
+    (None, None) => None,
   };
+  let deadline = deadline_duration.and_then(|d| Instant::now().checked_add(d));
 
-  let Some(doc_el) = find_document_element(&host.dom) else {
-    host
-      .diagnostics
-      .push("document.documentElement is missing; cannot apply className assignment".to_string());
-    return;
-  };
-
-  match dom2_set_attribute(&mut host.dom, doc_el, "class", &class_name) {
-    Ok(true) => host.diagnostics.push(format!(
-      "applied documentElement.className = {class_name:?}"
-    )),
-    Ok(false) => host
-      .diagnostics
-      .push(format!("documentElement.className already {class_name:?}")),
-    Err(err) => host.diagnostics.push(format!(
-      "failed to set documentElement.className = {class_name:?}: {err:?}"
-    )),
+  Budget {
+    fuel: Some(DEFAULT_JS_FUEL),
+    deadline,
+    check_time_every: DEFAULT_JS_CHECK_TIME_EVERY,
   }
-}
-
-fn dom2_is_html_namespace(namespace: &str) -> bool {
-  namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE
-}
-
-fn dom2_attr_name_matches(existing: &str, query: &str, is_html: bool) -> bool {
-  if is_html {
-    existing.eq_ignore_ascii_case(query)
-  } else {
-    existing == query
-  }
-}
-
-fn dom2_get_attribute<'a>(dom: &'a Dom2Document, node: Dom2NodeId, name: &str) -> Option<&'a str> {
-  let kind = &dom.node(node).kind;
-  let (attrs, is_html) = match kind {
-    Dom2NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | Dom2NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => (attributes, dom2_is_html_namespace(namespace)),
-    _ => return None,
-  };
-  attrs
-    .iter()
-    .find(|(k, _)| dom2_attr_name_matches(k.as_str(), name, is_html))
-    .map(|(_, v)| v.as_str())
-}
-
-fn dom2_set_attribute(
-  dom: &mut Dom2Document,
-  node: Dom2NodeId,
-  name: &str,
-  value: &str,
-) -> std::result::Result<bool, &'static str> {
-  let kind = &mut dom.node_mut(node).kind;
-  let (attrs, is_html) = match kind {
-    Dom2NodeKind::Element {
-      namespace,
-      attributes,
-      ..
-    }
-    | Dom2NodeKind::Slot {
-      namespace,
-      attributes,
-      ..
-    } => (attributes, dom2_is_html_namespace(namespace)),
-    _ => return Err("node does not support attributes"),
-  };
-
-  if let Some((_, existing)) = attrs
-    .iter_mut()
-    .find(|(k, _)| dom2_attr_name_matches(k.as_str(), name, is_html))
-  {
-    if existing == value {
-      return Ok(false);
-    }
-    existing.clear();
-    existing.push_str(value);
-    return Ok(true);
-  }
-
-  attrs.push((name.to_string(), value.to_string()));
-  Ok(true)
-}
-
-fn extract_document_element_class_name(script_text: &str) -> Option<String> {
-  static SINGLE_QUOTE_RE: OnceLock<Option<Regex>> = OnceLock::new();
-  static DOUBLE_QUOTE_RE: OnceLock<Option<Regex>> = OnceLock::new();
-
-  let single = SINGLE_QUOTE_RE.get_or_init(|| {
-    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*'([^']*)'"#).ok()
-  });
-  if let Some(single) = single.as_ref() {
-    if let Some(caps) = single.captures(script_text) {
-      return Some(caps.get(1)?.as_str().to_string());
-    }
-  }
-
-  let double = DOUBLE_QUOTE_RE.get_or_init(|| {
-    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*"([^"]*)""#).ok()
-  });
-  if let Some(double) = double.as_ref() {
-    if let Some(caps) = double.captures(script_text) {
-      return Some(caps.get(1)?.as_str().to_string());
-    }
-  }
-
-  None
-}
-
-fn find_document_element(dom: &Dom2Document) -> Option<Dom2NodeId> {
-  for id in dom.subtree_preorder(dom.root()) {
-    let node = dom.node(id);
-    if let Dom2NodeKind::Element {
-      tag_name,
-      namespace,
-      ..
-    } = &node.kind
-    {
-      if tag_name.eq_ignore_ascii_case("html")
-        && (namespace.is_empty() || namespace == fastrender::dom::HTML_NAMESPACE)
-      {
-        return Some(id);
-      }
-    }
-  }
-  None
 }
 
 /// Fetch a single page and render it to an image
@@ -430,7 +293,15 @@ fn render_page(
 
     // Import into dom2 for mutation.
     let dom2 = Dom2Document::from_renderer_dom(&dom);
-    let mut host = JsHost::new(dom2);
+    let mut host = match WindowHostState::new(dom2, base_hint.clone()) {
+      Ok(host) => host,
+      Err(err) => {
+        log(&format!(
+          "JavaScript: failed to initialize window host (continuing without JS): {err}"
+        ));
+        return render_fetched_document(renderer, &resource, Some(&base_hint), &options);
+      }
+    };
 
     // Collect and execute inline scripts best-effort.
     let run_limits = js.run_limits();
@@ -439,11 +310,12 @@ fn render_page(
     } else {
       js.max_script_bytes
     };
-    let mut event_loop = EventLoop::<JsHost>::new();
+    let mut event_loop = EventLoop::<WindowHostState>::new();
     let mut scripts_queued = 0usize;
 
-    for script_id in host.dom.subtree_preorder(host.dom.root()) {
-      let node = host.dom.node(script_id);
+    let dom = host.dom();
+    for script_id in dom.subtree_preorder(dom.root()) {
+      let node = dom.node(script_id);
       let Dom2NodeKind::Element { tag_name, namespace, .. } = &node.kind else {
         continue;
       };
@@ -452,19 +324,24 @@ fn render_page(
       {
         continue;
       }
-      if !host.dom.is_connected_for_scripting(script_id) {
+      if !dom.is_connected_for_scripting(script_id) {
         continue;
       }
 
       // External scripts are out of scope for the CLI MVP.
-      if dom2_get_attribute(&host.dom, script_id, "src").is_some_and(|v| !v.is_empty()) {
+      if dom.has_attribute(script_id, "src").unwrap_or(false) {
         log("JavaScript: skipping external <script src=...> (not supported yet)");
+        continue;
+      }
+
+      if determine_script_type_dom2(dom, script_id) != ScriptType::Classic {
+        log("JavaScript: skipping non-classic <script> (only classic scripts supported)");
         continue;
       }
 
       let mut inline_text = String::new();
       for &child_id in &node.children {
-        if let Dom2NodeKind::Text { content } = &host.dom.node(child_id).kind {
+        if let Dom2NodeKind::Text { content } = &dom.node(child_id).kind {
           inline_text.push_str(content);
         }
       }
@@ -479,10 +356,31 @@ fn render_page(
       }
 
       // Queue execution as tasks so microtask checkpoints are respected by the event loop.
-      let script_text = inline_text;
-      if let Err(err) = event_loop.queue_task(TaskSource::Script, move |dom, _event_loop| {
-        apply_js_stub(dom, &script_text);
-        Ok(())
+      let script_id_for_task = script_id;
+      let script_name: Arc<str> = Arc::from(format!("<inline script {}>", script_id.index()));
+      let script_text: Arc<str> = Arc::from(inline_text);
+      if let Err(err) = event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+        let prev = host.current_script_state().borrow().current_script;
+        host.current_script_state().borrow_mut().current_script = Some(script_id_for_task);
+
+        let result = with_event_loop(event_loop, || {
+          let window = host.window_mut();
+          window.reset_interrupt();
+          window.vm_mut().set_budget(js_budget_for_script(run_limits));
+
+          let exec_result = window.exec_script_with_name(script_name.clone(), script_text.clone());
+
+          window
+            .vm_mut()
+            .set_budget(Budget::unlimited(DEFAULT_JS_CHECK_TIME_EVERY));
+          exec_result
+        });
+
+        host.current_script_state().borrow_mut().current_script = prev;
+
+        result
+          .map(|_| ())
+          .map_err(|err| fastrender::Error::Other(format!("{}: {err}", &*script_name)))
       }) {
         log(&format!("JavaScript: failed to queue script task: {err}"));
         break;
@@ -496,7 +394,9 @@ fn render_page(
         "JavaScript: queued {scripts_queued} task(s) (max_tasks={} max_microtasks={} max_wall_ms={} max_script_bytes={})",
         run_limits.max_tasks, run_limits.max_microtasks, js.max_wall_ms, max_script_bytes
       ));
-      match event_loop.run_until_idle(&mut host, run_limits) {
+      match event_loop.run_until_idle_handling_errors(&mut host, run_limits, |err| {
+        log(&format!("JavaScript: uncaught exception: {err}"));
+      }) {
         Ok(RunUntilIdleOutcome::Idle) => {}
         Ok(RunUntilIdleOutcome::Stopped(reason)) => match reason {
           RunUntilIdleStopReason::MaxTasks { executed, limit } => {
@@ -521,12 +421,6 @@ fn render_page(
       }
     }
 
-    if !host.diagnostics.is_empty() {
-      for line in &host.diagnostics {
-        log(&format!("JavaScript: {line}"));
-      }
-    }
-
     // If a render timeout is configured, share the remaining budget with the renderer so JS + render
     // stays bounded by a single deadline.
     if options.timeout.is_some() {
@@ -538,7 +432,7 @@ fn render_page(
     }
 
     // Snapshot mutated dom2 tree back into renderer DOM and render one frame.
-    let dom = host.dom.to_renderer_dom();
+    let dom = host.dom().to_renderer_dom();
     let report = match renderer.prepare_dom_with_options(dom, Some(&base_hint), options.clone()) {
       Ok(report) => report,
       Err(err) => {

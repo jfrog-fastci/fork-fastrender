@@ -3,7 +3,9 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
-use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
+use crate::js::window_realm::{
+  register_dom_source, unregister_dom_source, WindowRealm, WindowRealmConfig, WindowRealmHost,
+};
 use crate::js::{
   install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
   install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
@@ -11,6 +13,7 @@ use crate::js::{
 };
 use crate::render_control;
 use crate::resource::{HttpFetcher, ResourceFetcher};
+use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Instant;
 use vm_js::{Budget, VmError};
@@ -141,6 +144,7 @@ pub struct WindowHostState {
   ///
   /// This is a host-level concept (HTML `Document.baseURI`) and is not stored in `dom2`.
   pub base_url: Option<String>,
+  dom_source_id: Option<u64>,
   document: DocumentHostState,
   window: WindowRealm,
   _fetch_bindings: WindowFetchBindings,
@@ -157,33 +161,51 @@ impl WindowHostState {
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
     let document_url = document_url.into();
-    let document = DocumentHostState::new(dom);
-    let mut window = WindowRealm::new(
+    let mut document = DocumentHostState::new(dom);
+    let dom_source_id = register_dom_source(NonNull::from(document.dom_mut()));
+    let mut window = match WindowRealm::new(
       WindowRealmConfig::new(document_url.clone())
+        .with_dom_source_id(dom_source_id)
         .with_current_script_state(document.current_script_state().clone()),
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
+    ) {
+      Ok(window) => window,
+      Err(err) => {
+        unregister_dom_source(dom_source_id);
+        return Err(Error::Other(err.to_string()));
+      }
+    };
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
     let fetch_bindings = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
-      install_window_timers_bindings::<WindowHostState>(vm, realm, heap)
-        .map_err(|e| Error::Other(e.to_string()))?;
-      install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
-        .map_err(|e| Error::Other(e.to_string()))?;
-      install_window_fetch_bindings_with_guard::<WindowHostState>(
+      if let Err(err) = install_window_timers_bindings::<WindowHostState>(vm, realm, heap) {
+        unregister_dom_source(dom_source_id);
+        return Err(Error::Other(err.to_string()));
+      }
+      if let Err(err) = install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
+      {
+        unregister_dom_source(dom_source_id);
+        return Err(Error::Other(err.to_string()));
+      }
+      match install_window_fetch_bindings_with_guard::<WindowHostState>(
         vm,
         realm,
         heap,
         WindowFetchEnv::for_document(fetcher, Some(document_url.clone())),
-      )
-      .map_err(|e| Error::Other(e.to_string()))?
+      ) {
+        Ok(bindings) => bindings,
+        Err(err) => {
+          unregister_dom_source(dom_source_id);
+          return Err(Error::Other(err.to_string()));
+        }
+      }
     };
 
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
+      dom_source_id: Some(dom_source_id),
       document,
       window,
       _fetch_bindings: fetch_bindings,
@@ -224,6 +246,14 @@ impl WindowHostState {
 
   pub fn window_mut(&mut self) -> &mut WindowRealm {
     &mut self.window
+  }
+}
+
+impl Drop for WindowHostState {
+  fn drop(&mut self) {
+    if let Some(id) = self.dom_source_id.take() {
+      unregister_dom_source(id);
+    }
   }
 }
 

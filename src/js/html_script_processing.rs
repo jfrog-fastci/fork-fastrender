@@ -167,13 +167,12 @@ where
   runner: Rc<Runner>,
   event_loop: &'a mut EventLoop<Host>,
   source_text: &'a str,
-  dom: &'a Document,
 }
 
 impl<'a, Host: 'static, Runner, HostWrapper> ScriptBlockExecutor<HostWrapper>
   for ScriptRunnerExecutor<'a, Host, Runner>
 where
-  HostWrapper: CurrentScriptHost + InnerHostAccess<Host>,
+  HostWrapper: CurrentScriptHost + DomHost + InnerHostAccess<Host>,
   Runner:
     Fn(&mut Host, &Document, NodeId, ScriptType, &str, &mut EventLoop<Host>) -> Result<()> + 'static,
 {
@@ -184,9 +183,13 @@ where
     script: NodeId,
     script_type: ScriptType,
   ) -> Result<()> {
+    // Clone the DOM snapshot passed to the runner so scripts that synchronously trigger nested script
+    // execution (re-entrant `execute_now` calls) do not hold an immutable RefCell borrow across DOM
+    // mutations performed by the orchestrator.
+    let dom_snapshot = host.with_dom(Document::clone);
     (self.runner)(
       host.inner_mut(),
-      self.dom,
+      &dom_snapshot,
       script,
       script_type,
       self.source_text,
@@ -197,7 +200,6 @@ where
 
 fn execute_now<Host, Runner, HostWrapper>(
   host: &mut HostWrapper,
-  dom: &Document,
   script: NodeId,
   source_text: &str,
   event_loop: &mut EventLoop<Host>,
@@ -220,7 +222,6 @@ where
     runner,
     event_loop,
     source_text,
-    dom,
   };
   {
     let _guard = JsExecutionGuard::enter(js_execution_depth);
@@ -239,7 +240,6 @@ where
 fn apply_actions<Host, HostWrapper, Loader, Runner>(
   scheduler: &mut ScriptScheduler<NodeId>,
   host: &mut HostWrapper,
-  dom: &Document,
   loader: &mut Loader,
   pending_fetches: &mut HashMap<Loader::Handle, ScriptId>,
   queued_task_scripts: &mut Vec<(NodeId, String)>,
@@ -272,7 +272,6 @@ where
       } => {
         execute_now(
           host,
-          dom,
           node_id,
           &source_text,
           event_loop,
@@ -297,7 +296,6 @@ where
       apply_actions(
         scheduler,
         host,
-        dom,
         loader,
         pending_fetches,
         queued_task_scripts,
@@ -322,7 +320,6 @@ where
 fn poll_fetch_completions<Host, HostWrapper, Loader, Runner>(
   scheduler: &mut ScriptScheduler<NodeId>,
   host: &mut HostWrapper,
-  dom: &Document,
   loader: &mut Loader,
   pending_fetches: &mut HashMap<Loader::Handle, ScriptId>,
   queued_task_scripts: &mut Vec<(NodeId, String)>,
@@ -346,7 +343,6 @@ where
     apply_actions(
       scheduler,
       host,
-      dom,
       loader,
       pending_fetches,
       queued_task_scripts,
@@ -405,15 +401,16 @@ where
           event_loop.perform_microtask_checkpoint(host)?;
         }
 
-        let Some(doc) = parser.document() else {
-          return Err(Error::Other(
-            "html_script_processing: parser document unavailable".to_string(),
-          ));
+        let discovered = {
+          let Some(doc) = parser.document() else {
+            return Err(Error::Other(
+              "html_script_processing: parser document unavailable".to_string(),
+            ));
+          };
+          let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+          let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker);
+          scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?
         };
-        let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
-        let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker);
-        let discovered =
-          scheduler.discovered_parser_script(spec, script, base_url_at_this_point)?;
         let mut host_wrapper = ParserHost {
           inner: host,
           parser: &parser,
@@ -421,7 +418,6 @@ where
         apply_actions(
           &mut scheduler,
           &mut host_wrapper,
-          &doc,
           loader,
           &mut pending_fetches,
           &mut queued_task_scripts,
@@ -445,7 +441,6 @@ where
   // End-of-parsing hook: allows defer scripts to start queuing once their fetch completes.
   let actions = scheduler.parsing_completed()?;
   {
-    let dom = dom_rc.borrow();
     let mut host_wrapper = RcDomHost {
       inner: host,
       dom: Rc::clone(&dom_rc),
@@ -453,7 +448,6 @@ where
     apply_actions(
       &mut scheduler,
       &mut host_wrapper,
-      &dom,
       loader,
       &mut pending_fetches,
       &mut queued_task_scripts,
@@ -467,7 +461,6 @@ where
     poll_fetch_completions(
       &mut scheduler,
       &mut host_wrapper,
-      &dom,
       loader,
       &mut pending_fetches,
       &mut queued_task_scripts,
@@ -485,7 +478,6 @@ where
     let js_execution_depth = Rc::clone(&js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
       let dom_for_host = Rc::clone(&dom);
-      let dom_ref = dom.borrow();
       let mut host_wrapper = RcDomHost {
         inner: host,
         dom: dom_for_host,
@@ -495,7 +487,6 @@ where
         runner,
         event_loop,
         source_text: &source_text,
-        dom: &dom_ref,
       };
       let _guard = JsExecutionGuard::enter(&js_execution_depth);
       orchestrator.execute_script_element(&mut host_wrapper, node_id, ScriptType::Classic, &mut exec)?;
@@ -696,7 +687,6 @@ mod tests {
     let runner = Rc::clone(&runner);
     let js_execution_depth_for_task = Rc::clone(&js_execution_depth);
     event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
-      let dom_ref = dom_for_task.borrow();
       let dom_for_host = Rc::clone(&dom_for_task);
       let mut host_wrapper = RcDomHost {
         inner: host,
@@ -704,7 +694,6 @@ mod tests {
       };
       execute_now(
         &mut host_wrapper,
-        &dom_ref,
         script,
         "a",
         event_loop,
@@ -774,7 +763,6 @@ mod tests {
 
           // Nested script execution should not run microtasks even if it invokes `execute_now`.
           {
-            let dom_ref = dom.borrow();
             let dom_for_host = Rc::clone(&dom);
             let mut host_wrapper = RcDomHost {
               inner: host,
@@ -782,7 +770,6 @@ mod tests {
             };
             execute_now(
               &mut host_wrapper,
-              &dom_ref,
               script_b,
               "b",
               event_loop,
@@ -799,7 +786,6 @@ mod tests {
 
     let mut host = Host::default();
     let mut event_loop = EventLoop::<Host>::new();
-    let dom_ref = dom.borrow();
     let dom_for_host = Rc::clone(&dom);
     let mut host_wrapper = RcDomHost {
       inner: &mut host,
@@ -807,7 +793,6 @@ mod tests {
     };
     execute_now(
       &mut host_wrapper,
-      &dom_ref,
       script_a,
       "a",
       &mut event_loop,
