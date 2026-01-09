@@ -100,43 +100,58 @@ impl StreamingHtmlParser {
 
   /// Run the tokenizer/tree-builder until it either needs a script, needs more input, or finishes.
   pub fn pump(&mut self) -> Result<StreamingParserYield> {
-    match self.parser.pump()? {
-      Html5everPump::Script(script) => {
-        // Ensure declarative shadow roots are attached before any connected script executes.
-        //
-        // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
-        // streaming parsing with script execution, we need scripts to observe the promoted tree
-        // shape once the relevant `<template shadowroot=...>` markup has been parsed.
-        //
-        // Only run this promotion when the yielded script is connected for scripting; scripts inside
-        // inert `<template>` contents must remain inert, and promoting while still parsing inside a
-        // template could invalidate html5ever's template state.
-        if let Some(sink) = self.parser.sink() {
-          let mut doc = sink.document_mut();
-          if doc.is_connected_for_scripting(script) {
-            doc.attach_shadow_roots();
-          }
-        } else {
-          debug_assert!(
-            false,
-            "StreamingHtmlParser yielded a script without an active DOM sink"
-          );
-        }
+    loop {
+      match self.parser.pump()? {
+        Html5everPump::Script(script) => {
+          // html5ever yields `TokenizerResult::Script` for any parsed `</script>` end tag, even when
+          // the resulting `<script>` element is not eligible for execution (e.g. inside inert
+          // `<template>` contents).
+          //
+          // The HTML script preparation algorithm early-outs when the script element is not
+          // connected, so these should not block parsing. Filter them out here so callers only see
+          // pause points that actually require script scheduling/execution.
+          let should_yield = if let Some(mut doc) = self.document_mut() {
+            if doc.is_connected_for_scripting(script) {
+              // Ensure declarative shadow roots are attached before any connected script executes.
+              //
+              // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
+              // streaming parsing with script execution, we need scripts to observe the promoted tree
+              // shape once the relevant `<template shadowroot=...>` markup has been parsed.
+              //
+              // Only run this promotion when the yielded script is connected for scripting; scripts
+              // inside inert `<template>` contents must remain inert, and promoting while still
+              // parsing inside a template could invalidate html5ever's template state.
+              doc.attach_shadow_roots();
+              true
+            } else {
+              false
+            }
+          } else {
+            debug_assert!(
+              false,
+              "StreamingHtmlParser yielded a script without an active DOM sink"
+            );
+            true
+          };
 
-        Ok(StreamingParserYield::Script {
-          script,
-          base_url_at_this_point: self.current_base_url(),
-        })
-      }
-      Html5everPump::NeedMoreInput => Ok(StreamingParserYield::NeedMoreInput),
-      Html5everPump::Finished(mut document) => {
-        // Ensure declarative shadow roots are attached for the final DOM snapshot.
-        //
-        // The parser also performs best-effort promotion before executing connected scripts (see the
-        // `Script` arm above), but additional shadowroot templates may appear after the final script
-        // yield (or in documents with no scripts at all).
-        document.attach_shadow_roots();
-        Ok(StreamingParserYield::Finished { document })
+          if should_yield {
+            return Ok(StreamingParserYield::Script {
+              script,
+              base_url_at_this_point: self.current_base_url(),
+            });
+          }
+          continue;
+        }
+        Html5everPump::NeedMoreInput => return Ok(StreamingParserYield::NeedMoreInput),
+        Html5everPump::Finished(mut document) => {
+          // Ensure declarative shadow roots are attached for the final DOM snapshot.
+          //
+          // The parser also performs best-effort promotion before executing connected scripts (see
+          // the `Script` arm above), but additional shadowroot templates may appear after the final
+          // script yield (or in documents with no scripts at all).
+          document.attach_shadow_roots();
+          return Ok(StreamingParserYield::Finished { document });
+        }
       }
     }
   }
@@ -271,6 +286,50 @@ mod tests {
     ]);
 
     assert_eq!(scripts_chunked, scripts_full);
+  }
+
+  #[test]
+  fn scripts_inside_inert_templates_do_not_yield_pause_points() {
+    let mut parser = StreamingHtmlParser::new(None);
+    parser.push_str("<!doctype html><template><script>inert</script></template><script>live</script>");
+
+    match parser.pump().unwrap() {
+      StreamingParserYield::Script { script, .. } => {
+        let doc = parser
+          .document()
+          .expect("document should be available while parsing");
+        assert_eq!(text_children_concat(&doc, script), "live");
+        assert!(
+          doc.is_connected_for_scripting(script),
+          "yielded script should be connected for scripting"
+        );
+
+        let mut saw_inert_script = false;
+        for node_id in doc.subtree_preorder(doc.root()) {
+          let NodeKind::Element { tag_name, .. } = &doc.node(node_id).kind else {
+            continue;
+          };
+          if !tag_name.eq_ignore_ascii_case("script") {
+            continue;
+          }
+          if !doc.is_connected_for_scripting(node_id) {
+            saw_inert_script = true;
+            break;
+          }
+        }
+        assert!(
+          saw_inert_script,
+          "expected a parsed <script> element inside inert <template> contents"
+        );
+      }
+      other => panic!("expected Script yield, got {other:?}"),
+    }
+
+    parser.set_eof();
+    match parser.pump().unwrap() {
+      StreamingParserYield::Finished { .. } => {}
+      other => panic!("expected Finished, got {other:?}"),
+    }
   }
 
   #[test]
@@ -546,7 +605,7 @@ mod tests {
   }
 
   #[test]
-  fn declarative_shadow_root_is_not_attached_at_inert_template_script_yield() {
+  fn declarative_shadow_root_attaches_and_inert_template_scripts_do_not_pause() {
     let mut parser = StreamingHtmlParser::new(None);
     parser.push_str(
       "<!doctype html>\
@@ -555,40 +614,9 @@ mod tests {
     );
     parser.set_eof();
 
-    let script = match parser.pump().unwrap() {
-      StreamingParserYield::Script { script, .. } => script,
-      other => panic!("expected Script yield, got {other:?}"),
-    };
-
-    {
-      let doc = parser
-        .document()
-        .expect("document should be available while parsing");
-      assert!(
-        !doc.is_connected_for_scripting(script),
-        "script inside <template> should not be connected for scripting"
-      );
-      let host = doc.get_element_by_id("host").expect("expected host element");
-      let first_child = *doc
-        .node(host)
-        .children
-        .first()
-        .expect("host should have a child node");
-      assert!(
-        matches!(
-          &doc.node(first_child).kind,
-          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template")
-        ),
-        "expected declarative shadow root template to remain unpromoted at inert script boundary"
-      );
-    }
-
-    let document = loop {
-      match parser.pump().unwrap() {
-        StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
-        StreamingParserYield::Script { .. } => panic!("unexpected additional script yield"),
-        StreamingParserYield::Finished { document } => break document,
-      }
+    let document = match parser.pump().unwrap() {
+      StreamingParserYield::Finished { document } => document,
+      other => panic!("expected Finished, got {other:?}"),
     };
 
     let host = document.get_element_by_id("host").expect("expected host element");
@@ -600,6 +628,24 @@ mod tests {
     assert!(
       matches!(document.node(first_child).kind, NodeKind::ShadowRoot { .. }),
       "expected declarative shadow root to be attached once parsing completes"
+    );
+
+    let mut saw_inert_script = false;
+    for node_id in document.subtree_preorder(document.root()) {
+      let NodeKind::Element { tag_name, .. } = &document.node(node_id).kind else {
+        continue;
+      };
+      if !tag_name.eq_ignore_ascii_case("script") {
+        continue;
+      }
+      if !document.is_connected_for_scripting(node_id) {
+        saw_inert_script = true;
+        break;
+      }
+    }
+    assert!(
+      saw_inert_script,
+      "expected a parsed <script> element inside inert <template> contents"
     );
   }
 }
