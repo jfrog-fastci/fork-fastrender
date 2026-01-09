@@ -77,11 +77,11 @@ What exists today (in-tree):
 ### How to run tests
 The relevant unit tests live in the `fastrender` crate’s `--lib` test binary. Run them (scoped) with:
 
-`scripts/cargo_agent.sh test -p fastrender --lib`
+`bash scripts/cargo_agent.sh test -p fastrender --lib`
 
 Some end-to-end scheduling/currentScript coverage lives in integration tests (example):
 
-`scripts/cargo_agent.sh test -p fastrender --test js_current_script`
+`bash scripts/cargo_agent.sh test -p fastrender --test js_current_script`
 
 ---
 
