@@ -5137,6 +5137,7 @@ fn paint_fragment_tree_with_state(
             node,
             Point::ZERO,
             node.bounds.size,
+            false,
             has_fixed_cb_ancestor,
           );
           // Listbox <select> controls are painted from their `SelectControl` model rather than real

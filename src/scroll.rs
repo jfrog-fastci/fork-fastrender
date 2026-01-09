@@ -1149,6 +1149,18 @@ fn collect_bounds(
   root: bool,
   has_fixed_cb_ancestor: bool,
 ) {
+  // Viewport-fixed descendants do not participate in scrollable overflow for any ancestor scroll
+  // container, since they remain pinned to the viewport (unless a fixed containing block is
+  // established).
+  if node
+    .style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !has_fixed_cb_ancestor
+  {
+    return;
+  }
+
   let rect = Rect::from_xywh(origin.x, origin.y, node.bounds.width(), node.bounds.height());
   let Some(visible_rect) = clip.intersect_rect(rect) else {
     return;
@@ -1200,6 +1212,7 @@ pub(crate) fn scroll_bounds_for_fragment(
   container: &FragmentNode,
   _origin: Point,
   viewport: Size,
+  treat_as_root: bool,
   has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
   // Scroll bounds are defined over the scrollport (the viewport through which descendants are
@@ -1216,10 +1229,20 @@ pub(crate) fn scroll_bounds_for_fragment(
 
   let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
 
-  // Collect descendant bounds without unioning the container's border box. The seed `bounds`
-  // already includes the scrollport rect; including a larger border box (e.g. due to reserved
-  // scrollbar gutters) would incorrectly allow scrolling even when the scrollable contents do not
-  // overflow.
+  // For the root scroll container (viewport scrolling), include the root fragment's border box in
+  // the content bounds when it is larger than the scrollport (e.g. in tests that use the root
+  // bounds to encode document content size). For non-root element scrollers we intentionally do
+  // not union the border box because it can include reserved scrollbar gutters, which would
+  // incorrectly allow scrolling even when the scrollable contents do not overflow.
+  if treat_as_root && scrollbar_reservation == crate::tree::fragment_tree::ScrollbarReservation::default() {
+    bounds.update(Rect::from_xywh(
+      0.0,
+      0.0,
+      container.bounds.width(),
+      container.bounds.height(),
+    ));
+  }
+
   let establishes_fixed_cb = container
     .style
     .as_deref()
@@ -1327,7 +1350,7 @@ impl<'a> ScrollChainState<'a> {
       return None;
     }
 
-    let bounds = scroll_bounds_for_fragment(node, origin, viewport, has_fixed_cb_ancestor);
+    let bounds = scroll_bounds_for_fragment(node, origin, viewport, treat_as_root, has_fixed_cb_ancestor);
     Some(Self {
       container: node,
       origin,

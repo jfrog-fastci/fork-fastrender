@@ -522,10 +522,11 @@ fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
     &ScrollState::default(),
     Point::new(65.0, 65.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(65.0, 65.0),
     "https://example.com/base/",
     "https://example.com/base/",
@@ -591,10 +592,11 @@ fn anchor_activation_appends_ismap_coordinates() {
     &ScrollState::default(),
     Point::new(75.0, 95.0),
   );
-  let (_, action) = engine.pointer_up(
+  let (_, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(75.0, 95.0),
     "https://example.com/base/",
     "https://example.com/base/",
@@ -2035,10 +2037,11 @@ fn submit_click_form_attr_does_not_match_form_inside_template_contents() {
     Point::new(5.0, 5.0),
   );
  
-  let (_changed, action) = engine.pointer_up(
+  let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://example.com/doc",
     "https://example.com/base/",
@@ -2120,10 +2123,11 @@ fn submit_click_does_not_mark_form_user_validity_across_shadow_root_boundary() {
     Point::new(5.0, 5.0),
   );
  
-  let (_changed, action) = engine.pointer_up(
+  let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://example.com/doc",
     "https://example.com/base/",
@@ -2366,10 +2370,11 @@ fn submit_click_includes_form_associated_control_outside_form_in_query() {
     Point::new(5.0, 5.0),
   );
 
-  let (_changed, action) = engine.pointer_up(
+  let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://example.com/doc",
     "https://example.com/base/",
@@ -2441,10 +2446,11 @@ fn submit_click_prefers_select_option_value_attribute_over_text_content() {
     Point::new(5.0, 5.0),
   );
 
-  let (_changed, action) = engine.pointer_up(
+  let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://example.com/doc",
     "https://example.com/base/",
@@ -2509,10 +2515,11 @@ fn submit_click_defaults_action_to_document_url_when_action_is_missing() {
     Point::new(5.0, 5.0),
   );
 
-  let (_changed, action) = engine.pointer_up(
+  let (_changed, action) = engine.pointer_up_with_scroll(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://example.com/doc",
     "https://example.com/base/",
