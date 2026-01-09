@@ -1,10 +1,33 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::render_control::{record_stage, StageGuard, StageHeartbeat};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::rc::Rc;
 
 use super::{EventLoop, JsExecutionOptions, ScriptElementSpec, ScriptType, TaskSource};
+
+struct JsExecutionGuard {
+  depth: Rc<Cell<usize>>,
+}
+
+impl Drop for JsExecutionGuard {
+  fn drop(&mut self) {
+    let cur = self.depth.get();
+    self
+      .depth
+      .set(cur.checked_sub(1).expect("js execution depth underflow"));
+  }
+}
+
+fn enter_js_execution(depth: &Rc<Cell<usize>>) -> JsExecutionGuard {
+  let cur = depth.get();
+  depth.set(cur + 1);
+  JsExecutionGuard {
+    depth: Rc::clone(depth),
+  }
+}
 
 /// A minimal script loader interface used by the script scheduler.
 ///
@@ -66,6 +89,7 @@ where
   Host: ScriptLoader + ScriptExecutor,
 {
   options: JsExecutionOptions,
+  js_execution_depth: Rc<Cell<usize>>,
   parsing_finished: bool,
 
   async_pending: HashMap<<Host as ScriptLoader>::Handle, ScriptElementSpec>,
@@ -82,6 +106,7 @@ where
   fn default() -> Self {
     Self {
       options: JsExecutionOptions::default(),
+      js_execution_depth: Rc::new(Cell::new(0)),
       parsing_finished: false,
       async_pending: HashMap::new(),
       defer_scripts: Vec::new(),
@@ -126,17 +151,16 @@ where
         .check_script_source(&spec.inline_text, "source=inline")?;
       // HTML `</script>` handling performs a microtask checkpoint *before* preparing/executing a
       // parser-inserted script when the JS execution context stack is empty.
-      //
-      // In this MVP we approximate "JS execution context stack is empty" by checking whether the
-      // event loop is currently executing a task/microtask. This prevents microtasks from running
-      // during re-entrant parsing (e.g. `document.write()` inside an executing script).
-      if spec.parser_inserted && event_loop.currently_running_task().is_none() {
+      if spec.parser_inserted && self.js_execution_depth.get() == 0 {
         event_loop.perform_microtask_checkpoint(host)?;
       }
       {
         let _stage_guard = StageGuard::install(Some(RenderStage::Script));
         record_stage(StageHeartbeat::Script);
-        host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
+        {
+          let _guard = enter_js_execution(&self.js_execution_depth);
+          host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
+        }
       }
       // HTML: a microtask checkpoint is performed after script execution.
       event_loop.perform_microtask_checkpoint(host)?;
@@ -180,7 +204,7 @@ where
     }
 
     // Parser-blocking external script: synchronously load + execute.
-    if spec.parser_inserted && event_loop.currently_running_task().is_none() {
+    if spec.parser_inserted && self.js_execution_depth.get() == 0 {
       event_loop.perform_microtask_checkpoint(host)?;
     }
     let script_text = host.load_blocking(src_url)?;
@@ -190,7 +214,10 @@ where
     {
       let _stage_guard = StageGuard::install(Some(RenderStage::Script));
       record_stage(StageHeartbeat::Script);
-      host.execute_classic_script(&script_text, &spec, event_loop)?;
+      {
+        let _guard = enter_js_execution(&self.js_execution_depth);
+        host.execute_classic_script(&script_text, &spec, event_loop)?;
+      }
     }
     event_loop.perform_microtask_checkpoint(host)?;
     Ok(())
@@ -203,7 +230,7 @@ where
         .options
         .check_script_source(&source, &format!("source=external handle={handle:?}"))?;
       if let Some(spec) = self.async_pending.remove(&handle) {
-        Self::queue_script_task(event_loop, spec, source)?;
+        self.queue_script_task(event_loop, spec, source)?;
         continue;
       }
       if let Some(idx) = self.defer_by_handle.remove(&handle) {
@@ -252,17 +279,20 @@ where
         .take()
         .ok_or_else(|| Error::Other("internal error: deferred script missing spec".to_string()))?;
       self.next_defer_to_queue += 1;
-      Self::queue_script_task(event_loop, spec, source)?;
+      self.queue_script_task(event_loop, spec, source)?;
     }
     Ok(())
   }
 
   fn queue_script_task(
+    &mut self,
     event_loop: &mut EventLoop<Host>,
     spec: ScriptElementSpec,
     source: String,
   ) -> Result<()> {
+    let js_execution_depth = Rc::clone(&self.js_execution_depth);
     event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+      let _guard = enter_js_execution(&js_execution_depth);
       host.execute_classic_script(&source, &spec, event_loop)
     })?;
     Ok(())
@@ -622,7 +652,9 @@ mod tests {
   use crate::dom::parse_html;
   use crate::js::extract_script_elements;
   use crate::js::{EventLoop, JsExecutionOptions, RunLimits, ScriptElementSpec, ScriptType};
+  use std::cell::RefCell;
   use std::collections::VecDeque;
+  use std::rc::Rc;
 
   #[derive(Default)]
   struct ManualLoader {
@@ -919,6 +951,32 @@ mod tests {
     scheduler.handle_script(&mut host, &mut event_loop, scripts[0].clone())?;
 
     assert_eq!(host.log, vec!["microtask".to_string(), "BLOCK".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn microtasks_run_before_parser_blocking_inline_script_even_inside_parse_task() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let scheduler = Rc::new(RefCell::new(ClassicScriptScheduler::<TestHost>::new()));
+
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.log.push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let scheduler_for_task = Rc::clone(&scheduler);
+    event_loop.queue_task(TaskSource::DOMManipulation, move |host, event_loop| {
+      scheduler_for_task.borrow_mut().handle_script(host, event_loop, inline_script("RUN"))?;
+      Ok(())
+    })?;
+
+    // Run the parse task first (without pre-draining microtasks) to ensure the pre-script checkpoint
+    // at `</script>` boundaries is the mechanism that flushes the microtask.
+    assert!(event_loop.run_next_task(&mut host)?);
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["microtask".to_string(), "RUN".to_string()]);
     Ok(())
   }
 
