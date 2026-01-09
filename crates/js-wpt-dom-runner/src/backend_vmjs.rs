@@ -529,14 +529,29 @@ struct EventState {
   in_passive_listener: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DomNodeKind {
+  Element,
+  DocumentFragment,
+}
+
+impl Default for DomNodeKind {
+  fn default() -> Self {
+    Self::Element
+  }
+}
+
 #[derive(Debug, Default)]
 struct DomNodeState {
+  kind: DomNodeKind,
   tag_name: String,
   parent: Option<GcObject>,
   children: Vec<GcObject>,
   // Children appended to <template> go into an inert subtree and must not be traversed by selector
   // APIs. We model this as a separate list rather than a real DocumentFragment.
   template_content: Vec<GcObject>,
+  /// Cached `childNodes` object so stored references behave like a live NodeList.
+  child_nodes: Option<GcObject>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -968,6 +983,17 @@ impl JsWptRuntime {
     };
     self.define_data_prop(document, create_element_key, Value::Object(create_element))?;
 
+    let create_document_fragment = self.alloc_native_function(native_document_create_document_fragment)?;
+    let create_fragment_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("createDocumentFragment")?)
+    };
+    self.define_data_prop(
+      document,
+      create_fragment_key,
+      Value::Object(create_document_fragment),
+    )?;
+
     // Minimal document structure: <html><head></head><body></body></html>.
     //
     // Only a handful of WPT smoke tests rely on `document.head`/`document.body`/`document.documentElement`;
@@ -988,6 +1014,12 @@ impl JsWptRuntime {
     if let Some(state) = self.dom_nodes.get_mut(&body) {
       state.parent = Some(document_element);
     }
+    let parent_node_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+    self.define_data_prop(head, parent_node_key, Value::Object(document_element))?;
+    self.define_data_prop(body, parent_node_key, Value::Object(document_element))?;
     self.update_dom_child_nodes(document_element)?;
 
     // Wire EventTarget parent pointers so event dispatch can traverse:
@@ -1252,6 +1284,14 @@ impl JsWptRuntime {
     let tag_value = self.alloc_string_value(&tag_name.to_ascii_uppercase())?;
     self.define_data_prop(obj, tag_key, tag_value)?;
 
+    // Minimal `parentNode` bookkeeping as a data property (this harness does not support accessor
+    // properties yet).
+    let parent_node_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+    self.define_data_prop(obj, parent_node_key, Value::Null)?;
+
     // Treat DOM elements as `EventTarget`s so they can participate in event dispatch paths.
     self.event_targets.insert(
       obj,
@@ -1264,13 +1304,53 @@ impl JsWptRuntime {
     self.dom_nodes.insert(
       obj,
       DomNodeState {
+        kind: DomNodeKind::Element,
         tag_name: tag_name.to_ascii_lowercase(),
         parent: None,
         children: Vec::new(),
         template_content: Vec::new(),
+        child_nodes: None,
       },
     );
 
+    self.update_dom_child_nodes(obj)?;
+    Ok(obj)
+  }
+
+  fn alloc_dom_document_fragment(&mut self) -> Result<GcObject, JsError> {
+    let obj = self.alloc_object()?;
+    // DocumentFragment is a Node but not an Element. For this harness we use the shared Node
+    // prototype (same object as `dom_element_proto`) but omit element-specific properties like
+    // `tagName`.
+    let proto = self.node_proto.ok_or_else(|| JsError::Vm(VmError::Unimplemented("DOM Node prototype")))?;
+    self.heap.object_set_prototype(obj, Some(proto))?;
+
+    // Like other DOM nodes, fragments participate in event dispatch paths, but they start detached.
+    self.event_targets.insert(
+      obj,
+      EventTargetState {
+        parent: None,
+        listeners: HashMap::new(),
+      },
+    );
+
+    let parent_node_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+    self.define_data_prop(obj, parent_node_key, Value::Null)?;
+
+    self.dom_nodes.insert(
+      obj,
+      DomNodeState {
+        kind: DomNodeKind::DocumentFragment,
+        tag_name: String::new(),
+        parent: None,
+        children: Vec::new(),
+        template_content: Vec::new(),
+        child_nodes: None,
+      },
+    );
     self.update_dom_child_nodes(obj)?;
     Ok(obj)
   }
@@ -1295,9 +1375,9 @@ impl JsWptRuntime {
   }
 
   fn update_dom_child_nodes(&mut self, node: GcObject) -> Result<(), JsError> {
-    let (tag_name, children) = match self.dom_nodes.get(&node) {
+    let (tag_name, children, cached_list) = match self.dom_nodes.get(&node) {
       None => return Ok(()),
-      Some(state) => (state.tag_name.clone(), state.children.clone()),
+      Some(state) => (state.tag_name.clone(), state.children.clone(), state.child_nodes),
     };
 
     let visible_children = if tag_name == "template" {
@@ -1305,7 +1385,49 @@ impl JsWptRuntime {
     } else {
       children
     };
-    let list = self.make_dom_nodelist(&visible_children)?;
+
+    let list = match cached_list {
+      Some(list) => list,
+      None => {
+        let list = self.alloc_object()?;
+        if let Some(state) = self.dom_nodes.get_mut(&node) {
+          state.child_nodes = Some(list);
+        }
+        list
+      }
+    };
+
+    // Mutate the cached list in-place so stored references behave like a live NodeList.
+    let length_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("length")?)
+    };
+    let old_len = match self.heap.get_property(list, &length_key)? {
+      Some(desc) => match desc.kind {
+        PropertyKind::Data { value, .. } => match value {
+          Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n >= 0.0 => n as usize,
+          _ => 0,
+        },
+        PropertyKind::Accessor { .. } => 0,
+      },
+      None => 0,
+    };
+    for idx in 0..old_len {
+      let key = {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
+      };
+      self.define_data_prop(list, key, Value::Undefined)?;
+    }
+    for (idx, &child) in visible_children.iter().enumerate() {
+      let key = {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
+      };
+      self.define_data_prop(list, key, Value::Object(child))?;
+    }
+    self.define_data_prop(list, length_key, Value::Number(visible_children.len() as f64))?;
+
     let child_nodes_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("childNodes")?)
@@ -2755,6 +2877,26 @@ fn native_document_create_element(
   Ok(Value::Object(elem))
 }
 
+fn native_document_create_document_fragment(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(document) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: createDocumentFragment called on non-object",
+    )?)));
+  };
+  if !rt.event_targets.contains_key(&document) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: createDocumentFragment called on non-document",
+    )?)));
+  }
+
+  let frag = rt.alloc_dom_document_fragment()?;
+  Ok(Value::Object(frag))
+}
+
 fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
   let Value::Object(parent) = this else {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
@@ -2777,6 +2919,68 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
       "TypeError: appendChild requires a Node",
     )?)));
   };
+
+  let child_is_fragment = rt
+    .dom_nodes
+    .get(&child)
+    .is_some_and(|state| state.kind == DomNodeKind::DocumentFragment);
+
+  if child_is_fragment {
+    // DocumentFragment insertion: move children into the parent (in order) and leave the fragment
+    // detached/empty.
+    if rt.dom_nodes.contains_key(&parent) && rt.dom_nodes.contains_key(&child) {
+      let parent_tag = rt
+        .dom_nodes
+        .get(&parent)
+        .map(|s| s.tag_name.clone())
+        .unwrap_or_default();
+      let parent_is_template = parent_tag == "template";
+
+      let fragment_children = rt
+        .dom_nodes
+        .get(&child)
+        .map(|s| s.children.clone())
+        .unwrap_or_default();
+
+      // Clear the fragment container first so the mutation is atomic from the perspective of the
+      // cached `childNodes` list.
+      if let Some(state) = rt.dom_nodes.get_mut(&child) {
+        state.children.clear();
+        state.template_content.clear();
+        state.parent = None;
+      }
+      let parent_node_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("parentNode")?)
+      };
+      rt.define_data_prop(child, parent_node_key, Value::Null)?;
+
+      for moved in fragment_children {
+        // Update the EventTarget propagation parent pointer for moved nodes.
+        if let Some(moved_state) = rt.event_targets.get_mut(&moved) {
+          moved_state.parent = Some(parent);
+        }
+
+        if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          if parent_is_template {
+            state.template_content.push(moved);
+          } else {
+            state.children.push(moved);
+          }
+        }
+        if let Some(state) = rt.dom_nodes.get_mut(&moved) {
+          state.parent = Some(parent);
+        }
+        rt.define_data_prop(moved, parent_node_key, Value::Object(parent))?;
+      }
+
+      rt.update_dom_child_nodes(parent)?;
+      rt.update_dom_child_nodes(child)?;
+    }
+
+    // Spec: Node.appendChild(DocumentFragment) returns the fragment itself.
+    return Ok(Value::Object(child));
+  }
 
   // Update the EventTarget propagation parent pointer.
   if let Some(child_state) = rt.event_targets.get_mut(&child) {
@@ -2822,6 +3026,11 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
     if let Some(state) = rt.dom_nodes.get_mut(&child) {
       state.parent = Some(parent);
     }
+    let parent_node_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+    rt.define_data_prop(child, parent_node_key, Value::Object(parent))?;
 
     rt.update_dom_child_nodes(parent)?;
   }
@@ -3576,6 +3785,11 @@ fn native_dom_remove_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -
       state.parent = None;
     }
   }
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
+  rt.define_data_prop(child, parent_node_key, Value::Null)?;
   if let Some(state) = rt.event_targets.get_mut(&child) {
     if state.parent == Some(parent) {
       state.parent = None;
