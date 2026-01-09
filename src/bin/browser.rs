@@ -483,6 +483,13 @@ struct App {
   /// at most one `UiToWorker::PointerMove` per rendered frame (and before pointer up/down when
   /// needed).
   pending_pointer_move: Option<fastrender::ui::UiToWorker>,
+  /// Whether the next `render_frame` should send a synthetic `PointerMove` to the active tab based
+  /// on the current cursor position.
+  ///
+  /// Switching tabs does not necessarily produce a `CursorMoved` event, so without this the newly
+  /// active tab might not receive a `PointerMove` until the user moves the mouse (hover state would
+  /// appear "stuck" or missing).
+  hover_sync_pending: bool,
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
@@ -595,6 +602,7 @@ impl App {
       last_cursor_pos_points: None,
       cursor_in_page: false,
       pending_pointer_move: None,
+      hover_sync_pending: false,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
@@ -1088,6 +1096,59 @@ impl App {
     self.close_select_dropdown();
     self.window.request_redraw();
   }
+
+  fn sync_hover_after_tab_change(&mut self, ctx: &egui::Context) {
+    use fastrender::ui::PointerButton;
+    use fastrender::ui::UiToWorker;
+
+    if !self.hover_sync_pending {
+      return;
+    }
+
+    let Some(tab_id) = self.page_input_tab else {
+      // We don't yet know where the page image is drawn (e.g. no frame uploaded). Retry on the
+      // next frame.
+      return;
+    };
+    let Some(mapping) = self.page_input_mapping else {
+      return;
+    };
+
+    let pos_points = self
+      .last_cursor_pos_points
+      .or_else(|| ctx.input(|i| i.pointer.hover_pos()));
+    let Some(pos_points) = pos_points else {
+      // Cursor position is unknown (outside window, or never moved). Bail rather than retrying
+      // indefinitely.
+      self.hover_sync_pending = false;
+      self.cursor_in_page = false;
+      return;
+    };
+
+    // Avoid updating page hover state while the pointer is interacting with a dropdown popup.
+    if self
+      .open_select_dropdown_rect
+      .is_some_and(|rect| rect.contains(pos_points))
+    {
+      self.hover_sync_pending = false;
+      self.cursor_in_page = false;
+      return;
+    }
+
+    if let Some(pos_css) = mapping.pos_points_to_pos_css_if_inside(pos_points) {
+      self.cursor_in_page = true;
+      self.pending_pointer_move = Some(UiToWorker::PointerMove {
+        tab_id,
+        pos_css,
+        button: PointerButton::None,
+      });
+    } else {
+      self.cursor_in_page = false;
+    }
+
+    self.hover_sync_pending = false;
+  }
+
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
     self.browser_state.chrome.request_focus_address_bar = true;
@@ -1527,6 +1588,8 @@ impl App {
           self.pointer_captured = false;
           self.captured_button = fastrender::ui::PointerButton::None;
           self.cursor_in_page = false;
+          self.hover_sync_pending = true;
+          self.pending_pointer_move = None;
 
           self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
@@ -1563,7 +1626,7 @@ impl App {
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
-            self.last_cursor_pos_points = None;
+            self.pending_pointer_move = None;
           }
 
           if let Some(created_tab) = close_result.created_tab {
@@ -1582,6 +1645,8 @@ impl App {
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: created_tab });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: created_tab,
               reason: RepaintReason::Explicit,
@@ -1595,6 +1660,8 @@ impl App {
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
@@ -1608,6 +1675,8 @@ impl App {
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
             self.cursor_in_page = false;
+            self.hover_sync_pending = true;
+            self.pending_pointer_move = None;
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id,
@@ -1828,6 +1897,7 @@ impl App {
     });
 
     self.render_select_dropdown(&ctx);
+    self.sync_hover_after_tab_change(&ctx);
     // Coalesce pointer-move bursts to at most one message per rendered frame.
     self.flush_pending_pointer_move();
 

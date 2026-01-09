@@ -107,6 +107,18 @@ impl InputMapping {
     Some((pos_css.x, pos_css.y))
   }
 
+  /// Like [`Self::pos_points_to_pos_css_clamped`], but returns `None` when `pos_points` lies outside
+  /// the drawn page image.
+  ///
+  /// This is useful when front-ends want to treat the page image bounds as a strict hit-test region
+  /// (e.g. sending a hover update only when the cursor is inside the page).
+  pub fn pos_points_to_pos_css_if_inside(&self, pos_points: Pos2) -> Option<(f32, f32)> {
+    if !self.image_rect_points.contains(pos_points) {
+      return None;
+    }
+    self.pos_points_to_pos_css_clamped(pos_points)
+  }
+
   /// Convert a position in viewport CSS pixels to an egui position (points).
   ///
   pub fn pos_css_to_pos_points(&self, pos_css: (f32, f32)) -> Option<Pos2> {
@@ -340,5 +352,32 @@ mod tests {
     // Drawn at 0.5 scale means 1 point = 2 CSS px.
     assert_approx2((rect_points.min.x, rect_points.min.y), (50.0, 25.0));
     assert_approx2((rect_points.width(), rect_points.height()), (100.0, 50.0));
+  }
+
+  #[test]
+  fn pos_points_to_pos_css_if_inside_returns_none_when_outside_image_rect() {
+    let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    assert!(mapping
+      .pos_points_to_pos_css_if_inside(Pos2::new(0.0, 0.0))
+      .is_none());
+    assert!(mapping
+      .pos_points_to_pos_css_if_inside(Pos2::new(900.0, 700.0))
+      .is_none());
+  }
+
+  #[test]
+  fn pos_points_to_pos_css_if_inside_matches_clamped_mapping_when_inside() {
+    let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let clamped = mapping
+      .pos_points_to_pos_css_clamped(Pos2::new(110.0, 70.0))
+      .unwrap();
+    let inside = mapping
+      .pos_points_to_pos_css_if_inside(Pos2::new(110.0, 70.0))
+      .unwrap();
+    assert_approx2(inside, clamped);
   }
 }
