@@ -585,16 +585,19 @@ impl BrowserRuntime {
             tab.scroll_state.viewport = offset;
             doc.set_scroll_state(tab.scroll_state.clone());
 
-            let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
-              tab_id,
-              url: url_string.clone(),
-            });
-            let title = find_document_title(doc.dom());
-            let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
-              tab_id,
-              url: url_string,
-              title,
-              can_go_back: tab.history.can_go_back(),
+             let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
+               tab_id,
+               url: url_string.clone(),
+             });
+             let title = find_document_title(doc.dom());
+             if let Some(title) = title.as_deref() {
+               tab.history.set_title(title.to_string());
+             }
+             let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+               tab_id,
+               url: url_string,
+               title,
+                can_go_back: tab.history.can_go_back(),
               can_go_forward: tab.history.can_go_forward(),
             });
 

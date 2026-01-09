@@ -269,7 +269,7 @@ impl VmJsScriptRealm {
 }
 
 impl super::VmJsEngineHost for VmJsScriptRealm {
-  fn vm_js_heap(&self) -> &vm_js::Heap {
+  fn vm_js_heap(&self) -> &Heap {
     &self.heap
   }
 
