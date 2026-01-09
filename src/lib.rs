@@ -214,7 +214,6 @@ pub mod process_limits;
 pub(crate) mod rayon_global;
 pub mod system;
 pub mod cli_utils;
-#[cfg(feature = "browser_ui")]
 pub mod ui;
 // ============================================================================
 // Public API

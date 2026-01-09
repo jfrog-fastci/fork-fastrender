@@ -1,14 +1,19 @@
 pub mod about_pages;
+pub mod app_state;
 pub mod browser_app;
 pub mod browser_worker;
 pub mod cancel;
-pub mod chrome;
 pub mod history;
 pub mod messages;
 pub mod tab_engine;
 pub mod ui_worker;
 pub mod worker;
 pub mod worker_loop;
+pub mod url;
+
+// `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
+#[cfg(feature = "browser_ui")]
+pub mod chrome;
 
 pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
@@ -37,13 +42,11 @@ pub mod wgpu_pixmap_texture;
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
 
-#[cfg(feature = "browser_ui")]
-pub mod url;
-
-#[cfg(feature = "browser_ui")]
 pub use url::normalize_user_url;
 
 pub use history::{HistoryEntry, TabHistory};
 pub use browser_app::{BrowserAppState, BrowserTabState, ChromeState, LatestFrameMeta};
+
+#[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};
 pub use tab_engine::TabEngine;
