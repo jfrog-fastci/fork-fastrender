@@ -12,3 +12,627 @@
 # reason = "known VM bug"
 # tracking_issue = "https://github.com/…"
 
+# Until `vm-js` grows broader ECMAScript coverage, most of the curated test262 suite is expected to
+# fail. Mark the whole curated expression subset as `xfail` so `xtask js test262 --fail-on new`
+# stays usable as a wiring + regression check.
+#
+# We then explicitly list the tests that currently pass so regressions in those tests are still
+# treated as unexpected failures.
+
+[[expectations]]
+glob = "language/expressions/**"
+status = "xfail"
+reason = "vm-js: ECMAScript semantics are still incomplete; tracked via curated test262 progress."
+
+# --- Known-passing tests (keep regressions unexpected) ---
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/addition/S11.6.1_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/11.1.4-0.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/spread-err-mult-err-obj-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/spread-err-mult-err-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/spread-err-sngl-err-obj-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/array/spread-err-sngl-err-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/concatenation/S9.8_A2_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/concatenation/S9.8_A3_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/concatenation/S9.8_A4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/S11.5.2_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/S11.5.2_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/S11.5.2_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/S11.5.2_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/S11.5.2_A4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/line-terminator.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/division/no-magic-asi.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A3.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A4.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A5.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A5.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A5.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/does-not-equals/S11.9.2_A6.2_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A3.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A3.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A3.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A4.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A5.1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A5.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A5.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/equals/S11.9.1_A6.2_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A3.1_T1.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A3.1_T2.6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than-or-equal/S11.8.4_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A3.1_T1.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A3.1_T2.6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A4.10.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/greater-than/S11.8.2_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/grouping/S11.1.6_A2_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/grouping/S11.1.6_A3_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/grouping/S11.1.6_A3_T6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A3.1_T1.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A3.1_T2.6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than-or-equal/S11.8.3_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A3.1_T1.3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A3.1_T2.6.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A4.10.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/less-than/S11.8.1_A4.4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A2.1_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A3_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A3_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A3_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A4_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/S11.11.1_A4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-and/symbol-logical-and-evaluation.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S11.4.9_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S11.4.9_A2.2_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S11.4.9_A3_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S11.4.9_A3_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S11.4.9_A3_T5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S9.2_A2_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S9.2_A3_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S9.2_A5_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/S9.2_A5_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-not/symbol-logical-not-evaluation.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A2.1_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A3_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A3_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A4_T3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/S11.11.2_A4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/logical-or/symbol-logical-or-evaluation.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/S11.5.3_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/S11.5.3_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/S11.5.3_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/S11.5.3_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/modulus/line-terminator.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/multiplication/S11.5.1_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/multiplication/S11.5.1_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/multiplication/S11.5.1_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/multiplication/S11.5.1_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/multiplication/line-terminator.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/ctorExpr-fn-ref-before-args-eval-fn-wrapup.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/ctorExpr-fn-ref-before-args-eval.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-mult-err-obj-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-mult-err-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-sngl-err-obj-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/new/spread-err-sngl-err-unresolvable.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/relational/S9.1_A1_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A4.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A6.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A8_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-does-not-equals/S11.9.5_A8_T5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A3.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A4.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A6.2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A8_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/strict-equals/S11.9.4_A8_T5.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/S11.6.2_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/S11.6.2_A2.4_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/S11.6.2_A2.4_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/subtraction/S11.6.2_A2.4_T4.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/typeof/boolean.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/typeof/get-value-ref-err.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/typeof/undefined.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/unary-minus/11.4.7-4-1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/unary-minus/S11.4.7_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/unary-plus/11.4.6-2-1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/unary-plus/S11.4.6_A2.1_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/unary-plus/S9.3_A4.1_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/void/S11.4.2_A2_T1.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/void/S11.4.2_A2_T2.js"
+status = "pass"
+
+[[expectations]]
+id = "language/expressions/void/S11.4.2_A4_T6.js"
+status = "pass"

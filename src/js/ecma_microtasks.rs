@@ -54,6 +54,12 @@ pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {
   pub realm: Option<vm_js::RealmId>,
 }
 
+impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
+  fn new(host: &'a mut Host, realm: Option<vm_js::RealmId>) -> Self {
+    Self { host, realm }
+  }
+}
+
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn heap(&self) -> &vm_js::Heap {
     self.host.vm_js_heap()
@@ -147,7 +153,7 @@ impl<'a, Host: VmJsEngineHost + 'static> VmJsHostHooks<'a, Host> {
   pub fn finish(mut self, host: &mut Host) -> Option<Error> {
     if !self.pending_discard.is_empty() {
       for (job, realm) in self.pending_discard.drain(..) {
-        let mut ctx = VmJsJobContext { host, realm };
+        let mut ctx = VmJsJobContext::new(host, realm);
         job.discard(&mut ctx);
       }
     }
@@ -169,7 +175,7 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       // Promise jobs can enqueue additional Promise jobs (e.g. thenable chains). Provide a fresh
       // host hook adapter for each run so nested jobs are queued onto the same microtask queue.
       let mut hooks = VmJsHostHooks::new(event_loop);
-      let mut ctx = VmJsJobContext { host, realm };
+      let mut ctx = VmJsJobContext::new(host, realm);
       let Some(job) = job_cell_for_closure.borrow_mut().take() else {
         // This microtask should run at most once. If the event loop misbehaves, treat the extra run
         // as a no-op rather than panicking (FastRender must not panic in production code).
@@ -417,10 +423,7 @@ mod tests {
         ran.store(true, Ordering::Relaxed);
         Ok(())
       });
-      let mut ctx = VmJsJobContext {
-        host: &mut host,
-        realm: None,
-      };
+      let mut ctx = VmJsJobContext::new(&mut host, None);
       let root = job
         .add_root(&mut ctx, vm_js::Value::Null)
         .map_err(vm_err)?;
@@ -436,10 +439,7 @@ mod tests {
         ran.store(true, Ordering::Relaxed);
         Ok(())
       });
-      let mut ctx = VmJsJobContext {
-        host: &mut host,
-        realm: None,
-      };
+      let mut ctx = VmJsJobContext::new(&mut host, None);
       let root = job
         .add_root(&mut ctx, vm_js::Value::Undefined)
         .map_err(vm_err)?;
