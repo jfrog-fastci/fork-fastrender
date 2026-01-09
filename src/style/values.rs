@@ -2108,6 +2108,7 @@ impl Length {
     cqh_base: f32,
     cqi_base: f32,
     cqb_base: f32,
+    writing_mode: crate::style::types::WritingMode,
   ) -> Self {
     let resolved =
       self.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
@@ -2119,7 +2120,11 @@ impl Length {
       let px = match unit {
         u if u.is_absolute() => Length::new(value, u).to_px(),
         u if u.is_viewport_relative() => {
-          Length::new(value, u).resolve_with_viewport(viewport_width, viewport_height)?
+          Length::new(value, u).resolve_with_viewport_for_writing_mode(
+            viewport_width,
+            viewport_height,
+            writing_mode,
+          )?
         }
         LengthUnit::Em => value * font_size_px,
         LengthUnit::Ex | LengthUnit::Ch => value * font_size_px * 0.5,

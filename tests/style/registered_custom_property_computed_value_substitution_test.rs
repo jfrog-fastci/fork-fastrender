@@ -100,6 +100,50 @@ fn registered_custom_property_length_percentage_max_preserves_percent_terms() {
 }
 
 #[test]
+fn registered_custom_property_length_vi_uses_writing_mode_inline_axis() {
+  let css = r#"
+    @property --len {
+      syntax: "<length>";
+      inherits: true;
+      initial-value: 0px;
+    }
+    #root { writing-mode: vertical-rl; --len: 100vi; }
+    #child { margin-left: var(--len); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+
+  assert_eq!(
+    child.styles.margin_left,
+    Some(Length::px(DEFAULT_VIEWPORT.height))
+  );
+}
+
+#[test]
+fn registered_custom_property_length_vb_uses_writing_mode_block_axis() {
+  let css = r#"
+    @property --len {
+      syntax: "<length>";
+      inherits: true;
+      initial-value: 0px;
+    }
+    #root { writing-mode: vertical-rl; --len: 100vb; }
+    #child { margin-left: var(--len); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+
+  assert_eq!(
+    child.styles.margin_left,
+    Some(Length::px(DEFAULT_VIEWPORT.width))
+  );
+}
+
+#[test]
 fn registered_custom_property_color_resolves_current_color_at_declaration_site() {
   let css = r#"
     @property --c {

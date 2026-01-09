@@ -35202,6 +35202,7 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
           cqh_base,
           cqi_base,
           cqb_base,
+          styles.writing_mode,
         ),
       ),
       CustomPropertyTypedValue::Number(n) => CustomPropertyTypedValue::Number(*n),
