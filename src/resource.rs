@@ -12712,9 +12712,15 @@ mod tests {
       "mozilla",
       ".",
       "org/en-US/docs/Web/CSS/",
-      "CSS_multicol_layout",
+      "CSS",
+      "_multicol",
+      "_layout",
       "/",
-      "Using_multi-column_layouts"
+      "Using",
+      "_multi",
+      "-",
+      "column",
+      "_layouts"
     );
 
     assert!(!src.contains(tesco), "found forbidden hostname allowlist");
