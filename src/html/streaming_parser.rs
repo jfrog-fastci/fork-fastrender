@@ -501,4 +501,60 @@ mod tests {
       other => panic!("expected Script yield, got {other:?}"),
     }
   }
+
+  #[test]
+  fn declarative_shadow_root_is_not_attached_at_inert_template_script_yield() {
+    let mut parser = StreamingHtmlParser::new(None);
+    parser.push_str(
+      "<!doctype html>\
+       <div id=host><template shadowroot=open><span>shadow</span></template></div>\
+       <template><script>INERT</script></template>",
+    );
+    parser.set_eof();
+
+    let script = match parser.pump() {
+      StreamingParserYield::Script { script, .. } => script,
+      other => panic!("expected Script yield, got {other:?}"),
+    };
+
+    {
+      let doc = parser.document();
+      assert!(
+        !doc.is_connected_for_scripting(script),
+        "script inside <template> should not be connected for scripting"
+      );
+      let host = doc.get_element_by_id("host").expect("expected host element");
+      let first_child = *doc
+        .node(host)
+        .children
+        .first()
+        .expect("host should have a child node");
+      assert!(
+        matches!(
+          &doc.node(first_child).kind,
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("template")
+        ),
+        "expected declarative shadow root template to remain unpromoted at inert script boundary"
+      );
+    }
+
+    let document = loop {
+      match parser.pump() {
+        StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
+        StreamingParserYield::Script { .. } => panic!("unexpected additional script yield"),
+        StreamingParserYield::Finished { document } => break document,
+      }
+    };
+
+    let host = document.get_element_by_id("host").expect("expected host element");
+    let first_child = *document
+      .node(host)
+      .children
+      .first()
+      .expect("host should have a child node");
+    assert!(
+      matches!(document.node(first_child).kind, NodeKind::ShadowRoot { .. }),
+      "expected declarative shadow root to be attached once parsing completes"
+    );
+  }
 }
