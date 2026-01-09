@@ -26,22 +26,10 @@ Code lives in:
 
 ## Build / run
 
-The `browser` binary is feature-gated behind `browser_ui` so the core renderer can compile without
-pulling in the GUI stack.
+The `browser` binary is feature-gated behind the Cargo feature `browser_ui` so the core renderer
+can compile without pulling in the GUI stack.
 
-```bash
-# Debug build:
-cargo run --features browser_ui --bin browser
-
-# Release build:
-cargo run --release --features browser_ui --bin browser
-```
-
-If you try to run it without `--features browser_ui`, `Cargo.toml` will refuse because the binary
-has `required-features = ["browser_ui"]`. See:
-
-- [`Cargo.toml`](../Cargo.toml)
-- Platform prerequisites + MSRV constraints + UI architecture details: [browser_ui.md](browser_ui.md)
+For build/run commands, platform prerequisites, and MSRV constraints, see [browser_ui.md](browser_ui.md).
 
 ## Current capabilities (MVP)
 
@@ -75,11 +63,8 @@ Browser-related environment variables live in [env-vars.md](env-vars.md). Notabl
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the
   `browser` process. This is applied at process start (and may be unsupported on some platforms).
 
-When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper:
-
-```bash
-scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --bin browser
-```
+When running against arbitrary real-world pages, consider using the repo’s resource limit wrapper
+(see [browser_ui.md](browser_ui.md)).
 
 ## Implementation notes
 
