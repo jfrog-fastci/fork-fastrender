@@ -51,6 +51,12 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .expect("initial about:newtab FrameReady");
+  // `spawn_ui_worker` emits `ScrollStateUpdated` immediately after `FrameReady`. Consume it too so
+  // a delayed send from the worker thread cannot race with the subsequent failing navigation.
+  super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
+  })
+  .expect("initial about:newtab ScrollStateUpdated");
   while ui_rx.try_recv().is_ok() {}
 
   ui_tx
