@@ -1,4 +1,4 @@
-use super::{Document, NodeId, NodeKind};
+use super::{Document, NodeId};
 
 impl Document {
   #[inline]
@@ -166,6 +166,7 @@ impl Iterator for SubtreePreorder<'_> {
 mod tests {
   use super::*;
   use crate::dom::parse_html;
+  use crate::dom2::NodeKind;
 
   #[test]
   fn connected_for_scripting_skips_inert_template_scripts() {
