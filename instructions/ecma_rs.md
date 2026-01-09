@@ -48,6 +48,19 @@ From the FastRender repo root:
 git submodule update --init engines/ecma-rs
 ```
 
+## Keeping the submodule in sync after pulling FastRender
+
+`git pull` updates the recorded gitlink SHA for `engines/ecma-rs`, but your working tree will
+continue using whatever commit is currently checked out inside the submodule directory until you
+explicitly update it.
+
+If `git submodule status` shows a leading `+` for `engines/ecma-rs`, your checkout is out-of-sync
+with the parent repo and you should update it:
+
+```bash
+git submodule update --init engines/ecma-rs
+```
+
 Note: `ecma-rs` itself contains optional nested submodules (large test corpora). Only initialize
 those when you intend to run those conformance suites:
 
