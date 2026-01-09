@@ -9,6 +9,7 @@ mod ui_render_worker_thread_builder_test;
 mod ui_stage_heartbeat_forwarding;
 mod ui_worker_history;
 mod ui_worker_interaction;
+mod ui_worker_hover_active;
 mod ui_worker_scroll;
 mod ui_worker_tabs;
 
