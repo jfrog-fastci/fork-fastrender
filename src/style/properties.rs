@@ -7512,9 +7512,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let value = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
-        FontVariantAlternateValue::Number(*n as u8)
-      }
       _ => return None,
     };
     parser.skip_whitespace();
@@ -7532,9 +7529,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let first = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
-        FontVariantAlternateValue::Number(*n as u8)
-      }
       _ => return None,
     };
 
@@ -7558,9 +7552,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       let tok = parser.next_including_whitespace().ok()?;
       let name = match tok {
         Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
-        Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
-          FontVariantAlternateValue::Number(*n as u8)
-        }
         _ => return None,
       };
       names.push(name);
@@ -34388,6 +34379,25 @@ mod tests {
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword("styleset(AltG,,AltA)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_numeric_args_are_invalid() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("Keep".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("styleset(1)".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
