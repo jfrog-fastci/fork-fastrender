@@ -430,6 +430,12 @@ impl<Host: 'static> EventLoop<Host> {
   where
     F: FnMut(Error),
   {
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
+
     let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
 
     match self.run_until_idle_handling_errors_inner(host, &mut run_state, &mut on_error) {
@@ -992,6 +998,7 @@ mod tests {
   use crate::{error::RenderError, render_control::RenderDeadline};
   use std::cell::Cell;
   use std::rc::Rc;
+  use std::sync::Mutex;
 
   #[derive(Default)]
   struct TestHost {
@@ -1018,6 +1025,111 @@ mod tests {
       }
       err => panic!("expected RenderError::Timeout, got {err:?}"),
     }
+  }
+
+  #[test]
+  fn run_until_idle_records_script_stage_heartbeat_when_no_stage_active() -> Result<()> {
+    struct Host;
+
+    let mut host = Host;
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    {
+      let _listener_guard = render_control::push_stage_listener(Some(Arc::new(move |stage| {
+        stages_for_listener
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(stage);
+      })));
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+    }
+
+    assert_eq!(
+      stages.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+      &[StageHeartbeat::Script]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn run_next_task_records_script_stage_heartbeat_when_no_stage_active() -> Result<()> {
+    struct Host;
+
+    let mut host = Host;
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |_host, _event_loop| Ok(()))?;
+
+    let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
+    let stages_for_listener = Arc::clone(&stages);
+    {
+      let _listener_guard = render_control::push_stage_listener(Some(Arc::new(move |stage| {
+        stages_for_listener
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(stage);
+      })));
+      assert!(event_loop.run_next_task(&mut host)?);
+    }
+
+    assert_eq!(
+      stages.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+      &[StageHeartbeat::Script]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_handling_errors_installs_script_stage_guard_for_tasks() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      observed: Vec<Option<RenderStage>>,
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.observed.push(render_control::active_stage());
+      Ok(())
+    })?;
+
+    assert_eq!(render_control::active_stage(), None);
+    assert_eq!(
+      event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_| {})?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.observed, vec![Some(RenderStage::Script)]);
+    assert_eq!(render_control::active_stage(), None);
+    Ok(())
+  }
+
+  #[test]
+  fn run_until_idle_handling_errors_respects_existing_stage_guard() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      observed: Vec<Option<RenderStage>>,
+    }
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::Script, |host, _event_loop| {
+      host.observed.push(render_control::active_stage());
+      Ok(())
+    })?;
+
+    {
+      let _outer_guard = StageGuard::install(Some(RenderStage::Layout));
+      assert_eq!(
+        event_loop.run_until_idle_handling_errors(&mut host, RunLimits::unbounded(), |_| {})?,
+        RunUntilIdleOutcome::Idle
+      );
+      assert_eq!(host.observed, vec![Some(RenderStage::Layout)]);
+      assert_eq!(render_control::active_stage(), Some(RenderStage::Layout));
+    }
+    assert_eq!(render_control::active_stage(), None);
+    Ok(())
   }
 
   #[test]
