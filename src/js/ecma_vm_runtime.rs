@@ -1358,7 +1358,7 @@ mod tests {
     fn interval_cb(
       vm: &mut Vm,
       scope: &mut Scope<'_>,
-      _host: &mut dyn VmHostHooks,
+      host: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       _args: &[Value],
@@ -1383,7 +1383,7 @@ mod tests {
         scope.push_root(Value::String(key_s))?;
         let func =
           scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
-        vm.call(scope, func, global_value, &[Value::Number(id as f64)])?;
+        vm.call_with_host(scope, host, func, global_value, &[Value::Number(id as f64)])?;
       }
 
       Ok(Value::Undefined)

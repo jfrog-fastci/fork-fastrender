@@ -230,8 +230,18 @@ impl Document {
 
     // Avoid duplicating the renderer's historical `<wbr>` behaviour when importing from an
     // existing renderer DOM tree that may already contain a ZWSP text node child.
+    //
+    // Only consider children that are actually connected to the `<wbr>` element via a consistent
+    // parent pointer; if the tree is partially detached, we still want to inject the synthetic
+    // node for the connected renderer snapshot.
     for &child in &node.children {
-      if let NodeKind::Text { content } = &self.node(child).kind {
+      let Some(child_node) = self.nodes.get(child.index()) else {
+        continue;
+      };
+      if child_node.parent != Some(node_id) {
+        continue;
+      }
+      if let NodeKind::Text { content } = &child_node.kind {
         if content == "\u{200B}" {
           return false;
         }
@@ -549,9 +559,16 @@ impl Document {
       if frame.next_child < src.children.len() {
         let child_id = src.children[frame.next_child];
         frame.next_child += 1;
+        let parent_id = frame.src;
         stack.push(frame);
 
+        // Follow only consistent parent pointers so partially-detached nodes don't reappear in the
+        // renderer snapshot.
         let child_src = self.node(child_id);
+        if child_src.parent != Some(parent_id) {
+          continue;
+        }
+
         let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
           continue;
         };
@@ -656,9 +673,15 @@ impl Document {
       if frame.next_child < src.children.len() {
         let child_id = src.children[frame.next_child];
         frame.next_child += 1;
+        let parent_id = frame.src;
         stack.push(frame);
 
         let child_src = self.node(child_id);
+        // Follow only consistent parent pointers so partially-detached nodes don't reappear in the
+        // renderer snapshot.
+        if child_src.parent != Some(parent_id) {
+          continue;
+        }
         let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
           continue;
         };
@@ -728,8 +751,13 @@ impl Document {
           if self.should_inject_wbr_zwsp(id) {
             stack.push(StackItem::SyntheticWbrZwsp(id));
           }
-          for child in node.children.iter().rev() {
-            stack.push(StackItem::Real(*child));
+          for &child in node.children.iter().rev() {
+            let Some(child_node) = self.nodes.get(child.index()) else {
+              continue;
+            };
+            if child_node.parent == Some(id) {
+              stack.push(StackItem::Real(child));
+            }
           }
         }
         StackItem::SyntheticWbrZwsp(parent) => {
@@ -789,8 +817,13 @@ impl Document {
           // For selector matching we treat inert subtrees (currently: `<template>` contents) as
           // disconnected, mirroring how template `.content` is not in the light DOM tree.
           if !node.inert_subtree {
-            for child in node.children.iter().rev() {
-              stack.push(StackItem::Real(*child));
+            for &child in node.children.iter().rev() {
+              let Some(child_node) = self.nodes.get(child.index()) else {
+                continue;
+              };
+              if child_node.parent == Some(id) {
+                stack.push(StackItem::Real(child));
+              }
             }
           }
         }

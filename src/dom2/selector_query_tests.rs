@@ -208,3 +208,49 @@ fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
   assert_eq!(doc.query_selector(":scope", Some(wbr)).unwrap(), Some(wbr));
   assert_eq!(doc.query_selector_all(":scope", Some(wbr)).unwrap(), vec![wbr]);
 }
+
+#[test]
+fn query_selector_ignores_nodes_detached_via_parent_pointer_only() {
+  // Dom mutation logic can temporarily leave stale entries in a parent's children list. Ensure we
+  // treat the parent pointer as authoritative and do not surface detached nodes via selector APIs.
+  let root = parse_html(
+    r#"<!doctype html>
+    <html>
+      <body>
+        <div id=host><div class=x id=in></div></div>
+        <div class=x id=out></div>
+      </body>
+    </html>"#,
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let in_div = find_element_by_id(&doc, "in");
+  // Detach by severing the parent pointer, but leave the stale entry in the original parent's
+  // children list.
+  doc.node_mut(in_div).parent = None;
+
+  assert!(
+    !doc.is_connected(in_div),
+    "sanity: severing the parent pointer should disconnect the node"
+  );
+
+  let result = doc
+    .query_selector(".x", None)
+    .unwrap()
+    .expect("expected a match for .x");
+  assert_eq!(
+    attr_value(&doc, result, "id"),
+    Some("out"),
+    "query_selector should ignore nodes detached by parent pointer mismatch"
+  );
+
+  let all = doc.query_selector_all(".x", None).unwrap();
+  assert_eq!(all.len(), 1);
+  assert_eq!(attr_value(&doc, all[0], "id"), Some("out"));
+
+  assert!(
+    doc.matches_selector(in_div, ".x").unwrap(),
+    "matches_selector should still work for detached nodes"
+  );
+}

@@ -228,3 +228,39 @@ fn renderer_dom_mapping_models_wbr_synthetic_zwsp_nodes() {
     "reverse mapping for `<wbr>` should remain the element's own preorder id"
   );
 }
+
+#[test]
+fn renderer_dom_mapping_ignores_stale_child_entries_when_parent_pointer_mismatches() {
+  let root = crate::dom::parse_html(
+    r#"<!doctype html>
+    <html>
+      <body>
+        <div id=host><div id=in></div></div>
+        <div id=out></div>
+      </body>
+    </html>"#,
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let in_div = doc.get_element_by_id("in").expect("missing in div");
+  doc.node_mut(in_div).parent = None;
+
+  let snapshot = doc.to_renderer_dom_with_mapping();
+  assert_eq!(
+    snapshot.mapping.preorder_for_node_id(in_div),
+    None,
+    "detached nodes should not be assigned renderer preorder ids"
+  );
+
+  // Ensure the snapshot DOM tree itself no longer contains the detached node.
+  let mut stack: Vec<&DomNode> = vec![&snapshot.dom];
+  while let Some(node) = stack.pop() {
+    if node.get_attribute_ref("id") == Some("in") {
+      panic!("detached node unexpectedly present in renderer snapshot DOM");
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+}
