@@ -1354,14 +1354,16 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           })
         }
         "mfenced" => {
-          let open = node
-            .get_attribute_ref("open")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "(".to_string());
-          let close = node
-            .get_attribute_ref("close")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| ")".to_string());
+          let open = match node.get_attribute_ref("open") {
+            Some(raw) if raw.is_empty() => None,
+            Some(raw) => Some(raw.to_string()),
+            None => Some("(".to_string()),
+          };
+          let close = match node.get_attribute_ref("close") {
+            Some(raw) if raw.is_empty() => None,
+            Some(raw) => Some(raw.to_string()),
+            None => Some(")".to_string()),
+          };
           let separators = match node.get_attribute_ref("separators") {
             None => Some(vec![',']),
             Some(raw) => {
@@ -1377,21 +1379,20 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             }
           };
           let inner = parse_children(node);
-          if inner.is_empty() {
-            return None;
-          }
           let mut row = Vec::new();
-          row.push(MathNode::Operator {
-            text: open,
-            form: None,
-            stretchy: Some(true),
-            symmetric: None,
-            minsize: None,
-            maxsize: None,
-            lspace: None,
-            rspace: None,
-            variant: Some(MathVariant::Normal),
-          });
+          if let Some(open) = open {
+            row.push(MathNode::Operator {
+              text: open,
+              form: None,
+              stretchy: Some(true),
+              symmetric: None,
+              minsize: None,
+              maxsize: None,
+              lspace: None,
+              rspace: None,
+              variant: Some(MathVariant::Normal),
+            });
+          }
           for (idx, child) in inner.into_iter().enumerate() {
             if idx > 0 {
               if let Some(separators) = &separators {
@@ -1415,17 +1416,19 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             }
             row.push(child);
           }
-          row.push(MathNode::Operator {
-            text: close,
-            form: None,
-            stretchy: Some(true),
-            symmetric: None,
-            minsize: None,
-            maxsize: None,
-            lspace: None,
-            rspace: None,
-            variant: Some(MathVariant::Normal),
-          });
+          if let Some(close) = close {
+            row.push(MathNode::Operator {
+              text: close,
+              form: None,
+              stretchy: Some(true),
+              symmetric: None,
+              minsize: None,
+              maxsize: None,
+              lspace: None,
+              rspace: None,
+              variant: Some(MathVariant::Normal),
+            });
+          }
           Some(MathNode::Row(row))
         }
         "menclose" => {
@@ -5034,6 +5037,87 @@ mod tests {
       panic!("expected identifier superscript");
     };
     assert_eq!(text, "a");
+  }
+
+  #[test]
+  fn mfenced_empty_open_close_and_separators_parses_as_plain_row() {
+    let fenced = parse_math_from_html(
+      "<math><mfenced open=\"\" close=\"\" separators=\"\"><mi>a</mi><mi>b</mi></mfenced></math>",
+    );
+    let row = parse_math_from_html("<math><mrow><mi>a</mi><mi>b</mi></mrow></math>");
+
+    let MathNode::Math {
+      children: fenced_children,
+      ..
+    } = &fenced
+    else {
+      panic!("expected math root");
+    };
+    assert_eq!(fenced_children.len(), 1);
+    let MathNode::Row(fenced_row) = &fenced_children[0] else {
+      panic!("expected row child");
+    };
+    assert_eq!(
+      fenced_row.len(),
+      2,
+      "mfenced open/close/separators empty should not emit fences or separators"
+    );
+    assert!(
+      !fenced_row
+        .iter()
+        .any(|child| matches!(child, MathNode::Operator { .. })),
+      "no <mo> operator nodes should be emitted for empty fences/separators"
+    );
+    assert!(matches!(
+      &fenced_row[0],
+      MathNode::Identifier { text, .. } if text == "a"
+    ));
+    assert!(matches!(
+      &fenced_row[1],
+      MathNode::Identifier { text, .. } if text == "b"
+    ));
+
+    let style = ComputedStyle::default();
+    let ctx = FontContext::empty();
+    let fenced_layout = layout_mathml(&fenced, &style, &ctx);
+    let row_layout = layout_mathml(&row, &style, &ctx);
+    assert!(
+      (fenced_layout.height - row_layout.height).abs() < 0.001,
+      "mfenced without fences should not affect layout height: {} vs {}",
+      fenced_layout.height,
+      row_layout.height
+    );
+    assert!(
+      (fenced_layout.baseline - row_layout.baseline).abs() < 0.001,
+      "mfenced without fences should not affect baseline: {} vs {}",
+      fenced_layout.baseline,
+      row_layout.baseline
+    );
+  }
+
+  #[test]
+  fn mfenced_without_children_renders_default_fences() {
+    let parsed = parse_math_from_html("<math><mfenced></mfenced></math>");
+    let MathNode::Math { children, .. } = parsed else {
+      panic!("expected math root");
+    };
+    assert_eq!(children.len(), 1);
+    let MathNode::Row(row) = &children[0] else {
+      panic!("expected mfenced to parse as a row");
+    };
+    assert_eq!(
+      row.len(),
+      2,
+      "empty mfenced should still emit opening and closing fence operators"
+    );
+    let MathNode::Operator { text, .. } = &row[0] else {
+      panic!("expected opening operator");
+    };
+    assert_eq!(text, "(");
+    let MathNode::Operator { text, .. } = &row[1] else {
+      panic!("expected closing operator");
+    };
+    assert_eq!(text, ")");
   }
 
   #[test]

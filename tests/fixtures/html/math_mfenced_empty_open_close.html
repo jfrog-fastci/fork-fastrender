@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<style>
+  body {
+    margin: 0;
+    font-size: 24px;
+    font-family: "DejaVu Serif", serif;
+    color: rgb(18, 18, 18);
+  }
+
+  .line {
+    margin: 8px;
+    padding: 6px 10px;
+    background: rgb(245, 245, 245);
+    outline: 1px solid rgb(220, 220, 220);
+    line-height: 1;
+  }
+</style>
+<body>
+  <div class="line">
+    Default empty &lt;mfenced&gt; should render parentheses:
+    <math><mfenced></mfenced></math>
+  </div>
+
+  <div class="line">
+    open="" close="" separators="" should render no fences:
+    x <math><mfenced open="" close="" separators=""><mi>a</mi><mi>b</mi></mfenced></math> y
+  </div>
+
+  <div class="line">
+    Reference mrow:
+    x <math><mrow><mi>a</mi><mi>b</mi></mrow></math> y
+  </div>
+</body>
+</html>

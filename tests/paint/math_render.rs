@@ -296,6 +296,23 @@ fn inline_math_baseline_matches_golden() {
 }
 
 #[test]
+fn math_mfenced_empty_open_close_matches_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_mfenced_empty_open_close"))
+      .expect("load math_mfenced_empty_open_close");
+    let png = renderer
+      .render_to_png(&html, 540, 220)
+      .expect("render mfenced open/close empty");
+    compare_golden(
+      "math_mfenced_empty_open_close",
+      &png,
+      &CompareConfig::lenient(),
+    );
+  });
+}
+
+#[test]
 fn math_stretchy_ops_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
