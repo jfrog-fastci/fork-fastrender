@@ -29,6 +29,7 @@ mod custom_property_registration_test;
 mod custom_property_registration_union_syntax_test;
 mod custom_property_wide_keywords_test;
 mod defaults_test;
+mod dynamic_range_limit_test;
 mod extract_print;
 mod flex_property_test;
 mod form_control_constraint_pseudo_test;

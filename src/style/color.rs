@@ -1097,6 +1097,14 @@ impl Color {
       return parse_color_mix(s);
     }
 
+    // CSS Color HDR 1 (draft): `dynamic-range-limit-mix()` isn't a color function in the spec,
+    // but some real-world stylesheets use it in `<color>` positions as a feature probe. Treat it
+    // as an alias for `color-mix()` so `@supports (color: dynamic-range-limit-mix(...))` can
+    // evaluate deterministically.
+    if starts_with_ignore_ascii_case(s, "dynamic-range-limit-mix(") {
+      return parse_dynamic_range_limit_mix_color(s);
+    }
+
     if starts_with_ignore_ascii_case(s, "color-contrast(") {
       return parse_color_contrast(s);
     }
@@ -1108,6 +1116,11 @@ impl Color {
     // RGB/RGBA functions
     if starts_with_ignore_ascii_case(s, "rgb(") || starts_with_ignore_ascii_case(s, "rgba(") {
       return parse_rgb(s);
+    }
+
+    // CSS Color 5: uncalibrated CMYK colors for print workflows.
+    if starts_with_ignore_ascii_case(s, "device-cmyk(") {
+      return parse_device_cmyk(s);
     }
 
     // HSL/HSLA functions
@@ -1397,6 +1410,137 @@ fn parse_hwb(s: &str) -> Result<Color, ColorParseError> {
   }
 
   Ok(Color::Rgba(hwb_to_rgba(h, w, b, alpha)))
+}
+
+fn parse_device_cmyk(input: &str) -> Result<Color, ColorParseError> {
+  let inner = strip_prefix_ignore_ascii_case(input, "device-cmyk(")
+    .and_then(|rest| rest.strip_suffix(')'))
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+
+  let parts = split_top_level_commas(inner);
+  let (args, fallback) = match parts.len() {
+    1 => (parts[0], None),
+    2 => (parts[0], Some(parts[1])),
+    4 => (inner, None), // legacy syntax: numbers separated by commas (no fallback)
+    5 => (inner, Some(parts[4])), // legacy syntax + optional fallback
+    _ => return Err(ColorParseError::InvalidFormat(input.to_string())),
+  };
+
+  if let Some(fallback) = fallback {
+    if fallback.is_empty() {
+      return Err(ColorParseError::InvalidFormat(input.to_string()));
+    }
+    // FastRender can naively convert device-cmyk() to sRGB, so the fallback is only parsed to
+    // accept the syntax. If we ever make device-cmyk conditional on print output capabilities,
+    // this is where we'd switch to using the fallback.
+    let _ = Color::parse(fallback)?;
+  }
+
+  let (c, m, y, k, alpha) = if parts.len() == 4 || parts.len() == 5 {
+    // Legacy syntax: device-cmyk(<number>#{4})
+    let c = parse_device_cmyk_component_str(parts[0])?;
+    let m = parse_device_cmyk_component_str(parts[1])?;
+    let y = parse_device_cmyk_component_str(parts[2])?;
+    let k = parse_device_cmyk_component_str(parts[3])?;
+    (c, m, y, k, 1.0)
+  } else {
+    // Modern syntax: space-separated components with optional `/ <alpha>`.
+    let mut parser_input = cssparser::ParserInput::new(args);
+    let mut parser = cssparser::Parser::new(&mut parser_input);
+    let c = parse_device_cmyk_component(&mut parser)?;
+    let m = parse_device_cmyk_component(&mut parser)?;
+    let y = parse_device_cmyk_component(&mut parser)?;
+    let k = parse_device_cmyk_component(&mut parser)?;
+    let alpha = if parser.try_parse(|p| p.expect_delim('/')).is_ok() {
+      parse_alpha_component(&mut parser)?
+    } else {
+      1.0
+    };
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return Err(ColorParseError::InvalidFormat(input.to_string()));
+    }
+    (c, m, y, k, alpha)
+  };
+
+  // Naive CMYK -> sRGB conversion (CSS Color 5, `naive.js`).
+  let r = 1.0 - (c * (1.0 - k) + k).min(1.0);
+  let g = 1.0 - (m * (1.0 - k) + k).min(1.0);
+  let b = 1.0 - (y * (1.0 - k) + k).min(1.0);
+
+  Ok(Color::Rgba(Rgba::new(
+    (r * 255.0).round().clamp(0.0, 255.0) as u8,
+    (g * 255.0).round().clamp(0.0, 255.0) as u8,
+    (b * 255.0).round().clamp(0.0, 255.0) as u8,
+    alpha.clamp(0.0, 1.0),
+  )))
+}
+
+fn parse_device_cmyk_component(
+  parser: &mut cssparser::Parser<'_, '_>,
+) -> Result<f32, ColorParseError> {
+  use cssparser::Token;
+  let token = parser
+    .next()
+    .map_err(|_| ColorParseError::InvalidFormat("device-cmyk".to_string()))?;
+  let value = match token {
+    Token::Number { value, .. } => *value,
+    Token::Percentage { unit_value, .. } => *unit_value,
+    other => return Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
+  };
+  Ok(value.clamp(0.0, 1.0))
+}
+
+fn parse_device_cmyk_component_str(value: &str) -> Result<f32, ColorParseError> {
+  let mut input = cssparser::ParserInput::new(value);
+  let mut parser = cssparser::Parser::new(&mut input);
+  let component = parse_device_cmyk_component(&mut parser)?;
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(ColorParseError::InvalidComponent(value.to_string()));
+  }
+  Ok(component)
+}
+
+fn parse_dynamic_range_limit_mix_color(input: &str) -> Result<Color, ColorParseError> {
+  let inner = strip_prefix_ignore_ascii_case(input, "dynamic-range-limit-mix(")
+    .and_then(|rest| rest.strip_suffix(')'))
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+  let parts = split_top_level_commas(inner);
+  if parts.len() != 3 {
+    return Err(ColorParseError::InvalidFormat(input.to_string()));
+  }
+
+  let space = {
+    let mut iter = split_ascii_whitespace(parts[0]);
+    if !matches!(iter.next(), Some(tok) if tok.eq_ignore_ascii_case("in")) {
+      return Err(ColorParseError::InvalidFormat(input.to_string()));
+    }
+    let name = iter
+      .next()
+      .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+    if iter.next().is_some() {
+      return Err(ColorParseError::InvalidFormat(input.to_string()));
+    }
+    match name.to_ascii_lowercase().as_str() {
+      "srgb" => ColorMixSpace::Srgb,
+      "srgb-linear" => ColorMixSpace::SrgbLinear,
+      "lab" => ColorMixSpace::Lab,
+      "lch" => ColorMixSpace::Lch,
+      "oklab" => ColorMixSpace::Oklab,
+      "oklch" => ColorMixSpace::Oklch,
+      other => return Err(ColorParseError::InvalidComponent(other.to_string())),
+    }
+  };
+
+  let (c0, w0) = parse_mix_component(trim_ascii_whitespace(parts[1]))?;
+  let (c1, w1) = parse_mix_component(trim_ascii_whitespace(parts[2]))?;
+  let (w0, w1) = normalize_mix_weights(w0, w1);
+
+  Ok(Color::Mix {
+    components: [(Box::new(c0), w0), (Box::new(c1), w1)],
+    space,
+  })
 }
 
 /// Parse an RGB channel (number or percentage) clamped to 0-255.
@@ -3639,5 +3783,46 @@ mod tests {
 
     let color = Hsla::new(120.0, 100.0, 50.0, 0.5);
     assert_eq!(format!("{}", color), "hsla(120.0, 100.0%, 50.0%, 0.500)");
+  }
+
+  #[test]
+  fn parses_device_cmyk_numbers_and_percentages() {
+    let red = Color::parse("device-cmyk(0 1 1 0)")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(red, Rgba::RED);
+
+    let cyan = Color::parse("device-cmyk(100% 0% 0% 0%)")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(cyan, Rgba::new(0, 255, 255, 1.0));
+  }
+
+  #[test]
+  fn device_cmyk_clamps_and_parses_alpha() {
+    let rgba = Color::parse("device-cmyk(-1 2 0 0 / 50%)")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(rgba.r, 255);
+    assert_eq!(rgba.g, 0);
+    assert_eq!(rgba.b, 255);
+    assert!((rgba.a - 0.5).abs() < 1e-6);
+  }
+
+  #[test]
+  fn device_cmyk_accepts_fallback_argument() {
+    let rgba = Color::parse("device-cmyk(0, 0, 0, 0, rgb(0 0 0))")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(rgba, Rgba::WHITE);
+  }
+
+  #[test]
+  fn dynamic_range_limit_mix_parses_like_color_mix() {
+    let rgba = Color::parse("dynamic-range-limit-mix(in srgb-linear, red, blue)")
+      .unwrap()
+      .to_rgba(Rgba::BLACK);
+    assert_eq!(rgba.r, rgba.b);
+    assert_eq!(rgba.g, 0);
   }
 }

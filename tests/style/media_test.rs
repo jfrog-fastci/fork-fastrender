@@ -8,6 +8,7 @@ use fastrender::debug::runtime::with_thread_runtime_toggles;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::style::media::ColorScheme;
 use fastrender::style::media::ContrastPreference;
+use fastrender::style::media::DynamicRange;
 use fastrender::style::media::DisplayMode;
 use fastrender::style::media::LightLevel;
 use fastrender::style::media::MediaContext;
@@ -1255,6 +1256,25 @@ fn test_dark_mode_pattern() {
 
   // Dark mode user sees dark theme
   assert!(dark_ctx.evaluate(&dark_mode));
+}
+
+#[test]
+fn test_dynamic_range_media_feature() {
+  let standard_query = MediaQuery::parse("(dynamic-range: standard)").unwrap();
+  let high_query = MediaQuery::parse("(dynamic-range: high)").unwrap();
+
+  let ctx = MediaContext::screen(800.0, 600.0);
+  assert!(ctx.evaluate(&standard_query));
+  assert!(!ctx.evaluate(&high_query));
+
+  let hdr = MediaContext::screen(800.0, 600.0).with_dynamic_range(DynamicRange::High);
+  assert!(hdr.evaluate(&standard_query));
+  assert!(hdr.evaluate(&high_query));
+}
+
+#[test]
+fn rejects_dynamic_range_invalid_value() {
+  assert!(MediaQuery::parse("(dynamic-range: ultra)").is_err());
 }
 
 #[test]

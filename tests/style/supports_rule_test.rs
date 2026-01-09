@@ -63,6 +63,19 @@ fn supports_nested_conditions_combine_correctly() {
 }
 
 #[test]
+fn supports_device_cmyk_color_function() {
+  let css = r"@supports (color: device-cmyk(0 1 1 0)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_dynamic_range_limit_mix_in_color_positions() {
+  let css =
+    r"@supports (color: dynamic-range-limit-mix(in srgb-linear, red, blue)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
 fn supports_and_inside_url_is_treated_as_value() {
   let css = r"@supports (background: url(and.png)) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "inline");

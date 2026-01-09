@@ -8,6 +8,7 @@ use crate::css::types::RadialGradientShape;
 use crate::css::types::RadialGradientSize;
 use crate::style::color::Rgba;
 use crate::style::values::Length;
+use cssparser::{Parser, ParserInput, Token};
 pub use crate::text::hyphenation::HyphensMode;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -789,6 +790,136 @@ pub enum ColorSchemePreference {
 impl Default for ColorSchemePreference {
   fn default() -> Self {
     ColorSchemePreference::Normal
+  }
+}
+
+/// Computed value for the CSS Color HDR 1 `dynamic-range-limit` property.
+///
+/// FastRender currently renders into SDR, but still parses and cascades this property so
+/// `@supports (dynamic-range-limit: ...)` and inheritance behave deterministically.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DynamicRangeLimit {
+  Standard,
+  Constrained,
+  NoLimit,
+  Mix(Vec<DynamicRangeLimitMixComponent>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicRangeLimitMixComponent {
+  pub value: Box<DynamicRangeLimit>,
+  pub percentage: f32,
+}
+
+impl Default for DynamicRangeLimit {
+  fn default() -> Self {
+    DynamicRangeLimit::NoLimit
+  }
+}
+
+impl DynamicRangeLimit {
+  pub fn parse(raw: &str) -> Option<Self> {
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      return None;
+    }
+    let value = parse_dynamic_range_limit_value(&mut parser).ok()?;
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return None;
+    }
+    Some(value)
+  }
+}
+
+fn parse_dynamic_range_limit_value<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<DynamicRangeLimit, cssparser::ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let token = parser.next()?;
+  match token {
+    Token::Ident(ident) => {
+      if ident.eq_ignore_ascii_case("standard") {
+        Ok(DynamicRangeLimit::Standard)
+      } else if ident.eq_ignore_ascii_case("constrained")
+        || ident.eq_ignore_ascii_case("constrained-high")
+      {
+        Ok(DynamicRangeLimit::Constrained)
+      } else if ident.eq_ignore_ascii_case("no-limit") || ident.eq_ignore_ascii_case("high") {
+        Ok(DynamicRangeLimit::NoLimit)
+      } else {
+        Err(parser.new_custom_error(()))
+      }
+    }
+    Token::Function(name) => {
+      if !name.eq_ignore_ascii_case("dynamic-range-limit-mix") {
+        return Err(parser.new_custom_error(()));
+      }
+      let components = parser.parse_nested_block(parse_dynamic_range_limit_mix)?;
+      Ok(DynamicRangeLimit::Mix(components))
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn parse_dynamic_range_limit_mix<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<Vec<DynamicRangeLimitMixComponent>, cssparser::ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let components = parser.parse_comma_separated(parse_dynamic_range_limit_mix_component)?;
+  if components.len() < 2 {
+    return Err(parser.new_custom_error(()));
+  }
+  Ok(components)
+}
+
+fn parse_dynamic_range_limit_mix_component<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<DynamicRangeLimitMixComponent, cssparser::ParseError<'i, ()>> {
+  let mut value: Option<DynamicRangeLimit> = None;
+  let mut percentage: Option<f32> = None;
+
+  for _ in 0..2 {
+    parser.skip_whitespace();
+    if value.is_none() {
+      if let Ok(parsed) = parser.try_parse(parse_dynamic_range_limit_value) {
+        value = Some(parsed);
+        continue;
+      }
+    }
+    if percentage.is_none() {
+      if let Ok(parsed) = parser.try_parse(parse_dynamic_range_limit_mix_percentage) {
+        percentage = Some(parsed);
+        continue;
+      }
+    }
+    return Err(parser.new_custom_error(()));
+  }
+
+  let value = value.ok_or_else(|| parser.new_custom_error(()))?;
+  let percentage = percentage.ok_or_else(|| parser.new_custom_error(()))?;
+  Ok(DynamicRangeLimitMixComponent {
+    value: Box::new(value),
+    percentage,
+  })
+}
+
+fn parse_dynamic_range_limit_mix_percentage<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Result<f32, cssparser::ParseError<'i, ()>> {
+  let token = parser.next()?;
+  match token {
+    Token::Percentage { unit_value, .. } => {
+      let value = (unit_value * 100.0).clamp(0.0, 100.0);
+      if value.is_finite() {
+        Ok(value)
+      } else {
+        Err(parser.new_custom_error(()))
+      }
+    }
+    _ => Err(parser.new_custom_error(())),
   }
 }
 

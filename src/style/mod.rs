@@ -85,6 +85,7 @@ use types::ClipPath;
 use types::ClipRect;
 use types::ColorOrNone;
 use types::ColorSchemePreference;
+use types::DynamicRangeLimit;
 use types::ColumnFill;
 use types::ColumnSpan;
 use types::ContainIntrinsicSizeAxis;
@@ -1138,6 +1139,7 @@ pub struct ComputedStyle {
   pub forced_color_adjust: ForcedColorAdjust,
   pub color_scheme: ColorSchemePreference,
   pub used_dark_color_scheme: bool,
+  pub dynamic_range_limit: DynamicRangeLimit,
   pub caret_color: CaretColor,
   pub accent_color: AccentColor,
   pub color: Rgba,
@@ -1544,6 +1546,7 @@ impl Default for ComputedStyle {
       forced_color_adjust: ForcedColorAdjust::Auto,
       color_scheme: ColorSchemePreference::Normal,
       used_dark_color_scheme: false,
+      dynamic_range_limit: DynamicRangeLimit::NoLimit,
       caret_color: CaretColor::Auto,
       accent_color: AccentColor::Auto,
       color: Rgba::BLACK,

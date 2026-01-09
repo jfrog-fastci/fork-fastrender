@@ -429,6 +429,8 @@ pub enum MediaFeature {
   PrefersReducedData(ReducedData),
   /// Color gamut support: `(color-gamut: srgb | p3 | rec2020)`
   ColorGamut(ColorGamut),
+  /// Dynamic range capability: `(dynamic-range: standard | high)`
+  DynamicRange(DynamicRange),
   /// Forced-colors user agent state: `(forced-colors: active|none)`
   ForcedColors(ForcedColors),
   /// Whether the UA is in an inverted-color mode: `(inverted-colors: inverted)`
@@ -563,6 +565,7 @@ enum MediaFeatureKey {
   PrefersReducedTransparency(ReducedTransparency),
   PrefersReducedData(ReducedData),
   ColorGamut(ColorGamut),
+  DynamicRange(DynamicRange),
   ForcedColors(ForcedColors),
   InvertedColors(InvertedColors),
   Range {
@@ -612,6 +615,7 @@ pub(crate) struct MediaContextFingerprint {
   prefers_contrast: ContrastPreference,
   prefers_color_scheme: Option<ColorScheme>,
   color_gamut: ColorGamut,
+  dynamic_range: DynamicRange,
   inverted_colors: bool,
   forced_colors: bool,
   color_depth: u32,
@@ -775,6 +779,7 @@ impl From<&MediaFeature> for MediaFeatureKey {
       }
       MediaFeature::PrefersReducedData(pref) => MediaFeatureKey::PrefersReducedData(*pref),
       MediaFeature::ColorGamut(gamut) => MediaFeatureKey::ColorGamut(*gamut),
+      MediaFeature::DynamicRange(range) => MediaFeatureKey::DynamicRange(*range),
       MediaFeature::ForcedColors(state) => MediaFeatureKey::ForcedColors(*state),
       MediaFeature::InvertedColors(state) => MediaFeatureKey::InvertedColors(*state),
       MediaFeature::Range { feature, op, value } => MediaFeatureKey::Range {
@@ -1175,6 +1180,12 @@ impl MediaFeature {
           value.ok_or_else(|| MediaParseError::MissingValue(name.as_ref().to_string()))?;
         let gamut = ColorGamut::parse(value)?;
         Ok(MediaFeature::ColorGamut(gamut))
+      }
+      "dynamic-range" => {
+        let value =
+          value.ok_or_else(|| MediaParseError::MissingValue(name.as_ref().to_string()))?;
+        let range = DynamicRange::parse(value)?;
+        Ok(MediaFeature::DynamicRange(range))
       }
       "forced-colors" => {
         let value =
@@ -1898,6 +1909,35 @@ impl fmt::Display for ColorGamut {
   }
 }
 
+/// Dynamic range capability (Media Queries Level 5: `dynamic-range`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DynamicRange {
+  Standard,
+  High,
+}
+
+impl DynamicRange {
+  pub fn parse(s: &str) -> Result<Self, MediaParseError> {
+    let s = ascii_lowercase_cow(trim_ascii_whitespace(s));
+    if s == "standard" {
+      Ok(DynamicRange::Standard)
+    } else if s == "high" {
+      Ok(DynamicRange::High)
+    } else {
+      Err(MediaParseError::InvalidDynamicRange(s.into_owned()))
+    }
+  }
+}
+
+impl fmt::Display for DynamicRange {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      DynamicRange::Standard => write!(f, "standard"),
+      DynamicRange::High => write!(f, "high"),
+    }
+  }
+}
+
 /// Forced colors state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ForcedColors {
@@ -2005,6 +2045,8 @@ pub struct MediaContext {
   pub monochrome_depth: u32,
   /// Device color gamut capability
   pub color_gamut: ColorGamut,
+  /// Dynamic range support level (`@media/dynamic-range`)
+  pub dynamic_range: DynamicRange,
   /// Whether primary input can hover
   pub can_hover: bool,
   /// Whether any input can hover
@@ -2092,6 +2134,7 @@ impl MediaContext {
       prefers_contrast: self.prefers_contrast,
       prefers_color_scheme: self.prefers_color_scheme,
       color_gamut: self.color_gamut,
+      dynamic_range: self.dynamic_range,
       inverted_colors: matches!(self.inverted_colors, InvertedColors::Inverted),
       forced_colors: self.forced_colors,
       color_depth: self.color_depth,
@@ -2134,6 +2177,7 @@ impl MediaContext {
       color_index: 0,
       monochrome_depth: 0,
       color_gamut: ColorGamut::Srgb,
+      dynamic_range: DynamicRange::Standard,
       can_hover: true,
       any_can_hover: true,
       pointer: PointerCapability::Fine,
@@ -2258,6 +2302,12 @@ impl MediaContext {
     self
   }
 
+  /// Returns a new context with the given dynamic-range capability.
+  pub fn with_dynamic_range(mut self, range: DynamicRange) -> Self {
+    self.dynamic_range = range;
+    self
+  }
+
   /// Returns a new context with the given device dimensions in CSS pixels.
   pub fn with_device_size(mut self, width: f32, height: f32) -> Self {
     if width.is_finite() && width > 0.0 {
@@ -2297,6 +2347,7 @@ impl MediaContext {
       color_index: 0,
       monochrome_depth: 0,
       color_gamut: ColorGamut::Srgb,
+      dynamic_range: DynamicRange::Standard,
       can_hover: false,
       any_can_hover: false,
       pointer: PointerCapability::None,
@@ -2345,6 +2396,7 @@ impl MediaContext {
       color_index: 0,
       monochrome_depth: 0,
       color_gamut: ColorGamut::Srgb,
+      dynamic_range: DynamicRange::Standard,
       can_hover: false,
       any_can_hover: false,
       pointer: PointerCapability::Coarse,
@@ -2852,6 +2904,9 @@ impl MediaContext {
       MediaFeature::MaxColorIndex(count) => MediaEvalResult::from_bool(self.color_index <= *count),
       MediaFeature::ColorGamut(required) => {
         MediaEvalResult::from_bool(self.color_gamut >= *required)
+      }
+      MediaFeature::DynamicRange(required) => {
+        MediaEvalResult::from_bool(self.dynamic_range >= *required)
       }
 
       // Monochrome features
@@ -3736,6 +3791,8 @@ pub enum MediaParseError {
   InvalidDisplayMode(String),
   /// Invalid color-gamut value
   InvalidColorGamut(String),
+  /// Invalid dynamic-range value
+  InvalidDynamicRange(String),
   /// Invalid forced-colors value
   InvalidForcedColors(String),
   /// Invalid inverted-colors value
@@ -3864,6 +3921,13 @@ impl fmt::Display for MediaParseError {
         write!(
           f,
           "Invalid color-gamut: '{}' (expected 'srgb', 'p3', or 'rec2020')",
+          s
+        )
+      }
+      MediaParseError::InvalidDynamicRange(s) => {
+        write!(
+          f,
+          "Invalid dynamic-range: '{}' (expected 'standard' or 'high')",
           s
         )
       }

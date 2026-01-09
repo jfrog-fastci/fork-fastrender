@@ -3497,6 +3497,7 @@ fn hash_media_feature_fingerprint(state: &mut impl Hasher, feature: &MediaFeatur
     MediaFeature::PrefersReducedTransparency(value) => value.hash(state),
     MediaFeature::PrefersReducedData(value) => value.hash(state),
     MediaFeature::ColorGamut(value) => value.hash(state),
+    MediaFeature::DynamicRange(value) => value.hash(state),
     MediaFeature::ForcedColors(value) => value.hash(state),
     MediaFeature::InvertedColors(value) => value.hash(state),
     MediaFeature::Range { feature, op, value } => {
@@ -16000,6 +16001,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
 
   // Color scheme inherits
   styles.color_scheme = parent.color_scheme.clone();
+  styles.dynamic_range_limit = parent.dynamic_range_limit.clone();
 
   // Color inherits
   styles.color = parent.color;

@@ -1025,6 +1025,13 @@ fn parse_color_scheme_tokens(tokens: &[String]) -> Option<ColorSchemePreference>
   Some(ColorSchemePreference::Supported { schemes, only })
 }
 
+fn parse_dynamic_range_limit(value: &PropertyValue) -> Option<DynamicRangeLimit> {
+  match value {
+    PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => DynamicRangeLimit::parse(raw),
+    _ => None,
+  }
+}
+
 fn content_value_from_property(value: &PropertyValue) -> Option<ContentValue> {
   let css_text = match value {
     PropertyValue::String(s) => format!("\"{}\"", s),
@@ -4437,6 +4444,7 @@ fn is_inherited_property(name: &str) -> bool {
     "color"
       | "-webkit-text-fill-color"
       | "color-scheme"
+      | "dynamic-range-limit"
       | "caret-color"
       | "accent-color"
       | "cursor"
@@ -6599,6 +6607,7 @@ pub(crate) fn apply_property_from_source(
     "accent-color" => styles.accent_color = source.accent_color,
     "caret-color" => styles.caret_color = source.caret_color,
     "color-scheme" => styles.color_scheme = source.color_scheme.clone(),
+    "dynamic-range-limit" => styles.dynamic_range_limit = source.dynamic_range_limit.clone(),
     "color" => {
       styles.color = source.color;
       styles.color_is_inherited = source.color_is_inherited;
@@ -13336,6 +13345,11 @@ fn apply_declaration_with_base_internal_with_order(
     "color-scheme" => {
       if let Some(pref) = parse_color_scheme(resolved_value) {
         styles.color_scheme = pref;
+      }
+    }
+    "dynamic-range-limit" => {
+      if let Some(limit) = parse_dynamic_range_limit(resolved_value) {
+        styles.dynamic_range_limit = limit;
       }
     }
     "color" => {

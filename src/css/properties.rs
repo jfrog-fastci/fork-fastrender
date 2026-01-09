@@ -21,6 +21,7 @@ use crate::style::float::Clear;
 use crate::style::float::Float;
 use crate::style::position::Position;
 use crate::style::types::BackgroundBox;
+use crate::style::types::DynamicRangeLimit;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
@@ -239,6 +240,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "cursor",
   "direction",
   "display",
+  "dynamic-range-limit",
   "empty-cells",
   "fill",
   "fill-opacity",
@@ -1631,6 +1633,13 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
         _ => Some(PropertyValue::Color(color)),
       };
     }
+  }
+
+  if property == "dynamic-range-limit" {
+    if DynamicRangeLimit::parse(value_str).is_some() {
+      return Some(PropertyValue::Keyword(value_str.to_string()));
+    }
+    return None;
   }
 
   // Individual transform properties (CSS Transforms Level 2).
