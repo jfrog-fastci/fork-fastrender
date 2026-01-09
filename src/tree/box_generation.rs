@@ -5315,7 +5315,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         || input_type.eq_ignore_ascii_case("email")
       {
         TextControlKind::Plain
-      } else {
+      } else if input_type.eq_ignore_ascii_case("image") {
         let label = placeholder
           .or_else(|| (!value.is_empty()).then_some(value))
           .or_else(|| Some(input_type.to_ascii_uppercase()));
@@ -5338,6 +5338,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           required,
           invalid,
         });
+      } else {
+        TextControlKind::Plain
       };
 
       FormControlKind::Text {
@@ -7736,11 +7738,14 @@ mod tests {
     assert!(
       controls
         .iter()
-        .any(|c| matches!(&c.control, FormControlKind::Unknown { label }
-        if label.as_deref() == Some("mystery"))
+        .any(|c| matches!(&c.control, FormControlKind::Text {
+          kind: TextControlKind::Plain,
+          placeholder,
+          ..
+        } if placeholder.as_deref() == Some("mystery"))
           && c.focus_visible
           && c.focused),
-      "unknown types should fall back to labeled control and keep focus-visible hint"
+      "unknown types should fall back to a text control and keep focus-visible hint"
     );
     assert!(
       controls.iter().any(|c| matches!(
