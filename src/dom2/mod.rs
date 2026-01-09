@@ -797,6 +797,15 @@ impl Document {
       SyntheticWbrZwsp(NodeId),
     }
 
+    fn node_is_renderable(kind: &NodeKind) -> bool {
+      // Keep selector preorder ids aligned with `to_renderer_dom` / `to_renderer_dom_subtree`, which
+      // drop html5ever-only nodes such as comments and doctypes.
+      !matches!(
+        kind,
+        NodeKind::Comment { .. } | NodeKind::ProcessingInstruction { .. } | NodeKind::Doctype { .. }
+      )
+    }
+
     let mut stack: Vec<StackItem> = vec![StackItem::Real(root)];
     while let Some(item) = stack.pop() {
       match item {
@@ -806,10 +815,13 @@ impl Document {
           }
 
           let preorder_id = preorder_to_node_id.len();
+          let node = self.node(id);
+          if !node_is_renderable(&node.kind) {
+            continue;
+          }
+
           preorder_to_node_id.push(Some(id));
           node_id_to_preorder[id.index()] = preorder_id;
-
-          let node = self.node(id);
 
           if self.should_inject_wbr_zwsp(id) {
             stack.push(StackItem::SyntheticWbrZwsp(id));

@@ -1,4 +1,5 @@
 use super::Document;
+use super::parse_html;
 use selectors::context::QuirksMode;
 
 #[test]
@@ -60,3 +61,16 @@ fn query_selector_from_template_scope_does_not_traverse_inert_contents() {
   );
 }
 
+#[test]
+fn selector_mapping_skips_doctype_and_comments_in_dom2_html_parse() {
+  // `dom2::parse_html` stores html5ever-only nodes (doctype/comments) in the arena but drops them
+  // when snapshotting back to the renderer `DomNode`. Selector preorder mappings must skip them too
+  // so query APIs stay in sync with the snapshot traversal order.
+  let html = "<!doctype html><!--c--><html><body><div id=a></div><div id=b></div></body></html>";
+  let mut doc = parse_html(html).unwrap();
+  let b = doc.get_element_by_id("b").expect("missing #b");
+
+  assert_eq!(doc.query_selector("#b", None).unwrap(), Some(b));
+  assert_eq!(doc.query_selector_all("#b", None).unwrap(), vec![b]);
+  assert!(doc.matches_selector(b, "#b").unwrap());
+}
