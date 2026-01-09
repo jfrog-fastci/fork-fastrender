@@ -222,6 +222,12 @@ impl VmJsScriptRealm {
   }
 }
 
+impl super::VmJsEngineHost for VmJsScriptRealm {
+  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
+    (&mut self.vm, &mut self.heap)
+  }
+}
+
 impl ScriptRealm for VmJsScriptRealm {
   fn eval_script(&mut self, source_name: &str, source: &str) -> Result<ScriptValue, ScriptError> {
     self.eval_script_with_budget(source_name, source, ScriptBudgetOverride::default())

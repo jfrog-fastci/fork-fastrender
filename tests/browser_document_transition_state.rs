@@ -144,7 +144,11 @@ fn browser_document_transition_state_tracks_style_changes_across_frames() -> Res
   let prepared = doc.prepared().expect("prepared document");
   let box_id = box_id_for_prepared(prepared, "box");
   assert!((sample_opacity(prepared, 800.0, box_id) - 0.7).abs() < 1e-3);
-  assert!((sample_opacity(prepared, 1300.0, box_id) - 0.35).abs() < 1e-3);
+  // CSS transitions apply a "reversing shortening factor": reversing back to the original value
+  // shortens the duration in proportion to how far the prior transition had progressed (here:
+  // 700ms of a 1000ms transition => 700ms duration when reversing). At t=1300ms, the reverse
+  // transition has progressed 500/700 ≈ 0.714, yielding opacity ≈ 0.2.
+  assert!((sample_opacity(prepared, 1300.0, box_id) - 0.2).abs() < 1e-3);
 
   Ok(())
 }
