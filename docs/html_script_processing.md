@@ -55,7 +55,7 @@ What exists today (in-tree):
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
-- **Mutable DOM for bindings (intended):**
+- **Mutable DOM for bindings (`dom2`):**
   - `src/dom2/`: mutable DOM (`dom2::Document`) intended for JS bindings and script-visible
     mutations.
   - `src/dom2/html5ever_tree_sink.rs`: `dom2::Dom2TreeSink` (`html5ever::TreeSink`) implementation
@@ -311,7 +311,8 @@ This section ties the components together. The goal is to make the parser/schedu
 boundaries explicit.
 
 ### A) Parsing, encountering `<script>`, and pausing at `</script>`
-1. Streaming parser builds nodes into a mutable DOM (eventually `dom2::Document` via a TreeSink).
+1. Streaming parser builds nodes into a live `dom2::Document` via the `dom2` html5ever TreeSink
+   (`Dom2TreeSink`).
 2. When a `<script>` end tag is processed, the parser driver builds a `ScriptElementSpec` for that
    element *at this parse position* (see `src/js/streaming.rs`), using:
    - element attributes (`src`, `async`, `defer`, `type`/`language`),
