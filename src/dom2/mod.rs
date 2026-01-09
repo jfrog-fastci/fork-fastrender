@@ -43,8 +43,8 @@ pub enum NodeKind {
   },
   /// A detached container for child nodes.
   ///
-  /// Document fragments are never inserted directly into the tree; callers implement DOM's special
-  /// insertion semantics by moving the fragment's children into the target parent.
+  /// Document fragments are never inserted directly into the tree: inserting a fragment moves its
+  /// children into the target parent (in order) and empties the fragment.
   DocumentFragment,
   /// An HTML comment node.
   ///
@@ -545,8 +545,9 @@ impl Document {
         },
         NodeKind::DocumentFragment => {
           // The renderer DOM snapshot format does not have a first-class DocumentFragment node
-          // type. Fragments should never be connected (insertion is rejected in dom2), but map them
-          // defensively to a plain document node to avoid panics if an invalid tree is constructed.
+          // type. Fragments should never be connected (insertion moves their children and leaves the
+          // fragment detached), but map them defensively to a plain document node to avoid panics if
+          // an invalid tree is constructed.
           DomNodeType::Document {
             quirks_mode: QuirksMode::NoQuirks,
             scripting_enabled,

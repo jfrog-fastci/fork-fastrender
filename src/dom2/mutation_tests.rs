@@ -94,7 +94,6 @@ fn inserting_empty_document_fragment_is_a_noop() {
   let frag = doc.create_document_fragment();
   assert_eq!(doc.append_child(root, frag).unwrap(), false);
   assert_eq!(doc.append_child(parent, frag).unwrap(), false);
-
   assert_eq!(doc.children(root).unwrap(), &[parent]);
   assert_eq!(doc.children(parent).unwrap(), &[]);
   assert_eq!(doc.parent(frag).unwrap(), None);
