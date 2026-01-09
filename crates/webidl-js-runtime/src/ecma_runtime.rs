@@ -917,8 +917,8 @@ impl JsRuntime for VmJsRuntime {
       Value::String(string_data) => Ok(self.alloc_string_object_from_handle(string_data)?),
       Value::Bool(boolean_data) => Ok(self.alloc_boolean_object_value(boolean_data)?),
       Value::Number(number_data) => Ok(self.alloc_number_object_value(number_data)?),
-      Value::BigInt(bigint_data) => Ok(self.alloc_bigint_object_value(bigint_data)?),
       Value::Symbol(symbol_data) => Ok(self.alloc_symbol_object_value(symbol_data)?),
+      Value::BigInt(bigint_data) => Ok(self.alloc_bigint_object_value(bigint_data)?),
     }
   }
 
@@ -931,7 +931,7 @@ impl JsRuntime for VmJsRuntime {
       Value::Undefined | Value::Null => false,
       Value::Bool(b) => b,
       Value::Number(n) => !(n == 0.0 || n.is_nan()),
-      Value::BigInt(n) => !n.is_zero(),
+      Value::BigInt(b) => !b.is_zero(),
       Value::String(s) => !self.heap.get_string(s)?.is_empty(),
       Value::Symbol(_) | Value::Object(_) => true,
     })
@@ -949,10 +949,10 @@ impl JsRuntime for VmJsRuntime {
       }
       Value::Null => 0.0,
       Value::Undefined => f64::NAN,
+      Value::String(s) => self.to_number_from_string(s)?,
       Value::BigInt(_) => {
         return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
       }
-      Value::String(s) => self.to_number_from_string(s)?,
       Value::Symbol(_) => {
         return Err(self.throw_type_error("Cannot convert a Symbol value to a number"));
       }
@@ -1453,6 +1453,10 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "0");
     let s = rt.to_string(Value::BigInt(JsBigInt::from_u128(42))).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "42");
+    let s = rt
+      .to_string(Value::BigInt(JsBigInt::from_u128(1).negate()))
+      .unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "-1");
   }
 
   #[test]
@@ -1474,6 +1478,66 @@ mod tests {
     assert!(rt.to_number(s).unwrap().is_nan());
     let s = rt.alloc_string_value("+0x10").unwrap();
     assert!(rt.to_number(s).unwrap().is_nan());
+  }
+
+  #[test]
+  fn to_boolean_bigint() {
+    let mut rt = VmJsRuntime::new();
+    assert!(!rt.to_boolean(Value::BigInt(JsBigInt::zero())).unwrap());
+    assert!(rt
+      .to_boolean(Value::BigInt(JsBigInt::from_u128(1)))
+      .unwrap());
+  }
+
+  #[test]
+  fn to_number_bigint_throws_type_error() {
+    let mut rt = VmJsRuntime::new();
+    let err = rt
+      .to_number(Value::BigInt(JsBigInt::from_u128(1)))
+      .unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown TypeError, got {other:?}"),
+    };
+
+    let name_key = rt.prop_key_str("name").unwrap();
+    let name_value = rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, name_value), "TypeError");
+  }
+
+  #[test]
+  fn to_bigint_conversions() {
+    let mut rt = VmJsRuntime::new();
+
+    assert_eq!(
+      rt.to_bigint(Value::Bool(true)).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(1))
+    );
+    assert_eq!(
+      rt.to_bigint(Value::Number(5.0)).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(5))
+    );
+
+    let err = rt.to_bigint(Value::Number(1.5)).unwrap_err();
+    let thrown = match err {
+      VmError::Throw(v) => v,
+      other => panic!("expected thrown RangeError, got {other:?}"),
+    };
+    let name_key = rt.prop_key_str("name").unwrap();
+    let name_value = rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, name_value), "RangeError");
+
+    let s = rt.alloc_string_value("42").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(42))
+    );
+
+    let s = rt.alloc_string_value("-0x10").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(16).negate())
+    );
   }
 
   #[test]
