@@ -3632,6 +3632,58 @@ fn blank_page_inserted_for_break_after_right() {
 }
 
 #[test]
+fn blank_page_inserted_for_break_after_left() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+          }
+          @page :blank {
+            @top-center { content: "Blank"; }
+          }
+          body { margin: 0; }
+          .first { height: 80px; }
+          .middle { break-before: page; height: 120px; break-after: left; }
+          .second { height: 120px; }
+        </style>
+      </head>
+      <body>
+        <div class="first">First</div>
+        <div class="middle">Middle</div>
+        <div class="second">Second</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  // Page 2 is `:left` in LTR page progression. `break-after: left` forces the next page to also be
+  // left, so pagination must insert a blank right page in-between.
+  assert_eq!(page_roots.len(), 4);
+
+  let blank_page = page_roots[2];
+  assert!(find_text(blank_page, "Blank").is_some());
+  assert!(find_text(blank_page, "First").is_none());
+  assert!(find_text(blank_page, "Middle").is_none());
+  assert!(find_text(blank_page, "Second").is_none());
+
+  assert!(find_text(page_roots[0], "First").is_some());
+  assert!(find_text(page_roots[1], "Middle").is_some());
+  assert!(find_text(page_roots[3], "Second").is_some());
+  assert!(find_text(page_roots[0], "Blank").is_none());
+  assert!(find_text(page_roots[1], "Blank").is_none());
+  assert!(find_text(page_roots[3], "Blank").is_none());
+}
+
+#[test]
 fn blank_pseudo_outweighs_right_pseudo_in_specificity() {
   let html = r#"
     <html>
