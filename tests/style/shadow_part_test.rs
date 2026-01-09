@@ -307,6 +307,54 @@ fn exportparts_renaming_hides_original_name_in_containing_scope() {
 }
 
 #[test]
+fn exportparts_empty_exports_no_parts() {
+  let html = r#"
+    <x-host id="host" exportparts="">
+      <template shadowroot="open">
+        <span id="inner" part="label">Inner</span>
+      </template>
+    </x-host>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let media = MediaContext::screen(800.0, 600.0);
+
+  let baseline_style_set = StyleSet {
+    document: StyleSheet::new(),
+    shadows: HashMap::new(),
+  };
+  let baseline = apply_style_set_with_media_target_and_imports(
+    &dom,
+    &baseline_style_set,
+    &media,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+  );
+  let baseline_color = find_by_id(&baseline, "inner")
+    .expect("shadow part")
+    .styles
+    .color;
+
+  let stylesheet =
+    parse_stylesheet("x-host::part(label) { color: rgb(200, 10, 20); }").expect("stylesheet");
+  let style_set = StyleSet {
+    document: stylesheet,
+    shadows: HashMap::new(),
+  };
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+  let inner = find_by_id(&styled, "inner").expect("shadow part");
+
+  assert_eq!(inner.styles.color, baseline_color);
+  assert_ne!(inner.styles.color, Rgba::rgb(200, 10, 20));
+}
+
+#[test]
 fn document_host_part_selector_does_not_apply() {
   let html = r#"
     <x-host id="host">

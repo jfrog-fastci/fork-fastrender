@@ -4913,10 +4913,8 @@ impl DomMaps {
           }
         }
       }
-      if let Some(mapping) = node.get_attribute_ref("exportparts").map(parse_exportparts) {
-        if !mapping.is_empty() {
-          exportparts_map.insert(id, mapping);
-        }
+      if let Some(attr) = node.get_attribute_ref("exportparts") {
+        exportparts_map.insert(id, parse_exportparts(attr));
       }
 
       if node.is_element() {
