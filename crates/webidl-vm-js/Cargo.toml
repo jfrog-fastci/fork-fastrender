@@ -1,0 +1,10 @@
+[package]
+name = "webidl-vm-js"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+vm-js = { path = "../../engines/ecma-rs/vm-js" }
+webidl = { path = "../../engines/ecma-rs/webidl" }
+

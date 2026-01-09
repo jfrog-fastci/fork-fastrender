@@ -12,7 +12,7 @@ use crate::render_control;
 use std::time::Instant;
 use vm_js::{
   Budget, ExecutionContext, Heap, Job, JobCallback, PropertyDescriptor, PropertyKey, PropertyKind,
-  RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks, VmJobContext,
+  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 
 type VmResult<T> = std::result::Result<T, VmError>;
@@ -369,7 +369,8 @@ fn raf_global_from_this(
 fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -479,7 +480,8 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
 fn cancel_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -707,7 +709,8 @@ mod tests {
   fn cb_raf(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     this: Value,
     args: &[Value],
@@ -730,7 +733,8 @@ mod tests {
   fn cb_job(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -745,6 +749,7 @@ mod tests {
   fn cb_raf_enqueue_job(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
     host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
@@ -797,7 +802,7 @@ mod tests {
         let mut scope = heap.scope();
         let raf = get_prop(&mut scope, global, "requestAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
-        vm.call(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
+        vm.call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
@@ -912,9 +917,9 @@ mod tests {
         let cancel = get_prop(&mut scope, global, "cancelAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
         let id = vm
-          .call(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
+          .call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
-        vm.call(&mut scope, cancel, Value::Undefined, &[id])
+        vm.call_without_host(&mut scope, cancel, Value::Undefined, &[id])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
@@ -961,7 +966,7 @@ mod tests {
         let job_cb = make_callback(vm, &mut scope, realm, global, "job_cb", cb_job);
         let raf_cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf_enqueue_job);
         set_prop(&mut scope, raf_cb, CALLBACK_JOB_KEY, Value::Object(job_cb));
-        vm.call(&mut scope, raf, Value::Undefined, &[Value::Object(raf_cb)])
+        vm.call_without_host(&mut scope, raf, Value::Undefined, &[Value::Object(raf_cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())

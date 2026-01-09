@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcSymbol, Heap, NativeFunctionId, PropertyDescriptor, PropertyKey, PropertyKind, Realm,
-  Scope, Value, Vm, VmError, VmHostHooks, WeakGcObject,
+  Scope, Value, Vm, VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,7 +452,8 @@ fn wrap_node<'a>(
 fn dom_document_create_element(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -472,7 +473,8 @@ fn dom_document_create_element(
 fn dom_document_get_element_by_id(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -496,7 +498,8 @@ fn dom_document_get_element_by_id(
 fn dom_document_query_selector(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -523,7 +526,8 @@ fn dom_document_query_selector(
 fn dom_node_append_child(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -545,7 +549,8 @@ fn dom_node_append_child(
 fn dom_element_set_attribute(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -571,7 +576,8 @@ fn dom_element_set_attribute(
 fn dom_node_text_content_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -618,7 +624,8 @@ fn dom_node_text_content_getter(
 fn dom_node_text_content_setter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -685,7 +692,8 @@ fn dom_node_text_content_setter(
 fn dom_element_class_list_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -724,7 +732,8 @@ fn dom_element_class_list_getter(
 fn dom_token_list_contains(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -743,7 +752,8 @@ fn dom_token_list_contains(
 fn dom_token_list_add(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -770,7 +780,8 @@ fn dom_token_list_add(
 fn dom_token_list_remove(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -797,7 +808,8 @@ fn dom_token_list_remove(
 fn dom_token_list_toggle(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -826,7 +838,8 @@ fn dom_token_list_toggle(
 fn dom_document_current_script_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],

@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHostHooks, VmOptions,
+  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHost, VmHostHooks,
+  VmOptions,
 };
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -375,7 +376,8 @@ impl Drop for CurrentScriptSourceGuard {
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -405,7 +407,8 @@ fn console_log_native(
 fn location_href_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -425,7 +428,8 @@ fn location_href_get_native(
 fn location_href_set_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
@@ -505,7 +509,8 @@ fn get_or_create_node_wrapper(
 fn document_current_script_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],

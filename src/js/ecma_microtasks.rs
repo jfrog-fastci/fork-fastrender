@@ -442,7 +442,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   fn record_call_native(
     _vm: &mut vm_js::Vm,
     scope: &mut vm_js::Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::GcObject,
     this: vm_js::Value,
     args: &[vm_js::Value],
@@ -454,7 +455,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   fn record_current_realm_native(
     vm: &mut vm_js::Vm,
     scope: &mut vm_js::Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],
@@ -474,7 +476,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   fn record_current_realm_sequence_native(
     vm: &mut vm_js::Vm,
     scope: &mut vm_js::Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],
@@ -494,7 +497,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   fn noop(
     _vm: &mut vm_js::Vm,
     _scope: &mut vm_js::Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],
@@ -505,7 +509,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
   fn record_callback_call(
     _vm: &mut vm_js::Vm,
     _scope: &mut vm_js::Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn vm_js::VmHost,
+    _hooks: &mut dyn vm_js::VmHostHooks,
     _callee: vm_js::GcObject,
     _this: vm_js::Value,
     _args: &[vm_js::Value],

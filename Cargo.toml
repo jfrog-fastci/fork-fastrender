@@ -14,6 +14,7 @@ members = [
   "crates/js-dom-bindings",
   "crates/js-dom-bindings-quickjs",
   "crates/webidl-js-runtime",
+  "crates/webidl-vm-js",
 ]
 # `engines/ecma-rs` is a nested workspace (git submodule). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
@@ -110,7 +111,7 @@ webidl-js-runtime = { path = "crates/webidl-js-runtime" }
 vm-js = { path = "engines/ecma-rs/vm-js" }
 parse-js = { path = "engines/ecma-rs/parse-js", features = ["diagnostics"] }
 webidl = { path = "engines/ecma-rs/webidl" }
-webidl-vm-js = { path = "engines/ecma-rs/webidl-vm-js" }
+webidl-vm-js = { path = "crates/webidl-vm-js" }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.

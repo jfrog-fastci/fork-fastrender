@@ -2,7 +2,7 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use rustc_hash::FxHashMap;
 use vm_js::{
   GcObject, GcSymbol, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value, Vm,
-  VmError, VmHostHooks, WeakGcObject,
+  VmError, VmHost, VmHostHooks, WeakGcObject,
 };
 
 #[derive(Debug)]
@@ -227,7 +227,8 @@ fn define_native_method(
 fn dom_query_selector(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -271,7 +272,8 @@ fn dom_query_selector(
 fn dom_get_attribute(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -312,7 +314,8 @@ fn dom_get_attribute(
 fn event_target_add_event_listener(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -349,7 +352,8 @@ fn event_target_add_event_listener(
 fn event_target_remove_event_listener(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],

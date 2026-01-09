@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use vm_js::{
   Budget, Heap, HeapLimits, Job, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks,
-  VmJobContext, VmOptions,
+  VmHost, VmJobContext, VmOptions,
 };
 
 use super::event_loop::{EventLoop, TimerId};
@@ -762,7 +762,8 @@ fn throw_type_error(scope: &mut Scope<'_>, message: &str) -> VmError {
 fn native_queue_microtask<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -822,7 +823,8 @@ fn native_queue_microtask<State: 'static>(
 fn native_set_timeout<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -932,7 +934,8 @@ fn native_set_timeout<State: 'static>(
 fn native_clear_timeout<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -953,7 +956,8 @@ fn native_clear_timeout<State: 'static>(
 fn native_set_interval<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -1060,7 +1064,8 @@ fn native_set_interval<State: 'static>(
 fn native_clear_interval<State: 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: vm_js::GcObject,
   _this: Value,
   args: &[Value],
@@ -1143,7 +1148,8 @@ mod tests {
   fn log_sync(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1157,7 +1163,8 @@ mod tests {
   fn log_micro(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1171,7 +1178,8 @@ mod tests {
   fn enqueue_nested_microtask(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1193,7 +1201,8 @@ mod tests {
   fn log_timeout(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1207,6 +1216,7 @@ mod tests {
   fn thenable_then(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
     host: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
@@ -1224,7 +1234,8 @@ mod tests {
   fn make_thenable(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1390,7 +1401,8 @@ mod tests {
     fn set_interval_id(
       _vm: &mut Vm,
       _scope: &mut Scope<'_>,
-      _host: &mut dyn VmHostHooks,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       args: &[Value],
@@ -1406,6 +1418,7 @@ mod tests {
     fn interval_cb(
       vm: &mut Vm,
       scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
       host: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,

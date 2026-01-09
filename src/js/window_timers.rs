@@ -15,7 +15,7 @@ use crate::render_control;
 use std::time::{Duration, Instant};
 use vm_js::{
   Budget, ExecutionContext, Heap, Job, JobCallback, PropertyDescriptor, PropertyKey, PropertyKind,
-  RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks, VmJobContext,
+  RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 pub(crate) const SET_TIMEOUT_STRING_HANDLER_ERROR: &str =
   "setTimeout does not currently support string handlers";
@@ -446,7 +446,8 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
 fn set_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -552,7 +553,8 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
 fn clear_timeout_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -584,7 +586,8 @@ fn clear_timeout_native<Host: WindowRealmHost + 'static>(
 fn set_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -688,7 +691,8 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
 fn clear_interval_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -719,7 +723,8 @@ fn clear_interval_native<Host: WindowRealmHost + 'static>(
 fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
@@ -1106,6 +1111,7 @@ mod tests {
   fn cb_enqueue_promise_job(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
     host: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
@@ -1130,7 +1136,8 @@ mod tests {
   fn cb_record_next(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1143,7 +1150,8 @@ mod tests {
   fn cb_push_t(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1158,7 +1166,8 @@ mod tests {
   fn cb_push_m(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     this: Value,
     _args: &[Value],
@@ -1179,7 +1188,8 @@ mod tests {
   fn cb_capture_args(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _host: &mut dyn VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     args: &[Value],
@@ -1199,7 +1209,8 @@ mod tests {
   fn cb_noop(
     _vm: &mut Vm,
     _scope: &mut Scope<'_>,
-    _host: &mut dyn vm_js::VmHostHooks,
+    _host: &mut dyn VmHost,
+    _hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1210,6 +1221,7 @@ mod tests {
   fn cb_interval_tick(
     vm: &mut Vm,
     scope: &mut Scope<'_>,
+    _host: &mut dyn VmHost,
     host: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
@@ -1268,7 +1280,7 @@ mod tests {
     scope.push_root(Value::String(call_key_s))?;
     let call_key = PropertyKey::from_string(call_key_s);
     let call = vm.get(&mut scope, set_timeout_func, call_key)?;
-    let err = vm.call(
+    let err = vm.call_without_host(
       &mut scope,
       call,
       Value::Object(set_timeout_func),
@@ -1292,7 +1304,8 @@ mod tests {
     fn cb_noop(
       _vm: &mut Vm,
       _scope: &mut Scope<'_>,
-      _host: &mut dyn VmHostHooks,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
       _callee: vm_js::GcObject,
       _this: Value,
       _args: &[Value],
@@ -1323,7 +1336,7 @@ mod tests {
     scope.push_root(Value::String(call_key_s))?;
     let call_key = PropertyKey::from_string(call_key_s);
     let call = vm.get(&mut scope, set_timeout_func, call_key)?;
-    let err = vm.call(
+    let err = vm.call_without_host(
       &mut scope,
       call,
       Value::Object(set_timeout_func),
@@ -1358,7 +1371,7 @@ mod tests {
     let sym = scope.alloc_symbol(Some("delay"))?;
     scope.push_root(Value::Symbol(sym))?;
 
-    let err = vm.call(
+    let err = vm.call_without_host(
       &mut scope,
       set_timeout,
       Value::Undefined,
@@ -1387,7 +1400,7 @@ mod tests {
     let sym = scope.alloc_symbol(Some("id"))?;
     scope.push_root(Value::Symbol(sym))?;
 
-    let err = vm.call(
+    let err = vm.call_without_host(
       &mut scope,
       clear_timeout,
       Value::Undefined,
@@ -1456,14 +1469,14 @@ mod tests {
         let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
         let micro_cb = make_callback(vm, &mut scope, global, "micro_cb", cb_push_m);
 
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
           &[Value::Object(timeout_cb), Value::Number(0.0)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           queue_microtask,
           Value::Undefined,
@@ -1564,7 +1577,7 @@ mod tests {
 
         let delay_s = scope.alloc_string("0x10").unwrap();
         scope.push_root(Value::String(delay_s)).unwrap();
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
@@ -1636,7 +1649,7 @@ mod tests {
           make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
         let next_cb = make_callback(vm, &mut scope, global, "next_cb", cb_record_next);
 
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
@@ -1644,7 +1657,7 @@ mod tests {
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
 
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
@@ -1804,7 +1817,7 @@ mod tests {
         scope
           .push_root(Value::String(x_s))
           .expect("push root arg string");
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
@@ -1867,7 +1880,7 @@ mod tests {
         scope
           .push_root(Value::String(handler_s))
           .expect("push root handler string");
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Undefined,
@@ -1908,7 +1921,7 @@ mod tests {
         scope
           .push_root(Value::String(handler_s))
           .expect("push root handler string");
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           queue_microtask,
           Value::Undefined,
@@ -1933,7 +1946,8 @@ mod tests {
     fn cb_record_this_is_undefined(
       _vm: &mut Vm,
       scope: &mut Scope<'_>,
-      _host: &mut dyn VmHostHooks,
+      _host: &mut dyn VmHost,
+      _hooks: &mut dyn VmHostHooks,
       callee: vm_js::GcObject,
       this: Value,
       _args: &[Value],
@@ -1981,7 +1995,7 @@ mod tests {
           "micro_cb",
           cb_record_this_is_undefined,
         );
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           queue_microtask,
           Value::Undefined,
@@ -2028,7 +2042,7 @@ mod tests {
         scope
           .push_root(Value::Object(handler_obj))
           .expect("push root handler object");
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           queue_microtask,
           Value::Undefined,
@@ -2067,7 +2081,7 @@ mod tests {
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_noop);
         let _ = vm
-          .call(
+          .call_without_host(
             &mut scope,
             set_timeout,
             Value::Undefined,
@@ -2118,7 +2132,7 @@ mod tests {
 
         let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_enqueue_promise_job);
 
-        vm.call(
+        vm.call_without_host(
           &mut scope,
           set_timeout,
           Value::Object(global),
