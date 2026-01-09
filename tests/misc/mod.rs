@@ -44,6 +44,7 @@ mod js_diagnostics;
 mod js_dom_shims;
 mod js_timers;
 mod vm_js_optional_chaining_this;
+mod js_fetch_bindings;
 mod list_border_outline_case_insensitive_test;
 mod logical_shorthand_parsing_test;
 mod map_hidden;
