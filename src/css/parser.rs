@@ -1001,7 +1001,7 @@ fn parse_namespace_rule<'i, 't>(
       namespace_state
         .namespaces
         .prefixes
-        .insert(CssString::from(prefix.to_ascii_lowercase()), CssString::from(url));
+        .insert(CssString::from(prefix), CssString::from(url));
     }
   } else {
     super::selectors::namespace_context_set_default(CssString::from(url));

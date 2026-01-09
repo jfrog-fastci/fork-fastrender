@@ -795,7 +795,8 @@ pub(crate) fn namespace_context_set_default(url: CssString) {
 }
 
 pub(crate) fn namespace_context_set_prefix(prefix: &str, url: CssString) {
-  let key = CssString::from(prefix.to_ascii_lowercase());
+  // Namespace prefixes are case-sensitive (CSS Namespaces / Selectors 4).
+  let key = CssString::from(prefix);
   NAMESPACE_CONTEXT.with(|ctx| {
     ctx.borrow_mut().prefixes.insert(key, url);
   });
@@ -850,15 +851,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     &self,
     prefix: &<Self::Impl as SelectorImpl>::NamespacePrefix,
   ) -> Option<<Self::Impl as SelectorImpl>::NamespaceUrl> {
-    let prefix = prefix.as_str();
     NAMESPACE_CONTEXT.with(|ctx| {
       let ctx = ctx.borrow();
-      if prefix.bytes().any(|b| b.is_ascii_uppercase()) {
-        let lower = prefix.to_ascii_lowercase();
-        ctx.prefixes.get(lower.as_str()).cloned()
-      } else {
-        ctx.prefixes.get(prefix).cloned()
-      }
+      ctx.prefixes.get(prefix.as_str()).cloned()
     })
   }
 

@@ -40,6 +40,22 @@ fn undeclared_prefix_invalidates_rule() {
 }
 
 #[test]
+fn namespace_prefixes_are_case_sensitive() {
+  let html = r#"<svg><rect id="r"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace svg url("http://www.w3.org/2000/svg");
+    svg|rect { display: block; }
+    SVG|rect { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let rect = find_by_id(&styled, "r").expect("rect");
+  assert_eq!(display(rect), "block");
+}
+
+#[test]
 fn default_namespace_restricts_unprefixed_type_selectors() {
   let html = r#"<g id="html"></g><svg><g id="svg"></g></svg>"#;
   let dom = dom::parse_html(html).unwrap();
