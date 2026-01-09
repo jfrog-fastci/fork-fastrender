@@ -206,6 +206,8 @@ pub fn execute_web_fetch<'a>(
     body: body_bytes,
   };
 
+  // Cacheable GET fast path: allow `ResourceFetcher` implementations to use the simpler
+  // `fetch_with_request` path (which is typically what caching layers key off of).
   let mut resource = if method_is_get
     && user_header_pairs.is_empty()
     && body_bytes.is_none()
@@ -315,35 +317,40 @@ pub fn execute_web_fetch<'a>(
     body,
   };
 
-  response.r#type = match request.mode {
-    RequestMode::Cors => ResponseType::Cors,
-    RequestMode::SameOrigin | RequestMode::Navigate => ResponseType::Basic,
-    RequestMode::NoCors => {
-      // Opaque response: hide status, headers, body, and URL.
-      //
-      // Note: This is a spec-shaped approximation of Fetch's "opaque filtered response". The
-      // renderer resource loader does not currently consume this API (it uses `ResourceFetcher`
-      // directly), so returning an inaccessible body here matches browser-visible `fetch()` behavior
-      // without impacting rendering.
-      let r#type = if (300..400).contains(&response.status)
-        && request.redirect == RequestRedirect::Manual
-      {
-        ResponseType::OpaqueRedirect
-      } else {
-        ResponseType::Opaque
-      };
-
-      return Ok(Response {
-        r#type,
-        url: String::new(),
-        redirected: response.redirected,
-        status: 0,
-        status_text: String::new(),
-        headers: Headers::new_with_guard(HeadersGuard::Immutable),
-        body: None,
-      });
+  // Apply Fetch response tainting based on request mode / redirect behavior.
+  // https://fetch.spec.whatwg.org/#concept-filtered-response
+  // https://fetch.spec.whatwg.org/#redirect-status
+  let status_is_redirect = matches!(response.status, 301 | 302 | 303 | 307 | 308);
+  let response_type = if request.redirect == RequestRedirect::Manual && status_is_redirect {
+    ResponseType::OpaqueRedirect
+  } else {
+    match request.mode {
+      RequestMode::Cors => ResponseType::Cors,
+      RequestMode::SameOrigin | RequestMode::Navigate => ResponseType::Basic,
+      RequestMode::NoCors => ResponseType::Opaque,
     }
   };
+
+  if matches!(response_type, ResponseType::Opaque | ResponseType::OpaqueRedirect) {
+    // Opaque response: hide status, headers, body, and URL.
+    //
+    // Note: This is a spec-shaped approximation of Fetch's filtered response types. The renderer
+    // resource loader does not currently consume this API (it uses `ResourceFetcher` directly), so
+    // returning an inaccessible body here matches browser-visible `fetch()` behavior without
+    // impacting rendering.
+    return Ok(Response {
+      r#type: response_type,
+      url: String::new(),
+      redirected: response.redirected,
+      status: 0,
+      status_text: String::new(),
+      headers: Headers::new_with_guard(HeadersGuard::Immutable),
+      body: None,
+    });
+  }
+
+  response.r#type = response_type;
+  response.headers.set_guard(HeadersGuard::Immutable);
 
   Ok(response)
 }
@@ -539,10 +546,10 @@ mod tests {
     ]);
     let fetcher = StaticFetcher { resource };
     let request = Request::new("GET", "https://example.com/a");
-    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+    let mut response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
 
-    assert_eq!(response.headers.guard(), HeadersGuard::Response);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
     assert_eq!(
       response.headers.get("content-type").unwrap().as_deref(),
       Some("text/plain")
@@ -552,6 +559,9 @@ mod tests {
       Some("hello")
     );
     assert!(!response.headers.has("set-cookie").unwrap());
+
+    let err = response.headers.set("x-new", "blocked").unwrap_err();
+    assert!(matches!(err, WebFetchError::HeadersImmutable));
   }
 
   #[test]
@@ -815,7 +825,11 @@ mod tests {
 
     let fetcher = ReferrerAssertingFetcher {
       expected_referrer_url: Some("https://override.example/referrer"),
-      resource: FetchedResource::new(b"ok".to_vec(), None),
+      resource: {
+        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+        resource.access_control_allow_origin = Some("https://override.example".to_string());
+        resource
+      },
     };
 
     let mut request = Request::new("GET", "https://example.com/a");
@@ -881,7 +895,11 @@ mod tests {
 
     let fetcher = ReferrerAssertingFetcher {
       expected_referrer_url: Some("https://ctx.example/page"),
-      resource: FetchedResource::new(b"ok".to_vec(), None),
+      resource: {
+        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+        resource.access_control_allow_origin = Some("https://ctx.example".to_string());
+        resource
+      },
     };
 
     let request = Request::new("GET", "https://example.com/a");
@@ -981,12 +999,15 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-
-    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    let mut response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
     assert_eq!(response.r#type, ResponseType::Basic);
     assert_eq!(response.status, 200);
     assert_eq!(response.url, "https://client.example/res");
-    assert!(response.body.is_some());
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
+    assert_eq!(
+      response.body.as_mut().unwrap().consume_bytes().unwrap(),
+      b"ok"
+    );
   }
 
   #[test]
@@ -1287,13 +1308,11 @@ mod tests {
     request.redirect = crate::resource::web_fetch::RequestRedirect::Manual;
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
-    assert_eq!(response.status, 302);
+    assert_eq!(response.r#type, ResponseType::OpaqueRedirect);
+    assert_eq!(response.status, 0);
     assert!(!response.redirected);
-    assert!(response.url.ends_with("/start"), "unexpected url: {}", response.url);
-    assert_eq!(
-      response.body.as_mut().unwrap().consume_bytes().unwrap(),
-      b""
-    );
+    assert_eq!(response.url, "");
+    assert!(response.body.is_none());
     handle.join().unwrap();
   }
 
@@ -1321,12 +1340,16 @@ mod tests {
 
     impl ResourceFetcher for UrlAssertingFetcher {
       fn fetch(&self, _url: &str) -> Result<FetchedResource> {
-        unreachable!("execute_web_fetch should call fetch_http_request");
+        unreachable!("execute_web_fetch should call fetch_with_request");
       }
 
-      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
-        assert_eq!(req.fetch.url, "https://example.com/dir/sub");
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.url, "https://example.com/dir/sub");
         Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        panic!("fetch_http_request should not be called for cacheable GET requests");
       }
     }
 
@@ -1338,7 +1361,8 @@ mod tests {
       ..WebFetchExecutionContext::default()
     };
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
-    assert_eq!(response.url, "https://example.com/dir/sub");
+    assert_eq!(response.r#type, ResponseType::Opaque);
+    assert_eq!(response.url, "");
   }
 
   #[test]
@@ -1347,12 +1371,16 @@ mod tests {
 
     impl ResourceFetcher for UrlAssertingFetcher {
       fn fetch(&self, _url: &str) -> Result<FetchedResource> {
-        unreachable!("execute_web_fetch should call fetch_http_request");
+        unreachable!("execute_web_fetch should call fetch_with_request");
       }
 
-      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
-        assert_eq!(req.fetch.url, "https://client.example/res");
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.url, "https://client.example/res");
         Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        panic!("fetch_http_request should not be called for cacheable GET requests");
       }
     }
 
@@ -1365,7 +1393,8 @@ mod tests {
       ..WebFetchExecutionContext::default()
     };
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
-    assert_eq!(response.url, "https://client.example/res");
+    assert_eq!(response.r#type, ResponseType::Opaque);
+    assert_eq!(response.url, "");
   }
 
   #[test]
@@ -1439,6 +1468,7 @@ mod tests {
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
     assert_eq!(response.r#type, ResponseType::Opaque);
     assert_eq!(response.status, 0);
+    assert_eq!(response.url, "");
     assert!(response.body.is_none());
   }
 }
