@@ -7,7 +7,10 @@ rust-version = "1.70"
 publish = false
 
 [workspace]
-members = ["xtask", "crates/webidl-ir", "crates/js-wpt-dom-runner"]
+members = ["xtask", "crates/webidl-ir", "crates/js-wpt-dom-runner", "crates/webidl-js-runtime"]
+# `engines/ecma-rs` is a nested workspace (git submodule). Exclude it so Cargo can build `vm-js`
+# and friends using their own workspace-inherited metadata.
+exclude = ["engines/ecma-rs"]
 resolver = "2"
 
 [features]
@@ -91,6 +94,7 @@ libc = "0.2"
 read-fonts = "0.20"
 skrifa = "0.20"
 walkdir = "2"
+webidl-js-runtime = { path = "crates/webidl-js-runtime" }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.

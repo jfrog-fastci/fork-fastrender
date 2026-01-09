@@ -26,6 +26,7 @@ pub mod time;
 pub mod url;
 pub mod window_timers;
 pub mod streaming;
+pub mod webidl;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
