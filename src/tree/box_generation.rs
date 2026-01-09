@@ -4158,6 +4158,7 @@ fn build_appearance_none_form_control_fallback(
       let span = (max_val - min_val).abs().max(0.0001);
       let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
       let clamped_pct = (clamped * 100.0).clamp(0.0, 100.0);
+      let is_rtl = styled.styles.direction == crate::style::types::Direction::Rtl;
 
       if let Some(track_style) = form_control.slider_track_style.as_ref() {
         let mut style = (**track_style).clone();
@@ -4182,12 +4183,17 @@ fn build_appearance_none_form_control_fallback(
       if let Some(thumb_style) = form_control.slider_thumb_style.as_ref() {
         let mut style = (**thumb_style).clone();
         style.position = Position::Absolute;
-        style.left = InsetValue::Length(Length::new(clamped_pct, LengthUnit::Percent));
-        style.right = InsetValue::Auto;
+        if is_rtl {
+          style.left = InsetValue::Auto;
+          style.right = InsetValue::Length(Length::new(clamped_pct, LengthUnit::Percent));
+        } else {
+          style.left = InsetValue::Length(Length::new(clamped_pct, LengthUnit::Percent));
+          style.right = InsetValue::Auto;
+        }
         style.top = InsetValue::Length(Length::new(50.0, LengthUnit::Percent));
         style.bottom = InsetValue::Auto;
         style.translate = TranslateValue::Values {
-          x: Length::new(-clamped_pct, LengthUnit::Percent),
+          x: Length::new(if is_rtl { clamped_pct } else { -clamped_pct }, LengthUnit::Percent),
           y: Length::new(-50.0, LengthUnit::Percent),
           z: Length::px(0.0),
         };

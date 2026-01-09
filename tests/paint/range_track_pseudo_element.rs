@@ -82,3 +82,52 @@ fn range_track_pseudo_element_paints_under_appearance_none() {
     );
   }
 }
+
+#[test]
+fn range_thumb_position_respects_direction_rtl_under_appearance_none() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: white; }
+      #slider {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 200px;
+        height: 20px;
+        padding: 0;
+        border: 0;
+        appearance: none;
+        direction: rtl;
+        background: white;
+      }
+      #slider::-webkit-slider-runnable-track,
+      #slider::-moz-range-track {
+        height: 20px;
+        background: rgb(255 0 0);
+      }
+      #slider::-webkit-slider-thumb,
+      #slider::-moz-range-thumb {
+        width: 10px;
+        height: 20px;
+        border: 0;
+        background: rgb(0 255 0);
+      }
+    </style>
+    <input id="slider" type="range" value="0" min="0" max="100" />
+  "#;
+
+  for backend in [PaintBackend::DisplayList, PaintBackend::Legacy] {
+    let pixmap = render(html, 220, 40, backend);
+    assert_eq!(
+      pixel(&pixmap, 5, 10),
+      (255, 0, 0, 255),
+      "expected rtl slider thumb to be on the right, leaving the left side as track (backend={backend:?})"
+    );
+    assert_eq!(
+      pixel(&pixmap, 195, 10),
+      (0, 255, 0, 255),
+      "expected rtl slider thumb to be at the right edge for value=min (backend={backend:?})"
+    );
+  }
+}
