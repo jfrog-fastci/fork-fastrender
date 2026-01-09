@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
   GcObject, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
-  PropertyKind, Realm, Scope, SourceText, Value, Vm, VmError, VmHostHooks, VmOptions,
+  PropertyKind, Realm, RealmId, Scope, SourceText, Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -49,12 +49,14 @@ impl WindowRealmConfig {
 
 pub struct WindowRealm {
   runtime: VmJsRuntime,
+  realm_id: RealmId,
   console_sink_id: Option<u64>,
   current_script_source_id: Option<u64>,
 }
 
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
+    let realm_id = RealmId::from_raw(NEXT_WINDOW_REALM_ID.fetch_add(1, Ordering::Relaxed));
     let mut vm_options = VmOptions::default();
     // Window realms should be interruptible even before full script execution is wired up.
     // This is separate from the renderer-level interrupt flag; callers can wire it up as needed.
@@ -76,6 +78,7 @@ impl WindowRealm {
     let (console_sink_id, current_script_source_id) = init_window_globals(vm, heap, realm, &config)?;
     Ok(Self {
       runtime,
+      realm_id,
       console_sink_id,
       current_script_source_id,
     })
@@ -180,7 +183,7 @@ impl vm_js::VmJobContext for WindowRealm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
-    let realm_id = self.realm().id();
+    let realm_id = self.realm_id;
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
     let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
@@ -197,7 +200,7 @@ impl vm_js::VmJobContext for WindowRealm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
-    let realm_id = self.realm().id();
+    let realm_id = self.realm_id;
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
     let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
@@ -257,6 +260,7 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
+static NEXT_WINDOW_REALM_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CONSOLE_SINK_ID: AtomicU64 = AtomicU64::new(1);
 static CONSOLE_SINKS: OnceLock<Mutex<HashMap<u64, ConsoleSink>>> = OnceLock::new();
 

@@ -983,14 +983,14 @@ fn apply_select_listbox_click(
 fn select_control_snapshot_from_box_tree(
   box_tree: &BoxTree,
   select_node_id: usize,
-) -> Option<(SelectControl, bool, Arc<ComputedStyle>)> {
+) -> Option<(usize, SelectControl, bool, Arc<ComputedStyle>)> {
   let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
   while let Some(node) = stack.pop() {
     if node.styled_node_id == Some(select_node_id) {
       if let BoxType::Replaced(replaced) = &node.box_type {
         if let ReplacedType::FormControl(form_control) = &replaced.replaced_type {
           if let FormControlKind::Select(control) = &form_control.control {
-            return Some((control.clone(), form_control.disabled, node.style.clone()));
+            return Some((node.id, control.clone(), form_control.disabled, node.style.clone()));
           }
         }
       }
@@ -1674,7 +1674,7 @@ impl InteractionEngine {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
         } else if index.node(target_id).is_some_and(is_select) {
           let snapshot = select_control_snapshot_from_box_tree(box_tree, target_id);
-          let computed_disabled = snapshot.as_ref().is_some_and(|(_, disabled, _)| *disabled);
+          let computed_disabled = snapshot.as_ref().is_some_and(|(_, _, disabled, _)| *disabled);
           if is_focusable_interactive_element(&index, target_id) && !computed_disabled {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
@@ -1682,24 +1682,22 @@ impl InteractionEngine {
           let disabled = is_disabled_or_inert(&index, target_id) || computed_disabled;
 
           if !disabled {
-            if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
-              if let Some((control, _, style)) = snapshot.as_ref() {
-                dom_changed |= apply_select_listbox_click(
-                  dom,
-                  fragment_tree,
-                  page_point,
-                  target_id,
-                  hit.box_id,
-                  scroll,
-                  control,
-                  style,
-                );
-              }
+            if let Some((select_box_id, control, _, style)) = snapshot.as_ref() {
+              dom_changed |= apply_select_listbox_click(
+                dom,
+                fragment_tree,
+                page_point,
+                target_id,
+                *select_box_id,
+                scroll,
+                control,
+                style,
+              );
             }
           }
 
           if !disabled {
-            if let Some((control, _, _)) = snapshot.as_ref() {
+            if let Some((_, control, _, _)) = snapshot.as_ref() {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
                 action = InteractionAction::OpenSelectDropdown {
@@ -2077,7 +2075,7 @@ impl InteractionEngine {
           // matches what is painted (e.g. skipping `display:none` options). Fall back to DOM order
           // before the first render.
           let options: Vec<(usize, bool)> = if let Some(box_tree) = box_tree {
-            if let Some((control, computed_disabled, _)) =
+            if let Some((_, control, computed_disabled, _)) =
               select_control_snapshot_from_box_tree(box_tree, focused)
             {
               if computed_disabled {

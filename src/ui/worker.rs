@@ -461,9 +461,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         url,
         reason,
       } => {
-        let tab = tabs
-          .entry(tab_id)
-          .or_insert_with(|| TabState::new(CancelGens::new()));
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
         tab
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -557,9 +557,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         viewport_css,
         dpr,
       } => {
-        let tab = tabs
-          .entry(tab_id)
-          .or_insert_with(|| TabState::new(CancelGens::new()));
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
         tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
         tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
         if let Some(doc) = tab.document.as_mut() {
