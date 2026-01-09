@@ -14,10 +14,9 @@ pub fn create_stacking_context_bounds_renderer_legacy() -> FastRender {
 
 fn create_renderer_with_backend(backend: &str) -> FastRender {
   crate::rayon_test_util::init_rayon_for_tests(2);
-  let toggles = RuntimeToggles::from_map(HashMap::from([(
-    "FASTR_PAINT_BACKEND".to_string(),
-    backend.to_string(),
-  )]));
+  let toggles = RuntimeToggles::from_map(HashMap::from([
+    ("FASTR_PAINT_BACKEND".to_string(), backend.to_string()),
+  ]));
   let config = FastRenderConfig::new()
     .with_runtime_toggles(toggles)
     .with_font_sources(FontConfig::bundled_only())

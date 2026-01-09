@@ -8637,6 +8637,72 @@ fn apply_declaration_with_base_internal_with_order(
         styles.shape_outside = shape;
       }
     }
+    "overflow-clip-margin" => {
+      let mut visual_box: Option<VisualBox> = None;
+      let mut margin: Option<Length> = None;
+      let mut invalid = false;
+
+      let mut parse_part = |part: &PropertyValue| {
+        match part {
+          PropertyValue::Keyword(kw) => {
+            if let Some(vb) = VisualBox::parse(kw) {
+              if visual_box.replace(vb).is_some() {
+                invalid = true;
+              }
+              return;
+            }
+            if let Some(len) = parse_length(kw) {
+              if margin.replace(len).is_some() {
+                invalid = true;
+              }
+              return;
+            }
+            invalid = true;
+          }
+          PropertyValue::Length(len) => {
+            if margin.replace(*len).is_some() {
+              invalid = true;
+            }
+          }
+          PropertyValue::Number(n) if *n == 0.0 => {
+            if margin.replace(Length::px(0.0)).is_some() {
+              invalid = true;
+            }
+          }
+          _ => invalid = true,
+        }
+      };
+
+      match resolved_value {
+        PropertyValue::Multiple(values) => {
+          if values.is_empty() {
+            invalid = true;
+          } else {
+            for part in values {
+              parse_part(part);
+            }
+          }
+        }
+        _ => parse_part(resolved_value),
+      }
+
+      if invalid {
+        // Ignore invalid declarations.
+      } else {
+        let margin = margin.unwrap_or_else(|| Length::px(0.0));
+        // CSS Overflow 3: `<length [0,∞]>` (negative values invalid).
+        if margin.calc.is_none() && margin.value < 0.0 {
+          // Ignore invalid negative length.
+        } else if margin.unit == LengthUnit::Percent {
+          // `<length>` does not accept percentages.
+        } else {
+          styles.overflow_clip_margin = OverflowClipMargin {
+            visual_box: visual_box.unwrap_or(VisualBox::PaddingBox),
+            margin,
+          };
+        }
+      }
+    }
     "overflow" => {
       match resolved_value {
         PropertyValue::Keyword(kw) => {

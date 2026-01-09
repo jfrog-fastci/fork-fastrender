@@ -40,6 +40,7 @@ use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::Isolation;
 use crate::style::types::MixBlendMode;
 use crate::style::types::Overflow;
+use crate::style::types::OverflowClipMargin;
 use crate::style::types::OverflowAnchor;
 use crate::style::types::ScrollSnapAlignments;
 use crate::style::types::ScrollSnapStop;
@@ -297,6 +298,12 @@ pub struct PositionedStyle {
   /// CSS: `overflow-y`
   /// Initial: visible
   pub overflow_y: Overflow,
+
+  /// Expansion applied to the clip edge used by `overflow: clip`.
+  ///
+  /// CSS: `overflow-clip-margin`
+  /// Initial: `0px` (with an implied `padding-box` reference edge).
+  pub overflow_clip_margin: OverflowClipMargin,
 
   /// Scroll anchoring behavior
   ///
@@ -618,6 +625,7 @@ impl Default for PositionedStyle {
       transform: Vec::new(),
       overflow_x: Overflow::Visible,
       overflow_y: Overflow::Visible,
+      overflow_clip_margin: OverflowClipMargin::default(),
       overflow_anchor: OverflowAnchor::Auto,
       user_select: UserSelect::Auto,
       touch_action: TouchAction::auto(),

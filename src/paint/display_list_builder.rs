@@ -3414,9 +3414,69 @@ impl DisplayListBuilder {
     clip_y: bool,
     expansion_bounds: Rect,
     viewport: Option<(f32, f32)>,
-    breakdown: Option<&BuildBreakdown>,
+    _breakdown: Option<&BuildBreakdown>,
   ) -> Option<ClipItem> {
+    let percentage_base = rects.border.width().max(0.0);
+    let raw_margin = &style.overflow_clip_margin.margin;
+    let resolved_margin = Self::resolve_length_for_paint(
+      raw_margin,
+      style.font_size,
+      style.root_font_size,
+      percentage_base,
+      viewport,
+    );
+    let resolved_margin = if resolved_margin.is_finite() {
+      resolved_margin.max(0.0)
+    } else {
+      0.0
+    };
+
+    let margin_x = if matches!(style.overflow_x, crate::style::types::Overflow::Clip) {
+      resolved_margin
+    } else {
+      0.0
+    };
+    let margin_y = if matches!(style.overflow_y, crate::style::types::Overflow::Clip) {
+      resolved_margin
+    } else {
+      0.0
+    };
+
+    let clip_box_x = if matches!(style.overflow_x, crate::style::types::Overflow::Clip) {
+      style.overflow_clip_margin.visual_box
+    } else {
+      crate::style::types::VisualBox::PaddingBox
+    };
+    let clip_box_y = if matches!(style.overflow_y, crate::style::types::Overflow::Clip) {
+      style.overflow_clip_margin.visual_box
+    } else {
+      crate::style::types::VisualBox::PaddingBox
+    };
+
+    let rect_for_visual_box = |vb: crate::style::types::VisualBox| -> Rect {
+      match vb {
+        crate::style::types::VisualBox::BorderBox => rects.border,
+        crate::style::types::VisualBox::PaddingBox => rects.padding,
+        crate::style::types::VisualBox::ContentBox => rects.content,
+      }
+    };
+
     let mut clip_rect = rects.padding;
+    if clip_x {
+      let base = rect_for_visual_box(clip_box_x);
+      let min_x = base.min_x() - margin_x;
+      let max_x = base.max_x() + margin_x;
+      clip_rect.origin.x = min_x;
+      clip_rect.size.width = (max_x - min_x).max(0.0);
+    }
+    if clip_y {
+      let base = rect_for_visual_box(clip_box_y);
+      let min_y = base.min_y() - margin_y;
+      let max_y = base.max_y() + margin_y;
+      clip_rect.origin.y = min_y;
+      clip_rect.size.height = (max_y - min_y).max(0.0);
+    }
+
     if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
       return None;
     }
@@ -3439,12 +3499,72 @@ impl DisplayListBuilder {
     }
 
     let radii = if clip_x && clip_y && !Self::border_radius_is_zero(style) {
-      let radii =
-        Self::resolve_clip_radii(style, rects, BackgroundBox::PaddingBox, viewport, breakdown);
-      (!radii.is_zero()).then_some(radii)
+      let base = Self::resolve_border_radii(Some(style), rects.border, viewport);
+      if base.is_zero() {
+        None
+      } else {
+        let border = rects.border;
+        let padding = rects.padding;
+        let content = rects.content;
+
+        let padding_inset_left = (padding.min_x() - border.min_x()).max(0.0);
+        let padding_inset_right = (border.max_x() - padding.max_x()).max(0.0);
+        let padding_inset_top = (padding.min_y() - border.min_y()).max(0.0);
+        let padding_inset_bottom = (border.max_y() - padding.max_y()).max(0.0);
+
+        let content_inset_left = (content.min_x() - border.min_x()).max(0.0);
+        let content_inset_right = (border.max_x() - content.max_x()).max(0.0);
+        let content_inset_top = (content.min_y() - border.min_y()).max(0.0);
+        let content_inset_bottom = (border.max_y() - content.max_y()).max(0.0);
+
+        let inset_x = |vb: crate::style::types::VisualBox| -> (f32, f32) {
+          match vb {
+            crate::style::types::VisualBox::BorderBox => (0.0, 0.0),
+            crate::style::types::VisualBox::PaddingBox => (padding_inset_left, padding_inset_right),
+            crate::style::types::VisualBox::ContentBox => (content_inset_left, content_inset_right),
+          }
+        };
+        let inset_y = |vb: crate::style::types::VisualBox| -> (f32, f32) {
+          match vb {
+            crate::style::types::VisualBox::BorderBox => (0.0, 0.0),
+            crate::style::types::VisualBox::PaddingBox => (padding_inset_top, padding_inset_bottom),
+            crate::style::types::VisualBox::ContentBox => (content_inset_top, content_inset_bottom),
+          }
+        };
+
+        let (inset_left, inset_right) = inset_x(clip_box_x);
+        let (inset_top, inset_bottom) = inset_y(clip_box_y);
+
+        let offset_left = -inset_left + margin_x;
+        let offset_right = -inset_right + margin_x;
+        let offset_top = -inset_top + margin_y;
+        let offset_bottom = -inset_bottom + margin_y;
+
+        let radii = crate::paint::display_list::BorderRadii {
+          top_left: crate::paint::display_list::BorderRadius {
+            x: (base.top_left.x + offset_left).max(0.0),
+            y: (base.top_left.y + offset_top).max(0.0),
+          },
+          top_right: crate::paint::display_list::BorderRadius {
+            x: (base.top_right.x + offset_right).max(0.0),
+            y: (base.top_right.y + offset_top).max(0.0),
+          },
+          bottom_right: crate::paint::display_list::BorderRadius {
+            x: (base.bottom_right.x + offset_right).max(0.0),
+            y: (base.bottom_right.y + offset_bottom).max(0.0),
+          },
+          bottom_left: crate::paint::display_list::BorderRadius {
+            x: (base.bottom_left.x + offset_left).max(0.0),
+            y: (base.bottom_left.y + offset_bottom).max(0.0),
+          },
+        }
+        .clamped(clip_rect.width(), clip_rect.height());
+        (!radii.is_zero()).then_some(radii)
+      }
     } else {
       None
     };
+
     Some(ClipItem {
       shape: ClipShape::Rect {
         rect: clip_rect,

@@ -86,6 +86,7 @@ mod transform_origin;
 mod transform_stacking_context_paint_order;
 mod transform_overflow_clip;
 mod overflow_clip_test;
+mod overflow_clip_margin_test;
 mod overflow_hidden_does_not_create_stacking_context;
 mod paged_media_margin_boxes;
 mod parallel_paint_test;

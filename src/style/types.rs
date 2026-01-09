@@ -67,6 +67,50 @@ impl Overflow {
   }
 }
 
+/// Box keywords accepted by `overflow-clip-margin`.
+///
+/// CSS Overflow 3 defines `<<visual-box>>` as a subset of the box model boxes
+/// that can be used as a reference edge for expanding clip bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualBox {
+  BorderBox,
+  PaddingBox,
+  ContentBox,
+}
+
+impl VisualBox {
+  pub fn parse(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("border-box") {
+      Some(Self::BorderBox)
+    } else if keyword.eq_ignore_ascii_case("padding-box") {
+      Some(Self::PaddingBox)
+    } else if keyword.eq_ignore_ascii_case("content-box") {
+      Some(Self::ContentBox)
+    } else {
+      None
+    }
+  }
+}
+
+/// Computed value for `overflow-clip-margin`.
+///
+/// The property allows expanding the clip edge used by `overflow: clip` beyond the
+/// chosen reference box edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverflowClipMargin {
+  pub visual_box: VisualBox,
+  pub margin: Length,
+}
+
+impl Default for OverflowClipMargin {
+  fn default() -> Self {
+    Self {
+      visual_box: VisualBox::PaddingBox,
+      margin: Length::px(0.0),
+    }
+  }
+}
+
 /// Determines which box the width/height properties apply to.
 ///
 /// CSS: `box-sizing`

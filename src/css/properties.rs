@@ -419,6 +419,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "scroll-margin-block-end",
   "scrollbar-gutter",
   "overflow",
+  "overflow-clip-margin",
   "overflow-x",
   "overflow-y",
   "overflow-anchor",
@@ -1868,6 +1869,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "offset-anchor"
       | "touch-action"
       | "overflow"
+      | "overflow-clip-margin"
       | "cursor"
       | "list-style"
       | "flex"
@@ -2506,6 +2508,68 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
     "overflow" | "overflow-x" | "overflow-y" => {
       return keyword_in_list(parsed, &["visible", "hidden", "scroll", "auto", "clip"])
+    }
+    "overflow-clip-margin" => {
+      let is_box = |kw: &str| -> bool {
+        kw.eq_ignore_ascii_case("border-box")
+          || kw.eq_ignore_ascii_case("padding-box")
+          || kw.eq_ignore_ascii_case("content-box")
+      };
+      let is_margin_len = |len: &Length| -> bool {
+        if len.calc.is_some() {
+          return true;
+        }
+        if !len.value.is_finite() || len.value < 0.0 {
+          return false;
+        }
+        // `overflow-clip-margin` uses `<length>` (not `<length-percentage>`).
+        len.unit != LengthUnit::Percent
+      };
+
+      return match parsed {
+        PropertyValue::Keyword(kw) => is_box(kw) || parse_length(kw).is_some_and(|len| is_margin_len(&len)),
+        PropertyValue::Number(n) => *n == 0.0,
+        PropertyValue::Length(len) => is_margin_len(len),
+        PropertyValue::Multiple(values) => {
+          let mut seen_box = false;
+          let mut seen_len = false;
+          for part in values {
+            match part {
+              PropertyValue::Keyword(kw) if is_box(kw) => {
+                if seen_box {
+                  return false;
+                }
+                seen_box = true;
+              }
+              PropertyValue::Length(len) if is_margin_len(len) => {
+                if seen_len {
+                  return false;
+                }
+                seen_len = true;
+              }
+              PropertyValue::Number(n) if *n == 0.0 => {
+                if seen_len {
+                  return false;
+                }
+                seen_len = true;
+              }
+              PropertyValue::Keyword(kw) => {
+                if let Some(len) = parse_length(kw) {
+                  if !is_margin_len(&len) || seen_len {
+                    return false;
+                  }
+                  seen_len = true;
+                } else {
+                  return false;
+                }
+              }
+              _ => return false,
+            }
+          }
+          seen_box || seen_len
+        }
+        _ => false,
+      };
     }
     "text-orientation" => {
       return keyword_in_list(

@@ -1812,6 +1812,254 @@ impl Painter {
     self.pixmap.fill(color);
   }
 
+  fn stacking_clip_for_style(&self, style: &ComputedStyle, abs_bounds: Rect) -> Option<StackingClip> {
+    // Honor overflow clipping: when overflow is hidden/scroll/clip, restrict painting. This
+    // prevents offscreen children from flooding the viewport when their layout positions explode.
+    let clip_x = matches!(
+      style.overflow_x,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+    ) || style.containment.paint;
+    let clip_y = matches!(
+      style.overflow_y,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+    ) || style.containment.paint;
+
+    let overflow_clip = if clip_x || clip_y {
+      let rects = background_rects(
+        abs_bounds.x(),
+        abs_bounds.y(),
+        abs_bounds.width(),
+        abs_bounds.height(),
+        style,
+        Some((self.css_width, self.css_height)),
+      );
+      let viewport = (self.css_width, self.css_height);
+      let percentage_base = rects.border.width().max(0.0);
+      let raw_margin = &style.overflow_clip_margin.margin;
+      let resolved_margin = resolve_length_for_paint(
+        raw_margin,
+        style.font_size,
+        style.root_font_size,
+        percentage_base,
+        viewport,
+      );
+      let resolved_margin = if resolved_margin.is_finite() {
+        resolved_margin.max(0.0)
+      } else {
+        0.0
+      };
+
+      // `contain: paint` applies an additional padding-box clip in the display-list backend.
+      // The legacy backend represents overflow+containment clipping with a single rounded-rect
+      // mask; prefer the containment padding box so `overflow-clip-margin` never expands the
+      // effective clip beyond the paint containment boundary.
+      let margin_x = if !style.containment.paint && matches!(style.overflow_x, Overflow::Clip) {
+        resolved_margin
+      } else {
+        0.0
+      };
+      let margin_y = if !style.containment.paint && matches!(style.overflow_y, Overflow::Clip) {
+        resolved_margin
+      } else {
+        0.0
+      };
+
+      let clip_box_x =
+        if !style.containment.paint && matches!(style.overflow_x, Overflow::Clip) {
+          style.overflow_clip_margin.visual_box
+        } else {
+          crate::style::types::VisualBox::PaddingBox
+        };
+      let clip_box_y =
+        if !style.containment.paint && matches!(style.overflow_y, Overflow::Clip) {
+          style.overflow_clip_margin.visual_box
+        } else {
+          crate::style::types::VisualBox::PaddingBox
+        };
+
+      let rect_for_visual_box = |vb: crate::style::types::VisualBox| -> Rect {
+        match vb {
+          crate::style::types::VisualBox::BorderBox => rects.border,
+          crate::style::types::VisualBox::PaddingBox => rects.padding,
+          crate::style::types::VisualBox::ContentBox => rects.content,
+        }
+      };
+
+      let mut clip_rect = rects.padding;
+      if clip_x {
+        let base = rect_for_visual_box(clip_box_x);
+        let min_x = base.min_x() - margin_x;
+        let max_x = base.max_x() + margin_x;
+        clip_rect.origin.x = min_x;
+        clip_rect.size.width = (max_x - min_x).max(0.0);
+      }
+      if clip_y {
+        let base = rect_for_visual_box(clip_box_y);
+        let min_y = base.min_y() - margin_y;
+        let max_y = base.max_y() + margin_y;
+        clip_rect.origin.y = min_y;
+        clip_rect.size.height = (max_y - min_y).max(0.0);
+      }
+
+      if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+        None
+      } else {
+        let clip_radii = if clip_x && clip_y {
+          let base = resolve_border_radii(Some(style), rects.border);
+          if base.is_zero() {
+            BorderRadii::ZERO
+          } else {
+            let border = rects.border;
+            let padding = rects.padding;
+            let content = rects.content;
+
+            let padding_inset_left = (padding.min_x() - border.min_x()).max(0.0);
+            let padding_inset_right = (border.max_x() - padding.max_x()).max(0.0);
+            let padding_inset_top = (padding.min_y() - border.min_y()).max(0.0);
+            let padding_inset_bottom = (border.max_y() - padding.max_y()).max(0.0);
+
+            let content_inset_left = (content.min_x() - border.min_x()).max(0.0);
+            let content_inset_right = (border.max_x() - content.max_x()).max(0.0);
+            let content_inset_top = (content.min_y() - border.min_y()).max(0.0);
+            let content_inset_bottom = (border.max_y() - content.max_y()).max(0.0);
+
+            let inset_x = |vb: crate::style::types::VisualBox| -> (f32, f32) {
+              match vb {
+                crate::style::types::VisualBox::BorderBox => (0.0, 0.0),
+                crate::style::types::VisualBox::PaddingBox => {
+                  (padding_inset_left, padding_inset_right)
+                }
+                crate::style::types::VisualBox::ContentBox => {
+                  (content_inset_left, content_inset_right)
+                }
+              }
+            };
+            let inset_y = |vb: crate::style::types::VisualBox| -> (f32, f32) {
+              match vb {
+                crate::style::types::VisualBox::BorderBox => (0.0, 0.0),
+                crate::style::types::VisualBox::PaddingBox => {
+                  (padding_inset_top, padding_inset_bottom)
+                }
+                crate::style::types::VisualBox::ContentBox => {
+                  (content_inset_top, content_inset_bottom)
+                }
+              }
+            };
+
+            let (inset_left, inset_right) = inset_x(clip_box_x);
+            let (inset_top, inset_bottom) = inset_y(clip_box_y);
+
+            let offset_left = -inset_left + margin_x;
+            let offset_right = -inset_right + margin_x;
+            let offset_top = -inset_top + margin_y;
+            let offset_bottom = -inset_bottom + margin_y;
+
+            BorderRadii {
+              top_left: crate::paint::display_list::BorderRadius {
+                x: (base.top_left.x + offset_left).max(0.0),
+                y: (base.top_left.y + offset_top).max(0.0),
+              },
+              top_right: crate::paint::display_list::BorderRadius {
+                x: (base.top_right.x + offset_right).max(0.0),
+                y: (base.top_right.y + offset_top).max(0.0),
+              },
+              bottom_right: crate::paint::display_list::BorderRadius {
+                x: (base.bottom_right.x + offset_right).max(0.0),
+                y: (base.bottom_right.y + offset_bottom).max(0.0),
+              },
+              bottom_left: crate::paint::display_list::BorderRadius {
+                x: (base.bottom_left.x + offset_left).max(0.0),
+                y: (base.bottom_left.y + offset_bottom).max(0.0),
+              },
+            }
+            .clamped(clip_rect.width(), clip_rect.height())
+          }
+        } else {
+          BorderRadii::ZERO
+        };
+
+        Some(StackingClip {
+          rect: clip_rect,
+          radii: clip_radii,
+          clip_x,
+          clip_y,
+          clip_root: false,
+        })
+      }
+    } else {
+      None
+    };
+
+    // CSS 2.1 `clip` applies only to absolutely positioned elements (position: absolute|fixed).
+    let clip_property = matches!(style.position, Position::Absolute | Position::Fixed)
+      .then(|| style.clip.as_ref())
+      .flatten()
+      .and_then(|clip| {
+        let font_size = style.font_size;
+        let root_font = style.root_font_size;
+        let viewport = (self.css_width, self.css_height);
+        let width = abs_bounds.width();
+        let height = abs_bounds.height();
+
+        let left = match &clip.left {
+          ClipComponent::Auto => abs_bounds.x(),
+          ClipComponent::Length(len) => {
+            abs_bounds.x()
+              + resolve_length_for_paint(len, font_size, root_font, width, viewport)
+          }
+        };
+        let top = match &clip.top {
+          ClipComponent::Auto => abs_bounds.y(),
+          ClipComponent::Length(len) => {
+            abs_bounds.y()
+              + resolve_length_for_paint(len, font_size, root_font, height, viewport)
+          }
+        };
+        let right = match &clip.right {
+          ClipComponent::Auto => abs_bounds.x() + width,
+          ClipComponent::Length(len) => {
+            abs_bounds.x()
+              + resolve_length_for_paint(len, font_size, root_font, width, viewport)
+          }
+        };
+        let bottom = match &clip.bottom {
+          ClipComponent::Auto => abs_bounds.y() + height,
+          ClipComponent::Length(len) => {
+            abs_bounds.y()
+              + resolve_length_for_paint(len, font_size, root_font, height, viewport)
+          }
+        };
+
+        let clip_rect = Rect::from_xywh(left, top, right - left, bottom - top);
+        if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+          None
+        } else {
+          Some(clip_rect)
+        }
+      });
+
+    match (overflow_clip, clip_property) {
+      (Some(overflow), Some(prop_rect)) => overflow.rect.intersection(prop_rect).map(|rect| {
+        StackingClip {
+          rect,
+          radii: BorderRadii::ZERO,
+          clip_x: true,
+          clip_y: true,
+          clip_root: true,
+        }
+      }),
+      (Some(overflow), None) => Some(overflow),
+      (None, Some(prop_rect)) => Some(StackingClip {
+        rect: prop_rect,
+        radii: BorderRadii::ZERO,
+        clip_x: true,
+        clip_y: true,
+        clip_root: true,
+      }),
+      (None, None) => None,
+    }
+  }
+
   /// Collect display commands respecting stacking-context ordering.
   ///
   /// This follows the simplified CSS painting order for a stacking context:
@@ -1889,7 +2137,7 @@ impl Painter {
 
     if debug_fragments {
       eprintln!(
-        "fragment {:?} bounds=({}, {}, {}, {}) children={} establishes={} display={:?}",
+        "fragment {:?} bounds=({}, {}, {}, {}) children={} establishes={} display={:?} overflow=({:?},{:?}) overflow_clip_margin={:?}",
         describe_content(&fragment.content),
         abs_bounds.x(),
         abs_bounds.y(),
@@ -1901,7 +2149,10 @@ impl Painter {
           .as_deref()
           .map(|s| creates_stacking_context(s, parent_style, is_root_context))
           .unwrap_or(is_root_context),
-        fragment.style.as_deref().map(|s| s.display)
+        fragment.style.as_deref().map(|s| s.display),
+        fragment.style.as_deref().map(|s| s.overflow_x),
+        fragment.style.as_deref().map(|s| s.overflow_y),
+        fragment.style.as_deref().map(|s| s.overflow_clip_margin),
       );
     }
 
@@ -2060,7 +2311,28 @@ impl Painter {
         )?;
       }
 
-      items.extend(local_commands);
+      let clip = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
+      if clip.is_some() {
+        items.push(DisplayCommand::StackingContext {
+          rect: abs_bounds,
+          opacity: 1.0,
+          transform: None,
+          transform_3d: None,
+          blend_mode: MixBlendMode::Normal,
+          isolated: false,
+          mask: None,
+          filters: Vec::new(),
+          backdrop_filters: Vec::new(),
+          // Overflow clips (and CSS `clip`) should not impose an additional border-radius clip when
+          // compositing the layer; only the explicit `clip` should apply.
+          radii: BorderRadii::ZERO,
+          clip,
+          clip_path: None,
+          commands: local_commands,
+        });
+      } else {
+        items.extend(local_commands);
+      }
       return Ok(());
     }
 
@@ -2240,117 +2512,7 @@ impl Painter {
       .map(|s| resolve_filters(&s.backdrop_filter, s, viewport, &self.font_ctx, svg_filters))
       .unwrap_or_default();
     let has_backdrop = !backdrop_filters.is_empty();
-    let clip: Option<StackingClip> = style_ref.and_then(|style| {
-      // Honor overflow clipping: when overflow is hidden/scroll/clip, restrict painting to the
-      // padding box. This prevents offscreen children from flooding the viewport when their
-      // layout positions explode.
-      let clip_x = matches!(
-        style.overflow_x,
-        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-      ) || style.containment.paint;
-      let clip_y = matches!(
-        style.overflow_y,
-        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-      ) || style.containment.paint;
-      let overflow_clip = if clip_x || clip_y {
-        let rects = background_rects(
-          abs_bounds.x(),
-          abs_bounds.y(),
-          abs_bounds.width(),
-          abs_bounds.height(),
-          style,
-          Some((self.css_width, self.css_height)),
-        );
-        let clip_rect = rects.padding;
-        if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
-          None
-        } else {
-          let clip_radii = resolve_clip_radii(
-            style,
-            &rects,
-            crate::style::types::BackgroundBox::PaddingBox,
-            Some((self.css_width, self.css_height)),
-          );
-          Some(StackingClip {
-            rect: clip_rect,
-            radii: clip_radii,
-            clip_x,
-            clip_y,
-            clip_root: false,
-          })
-        }
-      } else {
-        None
-      };
-
-      // CSS 2.1 `clip` applies only to absolutely positioned elements (position: absolute|fixed).
-      let clip_property = matches!(style.position, Position::Absolute | Position::Fixed)
-        .then(|| style.clip.as_ref())
-        .flatten()
-        .and_then(|clip| {
-        let font_size = style.font_size;
-        let root_font = style.root_font_size;
-        let viewport = (self.css_width, self.css_height);
-        let width = abs_bounds.width();
-        let height = abs_bounds.height();
-
-        let left = match &clip.left {
-          ClipComponent::Auto => abs_bounds.x(),
-          ClipComponent::Length(len) => {
-            abs_bounds.x() + resolve_length_for_paint(len, font_size, root_font, width, viewport)
-          }
-        };
-        let top = match &clip.top {
-          ClipComponent::Auto => abs_bounds.y(),
-          ClipComponent::Length(len) => {
-            abs_bounds.y() + resolve_length_for_paint(len, font_size, root_font, height, viewport)
-          }
-        };
-        let right = match &clip.right {
-          ClipComponent::Auto => abs_bounds.x() + width,
-          ClipComponent::Length(len) => {
-            abs_bounds.x() + resolve_length_for_paint(len, font_size, root_font, width, viewport)
-          }
-        };
-        let bottom = match &clip.bottom {
-          ClipComponent::Auto => abs_bounds.y() + height,
-          ClipComponent::Length(len) => {
-            abs_bounds.y() + resolve_length_for_paint(len, font_size, root_font, height, viewport)
-          }
-        };
-
-        let clip_rect = Rect::from_xywh(left, top, right - left, bottom - top);
-        if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
-          None
-        } else {
-          Some(clip_rect)
-        }
-      });
-
-      match (overflow_clip, clip_property) {
-        (Some(overflow), Some(prop_rect)) => {
-          overflow
-            .rect
-            .intersection(prop_rect)
-            .map(|rect| StackingClip {
-              rect,
-              radii: BorderRadii::ZERO,
-              clip_x: true,
-              clip_y: true,
-              clip_root: true,
-            })
-        }
-        (Some(overflow), None) => Some(overflow),
-        (None, Some(prop_rect)) => Some(StackingClip {
-          rect: prop_rect,
-          radii: BorderRadii::ZERO,
-          clip_x: true,
-          clip_y: true,
-          clip_root: true,
-        }),
-        (None, None) => None,
-      }
-    });
+    let clip: Option<StackingClip> = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
     let clip_path = match style_ref {
       Some(style) => resolve_clip_path(
         style,

@@ -148,6 +148,7 @@ use types::OffsetRotate;
 use types::OutlineColor;
 use types::OutlineStyle;
 use types::Overflow;
+use types::OverflowClipMargin;
 use types::OverflowAnchor;
 use types::OverflowWrap;
 use types::AnchorSizeFunction;
@@ -1204,6 +1205,7 @@ pub struct ComputedStyle {
   pub resize: Resize,
   pub overflow_x: Overflow,
   pub overflow_y: Overflow,
+  pub overflow_clip_margin: OverflowClipMargin,
   pub border_spacing_horizontal: Length,
   pub border_spacing_vertical: Length,
   pub border_collapse: BorderCollapse,
@@ -1591,6 +1593,7 @@ impl Default for ComputedStyle {
       resize: Resize::None,
       overflow_x: Overflow::Visible,
       overflow_y: Overflow::Visible,
+      overflow_clip_margin: OverflowClipMargin::default(),
       border_spacing_horizontal: Length::px(0.0),
       border_spacing_vertical: Length::px(0.0),
       border_collapse: BorderCollapse::Separate,
