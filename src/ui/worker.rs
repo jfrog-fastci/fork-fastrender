@@ -461,6 +461,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let scroll = &tab.scroll_state;
         let document_url = tab.current_url.clone().unwrap_or_default();
         let base_url = tab.effective_base_url().unwrap_or("").to_string();
+        let document_url = tab.current_url.clone().unwrap_or_default();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;

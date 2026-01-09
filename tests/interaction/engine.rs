@@ -973,7 +973,7 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
 }
 
 #[test]
-fn submit_click_marks_form_user_validity() {
+fn submit_click_navigates_and_marks_user_validity() {
   let mut dom = doc(vec![el(
     "html",
     vec![("id", "html")],
@@ -998,6 +998,10 @@ fn submit_click_marks_form_user_validity() {
   assert!(
     !has_attr(&dom, "f", "data-fastr-user-validity"),
     "form should not be marked initially"
+  );
+  assert!(
+    !has_attr(&dom, "submit", "data-fastr-user-validity"),
+    "submit control should not be marked initially"
   );
 
   let submit_dom_id = node_id(&dom, "submit");
@@ -1049,6 +1053,117 @@ fn submit_click_marks_form_user_validity() {
 
   assert_eq!(
     attr_value(&dom, "f", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn submit_button_click_submits_get_form_with_query_and_submitter() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "form"), ("action", "/search")],
+        vec![
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "hello world")],
+            vec![],
+          ),
+          el(
+            "input",
+            vec![
+              ("id", "c"),
+              ("type", "checkbox"),
+              ("name", "c"),
+              ("value", "yes"),
+              ("checked", ""),
+            ],
+            vec![],
+          ),
+          el(
+            "select",
+            vec![("id", "sel"), ("name", "sel")],
+            vec![
+              el("option", vec![("id", "o1"), ("value", "a")], vec![]),
+              el(
+                "option",
+                vec![("id", "o2"), ("value", "b"), ("selected", "")],
+                vec![],
+              ),
+            ],
+          ),
+          el(
+            "button",
+            vec![
+              ("id", "submit"),
+              ("type", "submit"),
+              ("name", "s"),
+              ("value", "go"),
+            ],
+            vec![],
+          ),
+        ],
+      )],
+    )],
+  )]);
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/",
+  );
+  assert!(changed);
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=hello+world&c=yes&sel=b&s=go".to_string()
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "form", "data-fastr-user-validity").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "submit", "data-fastr-user-validity").as_deref(),
     Some("true")
   );
 }
@@ -1970,6 +2085,11 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     "single-select listbox should clear previously selected option"
   );
   assert!(has_attr(&dom, "o2", "selected"), "clicked row should be selected");
+  assert_eq!(
+    attr_value(&dom, "s", "data-fastr-user-validity").as_deref(),
+    Some("true"),
+    "user mutation should mark the select for :user-invalid matching"
+  );
 
   // Clicking a disabled option row must not change selection.
   engine.pointer_down(

@@ -91,6 +91,31 @@ fn radio_activation_unchecks_others_in_same_group() {
 }
 
 #[test]
+fn radio_activation_missing_name_groups_as_empty_string() {
+  // HTML treats missing `name` as the empty string, so radios with no `name` still form a group.
+  let mut dom = parse_html(
+    r#"<!doctype html>
+      <input id="r1" type="radio" checked>
+      <input id="r2" type="radio">"#,
+  )
+  .unwrap();
+
+  let index = DomIndex::build(&mut dom);
+  let r2_id = *index.id_by_element_id.get("r2").unwrap();
+  assert!(activate_radio(&mut dom, r2_id));
+
+  let mut index = DomIndex::build(&mut dom);
+  let r1_id = *index.id_by_element_id.get("r1").unwrap();
+  let r2_id = *index.id_by_element_id.get("r2").unwrap();
+  index
+    .with_node_mut(r1_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .unwrap();
+  index
+    .with_node_mut(r2_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .unwrap();
+}
+
+#[test]
 fn radio_activation_is_scoped_to_nearest_form() {
   let mut dom = parse_html(
     r#"<!doctype html>
@@ -121,6 +146,38 @@ fn radio_activation_is_scoped_to_nearest_form() {
     .unwrap();
   index
     .with_node_mut(b1_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .unwrap();
+}
+
+#[test]
+fn radio_activation_supports_form_attribute_association() {
+  let mut dom = parse_html(
+    r#"<!doctype html>
+      <form id="f">
+        <input id="in_form" type="radio" name="g" checked>
+      </form>
+      <input id="out_form" type="radio" name="g" form="f">
+      <input id="other" type="radio" name="g" checked>"#,
+  )
+  .unwrap();
+
+  let index = DomIndex::build(&mut dom);
+  let out_id = *index.id_by_element_id.get("out_form").unwrap();
+  assert!(activate_radio(&mut dom, out_id));
+
+  let mut index = DomIndex::build(&mut dom);
+  let in_id = *index.id_by_element_id.get("in_form").unwrap();
+  let out_id = *index.id_by_element_id.get("out_form").unwrap();
+  let other_id = *index.id_by_element_id.get("other").unwrap();
+
+  index
+    .with_node_mut(in_id, |node| assert!(node.get_attribute_ref("checked").is_none()))
+    .unwrap();
+  index
+    .with_node_mut(out_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
+    .unwrap();
+  index
+    .with_node_mut(other_id, |node| assert!(node.get_attribute_ref("checked").is_some()))
     .unwrap();
 }
 

@@ -557,36 +557,151 @@ fn clear_checked_in_radio_group(
 }
 
 pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
-  let Some((target_ptr, ancestors)) =
-    find_node_ptr_with_ancestors_by_preorder_id(root, radio_node_id)
-  else {
+  let mut index = DomIndex::build(root);
+
+  // HTML radio group membership depends on:
+  // - the `name` value (missing treated as the empty string), and
+  // - the element's form owner (or tree root if there is no form owner).
+  //
+  // This replaces a tree scan that could uncheck radios outside the correct scope.
+
+  fn tree_root_boundary(index: &mut DomIndex, node_id: usize) -> usize {
+    let mut current = node_id;
+    while current != 0 {
+      let is_boundary = index
+        .with_node_mut(current, |node| {
+          matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. })
+        })
+        .unwrap_or(false);
+      if is_boundary {
+        return current;
+      }
+      let parent = index.parent.get(current).copied().unwrap_or(0);
+      if parent == 0 {
+        break;
+      }
+      current = parent;
+    }
+    node_id
+  }
+
+  fn form_owner(index: &mut DomIndex, node_id: usize) -> Option<usize> {
+    let root_boundary = tree_root_boundary(index, node_id);
+
+    let form_attr = index
+      .with_node_mut(node_id, |node| {
+        node
+          .is_element()
+          .then(|| node.get_attribute_ref("form").map(trim_ascii_whitespace))
+          .flatten()
+          .filter(|v| !v.is_empty())
+          .map(str::to_string)
+      })
+      .flatten();
+
+    if let Some(form_attr) = form_attr.as_deref() {
+      if let Some(&id) = index.id_by_element_id.get(form_attr) {
+        let is_form = index
+          .with_node_mut(id, |node| is_form_element(node))
+          .unwrap_or(false);
+        if is_form && tree_root_boundary(index, id) == root_boundary {
+          return Some(id);
+        }
+      }
+    }
+
+    // Nearest ancestor <form>, stopping at the tree-root boundary.
+    let mut current = node_id;
+    while current != 0 {
+      let parent = index.parent.get(current).copied().unwrap_or(0);
+      if parent == 0 {
+        break;
+      }
+      current = parent;
+
+      if current == root_boundary {
+        break;
+      }
+
+      if index
+        .with_node_mut(current, |node| is_form_element(node))
+        .unwrap_or(false)
+      {
+        return Some(current);
+      }
+    }
+
+    None
+  }
+
+  let Some((ok, group_name)) = index.with_node_mut(radio_node_id, |node| {
+    if !is_input_of_type(node, "radio") {
+      return (false, String::new());
+    }
+    if is_disabled_or_inert(node) {
+      return (false, String::new());
+    }
+    let name = node.get_attribute_ref("name").unwrap_or("").to_string();
+    (true, name)
+  }) else {
     return false;
   };
-
-  // Safety: pointer is within `root` and we only borrow it mutably for this scope.
-  let target = unsafe { &mut *target_ptr };
-
-  if !is_input_of_type(target, "radio") {
+  if !ok {
     return false;
   }
 
-  if is_disabled_or_inert_with_ancestors(target, &ancestors) {
-    return false;
-  }
-
-  let group_name = radio_group_name(target).map(str::to_string);
-  let group_root_ptr = radio_group_root_ptr(target_ptr, &ancestors);
-
-  let mut changed = set_bool_attr(target, "checked", true);
-
-  let Some(group_name) = group_name else {
-    return changed;
+  let active_form = form_owner(&mut index, radio_node_id);
+  let active_root = if active_form.is_none() {
+    tree_root_boundary(&mut index, radio_node_id)
+  } else {
+    0
   };
 
-  changed |= clear_checked_in_radio_group(group_root_ptr, target_ptr, &group_name);
+  let mut changed = index
+    .with_node_mut(radio_node_id, |node| set_bool_attr(node, "checked", true))
+    .unwrap_or(false);
+
+  for id in 1..=index.len() {
+    if id == radio_node_id {
+      continue;
+    }
+
+    let Some(Some(candidate_name)) = index.with_node_mut(id, |node| {
+      if !is_input_of_type(node, "radio") {
+        return None;
+      }
+      Some(node.get_attribute_ref("name").unwrap_or("").to_string())
+    }) else {
+      continue;
+    };
+
+    if candidate_name != group_name {
+      continue;
+    }
+
+    let owner = form_owner(&mut index, id);
+    if let Some(active_form) = active_form {
+      if owner != Some(active_form) {
+        continue;
+      }
+    } else {
+      if owner.is_some() {
+        continue;
+      }
+      if tree_root_boundary(&mut index, id) != active_root {
+        continue;
+      }
+    }
+
+    changed |= index
+      .with_node_mut(id, |node| remove_attr(node, "checked"))
+      .unwrap_or(false);
+  }
 
   if changed {
-    changed |= mark_user_validity(target);
+    changed |= index
+      .with_node_mut(radio_node_id, |node| mark_user_validity(node))
+      .unwrap_or(false);
   }
 
   changed

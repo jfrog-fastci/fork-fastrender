@@ -762,6 +762,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         };
         let document_url = tab.url.clone().unwrap_or_default();
         let base_url = effective_base_url(tab).to_string();
+        let document_url = tab.url.clone().unwrap_or_default();
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
         let engine = &mut tab.interaction;

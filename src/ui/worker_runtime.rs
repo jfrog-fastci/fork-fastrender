@@ -556,10 +556,7 @@ impl BrowserWorkerRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
-    let document_url = tab
-      .url
-      .as_deref()
-      .unwrap_or(about_pages::ABOUT_BASE_URL);
+    let document_url = tab.url.as_deref().unwrap_or(about_pages::ABOUT_BASE_URL);
     let base_url = tab
       .base_url
       .as_deref()
@@ -624,13 +621,43 @@ impl BrowserWorkerRuntime {
     let Some(dom) = tab.dom.as_mut() else {
       return;
     };
+    let document_url = tab.url.as_deref().unwrap_or(about_pages::ABOUT_BASE_URL);
+    let base_url = tab
+      .base_url
+      .as_deref()
+      .or(tab.url.as_deref())
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let box_tree = tab.prepared.as_ref().map(|prepared| prepared.box_tree());
-    if tab
-      .interaction
-      .key_action_with_box_tree(dom, box_tree, key)
-    {
+
+    let (dom_changed, action) = tab.interaction.key_activate_with_box_tree(
+      dom,
+      box_tree,
+      key,
+      document_url,
+      base_url,
+    );
+    if dom_changed {
       tab.dirty = true;
-      self.render_current(tab_id, RepaintReason::Input);
+    }
+
+    match action {
+      InteractionAction::Navigate { href } => {
+        // Navigation replaces the document, so any DOM changes (e.g. visited flag) are not painted
+        // for the previous page.
+        self.navigate(tab_id, href, NavigationReason::LinkClick);
+      }
+      InteractionAction::OpenSelectDropdown { .. } => {
+        // The headless runtime does not currently surface select dropdown UI. Still trigger a paint
+        // if DOM mutations occurred (e.g. focus changes).
+        if tab.dirty {
+          self.render_current(tab_id, RepaintReason::Input);
+        }
+      }
+      InteractionAction::FocusChanged { .. } | InteractionAction::None => {
+        if tab.dirty {
+          self.render_current(tab_id, RepaintReason::Input);
+        }
+      }
     }
   }
 

@@ -969,7 +969,51 @@ fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> 
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
 
-fn form_control_value(node: &DomNode) -> Option<(String, String)> {
+fn option_value(option: &DomNode) -> String {
+  if let Some(value) = option.get_attribute_ref("value") {
+    return value.to_string();
+  }
+  collect_text_children_value(option)
+}
+
+fn select_value(index: &DomIndexMut, select_id: usize) -> Option<String> {
+  let mut end = select_id;
+  for id in (select_id + 1)..index.id_to_node.len() {
+    if is_ancestor_or_self(index, select_id, id) {
+      end = id;
+    } else {
+      break;
+    }
+  }
+
+  let mut first_option: Option<usize> = None;
+  let mut selected_option: Option<usize> = None;
+
+  for id in (select_id + 1)..=end {
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
+      first_option.get_or_insert(id);
+      if selected_option.is_none() && node.get_attribute_ref("selected").is_some() {
+        selected_option = Some(id);
+      }
+    }
+  }
+
+  let option_id = selected_option.or(first_option)?;
+  let option_node = index.node(option_id)?;
+  Some(option_value(option_node))
+}
+
+fn form_control_value(
+  index: &DomIndexMut,
+  node_id: usize,
+  node: &DomNode,
+) -> Option<(String, String)> {
   let name = node
     .get_attribute_ref("name")
     .map(trim_ascii_whitespace)
@@ -1004,12 +1048,18 @@ fn form_control_value(node: &DomNode) -> Option<(String, String)> {
     return Some((name.to_string(), value));
   }
 
+  if is_select(node) {
+    let value = select_value(index, node_id)?;
+    return Some((name.to_string(), value));
+  }
+
   None
 }
 
 fn build_get_form_submission_url(
   index: &DomIndexMut,
   form_id: usize,
+  submitter_id: Option<usize>,
   document_url: &str,
   base_url: &str,
 ) -> Option<String> {
@@ -1027,10 +1077,15 @@ fn build_get_form_submission_url(
 
   let action_url = if action_attr.is_empty() {
     let doc = trim_ascii_whitespace(document_url);
-    if doc.is_empty() {
-      return None;
+    if !doc.is_empty() {
+      doc.to_string()
+    } else {
+      let base = trim_ascii_whitespace(base_url);
+      if base.is_empty() {
+        return None;
+      }
+      base.to_string()
     }
-    doc.to_string()
   } else {
     resolve_url(base_url, action_attr)?
   };
@@ -1055,8 +1110,24 @@ fn build_get_form_submission_url(
       continue;
     }
 
-    if let Some((name, value)) = form_control_value(node) {
+    if let Some((name, value)) = form_control_value(index, id, node) {
       serializer.append_pair(&name, &value);
+    }
+  }
+
+  if let Some(submitter_id) = submitter_id {
+    if let Some(submitter) = index.node(submitter_id) {
+      if !(node_or_ancestor_is_inert(index, submitter_id) || node_is_disabled(index, submitter_id))
+      {
+        if let Some(name) = submitter
+          .get_attribute_ref("name")
+          .map(trim_ascii_whitespace)
+          .filter(|v| !v.is_empty())
+        {
+          let value = submitter.get_attribute_ref("value").unwrap_or("on");
+          serializer.append_pair(name, value);
+        }
+      }
     }
   }
 
@@ -1426,8 +1497,13 @@ impl InteractionEngine {
               dom_changed |= dom_mutation::activate_radio(dom, target_id);
             }
           } else if index.node(target_id).is_some_and(is_submit_control) {
-            // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-            if !node_is_disabled(&index, target_id) {
+            if node_is_disabled(&index, target_id) {
+              // Disabled submit controls do not submit.
+            } else {
+              // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+              if let Some(node_mut) = index.node_mut(target_id) {
+                dom_changed |= dom_mutation::mark_user_validity(node_mut);
+              }
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
               if let Some(url) =
                 super::form_submit::form_submission_get_url(dom, target_id, document_url, base_url)
@@ -1898,9 +1974,18 @@ impl InteractionEngine {
             // Disabled submit controls do not submit.
           } else {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+            if let Some(node_mut) = index.node_mut(focused) {
+              changed |= dom_mutation::mark_user_validity(node_mut);
+            }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = find_ancestor_form(&index, focused) {
-              if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+              if let Some(url) = build_get_form_submission_url(
+                &index,
+                form_id,
+                Some(focused),
+                document_url,
+                base_url,
+              ) {
                 action = InteractionAction::Navigate { href: url };
               }
             }
@@ -1910,9 +1995,14 @@ impl InteractionEngine {
             // Disabled controls do not submit.
           } else {
             // Pressing Enter in a text field can submit the form; flip user validity as well.
+            if let Some(node_mut) = index.node_mut(focused) {
+              changed |= dom_mutation::mark_user_validity(node_mut);
+            }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = find_ancestor_form(&index, focused) {
-              if let Some(url) = build_get_form_submission_url(&index, form_id, document_url, base_url) {
+              if let Some(url) =
+                build_get_form_submission_url(&index, form_id, None, document_url, base_url)
+              {
                 action = InteractionAction::Navigate { href: url };
               }
             }
@@ -1936,10 +2026,13 @@ impl InteractionEngine {
           if node_is_disabled(&index, focused) {
             // Disabled submit controls do not submit.
           } else {
+            if let Some(node_mut) = index.node_mut(focused) {
+              changed |= dom_mutation::mark_user_validity(node_mut);
+            }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = find_ancestor_form(&index, focused) {
               if let Some(url) =
-                build_get_form_submission_url(&index, form_id, document_url, base_url)
+                build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
               {
                 action = InteractionAction::Navigate { href: url };
               }
