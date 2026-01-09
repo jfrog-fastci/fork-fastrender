@@ -189,6 +189,11 @@ pub fn execute_web_fetch<'a>(
       "web fetch request body is not allowed for GET/HEAD".to_string(),
     ));
   }
+  if request.mode == RequestMode::NoCors && !(method_is_get || method_is_head || method_is_post) {
+    return Err(Error::Other(format!(
+      "web fetch no-cors mode requires a CORS-safelisted method (GET/HEAD/POST); got {method:?}"
+    )));
+  }
 
   let referrer_url = effective_referrer_url(request, ctx);
   let referrer_origin = ctx
@@ -2063,6 +2068,19 @@ mod tests {
     assert!(message.contains("connect-src"));
     assert!(message.contains("final URL"));
     assert!(message.contains("other.example"));
+  }
+
+  #[test]
+  fn no_cors_rejects_non_safelisted_method_before_fetching() {
+    let fetcher = PanicFetcher;
+    let mut request = Request::new("PUT", "https://example.com/res");
+    request.set_mode(RequestMode::NoCors);
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected no-cors method error");
+    assert!(matches!(err, Error::Other(_)));
+    let message = err.to_string();
+    assert!(message.contains("no-cors"), "unexpected error: {message}");
+    assert!(message.contains("CORS-safelisted"), "unexpected error: {message}");
   }
 
   #[test]

@@ -273,12 +273,12 @@ impl<'js> JsRequest<'js> {
 
   fn to_core_request(&self, ctx: Ctx<'js>) -> JsResult<fastrender::resource::web_fetch::Request> {
     let mut req = fastrender::resource::web_fetch::Request::new(self.method.clone(), self.url.clone());
-    req.mode = self.mode;
     req.credentials = self.credentials;
     req.redirect = self.redirect;
     req.referrer = self.referrer.clone();
     req.referrer_policy = self.referrer_policy;
     req.headers = self.headers.borrow().inner.clone();
+    req.set_mode(self.mode);
     if let Some(body) = self.body.as_ref() {
       req.body = Some(map_web_fetch_result(ctx, Body::new(body.clone()))?);
     }
