@@ -1189,26 +1189,24 @@ impl Clone for BoxNode {
         frame.next_child += 1;
 
         dst.children.push(clone_shallow(child_src));
-        let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut BoxNode;
-
         stack.push(frame);
-        stack.push(Frame {
-          src: child_src,
-          dst: child_dst,
-          next_child: 0,
-          footnote_done: false,
-        });
+        if let Some(child_dst) = dst.children.last_mut().map(|child| child as *mut BoxNode) {
+          stack.push(Frame {
+            src: child_src,
+            dst: child_dst,
+            next_child: 0,
+            footnote_done: false,
+          });
+        }
         continue;
       }
 
       if !frame.footnote_done {
         frame.footnote_done = true;
         if let Some(body_src) = src.footnote_body.as_deref() {
-          dst.footnote_body = Some(Box::new(clone_shallow(body_src)));
-          let body_dst = dst
-            .footnote_body
-            .as_deref_mut()
-            .expect("footnote body was just assigned") as *mut BoxNode;
+          let mut body = Box::new(clone_shallow(body_src));
+          let body_dst = (&mut *body) as *mut BoxNode;
+          dst.footnote_body = Some(body);
 
           stack.push(frame);
           stack.push(Frame {
