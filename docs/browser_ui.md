@@ -86,12 +86,14 @@ The desktop UI is deliberately split into:
 - **Render worker**: runs the “heavy” pipeline (fetch → parse → style → layout → paint) and produces
   a `tiny_skia::Pixmap` for the current viewport.
 
-The worker boundary is kept so we can:
+The worker boundary keeps the UI responsive under slow network/layout and provides a place to add
+browser-style behaviors over time:
 
 - keep the UI responsive under slow network/layout,
-- cancel work on rapid navigation/scroll,
-- drop stale renders, and
 - route results to the correct tab via `tab_id`.
+
+Cancellation and stale-frame dropping are planned (see below), but are not yet fully wired into the
+current worker implementations.
 
 ### UI thread vs render worker thread
 
@@ -133,10 +135,13 @@ render job at a time; concurrent renders would need per-job routing.
 FastRender cancellation is *cooperative*: `RenderDeadline` can carry a `cancel_callback` that is
 polled throughout the pipeline (see [`RenderDeadline::check`](../src/render_control.rs)).
 
-The browser UI uses a generation-counter approach in [`src/ui/cancel.rs`](../src/ui/cancel.rs):
+The browser UI includes generation-counter cancellation helpers in [`src/ui/cancel.rs`](../src/ui/cancel.rs):
 
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
+
+Note: the current worker loops are mostly synchronous and do not yet use these helpers; they
+document the intended pattern for when cancellation is wired in.
 
 The typical pattern is:
 
