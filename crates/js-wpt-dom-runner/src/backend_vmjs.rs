@@ -1,4 +1,4 @@
-use crate::backend::{Backend, BackendInit, BackendReport};
+use crate::backend::{Backend, BackendInit};
 use crate::wpt_report::WptReport;
 use crate::RunError;
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
@@ -108,7 +108,11 @@ impl VmJsBackend {
 }
 
 impl Backend for VmJsBackend {
-  fn init_realm(&mut self, init: BackendInit) -> Result<(), RunError> {
+  fn init_realm(
+    &mut self,
+    init: BackendInit,
+    _host: Option<&mut dyn crate::engine::HostEnvironment>,
+  ) -> Result<(), RunError> {
     // Use a virtual deadline derived from the configured timeout. The backend advances its own
     // virtual clock deterministically when idle (see `idle_wait`) rather than sleeping in real
     // time.
@@ -123,7 +127,7 @@ impl Backend for VmJsBackend {
     Ok(())
   }
 
-  fn eval_script(&mut self, source: &str) -> Result<(), RunError> {
+  fn eval_script(&mut self, source: &str, _name: &str) -> Result<(), RunError> {
     if self.timed_out {
       return Ok(());
     }
@@ -231,7 +235,7 @@ impl Backend for VmJsBackend {
     result
   }
 
-  fn take_report(&mut self) -> Result<Option<BackendReport>, RunError> {
+  fn take_report(&mut self) -> Result<Option<WptReport>, RunError> {
     let rt = self.rt_mut()?;
     Ok(rt.report.take())
   }
@@ -1861,6 +1865,11 @@ impl JsWptRuntime {
 
   fn value_to_string_lossy(&mut self, value: Value) -> String {
     match value {
+      Value::String(s) => self
+        .heap
+        .get_string(s)
+        .map(|s| s.to_utf8_lossy())
+        .unwrap_or_else(|_| "<invalid string>".to_string()),
       Value::Symbol(_) => "[symbol]".to_string(),
       Value::Object(_) => "[object]".to_string(),
       _ => {
@@ -2762,7 +2771,10 @@ mod tests {
   fn value_to_string_lossy_formats_numbers_like_ecmascript() {
     let mut rt = JsWptRuntime::new("https://example.com/");
 
-    assert_eq!(rt.value_to_string_lossy(Value::Number(f64::INFINITY)), "Infinity");
+    assert_eq!(
+      rt.value_to_string_lossy(Value::Number(f64::INFINITY)),
+      "Infinity"
+    );
     assert_eq!(
       rt.value_to_string_lossy(Value::Number(f64::NEG_INFINITY)),
       "-Infinity"

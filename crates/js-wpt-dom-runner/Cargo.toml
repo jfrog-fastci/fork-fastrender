@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = ["quickjs"]
+
+# QuickJS (`rquickjs`) backend (current default). This will be replaced by the in-tree `vm-js`
+# backend once FastRender's host bindings + event loop are ready.
+quickjs = ["dep:rquickjs"]
+
+# `ecma-rs/vm-js` backend (optional; enabled with `--features vmjs`).
+vmjs = ["dep:vm-js", "dep:parse-js"]
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -17,5 +27,6 @@ url = "2.5"
 walkdir = "2"
 html5ever = "0.35"
 markup5ever_rcdom = "0.35"
-vm-js = { path = "../../engines/ecma-rs/vm-js" }
-parse-js = { path = "../../engines/ecma-rs/parse-js" }
+rquickjs = { version = "0.9", optional = true }
+vm-js = { path = "../../engines/ecma-rs/vm-js", optional = true }
+parse-js = { path = "../../engines/ecma-rs/parse-js", optional = true }

@@ -161,15 +161,41 @@ impl Runner {
     }
 
     let mut backend: Box<dyn Backend> = match backend_kind {
-      BackendKind::VmJs => Box::new(crate::backend_vmjs::VmJsBackend::new()),
+      BackendKind::QuickJs => {
+        #[cfg(feature = "quickjs")]
+        {
+          Box::new(crate::engine::quickjs::QuickJsBackend::new())
+        }
+        #[cfg(not(feature = "quickjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `quickjs` is not available in this build".to_string(),
+          ));
+        }
+      }
+      BackendKind::VmJs => {
+        #[cfg(feature = "vmjs")]
+        {
+          Box::new(crate::backend_vmjs::VmJsBackend::new())
+        }
+        #[cfg(not(feature = "vmjs"))]
+        {
+          return Err(RunError::Js(
+            "selected backend `vmjs` is not available in this build".to_string(),
+          ));
+        }
+      }
     };
 
-    if let Err(err) = backend.init_realm(BackendInit {
-      test_url: test_url.clone(),
-      timeout,
-      max_tasks: self.config.max_tasks,
-      max_microtasks: self.config.max_microtasks,
-    }) {
+    if let Err(err) = backend.init_realm(
+      BackendInit {
+        test_url: test_url.clone(),
+        timeout,
+        max_tasks: self.config.max_tasks,
+        max_microtasks: self.config.max_microtasks,
+      },
+      None,
+    ) {
       return Ok(RunResult {
         outcome: map_backend_error(err)?,
         wpt_report: None,
@@ -179,15 +205,15 @@ impl Runner {
     // Load / evaluate scripts in-order. If a script throws, surface it as a harness-level error
     // (via `window.onerror` if available, else by calling `__fastrender_wpt_report` directly).
     for script in scripts {
-      let src = match script {
+      let (src, name) = match script {
         ScriptToEval::Url(url) => {
           let path = self.fs.resolve_url(base_dir, &url)?;
-          self.fs.read_to_string(&path)?
+          (self.fs.read_to_string(&path)?, url)
         }
-        ScriptToEval::Inline(src) => src,
+        ScriptToEval::Inline(src) => (src, test_url.clone()),
       };
 
-      if let Err(err) = backend.eval_script(&src) {
+      if let Err(err) = backend.eval_script(&src, &name) {
         match err {
           RunError::Js(msg) if is_interrupt_error(&msg) => {
             return Ok(RunResult {
@@ -370,15 +396,15 @@ fn best_effort_report_uncaught_error(
     r#"(function () {{
       var msg = {msg};
       try {{
-        if (typeof onerror === "function") {{
-          try {{ onerror(msg, "", 0, 0, msg); return; }} catch (_e) {{}}
+        if (typeof onerror === \"function\") {{
+          try {{ onerror(msg, \"\", 0, 0, msg); return; }} catch (_e) {{}}
         }}
       }} catch (_e) {{}}
       try {{
-        if (typeof __fastrender_wpt_report === "function") {{
+        if (typeof __fastrender_wpt_report === \"function\") {{
           __fastrender_wpt_report({{
-            file_status: "error",
-            harness_status: "error",
+            file_status: \"error\",
+            harness_status: \"error\",
             message: msg,
             stack: null,
             subtests: []
@@ -387,7 +413,7 @@ fn best_effort_report_uncaught_error(
       }} catch (_e) {{}}
     }})();"#
   );
-  backend.eval_script(&src)
+  backend.eval_script(&src, "fastrender_uncaught_error_report.js")
 }
 
 fn drive_backend_until_report(

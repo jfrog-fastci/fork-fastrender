@@ -1,4 +1,4 @@
-use js_wpt_dom_runner::{discover_tests, BackendKind, RunOutcome, Runner, RunnerConfig, WptFs};
+use js_wpt_dom_runner::{discover_tests, BackendKind, BackendSelection, RunOutcome, Runner, RunnerConfig, WptFs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,7 +29,8 @@ fn run_test_id_all_backends(
   for backend in BackendKind::all_available() {
     let mut config = config.clone();
     config.backend = match backend {
-      BackendKind::VmJs => js_wpt_dom_runner::BackendSelection::VmJs,
+      BackendKind::QuickJs => BackendSelection::QuickJs,
+      BackendKind::VmJs => BackendSelection::VmJs,
     };
 
     let fs = WptFs::new(&corpus_root).expect("wpt fs");
@@ -88,13 +89,13 @@ fn runs_setinterval_and_clearinterval() {
 #[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   for (backend, result) in run_test_id_all_backends(
-      "smoke/timeout_long.window.js",
-      RunnerConfig {
-        default_timeout: Duration::from_millis(10),
-        long_timeout: Duration::from_millis(250),
-        ..RunnerConfig::default()
-      },
-    ) {
+    "smoke/timeout_long.window.js",
+    RunnerConfig {
+      default_timeout: Duration::from_millis(10),
+      long_timeout: Duration::from_millis(250),
+      ..RunnerConfig::default()
+    },
+  ) {
     assert_eq!(
       result.outcome,
       RunOutcome::Pass,
@@ -105,8 +106,7 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
 
 #[test]
 fn discovers_worker_tests_but_skips_them() {
-  for (backend, result) in
-    run_test_id_all_backends("smoke/unsupported.worker.js", RunnerConfig::default())
+  for (backend, result) in run_test_id_all_backends("smoke/unsupported.worker.js", RunnerConfig::default())
   {
     match result.outcome {
       RunOutcome::Skip(reason) => {
@@ -122,9 +122,10 @@ fn discovers_worker_tests_but_skips_them() {
 
 #[test]
 fn discovers_serviceworker_tests_but_skips_them() {
-  for (backend, result) in
-    run_test_id_all_backends("smoke/unsupported.serviceworker.js", RunnerConfig::default())
-  {
+  for (backend, result) in run_test_id_all_backends(
+    "smoke/unsupported.serviceworker.js",
+    RunnerConfig::default(),
+  ) {
     match result.outcome {
       RunOutcome::Skip(reason) => {
         assert!(
@@ -139,9 +140,10 @@ fn discovers_serviceworker_tests_but_skips_them() {
 
 #[test]
 fn discovers_sharedworker_tests_but_skips_them() {
-  for (backend, result) in
-    run_test_id_all_backends("smoke/unsupported.sharedworker.js", RunnerConfig::default())
-  {
+  for (backend, result) in run_test_id_all_backends(
+    "smoke/unsupported.sharedworker.js",
+    RunnerConfig::default(),
+  ) {
     match result.outcome {
       RunOutcome::Skip(reason) => {
         assert!(

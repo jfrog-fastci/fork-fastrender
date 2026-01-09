@@ -13,6 +13,8 @@
 
 mod discover;
 mod backend;
+mod engine;
+#[cfg(feature = "vmjs")]
 mod backend_vmjs;
 mod meta;
 mod runner;

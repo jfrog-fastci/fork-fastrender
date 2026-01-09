@@ -24,7 +24,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
     // Use an explicit backend so local debugging env vars don't affect test results.
-    backend: BackendSelection::VmJs,
+    backend: BackendSelection::QuickJs,
   })
   .expect("run suite");
 
@@ -90,7 +90,7 @@ fn suite_event_loop_tests_pass() {
     timeout: Duration::from_millis(500),
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
-    backend: BackendSelection::VmJs,
+    backend: BackendSelection::QuickJs,
   })
   .expect("run suite");
 
@@ -109,6 +109,7 @@ fn suite_event_loop_tests_pass() {
 }
 
 #[test]
+#[cfg(feature = "vmjs")]
 fn suite_events_tests_pass() {
   let corpus_root = corpus_root();
 
