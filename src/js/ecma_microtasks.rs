@@ -23,10 +23,6 @@ use std::rc::Rc;
 /// `vm-js` jobs need access to a [`vm_js::Vm`] + [`vm_js::Heap`] so they can call/construct
 /// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
-  fn vm_js_heap(&self) -> &vm_js::Heap;
-
-  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap;
-
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
@@ -239,10 +235,6 @@ mod tests {
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
-
-      fn vm_js_heap(&self) -> &vm_js::Heap {
-        &self.heap
-      }
     }
 
     let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
@@ -314,10 +306,6 @@ mod tests {
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
-      }
-
-      fn vm_js_heap(&self) -> &vm_js::Heap {
-        &self.heap
       }
     }
 
@@ -420,10 +408,6 @@ mod tests {
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
-      }
-
-      fn vm_js_heap(&self) -> &vm_js::Heap {
-        &self.heap
       }
     }
 

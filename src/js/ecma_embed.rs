@@ -280,10 +280,6 @@ impl super::VmJsEngineHost for VmJsScriptRealm {
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
     (&mut self.vm, &mut self.heap)
   }
-
-  fn vm_js_heap(&self) -> &Heap {
-    &self.heap
-  }
 }
 
 impl ScriptRealm for VmJsScriptRealm {
