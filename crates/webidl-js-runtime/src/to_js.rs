@@ -63,10 +63,14 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
       WebIdlValue::Null => Ok(rt.js_null()),
       _ => to_js_with_limits(rt, ctx, inner, value, limits),
     },
-    IdlType::Union(_) => {
+    IdlType::Union(_members) => {
       let WebIdlValue::Union { member_ty, value } = value else {
         return Err(rt.throw_type_error("union return value must include a selected member type"));
       };
+      let flattened = ty.flattened_union_member_types();
+      if !flattened.iter().any(|m| m == member_ty.innermost_type()) {
+        return Err(rt.throw_type_error("union return value member type is not part of the union"));
+      }
       to_js_with_limits(rt, ctx, member_ty, value, limits)
     }
 
@@ -734,6 +738,35 @@ mod tests {
       "expected TypeError, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn union_return_rejects_member_not_in_union() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("(long or DOMString)")?;
+    let member_ty = parse_idl_type_complete("boolean")?;
+    let value = WebIdlValue::Union {
+      member_ty: Box::new(member_ty),
+      value: Box::new(WebIdlValue::Boolean(true)),
+    };
+
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("member type is not part of the union"),
+      "expected union member error message, got {msg:?}"
+    );
     Ok(())
   }
 
