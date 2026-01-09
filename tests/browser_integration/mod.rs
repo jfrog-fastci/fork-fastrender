@@ -28,6 +28,7 @@ mod ui_worker_cancellation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
 mod ui_worker_interaction;
+mod ui_worker_form_submit;
 mod ui_worker_keyboard;
 mod ui_worker_fragment_navigation;
 mod ui_worker_navigation_errors;

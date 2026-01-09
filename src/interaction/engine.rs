@@ -17,7 +17,6 @@ use url::form_urlencoded;
 use url::Url;
 
 use super::dom_mutation;
-use super::form_submit;
 use super::hit_test::hit_test_dom;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1034,60 +1033,70 @@ fn find_ancestor_form(index: &DomIndexMut, mut node_id: usize) -> Option<usize> 
     if is_form(node) {
       return Some(node_id);
     }
+    // Shadow roots are tree root boundaries for form owner resolution; do not walk out into the
+    // shadow host tree.
+    if matches!(node.node_type, DomNodeType::ShadowRoot { .. } | DomNodeType::Document { .. }) {
+      break;
+    }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
   }
   None
+}
+
+fn tree_root_boundary_id(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = index.node(node_id)?;
+    if matches!(node.node_type, DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }) {
+      return Some(node_id);
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  None
+}
+
+fn find_element_by_id_attr_in_tree(
+  index: &DomIndexMut,
+  tree_root_id: usize,
+  html_id: &str,
+) -> Option<usize> {
+  for node_id in 1..index.id_to_node.len() {
+    let Some(node) = index.node(node_id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    if node.get_attribute_ref("id") != Some(html_id) {
+      continue;
+    }
+    if tree_root_boundary_id(index, node_id) == Some(tree_root_id) {
+      return Some(node_id);
+    }
+  }
+  None
+}
+
+fn resolve_form_owner(index: &DomIndexMut, control_node_id: usize) -> Option<usize> {
+  let control = index.node(control_node_id)?;
+
+  if let Some(form_attr) = control
+    .get_attribute_ref("form")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+  {
+    let tree_root = tree_root_boundary_id(index, control_node_id)?;
+    let referenced = find_element_by_id_attr_in_tree(index, tree_root, form_attr)?;
+    return index.node(referenced).is_some_and(is_form).then_some(referenced);
+  }
+
+  find_ancestor_form(index, control_node_id)
 }
 
 // `SelectControl` uses Strings/Vecs and does not contain floats, so its derived `PartialEq` is a
 // full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
 impl Eq for SelectControl {}
 
-fn option_value(option: &DomNode) -> String {
-  if let Some(value) = option.get_attribute_ref("value") {
-    return value.to_string();
-  }
-  collect_text_children_value(option)
-}
-
-fn select_value(index: &DomIndexMut, select_id: usize) -> Option<String> {
-  let mut end = select_id;
-  for id in (select_id + 1)..index.id_to_node.len() {
-    if is_ancestor_or_self(index, select_id, id) {
-      end = id;
-    } else {
-      break;
-    }
-  }
-
-  let mut first_option: Option<usize> = None;
-  let mut selected_option: Option<usize> = None;
-
-  for id in (select_id + 1)..=end {
-    let Some(node) = index.node(id) else {
-      continue;
-    };
-    if node
-      .tag_name()
-      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
-    {
-      first_option.get_or_insert(id);
-      if selected_option.is_none() && node.get_attribute_ref("selected").is_some() {
-        selected_option = Some(id);
-      }
-    }
-  }
-
-  let option_id = selected_option.or(first_option)?;
-  let option_node = index.node(option_id)?;
-  Some(option_value(option_node))
-}
-
-fn form_control_value(
-  index: &DomIndexMut,
-  node_id: usize,
-  node: &DomNode,
-) -> Option<(String, String)> {
+fn form_control_value(node: &DomNode) -> Option<(String, String)> {
   let name = node
     .get_attribute_ref("name")
     .map(trim_ascii_whitespace)
@@ -1119,11 +1128,6 @@ fn form_control_value(
 
   if is_textarea(node) {
     let value = collect_text_children_value(node);
-    return Some((name.to_string(), value));
-  }
-
-  if is_select(node) {
-    let value = select_value(index, node_id)?;
     return Some((name.to_string(), value));
   }
 
@@ -1171,9 +1175,6 @@ fn build_get_form_submission_url(
   let mut serializer = form_urlencoded::Serializer::new(String::new());
 
   for id in 1..index.id_to_node.len() {
-    if !is_ancestor_or_self(index, form_id, id) {
-      continue;
-    }
     let Some(node) = index.node(id) else {
       continue;
     };
@@ -1184,7 +1185,82 @@ fn build_get_form_submission_url(
       continue;
     }
 
-    if let Some((name, value)) = form_control_value(index, id, node) {
+    if !(is_input(node) || is_textarea(node) || is_select(node)) {
+      continue;
+    }
+    if resolve_form_owner(index, id) != Some(form_id) {
+      continue;
+    }
+
+    if is_select(node) {
+      let Some(name) = node
+        .get_attribute_ref("name")
+        .map(trim_ascii_whitespace)
+        .filter(|v| !v.is_empty())
+      else {
+        continue;
+      };
+
+      let multiple = node.get_attribute_ref("multiple").is_some();
+      let rows = collect_select_rows(index, id);
+      let mut options: Vec<(usize, bool)> = Vec::new();
+      for row in rows {
+        let SelectRow::Option { node_id, disabled } = row else {
+          continue;
+        };
+        options.push((node_id, disabled));
+      }
+
+      if multiple {
+        for (opt_id, disabled) in options {
+          if disabled {
+            continue;
+          }
+          let Some(option) = index.node(opt_id) else {
+            continue;
+          };
+          if option.get_attribute_ref("selected").is_none() {
+            continue;
+          }
+
+          let value = option
+            .get_attribute_ref("value")
+            .map(str::to_string)
+            .unwrap_or_else(|| collect_text_children_value(option));
+          serializer.append_pair(name, &value);
+        }
+      } else {
+        let mut chosen: Option<usize> = None;
+        for (opt_id, disabled) in options.iter() {
+          if *disabled {
+            continue;
+          }
+          if index
+            .node(*opt_id)
+            .and_then(|opt| opt.get_attribute_ref("selected"))
+            .is_some()
+          {
+            chosen = Some(*opt_id);
+            break;
+          }
+        }
+        if chosen.is_none() {
+          chosen = options
+            .iter()
+            .find_map(|(opt_id, disabled)| (!*disabled).then_some(*opt_id));
+        }
+
+        if let Some(opt_id) = chosen {
+          if let Some(option) = index.node(opt_id) {
+            let value = option
+              .get_attribute_ref("value")
+              .map(str::to_string)
+              .unwrap_or_else(|| collect_text_children_value(option));
+            serializer.append_pair(name, &value);
+          }
+        }
+      }
+    } else if let Some((name, value)) = form_control_value(node) {
       serializer.append_pair(&name, &value);
     }
   }
@@ -1673,10 +1749,12 @@ impl InteractionEngine {
                 dom_changed |= dom_mutation::mark_user_validity(node_mut);
               }
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
-              if let Some(href) =
-                form_submit::form_submission_get_url(dom, target_id, document_url, base_url)
-              {
-                action = InteractionAction::Navigate { href };
+              if let Some(form_id) = resolve_form_owner(&index, target_id) {
+                if let Some(url) =
+                  build_get_form_submission_url(&index, form_id, Some(target_id), document_url, base_url)
+                {
+                  action = InteractionAction::Navigate { href: url };
+                }
               }
             }
           }
@@ -2152,10 +2230,11 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(href) =
-              form_submit::form_submission_get_url(dom, focused, document_url, base_url)
-            {
-              action = InteractionAction::Navigate { href };
+            if let Some(form_id) = resolve_form_owner(&index, focused) {
+              if let Some(url) = build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
+              {
+                action = InteractionAction::Navigate { href: url };
+              }
             }
           }
         } else if index.node(focused).is_some_and(is_text_input) {
@@ -2167,10 +2246,8 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(form_id) = find_ancestor_form(&index, focused) {
-              if let Some(url) =
-                build_get_form_submission_url(&index, form_id, None, document_url, base_url)
-              {
+            if let Some(form_id) = resolve_form_owner(&index, focused) {
+              if let Some(url) = build_get_form_submission_url(&index, form_id, None, document_url, base_url) {
                 action = InteractionAction::Navigate { href: url };
               }
             }
@@ -2198,10 +2275,12 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(href) =
-              form_submit::form_submission_get_url(dom, focused, document_url, base_url)
-            {
-              action = InteractionAction::Navigate { href };
+            if let Some(form_id) = resolve_form_owner(&index, focused) {
+              if let Some(url) =
+                build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
+              {
+                action = InteractionAction::Navigate { href: url };
+              }
             }
           }
         } else if index.node(focused).is_some_and(is_button) {

@@ -583,6 +583,7 @@ impl BrowserWorkerRuntime {
       .as_deref()
       .or(tab.url.as_deref())
       .unwrap_or(about_pages::ABOUT_BASE_URL);
+    let document_url = tab.url.as_deref().unwrap_or("");
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
