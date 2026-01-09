@@ -791,6 +791,41 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     Some(meta.stored_at)
   }
 
+  fn stored_at_for_cached_artifact_entry(
+    &self,
+    kind: FetchContextKind,
+    url: &str,
+    request: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+    origin_key: Option<&str>,
+    credentials_mode: super::FetchCredentialsMode,
+  ) -> Option<u64> {
+    let base_key = self.artifact_key_with_partition(kind, url, artifact, origin_key, credentials_mode);
+    let vary = self.read_vary_for_base_key(&base_key);
+    let request = FetchRequest {
+      url,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode,
+    };
+    let vary_key =
+      super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+    let key = self.variant_key_for_base_key(&base_key, &vary_key);
+    let data_path = self.data_path_for_key(&key);
+    let meta_path = self.meta_path_for_data(&data_path);
+    let meta_bytes = read_path_prefix_with_deadline(
+      &meta_path,
+      DISK_META_READ_STAGE,
+      DISK_META_READ_CHUNK_SIZE,
+      DISK_META_MAX_BYTES,
+    )
+    .ok()?;
+    let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
+    Some(meta.stored_at)
+  }
+
   fn data_path(&self, kind: FetchContextKind, url: &str) -> PathBuf {
     self.data_path_for_key(&self.cache_key(kind, url))
   }
@@ -1036,6 +1071,42 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
   ) {
     if !self.lock_is_active(data_path) {
       self.remove_entry_files_best_effort(key, data_path, meta_path);
+    }
+  }
+
+  fn remove_entry_family_files_best_effort(&self, base_key: &str) {
+    // This is primarily used by disk-cache readers to self-heal corrupted/stale entries. When disk
+    // writeback is disabled under a render deadline, we still prefer removing the files (without
+    // updating the index) so future runs don't keep hitting the same stale data.
+    let vary_path = self.vary_metadata_path_for_base_key(base_key);
+    let _ = fs::remove_file(tmp_path(&vary_path));
+    let _ = fs::remove_file(&vary_path);
+
+    let data_path = self.data_path_for_key(base_key);
+    let meta_path = self.meta_path_for_data(&data_path);
+    self.remove_entry_files_best_effort_if_unlocked(base_key, &data_path, &meta_path);
+
+    let prefix = format!("{base_key}.v");
+    let Ok(dir) = fs::read_dir(&self.cache_dir) else {
+      return;
+    };
+    for entry in dir.flatten() {
+      let path = entry.path();
+      if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+        continue;
+      }
+      let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+        continue;
+      };
+      if !name.starts_with(&prefix) {
+        continue;
+      }
+      let Some(key) = name.strip_suffix(".bin") else {
+        continue;
+      };
+      let data_path = self.cache_dir.join(&name);
+      let meta_path = self.meta_path_for_data(&data_path);
+      self.remove_entry_files_best_effort_if_unlocked(key, &data_path, &meta_path);
     }
   }
 
@@ -3533,7 +3604,45 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       )
       .ok()
       .flatten();
-    let (_, snapshot) = snapshot?;
+    let (canonical, snapshot) = snapshot?;
+    let canonical_request = FetchRequest {
+      url: &canonical,
+      destination: request.destination,
+      referrer_url: request.referrer_url,
+      client_origin: request.client_origin,
+      referrer_policy: request.referrer_policy,
+      credentials_mode: default_credentials_mode,
+    };
+    let artifact_stored_at = snapshot
+      .http_cache
+      .as_ref()
+      .and_then(|meta| system_time_to_secs(meta.stored_at))
+      .or_else(|| {
+        self.stored_at_for_cached_artifact_entry(
+          kind,
+          &canonical,
+          canonical_request,
+          artifact,
+          None,
+          default_credentials_mode,
+        )
+      });
+    let resource_stored_at = self.stored_at_for_cached_entry(
+      kind,
+      &canonical,
+      canonical_request,
+      None,
+      default_credentials_mode,
+    );
+    if resource_stored_at.is_none()
+      || artifact_stored_at.is_none()
+      || resource_stored_at != artifact_stored_at
+    {
+      let base_key =
+        self.artifact_key_with_partition(kind, &canonical, artifact, None, default_credentials_mode);
+      self.remove_entry_family_files_best_effort(&base_key);
+      return None;
+    }
     let plan = self
       .memory
       .plan_cache_use(url, Some(snapshot.clone()), self.disk_config.max_age);
@@ -3563,7 +3672,50 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       )
       .ok()
       .flatten();
-    let (_, snapshot) = snapshot?;
+    let (canonical, snapshot) = snapshot?;
+    let canonical_request = FetchRequest {
+      url: &canonical,
+      destination: req.destination,
+      referrer_url: req.referrer_url,
+      client_origin: req.client_origin,
+      referrer_policy: req.referrer_policy,
+      credentials_mode: req.credentials_mode,
+    };
+    let artifact_stored_at = snapshot
+      .http_cache
+      .as_ref()
+      .and_then(|meta| system_time_to_secs(meta.stored_at))
+      .or_else(|| {
+        self.stored_at_for_cached_artifact_entry(
+          kind,
+          &canonical,
+          canonical_request,
+          artifact,
+          origin_key.as_deref(),
+          req.credentials_mode,
+        )
+      });
+    let resource_stored_at = self.stored_at_for_cached_entry(
+      kind,
+      &canonical,
+      canonical_request,
+      origin_key.as_deref(),
+      req.credentials_mode,
+    );
+    if resource_stored_at.is_none()
+      || artifact_stored_at.is_none()
+      || resource_stored_at != artifact_stored_at
+    {
+      let base_key = self.artifact_key_with_partition(
+        kind,
+        &canonical,
+        artifact,
+        origin_key.as_deref(),
+        req.credentials_mode,
+      );
+      self.remove_entry_family_files_best_effort(&base_key);
+      return None;
+    }
     let plan =
       self
         .memory
@@ -5203,6 +5355,37 @@ mod tests {
       let req_b =
         FetchRequest::new(url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
 
+      // The artifact stored-at timestamp is tied to the underlying resource entry. Seed distinct
+      // CORS-partitioned resource variants so the artifacts remain readable after the stored-at
+      // validation check.
+      let origin_a = super::super::cors_cache_partition_key(&req_a);
+      let origin_b = super::super::cors_cache_partition_key(&req_b);
+      let mut seeded = FetchedResource::new(b"seed".to_vec(), Some("image/png".to_string()));
+      seeded.status = Some(200);
+      seeded.final_url = Some(url.to_string());
+      disk.persist_resource_with_partition(
+        FetchContextKind::ImageCors,
+        url,
+        req_a,
+        &seeded,
+        None,
+        None,
+        None,
+        origin_a.as_deref(),
+        req_a.credentials_mode,
+      );
+      disk.persist_resource_with_partition(
+        FetchContextKind::ImageCors,
+        url,
+        req_b,
+        &seeded,
+        None,
+        None,
+        None,
+        origin_b.as_deref(),
+        req_b.credentials_mode,
+      );
+
       let mut source_a = FetchedResource::new(
         Vec::new(),
         Some(IMAGE_PROBE_METADATA_CONTENT_TYPE.to_string()),
@@ -5698,6 +5881,13 @@ mod tests {
     let url = "https://example.com/artifact-under-deadline";
     let artifact_bytes = br#"{"intrinsic":"ok"}"#;
 
+    // Seed an underlying resource entry so the stored-at validation check can confirm that the
+    // artifact matches the bytes on disk.
+    let req = FetchRequest::new(url, FetchDestination::Other);
+    let mut seeded = FetchedResource::new(b"seed".to_vec(), Some("text/plain".to_string()));
+    seeded.final_url = Some(url.to_string());
+    disk.persist_resource(TEST_KIND, url, req, &seeded, None, None, None);
+
     let deadline = render_control::RenderDeadline::new(Some(Duration::from_millis(500)), None);
     render_control::with_deadline(Some(&deadline), || {
       disk.write_cache_artifact(
@@ -5730,6 +5920,77 @@ mod tests {
       cached.content_type.as_deref(),
       Some(IMAGE_PROBE_METADATA_CONTENT_TYPE)
     );
+  }
+
+  #[test]
+  fn disk_cache_invalidates_cache_artifacts_when_resource_stored_at_changes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let url = "https://example.com/invalidate-artifact";
+    let req = FetchRequest::new(url, FetchDestination::Other);
+
+    let mut seeded = FetchedResource::new(b"seed".to_vec(), Some("text/plain".to_string()));
+    seeded.final_url = Some(url.to_string());
+    disk.persist_resource(TEST_KIND, url, req, &seeded, None, None, None);
+
+    let artifact_bytes = br#"{"intrinsic":"v1"}"#;
+    disk.write_cache_artifact_with_request(
+      req,
+      CacheArtifactKind::ImageProbeMetadata,
+      artifact_bytes,
+      None,
+    );
+
+    let key = disk.artifact_key(TEST_KIND, url, CacheArtifactKind::ImageProbeMetadata);
+    let artifact_data_path = disk.data_path_for_key(&key);
+    let artifact_meta_path = disk.meta_path_for_data(&artifact_data_path);
+    assert!(artifact_data_path.exists(), "expected artifact data to exist");
+    assert!(
+      artifact_meta_path.exists(),
+      "expected artifact metadata to exist"
+    );
+
+    let cached = disk
+      .read_cache_artifact_with_request(req, CacheArtifactKind::ImageProbeMetadata)
+      .expect("artifact hit");
+    assert_eq!(cached.bytes, artifact_bytes);
+
+    // Simulate the underlying resource being refreshed/revalidated on disk by bumping its stored-at
+    // timestamp.
+    let resource_data_path = disk.data_path(TEST_KIND, url);
+    let resource_meta_path = disk.meta_path_for_data(&resource_data_path);
+    let meta_bytes = fs::read(&resource_meta_path).expect("read resource meta");
+    let mut meta: StoredMetadata =
+      serde_json::from_slice(&meta_bytes).expect("parse resource meta");
+    meta.stored_at = meta.stored_at.saturating_add(1);
+    fs::write(&resource_meta_path, serde_json::to_vec(&meta).expect("serialize resource meta"))
+      .expect("write resource meta");
+
+    assert!(
+      disk
+        .read_cache_artifact_with_request(req, CacheArtifactKind::ImageProbeMetadata)
+        .is_none(),
+      "expected stale artifact to be treated as a cache miss"
+    );
+    assert!(
+      !artifact_data_path.exists(),
+      "expected stale artifact data file to be removed"
+    );
+    assert!(
+      !artifact_meta_path.exists(),
+      "expected stale artifact meta file to be removed"
+    );
+
+    disk.write_cache_artifact_with_request(
+      req,
+      CacheArtifactKind::ImageProbeMetadata,
+      artifact_bytes,
+      None,
+    );
+    let cached_again = disk
+      .read_cache_artifact_with_request(req, CacheArtifactKind::ImageProbeMetadata)
+      .expect("artifact hit after rewrite");
+    assert_eq!(cached_again.bytes, artifact_bytes);
   }
 
   #[test]
