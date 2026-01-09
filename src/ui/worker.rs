@@ -557,11 +557,52 @@ fn url_fragment(url: &str) -> Option<&str> {
 fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
-  url: String,
+  mut url: String,
   reason: NavigationReason,
-  restore_scroll: Option<(f32, f32)>,
+  mut restore_scroll: Option<(f32, f32)>,
   tx: &Sender<WorkerToUi>,
 ) {
+  // Apply history semantics first so that Back/Forward restores the correct scroll position and
+  // Reload uses the current entry URL (without creating a new history entry).
+  match reason {
+    // `TypedUrl` / `LinkClick` history push is handled after we check for same-document fragment
+    // navigations. Fragment-only navigations should not reset scroll container offsets.
+    NavigationReason::TypedUrl | NavigationReason::LinkClick => {}
+    NavigationReason::Reload => {
+      if let Some(entry) = tab.history.reload_target() {
+        url = entry.url.clone();
+      }
+    }
+    NavigationReason::BackForward => {
+      if !tab
+        .history
+        .current()
+        .is_some_and(|entry| entry.url == url)
+      {
+        if tab.history.go_back_forward_to(&url).is_none() {
+          let _ = tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("BackForward navigation to unknown URL: {url}"),
+          });
+          return;
+        }
+      }
+
+      let Some(entry) = tab.history.current() else {
+        return;
+      };
+      url = entry.url.clone();
+      restore_scroll.get_or_insert((entry.scroll_x, entry.scroll_y));
+
+      // Apply restored viewport scroll before fragment-only navigation handling. Keep element scroll
+      // offsets intact for same-document fragment history navigations.
+      if let Some((scroll_x, scroll_y)) = restore_scroll {
+        tab.scroll_state.viewport.x = if scroll_x.is_finite() { scroll_x.max(0.0) } else { 0.0 };
+        tab.scroll_state.viewport.y = if scroll_y.is_finite() { scroll_y.max(0.0) } else { 0.0 };
+      }
+    }
+  }
+
   // Allow Reload to fully reload the document even if the URL only differs by fragment.
   if reason != NavigationReason::Reload {
     if let Some(nav) = same_document_fragment_navigation(tab.current_url.as_deref(), &url) {
