@@ -3,7 +3,10 @@ use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::geometry::Size;
+use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::scroll::ScrollState;
+use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
@@ -13,6 +16,7 @@ use crate::tree::box_tree::SelectControl;
 use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
+use std::sync::Arc;
 use url::form_urlencoded;
 use url::Url;
 
@@ -700,34 +704,7 @@ fn set_textarea_text_children_value(node: &mut DomNode, value: &str) -> (bool, b
   (true, true)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SelectRow {
-  OptGroupLabel { disabled: bool },
-  Option { node_id: usize, disabled: bool },
-}
-
-fn has_disabled_optgroup_ancestor(index: &DomIndexMut, mut node_id: usize, root_id: usize) -> bool {
-  while node_id != 0 && node_id != root_id {
-    let parent = *index.parent.get(node_id).unwrap_or(&0);
-    if parent == 0 || parent == root_id {
-      break;
-    }
-    if index.node(parent).is_some_and(|node| {
-      node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
-        && node.get_attribute_ref("disabled").is_some()
-    }) {
-      return true;
-    }
-    node_id = parent;
-  }
-  false
-}
-
-fn collect_select_rows(index: &DomIndexMut, select_id: usize) -> Vec<SelectRow> {
-  // Like `build_select_control`, `<optgroup>` contributes a label row followed by its descendants.
-  // This function operates directly on the DOM so it can recover DOM node ids for `<option>` rows.
+fn collect_select_option_nodes_dom(index: &DomIndexMut, select_id: usize) -> Vec<(usize, bool)> {
   let mut end = select_id;
   for id in (select_id + 1)..index.id_to_node.len() {
     if is_ancestor_or_self(index, select_id, id) {
@@ -737,36 +714,37 @@ fn collect_select_rows(index: &DomIndexMut, select_id: usize) -> Vec<SelectRow> 
     }
   }
 
-  let mut rows = Vec::new();
+  let mut options = Vec::new();
   for id in (select_id + 1)..=end {
     let Some(node) = index.node(id) else {
       continue;
     };
-    if !node.is_element() {
-      continue;
-    }
-    let Some(tag) = node.tag_name() else {
-      continue;
-    };
-
-    if tag.eq_ignore_ascii_case("optgroup") {
-      let disabled = node.get_attribute_ref("disabled").is_some()
-        || has_disabled_optgroup_ancestor(index, id, select_id);
-      rows.push(SelectRow::OptGroupLabel { disabled });
+    if !node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
       continue;
     }
 
-    if tag.eq_ignore_ascii_case("option") {
-      let disabled = node.get_attribute_ref("disabled").is_some()
-        || has_disabled_optgroup_ancestor(index, id, select_id);
-      rows.push(SelectRow::Option {
-        node_id: id,
-        disabled,
-      });
+    let mut disabled = node.get_attribute_ref("disabled").is_some();
+    let mut ancestor = *index.parent.get(id).unwrap_or(&0);
+    while ancestor != 0 && ancestor != select_id {
+      if index.node(ancestor).is_some_and(|node| {
+        node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
+          && node.get_attribute_ref("disabled").is_some()
+      }) {
+        disabled = true;
+        break;
+      }
+      ancestor = *index.parent.get(ancestor).unwrap_or(&0);
     }
+
+    options.push((id, disabled));
   }
 
-  rows
+  options
 }
 
 fn fragment_rect_for_box_id_at_point(
@@ -806,6 +784,95 @@ fn fragment_rect_for_box_id_at_point(
   }
 
   None
+}
+
+fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect {
+  Rect::from_xywh(
+    rect.x() + left,
+    rect.y() + top,
+    (rect.width() - left - right).max(0.0),
+    (rect.height() - top - bottom).max(0.0),
+  )
+}
+
+fn select_content_rect(border_rect: Rect, style: &ComputedStyle, viewport_size: Size) -> Rect {
+  let base = border_rect.width().max(0.0);
+  let viewport = if viewport_size.width.is_finite() && viewport_size.height.is_finite() {
+    (viewport_size.width, viewport_size.height)
+  } else {
+    (base, base)
+  };
+
+  let font_size = style.font_size;
+  let root_font_size = style.root_font_size;
+
+  // Mirror the painter's `background_rects` logic: border rect -> padding rect -> content rect.
+  let border_left = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_left_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let border_right = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_right_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let border_top = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_top_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let border_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_bottom_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+
+  let padding_left = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_left,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let padding_right = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_right,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let padding_top = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_top,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let padding_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_bottom,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+
+  let padding_rect = inset_rect(border_rect, border_left, border_top, border_right, border_bottom);
+  inset_rect(
+    padding_rect,
+    padding_left,
+    padding_top,
+    padding_right,
+    padding_bottom,
+  )
 }
 
 fn fragment_rect_for_box_id(fragment_tree: &FragmentTree, target_box_id: usize) -> Option<Rect> {
@@ -891,49 +958,74 @@ fn apply_select_listbox_click(
   fragment_tree: &FragmentTree,
   page_point: Point,
   select_id: usize,
-  control: &SelectControl,
-  hit_box_id: usize,
+  select_box_id: usize,
   scroll_state: &ScrollState,
+  control: &SelectControl,
+  style: &ComputedStyle,
 ) -> bool {
   let is_listbox = control.multiple || control.size > 1;
   if !is_listbox {
     return false;
   }
 
-  let Some(select_rect) = fragment_rect_for_box_id_at_point(fragment_tree, page_point, hit_box_id) else {
+  let Some(select_rect) =
+    fragment_rect_for_box_id_at_point(fragment_tree, page_point, select_box_id)
+  else {
     return false;
   };
 
-  let row_count_total = control.items.len();
-  if row_count_total == 0 {
+  let total_rows = control.items.len();
+  if total_rows == 0 {
     return false;
   }
 
-  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
-  if !scroll_y.is_finite() {
-    scroll_y = 0.0;
-  }
+  let viewport_size = fragment_tree.viewport_size();
+  let content_rect = select_content_rect(select_rect, style, viewport_size);
 
-  let row_height = select_rect.height() / control.size.max(1) as f32;
+  let row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
   if row_height <= 0.0 || !row_height.is_finite() {
     return false;
   }
 
-  let viewport_height = select_rect.height().max(0.0);
-  let content_height = row_height * row_count_total as f32;
+  let viewport_height = content_rect.height().max(0.0);
+  let content_height = row_height * total_rows as f32;
+  if !viewport_height.is_finite() || !content_height.is_finite() {
+    return false;
+  }
+
   let max_scroll_y = (content_height - viewport_height).max(0.0);
+  if !max_scroll_y.is_finite() {
+    return false;
+  }
+
+  let mut scroll_y = scroll_state.element_offset(select_box_id).y;
+  if !scroll_y.is_finite() {
+    scroll_y = 0.0;
+  }
   scroll_y = scroll_y.clamp(0.0, max_scroll_y);
 
-  let local_y = page_point.y - select_rect.y();
+  let local_y = page_point.y - content_rect.y();
+  if !local_y.is_finite() {
+    return false;
+  }
   let content_y = local_y + scroll_y;
+  if !content_y.is_finite() {
+    return false;
+  }
   let mut row_idx = (content_y / row_height).floor() as isize;
-  row_idx = row_idx.clamp(0, row_count_total.saturating_sub(1) as isize);
+  row_idx = row_idx.clamp(0, total_rows.saturating_sub(1) as isize);
 
-  match control.items.get(row_idx as usize) {
-    Some(SelectItem::OptGroupLabel { .. }) | None => false,
-    Some(SelectItem::Option {
-      node_id, disabled, ..
-    }) => {
+  let Some(item) = control.items.get(row_idx as usize) else {
+    return false;
+  };
+
+  match item {
+    SelectItem::OptGroupLabel { .. } => false,
+    SelectItem::Option {
+      node_id,
+      disabled,
+      ..
+    } => {
       if *disabled {
         return false;
       }
@@ -942,77 +1034,17 @@ fn apply_select_listbox_click(
   }
 }
 
-fn apply_select_listbox_click_dom_fallback(
-  dom: &mut DomNode,
-  index: &DomIndexMut,
-  fragment_tree: &FragmentTree,
-  page_point: Point,
-  select_id: usize,
-  hit_box_id: usize,
-  scroll_state: &ScrollState,
-) -> bool {
-  let Some(select_node) = index.node(select_id) else {
-    return false;
-  };
-
-  let multiple = select_node.get_attribute_ref("multiple").is_some();
-  let size = crate::dom::select_effective_size(select_node);
-  let is_listbox = multiple || size > 1;
-  if !is_listbox {
-    return false;
-  }
-
-  let Some(select_rect) = fragment_rect_for_box_id_at_point(fragment_tree, page_point, hit_box_id) else {
-    return false;
-  };
-
-  let rows = collect_select_rows(index, select_id);
-  if rows.is_empty() {
-    return false;
-  }
-
-  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
-  if !scroll_y.is_finite() {
-    scroll_y = 0.0;
-  }
-
-  let row_height = select_rect.height() / size.max(1) as f32;
-  if row_height <= 0.0 || !row_height.is_finite() {
-    return false;
-  }
-
-  let viewport_height = select_rect.height().max(0.0);
-  let content_height = row_height * rows.len() as f32;
-  let max_scroll_y = (content_height - viewport_height).max(0.0);
-  scroll_y = scroll_y.clamp(0.0, max_scroll_y);
-
-  let local_y = page_point.y - select_rect.y();
-  let content_y = local_y + scroll_y;
-  let mut row_idx = (content_y / row_height).floor() as isize;
-  row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
-
-  match rows.get(row_idx as usize) {
-    Some(SelectRow::OptGroupLabel { .. }) | None => false,
-    Some(SelectRow::Option { node_id, disabled }) => {
-      if *disabled {
-        return false;
-      }
-      dom_mutation::activate_select_option(dom, select_id, *node_id, multiple)
-    }
-  }
-}
-
 fn select_control_snapshot_from_box_tree(
   box_tree: &BoxTree,
   select_node_id: usize,
-) -> Option<(SelectControl, bool)> {
+) -> Option<(SelectControl, bool, Arc<ComputedStyle>)> {
   let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
   while let Some(node) = stack.pop() {
     if node.styled_node_id == Some(select_node_id) {
       if let BoxType::Replaced(replaced) = &node.box_type {
         if let ReplacedType::FormControl(form_control) = &replaced.replaced_type {
           if let FormControlKind::Select(control) = &form_control.control {
-            return Some((control.clone(), form_control.disabled));
+            return Some((control.clone(), form_control.disabled, node.style.clone()));
           }
         }
       }
@@ -1202,17 +1234,10 @@ fn build_get_form_submission_url(
       };
 
       let multiple = node.get_attribute_ref("multiple").is_some();
-      let rows = collect_select_rows(index, id);
-      let mut options: Vec<(usize, bool)> = Vec::new();
-      for row in rows {
-        let SelectRow::Option { node_id, disabled } = row else {
-          continue;
-        };
-        options.push((node_id, disabled));
-      }
+      let options = collect_select_option_nodes_dom(index, id);
 
       if multiple {
-        for (opt_id, disabled) in options {
+        for (opt_id, disabled) in options.iter().copied() {
           if disabled {
             continue;
           }
@@ -1294,34 +1319,25 @@ fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_i
     return false;
   }
 
-  let rows = collect_select_rows(index, select_id);
-  if rows.is_empty() {
+  let options = collect_select_option_nodes_dom(index, select_id);
+  if options.is_empty() {
     return false;
   }
 
-  // Build the `<option>` list in tree order, skipping disabled options when navigating.
-  let mut options: Vec<(usize, bool)> = Vec::new(); // (node_id, disabled)
   let mut last_selected_idx: Option<usize> = None;
   let mut first_enabled_idx: Option<usize> = None;
   let mut last_enabled_idx: Option<usize> = None;
 
-  for row in rows {
-    let SelectRow::Option { node_id, disabled } = row else {
-      continue;
-    };
-
-    let idx = options.len();
-    options.push((node_id, disabled));
-
+  for (idx, (node_id, disabled)) in options.iter().enumerate() {
     if index
-      .node(node_id)
+      .node(*node_id)
       .and_then(|node| node.get_attribute_ref("selected"))
       .is_some()
     {
       last_selected_idx = Some(idx);
     }
 
-    if !disabled {
+    if !*disabled {
       if first_enabled_idx.is_none() {
         first_enabled_idx = Some(idx);
       }
@@ -1670,7 +1686,7 @@ impl InteractionEngine {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
         } else if index.node(target_id).is_some_and(is_select) {
           let snapshot = select_control_snapshot_from_box_tree(box_tree, target_id);
-          let computed_disabled = snapshot.as_ref().is_some_and(|(_, disabled)| *disabled);
+          let computed_disabled = snapshot.as_ref().is_some_and(|(_, disabled, _)| *disabled);
           if is_focusable_interactive_element(&index, target_id) && !computed_disabled {
             dom_changed |= self.set_focus(&mut index, Some(target_id), false);
           }
@@ -1679,34 +1695,23 @@ impl InteractionEngine {
 
           if !disabled {
             if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
-              if let Some((control, _)) = snapshot.as_ref() {
+              if let Some((control, _, style)) = snapshot.as_ref() {
                 dom_changed |= apply_select_listbox_click(
                   dom,
                   fragment_tree,
                   page_point,
                   target_id,
+                  hit.box_id,
+                  scroll,
                   control,
-                  hit.box_id,
-                  scroll,
-                );
-              } else {
-                // Unit tests can build simplified box trees without a `FormControl` snapshot. Fall
-                // back to a DOM-derived row model so listbox clicks still update `<option>` state.
-                dom_changed |= apply_select_listbox_click_dom_fallback(
-                  dom,
-                  &index,
-                  fragment_tree,
-                  page_point,
-                  target_id,
-                  hit.box_id,
-                  scroll,
+                  style,
                 );
               }
             }
           }
 
           if !disabled {
-            if let Some((control, _)) = snapshot.as_ref() {
+            if let Some((control, _, _)) = snapshot.as_ref() {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
                 action = InteractionAction::OpenSelectDropdown {
@@ -2007,9 +2012,6 @@ impl InteractionEngine {
       KeyAction::Space => {
         // Handled by `key_activate` (may trigger navigation).
       }
-      KeyAction::Tab | KeyAction::ShiftTab => {
-        unreachable!("handled above")
-      }
       KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
         if matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown) && index.node(focused).is_some_and(is_range_input)
         {
@@ -2040,37 +2042,29 @@ impl InteractionEngine {
           // Prefer the `BoxTree`'s `SelectControl` snapshot when available so keyboard navigation
           // matches what is painted (e.g. skipping `display:none` options). Fall back to DOM order
           // before the first render.
-          let mut options: Vec<(usize, bool)> = Vec::new(); // (option_node_id, disabled)
-          let mut computed_disabled = false;
-
-          if let Some(box_tree) = box_tree {
-            if let Some((control, disabled)) = select_control_snapshot_from_box_tree(box_tree, focused) {
-              computed_disabled = disabled;
-              if !computed_disabled {
-                for item in control.items.iter() {
-                  if let SelectItem::Option {
-                    node_id, disabled, ..
-                  } = item
-                  {
-                    options.push((*node_id, *disabled));
-                  }
-                }
+          let options: Vec<(usize, bool)> = if let Some(box_tree) = box_tree {
+            if let Some((control, computed_disabled, _)) =
+              select_control_snapshot_from_box_tree(box_tree, focused)
+            {
+              if computed_disabled {
+                return changed;
               }
+              control
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                  SelectItem::Option {
+                    node_id, disabled, ..
+                  } => Some((*node_id, *disabled)),
+                  _ => None,
+                })
+                .collect()
+            } else {
+              collect_select_option_nodes_dom(&index, focused)
             }
-          }
-
-          if computed_disabled {
-            return changed;
-          }
-
-          if options.is_empty() {
-            for row in collect_select_rows(&index, focused) {
-              let SelectRow::Option { node_id, disabled } = row else {
-                continue;
-              };
-              options.push((node_id, disabled));
-            }
-          }
+          } else {
+            collect_select_option_nodes_dom(&index, focused)
+          };
 
           if options.is_empty() {
             return changed;
@@ -2139,6 +2133,9 @@ impl InteractionEngine {
           let option_node_id = options[next_idx].0;
           changed |= dom_mutation::activate_select_option(dom, focused, option_node_id, false);
         }
+      }
+      KeyAction::Tab | KeyAction::ShiftTab => {
+        unreachable!("handled above")
       }
     }
 
