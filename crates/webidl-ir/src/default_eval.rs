@@ -547,13 +547,13 @@ fn convert_to_int(
 
   if ext.enforce_range {
     if x.is_nan() || x.is_infinite() {
-      return Err(WebIdlException::type_error(
+      return Err(WebIdlException::range_error(
         "EnforceRange integer default cannot be NaN/Infinity",
       ));
     }
     x = integer_part(x);
     if x < lower_bound || x > upper_bound {
-      return Err(WebIdlException::type_error(
+      return Err(WebIdlException::range_error(
         "integer default is outside EnforceRange bounds",
       ));
     }

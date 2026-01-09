@@ -40,11 +40,18 @@ pub enum WebIdlValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WebIdlException {
   TypeError { message: String },
+  RangeError { message: String },
 }
 
 impl WebIdlException {
   pub fn type_error(message: impl Into<String>) -> Self {
     WebIdlException::TypeError {
+      message: message.into(),
+    }
+  }
+
+  pub fn range_error(message: impl Into<String>) -> Self {
+    WebIdlException::RangeError {
       message: message.into(),
     }
   }
@@ -54,6 +61,7 @@ impl std::fmt::Display for WebIdlException {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
       WebIdlException::TypeError { message } => write!(f, "TypeError: {message}"),
+      WebIdlException::RangeError { message } => write!(f, "RangeError: {message}"),
     }
   }
 }

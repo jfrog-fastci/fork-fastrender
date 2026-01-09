@@ -220,7 +220,7 @@ fn enforce_range_integer_default_is_checked() {
   let dv = parse_default_value("200").unwrap();
   assert!(matches!(
     eval_default_value(&ty, &dv, &ctx),
-    Err(WebIdlException::TypeError { .. })
+    Err(WebIdlException::RangeError { .. })
   ));
 }
 

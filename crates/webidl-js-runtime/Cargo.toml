@@ -6,4 +6,4 @@ publish = false
 
 [dependencies]
 vm-js = { path = "../../engines/ecma-rs/vm-js" }
-
+webidl-ir = { path = "../webidl-ir" }

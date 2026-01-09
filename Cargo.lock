@@ -4379,6 +4379,7 @@ name = "webidl-js-runtime"
 version = "0.1.0"
 dependencies = [
  "vm-js",
+ "webidl-ir",
 ]
 
 [[package]]
