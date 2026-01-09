@@ -13,7 +13,7 @@ use fastrender::style::types::FontVariantPosition;
 use fastrender::style::types::NumericFigure;
 use fastrender::style::types::NumericFraction;
 use fastrender::style::types::NumericSpacing;
-use fastrender::style::types::{FontWeight, FontVariantAlternates};
+use fastrender::style::types::{FontVariantAlternateValue, FontVariantAlternates, FontWeight};
 use fastrender::style::types::{FontVariantEastAsian, FontVariantNumeric};
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -102,18 +102,27 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
     FontVariantAlternates {
       historical_forms: true,
       stylistic: None,
-      stylesets: vec![1, 2],
+      stylesets: vec![
+        FontVariantAlternateValue::Number(1),
+        FontVariantAlternateValue::Number(2),
+      ],
       character_variants: vec![],
-      swash: Some(3),
+      swash: Some(FontVariantAlternateValue::Number(3)),
       ornaments: None,
-      annotation: Some("Note".to_string()),
+      annotation: Some(FontVariantAlternateValue::Name("Note".to_string())),
     }
   );
-  assert_eq!(variant.styles.font_variant_position, FontVariantPosition::Sub);
+  assert_eq!(
+    variant.styles.font_variant_position,
+    FontVariantPosition::Sub
+  );
 
   let longhand = find_by_id(&styled, "longhand").expect("longhand element");
   assert_eq!(longhand.styles.font_variant, FontVariant::Normal);
-  assert_eq!(longhand.styles.font_variant_caps, FontVariantCaps::AllSmallCaps);
+  assert_eq!(
+    longhand.styles.font_variant_caps,
+    FontVariantCaps::AllSmallCaps
+  );
   assert_eq!(
     longhand.styles.font_variant_ligatures,
     FontVariantLigatures {
@@ -138,17 +147,20 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
       ruby: false,
     }
   );
-  assert_eq!(longhand.styles.font_variant_position, FontVariantPosition::Super);
+  assert_eq!(
+    longhand.styles.font_variant_position,
+    FontVariantPosition::Super
+  );
   assert_eq!(
     longhand.styles.font_variant_alternates,
     FontVariantAlternates {
       historical_forms: false,
-      stylistic: Some(4),
+      stylistic: Some(FontVariantAlternateValue::Number(4)),
       stylesets: vec![],
       character_variants: vec![],
       swash: None,
       ornaments: None,
-      annotation: Some("FooBar".to_string()),
+      annotation: Some(FontVariantAlternateValue::Name("FooBar".to_string())),
     }
   );
 
@@ -161,4 +173,3 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
   let stretch = find_by_id(&styled, "stretch").expect("stretch element");
   assert_eq!(stretch.styles.font_stretch, FontStretch::Condensed);
 }
-

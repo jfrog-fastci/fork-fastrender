@@ -49,6 +49,7 @@
 //! - HarfBuzz documentation: <https://harfbuzz.github.io/>
 //! - rustybuzz documentation: <https://docs.rs/rustybuzz/>
 
+use crate::css::types::FontFeatureValuesGroup;
 use crate::css::types::FontPaletteBase;
 use crate::error::Result;
 use crate::error::TextError;
@@ -64,6 +65,7 @@ use crate::style::types::FontSizeAdjust;
 use crate::style::types::FontSizeAdjustMetric;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::FontVariant;
+use crate::style::types::FontVariantAlternateValue;
 use crate::style::types::FontVariantCaps;
 use crate::style::types::FontVariantEmoji;
 use crate::style::types::FontVariantPosition;
@@ -90,6 +92,7 @@ use crate::text::font_fallback::GlyphFallbackCacheKey;
 use crate::text::font_loader::FontContext;
 use crate::text::script_fallback;
 use lru::LruCache;
+use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 use rustybuzz::Direction as HbDirection;
@@ -2324,8 +2327,8 @@ pub struct FontRun {
   pub vertical: bool,
 }
 
-/// Collects OpenType features from computed style.
-fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
+/// Collects OpenType features from computed style for a particular font family.
+fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Feature> {
   let mut features = Vec::new();
   let lig = style.font_variant_ligatures;
   let numeric = &style.font_variant_numeric;
@@ -2419,83 +2422,153 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
   if alternates.historical_forms {
     push_toggle(&mut features, *b"hist", true);
   }
-  if let Some(set) = alternates.stylistic {
+
+  let resolve_list = |group: FontFeatureValuesGroup, name: &str| {
+    style
+      .font_feature_values
+      .lookup(font_family, group, name)
+      .unwrap_or(&[])
+  };
+
+  let resolve_single =
+    |group: FontFeatureValuesGroup, name: &str| resolve_list(group, name).first().copied();
+
+  if let Some(set) = alternates.stylistic.as_ref() {
     // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.
     let tag = Tag::from_bytes(b"salt");
     features.retain(|f| f.tag != tag);
-    features.push(Feature {
-      tag,
-      value: set as u32,
-      start: 0,
-      end: u32::MAX,
-    });
-  }
-  for set in &alternates.stylesets {
-    if let Some(tag) = number_tag(b"ss", *set) {
-      push_toggle(&mut features, tag, true);
-    }
-  }
-  for cv in &alternates.character_variants {
-    if let Some(tag) = number_tag(b"cv", *cv) {
-      let tag = Tag::from_bytes(&tag);
+
+    let value = match set {
+      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Name(name) => {
+        resolve_single(FontFeatureValuesGroup::Stylistic, name.as_str())
+      }
+    };
+    if let Some(value) = value {
       features.push(Feature {
         tag,
-        value: 1,
+        value: value as u32,
         start: 0,
         end: u32::MAX,
       });
     }
   }
-  if let Some(swash) = alternates.swash {
+
+  for set in &alternates.stylesets {
+    match set {
+      FontVariantAlternateValue::Number(idx) => {
+        if let Some(tag) = number_tag(b"ss", *idx) {
+          push_toggle(&mut features, tag, true);
+        }
+      }
+      FontVariantAlternateValue::Name(name) => {
+        for &idx in resolve_list(FontFeatureValuesGroup::Styleset, name.as_str()) {
+          if let Some(tag) = number_tag(b"ss", idx) {
+            push_toggle(&mut features, tag, true);
+          }
+        }
+      }
+    }
+  }
+
+  for cv in &alternates.character_variants {
+    match cv {
+      FontVariantAlternateValue::Number(idx) => {
+        if let Some(tag) = number_tag(b"cv", *idx) {
+          let tag = Tag::from_bytes(&tag);
+          features.push(Feature {
+            tag,
+            value: 1,
+            start: 0,
+            end: u32::MAX,
+          });
+        }
+      }
+      FontVariantAlternateValue::Name(name) => {
+        for &idx in resolve_list(FontFeatureValuesGroup::CharacterVariant, name.as_str()) {
+          if let Some(tag) = number_tag(b"cv", idx) {
+            let tag = Tag::from_bytes(&tag);
+            features.push(Feature {
+              tag,
+              value: 1,
+              start: 0,
+              end: u32::MAX,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if let Some(swash) = alternates.swash.as_ref() {
     // CSS Fonts 4 `swash(<feature-value-name>)` maps to both `swsh <feature-index>` and
     // `cswh <feature-index>`.
     let swsh_tag = Tag::from_bytes(b"swsh");
     let cswh_tag = Tag::from_bytes(b"cswh");
     features.retain(|f| f.tag != swsh_tag && f.tag != cswh_tag);
-    let value = swash as u32;
-    features.push(Feature {
-      tag: swsh_tag,
-      value,
-      start: 0,
-      end: u32::MAX,
-    });
-    features.push(Feature {
-      tag: cswh_tag,
-      value,
-      start: 0,
-      end: u32::MAX,
-    });
+
+    let value = match swash {
+      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Name(name) => {
+        resolve_single(FontFeatureValuesGroup::Swash, name.as_str())
+      }
+    };
+    if let Some(value) = value {
+      let value = value as u32;
+      features.push(Feature {
+        tag: swsh_tag,
+        value,
+        start: 0,
+        end: u32::MAX,
+      });
+      features.push(Feature {
+        tag: cswh_tag,
+        value,
+        start: 0,
+        end: u32::MAX,
+      });
+    }
   }
-  if let Some(orn) = alternates.ornaments {
+
+  if let Some(orn) = alternates.ornaments.as_ref() {
     let tag = Tag::from_bytes(b"ornm");
     features.retain(|f| f.tag != tag);
-    features.push(Feature {
-      tag,
-      value: orn as u32,
-      start: 0,
-      end: u32::MAX,
-    });
+
+    let value = match orn {
+      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Name(name) => {
+        resolve_single(FontFeatureValuesGroup::Ornaments, name)
+      }
+    };
+    if let Some(value) = value {
+      features.push(Feature {
+        tag,
+        value: value as u32,
+        start: 0,
+        end: u32::MAX,
+      });
+    }
   }
-  if let Some(annotation) = alternates.annotation.as_deref() {
+
+  if let Some(annotation) = alternates.annotation.as_ref() {
     // CSS `annotation()` maps to the OpenType `nalt` feature.
-    //
-    // The argument can be a numeric value or a named feature-value from `@font-feature-values`.
-    // We don't support named lookups yet, so fall back to enabling `nalt` with value 1.
     let tag = Tag::from_bytes(b"nalt");
     features.retain(|f| f.tag != tag);
-    let value = annotation
-      .trim()
-      .parse::<u8>()
-      .ok()
-      .filter(|n| *n > 0 && *n <= 99)
-      .map(|n| n as u32)
-      .unwrap_or(1);
-    features.push(Feature {
-      tag,
-      value,
-      start: 0,
-      end: u32::MAX,
-    });
+
+    let value = match annotation {
+      FontVariantAlternateValue::Number(v) => Some(*v),
+      FontVariantAlternateValue::Name(name) => {
+        resolve_single(FontFeatureValuesGroup::Annotation, name)
+      }
+    };
+    if let Some(value) = value {
+      features.push(Feature {
+        tag,
+        value: value as u32,
+        start: 0,
+        end: u32::MAX,
+      });
+    }
   }
 
   match style.font_kerning {
@@ -3061,7 +3134,23 @@ fn assign_fonts_internal(
   let track_last_resort_fallbacks =
     text_diagnostics_enabled() || text_diagnostics_verbose_logging();
 
-  let features: Arc<[Feature]> = collect_opentype_features(style).into_boxed_slice().into();
+  fn style_features_for_font(
+    style: &ComputedStyle,
+    font: &LoadedFont,
+    cache: &mut FxHashMap<String, Arc<[Feature]>>,
+  ) -> Arc<[Feature]> {
+    let key = font.family.to_ascii_lowercase();
+    if let Some(hit) = cache.get(&key) {
+      return Arc::clone(hit);
+    }
+    let features: Arc<[Feature]> = collect_opentype_features(style, &font.family)
+      .into_boxed_slice()
+      .into();
+    cache.insert(key, Arc::clone(&features));
+    features
+  }
+
+  let mut feature_cache: FxHashMap<String, Arc<[Feature]>> = FxHashMap::default();
   let authored_variations = crate::text::variations::authored_variations_from_style(style);
   let preferred_aspect = preferred_font_aspect(style, font_context);
   let (font_style, requested_oblique) = match style.font_style {
@@ -3248,6 +3337,8 @@ fn assign_fonts_internal(
             if style.font_size > 0.0 {
               synthetic_bold *= used_font_size / style.font_size;
             }
+            let style_features =
+              style_features_for_font(style, font_arc.as_ref(), &mut feature_cache);
             push_font_run(
               &mut font_runs,
               run,
@@ -3258,7 +3349,7 @@ fn assign_fonts_internal(
               synthetic_oblique,
               used_font_size,
               0.0,
-              &features,
+              &style_features,
               &authored_variations,
               style,
             );
@@ -3322,6 +3413,8 @@ fn assign_fonts_internal(
               if style.font_size > 0.0 {
                 synthetic_bold *= used_font_size / style.font_size;
               }
+              let style_features =
+                style_features_for_font(style, font_arc.as_ref(), &mut feature_cache);
               push_font_run(
                 &mut font_runs,
                 run,
@@ -3332,7 +3425,7 @@ fn assign_fonts_internal(
                 synthetic_oblique,
                 used_font_size,
                 0.0,
-                &features,
+                &style_features,
                 &authored_variations,
                 style,
               );
@@ -3433,6 +3526,8 @@ fn assign_fonts_internal(
           {
             // Switch back to the run's primary font without consulting the fallback cache.
             if let Some(cur) = current.take() {
+              let style_features =
+                style_features_for_font(style, cur.font.as_ref(), &mut feature_cache);
               push_font_run(
                 &mut font_runs,
                 run,
@@ -3443,7 +3538,7 @@ fn assign_fonts_internal(
                 cur.synthetic_oblique,
                 cur.font_size,
                 cur.baseline_shift,
-                &features,
+                &style_features,
                 &authored_variations,
                 style,
               );
@@ -3793,6 +3888,7 @@ fn assign_fonts_internal(
       }
 
       if let Some(cur) = current.take() {
+        let style_features = style_features_for_font(style, cur.font.as_ref(), &mut feature_cache);
         push_font_run(
           &mut font_runs,
           run,
@@ -3803,7 +3899,7 @@ fn assign_fonts_internal(
           cur.synthetic_oblique,
           cur.font_size,
           cur.baseline_shift,
-          &features,
+          &style_features,
           &authored_variations,
           style,
         );
@@ -3830,6 +3926,7 @@ fn assign_fonts_internal(
     }
 
     if let Some(cur) = current.take() {
+      let style_features = style_features_for_font(style, cur.font.as_ref(), &mut feature_cache);
       push_font_run(
         &mut font_runs,
         run,
@@ -3840,7 +3937,7 @@ fn assign_fonts_internal(
         cur.synthetic_oblique,
         cur.font_size,
         cur.baseline_shift,
-        &features,
+        &style_features,
         &authored_variations,
         style,
       );
@@ -5760,6 +5857,7 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
     }
   }
   (Arc::as_ptr(&style.font_palettes) as usize).hash(&mut hasher);
+  (Arc::as_ptr(&style.font_feature_values) as usize).hash(&mut hasher);
 
   std::mem::discriminant(&style.font_variant).hash(&mut hasher);
   std::mem::discriminant(&style.font_variant_caps).hash(&mut hasher);
@@ -6762,6 +6860,7 @@ mod tests {
   use crate::style::types::FontFeatureSetting;
   use crate::style::types::FontKerning;
   use crate::style::types::FontStretch;
+  use crate::style::types::FontVariantAlternateValue;
   use crate::style::types::FontVariantLigatures;
   use crate::style::types::FontVariationSetting;
   use crate::style::types::FontWeight;
@@ -7985,7 +8084,9 @@ mod tests {
     let base_hash = shaping_style_hash(&base);
 
     let mut with_character_variants = base.clone();
-    with_character_variants.font_variant_alternates.character_variants = vec![1];
+    with_character_variants
+      .font_variant_alternates
+      .character_variants = vec![FontVariantAlternateValue::Number(1)];
     assert_ne!(
       base_hash,
       shaping_style_hash(&with_character_variants),
@@ -7993,7 +8094,7 @@ mod tests {
     );
 
     let mut with_swash = base.clone();
-    with_swash.font_variant_alternates.swash = Some(1);
+    with_swash.font_variant_alternates.swash = Some(FontVariantAlternateValue::Number(1));
     assert_ne!(
       base_hash,
       shaping_style_hash(&with_swash),
@@ -8001,7 +8102,7 @@ mod tests {
     );
 
     let mut with_ornaments = base.clone();
-    with_ornaments.font_variant_alternates.ornaments = Some(1);
+    with_ornaments.font_variant_alternates.ornaments = Some(FontVariantAlternateValue::Number(1));
     assert_ne!(
       base_hash,
       shaping_style_hash(&with_ornaments),
@@ -8009,7 +8110,8 @@ mod tests {
     );
 
     let mut with_annotation = base.clone();
-    with_annotation.font_variant_alternates.annotation = Some("test".to_string());
+    with_annotation.font_variant_alternates.annotation =
+      Some(FontVariantAlternateValue::Name("test".to_string()));
     assert_ne!(
       base_hash,
       shaping_style_hash(&with_annotation),
@@ -8046,8 +8148,14 @@ mod tests {
         "{label}: initial shape should call shape_font_run"
       );
       let stats_after_first = pipeline.cache_stats();
-      assert_eq!(stats_after_first.misses, 1, "{label}: expected miss for first shape");
-      assert_eq!(stats_after_first.hits, 0, "{label}: expected no hits for first shape");
+      assert_eq!(
+        stats_after_first.misses, 1,
+        "{label}: expected miss for first shape"
+      );
+      assert_eq!(
+        stats_after_first.hits, 0,
+        "{label}: expected no hits for first shape"
+      );
 
       let mut variant_style = base_style.clone();
       mutate(&mut variant_style);
@@ -8082,22 +8190,21 @@ mod tests {
       text,
       &style,
       "character_variants",
-      |style| style.font_variant_alternates.character_variants = vec![1],
+      |style| {
+        style.font_variant_alternates.character_variants =
+          vec![FontVariantAlternateValue::Number(1)];
+      },
     );
     assert_cache_miss_for_variant(&pipeline, &ctx, text, &style, "swash", |style| {
-      style.font_variant_alternates.swash = Some(1);
+      style.font_variant_alternates.swash = Some(FontVariantAlternateValue::Number(1));
     });
     assert_cache_miss_for_variant(&pipeline, &ctx, text, &style, "ornaments", |style| {
-      style.font_variant_alternates.ornaments = Some(1);
+      style.font_variant_alternates.ornaments = Some(FontVariantAlternateValue::Number(1));
     });
-    assert_cache_miss_for_variant(
-      &pipeline,
-      &ctx,
-      text,
-      &style,
-      "annotation",
-      |style| style.font_variant_alternates.annotation = Some("test".to_string()),
-    );
+    assert_cache_miss_for_variant(&pipeline, &ctx, text, &style, "annotation", |style| {
+      style.font_variant_alternates.annotation =
+        Some(FontVariantAlternateValue::Name("test".to_string()))
+    });
   }
 
   #[test]
@@ -10005,7 +10112,7 @@ mod tests {
     }]
     .into();
 
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
     for f in feats {
       seen.insert(f.tag.to_bytes(), f.value);
@@ -10030,7 +10137,7 @@ mod tests {
     style.font_variant_east_asian.ruby = true;
     style.font_variant_position = FontVariantPosition::Super;
 
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
     for f in feats {
       seen.insert(f.tag.to_bytes(), f.value);
@@ -10052,7 +10159,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_variant_caps = FontVariantCaps::AllSmallCaps;
 
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
     for f in feats {
       seen.insert(f.tag.to_bytes(), f.value);
@@ -10061,7 +10168,7 @@ mod tests {
     assert_eq!(seen.get(b"c2sc"), Some(&1));
 
     style.font_variant_caps = FontVariantCaps::AllPetiteCaps;
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
     for f in feats {
       seen.insert(f.tag.to_bytes(), f.value);
@@ -10070,7 +10177,7 @@ mod tests {
     assert_eq!(seen.get(b"c2pc"), Some(&1));
 
     style.font_variant_caps = FontVariantCaps::Unicase;
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     assert!(feats.iter().any(|f| f.tag.to_bytes() == *b"unic"));
   }
 
@@ -10078,14 +10185,17 @@ mod tests {
   fn collect_features_includes_alternates() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.historical_forms = true;
-    style.font_variant_alternates.stylistic = Some(3);
-    style.font_variant_alternates.stylesets = vec![1, 2];
-    style.font_variant_alternates.character_variants = vec![4];
-    style.font_variant_alternates.swash = Some(1);
-    style.font_variant_alternates.ornaments = Some(2);
-    style.font_variant_alternates.annotation = Some("note".to_string());
+    style.font_variant_alternates.stylistic = Some(FontVariantAlternateValue::Number(3));
+    style.font_variant_alternates.stylesets = vec![
+      FontVariantAlternateValue::Number(1),
+      FontVariantAlternateValue::Number(2),
+    ];
+    style.font_variant_alternates.character_variants = vec![FontVariantAlternateValue::Number(4)];
+    style.font_variant_alternates.swash = Some(FontVariantAlternateValue::Number(1));
+    style.font_variant_alternates.ornaments = Some(FontVariantAlternateValue::Number(2));
+    style.font_variant_alternates.annotation = Some(FontVariantAlternateValue::Number(1));
 
-    let feats = collect_opentype_features(&style);
+    let feats = collect_opentype_features(&style, "serif");
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
     for f in feats {
       seen.insert(f.tag.to_bytes(), f.value);

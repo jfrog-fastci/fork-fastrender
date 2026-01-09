@@ -31,8 +31,8 @@ use crate::style::grid::parse_subgrid_line_names;
 use crate::style::grid::parse_track_list;
 use crate::style::grid::ParsedGridTemplate;
 use crate::style::grid::ParsedTracks;
-use crate::style::inline_axis_positive;
 use crate::style::inline_axis_is_horizontal;
+use crate::style::inline_axis_positive;
 use crate::style::position::Position;
 use crate::style::string_set::parse_string_set_value;
 use crate::style::types::*;
@@ -1355,7 +1355,11 @@ fn parse_timeline_axis_list(raw: &str) -> Option<Vec<TimelineAxis>> {
     }
     axes.push(axis);
   }
-  if axes.is_empty() { None } else { Some(axes) }
+  if axes.is_empty() {
+    None
+  } else {
+    Some(axes)
+  }
 }
 
 fn parse_view_timeline_list(raw: &str) -> Option<Vec<ViewTimeline>> {
@@ -1476,7 +1480,11 @@ fn parse_view_timeline_inset_list(raw: &str) -> Option<Vec<Option<ViewTimelineIn
     };
     insets.push(inset);
   }
-  if insets.is_empty() { None } else { Some(insets) }
+  if insets.is_empty() {
+    None
+  } else {
+    Some(insets)
+  }
 }
 
 fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
@@ -1717,11 +1725,8 @@ fn parse_animation_range_list(raw: &str) -> Option<Vec<AnimationRange>> {
       return None;
     }
 
-    let (start, consumed_start) = parse_animation_range_offset(
-      &tokens,
-      RangeOffset::Progress(0.0),
-      Length::px(0.0),
-    )?;
+    let (start, consumed_start) =
+      parse_animation_range_offset(&tokens, RangeOffset::Progress(0.0), Length::px(0.0))?;
     let remaining = &tokens[consumed_start..];
     let (end, consumed_end) = if remaining.is_empty() {
       match start {
@@ -1742,7 +1747,11 @@ fn parse_animation_range_list(raw: &str) -> Option<Vec<AnimationRange>> {
     }
     ranges.push(AnimationRange { start, end });
   }
-  if ranges.is_empty() { None } else { Some(ranges) }
+  if ranges.is_empty() {
+    None
+  } else {
+    Some(ranges)
+  }
 }
 
 fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Option<Vec<RangeOffset>> {
@@ -1775,7 +1784,11 @@ fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Option<
     offsets.push(offset);
   }
 
-  if offsets.is_empty() { None } else { Some(offsets) }
+  if offsets.is_empty() {
+    None
+  } else {
+    Some(offsets)
+  }
 }
 
 fn pick_or_last<T: Clone>(list: &[T], idx: usize, default: T) -> T {
@@ -3472,8 +3485,8 @@ fn parse_transition_shorthand(
             invalid = true;
             break;
           }
-          let canonical =
-            crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
+          let canonical = crate::css::properties::vendor_prefixed_property_alias(&lower)
+            .unwrap_or(lower.as_str());
           property = Some(match canonical {
             "all" => TransitionProperty::All,
             "none" => TransitionProperty::None,
@@ -6524,7 +6537,9 @@ pub(crate) fn apply_property_from_source(
       styles.text_decoration_skip_spaces = source.text_decoration_skip_spaces;
       styles.text_decoration_skip_ink = source.text_decoration_skip_ink;
     }
-    "text-decoration-skip-self" => styles.text_decoration_skip_self = source.text_decoration_skip_self,
+    "text-decoration-skip-self" => {
+      styles.text_decoration_skip_self = source.text_decoration_skip_self
+    }
     "text-decoration-skip-box" => styles.text_decoration_skip_box = source.text_decoration_skip_box,
     "text-decoration-skip-spaces" => {
       styles.text_decoration_skip_spaces = source.text_decoration_skip_spaces
@@ -7293,6 +7308,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     return None;
   }
 
+  use crate::style::types::FontVariantAlternateValue;
+
   let mut alt = FontVariantAlternates::default();
   let mut seen_stylistic = false;
   let mut seen_swash = false;
@@ -7304,6 +7321,19 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       .parse::<u8>()
       .ok()
       .filter(|n| *n > 0 && *n <= 99)
+  };
+
+  let parse_value = |s: &str| {
+    if let Some(n) = parse_num(s) {
+      Some(FontVariantAlternateValue::Number(n))
+    } else {
+      let name = trim_ascii_whitespace(s);
+      if name.is_empty() {
+        None
+      } else {
+        Some(FontVariantAlternateValue::Name(name.to_string()))
+      }
+    }
   };
 
   fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -7322,29 +7352,29 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "stylistic(")
-      .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "stylistic(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_stylistic {
         return None;
       }
-      if let Some(n) = parse_num(inner) {
-        alt.stylistic = Some(n);
+      if let Some(value) = parse_value(inner) {
+        alt.stylistic = Some(value);
         seen_stylistic = true;
         continue;
       }
       return None;
     }
 
-      if let Some(inner) = strip_prefix_ignore_ascii_case(token, "styleset(")
-        .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "styleset(").and_then(|s| s.strip_suffix(')'))
+    {
+      for part in inner
+        .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
+        .filter(|s| !s.is_empty())
       {
-        for part in inner
-          .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
-          .filter(|s| !s.is_empty())
-        {
-          if let Some(n) = parse_num(part) {
-            alt.stylesets.push(n);
+        if let Some(value) = parse_value(part) {
+          alt.stylesets.push(value);
         } else {
           return None;
         }
@@ -7352,15 +7382,15 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-      if let Some(inner) = strip_prefix_ignore_ascii_case(token, "character-variant(")
-        .and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "character-variant(").and_then(|s| s.strip_suffix(')'))
+    {
+      for part in inner
+        .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
+        .filter(|s| !s.is_empty())
       {
-        for part in inner
-          .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
-          .filter(|s| !s.is_empty())
-        {
-          if let Some(n) = parse_num(part) {
-            alt.character_variants.push(n);
+        if let Some(value) = parse_value(part) {
+          alt.character_variants.push(value);
         } else {
           return None;
         }
@@ -7368,13 +7398,14 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       continue;
     }
 
-    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "swash(").and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) =
+      strip_prefix_ignore_ascii_case(token, "swash(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_swash {
         return None;
       }
-      if let Some(n) = parse_num(inner) {
-        alt.swash = Some(n);
+      if let Some(value) = parse_value(inner) {
+        alt.swash = Some(value);
         seen_swash = true;
         continue;
       }
@@ -7387,8 +7418,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       if seen_ornaments {
         return None;
       }
-      if let Some(n) = parse_num(inner) {
-        alt.ornaments = Some(n);
+      if let Some(value) = parse_value(inner) {
+        alt.ornaments = Some(value);
         seen_ornaments = true;
         continue;
       }
@@ -7401,9 +7432,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       if seen_annotation {
         return None;
       }
-      let inner = trim_ascii_whitespace(inner);
-      if !inner.is_empty() {
-        alt.annotation = Some(inner.to_string());
+      if let Some(value) = parse_value(inner) {
+        alt.annotation = Some(value);
         seen_annotation = true;
         continue;
       }
@@ -7625,8 +7655,10 @@ impl ComputedStyle {
   pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle) {
     // Start from the current parent store (animations may have mutated it).
     let mut store = parent_styles.custom_properties.clone();
-    let registry_changed =
-      !Arc::ptr_eq(&self.custom_property_registry, &parent_styles.custom_property_registry);
+    let registry_changed = !Arc::ptr_eq(
+      &self.custom_property_registry,
+      &parent_styles.custom_property_registry,
+    );
 
     // When a node inherits from a parent in a different tree scope (e.g. slotted light-DOM nodes
     // inheriting from <slot> inside a shadow root), the inherited store may contain typed values
@@ -8552,7 +8584,7 @@ fn apply_declaration_with_base_internal_with_order(
       }
     };
 
-      match value {
+    match value {
       PropertyValue::Keyword(kw) => {
         let trimmed = trim_ascii_whitespace(kw);
         if trimmed.is_empty() {
@@ -8625,7 +8657,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
   };
 
-    #[deny(unreachable_patterns)]
+  #[deny(unreachable_patterns)]
   match property {
     "all" => {
       let Some(global) = global_keyword(resolved_value) else {
@@ -11017,56 +11049,56 @@ fn apply_declaration_with_base_internal_with_order(
           styles.grid_column_start = n;
         } else {
           // Store in grid_column_raw for deferred resolution
-           let current_end = styles
-             .grid_column_raw
-             .as_ref()
-             .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
-             .unwrap_or("auto");
-           styles.grid_column_raw = Some(format!("{} / {}", kw, current_end));
-         }
-       }
+          let current_end = styles
+            .grid_column_raw
+            .as_ref()
+            .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+            .unwrap_or("auto");
+          styles.grid_column_raw = Some(format!("{} / {}", kw, current_end));
+        }
+      }
     }
     "grid-column-end" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_column_end = n;
         } else {
-           let current_start = styles
-             .grid_column_raw
-             .as_ref()
-             .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
-             .unwrap_or("auto");
-           styles.grid_column_raw = Some(format!("{} / {}", current_start, kw));
-         }
-       }
+          let current_start = styles
+            .grid_column_raw
+            .as_ref()
+            .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+            .unwrap_or("auto");
+          styles.grid_column_raw = Some(format!("{} / {}", current_start, kw));
+        }
+      }
     }
     "grid-row-start" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_row_start = n;
         } else {
-           let current_end = styles
-             .grid_row_raw
-             .as_ref()
-             .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
-             .unwrap_or("auto");
-           styles.grid_row_raw = Some(format!("{} / {}", kw, current_end));
-         }
-       }
+          let current_end = styles
+            .grid_row_raw
+            .as_ref()
+            .and_then(|s| s.split_once('/').map(|(_, e)| trim_ascii_whitespace(e)))
+            .unwrap_or("auto");
+          styles.grid_row_raw = Some(format!("{} / {}", kw, current_end));
+        }
+      }
     }
     "grid-row-end" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if let Ok(n) = kw.parse::<i32>() {
           styles.grid_row_end = n;
         } else {
-           let current_start = styles
-             .grid_row_raw
-             .as_ref()
-             .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
-             .unwrap_or("auto");
-           styles.grid_row_raw = Some(format!("{} / {}", current_start, kw));
-         }
-       }
+          let current_start = styles
+            .grid_row_raw
+            .as_ref()
+            .and_then(|s| s.split_once('/').map(|(s, _)| trim_ascii_whitespace(s)))
+            .unwrap_or("auto");
+          styles.grid_row_raw = Some(format!("{} / {}", current_start, kw));
+        }
+      }
     }
     "grid-area" => {
       if let PropertyValue::Keyword(kw) | PropertyValue::String(kw) = resolved_value {
@@ -12817,10 +12849,7 @@ fn apply_declaration_with_base_internal_with_order(
         .resize_with(target_len, ScrollTimeline::default);
       let fallback = names.last().cloned().unwrap_or(None);
       for idx in 0..target_len {
-        let name = names
-          .get(idx)
-          .cloned()
-          .unwrap_or_else(|| fallback.clone());
+        let name = names.get(idx).cloned().unwrap_or_else(|| fallback.clone());
         styles.scroll_timelines[idx].name = name;
       }
     }
@@ -12857,13 +12886,12 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
       let target_len = styles.view_timelines.len().max(names.len());
-      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      styles
+        .view_timelines
+        .resize_with(target_len, ViewTimeline::default);
       let fallback = names.last().cloned().unwrap_or(None);
       for idx in 0..target_len {
-        let name = names
-          .get(idx)
-          .cloned()
-          .unwrap_or_else(|| fallback.clone());
+        let name = names.get(idx).cloned().unwrap_or_else(|| fallback.clone());
         styles.view_timelines[idx].name = name;
       }
     }
@@ -12873,7 +12901,9 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       };
       let target_len = styles.view_timelines.len().max(axes.len());
-      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      styles
+        .view_timelines
+        .resize_with(target_len, ViewTimeline::default);
       let fallback = *axes.last().unwrap_or(&TimelineAxis::Block);
       for idx in 0..target_len {
         let axis = axes.get(idx).copied().unwrap_or(fallback);
@@ -12886,7 +12916,9 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       };
       let target_len = styles.view_timelines.len().max(insets.len());
-      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      styles
+        .view_timelines
+        .resize_with(target_len, ViewTimeline::default);
       let fallback = insets.last().copied().unwrap_or(None);
       for idx in 0..target_len {
         let inset = insets.get(idx).copied().unwrap_or(fallback);
@@ -12923,7 +12955,8 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "animation-range-end" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      let Some(end_offsets) = parse_animation_range_offset_list(css_text, RangeOffset::Progress(1.0))
+      let Some(end_offsets) =
+        parse_animation_range_offset_list(css_text, RangeOffset::Progress(1.0))
       else {
         return;
       };
@@ -13043,7 +13076,8 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "transition" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      if let Some((props, durations, delays, timings, behaviors)) = parse_transition_shorthand(css_text)
+      if let Some((props, durations, delays, timings, behaviors)) =
+        parse_transition_shorthand(css_text)
       {
         styles.transition_properties = props.into();
         styles.transition_durations = durations.into();
@@ -14870,7 +14904,9 @@ fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> 
             // Negative grow/shrink values make the declaration invalid.
             return None;
           }
-          PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") || kw.eq_ignore_ascii_case("content") => {
+          PropertyValue::Keyword(kw)
+            if kw.eq_ignore_ascii_case("auto") || kw.eq_ignore_ascii_case("content") =>
+          {
             if basis.is_none() {
               basis = Some(if kw.eq_ignore_ascii_case("auto") {
                 FlexBasis::Auto
@@ -15428,7 +15464,9 @@ fn parse_border_image_outset_list(values: &[PropertyValue]) -> Option<BorderImag
     match v {
       PropertyValue::Number(n) if *n >= 0.0 => outsets.push(BorderImageOutsetValue::Number(*n)),
       PropertyValue::Length(len)
-        if len.value >= 0.0 && !len.unit.is_percentage() && !len.calc.is_some_and(|calc| calc.has_percentage()) =>
+        if len.value >= 0.0
+          && !len.unit.is_percentage()
+          && !len.calc.is_some_and(|calc| calc.has_percentage()) =>
       {
         outsets.push(BorderImageOutsetValue::Length(*len))
       }
@@ -15518,8 +15556,7 @@ fn parse_border_image_shorthand(value: &PropertyValue) -> Option<BorderImage> {
     )
   };
 
-  let is_fill_keyword =
-    |token: &PropertyValue| matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"));
+  let is_fill_keyword = |token: &PropertyValue| matches!(token, PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("fill"));
 
   let is_slice_value = |token: &PropertyValue| -> bool {
     match token {
@@ -16054,49 +16091,55 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
       let b = parts[1];
 
       match (a, b) {
-        (Part::Keyword(kind_a, kw_a), Part::Keyword(kind_b, kw_b)) => {
-          match (kind_a, kind_b) {
-            (AxisKind::Horizontal, AxisKind::Vertical) => {
-              x = Some(AxisPos {
-                align: kw_a,
-                offset: None,
-              });
-              y = Some(AxisPos {
-                align: kw_b,
-                offset: None,
-              });
-            }
-            (AxisKind::Vertical, AxisKind::Horizontal) => {
-              x = Some(AxisPos {
-                align: kw_b,
-                offset: None,
-              });
-              y = Some(AxisPos {
-                align: kw_a,
-                offset: None,
-              });
-            }
-            (AxisKind::Either, AxisKind::Horizontal) | (AxisKind::Horizontal, AxisKind::Either) => {
-              x = Some(AxisPos {
-                align: if kind_a == AxisKind::Horizontal { kw_a } else { kw_b },
-                offset: None,
-              });
-              y = Some(default);
-            }
-            (AxisKind::Either, AxisKind::Vertical) | (AxisKind::Vertical, AxisKind::Either) => {
-              x = Some(default);
-              y = Some(AxisPos {
-                align: if kind_a == AxisKind::Vertical { kw_a } else { kw_b },
-                offset: None,
-              });
-            }
-            (AxisKind::Either, AxisKind::Either) => {
-              x = Some(default);
-              y = Some(default);
-            }
-            _ => {}
+        (Part::Keyword(kind_a, kw_a), Part::Keyword(kind_b, kw_b)) => match (kind_a, kind_b) {
+          (AxisKind::Horizontal, AxisKind::Vertical) => {
+            x = Some(AxisPos {
+              align: kw_a,
+              offset: None,
+            });
+            y = Some(AxisPos {
+              align: kw_b,
+              offset: None,
+            });
           }
-        }
+          (AxisKind::Vertical, AxisKind::Horizontal) => {
+            x = Some(AxisPos {
+              align: kw_b,
+              offset: None,
+            });
+            y = Some(AxisPos {
+              align: kw_a,
+              offset: None,
+            });
+          }
+          (AxisKind::Either, AxisKind::Horizontal) | (AxisKind::Horizontal, AxisKind::Either) => {
+            x = Some(AxisPos {
+              align: if kind_a == AxisKind::Horizontal {
+                kw_a
+              } else {
+                kw_b
+              },
+              offset: None,
+            });
+            y = Some(default);
+          }
+          (AxisKind::Either, AxisKind::Vertical) | (AxisKind::Vertical, AxisKind::Either) => {
+            x = Some(default);
+            y = Some(AxisPos {
+              align: if kind_a == AxisKind::Vertical {
+                kw_a
+              } else {
+                kw_b
+              },
+              offset: None,
+            });
+          }
+          (AxisKind::Either, AxisKind::Either) => {
+            x = Some(default);
+            y = Some(default);
+          }
+          _ => {}
+        },
         (Part::Keyword(AxisKind::Vertical, kw), Part::Offset(off)) => {
           y = Some(AxisPos {
             align: kw,
@@ -16190,11 +16233,8 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
             }
           },
         }
-      } else if let (
-        Part::Keyword(kind_a, kw_a),
-        Part::Keyword(kind_b, kw_b),
-        Part::Offset(off),
-      ) = (a, b, c)
+      } else if let (Part::Keyword(kind_a, kw_a), Part::Keyword(kind_b, kw_b), Part::Offset(off)) =
+        (a, b, c)
       {
         // `<edge> <other-axis-keyword> <offset>` forms where the offset follows the second keyword.
         match kind_b {
@@ -16345,7 +16385,9 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
 
 pub fn parse_background_size_component(value: &PropertyValue) -> Option<BackgroundSizeComponent> {
   match value {
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => Some(BackgroundSizeComponent::Auto),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
+      Some(BackgroundSizeComponent::Auto)
+    }
     PropertyValue::Length(len) => Some(BackgroundSizeComponent::Length(*len)),
     PropertyValue::Number(n) if *n == 0.0 => Some(BackgroundSizeComponent::Length(Length::px(0.0))),
     PropertyValue::Percentage(p) => Some(BackgroundSizeComponent::Length(Length::percent(*p))),
@@ -16369,17 +16411,15 @@ fn parse_background_size(value: &PropertyValue) -> Option<BackgroundSize> {
         None
       }
     }
-    PropertyValue::Multiple(values) => {
-      match values.len() {
-        0 => None,
-        1 => parse_background_size(&values[0]),
-        2 => Some(BackgroundSize::Explicit(
-          parse_background_size_component(&values[0])?,
-          parse_background_size_component(&values[1])?,
-        )),
-        _ => None,
-      }
-    }
+    PropertyValue::Multiple(values) => match values.len() {
+      0 => None,
+      1 => parse_background_size(&values[0]),
+      2 => Some(BackgroundSize::Explicit(
+        parse_background_size_component(&values[0])?,
+        parse_background_size_component(&values[1])?,
+      )),
+      _ => None,
+    },
     _ => parse_background_size_component(value)
       .map(|c| BackgroundSize::Explicit(c, BackgroundSizeComponent::Auto)),
   }
@@ -17118,9 +17158,7 @@ fn parse_container_names(value: &PropertyValue) -> Option<Vec<String>> {
   parse_container_names_from_str(text)
 }
 
-fn parse_container_shorthand(
-  value: &PropertyValue,
-) -> Option<(Vec<String>, ContainerType)> {
+fn parse_container_shorthand(value: &PropertyValue) -> Option<(Vec<String>, ContainerType)> {
   let PropertyValue::Keyword(text) = value else {
     return None;
   };
@@ -17497,7 +17535,8 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
         //
         // This mirrors how the parser handles vendor-prefixed properties in declaration names and
         // avoids needing to list prefixed spellings in will-change trigger tables.
-        let canonical = crate::css::properties::vendor_prefixed_property_alias(other).unwrap_or(other);
+        let canonical =
+          crate::css::properties::vendor_prefixed_property_alias(other).unwrap_or(other);
         hints.push(WillChangeHint::Property(canonical.to_string()))
       }
     }
@@ -19843,7 +19882,9 @@ fn parse_text_emphasis_style(value: &PropertyValue) -> Option<TextEmphasisStyle>
       }
 
       if let Some(string) = string {
-        return tokens.is_empty().then_some(TextEmphasisStyle::String(string));
+        return tokens
+          .is_empty()
+          .then_some(TextEmphasisStyle::String(string));
       }
 
       parse_keyword_tokens(&tokens)
@@ -20086,12 +20127,14 @@ struct ParsedTextDecorationSkip {
 
 fn parse_text_decoration_skip(value: &PropertyValue) -> Option<ParsedTextDecorationSkip> {
   match value {
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(ParsedTextDecorationSkip {
-      self_: TextDecorationSkipSelf::NoSkip,
-      box_: TextDecorationSkipBox::None,
-      spaces: TextDecorationSkipSpaces::None,
-      ink: TextDecorationSkipInk::None,
-    }),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => {
+      Some(ParsedTextDecorationSkip {
+        self_: TextDecorationSkipSelf::NoSkip,
+        box_: TextDecorationSkipBox::None,
+        spaces: TextDecorationSkipSpaces::None,
+        ink: TextDecorationSkipInk::None,
+      })
+    }
     // Web-compat: legacy `text-decoration-skip` values like `objects` and `ink` are common in
     // CSS resets (often via `-webkit-text-decoration-skip: ink`). Map them to the initial
     // behavior ("auto") so the declaration is accepted and enables the default atomic-inline
@@ -20166,16 +20209,24 @@ fn parse_text_decoration_skip_self(value: &PropertyValue) -> Option<TextDecorati
 
 fn parse_text_decoration_skip_box(value: &PropertyValue) -> Option<TextDecorationSkipBox> {
   match value {
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(TextDecorationSkipBox::None),
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => Some(TextDecorationSkipBox::All),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => {
+      Some(TextDecorationSkipBox::None)
+    }
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => {
+      Some(TextDecorationSkipBox::All)
+    }
     _ => None,
   }
 }
 
 fn parse_text_decoration_skip_spaces(value: &PropertyValue) -> Option<TextDecorationSkipSpaces> {
   match value {
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(TextDecorationSkipSpaces::None),
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => Some(TextDecorationSkipSpaces::All),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => {
+      Some(TextDecorationSkipSpaces::None)
+    }
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => {
+      Some(TextDecorationSkipSpaces::All)
+    }
     _ => {
       let components: Vec<&PropertyValue> = match value {
         PropertyValue::Multiple(values) if !values.is_empty() => values.iter().collect(),
@@ -20956,6 +21007,7 @@ mod tests {
   use crate::style::types::FontPalette;
   use crate::style::types::FontStretch;
   use crate::style::types::FontVariant;
+  use crate::style::types::FontVariantAlternateValue;
   use crate::style::types::GridAutoFlow;
   use crate::style::types::GridTrack;
   use crate::style::types::ImageOrientation;
@@ -20986,22 +21038,22 @@ mod tests {
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationStyle;
   use crate::style::types::TextDecorationThickness;
-  use crate::style::types::TextUnderlineOffset;
   use crate::style::types::TextEmphasisFill;
   use crate::style::types::TextEmphasisPosition;
-  use crate::style::types::TextEmphasisSkip;
   use crate::style::types::TextEmphasisShape;
+  use crate::style::types::TextEmphasisSkip;
   use crate::style::types::TextEmphasisStyle;
   use crate::style::types::TextOrientation;
   use crate::style::types::TextOverflowSide;
   use crate::style::types::TextSizeAdjust;
   use crate::style::types::TextTransform;
+  use crate::style::types::TextUnderlineOffset;
   use crate::style::types::TextWrap;
   use crate::style::types::TransformBox;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
-  use crate::style::values::CustomPropertySyntax;
   use crate::style::values::CalcLength;
+  use crate::style::values::CustomPropertySyntax;
   use crate::style::values::CustomPropertyTypedValue;
   use crate::style::values::LengthUnit;
   use cssparser::Parser;
@@ -22605,10 +22657,7 @@ mod tests {
       false,
     );
 
-    assert_eq!(
-      styles.animation_names,
-      vec![None, Some("fade".to_string())]
-    );
+    assert_eq!(styles.animation_names, vec![None, Some("fade".to_string())]);
   }
 
   #[test]
@@ -23011,7 +23060,9 @@ mod tests {
     let parent_styles = ComputedStyle::default();
     let mut styles = ComputedStyle::default();
 
-    let valid = parse_declarations("animation-timeline: foo;").pop().unwrap();
+    let valid = parse_declarations("animation-timeline: foo;")
+      .pop()
+      .unwrap();
     apply_declaration_with_base(
       &mut styles,
       &valid,
@@ -23030,7 +23081,9 @@ mod tests {
 
     // CSS-wide keywords are excluded from <custom-ident>, so `inherit` should invalidate the whole
     // declaration rather than being treated as a timeline name.
-    let invalid = parse_declarations("animation-timeline: inherit, auto;").pop().unwrap();
+    let invalid = parse_declarations("animation-timeline: inherit, auto;")
+      .pop()
+      .unwrap();
     apply_declaration_with_base(
       &mut styles,
       &invalid,
@@ -23095,7 +23148,10 @@ mod tests {
     );
 
     assert_eq!(
-      styles.animation_names.get(0).and_then(|name| name.as_deref()),
+      styles
+        .animation_names
+        .get(0)
+        .and_then(|name| name.as_deref()),
       Some("fade")
     );
     assert_eq!(
@@ -24940,7 +24996,9 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+    assert!(
+      matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001)
+    );
 
     apply_declaration(
       &mut style,
@@ -24955,7 +25013,9 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+    assert!(
+      matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001)
+    );
 
     apply_declaration(
       &mut style,
@@ -24970,7 +25030,9 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001));
+    assert!(
+      matches!(style.aspect_ratio, AspectRatio::AutoRatio(r) if (r - (16.0/9.0)).abs() < 0.0001)
+    );
 
     apply_declaration(
       &mut style,
@@ -26846,7 +26908,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "object-position".into(),
-      value: parse_property_value("object-position", "10px center").expect("object-position parsed"),
+      value: parse_property_value("object-position", "10px center")
+        .expect("object-position parsed"),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -28348,13 +28411,14 @@ mod tests {
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
 
-    assert!(
-      style
-        .text_decoration
-        .lines
-        .contains(TextDecorationLine::UNDERLINE)
-    );
-    assert!(style.text_decoration.lines.contains(TextDecorationLine::OVERLINE));
+    assert!(style
+      .text_decoration
+      .lines
+      .contains(TextDecorationLine::UNDERLINE));
+    assert!(style
+      .text_decoration
+      .lines
+      .contains(TextDecorationLine::OVERLINE));
     assert!(style.text_decoration_line_specified);
   }
 
@@ -28743,7 +28807,10 @@ mod tests {
       16.0,
     );
 
-    assert_eq!(style.text_emphasis_position, TextEmphasisPosition::UnderLeft);
+    assert_eq!(
+      style.text_emphasis_position,
+      TextEmphasisPosition::UnderLeft
+    );
   }
 
   #[test]
@@ -29025,8 +29092,14 @@ mod tests {
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
 
-    assert!(style.text_decoration.lines.contains(TextDecorationLine::UNDERLINE));
-    assert!(style.text_decoration.lines.contains(TextDecorationLine::OVERLINE));
+    assert!(style
+      .text_decoration
+      .lines
+      .contains(TextDecorationLine::UNDERLINE));
+    assert!(style
+      .text_decoration
+      .lines
+      .contains(TextDecorationLine::OVERLINE));
     assert!(style.text_decoration_line_specified);
   }
 
@@ -30070,7 +30143,10 @@ mod tests {
 
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
 
-    assert_eq!(style.background_layers[0].repeat, BackgroundRepeat::no_repeat());
+    assert_eq!(
+      style.background_layers[0].repeat,
+      BackgroundRepeat::no_repeat()
+    );
     let BackgroundPosition::Position { x, y } = style.background_layers[0].position;
     assert!((x.alignment - 1.0).abs() < 0.01);
     assert!((y.alignment - 0.5).abs() < 0.01);
@@ -32269,11 +32345,20 @@ mod tests {
     assert!(style.font_variant_ligatures.discretionary);
     assert!(style.font_variant_ligatures.contextual);
     assert!(style.font_variant_alternates.historical_forms);
-    assert_eq!(style.font_variant_alternates.stylesets, vec![1, 2]);
-    assert_eq!(style.font_variant_alternates.swash, Some(3));
     assert_eq!(
-      style.font_variant_alternates.annotation.as_deref(),
-      Some("note")
+      style.font_variant_alternates.stylesets,
+      vec![
+        FontVariantAlternateValue::Number(1),
+        FontVariantAlternateValue::Number(2),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Number(3))
+    );
+    assert_eq!(
+      style.font_variant_alternates.annotation,
+      Some(FontVariantAlternateValue::Name("note".to_string()))
     );
     assert!(matches!(
       style.font_variant_position,
@@ -32294,8 +32379,18 @@ mod tests {
 
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
 
-    assert_eq!(style.font_variant_alternates.stylesets, vec![1, 2, 3]);
-    assert_eq!(style.font_variant_alternates.swash, Some(4));
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![
+        FontVariantAlternateValue::Number(1),
+        FontVariantAlternateValue::Number(2),
+        FontVariantAlternateValue::Number(3),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Number(4))
+    );
     assert!(matches!(
       style.font_variant_caps,
       FontVariantCaps::SmallCaps
@@ -32853,7 +32948,7 @@ mod tests {
   #[test]
   fn font_variant_alternates_conflict_invalidates_declaration() {
     let mut style = ComputedStyle::default();
-    style.font_variant_alternates.stylistic = Some(1);
+    style.font_variant_alternates.stylistic = Some(FontVariantAlternateValue::Number(1));
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword("stylistic(1) stylistic(2)".to_string()),
@@ -32862,7 +32957,10 @@ mod tests {
       important: false,
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert_eq!(style.font_variant_alternates.stylistic, Some(1));
+    assert_eq!(
+      style.font_variant_alternates.stylistic,
+      Some(FontVariantAlternateValue::Number(1))
+    );
   }
 
   #[test]
@@ -32876,9 +32974,25 @@ mod tests {
       important: false,
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert_eq!(style.font_variant_alternates.stylesets, vec![1, 2, 3]);
-    assert_eq!(style.font_variant_alternates.character_variants, vec![4, 5]);
-    assert_eq!(style.font_variant_alternates.swash, Some(6));
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![
+        FontVariantAlternateValue::Number(1),
+        FontVariantAlternateValue::Number(2),
+        FontVariantAlternateValue::Number(3),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.character_variants,
+      vec![
+        FontVariantAlternateValue::Number(4),
+        FontVariantAlternateValue::Number(5),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Number(6))
+    );
   }
 
   #[test]
@@ -33875,50 +33989,50 @@ pub fn resolve_pending_logical_properties(styles: &mut ComputedStyle) {
   let inline_sides = inline_physical_sides(styles);
   let block_sides = block_physical_sides(styles);
 
-    let pending = std::mem::take(&mut styles.logical.pending);
-    for pending_prop in pending {
-      match pending_prop.property {
-        crate::style::LogicalProperty::Margin { axis, start, end } => {
-          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-          if let Some(v) = start {
-            set_margin_side(styles, start_side, v, pending_prop.order);
-          }
-          if let Some(v) = end {
-            set_margin_side(styles, end_side, v, pending_prop.order);
-          }
+  let pending = std::mem::take(&mut styles.logical.pending);
+  for pending_prop in pending {
+    match pending_prop.property {
+      crate::style::LogicalProperty::Margin { axis, start, end } => {
+        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+        if let Some(v) = start {
+          set_margin_side(styles, start_side, v, pending_prop.order);
         }
-        crate::style::LogicalProperty::ScrollMargin { axis, start, end } => {
-          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-          if let Some(v) = start {
-            set_scroll_margin_side(styles, start_side, v, pending_prop.order);
-          }
-          if let Some(v) = end {
-            set_scroll_margin_side(styles, end_side, v, pending_prop.order);
-          }
+        if let Some(v) = end {
+          set_margin_side(styles, end_side, v, pending_prop.order);
         }
-        crate::style::LogicalProperty::Padding { axis, start, end } => {
-          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-          if let Some(v) = start {
-            set_padding_side(styles, start_side, v, pending_prop.order);
-          }
-          if let Some(v) = end {
-            set_padding_side(styles, end_side, v, pending_prop.order);
-          }
+      }
+      crate::style::LogicalProperty::ScrollMargin { axis, start, end } => {
+        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+        if let Some(v) = start {
+          set_scroll_margin_side(styles, start_side, v, pending_prop.order);
         }
-        crate::style::LogicalProperty::ScrollPadding { axis, start, end } => {
-          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-          if let Some(v) = start {
-            set_scroll_padding_side(styles, start_side, v, pending_prop.order);
-          }
-          if let Some(v) = end {
-            set_scroll_padding_side(styles, end_side, v, pending_prop.order);
-          }
+        if let Some(v) = end {
+          set_scroll_margin_side(styles, end_side, v, pending_prop.order);
         }
-        crate::style::LogicalProperty::BorderWidth { axis, start, end } => {
-          let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
-          if let Some(v) = start {
-            set_border_width_side(styles, start_side, v, pending_prop.order);
-          }
+      }
+      crate::style::LogicalProperty::Padding { axis, start, end } => {
+        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+        if let Some(v) = start {
+          set_padding_side(styles, start_side, v, pending_prop.order);
+        }
+        if let Some(v) = end {
+          set_padding_side(styles, end_side, v, pending_prop.order);
+        }
+      }
+      crate::style::LogicalProperty::ScrollPadding { axis, start, end } => {
+        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+        if let Some(v) = start {
+          set_scroll_padding_side(styles, start_side, v, pending_prop.order);
+        }
+        if let Some(v) = end {
+          set_scroll_padding_side(styles, end_side, v, pending_prop.order);
+        }
+      }
+      crate::style::LogicalProperty::BorderWidth { axis, start, end } => {
+        let (start_side, end_side) = sides_for_axis(axis, inline_sides, block_sides);
+        if let Some(v) = start {
+          set_border_width_side(styles, start_side, v, pending_prop.order);
+        }
         if let Some(v) = end {
           set_border_width_side(styles, end_side, v, pending_prop.order);
         }

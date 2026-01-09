@@ -187,10 +187,10 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       drop(ctx);
 
       let enqueue_err = hooks.finish(host);
-       if let Some(err) = enqueue_err {
-         return Err(err);
-       }
-       job_result?;
+      if let Some(err) = enqueue_err {
+        return Err(err);
+      }
+      job_result?;
       Ok(())
     });
 

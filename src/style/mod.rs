@@ -14,6 +14,7 @@ pub mod custom_property_store;
 pub mod defaults;
 pub mod display;
 pub mod float;
+pub mod font_feature_values;
 pub mod font_palette;
 pub mod grid;
 pub mod media;
@@ -43,6 +44,7 @@ use color::{Color, Rgba};
 use counter_styles::CounterStyleRegistry;
 use counters::CounterProperties;
 use display::Display;
+use font_feature_values::FontFeatureValuesRegistry;
 use font_palette::FontPaletteRegistry;
 use position::Position;
 use smallvec::SmallVec;
@@ -1111,6 +1113,8 @@ pub struct ComputedStyle {
   pub counter_styles: Arc<CounterStyleRegistry>,
   /// Registry of named color font palettes.
   pub font_palettes: Arc<FontPaletteRegistry>,
+  /// Registry of `@font-feature-values` rules used for resolving named alternates.
+  pub font_feature_values: Arc<FontFeatureValuesRegistry>,
 
   // Color and background
   pub forced_color_adjust: ForcedColorAdjust,
@@ -1508,6 +1512,7 @@ impl Default for ComputedStyle {
       counters: CounterProperties::default(),
       counter_styles: Arc::new(CounterStyleRegistry::with_builtins()),
       font_palettes: Arc::new(FontPaletteRegistry::default()),
+      font_feature_values: Arc::new(FontFeatureValuesRegistry::default()),
       forced_color_adjust: ForcedColorAdjust::Auto,
       color_scheme: ColorSchemePreference::Normal,
       used_dark_color_scheme: false,

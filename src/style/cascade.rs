@@ -2836,28 +2836,28 @@ fn eval_style_range_value(
     },
     StyleRangeValue::CustomProperty(name) => {
       let entry = styles.custom_properties.get(name)?;
-        if let Some(typed) = entry.typed.as_ref() {
-          use crate::style::values::CustomPropertyTypedValue;
-          return match typed {
-            CustomPropertyTypedValue::Length(len) => Some(NumericValue {
-              ty: NumericType::LengthPx,
-              value: resolve_length_for_query(len, container, ctx)?,
-            }),
-            CustomPropertyTypedValue::Number(n) => Some(NumericValue {
-              ty: NumericType::Number,
-              value: *n,
-            }),
-            CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
-              ty: NumericType::Percentage,
-              value: *p,
-            }),
-            CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
-              ty: NumericType::AngleDeg,
-              value: *deg,
-            }),
-            CustomPropertyTypedValue::Color(_) | CustomPropertyTypedValue::List { .. } => None,
-          };
-        }
+      if let Some(typed) = entry.typed.as_ref() {
+        use crate::style::values::CustomPropertyTypedValue;
+        return match typed {
+          CustomPropertyTypedValue::Length(len) => Some(NumericValue {
+            ty: NumericType::LengthPx,
+            value: resolve_length_for_query(len, container, ctx)?,
+          }),
+          CustomPropertyTypedValue::Number(n) => Some(NumericValue {
+            ty: NumericType::Number,
+            value: *n,
+          }),
+          CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
+            ty: NumericType::Percentage,
+            value: *p,
+          }),
+          CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
+            ty: NumericType::AngleDeg,
+            value: *deg,
+          }),
+          CustomPropertyTypedValue::Color(_) | CustomPropertyTypedValue::List { .. } => None,
+        };
+      }
       parse_numeric_value(&entry.value, container, ctx)
     }
     StyleRangeValue::Value(raw) => parse_numeric_value(raw, container, ctx),
@@ -10710,7 +10710,9 @@ fn explain_property_for_node_with_prepared(
       PropertyValue::Length(len) => len.to_string(),
       PropertyValue::Percentage(pct) => format!("{pct}%"),
       PropertyValue::Number(num) => num.to_string(),
-      PropertyValue::Keyword(text) | PropertyValue::String(text) | PropertyValue::Url(text) => text.clone(),
+      PropertyValue::Keyword(text) | PropertyValue::String(text) | PropertyValue::Url(text) => {
+        text.clone()
+      }
       PropertyValue::Custom(text) => text.clone(),
       PropertyValue::FontFamily(list) => list.join(", "),
       PropertyValue::Multiple(values) => values
@@ -11451,15 +11453,61 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     std::sync::Arc::new(registry)
   };
 
+  let font_feature_values = {
+    let mut registry = crate::style::font_feature_values::FontFeatureValuesRegistry::default();
+
+    let ua_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+      ua_stylesheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      ua_stylesheet.collect_font_feature_values_rules(media_ctx)
+    };
+    let author_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+      author_sheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+    } else {
+      author_sheet.collect_font_feature_values_rules(media_ctx)
+    };
+
+    fn register_collected(
+      registry: &mut crate::style::font_feature_values::FontFeatureValuesRegistry,
+      mut collected: Vec<crate::css::types::CollectedFontFeatureValuesRule<'_>>,
+    ) {
+      collected.sort_by(|a, b| {
+        a.layer_order
+          .as_ref()
+          .cmp(b.layer_order.as_ref())
+          .then(a.order.cmp(&b.order))
+      });
+      for rule in collected {
+        registry.register(rule.rule.clone());
+      }
+    }
+
+    register_collected(&mut registry, ua_feature_values);
+    register_collected(&mut registry, author_feature_values);
+
+    for (_host, _shadow_root_id, sheet) in &shadow_sheets {
+      let shadow_values = if let Some(cache) = media_cache.as_deref_mut() {
+        sheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        sheet.collect_font_feature_values_rules(media_ctx)
+      };
+      register_collected(&mut registry, shadow_values);
+    }
+
+    std::sync::Arc::new(registry)
+  };
+
   let initial_custom_properties = custom_property_registry_document.initial_values();
   let mut base_styles = ComputedStyle::default();
   base_styles.counter_styles = counter_styles.clone();
   base_styles.font_palettes = font_palettes.clone();
+  base_styles.font_feature_values = font_feature_values.clone();
   base_styles.custom_property_registry = custom_property_registry_document.clone();
   base_styles.custom_properties = initial_custom_properties.clone();
   let mut base_ua_styles = ComputedStyle::default();
   base_ua_styles.counter_styles = counter_styles;
   base_ua_styles.font_palettes = font_palettes;
+  base_ua_styles.font_feature_values = font_feature_values;
   base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
   base_ua_styles.custom_properties = initial_custom_properties;
   let has_starting_styles = include_starting_style
@@ -11954,15 +12002,62 @@ impl<'a> PreparedCascade<'a> {
       std::sync::Arc::new(registry)
     };
 
+    let font_feature_values = {
+      let mut registry = crate::style::font_feature_values::FontFeatureValuesRegistry::default();
+
+      let ua_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+        ua_stylesheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        ua_stylesheet.collect_font_feature_values_rules(media_ctx)
+      };
+      let author_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+        document_ref.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+      } else {
+        document_ref.collect_font_feature_values_rules(media_ctx)
+      };
+
+      fn register_collected(
+        registry: &mut crate::style::font_feature_values::FontFeatureValuesRegistry,
+        mut collected: Vec<crate::css::types::CollectedFontFeatureValuesRule<'_>>,
+      ) {
+        collected.sort_by(|a, b| {
+          a.layer_order
+            .as_ref()
+            .cmp(b.layer_order.as_ref())
+            .then(a.order.cmp(&b.order))
+        });
+        for rule in collected {
+          registry.register(rule.rule.clone());
+        }
+      }
+
+      register_collected(&mut registry, ua_feature_values);
+      register_collected(&mut registry, author_feature_values);
+
+      for (_host, sheet) in &shadow_sheets {
+        let sheet_ref: &'a StyleSheet = unsafe { &*(&**sheet as *const StyleSheet) };
+        let shadow_values = if let Some(cache) = media_cache.as_deref_mut() {
+          sheet_ref.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
+        } else {
+          sheet_ref.collect_font_feature_values_rules(media_ctx)
+        };
+        register_collected(&mut registry, shadow_values);
+      }
+
+      std::sync::Arc::new(registry)
+    };
+
     let initial_custom_properties = custom_property_registry_document.initial_values();
     let mut base_styles = ComputedStyle::default();
     base_styles.counter_styles = counter_styles.clone();
     base_styles.font_palettes = font_palettes.clone();
+    base_styles.font_feature_values = font_feature_values.clone();
     base_styles.custom_property_registry = custom_property_registry_document.clone();
     base_styles.custom_properties = initial_custom_properties.clone();
     let mut base_ua_styles = ComputedStyle::default();
     base_ua_styles.counter_styles = counter_styles;
     base_ua_styles.font_palettes = font_palettes;
+    base_ua_styles.font_feature_values = font_feature_values;
     base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
     base_ua_styles.custom_properties = initial_custom_properties;
 
@@ -15895,6 +15990,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.list_style_image = parent.list_style_image.clone();
   styles.counter_styles = parent.counter_styles.clone();
   styles.font_palettes = parent.font_palettes.clone();
+  styles.font_feature_values = parent.font_feature_values.clone();
   styles.image_orientation = parent.image_orientation;
   styles.quotes = parent.quotes.clone();
   styles.cursor = parent.cursor;

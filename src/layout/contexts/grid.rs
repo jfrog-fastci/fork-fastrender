@@ -59,10 +59,9 @@ use crate::layout::style_override::{push_style_override, style_override_for, Sty
 use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
-  record_taffy_style_cache_miss, taffy_grid_container_style_fingerprint,
-  taffy_counters_enabled, taffy_grid_item_style_fingerprint, taffy_template_cache_limit,
-  CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey,
-  TAFFY_ABORT_CHECK_STRIDE,
+  record_taffy_style_cache_miss, taffy_counters_enabled, taffy_grid_container_style_fingerprint,
+  taffy_grid_item_style_fingerprint, taffy_template_cache_limit, CachedTaffyTemplate,
+  SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
 };
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::clamp_with_order;
@@ -4528,16 +4527,34 @@ impl GridFormattingContext {
     // style only stores any author-supplied `subgrid [...]` names; the inherited parent names must
     // be reconstructed so `grid-*-raw` named placements resolve correctly.
     let needs_column_effective_names = box_node.style.grid_column_subgrid
-      && positioned_children.iter().any(|&child_ptr| unsafe { &*child_ptr }.style.grid_column_raw.is_some());
+      && positioned_children
+        .iter()
+        .any(|&child_ptr| unsafe { &*child_ptr }.style.grid_column_raw.is_some());
     let needs_row_effective_names = box_node.style.grid_row_subgrid
-      && positioned_children.iter().any(|&child_ptr| unsafe { &*child_ptr }.style.grid_row_raw.is_some());
+      && positioned_children
+        .iter()
+        .any(|&child_ptr| unsafe { &*child_ptr }.style.grid_row_raw.is_some());
 
-    let effective_column_line_names = needs_column_effective_names.then(|| {
-      resolve_effective_grid_line_names_for_node_axis(taffy, node_id, CssGridAxis::Column, axes_swapped)
-    }).flatten();
-    let effective_row_line_names = needs_row_effective_names.then(|| {
-      resolve_effective_grid_line_names_for_node_axis(taffy, node_id, CssGridAxis::Row, axes_swapped)
-    }).flatten();
+    let effective_column_line_names = needs_column_effective_names
+      .then(|| {
+        resolve_effective_grid_line_names_for_node_axis(
+          taffy,
+          node_id,
+          CssGridAxis::Column,
+          axes_swapped,
+        )
+      })
+      .flatten();
+    let effective_row_line_names = needs_row_effective_names
+      .then(|| {
+        resolve_effective_grid_line_names_for_node_axis(
+          taffy,
+          node_id,
+          CssGridAxis::Row,
+          axes_swapped,
+        )
+      })
+      .flatten();
 
     for &child_ptr in positioned_children {
       let child = unsafe { &*child_ptr };
@@ -4576,7 +4593,7 @@ impl GridFormattingContext {
               (start > 0 && end > start)
                 .then(|| u16::try_from((end - start + 1).max(0)).ok())
                 .flatten()
-          }),
+            }),
         )
       };
       let x_line_names: &[Vec<String>] = if axes_swapped {
@@ -6135,7 +6152,11 @@ impl GridFormattingContext {
         )
       });
       let simple_grid = !has_positioned_children
-        && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
+        && self.is_simple_grid(
+          style_override,
+          &in_flow_children,
+          &mut style_deadline_counter,
+        )?;
       let override_taffy_style = self.convert_style(
         style_override,
         None,
@@ -8389,7 +8410,11 @@ impl FormattingContext for GridFormattingContext {
       // are temporarily overridden (e.g. flex/grid intrinsic probes or final item sizing).
       let mut style_deadline_counter = 0usize;
       let simple_grid = positioned_children.is_empty()
-        && ctx.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
+        && ctx.is_simple_grid(
+          style_override,
+          &in_flow_children,
+          &mut style_deadline_counter,
+        )?;
       let override_taffy_style = self.convert_style(
         style_override,
         None,
@@ -10001,7 +10026,11 @@ impl FormattingContext for GridFormattingContext {
         )
       });
       let simple_grid = !has_positioned_children
-        && self.is_simple_grid(style_override, &in_flow_children, &mut style_deadline_counter)?;
+        && self.is_simple_grid(
+          style_override,
+          &in_flow_children,
+          &mut style_deadline_counter,
+        )?;
       let override_taffy_style = self.convert_style(
         style_override,
         None,
@@ -11703,7 +11732,8 @@ mod tests {
     let key_a = TaffyNodeCacheKey::new(
       TaffyAdapterKind::Grid,
       taffy_grid_container_style_fingerprint(container_a.style.as_ref()),
-      super::grid_child_fingerprint(&children_a, false, &mut deadline_counter).expect("fingerprint"),
+      super::grid_child_fingerprint(&children_a, false, &mut deadline_counter)
+        .expect("fingerprint"),
       gc.viewport_size,
     );
 
@@ -11736,7 +11766,8 @@ mod tests {
     let key_b = TaffyNodeCacheKey::new(
       TaffyAdapterKind::Grid,
       taffy_grid_container_style_fingerprint(container_b.style.as_ref()),
-      super::grid_child_fingerprint(&children_b, false, &mut deadline_counter).expect("fingerprint"),
+      super::grid_child_fingerprint(&children_b, false, &mut deadline_counter)
+        .expect("fingerprint"),
       gc.viewport_size,
     );
     assert_eq!(
@@ -11789,7 +11820,7 @@ mod tests {
     let mut deadline_counter = 0usize;
     let replaced_fp =
       super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
-      .expect("fingerprint");
+        .expect("fingerprint");
 
     assert_ne!(
       normal_fp, replaced_fp,

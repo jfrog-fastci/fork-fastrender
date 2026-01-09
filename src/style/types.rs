@@ -2459,16 +2459,24 @@ impl Default for FontVariantCaps {
   }
 }
 
+/// A numeric or named argument to a `font-variant-alternates` function (e.g. `styleset(1)` or
+/// `styleset(disambiguation)`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FontVariantAlternateValue {
+  Number(u8),
+  Name(String),
+}
+
 /// Alternates (`font-variant-alternates`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontVariantAlternates {
   pub historical_forms: bool,
-  pub stylistic: Option<u8>,
-  pub stylesets: Vec<u8>,
-  pub character_variants: Vec<u8>,
-  pub swash: Option<u8>,
-  pub ornaments: Option<u8>,
-  pub annotation: Option<String>,
+  pub stylistic: Option<FontVariantAlternateValue>,
+  pub stylesets: Vec<FontVariantAlternateValue>,
+  pub character_variants: Vec<FontVariantAlternateValue>,
+  pub swash: Option<FontVariantAlternateValue>,
+  pub ornaments: Option<FontVariantAlternateValue>,
+  pub annotation: Option<FontVariantAlternateValue>,
 }
 
 impl Default for FontVariantAlternates {
@@ -2710,8 +2718,13 @@ impl FontSizeAdjustMetric {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FontSizeAdjust {
   None,
-  Number { ratio: f32, metric: FontSizeAdjustMetric },
-  FromFont { metric: FontSizeAdjustMetric },
+  Number {
+    ratio: f32,
+    metric: FontSizeAdjustMetric,
+  },
+  FromFont {
+    metric: FontSizeAdjustMetric,
+  },
 }
 
 impl Default for FontSizeAdjust {

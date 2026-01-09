@@ -3,8 +3,8 @@
 //! Core types for representing CSS stylesheets, rules, and values.
 
 use super::selectors::FastRenderSelectorImpl;
-use super::selectors::PseudoElement;
 use super::selectors::PseudoClassParser;
+use super::selectors::PseudoElement;
 use super::supports;
 use crate::css::loader::{resolve_href_with_base, FetchedStylesheet};
 use crate::error::{Error, RenderError, RenderStage};
@@ -311,6 +311,14 @@ pub struct CollectedFontPaletteRule<'a> {
   pub order: usize,
 }
 
+/// Flattened @font-feature-values rule with cascade-layer ordering preserved.
+#[derive(Debug, Clone)]
+pub struct CollectedFontFeatureValuesRule<'a> {
+  pub rule: &'a FontFeatureValuesRule,
+  pub layer_order: Arc<[u32]>,
+  pub order: usize,
+}
+
 /// Flattened @property rule with cascade-layer ordering preserved.
 #[derive(Debug, Clone)]
 pub struct CollectedPropertyRule<'a> {
@@ -544,6 +552,7 @@ impl StyleSheet {
           }
           CssRule::Page(_)
           | CssRule::CounterStyle(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
           | CssRule::Property(_)
           | CssRule::FontFace(_)
@@ -730,6 +739,34 @@ impl StyleSheet {
     result
   }
 
+  /// Collects @font-feature-values rules for the given media context.
+  pub fn collect_font_feature_values_rules(
+    &self,
+    media_ctx: &MediaContext,
+  ) -> Vec<CollectedFontFeatureValuesRule<'_>> {
+    self.collect_font_feature_values_rules_with_cache(media_ctx, None)
+  }
+
+  /// Collects @font-feature-values rules using an optional media-query cache.
+  pub fn collect_font_feature_values_rules_with_cache(
+    &self,
+    media_ctx: &MediaContext,
+    cache: Option<&mut MediaQueryCache>,
+  ) -> Vec<CollectedFontFeatureValuesRule<'_>> {
+    let mut result = Vec::new();
+    let mut registry = LayerRegistry::new();
+    let empty_layer = empty_layer_path();
+    collect_font_feature_values_rules_recursive(
+      &self.rules,
+      media_ctx,
+      cache,
+      &mut registry,
+      &empty_layer,
+      &mut result,
+    );
+    result
+  }
+
   /// Collects @property rules.
   pub fn collect_property_rules(&self, media_ctx: &MediaContext) -> Vec<CollectedPropertyRule<'_>> {
     self.collect_property_rules_with_cache(media_ctx, None)
@@ -794,11 +831,7 @@ impl StyleSheet {
     cache: Option<&mut MediaQueryCache>,
   ) -> std::result::Result<Self, RenderError> {
     self.resolve_imports_owned_with_cache_with_importer_url(
-      loader,
-      base_url,
-      base_url,
-      media_ctx,
-      cache,
+      loader, base_url, base_url, media_ctx, cache,
     )
   }
 
@@ -879,6 +912,7 @@ impl StyleSheet {
           | CssRule::Import(_)
           | CssRule::FontFace(_)
           | CssRule::Keyframes(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
           | CssRule::Property(_) => {}
         }
@@ -930,6 +964,7 @@ impl StyleSheet {
           | CssRule::Import(_)
           | CssRule::FontFace(_)
           | CssRule::Keyframes(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
           | CssRule::Property(_) => {}
         }
@@ -1039,6 +1074,7 @@ fn collect_rules_recursive<'a>(
       }
       CssRule::Keyframes(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::Layer(layer_rule) => {
         if layer_rule.rules.is_empty() {
           for name in &layer_rule.names {
@@ -1211,6 +1247,7 @@ fn collect_page_rules_recursive<'a>(
       CssRule::Keyframes(_) | CssRule::CounterStyle(_) => {}
       CssRule::Style(_) | CssRule::Import(_) | CssRule::FontFace(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
       CssRule::Scope(scope_rule) => {
         collect_page_rules_recursive(
@@ -1262,6 +1299,7 @@ fn collect_font_faces_recursive(
       CssRule::Page(_) => {}
       CssRule::CounterStyle(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
       CssRule::Layer(layer_rule) => {
         if layer_rule.rules.is_empty() {
@@ -1307,6 +1345,7 @@ fn set_font_face_source_stylesheet_url_in_rules(rules: &mut [CssRule], styleshee
         CssRule::Scope(rule) => visit_rules(&mut rule.rules, stylesheet_url),
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
         | CssRule::Import(_)
@@ -1336,6 +1375,7 @@ fn set_font_face_source_referrer_policy_in_rules(rules: &mut [CssRule], policy: 
         CssRule::Scope(rule) => visit_rules(&mut rule.rules, policy),
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
         | CssRule::Import(_)
@@ -1610,16 +1650,14 @@ fn collect_css_metadata_recursive(
       CssRule::Page(_)
       | CssRule::CounterStyle(_)
       | CssRule::Import(_)
+      | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
       | CssRule::Property(_) => {}
     }
   }
 }
 
-fn collect_container_query_metadata(
-  queries: &[ContainerQuery],
-  out: &mut CollectedCssMetadata,
-) {
+fn collect_container_query_metadata(queries: &[ContainerQuery], out: &mut CollectedCssMetadata) {
   fn collect_style_query(expr: &StyleQueryExpr, out: &mut CollectedCssMetadata) {
     match expr {
       StyleQueryExpr::Unknown => {}
@@ -1744,6 +1782,7 @@ fn collect_keyframes_recursive(
       CssRule::Page(_) | CssRule::CounterStyle(_) => {}
       CssRule::Style(_) | CssRule::Import(_) | CssRule::FontFace(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
       CssRule::Scope(scope_rule) => {
         collect_keyframes_recursive(&scope_rule.rules, media_ctx, cache.as_deref_mut(), out);
@@ -1877,6 +1916,7 @@ fn collect_counter_styles_recursive<'a>(
       CssRule::FontFace(_) => {}
       CssRule::Keyframes(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::Property(_) => {}
       CssRule::StartingStyle(starting_rule) => {
         collect_counter_styles_recursive(
@@ -2022,6 +2062,145 @@ fn collect_font_palette_rules_recursive<'a>(
         );
       }
       CssRule::Property(_) => {}
+      CssRule::FontFeatureValues(_) => {}
+    }
+  }
+}
+
+fn collect_font_feature_values_rules_recursive<'a>(
+  rules: &'a [CssRule],
+  media_ctx: &MediaContext,
+  cache: Option<&mut MediaQueryCache>,
+  registry: &mut LayerRegistry,
+  current_layer: &Arc<[u32]>,
+  out: &mut Vec<CollectedFontFeatureValuesRule<'a>>,
+) {
+  let mut cache = cache;
+  for rule in rules {
+    match rule {
+      CssRule::FontFeatureValues(feature_values) => {
+        let layer_order = if current_layer.is_empty() {
+          unlayered_layer_order()
+        } else {
+          Arc::clone(current_layer)
+        };
+        let order = out.len();
+        out.push(CollectedFontFeatureValuesRule {
+          rule: feature_values,
+          layer_order,
+          order,
+        });
+      }
+      CssRule::Media(media_rule) => {
+        if media_ctx.evaluate_list_with_cache(&media_rule.queries, cache.as_deref_mut()) {
+          collect_font_feature_values_rules_recursive(
+            &media_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Supports(supports_rule) => {
+        if supports_rule.condition.matches() {
+          collect_font_feature_values_rules_recursive(
+            &supports_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Layer(layer_rule) => {
+        if layer_rule.rules.is_empty() {
+          for name in &layer_rule.names {
+            registry.register_path(current_layer.as_ref(), name);
+          }
+          if layer_rule.anonymous {
+            registry.register_anonymous(current_layer.as_ref());
+          }
+          continue;
+        }
+
+        if layer_rule.anonymous {
+          let path = registry.ensure_anonymous(current_layer.as_ref());
+          collect_font_feature_values_rules_recursive(
+            &layer_rule.rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            &path,
+            out,
+          );
+          continue;
+        }
+
+        if layer_rule.names.len() != 1 {
+          continue;
+        }
+        let path = registry.ensure_path(current_layer.as_ref(), &layer_rule.names[0]);
+        collect_font_feature_values_rules_recursive(
+          &layer_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          &path,
+          out,
+        );
+      }
+      CssRule::Style(style_rule) => {
+        if !style_rule.nested_rules.is_empty() {
+          collect_font_feature_values_rules_recursive(
+            &style_rule.nested_rules,
+            media_ctx,
+            cache.as_deref_mut(),
+            registry,
+            current_layer,
+            out,
+          );
+        }
+      }
+      CssRule::Scope(scope_rule) => {
+        collect_font_feature_values_rules_recursive(
+          &scope_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::Container(container_rule) => {
+        collect_font_feature_values_rules_recursive(
+          &container_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::StartingStyle(starting_rule) => {
+        collect_font_feature_values_rules_recursive(
+          &starting_rule.rules,
+          media_ctx,
+          cache.as_deref_mut(),
+          registry,
+          current_layer,
+          out,
+        );
+      }
+      CssRule::Import(_)
+      | CssRule::Page(_)
+      | CssRule::FontFace(_)
+      | CssRule::CounterStyle(_)
+      | CssRule::FontPaletteValues(_)
+      | CssRule::Property(_)
+      | CssRule::Keyframes(_) => {}
     }
   }
 }
@@ -2158,6 +2337,7 @@ fn collect_property_rules_recursive<'a>(
       CssRule::FontFace(_) => {}
       CssRule::Keyframes(_) => {}
       CssRule::FontPaletteValues(_) => {}
+      CssRule::FontFeatureValues(_) => {}
       CssRule::CounterStyle(_) => {}
     }
   }
@@ -2248,8 +2428,7 @@ fn supports_selector_is_valid(selector_list: &str) -> bool {
       &PseudoClassParser,
       &mut parser,
       selectors::parser::ParseRelative::No,
-    )
-    else {
+    ) else {
       continue;
     };
 
@@ -2258,9 +2437,11 @@ fn supports_selector_is_valid(selector_list: &str) -> bool {
     // selectors that end in an unmodelled vendor pseudo-element (e.g. `::-webkit-scrollbar`) as
     // unsupported so `@supports not selector(::-webkit-scrollbar)` gates can enable standard
     // scrollbar styling fallback.
-    if list.slice().iter().any(|selector| {
-      !matches!(selector.pseudo_element(), Some(PseudoElement::Vendor(_)))
-    }) {
+    if list
+      .slice()
+      .iter()
+      .any(|selector| !matches!(selector.pseudo_element(), Some(PseudoElement::Vendor(_))))
+    {
       return true;
     }
   }
@@ -2461,6 +2642,7 @@ mod tests {
         CssRule::Import(_)
         | CssRule::Page(_)
         | CssRule::CounterStyle(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
         | CssRule::FontFace(_)
@@ -2511,6 +2693,7 @@ mod tests {
         }
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
         | CssRule::Property(_)
         | CssRule::FontFace(_)
@@ -3190,6 +3373,8 @@ pub enum CssRule {
   Page(PageRule),
   /// A @counter-style rule defining a custom counter style.
   CounterStyle(CounterStyleRule),
+  /// A @font-feature-values rule defining named OpenType feature values.
+  FontFeatureValues(FontFeatureValuesRule),
   /// A @font-palette-values rule defining a named color font palette.
   FontPaletteValues(FontPaletteValuesRule),
   /// A @property rule registering a custom property.
@@ -3595,6 +3780,55 @@ pub struct KeyframesRule {
   pub keyframes: Vec<Keyframe>,
 }
 
+/// Feature group inside `@font-feature-values`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FontFeatureValuesGroup {
+  Stylistic,
+  Styleset,
+  CharacterVariant,
+  Swash,
+  Ornaments,
+  Annotation,
+}
+
+impl FontFeatureValuesGroup {
+  pub fn from_at_keyword(keyword: &str) -> Option<Self> {
+    if keyword.eq_ignore_ascii_case("stylistic") {
+      Some(Self::Stylistic)
+    } else if keyword.eq_ignore_ascii_case("styleset") {
+      Some(Self::Styleset)
+    } else if keyword.eq_ignore_ascii_case("character-variant") {
+      Some(Self::CharacterVariant)
+    } else if keyword.eq_ignore_ascii_case("swash") {
+      Some(Self::Swash)
+    } else if keyword.eq_ignore_ascii_case("ornaments") {
+      Some(Self::Ornaments)
+    } else if keyword.eq_ignore_ascii_case("annotation") {
+      Some(Self::Annotation)
+    } else {
+      None
+    }
+  }
+}
+
+/// A parsed `@font-feature-values` rule (CSS Fonts).
+///
+/// The rule associates named feature-value definitions with one or more font families.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontFeatureValuesRule {
+  pub font_families: Vec<String>,
+  pub groups: FxHashMap<FontFeatureValuesGroup, FxHashMap<String, Vec<u8>>>,
+}
+
+impl FontFeatureValuesRule {
+  pub fn new(font_families: Vec<String>) -> Self {
+    Self {
+      font_families,
+      groups: FxHashMap::default(),
+    }
+  }
+}
+
 /// Base palette selection for @font-palette-values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontPaletteBase {
@@ -3647,7 +3881,10 @@ pub enum FontSourceFormat {
 impl FontSourceFormat {
   /// Construct from a raw format() hint string.
   pub fn from_hint(hint: &str) -> Self {
-    match trim_ascii_whitespace_css(hint).to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_css(hint)
+      .to_ascii_lowercase()
+      .as_str()
+    {
       "woff2" => FontSourceFormat::Woff2,
       "woff" => FontSourceFormat::Woff,
       "opentype" | "otf" => FontSourceFormat::Opentype,
@@ -3679,7 +3916,10 @@ pub enum FontTechKeyword {
 
 impl FontTechKeyword {
   pub fn from_ident(ident: &str) -> Self {
-    match trim_ascii_whitespace_css(ident).to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_css(ident)
+      .to_ascii_lowercase()
+      .as_str()
+    {
       "variations" => Self::Variations,
       "palettes" => Self::Palettes,
       "incremental" => Self::Incremental,
@@ -3716,7 +3956,10 @@ pub enum FontFormatKeyword {
 
 impl FontFormatKeyword {
   pub fn from_ident(ident: &str) -> Self {
-    match trim_ascii_whitespace_css(ident).to_ascii_lowercase().as_str() {
+    match trim_ascii_whitespace_css(ident)
+      .to_ascii_lowercase()
+      .as_str()
+    {
       "woff2" => Self::Woff2,
       "woff" => Self::Woff,
       "opentype" => Self::Opentype,
@@ -3984,14 +4227,12 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
       CssRule::FontFace(_)
       | CssRule::Keyframes(_)
       | CssRule::CounterStyle(_)
+      | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
       | CssRule::Property(_)
       | CssRule::Page(_) => out.push(rule),
       CssRule::Container(container_rule) => {
-        let ContainerRule {
-          conditions,
-          rules,
-        } = container_rule;
+        let ContainerRule { conditions, rules } = container_rule;
         let mut resolved_children = Vec::new();
         resolve_rules_owned(
           rules,
@@ -4160,51 +4401,47 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
 
           state.stack.push(canonical_href.clone());
 
-          let resolved_children =
-            match loader.load_with_importer(&canonical_href, importer_url) {
-              Ok(fetched) => {
-                let sheet_url = fetched
-                  .final_url
-                  .clone()
-                  .unwrap_or_else(|| canonical_href.clone());
-                if let Some(final_url) = fetched.final_url.as_deref() {
-                  state.record_redirect(&canonical_href, final_url);
-                }
-                let canonical_sheet_url = state.canonicalize_url(&sheet_url);
-                if let Some(last) = state.stack.last_mut() {
-                  *last = canonical_sheet_url.clone();
-                }
-                if state
-                  .stack
-                  .iter()
-                  .take(state.stack.len().saturating_sub(1))
-                  .any(|url| url == &canonical_sheet_url)
-                {
-                  // Redirects can create cycles; treat them like any other failed import.
-                  state.stack.pop();
-                  None
-                } else {
-                  // A redirect may land on a stylesheet we've already fetched and cached.
-                  if let Some(entry) = state.cache.get(&canonical_sheet_url) {
-                    let out = match entry {
-                      CachedImport::Ok(rules) => {
-                        let mut cloned = Vec::with_capacity(rules.len());
-                        for rule in rules {
-                          check_active_periodic(
-                            deadline_counter,
-                            DEADLINE_STRIDE,
-                            RenderStage::Css,
-                          )?;
-                          cloned.push(rule.clone());
-                        }
-                        Some(cloned)
+          let resolved_children = match loader.load_with_importer(&canonical_href, importer_url) {
+            Ok(fetched) => {
+              let sheet_url = fetched
+                .final_url
+                .clone()
+                .unwrap_or_else(|| canonical_href.clone());
+              if let Some(final_url) = fetched.final_url.as_deref() {
+                state.record_redirect(&canonical_href, final_url);
+              }
+              let canonical_sheet_url = state.canonicalize_url(&sheet_url);
+              if let Some(last) = state.stack.last_mut() {
+                *last = canonical_sheet_url.clone();
+              }
+              if state
+                .stack
+                .iter()
+                .take(state.stack.len().saturating_sub(1))
+                .any(|url| url == &canonical_sheet_url)
+              {
+                // Redirects can create cycles; treat them like any other failed import.
+                state.stack.pop();
+                None
+              } else {
+                // A redirect may land on a stylesheet we've already fetched and cached.
+                if let Some(entry) = state.cache.get(&canonical_sheet_url) {
+                  let out = match entry {
+                    CachedImport::Ok(rules) => {
+                      let mut cloned = Vec::with_capacity(rules.len());
+                      for rule in rules {
+                        check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
+                        cloned.push(rule.clone());
                       }
-                      CachedImport::Failed => None,
-                    };
-                    state.stack.pop();
-                    out
-                  } else {
-                    let sheet = match crate::css::parser::parse_stylesheet_with_media_cached_by_url_shared(
+                      Some(cloned)
+                    }
+                    CachedImport::Failed => None,
+                  };
+                  state.stack.pop();
+                  out
+                } else {
+                  let sheet =
+                    match crate::css::parser::parse_stylesheet_with_media_cached_by_url_shared(
                       &fetched.css,
                       &canonical_sheet_url,
                       media_ctx,
@@ -4224,57 +4461,58 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                       }
                     };
 
-                    let mut rules = sheet.rules.clone();
-                    set_font_face_source_stylesheet_url_in_rules(&mut rules, &canonical_sheet_url);
-                    if let Some(policy) = loader.referrer_policy_for_stylesheet(&canonical_sheet_url) {
-                      set_font_face_source_referrer_policy_in_rules(&mut rules, policy);
-                    }
-
-                    let resolved_children = if sheet.contains_imports() {
-                      let mut resolved_children = Vec::new();
-                      resolve_rules_owned(
-                        rules,
-                        loader,
-                        Some(&canonical_sheet_url),
-                        Some(&canonical_sheet_url),
-                        media_ctx,
-                        cache.as_deref_mut(),
-                        state,
-                        true,
-                        &mut resolved_children,
-                        deadline_counter,
-                      )?;
-                      resolved_children
-                    } else {
-                      rules
-                    };
-
-                    // Cache the fully-resolved rules so duplicate imports don't re-fetch or re-parse.
-                    // Cloning is required because each @import occurrence contributes its own owned rule
-                    // list to the output tree.
-                    let mut cached_clone = Vec::with_capacity(resolved_children.len());
-                    for rule in &resolved_children {
-                      check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
-                      cached_clone.push(rule.clone());
-                    }
-                    state
-                      .cache
-                      .insert(canonical_sheet_url.clone(), CachedImport::Ok(cached_clone));
-
-                    state.stack.pop();
-                    Some(resolved_children)
+                  let mut rules = sheet.rules.clone();
+                  set_font_face_source_stylesheet_url_in_rules(&mut rules, &canonical_sheet_url);
+                  if let Some(policy) = loader.referrer_policy_for_stylesheet(&canonical_sheet_url)
+                  {
+                    set_font_face_source_referrer_policy_in_rules(&mut rules, policy);
                   }
+
+                  let resolved_children = if sheet.contains_imports() {
+                    let mut resolved_children = Vec::new();
+                    resolve_rules_owned(
+                      rules,
+                      loader,
+                      Some(&canonical_sheet_url),
+                      Some(&canonical_sheet_url),
+                      media_ctx,
+                      cache.as_deref_mut(),
+                      state,
+                      true,
+                      &mut resolved_children,
+                      deadline_counter,
+                    )?;
+                    resolved_children
+                  } else {
+                    rules
+                  };
+
+                  // Cache the fully-resolved rules so duplicate imports don't re-fetch or re-parse.
+                  // Cloning is required because each @import occurrence contributes its own owned rule
+                  // list to the output tree.
+                  let mut cached_clone = Vec::with_capacity(resolved_children.len());
+                  for rule in &resolved_children {
+                    check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
+                    cached_clone.push(rule.clone());
+                  }
+                  state
+                    .cache
+                    .insert(canonical_sheet_url.clone(), CachedImport::Ok(cached_clone));
+
+                  state.stack.pop();
+                  Some(resolved_children)
                 }
               }
-              Err(_) => {
-                // Per spec, failed imports are ignored.
-                state.stack.pop();
-                state
-                  .cache
-                  .insert(canonical_href.clone(), CachedImport::Failed);
-                None
-              }
-            };
+            }
+            Err(_) => {
+              // Per spec, failed imports are ignored.
+              state.stack.pop();
+              state
+                .cache
+                .insert(canonical_href.clone(), CachedImport::Failed);
+              None
+            }
+          };
 
           resolved_children
         };

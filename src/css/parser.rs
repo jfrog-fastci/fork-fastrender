@@ -28,11 +28,13 @@ use super::types::FontFaceRule;
 use super::types::FontFaceSource;
 use super::types::FontFaceStyle;
 use super::types::FontFaceUrlSource;
+use super::types::FontFeatureValuesGroup;
+use super::types::FontFeatureValuesRule;
+use super::types::FontFormatKeyword;
 use super::types::FontPaletteBase;
 use super::types::FontPaletteOverride;
 use super::types::FontPaletteValuesRule;
 use super::types::FontSourceFormat;
-use super::types::FontFormatKeyword;
 use super::types::FontTechKeyword;
 use super::types::ImportLayer;
 use super::types::ImportRule;
@@ -713,6 +715,9 @@ fn parse_rule<'i, 't>(
     }
     if kw.eq_ignore_ascii_case("counter-style") {
       return parse_counter_style_rule(parser);
+    }
+    if kw.eq_ignore_ascii_case("font-feature-values") {
+      return parse_font_feature_values_rule(parser, css_source);
     }
     if kw.eq_ignore_ascii_case("font-palette-values") {
       return parse_font_palette_values_rule(parser, css_source);
@@ -3281,6 +3286,207 @@ fn parse_font_palette_values_rule<'i, 't>(
     parse_font_palette_descriptors(nested, trim_ascii_whitespace(&name), css_source)
   })?;
   Ok(rule.map(CssRule::FontPaletteValues))
+}
+
+fn parse_font_feature_values_rule<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+  _css_source: &str,
+) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
+  parser.skip_whitespace();
+
+  let font_families =
+    match parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |p| {
+      let mut families: Vec<String> = Vec::new();
+      let mut ident_parts: Vec<String> = Vec::new();
+
+      while !p.is_exhausted() {
+        if !css_deadline_allows_progress() {
+          break;
+        }
+        p.skip_whitespace();
+        if p.is_exhausted() {
+          break;
+        }
+
+        match p.next()? {
+          Token::Comma => {
+            if !ident_parts.is_empty() {
+              families.push(ident_parts.join(" "));
+              ident_parts.clear();
+            }
+          }
+          Token::Ident(id) => {
+            ident_parts.push(id.to_string());
+          }
+          Token::QuotedString(s) => {
+            if !ident_parts.is_empty() {
+              families.push(ident_parts.join(" "));
+              ident_parts.clear();
+            }
+            families.push(s.to_string());
+          }
+          _ => {
+            // Invalid prelude; abort parsing this rule.
+            return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+              "invalid @font-feature-values prelude".into(),
+            )));
+          }
+        }
+      }
+
+      if !ident_parts.is_empty() {
+        families.push(ident_parts.join(" "));
+      }
+
+      Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(families)
+    }) {
+      Ok(families) => families,
+      Err(_) => {
+        skip_at_rule(parser);
+        return Ok(None);
+      }
+    };
+
+  let font_families: Vec<String> = font_families
+    .into_iter()
+    .map(|name| trim_ascii_whitespace(&name).to_string())
+    .filter(|name| !name.is_empty())
+    .collect();
+
+  if font_families.is_empty() {
+    skip_at_rule(parser);
+    return Ok(None);
+  }
+
+  parser.expect_curly_bracket_block().map_err(|_| {
+    parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent("expected {".into()))
+  })?;
+
+  let rule = parser.parse_nested_block(|nested| {
+    let mut rule = FontFeatureValuesRule::new(font_families.clone());
+
+    while !nested.is_exhausted() {
+      if !css_deadline_allows_progress() {
+        break;
+      }
+      nested.skip_whitespace();
+      if nested.is_exhausted() {
+        break;
+      }
+
+      match nested.next_including_whitespace() {
+        Ok(Token::AtKeyword(kw)) => {
+          let Some(group) = FontFeatureValuesGroup::from_at_keyword(kw.as_ref()) else {
+            skip_at_rule(nested);
+            continue;
+          };
+
+          nested.skip_whitespace();
+          if nested.expect_curly_bracket_block().is_err() {
+            skip_at_rule(nested);
+            continue;
+          }
+
+          let parsed_group = nested.parse_nested_block(|group_parser| {
+            let mut map: FxHashMap<String, Vec<u8>> = FxHashMap::default();
+
+            while !group_parser.is_exhausted() {
+              if !css_deadline_allows_progress() {
+                break;
+              }
+              group_parser.skip_whitespace();
+              if group_parser.is_exhausted() {
+                break;
+              }
+
+              let name = match group_parser.expect_ident() {
+                Ok(id) => id.to_string(),
+                Err(_) => {
+                  skip_to_semicolon(group_parser);
+                  continue;
+                }
+              };
+
+              if group_parser.expect_colon().is_err() {
+                skip_to_semicolon(group_parser);
+                continue;
+              }
+
+              let mut values: Vec<u8> = Vec::new();
+              let mut valid = true;
+
+              loop {
+                group_parser.skip_whitespace();
+                if group_parser.is_exhausted() {
+                  break;
+                }
+
+                match group_parser.next_including_whitespace() {
+                  Ok(Token::Semicolon) => break,
+                  Ok(Token::Comma) => continue,
+                  Ok(Token::Number {
+                    int_value: Some(v), ..
+                  }) => {
+                    if (1..=99).contains(v) {
+                      values.push(*v as u8);
+                    } else {
+                      valid = false;
+                      skip_to_semicolon(group_parser);
+                      break;
+                    }
+                  }
+                  Ok(Token::WhiteSpace(_)) => continue,
+                  Ok(Token::ParenthesisBlock)
+                  | Ok(Token::CurlyBracketBlock)
+                  | Ok(Token::SquareBracketBlock)
+                  | Ok(Token::Function(_)) => {
+                    let _ = group_parser.parse_nested_block(consume_nested_tokens::<()>);
+                    valid = false;
+                    skip_to_semicolon(group_parser);
+                    break;
+                  }
+                  Ok(_) | Err(_) => {
+                    valid = false;
+                    skip_to_semicolon(group_parser);
+                    break;
+                  }
+                }
+              }
+
+              if valid && !values.is_empty() {
+                map.insert(name, values);
+              }
+            }
+
+            Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(map)
+          });
+
+          if let Ok(map) = parsed_group {
+            if !map.is_empty() {
+              rule.groups.insert(group, map);
+            }
+          }
+        }
+        Ok(Token::CurlyBracketBlock)
+        | Ok(Token::ParenthesisBlock)
+        | Ok(Token::SquareBracketBlock)
+        | Ok(Token::Function(_)) => {
+          let _ = nested.parse_nested_block(consume_nested_tokens::<()>);
+        }
+        Ok(Token::Semicolon) => {}
+        Ok(_) => {}
+        Err(_) => break,
+      }
+    }
+
+    if rule.groups.is_empty() {
+      Ok(None)
+    } else {
+      Ok(Some(rule))
+    }
+  })?;
+
+  Ok(rule.map(CssRule::FontFeatureValues))
 }
 
 fn parse_font_palette_descriptors<'i, 't>(
