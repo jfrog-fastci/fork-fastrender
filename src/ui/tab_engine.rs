@@ -348,7 +348,7 @@ impl TabEngine {
       | UiToWorker::SelectDropdownPick { .. }
       | UiToWorker::TextInput { .. }
       | UiToWorker::KeyAction { .. }
-      | UiToWorker::SelectDropdownChoose { .. } => {}
+      => {}
     }
   }
 }
