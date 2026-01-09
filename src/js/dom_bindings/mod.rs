@@ -1355,6 +1355,29 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.node, "replaceChild", replace_child)?;
 
+    // contains
+    let dom_for_contains = dom.clone();
+    let platform_objects_for_contains = platform_objects.clone();
+    let contains = rt.alloc_function_value(move |rt, this, args| {
+      let this_id = extract_node_id(rt, &platform_objects_for_contains, this)?;
+      let other = args.get(0).copied().unwrap_or(Value::Undefined);
+      let other_id = match other {
+        Value::Undefined | Value::Null => return Ok(Value::Bool(false)),
+        other => extract_node_id(rt, &platform_objects_for_contains, other)?,
+      };
+
+      let dom_ref = dom_for_contains.borrow();
+      let mut cur = Some(other_id);
+      while let Some(id) = cur {
+        if id == this_id {
+          return Ok(Value::Bool(true));
+        }
+        cur = dom_ref.parent_node(id);
+      }
+      Ok(Value::Bool(false))
+    })?;
+    define_method(rt, prototypes.node, "contains", contains)?;
+
     // parentNode
     let dom_for_parent = dom.clone();
     let platform_objects_for_parent = platform_objects.clone();
@@ -3898,6 +3921,82 @@ mod tests {
       .call_function(append_child, document, &[div])
       .unwrap();
     assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(true));
+  }
+
+  #[test]
+  fn node_contains_reflects_dom2_tree() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let contains_key = pk(&mut realm.rt, "contains");
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let doc_append_child = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(doc_append_child, document, &[div])
+      .unwrap();
+
+    let div_append_child = realm.rt.get(div, append_child_key).unwrap();
+    realm.rt.call_function(div_append_child, div, &[span]).unwrap();
+
+    let div_contains = realm.rt.get(div, contains_key).unwrap();
+    assert_eq!(
+      realm.rt.call_function(div_contains, div, &[span]).unwrap(),
+      Value::Bool(true)
+    );
+    // Inclusive.
+    assert_eq!(
+      realm.rt.call_function(div_contains, div, &[div]).unwrap(),
+      Value::Bool(true)
+    );
+    // Missing arg is treated as null.
+    assert_eq!(
+      realm.rt.call_function(div_contains, div, &[]).unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm
+        .rt
+        .call_function(div_contains, div, &[Value::Null])
+        .unwrap(),
+      Value::Bool(false)
+    );
+
+    let span_contains = realm.rt.get(span, contains_key).unwrap();
+    assert_eq!(
+      realm.rt.call_function(span_contains, span, &[div]).unwrap(),
+      Value::Bool(false)
+    );
+
+    let document_contains = realm.rt.get(document, contains_key).unwrap();
+    assert_eq!(
+      realm
+        .rt
+        .call_function(document_contains, document, &[span])
+        .unwrap(),
+      Value::Bool(true)
+    );
+
+    let err = realm
+      .rt
+      .call_function(div_contains, div, &[Value::Number(1.0)])
+      .unwrap_err();
+    assert!(matches!(err, VmError::Throw(_)));
   }
 
   #[test]
