@@ -1593,6 +1593,19 @@ mod tests {
     let s = rt.alloc_string_value("   ").unwrap();
     assert_eq!(rt.to_bigint(s).unwrap(), Value::BigInt(JsBigInt::zero()));
 
+    let s = rt.alloc_string_value("+7").unwrap();
+    assert_eq!(
+      rt.to_bigint(s).unwrap(),
+      Value::BigInt(JsBigInt::from_u128(7))
+    );
+
+    // `vm-js` BigInt currently uses a fixed-size magnitude. Ensure we surface overflow as a
+    // RangeError so callers can distinguish it from syntax failures.
+    let s = rt
+      .alloc_string_value("340282366920938463463374607431768211456")
+      .unwrap(); // u128::MAX + 1
+    let err = rt.to_bigint(s).unwrap_err();
+    assert_eq!(thrown_error_name(&mut rt, err), "RangeError");
     let s = rt.alloc_string_value("-0x10").unwrap();
     let err = rt.to_bigint(s).unwrap_err();
     assert_eq!(thrown_error_name(&mut rt, err), "SyntaxError");
