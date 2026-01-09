@@ -176,6 +176,77 @@ fn preserve_3d_backdrop_filter_respects_intermediate_backdrop_root_scope() {
 }
 
 #[test]
+fn preserve_3d_mix_blend_mode_respects_intermediate_backdrop_root_scope() {
+  let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  let left_half = Rect::from_xywh(0.0, 0.0, 5.0, 10.0);
+
+  let mut list = DisplayList::new();
+  // Page background outside the preserve-3d context.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::RED,
+  }));
+
+  // Outer preserve-3d root that does *not* establish a backdrop root. The descendant blend-mode
+  // operation must not see this red background once we cross the intermediate backdrop root
+  // boundary below.
+  list.push(DisplayItem::PushStackingContext(context(bounds, TransformStyle::Preserve3d)));
+
+  // Intermediate preserve-3d stacking context that establishes a Backdrop Root boundary (e.g. via
+  // `will-change`). Only paint green on the left half so the right half of the Backdrop Root Image
+  // is transparent.
+  let mut intermediate_root = context(bounds, TransformStyle::Preserve3d);
+  intermediate_root.establishes_backdrop_root = true;
+  intermediate_root.has_backdrop_sensitive_descendants = true;
+  list.push(DisplayItem::PushStackingContext(intermediate_root));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: left_half,
+    color: Rgba::GREEN,
+  }));
+
+  // Descendant flat plane with a mix-blend-mode. The blend backdrop should be scoped to the
+  // intermediate backdrop root image (transparent on the right half), not the global canvas (red).
+  let mut blended_plane = context(bounds, TransformStyle::Flat);
+  blended_plane.transform = Some(Transform3D::translate(0.0, 0.0, 10.0));
+  blended_plane.mix_blend_mode = BlendMode::Difference;
+  list.push(DisplayItem::PushStackingContext(blended_plane));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::BLUE,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  list.push(DisplayItem::PopStackingContext); // intermediate backdrop root
+  list.push(DisplayItem::PopStackingContext); // outer preserve-3d root
+
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PRESERVE3D_DISABLE_SCENE".to_string(),
+    "0".to_string(),
+  )])));
+
+  let pixmap = with_thread_runtime_toggles(toggles, || {
+    DisplayListRenderer::new(10, 10, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap()
+  });
+
+  let left_px = pixmap.pixel(2, 5).expect("pixel in-bounds");
+  assert_eq!(
+    (left_px.red(), left_px.green(), left_px.blue(), left_px.alpha()),
+    (0, 255, 255, 255),
+    "expected difference blend of blue over green to produce cyan"
+  );
+
+  let right_px = pixmap.pixel(7, 5).expect("pixel in-bounds");
+  assert_eq!(
+    (right_px.red(), right_px.green(), right_px.blue(), right_px.alpha()),
+    (0, 0, 255, 255),
+    "expected mix-blend-mode to stop at the intermediate backdrop root (transparent backdrop), so the blend does not see the red page background"
+  );
+}
+
+#[test]
 fn preserve_3d_root_backdrop_root_includes_canvas_background() {
   let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
 

@@ -9700,6 +9700,18 @@ impl DisplayListRenderer {
             }
           }
         }
+        // `mix-blend-mode` is also backdrop-sensitive: inside a preserve-3d scene compositor we
+        // need a scratch buffer for the nearest intermediate Backdrop Root so blending does not
+        // sample/composite against content above that boundary.
+        if item.compositing.as_ref().is_some_and(|compositing| {
+          !matches!(compositing.mix_blend_mode, BlendMode::Normal)
+        }) {
+          if let Some(&id) = item.backdrop_root_chain.last() {
+            if id < needs_buffer.len() {
+              needs_buffer[id] = true;
+            }
+          }
+        }
       }
 
       if needs_buffer.iter().any(|needed| *needed) {
@@ -10126,81 +10138,174 @@ impl DisplayListRenderer {
                     clip_override,
                   )? {
                     painted = true;
-                    match blend {
-                      Some(mode) if is_manual_blend(mode) => {
-                        renderer.composite_manual_layer(
-                          warped.pixmap(),
-                          1.0,
-                          mode,
-                          warped.offset(),
-                          None,
-                        )?;
-                        for &root_id in &scene_item.backdrop_root_chain {
-                          if let Some(buffer) = nested_backdrop_buffers
-                            .get_mut(root_id)
-                            .and_then(|buf| buf.as_mut())
-                          {
-                            composite_manual_layer_pixmap(
-                              buffer,
-                              warped.pixmap(),
-                              1.0,
-                              mode,
-                              warped.offset(),
-                              None,
+                    if let Some(mode) = blend {
+                      // `mix-blend-mode` backdrops are scoped by Filter Effects Level 2 Backdrop
+                      // Roots. When inside an intermediate backdrop-root chain, blend operations
+                      // must see the corresponding nested backdrop buffer rather than the global
+                      // canvas (which already includes pixels above the boundary).
+                      let mut scoped = false;
+                      if let Some(scope_id) = sampling_backdrop_root {
+                        let w = warped.pixmap().width();
+                        let h = warped.pixmap().height();
+                        if let (Some(mut backdrop_region), Some(mut blended_region)) =
+                          (new_pixmap(w, h), new_pixmap(w, h))
+                        {
+                          let copied_backdrop = {
+                            if let Some(scope_buffer) = nested_backdrop_buffers
+                              .get(scope_id)
+                              .and_then(|buf| buf.as_ref())
+                            {
+                              copy_pixmap_region_with_offset(
+                                &mut backdrop_region,
+                                scope_buffer,
+                                warped.offset().0,
+                                warped.offset().1,
+                              )?;
+                              true
+                            } else {
+                              false
+                            }
+                          };
+
+                          if copied_backdrop {
+                            blended_region
+                              .data_mut()
+                              .copy_from_slice(backdrop_region.data());
+
+                            if is_manual_blend(mode) {
+                              composite_manual_layer_pixmap(
+                                &mut blended_region,
+                                warped.pixmap(),
+                                1.0,
+                                mode,
+                                (0, 0),
+                                None,
+                              )?;
+                            } else {
+                              composite_layer_into_pixmap(
+                                &mut blended_region,
+                                warped.pixmap(),
+                                1.0,
+                                map_blend_mode(mode),
+                                (0, 0),
+                                None,
+                              );
+                            }
+
+                            // Convert the blended output into an isolated source image so we can
+                            // composite it with normal source-over onto the global canvas and all
+                            // nested backdrop buffers without re-blending against the wrong
+                            // backdrops.
+                            crate::paint::canvas::uncomposite_layer_source_over_backdrop(
+                              &mut blended_region,
+                              &backdrop_region,
+                              (0, 0),
+                              Some((warped.pixmap(), (0, 0))),
                             )?;
-                          }
-                        }
-                      }
-                      Some(mode) => {
-                        let blend_mode = map_blend_mode(mode);
-                        composite_layer_into_pixmap(
-                          renderer.canvas.pixmap_mut(),
-                          warped.pixmap(),
-                          1.0,
-                          blend_mode,
-                          warped.offset(),
-                          None,
-                        );
-                        for &root_id in &scene_item.backdrop_root_chain {
-                          if let Some(buffer) = nested_backdrop_buffers
-                            .get_mut(root_id)
-                            .and_then(|buf| buf.as_mut())
-                          {
+
                             composite_layer_into_pixmap(
-                              buffer,
-                              warped.pixmap(),
+                              renderer.canvas.pixmap_mut(),
+                              &blended_region,
                               1.0,
-                              blend_mode,
+                              SkiaBlendMode::SourceOver,
                               warped.offset(),
                               None,
                             );
+                            for &root_id in &scene_item.backdrop_root_chain {
+                              if let Some(buffer) = nested_backdrop_buffers
+                                .get_mut(root_id)
+                                .and_then(|buf| buf.as_mut())
+                              {
+                                composite_layer_into_pixmap(
+                                  buffer,
+                                  &blended_region,
+                                  1.0,
+                                  SkiaBlendMode::SourceOver,
+                                  warped.offset(),
+                                  None,
+                                );
+                              }
+                            }
+                            scoped = true;
                           }
                         }
                       }
-                      None => {
-                        let blend_mode = renderer.canvas.blend_mode();
-                        composite_layer_into_pixmap(
-                          renderer.canvas.pixmap_mut(),
-                          warped.pixmap(),
-                          1.0,
-                          blend_mode,
-                          warped.offset(),
-                          None,
-                        );
-                        for &root_id in &scene_item.backdrop_root_chain {
-                          if let Some(buffer) = nested_backdrop_buffers
-                            .get_mut(root_id)
-                            .and_then(|buf| buf.as_mut())
-                          {
-                            composite_layer_into_pixmap(
-                              buffer,
-                              warped.pixmap(),
-                              1.0,
-                              blend_mode,
-                              warped.offset(),
-                              None,
-                            );
+
+                      if !scoped {
+                        // Fall back to the unscoped blend logic (matches the previous behavior).
+                        if is_manual_blend(mode) {
+                          renderer.composite_manual_layer(
+                            warped.pixmap(),
+                            1.0,
+                            mode,
+                            warped.offset(),
+                            None,
+                          )?;
+                          for &root_id in &scene_item.backdrop_root_chain {
+                            if let Some(buffer) = nested_backdrop_buffers
+                              .get_mut(root_id)
+                              .and_then(|buf| buf.as_mut())
+                            {
+                              composite_manual_layer_pixmap(
+                                buffer,
+                                warped.pixmap(),
+                                1.0,
+                                mode,
+                                warped.offset(),
+                                None,
+                              )?;
+                            }
                           }
+                        } else {
+                          let blend_mode = map_blend_mode(mode);
+                          composite_layer_into_pixmap(
+                            renderer.canvas.pixmap_mut(),
+                            warped.pixmap(),
+                            1.0,
+                            blend_mode,
+                            warped.offset(),
+                            None,
+                          );
+                          for &root_id in &scene_item.backdrop_root_chain {
+                            if let Some(buffer) = nested_backdrop_buffers
+                              .get_mut(root_id)
+                              .and_then(|buf| buf.as_mut())
+                            {
+                              composite_layer_into_pixmap(
+                                buffer,
+                                warped.pixmap(),
+                                1.0,
+                                blend_mode,
+                                warped.offset(),
+                                None,
+                              );
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      let blend_mode = renderer.canvas.blend_mode();
+                      composite_layer_into_pixmap(
+                        renderer.canvas.pixmap_mut(),
+                        warped.pixmap(),
+                        1.0,
+                        blend_mode,
+                        warped.offset(),
+                        None,
+                      );
+                      for &root_id in &scene_item.backdrop_root_chain {
+                        if let Some(buffer) = nested_backdrop_buffers
+                          .get_mut(root_id)
+                          .and_then(|buf| buf.as_mut())
+                        {
+                          composite_layer_into_pixmap(
+                            buffer,
+                            warped.pixmap(),
+                            1.0,
+                            blend_mode,
+                            warped.offset(),
+                            None,
+                          );
                         }
                       }
                     }
