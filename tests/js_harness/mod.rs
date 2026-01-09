@@ -781,6 +781,15 @@ impl Harness {
     Ok(self.host.loader.completed.pop_front())
   }
 
+  /// Mark an external script load as completed without polling the harness-owned scheduler.
+  ///
+  /// Some integration tests drive their own [`ClassicScriptScheduler`] instance (rather than the
+  /// one embedded in [`HostState`]). Those tests need a way to enqueue script completions into the
+  /// host's [`ScriptLoader`] queue without the harness consuming them eagerly.
+  pub fn complete_external_script_only(&mut self, url: &str) -> Result<()> {
+    self.host.complete_external_script(url)
+  }
+
   pub fn complete_external_script(&mut self, url: &str) -> Result<()> {
     self.host.complete_external_script(url)?;
     let mut scheduler = std::mem::take(&mut self.host.script_scheduler);

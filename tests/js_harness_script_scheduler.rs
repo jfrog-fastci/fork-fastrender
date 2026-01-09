@@ -37,7 +37,7 @@ fn async_external_scripts_execute_in_completion_order() -> Result<()> {
   }
 
   // Complete `b` first, ensuring it runs first.
-  harness.complete_external_script("https://example.com/b.js")?;
+  harness.complete_external_script_only("https://example.com/b.js")?;
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
     scheduler.poll(host, event_loop)?;
@@ -48,7 +48,7 @@ fn async_external_scripts_execute_in_completion_order() -> Result<()> {
   );
   assert_eq!(harness.take_log(), vec!["b".to_string()]);
 
-  harness.complete_external_script("https://example.com/a.js")?;
+  harness.complete_external_script_only("https://example.com/a.js")?;
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
     scheduler.poll(host, event_loop)?;
@@ -82,8 +82,8 @@ fn defer_external_scripts_execute_in_document_order_after_parsing_finished() -> 
 
   // Defer scripts should execute in insertion order (1 then 2), regardless of fetch completion
   // ordering. Complete 2 first to validate the scheduler logic.
-  harness.complete_external_script("https://example.com/2.js")?;
-  harness.complete_external_script("https://example.com/1.js")?;
+  harness.complete_external_script_only("https://example.com/2.js")?;
+  harness.complete_external_script_only("https://example.com/1.js")?;
   {
     let (host, event_loop) = harness.host_and_event_loop_mut();
     scheduler.poll(host, event_loop)?;
