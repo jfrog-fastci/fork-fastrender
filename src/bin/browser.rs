@@ -1029,7 +1029,12 @@ impl App {
       return;
     };
 
-    let Some(SelectItem::Option { disabled, .. }) = control.items.get(clicked_item_idx) else {
+    let Some(SelectItem::Option {
+      node_id: option_node_id,
+      disabled,
+      ..
+    }) = control.items.get(clicked_item_idx)
+    else {
       self.close_select_dropdown();
       self.window.request_redraw();
       return;
@@ -1041,10 +1046,10 @@ impl App {
     }
 
     // Apply selection directly rather than synthesizing key events.
-    self.send_worker_msg(UiToWorker::SelectDropdownPick {
+    self.send_worker_msg(UiToWorker::SelectDropdownChoose {
       tab_id,
       select_node_id,
-      item_index: clicked_item_idx,
+      option_node_id: *option_node_id,
     });
 
     self.close_select_dropdown();
