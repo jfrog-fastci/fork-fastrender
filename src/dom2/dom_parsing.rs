@@ -11,14 +11,23 @@ fn document_quirks_mode(doc: &Document) -> QuirksMode {
   }
 }
 
-fn element_context(doc: &Document, context: NodeId) -> Result<(&str, &str), DomError> {
+fn element_context(
+  doc: &Document,
+  context: NodeId,
+) -> Result<(&str, &str, &[(String, String)]), DomError> {
   let node = doc.nodes.get(context.index()).ok_or(DomError::NotFoundError)?;
   match &node.kind {
     NodeKind::Element {
-      tag_name, namespace, ..
-    } => Ok((tag_name.as_str(), namespace.as_str())),
+      tag_name,
+      namespace,
+      attributes,
+    } => Ok((tag_name.as_str(), namespace.as_str(), attributes.as_slice())),
     // `NodeKind::Slot` does not store its tag name, but today it always represents `<slot>`.
-    NodeKind::Slot { namespace, .. } => Ok(("slot", namespace.as_str())),
+    NodeKind::Slot {
+      namespace,
+      attributes,
+      ..
+    } => Ok(("slot", namespace.as_str(), attributes.as_slice())),
     _ => Err(DomError::InvalidNodeType),
   }
 }
@@ -34,14 +43,21 @@ pub(super) fn parse_html_fragment_as_fragment(
   context: NodeId,
   html: &str,
 ) -> Result<NodeId, DomError> {
-  let (context_tag, context_namespace) = element_context(doc, context)?;
+  let (context_tag, context_namespace, context_attributes) = element_context(doc, context)?;
   let quirks_mode = document_quirks_mode(doc);
 
   // Respect the owning document's parsing mode. This matters for elements like `<noscript>`, whose
   // fragment parsing semantics change based on whether scripting is enabled.
   let options = DomParseOptions::with_scripting_enabled(doc.scripting_enabled);
-  let parsed = crate::dom::parse_html_fragment(html, context_tag, context_namespace, options, quirks_mode)
-    .map_err(|_| DomError::SyntaxError)?;
+  let parsed = crate::dom::parse_html_fragment_with_context_attrs(
+    html,
+    context_tag,
+    context_namespace,
+    context_attributes,
+    options,
+    quirks_mode,
+  )
+  .map_err(|_| DomError::SyntaxError)?;
 
   let fragment = doc.create_document_fragment();
   let imported_roots = import_domnodes_into_parent(doc, fragment, &parsed);

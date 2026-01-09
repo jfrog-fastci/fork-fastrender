@@ -1,5 +1,6 @@
 use crate::dom::parse_html;
 use crate::dom::HTML_NAMESPACE;
+use crate::dom::MATHML_NAMESPACE;
 use selectors::context::QuirksMode;
 
 use super::{Document, DomError, NodeId, NodeKind};
@@ -565,4 +566,70 @@ fn set_inner_html_preserves_shadow_root() {
     doc.outer_html(shadow_span).unwrap(),
     r#"<span id="shadow">shadow</span>"#
   );
+}
+
+#[test]
+fn inner_html_mathml_annotation_xml_context_uses_encoding_attribute() {
+  let root = parse_html(
+    "<!doctype html><html><body><math>\
+     <annotation-xml id=noenc></annotation-xml>\
+     <annotation-xml id=enc encoding=\"text/html\"></annotation-xml>\
+     </math></body></html>",
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let noenc = find_element_by_id(&doc, "noenc");
+  let enc = find_element_by_id(&doc, "enc");
+
+  for id in [noenc, enc] {
+    match &doc.node(id).kind {
+      NodeKind::Element { tag_name, namespace, .. } => {
+        assert!(
+          tag_name.eq_ignore_ascii_case("annotation-xml"),
+          "expected annotation-xml element, got <{tag_name}>"
+        );
+        assert_eq!(
+          namespace,
+          MATHML_NAMESPACE,
+          "annotation-xml should be in the MathML namespace"
+        );
+      }
+      other => panic!("expected element node, got {other:?}"),
+    }
+  }
+
+  let fragment = "<malignmark>hi</malignmark>";
+  doc.set_inner_html(noenc, fragment).unwrap();
+  doc.set_inner_html(enc, fragment).unwrap();
+
+  fn assert_single_child_namespace(
+    doc: &Document,
+    parent: NodeId,
+    expected_namespace: &str,
+  ) {
+    let children = doc.node(parent).children.clone();
+    assert_eq!(children.len(), 1, "expected a single child node");
+
+    let child = children[0];
+    match &doc.node(child).kind {
+      NodeKind::Element { tag_name, namespace, .. } => {
+        assert!(
+          tag_name.eq_ignore_ascii_case("malignmark"),
+          "expected <malignmark> element, got <{tag_name}>"
+        );
+        assert_eq!(namespace, expected_namespace);
+      }
+      other => panic!("expected element child, got {other:?}"),
+    }
+  }
+
+  // Without an `encoding` attribute, annotation-xml is not an HTML integration point and the
+  // `<malignmark>` start tag is parsed into the MathML namespace (it is excluded from the MathML
+  // text integration point fast path).
+  assert_single_child_namespace(&doc, noenc, MATHML_NAMESPACE);
+
+  // With `encoding=text/html`, annotation-xml becomes an HTML integration point and the same markup
+  // is parsed into the HTML namespace (normalized to the empty string in dom2).
+  assert_single_child_namespace(&doc, enc, "");
 }

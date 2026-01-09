@@ -3,9 +3,11 @@ use crate::error::ParseError;
 use crate::error::RenderStage;
 use crate::error::Result;
 use html5ever::parse_fragment;
+use html5ever::tendril::StrTendril;
 use html5ever::tendril::TendrilSink;
 use html5ever::tree_builder::QuirksMode as HtmlQuirksMode;
 use html5ever::tree_builder::TreeBuilderOpts;
+use html5ever::Attribute;
 use html5ever::ParseOpts;
 use markup5ever::LocalName;
 use markup5ever::Namespace;
@@ -42,6 +44,56 @@ pub fn parse_html_fragment(
   options: DomParseOptions,
   document_quirks: QuirksMode,
 ) -> Result<Vec<DomNode>> {
+  parse_html_fragment_with_context_attrs(
+    html,
+    context_tag,
+    context_namespace,
+    &[],
+    options,
+    document_quirks,
+  )
+}
+
+fn build_context_attrs(context_namespace: &str, attrs: &[(String, String)]) -> Vec<Attribute> {
+  if attrs.is_empty() {
+    return Vec::new();
+  }
+
+  // In HTML contexts, attribute names are ASCII case-insensitive and are normalized to lowercase by
+  // the parser. Preserve case for foreign contexts (MathML/SVG), where attribute names can be
+  // case-sensitive.
+  let is_html = normalize_parse_namespace(context_namespace) == HTML_NAMESPACE;
+  let attr_ns: Namespace = "".into();
+
+  attrs
+    .iter()
+    .map(|(name, value)| {
+      let local: LocalName = if is_html {
+        name.to_ascii_lowercase().into()
+      } else {
+        name.as_str().into()
+      };
+      Attribute {
+        name: QualName::new(None, attr_ns.clone(), local),
+        value: StrTendril::from(value.as_str()),
+      }
+    })
+    .collect()
+}
+
+/// Parse an HTML fragment in the context of a given element tag/namespace + attributes.
+///
+/// Most callers should use [`parse_html_fragment`]. This variant exists for cases where the
+/// context element's attributes affect parsing (notably MathML `<annotation-xml encoding=...>`,
+/// which is an HTML integration point when `encoding` is `text/html` or `application/xhtml+xml`).
+pub fn parse_html_fragment_with_context_attrs(
+  html: &str,
+  context_tag: &str,
+  context_namespace: &str,
+  context_attributes: &[(String, String)],
+  options: DomParseOptions,
+  document_quirks: QuirksMode,
+) -> Result<Vec<DomNode>> {
   let opts = ParseOpts {
     tree_builder: TreeBuilderOpts {
       scripting_enabled: options.scripting_enabled,
@@ -52,6 +104,7 @@ pub fn parse_html_fragment(
   };
 
   let context_name = fragment_context_qual_name(context_tag, context_namespace);
+  let context_attrs = build_context_attrs(context_namespace, context_attributes);
 
   let html5ever_timer = super::dom_parse_diagnostics_timer();
   let reader = io::Cursor::new(html.as_bytes());
@@ -67,7 +120,7 @@ pub fn parse_html_fragment(
     RcDom::default(),
     opts,
     context_name,
-    Vec::new(),
+    context_attrs,
     context_element_allows_scripting,
   )
     .from_utf8()
@@ -134,7 +187,7 @@ pub fn parse_html_fragment(
     node_type: DomNodeType::Element {
       tag_name: context_tag.to_string(),
       namespace: normalize_dom_namespace(context_namespace).to_string(),
-      attributes: Vec::new(),
+      attributes: context_attributes.to_vec(),
     },
     children: converted,
   };
@@ -584,6 +637,68 @@ mod tests {
         );
       }
       other => panic!("expected <circle> element, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parse_fragment_mathml_annotation_xml_integration_point_uses_context_attrs() {
+    // The HTML parsing algorithm treats MathML annotation-xml as a text integration point. Some
+    // start tags (notably `malignmark`/`mglyph`) are excluded from the "MathML text integration
+    // point" fast path, and are only parsed as HTML when the element is an *HTML integration point*
+    // (which depends on its `encoding` attribute).
+    //
+    // Use `<malignmark>` to exercise the encoding-dependent HTML integration point behavior.
+    let html = "<malignmark>hi</malignmark>";
+
+    // Without the `encoding` context attribute, MathML annotation-xml is *not* an HTML integration
+    // point, so `malignmark` is parsed as a foreign element (MathML namespace).
+    let nodes_without_attrs = parse_html_fragment(
+      html,
+      "annotation-xml",
+      crate::dom::MATHML_NAMESPACE,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes_without_attrs.len(), 1);
+    match &nodes_without_attrs[0].node_type {
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        assert_eq!(tag_name, "malignmark");
+        assert_eq!(namespace, crate::dom::MATHML_NAMESPACE);
+      }
+      other => panic!("expected element node, got {other:?}"),
+    }
+
+    // With `encoding=text/html`, annotation-xml becomes an HTML integration point and the same
+    // markup is parsed into the HTML namespace.
+    let context_attrs = vec![("encoding".to_string(), "text/html".to_string())];
+    let nodes_with_attrs = parse_html_fragment_with_context_attrs(
+      html,
+      "annotation-xml",
+      crate::dom::MATHML_NAMESPACE,
+      &context_attrs,
+      DomParseOptions::default(),
+      QuirksMode::NoQuirks,
+    )
+    .expect("parse fragment");
+    assert_eq!(nodes_with_attrs.len(), 1);
+    match &nodes_with_attrs[0].node_type {
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        assert_eq!(tag_name, "malignmark");
+        assert!(
+          namespace.is_empty(),
+          "expected HTML element namespace to be normalized to the empty string, got {namespace:?}"
+        );
+      }
+      other => panic!("expected element node, got {other:?}"),
     }
   }
 }

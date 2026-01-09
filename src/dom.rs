@@ -146,7 +146,7 @@ mod scripting_parser;
 pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
 
 mod fragment;
-pub use fragment::parse_html_fragment;
+pub use fragment::{parse_html_fragment, parse_html_fragment_with_context_attrs};
 
 pub(crate) mod forms_validation;
 
