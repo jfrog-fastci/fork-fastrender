@@ -26,13 +26,6 @@ fn describe_message(msg: &WorkerToUi) -> String {
     WorkerToUi::FrameReady { frame, .. } => {
       format!("FrameReady(viewport={:?})", frame.scroll_state.viewport)
     }
-    WorkerToUi::OpenSelectDropdown { select_node_id, .. } => {
-      format!("OpenSelectDropdown(select_node_id={select_node_id})")
-    }
-    WorkerToUi::SelectDropdownOpened { select_node_id, .. } => {
-      format!("SelectDropdownOpened(select_node_id={select_node_id})")
-    }
-    WorkerToUi::SelectDropdownClosed { .. } => "SelectDropdownClosed".to_string(),
     WorkerToUi::LoadingState { loading, .. } => format!("LoadingState({loading})"),
     WorkerToUi::DebugLog { line, .. } => format!("DebugLog({})", line.trim_end()),
     other => format!("{other:?}"),
