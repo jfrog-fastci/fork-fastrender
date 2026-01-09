@@ -2126,7 +2126,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         out.insert(id.to_string());
       }
     }
-    if let ClipPath::Url(src) = &styled.styles.clip_path {
+    if let ClipPath::Url(src, _) = &styled.styles.clip_path {
       if let Some(id) = trim_ascii_whitespace(src)
         .strip_prefix('#')
         .filter(|id| !id.is_empty())

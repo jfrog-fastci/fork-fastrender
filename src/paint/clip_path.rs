@@ -234,7 +234,7 @@ pub(crate) fn resolve_clip_path(
 ) -> Result<Option<ResolvedClipPath>, RenderError> {
   match &style.clip_path {
     ClipPath::None => Ok(None),
-    ClipPath::Url(_) => Ok(None),
+    ClipPath::Url(_, _) => Ok(None),
     ClipPath::Box(reference) => {
       let boxes = reference_boxes(style, bounds, viewport, font_ctx);
       let rect = select_reference_box(boxes, *reference);
@@ -255,6 +255,17 @@ pub(crate) fn resolve_clip_path(
       )
     }
   }
+}
+
+pub(crate) fn resolve_clip_path_reference_box_rect(
+  style: &ComputedStyle,
+  bounds: Rect,
+  viewport: (f32, f32),
+  font_ctx: &FontContext,
+  reference: ReferenceBox,
+) -> Rect {
+  let boxes = reference_boxes(style, bounds, viewport, font_ctx);
+  select_reference_box(boxes, reference)
 }
 
 pub(crate) fn resolve_basic_shape(

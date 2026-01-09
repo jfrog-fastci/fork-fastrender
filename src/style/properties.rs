@@ -20087,11 +20087,38 @@ fn parse_clip_path_value(value: &PropertyValue) -> Option<ClipPath> {
       if trim_ascii_whitespace(url).is_empty() {
         None
       } else {
-        Some(ClipPath::Url(url.clone()))
+        Some(ClipPath::Url(url.clone(), None))
       }
     }
     PropertyValue::Keyword(kw) => parse_clip_path_str(kw),
     PropertyValue::Multiple(parts) => {
+      if parts.iter().any(|part| matches!(part, PropertyValue::Url(_))) {
+        let mut url: Option<&str> = None;
+        let mut reference: Option<ReferenceBox> = None;
+        for part in parts {
+          match part {
+            PropertyValue::Url(src) => {
+              if trim_ascii_whitespace(src).is_empty() {
+                return None;
+              }
+              if url.replace(src.as_str()).is_some() {
+                return None;
+              }
+            }
+            PropertyValue::Keyword(kw) => {
+              let mut input = ParserInput::new(kw);
+              let mut parser = Parser::new(&mut input);
+              let parsed = parser.parse_entirely(parse_reference_box).ok()?;
+              if reference.replace(parsed).is_some() {
+                return None;
+              }
+            }
+            _ => return None,
+          }
+        }
+        return Some(ClipPath::Url(url?.to_string(), reference));
+      }
+
       let mut joined = String::new();
       for (idx, part) in parts.iter().enumerate() {
         let token = match part {
@@ -20221,13 +20248,13 @@ fn parse_clip_path_str(input_str: &str) -> Option<ClipPath> {
   let mut parser = Parser::new(&mut input);
 
   if let Ok(url) = parser.try_parse(|p| p.expect_url()) {
-    parser.expect_exhausted().ok()?;
     let url = url.as_ref().to_string();
-    return if trim_ascii_whitespace(&url).is_empty() {
-      None
-    } else {
-      Some(ClipPath::Url(url))
-    };
+    if trim_ascii_whitespace(&url).is_empty() {
+      return None;
+    }
+    let reference = parser.try_parse(parse_reference_box).ok();
+    parser.expect_exhausted().ok()?;
+    return Some(ClipPath::Url(url, reference));
   }
 
   if parser
@@ -20242,6 +20269,20 @@ fn parse_clip_path_str(input_str: &str) -> Option<ClipPath> {
     let reference = parser.try_parse(parse_reference_box).ok();
     parser.expect_exhausted().ok()?;
     return Some(ClipPath::BasicShape(Box::new(shape), reference));
+  }
+
+  // `<geometry-box> || url(...)` is non-standard but widely used alongside HTML elements.
+  let state = parser.state();
+  if let Ok(reference) = parser.try_parse(parse_reference_box) {
+    if let Ok(url) = parser.try_parse(|p| p.expect_url()) {
+      let url = url.as_ref().to_string();
+      if trim_ascii_whitespace(&url).is_empty() {
+        return None;
+      }
+      parser.expect_exhausted().ok()?;
+      return Some(ClipPath::Url(url, Some(reference)));
+    }
+    parser.reset(&state);
   }
 
   // `<basic-shape> || <geometry-box>` allows the geometry box to appear before the shape.
@@ -25105,7 +25146,7 @@ mod tests {
     };
     let mut style = ComputedStyle::default();
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert_eq!(style.clip_path, ClipPath::Url("#clip".into()));
+    assert_eq!(style.clip_path, ClipPath::Url("#clip".into(), None));
   }
 
   #[test]
@@ -25119,7 +25160,44 @@ mod tests {
     };
     let mut style = ComputedStyle::default();
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
-    assert_eq!(style.clip_path, ClipPath::Url("#clip".into()));
+    assert_eq!(style.clip_path, ClipPath::Url("#clip".into(), None));
+  }
+
+  #[test]
+  fn parses_clip_path_url_with_reference_box() {
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Url("#clip".into()),
+        PropertyValue::Keyword("content-box".into()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.clip_path,
+      ClipPath::Url("#clip".into(), Some(ReferenceBox::ContentBox))
+    );
+
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("content-box".into()),
+        PropertyValue::Url("#clip".into()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.clip_path,
+      ClipPath::Url("#clip".into(), Some(ReferenceBox::ContentBox))
+    );
   }
 
   #[test]

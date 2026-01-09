@@ -4031,7 +4031,11 @@ pub enum BasicShape {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipPath {
   None,
-  Url(String),
+  /// Fragment-only `url(#id)` (and potentially external URLs in the future).
+  ///
+  /// The optional `ReferenceBox` corresponds to the geometry-box component that can appear
+  /// alongside `url(...)` in the authored value (e.g. `clip-path: url(#clip) content-box`).
+  Url(String, Option<ReferenceBox>),
   Box(ReferenceBox),
   BasicShape(Box<BasicShape>, Option<ReferenceBox>),
 }

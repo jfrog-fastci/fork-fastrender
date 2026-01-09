@@ -22,6 +22,7 @@ mod color_font_test;
 mod color_mix_display_list_test;
 mod color_mix_polar_display_list_test;
 mod clip_path_polygon_path;
+mod clip_path_svg_url;
 mod contain_paint;
 mod determinism_repeat_test;
 mod forced_colors_display_list_test;

@@ -2991,9 +2991,22 @@ impl DisplayListBuilder {
       },
       None => None,
     };
-    let clip_path_mask = root_style.and_then(|style| match &style.clip_path {
-      crate::style::types::ClipPath::Url(src) => self.decode_clip_path_url(src, style, root_border_bounds),
-      _ => None,
+    let clip_path_mask = root_style.and_then(|style| {
+      let (src, reference_override) = match &style.clip_path {
+        crate::style::types::ClipPath::Url(src, reference_override) => (src.as_str(), *reference_override),
+        _ => return None,
+      };
+
+      let reference = reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
+      let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
+        style,
+        root_border_bounds,
+        viewport,
+        &self.font_ctx,
+        reference,
+      );
+      let image = self.decode_clip_path_url(src, style, reference_rect)?;
+      Some((image, reference_rect))
     });
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
@@ -3054,11 +3067,11 @@ impl DisplayListBuilder {
     let mut child_visibility = context_visibility;
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
-    } else if clip_path_mask.is_some() {
-      // Rasterized fragment-only `clip-path: url(#id)` masks always cover at most the target
-      // reference box (we render a rect and apply the clip-path), so the border bounds are a safe
-      // hard-clip rectangle for culling purposes.
-      child_visibility = child_visibility.intersect(Some(root_border_bounds), true);
+    } else if let Some((_, rect)) = clip_path_mask.as_ref() {
+      // Rasterized fragment-only `clip-path: url(#id)` masks always cover at most the chosen
+      // reference box (we render a rect and apply the clip-path), so the reference bounds are a
+      // safe hard-clip rectangle for culling purposes.
+      child_visibility = child_visibility.intersect(Some(*rect), true);
     }
     if let Some(bounds) = clip_rect.as_ref().and_then(|clip| Self::clip_bounds(clip)) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
@@ -3268,11 +3281,11 @@ impl DisplayListBuilder {
         shape: ClipShape::Path { path },
       }));
       pushed_clips += 1;
-    } else if let Some(image) = clip_path_mask {
+    } else if let Some((image, rect)) = clip_path_mask {
       self.list.push(DisplayItem::PushClip(ClipItem {
         shape: ClipShape::AlphaMask {
           image,
-          rect: root_border_bounds,
+          rect,
         },
       }));
       pushed_clips += 1;
@@ -14643,7 +14656,7 @@ mod tests {
     )]);
 
     let mut style = ComputedStyle::default();
-    style.clip_path = ClipPath::Url("#clip".to_string());
+    style.clip_path = ClipPath::Url("#clip".to_string(), None);
     style.background_color = Rgba::RED;
     let fragment = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 20.0, 20.0),

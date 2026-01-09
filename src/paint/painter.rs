@@ -749,7 +749,7 @@ enum DisplayCommand {
     backdrop_filters: Vec<ResolvedFilter>,
     radii: BorderRadii,
     clip: Option<StackingClip>,
-    clip_path: Option<ResolvedClipPath>,
+    clip_path: Option<StackingClipPath>,
     commands: Vec<DisplayCommand>,
   },
 }
@@ -787,6 +787,17 @@ struct StackingClip {
   /// Whether this clip should apply to the stacking-context root itself (e.g. CSS `clip`).
   /// Overflow clipping applies only to descendants.
   clip_root: bool,
+}
+
+#[derive(Debug, Clone)]
+enum StackingClipPath {
+  Shape(ResolvedClipPath),
+  Svg {
+    /// Fragment id (without the leading `#`).
+    id: String,
+    /// Reference box rectangle in the stacking-context coordinate space.
+    reference_rect: Rect,
+  },
 }
 
 fn is_positioned(style: &ComputedStyle) -> bool {
@@ -2527,12 +2538,35 @@ impl Painter {
     let has_backdrop = !backdrop_filters.is_empty();
     let clip: Option<StackingClip> = style_ref.and_then(|style| self.stacking_clip_for_style(style, abs_bounds));
     let clip_path = match style_ref {
-      Some(style) => resolve_clip_path(
-        style,
-        abs_bounds,
-        (self.css_width, self.css_height),
-        &self.font_ctx,
-      )?,
+      Some(style) => match &style.clip_path {
+        crate::style::types::ClipPath::Url(src, reference_override) => {
+          let trimmed = trim_ascii_whitespace_html_css(src);
+          if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+            let reference =
+              reference_override.unwrap_or(crate::style::types::ReferenceBox::BorderBox);
+            let reference_rect = crate::paint::clip_path::resolve_clip_path_reference_box_rect(
+              style,
+              abs_bounds,
+              (self.css_width, self.css_height),
+              &self.font_ctx,
+              reference,
+            );
+            Some(StackingClipPath::Svg {
+              id: id.to_string(),
+              reference_rect,
+            })
+          } else {
+            None
+          }
+        }
+        _ => resolve_clip_path(
+          style,
+          abs_bounds,
+          (self.css_width, self.css_height),
+          &self.font_ctx,
+        )?
+        .map(StackingClipPath::Shape),
+      },
       None => None,
     };
     let mask = fragment
@@ -3449,19 +3483,144 @@ impl Painter {
 
         if let Some(ref clip_path) = clip_path {
           let clip_path_start = profile_enabled.then(Instant::now);
-          if let Some(size) =
-            IntSize::from_wh(base_painter.pixmap.width(), base_painter.pixmap.height())
-          {
-            let transform =
-              Transform::from_translate(-offset.x * self.scale, -offset.y * self.scale);
-            if let Some(mask) = clip_path.mask(self.scale, size, transform) {
-              let clip_bounds_device = base_painter.device_rect(clip_path.bounds());
-              let dirty = clip_mask_dirty_bounds(
-                clip_bounds_device,
-                base_painter.pixmap.width(),
-                base_painter.pixmap.height(),
-              );
-              apply_mask_with_dirty_bounds_rgba(&mut base_painter.pixmap, &mask, dirty)?;
+          match clip_path {
+            StackingClipPath::Shape(clip_path) => {
+              if let Some(size) =
+                IntSize::from_wh(base_painter.pixmap.width(), base_painter.pixmap.height())
+              {
+                let transform =
+                  Transform::from_translate(-offset.x * self.scale, -offset.y * self.scale);
+                if let Some(mask) = clip_path.mask(self.scale, size, transform) {
+                  let clip_bounds_device = base_painter.device_rect(clip_path.bounds());
+                  let dirty = clip_mask_dirty_bounds(
+                    clip_bounds_device,
+                    base_painter.pixmap.width(),
+                    base_painter.pixmap.height(),
+                  );
+                  apply_mask_with_dirty_bounds_rgba(&mut base_painter.pixmap, &mask, dirty)?;
+                }
+              }
+            }
+            StackingClipPath::Svg { id, reference_rect } => {
+              (|| -> RenderResult<()> {
+                let canvas_w = base_painter.pixmap.width();
+                let canvas_h = base_painter.pixmap.height();
+                if canvas_w == 0 || canvas_h == 0 {
+                  return Ok(());
+                }
+
+                if reference_rect.width() <= 0.0
+                  || reference_rect.height() <= 0.0
+                  || !reference_rect.width().is_finite()
+                  || !reference_rect.height().is_finite()
+                {
+                  // A degenerate reference box clips away the entire stacking context.
+                  check_active(RenderStage::Paint)?;
+                  base_painter.pixmap.data_mut().fill(0);
+                  return Ok(());
+                }
+
+                let Some(defs) = base_painter.svg_id_defs.as_ref() else {
+                  // Unresolvable fragment-only clip-path URLs behave like `clip-path: none`.
+                  return Ok(());
+                };
+
+                let view_w = reference_rect.width().ceil().max(1.0) as u32;
+                let view_h = reference_rect.height().ceil().max(1.0) as u32;
+                let Some(svg) =
+                  crate::paint::svg_mask_image::inline_svg_for_clip_path_id(defs, id, view_w, view_h)
+                else {
+                  // Missing defs: treat as `clip-path: none`.
+                  return Ok(());
+                };
+
+                let cache_key = format!("svg-clip-path-fragment:{id}");
+                let clip_pixmap = match base_painter.image_cache.render_svg_pixmap_at_size(
+                  &svg,
+                  view_w,
+                  view_h,
+                  &cache_key,
+                  self.scale,
+                ) {
+                  Ok(pixmap) => pixmap,
+                  Err(crate::Error::Render(RenderError::Timeout { stage, elapsed })) => {
+                    return Err(RenderError::Timeout { stage, elapsed });
+                  }
+                  Err(_) => return Ok(()),
+                };
+
+                let rect_device = base_painter.device_rect(*reference_rect);
+                let dirty = clip_mask_dirty_bounds(rect_device, canvas_w, canvas_h);
+
+                let Some(mut scratch) = new_pixmap(canvas_w, canvas_h) else {
+                  // Soft failure: skip clip-path.
+                  return Ok(());
+                };
+
+                let scale_x = if clip_pixmap.width() > 0 {
+                  rect_device.width() / clip_pixmap.width() as f32
+                } else {
+                  1.0
+                };
+                let scale_y = if clip_pixmap.height() > 0 {
+                  rect_device.height() / clip_pixmap.height() as f32
+                } else {
+                  1.0
+                };
+                let draw_transform =
+                  Transform::from_row(scale_x, 0.0, 0.0, scale_y, rect_device.x(), rect_device.y());
+
+                let mut paint = PixmapPaint::default();
+                paint.opacity = 1.0;
+                paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+                paint.quality = tiny_skia::FilterQuality::Bilinear;
+                scratch.draw_pixmap(
+                  0,
+                  0,
+                  clip_pixmap.as_ref().as_ref(),
+                  &paint,
+                  draw_transform,
+                  None,
+                );
+
+                let Some(mut mask) = Mask::new(canvas_w, canvas_h) else {
+                  return Ok(());
+                };
+                mask.data_mut().fill(0);
+
+                if let Some(dirty) = dirty {
+                  let width = mask.width() as usize;
+                  let mask_stride = width;
+                  let pixmap_stride = width * 4;
+                  let mask_data = mask.data_mut();
+                  let pixmap_data = scratch.data();
+                  let x0 = dirty.x0 as usize;
+                  let x1 = dirty.x1 as usize;
+                  let y0 = dirty.y0 as usize;
+                  let y1 = dirty.y1 as usize;
+
+                  let mut deadline_counter = 0usize;
+                  for y in y0..y1 {
+                    let dst_start = y * mask_stride + x0;
+                    let dst_end = y * mask_stride + x1;
+                    let dst = &mut mask_data[dst_start..dst_end];
+                    let mut src_idx = y * pixmap_stride + x0 * 4 + 3;
+                    let mut x = 0usize;
+                    while x < dst.len() {
+                      check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+                      let x_end = (x + CLIP_MASK_DEADLINE_STRIDE).min(dst.len());
+                      for px in dst[x..x_end].iter_mut() {
+                        *px = pixmap_data[src_idx];
+                        src_idx += 4;
+                      }
+                      x = x_end;
+                    }
+                  }
+                }
+
+                apply_mask_with_dirty_bounds_rgba(&mut base_painter.pixmap, &mask, dirty)?;
+                Ok(())
+              })()?;
             }
           }
           if let Some(start) = clip_path_start {
@@ -13227,7 +13386,7 @@ fn stacking_context_bounds(
   rect: Rect,
   transform: Option<&Transform3D>,
   clip: Option<&StackingClip>,
-  clip_path: Option<&ResolvedClipPath>,
+  clip_path: Option<&StackingClipPath>,
   viewport: (f32, f32),
 ) -> Option<Rect> {
   let project_rect_bounds = |rect: Rect, transform: &Transform3D| -> Option<Rect> {
@@ -13265,7 +13424,10 @@ fn stacking_context_bounds(
     base = base.union(clipped);
   }
   if let Some(path) = clip_path {
-    let clip_bounds = path.bounds();
+    let clip_bounds = match path {
+      StackingClipPath::Shape(path) => path.bounds(),
+      StackingClipPath::Svg { reference_rect, .. } => *reference_rect,
+    };
     base = base.intersection(clip_bounds).unwrap_or(clip_bounds);
   }
   if let Some(outline_bounds) = outline_bounds {

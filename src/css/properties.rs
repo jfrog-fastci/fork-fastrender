@@ -1894,6 +1894,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
     "object-position"
       | "border-spacing"
       | "shape-outside"
+      | "clip-path"
       | "border-radius"
       | "border-top-left-radius"
       | "border-top-right-radius"
