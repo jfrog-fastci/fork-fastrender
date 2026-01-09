@@ -224,6 +224,11 @@ fn provides_document_head_and_body_shims() {
 }
 
 #[test]
+fn element_matches_and_closest_work() {
+  assert_wpt_pass("dom/element_matches_closest.window.js");
+}
+
+#[test]
 fn discovers_worker_tests_but_skips_them() {
   for (backend, result) in
     run_test_id_all_backends("smoke/unsupported.worker.js", RunnerConfig::default())

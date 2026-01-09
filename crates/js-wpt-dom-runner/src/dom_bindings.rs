@@ -174,6 +174,13 @@ const DOM_BINDINGS_SHIM: &str = r##"
     // Ignore; fallback nodes still have per-instance methods via `ensureNodeApis`.
   }
 
+  // Host shims may have created structural nodes (`document.documentElement`, `document.head`,
+  // `document.body`) before this DOM shim installs its node-kind markers. Ensure they are treated
+  // as elements so selector APIs like `matches()` / `closest()` can traverse them.
+  ensureNodeKind(doc.documentElement, "element");
+  ensureNodeKind(doc.head, "element");
+  ensureNodeKind(doc.body, "element");
+
   function validateSelectors(sel) {
     sel = String(sel);
     if (sel === "") throw new SyntaxError("SyntaxError");
@@ -303,6 +310,25 @@ const DOM_BINDINGS_SHIM: &str = r##"
       };
       g.Element.prototype.querySelectorAll = function (selectors) {
         return queryAll(this, selectors);
+      };
+      g.Element.prototype.matches = function (selectors) {
+        var sel = validateSelectors(selectors);
+        var tokens = splitTokens(sel);
+        // `Element.matches()` uses the element itself as the selector subject; no additional scoping
+        // root restriction is applied (unlike `querySelector`, which scopes traversal).
+        return matchesSelector(this, tokens, null);
+      };
+      g.Element.prototype.closest = function (selectors) {
+        var sel = validateSelectors(selectors);
+        var tokens = splitTokens(sel);
+        var cur = this;
+        while (cur) {
+          if (cur.__node_kind === "element" && matchesSelector(cur, tokens, null)) {
+            return cur;
+          }
+          cur = cur.parentNode;
+        }
+        return null;
       };
     }
   } catch (_e) {
