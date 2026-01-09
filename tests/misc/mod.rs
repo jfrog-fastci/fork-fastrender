@@ -41,6 +41,7 @@ mod dom2_js_events;
 mod js_event_loop_timers;
 mod js_diagnostics;
 mod js_dom_shims;
+mod vm_js_optional_chaining_this;
 mod list_border_outline_case_insensitive_test;
 mod logical_shorthand_parsing_test;
 mod map_hidden;
