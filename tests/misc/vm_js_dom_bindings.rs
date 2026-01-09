@@ -493,6 +493,301 @@ fn node_text_content_getter_and_setter() -> Result<(), VmError> {
 }
 
 #[test]
+fn element_inner_html_and_outer_html_round_trip() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom.clone(), current_script)?;
+
+  struct Recorded {
+    inner_html_initial: String,
+    inner_html_round_trip: String,
+    outer_html_round_trip: String,
+    span_node_type: f64,
+    tail_node_type: f64,
+    span_text: String,
+    tail_text: String,
+    div_text: String,
+    child_identity_preserved: bool,
+    script_already_started: bool,
+    old_wrapper_disconnected: bool,
+    replaced_parent_is_body: bool,
+    replaced_text: String,
+    target_node_detached: bool,
+  }
+
+  let mut scope = heap.scope();
+  let recorded: Result<Recorded, VmError> = (|| {
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .ok_or(VmError::InvariantViolation(
+        "globalThis.document should be defined",
+      ))?;
+    let Value::Object(document_obj) = document_val else {
+      return Err(VmError::InvariantViolation("document should be an object"));
+    };
+
+    let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+    let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+      .ok_or(VmError::InvariantViolation(
+        "document.createElement should exist",
+      ))?;
+
+    let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+    let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+      .ok_or(VmError::InvariantViolation("appendChild should exist"))?;
+
+    // Document nodes can only have one element child; use a `<body>` element as the root parent so
+    // `outerHTML` replacement does not attempt to modify a direct child of the `Document`.
+    let tag_body = Value::String(scope.alloc_string("body")?);
+    let body_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_body])?;
+    let Value::Object(_body_obj) = body_val else {
+      return Err(VmError::InvariantViolation("createElement(body) should return an object"));
+    };
+    vm.call_without_host(&mut scope, append_child, document_val, &[body_val])?;
+
+    let tag_div = Value::String(scope.alloc_string("div")?);
+    let div_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+    let Value::Object(div_obj) = div_val else {
+      return Err(VmError::InvariantViolation("createElement(div) should return an object"));
+    };
+
+    let key_set_attribute = PropertyKey::from_string(scope.alloc_string("setAttribute")?);
+    let set_attribute = get_data_property_value(scope.heap(), div_obj, &key_set_attribute)
+      .ok_or(VmError::InvariantViolation("setAttribute should exist"))?;
+    let arg_id = Value::String(scope.alloc_string("id")?);
+    let arg_target = Value::String(scope.alloc_string("target")?);
+    vm.call_without_host(&mut scope, set_attribute, div_val, &[arg_id, arg_target])?;
+
+    vm.call_without_host(&mut scope, append_child, body_val, &[div_val])?;
+
+    let (body_id, target_id) = {
+      let dom_ref = dom.borrow();
+      let body_id = dom_ref
+        .document_element()
+        .ok_or(VmError::InvariantViolation("missing body element"))?;
+      let target_id = dom_ref
+        .get_element_by_id("target")
+        .ok_or(VmError::InvariantViolation("missing #target element"))?;
+      (body_id, target_id)
+    };
+
+    let key_inner_html = PropertyKey::from_string(scope.alloc_string("innerHTML")?);
+    let inner_html_get = get_accessor_getter(scope.heap(), div_obj, &key_inner_html)
+      .ok_or(VmError::InvariantViolation("innerHTML getter should exist"))?;
+    let inner_html_set = get_accessor_setter(scope.heap(), div_obj, &key_inner_html)
+      .ok_or(VmError::InvariantViolation("innerHTML setter should exist"))?;
+
+    let inner_html_initial = vm.call_without_host(&mut scope, inner_html_get, div_val, &[])?;
+    let Value::String(inner_html_initial) = inner_html_initial else {
+      return Err(VmError::InvariantViolation("innerHTML getter should return a string"));
+    };
+    let inner_html_initial = scope.heap().get_string(inner_html_initial)?.to_utf8_lossy().to_string();
+
+    let arg_html = Value::String(scope.alloc_string("<span id=child>hi</span>tail")?);
+    vm.call_without_host(&mut scope, inner_html_set, div_val, &[arg_html])?;
+
+    let inner_html_round_trip = vm.call_without_host(&mut scope, inner_html_get, div_val, &[])?;
+    let Value::String(inner_html_round_trip) = inner_html_round_trip else {
+      return Err(VmError::InvariantViolation("innerHTML getter should return a string"));
+    };
+    let inner_html_round_trip = scope
+      .heap()
+      .get_string(inner_html_round_trip)?
+      .to_utf8_lossy()
+      .to_string();
+
+    // Validate Node navigation for the newly inserted children.
+    let key_first_child = PropertyKey::from_string(scope.alloc_string("firstChild")?);
+    let first_child_get = get_accessor_getter(scope.heap(), div_obj, &key_first_child)
+      .ok_or(VmError::InvariantViolation("firstChild getter should exist"))?;
+    let key_next_sibling = PropertyKey::from_string(scope.alloc_string("nextSibling")?);
+    let next_sibling_get = get_accessor_getter(scope.heap(), div_obj, &key_next_sibling)
+      .ok_or(VmError::InvariantViolation("nextSibling getter should exist"))?;
+    let key_node_type = PropertyKey::from_string(scope.alloc_string("nodeType")?);
+    let node_type_get = get_accessor_getter(scope.heap(), div_obj, &key_node_type)
+      .ok_or(VmError::InvariantViolation("nodeType getter should exist"))?;
+    let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+    let text_content_get = get_accessor_getter(scope.heap(), div_obj, &key_text_content)
+      .ok_or(VmError::InvariantViolation("textContent getter should exist"))?;
+
+    let span_val = vm.call_without_host(&mut scope, first_child_get, div_val, &[])?;
+    let Value::Object(_span_obj) = span_val else {
+      return Err(VmError::InvariantViolation("firstChild should return an object"));
+    };
+    let tail_val = vm.call_without_host(&mut scope, next_sibling_get, span_val, &[])?;
+    let Value::Object(_tail_obj) = tail_val else {
+      return Err(VmError::InvariantViolation("nextSibling should return an object"));
+    };
+
+    let span_node_type = vm.call_without_host(&mut scope, node_type_get, span_val, &[])?;
+    let Value::Number(span_node_type) = span_node_type else {
+      return Err(VmError::InvariantViolation("nodeType should return a number"));
+    };
+    let tail_node_type = vm.call_without_host(&mut scope, node_type_get, tail_val, &[])?;
+    let Value::Number(tail_node_type) = tail_node_type else {
+      return Err(VmError::InvariantViolation("nodeType should return a number"));
+    };
+
+    let span_text = vm.call_without_host(&mut scope, text_content_get, span_val, &[])?;
+    let Value::String(span_text) = span_text else {
+      return Err(VmError::InvariantViolation("textContent should return a string"));
+    };
+    let span_text = scope.heap().get_string(span_text)?.to_utf8_lossy().to_string();
+
+    let tail_text = vm.call_without_host(&mut scope, text_content_get, tail_val, &[])?;
+    let Value::String(tail_text) = tail_text else {
+      return Err(VmError::InvariantViolation("textContent should return a string"));
+    };
+    let tail_text = scope.heap().get_string(tail_text)?.to_utf8_lossy().to_string();
+
+    let div_text = vm.call_without_host(&mut scope, text_content_get, div_val, &[])?;
+    let Value::String(div_text) = div_text else {
+      return Err(VmError::InvariantViolation("textContent should return a string"));
+    };
+    let div_text = scope.heap().get_string(div_text)?.to_utf8_lossy().to_string();
+
+    // document.getElementById should be able to find the inserted child element and return the same
+    // wrapper object (identity cache).
+    let key_get_element_by_id = PropertyKey::from_string(scope.alloc_string("getElementById")?);
+    let get_element_by_id = get_data_property_value(scope.heap(), document_obj, &key_get_element_by_id)
+      .ok_or(VmError::InvariantViolation("getElementById should exist"))?;
+    let arg_child = Value::String(scope.alloc_string("child")?);
+    let child_val = vm.call_without_host(&mut scope, get_element_by_id, document_val, &[arg_child])?;
+    let child_identity_preserved = child_val == span_val;
+
+    // outerHTML getter serializes the element itself.
+    let key_outer_html = PropertyKey::from_string(scope.alloc_string("outerHTML")?);
+    let outer_html_get = get_accessor_getter(scope.heap(), div_obj, &key_outer_html)
+      .ok_or(VmError::InvariantViolation("outerHTML getter should exist"))?;
+    let outer_html_set = get_accessor_setter(scope.heap(), div_obj, &key_outer_html)
+      .ok_or(VmError::InvariantViolation("outerHTML setter should exist"))?;
+
+    let outer_html_round_trip = vm.call_without_host(&mut scope, outer_html_get, div_val, &[])?;
+    let Value::String(outer_html_round_trip) = outer_html_round_trip else {
+      return Err(VmError::InvariantViolation("outerHTML getter should return a string"));
+    };
+    let outer_html_round_trip = scope
+      .heap()
+      .get_string(outer_html_round_trip)?
+      .to_utf8_lossy()
+      .to_string();
+
+    // Insert a script via innerHTML; the Rust-side DOM should mark it as already started.
+    let arg_script = Value::String(scope.alloc_string("<script id=s>console.log(1)</script>")?);
+    vm.call_without_host(&mut scope, inner_html_set, div_val, &[arg_script])?;
+
+    let script_already_started = {
+      let dom_ref = dom.borrow();
+      let script_id = dom_ref
+        .get_element_by_id("s")
+        .ok_or(VmError::InvariantViolation("expected script inserted via innerHTML"))?;
+      dom_ref.node(script_id).script_already_started
+    };
+
+    // outerHTML setter replaces the element and should disconnect the old wrapper (parentNode=null).
+    let arg_replacement = Value::String(scope.alloc_string("<p id=replaced>ok</p>")?);
+    vm.call_without_host(&mut scope, outer_html_set, div_val, &[arg_replacement])?;
+
+    let key_parent_node = PropertyKey::from_string(scope.alloc_string("parentNode")?);
+    let parent_node_get = get_accessor_getter(scope.heap(), div_obj, &key_parent_node)
+      .ok_or(VmError::InvariantViolation("parentNode getter should exist"))?;
+    let div_parent = vm.call_without_host(&mut scope, parent_node_get, div_val, &[])?;
+    let old_wrapper_disconnected = matches!(div_parent, Value::Null);
+
+    let arg_replaced = Value::String(scope.alloc_string("replaced")?);
+    let replaced_val =
+      vm.call_without_host(&mut scope, get_element_by_id, document_val, &[arg_replaced])?;
+    let Value::Object(_replaced_obj) = replaced_val else {
+      return Err(VmError::InvariantViolation("expected replaced element wrapper"));
+    };
+    let replaced_parent = vm.call_without_host(&mut scope, parent_node_get, replaced_val, &[])?;
+    let replaced_parent_is_body = replaced_parent == body_val;
+
+    let replaced_text = vm.call_without_host(&mut scope, text_content_get, replaced_val, &[])?;
+    let Value::String(replaced_text) = replaced_text else {
+      return Err(VmError::InvariantViolation("textContent should return a string"));
+    };
+    let replaced_text = scope.heap().get_string(replaced_text)?.to_utf8_lossy().to_string();
+
+    let target_node_detached = {
+      let dom_ref = dom.borrow();
+      let parent = dom_ref
+        .parent(target_id)
+        .map_err(|_| VmError::InvariantViolation("dom.parent failed for original target"))?;
+      parent.is_none()
+    };
+
+    // Also validate that the new element is connected under the original `<body>` element.
+    {
+      let dom_ref = dom.borrow();
+      let replaced_id = dom_ref
+        .get_element_by_id("replaced")
+        .ok_or(VmError::InvariantViolation("expected #replaced to exist in DOM"))?;
+      let replaced_parent = dom_ref
+        .parent(replaced_id)
+        .map_err(|_| VmError::InvariantViolation("dom.parent failed for #replaced"))?;
+      if replaced_parent != Some(body_id) {
+        return Err(VmError::InvariantViolation(
+          "#replaced should be a child of the body element",
+        ));
+      }
+    }
+
+    Ok(Recorded {
+      inner_html_initial,
+      inner_html_round_trip,
+      outer_html_round_trip,
+      span_node_type,
+      tail_node_type,
+      span_text,
+      tail_text,
+      div_text,
+      child_identity_preserved,
+      script_already_started,
+      old_wrapper_disconnected,
+      replaced_parent_is_body,
+      replaced_text,
+      target_node_detached,
+    })
+  })();
+
+  drop(scope);
+  realm.teardown(&mut heap);
+
+  let recorded = recorded?;
+
+  assert_eq!(recorded.inner_html_initial, "");
+  assert_eq!(
+    recorded.inner_html_round_trip,
+    "<span id=\"child\">hi</span>tail"
+  );
+  assert_eq!(recorded.span_node_type, 1.0);
+  assert_eq!(recorded.tail_node_type, 3.0);
+  assert_eq!(recorded.span_text, "hi");
+  assert_eq!(recorded.tail_text, "tail");
+  assert_eq!(recorded.div_text, "hitail");
+  assert!(recorded.child_identity_preserved);
+  assert_eq!(
+    recorded.outer_html_round_trip,
+    "<div id=\"target\"><span id=\"child\">hi</span>tail</div>"
+  );
+  assert!(recorded.script_already_started);
+  assert!(recorded.old_wrapper_disconnected);
+  assert!(recorded.replaced_parent_is_body);
+  assert_eq!(recorded.replaced_text, "ok");
+  assert!(recorded.target_node_detached);
+
+  Ok(())
+}
+
+#[test]
 fn element_class_list_dom_token_list() -> Result<(), VmError> {
   let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
   let mut heap = Heap::new(limits);

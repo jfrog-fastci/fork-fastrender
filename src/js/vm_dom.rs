@@ -1441,6 +1441,84 @@ fn dom_element_set_attribute(
   Ok(Value::Undefined)
 }
 
+fn dom_element_inner_html_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  match host.dom.borrow().inner_html(element_id) {
+    Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
+    Err(err) => throw_dom_error(scope, host, err),
+  }
+}
+
+fn dom_element_inner_html_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let html_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html = to_dom_string(scope, host, html_val)?;
+
+  match host.dom.borrow_mut().set_inner_html(element_id, &html) {
+    Ok(()) => Ok(Value::Undefined),
+    Err(err) => throw_dom_error(scope, host, err),
+  }
+}
+
+fn dom_element_outer_html_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  match host.dom.borrow().outer_html(element_id) {
+    Ok(html) => Ok(Value::String(scope.alloc_string(&html)?)),
+    Err(err) => throw_dom_error(scope, host, err),
+  }
+}
+
+fn dom_element_outer_html_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let html_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let html = to_dom_string(scope, host, html_val)?;
+
+  match host.dom.borrow_mut().set_outer_html(element_id, &html) {
+    Ok(()) => Ok(Value::Undefined),
+    Err(err) => throw_dom_error(scope, host, err),
+  }
+}
+
 fn dom_node_text_content_getter(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1860,6 +1938,10 @@ pub fn install_dom_bindings_with_limits(
   let call_next_sibling = vm.register_native_call(dom_node_next_sibling_getter)?;
   let call_node_type = vm.register_native_call(dom_node_node_type_getter)?;
   let call_set_attribute = vm.register_native_call(dom_element_set_attribute)?;
+  let call_inner_html_get = vm.register_native_call(dom_element_inner_html_getter)?;
+  let call_inner_html_set = vm.register_native_call(dom_element_inner_html_setter)?;
+  let call_outer_html_get = vm.register_native_call(dom_element_outer_html_getter)?;
+  let call_outer_html_set = vm.register_native_call(dom_element_outer_html_setter)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
   let call_text_content_set = vm.register_native_call(dom_node_text_content_setter)?;
@@ -1931,6 +2013,20 @@ pub fn install_dom_bindings_with_limits(
     "getElementsByClassName",
     call_element_get_elements_by_class_name,
     1,
+  )?;
+  install_accessor(
+    &mut scope,
+    proto_element,
+    "innerHTML",
+    call_inner_html_get,
+    call_inner_html_set,
+  )?;
+  install_accessor(
+    &mut scope,
+    proto_element,
+    "outerHTML",
+    call_outer_html_get,
+    call_outer_html_set,
   )?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
   install_accessor(
