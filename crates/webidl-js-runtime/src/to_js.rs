@@ -275,9 +275,15 @@ fn to_js_named<R: WebIdlJsRuntime>(
       to_js_with_limits(rt, ctx, inner, value, limits)
     }
     NamedTypeKind::Interface => match value {
-      WebIdlValue::PlatformObject(obj) => rt
-        .platform_object_to_js_value(obj)
-        .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime")),
+      WebIdlValue::PlatformObject(obj) => {
+        let js_value = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.implements_interface(js_value, &named.name) {
+          return Err(rt.throw_type_error("platform object does not implement the interface"));
+        }
+        Ok(js_value)
+      }
       _ => Err(rt.throw_type_error(
         "interface return values are not supported yet (expected platform object)",
       )),
@@ -379,7 +385,7 @@ mod tests {
   use crate::VmJsRuntime;
   use std::collections::BTreeMap;
   use vm_js::Value;
-  use webidl_ir::{parse_idl_type_complete, DictionarySchema};
+  use webidl_ir::{parse_idl_type_complete, DictionarySchema, NamedType, NamedTypeKind, PlatformObject};
 
   #[test]
   fn primitives_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
@@ -581,6 +587,42 @@ mod tests {
         .ok_or_else(|| "missing record property")?;
       assert!(desc.enumerable);
     }
+
+    Ok(())
+  }
+
+  #[test]
+  fn interface_return_requires_branded_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let node_ty = IdlType::Named(NamedType {
+      name: "Node".to_string(),
+      kind: NamedTypeKind::Interface,
+    });
+
+    let obj = rt.alloc_platform_object_value("Node", &["EventTarget"], 123)?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
+    let out = to_js(&mut rt, &ctx, &node_ty, &value)?;
+    assert_eq!(out, obj);
+
+    let other_ty = IdlType::Named(NamedType {
+      name: "Document".to_string(),
+      kind: NamedTypeKind::Interface,
+    });
+    let err = to_js(&mut rt, &ctx, &other_ty, &value).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
 
     Ok(())
   }
