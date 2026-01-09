@@ -608,6 +608,96 @@ fn window_fetch_forwards_request_headers() -> Result<()> {
 }
 
 #[test]
+fn window_fetch_accepts_request_object_input() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ const req = new Request("https://example.com/headers", { headers: { "x-test": "1" } });
+ fetch(req).then(() => {});
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(
+    fetcher
+      .last_request_headers()
+      .iter()
+      .any(|(name, value)| name == "x-test" && value == "1"),
+    "expected Request object input to forward x-test: 1"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_request_constructor_clones_request_input() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ const req1 = new Request("https://example.com/headers", { headers: { "x-test": "1" } });
+ const req2 = new Request(req1);
+ req2.headers.set("x-test", "2");
+ fetch(req2).then(() => {});
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(
+    fetcher
+      .last_request_headers()
+      .iter()
+      .any(|(name, value)| name == "x-test" && value == "2"),
+    "expected Request cloned from Request(input) to forward updated x-test: 2"
+  );
+  Ok(())
+}
+
+#[test]
 fn window_fetch_response_json_parses_body() -> Result<()> {
   let fetcher: Arc<InMemoryFetcher> = Arc::new(
     InMemoryFetcher::new().with_response("https://example.com/json", br#"{"ok": true}"#, 200),

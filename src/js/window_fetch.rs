@@ -585,6 +585,17 @@ fn response_proto_from_callee(scope: &Scope<'_>, callee: GcObject) -> Result<GcO
   }
 }
 
+fn request_info_from_value(scope: &mut Scope<'_>, value: Value) -> Option<(u64, u64)> {
+  let Value::Object(obj) = value else {
+    return None;
+  };
+  let env_id = get_data_prop(scope, obj, ENV_ID_KEY).ok()?;
+  let request_id = get_data_prop(scope, obj, REQUEST_ID_KEY).ok()?;
+  let env_id = number_to_u64(env_id).ok()?;
+  let request_id = number_to_u64(request_id).ok()?;
+  Some((env_id, request_id))
+}
+
 struct JsPromiseCapability {
   promise: Value,
   resolve: Value,
@@ -1085,10 +1096,21 @@ fn request_ctor_construct(
 ) -> Result<Value, VmError> {
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
-  let url = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let mut request = CoreRequest::new("GET", url);
+  let mut request = if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
+    with_env_state(other_env_id, |state| {
+      state
+        .requests
+        .get(&other_request_id)
+        .cloned()
+        .ok_or(VmError::TypeError("Request: invalid backing request"))
+    })?
+  } else {
+    let url = to_rust_string(scope.heap_mut(), input)?;
+    CoreRequest::new("GET", url)
+  };
   if matches!(init, Value::Object(_)) {
     let Value::Object(init_obj) = init else { unreachable!() };
     let method_key = alloc_key(scope, "method")?;
@@ -1445,12 +1467,24 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let env_id = env_id_from_callee(scope, callee)?;
   let headers_proto = headers_proto_from_callee(scope, callee)?;
   let response_proto = response_proto_from_callee(scope, callee)?;
-  let url = to_rust_string(scope.heap_mut(), args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
   // Build request synchronously (invalid init should reject deterministically).
-  let mut request = CoreRequest::new("GET", url);
-  request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
+  let mut request = if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
+    with_env_state(other_env_id, |state| {
+      state
+        .requests
+        .get(&other_request_id)
+        .cloned()
+        .ok_or(VmError::TypeError("Request: invalid backing request"))
+    })?
+  } else {
+    let url = to_rust_string(scope.heap_mut(), input)?;
+    let mut request = CoreRequest::new("GET", url);
+    request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
+    request
+  };
 
   if let Value::Object(init_obj) = init {
     let method_key = alloc_key(scope, "method")?;
