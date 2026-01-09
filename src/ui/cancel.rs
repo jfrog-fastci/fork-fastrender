@@ -70,6 +70,14 @@ impl CancelSnapshot {
         || gens_paint.load(Ordering::Relaxed) != expected_paint
     })
   }
+
+  pub fn is_still_current_for_prepare(&self, gens: &CancelGens) -> bool {
+    gens.nav.load(Ordering::Relaxed) == self.nav
+  }
+
+  pub fn is_still_current_for_paint(&self, gens: &CancelGens) -> bool {
+    gens.nav.load(Ordering::Relaxed) == self.nav && gens.paint.load(Ordering::Relaxed) == self.paint
+  }
 }
 
 pub fn deadline_for(callback: Arc<CancelCallback>, timeout: Option<Duration>) -> RenderDeadline {
@@ -87,10 +95,13 @@ mod tests {
     let callback = snapshot.cancel_callback_for_prepare(&gens);
 
     assert!(!callback());
+    assert!(snapshot.is_still_current_for_prepare(&gens));
     gens.bump_paint();
     assert!(!callback());
+    assert!(snapshot.is_still_current_for_prepare(&gens));
     gens.bump_nav();
     assert!(callback());
+    assert!(!snapshot.is_still_current_for_prepare(&gens));
   }
 
   #[test]
@@ -100,14 +111,18 @@ mod tests {
     let callback = snapshot.cancel_callback_for_paint(&gens);
 
     assert!(!callback());
+    assert!(snapshot.is_still_current_for_paint(&gens));
     gens.bump_paint();
     assert!(callback());
+    assert!(!snapshot.is_still_current_for_paint(&gens));
 
     let snapshot = gens.snapshot_paint();
     let callback = snapshot.cancel_callback_for_paint(&gens);
     assert!(!callback());
+    assert!(snapshot.is_still_current_for_paint(&gens));
     gens.bump_nav();
     assert!(callback());
+    assert!(!snapshot.is_still_current_for_paint(&gens));
   }
 
   #[test]
