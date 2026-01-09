@@ -1469,6 +1469,9 @@ mod tests {
     assert_eq!(response.r#type, ResponseType::Opaque);
     assert_eq!(response.status, 0);
     assert_eq!(response.url, "");
+    assert!(!response.redirected);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
     assert!(response.body.is_none());
+    assert!(response.headers.sort_and_combine().is_empty());
   }
 }
