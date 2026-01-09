@@ -377,17 +377,18 @@ impl Evaluator<'_> {
     format_stack_trace(&frames)
   }
 
-  fn value_to_string(&self, heap: &Heap, value: Value) -> Result<String, VmError> {
-    Ok(match value {
-      Value::Undefined => "undefined".to_string(),
-      Value::Null => "null".to_string(),
-      Value::Bool(true) => "true".to_string(),
-      Value::Bool(false) => "false".to_string(),
-      Value::Number(n) => n.to_string(),
-      Value::String(s) => heap.get_string(s)?.to_utf8_lossy(),
-      Value::Symbol(_) => "Symbol".to_string(),
-      Value::Object(_) => "[object Object]".to_string(),
-    })
+  fn value_to_string(&self, heap: &mut Heap, value: Value) -> Result<String, VmError> {
+    // Use `vm-js`'s `ToString` for primitives so we match ECMAScript formatting rules (not Rust
+    // float formatting). In particular, this keeps `Infinity`/`-Infinity`/`NaN` spelling correct.
+    match value {
+      // Keep the embedding's current placeholder formatting for unsupported types.
+      Value::Symbol(_) => Ok("Symbol".to_string()),
+      Value::Object(_) => Ok("[object Object]".to_string()),
+      other => {
+        let s = heap.to_string(other)?;
+        Ok(heap.get_string(s)?.to_utf8_lossy())
+      }
+    }
   }
 
   fn value_to_script_value(&self, heap: &Heap, value: Value) -> Result<ScriptValue, ScriptError> {
@@ -492,7 +493,7 @@ impl Evaluator<'_> {
   ) -> Result<ScriptError, ScriptError> {
     let value = self.eval_expr(scope, &stmt.value)?;
     let message = self
-      .value_to_string(scope.heap(), value)
+      .value_to_string(scope.heap_mut(), value)
       .map_err(vm_error_to_runtime)?;
     let stack_trace = self.stack_trace_at_loc(node.loc);
     Ok(ScriptError::Exception { message, stack_trace })
@@ -562,10 +563,10 @@ impl Evaluator<'_> {
           // Minimal string concatenation for the common cases.
           _ => {
             let a = self
-              .value_to_string(rhs_scope.heap(), left)
+              .value_to_string(rhs_scope.heap_mut(), left)
               .map_err(vm_error_to_runtime)?;
             let b = self
-              .value_to_string(rhs_scope.heap(), right)
+              .value_to_string(rhs_scope.heap_mut(), right)
               .map_err(vm_error_to_runtime)?;
             let combined = format!("{a}{b}");
             let handle = rhs_scope.alloc_string(&combined).map_err(vm_error_to_runtime)?;
@@ -765,6 +766,21 @@ mod tests {
     .unwrap();
     let value = realm.eval_script("test.js", "1+2").unwrap();
     assert_eq!(value, ScriptValue::Number(3.0));
+  }
+
+  #[test]
+  fn string_concatenation_uses_ecmascript_number_formatting() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    let value = realm.eval_script("num.js", "1e999 + ''").unwrap();
+    assert_eq!(value, ScriptValue::String("Infinity".to_string()));
   }
 
   #[test]
