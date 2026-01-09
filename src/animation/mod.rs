@@ -147,6 +147,20 @@ fn lerp_color(a: Rgba, b: Rgba, t: f32) -> Rgba {
   )
 }
 
+fn add_color(a: Rgba, b: Rgba) -> Rgba {
+  let add_chan = |ca: u8, cb: u8| -> u8 { ca.saturating_add(cb) };
+  Rgba::new(
+    add_chan(a.r, b.r),
+    add_chan(a.g, b.g),
+    add_chan(a.b, b.b),
+    (a.a + b.a).clamp(0.0, 1.0),
+  )
+}
+
+fn clamp_color_channel_i128(value: i128) -> u8 {
+  value.clamp(0, 255) as u8
+}
+
 fn interpolate_custom_property(
   from: &CustomPropertyValue,
   to: &CustomPropertyValue,
@@ -3897,7 +3911,7 @@ fn apply_additive_animation_value(
       let effect = compose_transform_list(effect_list);
       let combined = underlying.multiply(&effect);
       style.transform = vec![crate::css::types::Transform::Matrix3d(combined.m)];
-      true
+      return true;
     }
     ("translate", AnimatedValue::Translate(effect)) => {
       // `translate: none` is an identity translation and should not force the property into the
@@ -3923,7 +3937,7 @@ fn apply_additive_animation_value(
         y: Length::px(uy + ey),
         z: Length::px(uz + ez),
       };
-      true
+      return true;
     }
     ("rotate", AnimatedValue::Rotate(effect)) => {
       // `rotate: none` is an identity rotation and should not force the property into the angle
@@ -3986,7 +4000,7 @@ fn apply_additive_animation_value(
           angle,
         };
       }
-      true
+      return true;
     }
     ("scale", AnimatedValue::Scale(effect)) => {
       // `scale: none` is an identity scaling and should not force the property into the numeric
@@ -4009,14 +4023,108 @@ fn apply_additive_animation_value(
         y: uy * ey,
         z: uz * ez,
       };
-      true
+      return true;
     }
     ("opacity", AnimatedValue::Opacity(effect)) => {
       style.opacity = clamp_progress(style.opacity + effect);
-      true
+      return true;
     }
-    _ => false,
+    _ => {}
   }
+
+  let Some(interpolator) = interpolator_for(property) else {
+    return false;
+  };
+  let Some(underlying) = (interpolator.extract)(style, ctx) else {
+    return false;
+  };
+
+  let combined = match (&underlying, value) {
+    (AnimatedValue::Color(under), AnimatedValue::Color(effect)) => {
+      if !under.a.is_finite() || !effect.a.is_finite() {
+        None
+      } else {
+        Some(AnimatedValue::Color(add_color(*under, *effect)))
+      }
+    }
+    (AnimatedValue::Length(under), AnimatedValue::Length(effect)) => {
+      let under_px = under.to_px();
+      let effect_px = effect.to_px();
+      if !under_px.is_finite() || !effect_px.is_finite() {
+        None
+      } else {
+        let mut px = under_px + effect_px;
+        // `outline-width` is clamped to be non-negative at computed-value time.
+        if property == "outline-width" {
+          px = px.max(0.0);
+        }
+        Some(AnimatedValue::Length(Length::px(px)))
+      }
+    }
+    (
+      AnimatedValue::OutlineColor(OutlineColor::Color(under)),
+      AnimatedValue::OutlineColor(OutlineColor::Color(effect)),
+    ) => {
+      if !under.a.is_finite() || !effect.a.is_finite() {
+        None
+      } else {
+        Some(AnimatedValue::OutlineColor(OutlineColor::Color(add_color(
+          *under, *effect,
+        ))))
+      }
+    }
+    (AnimatedValue::BorderColor(under), AnimatedValue::BorderColor(effect)) => {
+      if !under.iter().all(|c| c.a.is_finite()) || !effect.iter().all(|c| c.a.is_finite()) {
+        None
+      } else {
+        let mut out = [Rgba::TRANSPARENT; 4];
+        for i in 0..4 {
+          out[i] = add_color(under[i], effect[i]);
+        }
+        Some(AnimatedValue::BorderColor(out))
+      }
+    }
+    (AnimatedValue::BorderWidth(under), AnimatedValue::BorderWidth(effect)) => {
+      let mut out = [Length::px(0.0); 4];
+      for i in 0..4 {
+        let under_px = under[i].to_px();
+        let effect_px = effect[i].to_px();
+        if !under_px.is_finite() || !effect_px.is_finite() {
+          return false;
+        }
+        out[i] = Length::px((under_px + effect_px).max(0.0));
+      }
+      Some(AnimatedValue::BorderWidth(out))
+    }
+    (AnimatedValue::BorderRadius(under), AnimatedValue::BorderRadius(effect)) => {
+      let mut out = [BorderCornerRadius::default(); 4];
+      for i in 0..4 {
+        let under_x = under[i].x.to_px();
+        let under_y = under[i].y.to_px();
+        let effect_x = effect[i].x.to_px();
+        let effect_y = effect[i].y.to_px();
+        if !under_x.is_finite()
+          || !under_y.is_finite()
+          || !effect_x.is_finite()
+          || !effect_y.is_finite()
+        {
+          return false;
+        }
+        out[i] = BorderCornerRadius {
+          x: Length::px((under_x + effect_x).max(0.0)),
+          y: Length::px((under_y + effect_y).max(0.0)),
+        };
+      }
+      Some(AnimatedValue::BorderRadius(out))
+    }
+    _ => None,
+  };
+
+  if let Some(combined) = combined {
+    (interpolator.apply)(style, &combined);
+    return true;
+  }
+  false
 }
 
 fn apply_iteration_accumulation(
@@ -4167,6 +4275,127 @@ fn accumulate_iteration_value(
       }
       let delta = end - start;
       Some(AnimatedValue::Opacity(cur + (iteration as f32) * delta))
+    }
+    (AnimatedValue::Color(cur), AnimatedValue::Color(start), AnimatedValue::Color(end)) => {
+      if !cur.a.is_finite() || !start.a.is_finite() || !end.a.is_finite() {
+        return None;
+      }
+      let iter = iteration as i128;
+      let r = clamp_color_channel_i128(cur.r as i128 + iter * (end.r as i128 - start.r as i128));
+      let g = clamp_color_channel_i128(cur.g as i128 + iter * (end.g as i128 - start.g as i128));
+      let b = clamp_color_channel_i128(cur.b as i128 + iter * (end.b as i128 - start.b as i128));
+      let alpha = (cur.a + (iteration as f32) * (end.a - start.a)).clamp(0.0, 1.0);
+      if !alpha.is_finite() {
+        return None;
+      }
+      Some(AnimatedValue::Color(Rgba::new(r, g, b, alpha)))
+    }
+    (AnimatedValue::Length(cur), AnimatedValue::Length(start), AnimatedValue::Length(end)) => {
+      let cur_px = cur.to_px();
+      let start_px = start.to_px();
+      let end_px = end.to_px();
+      if !cur_px.is_finite() || !start_px.is_finite() || !end_px.is_finite() {
+        return None;
+      }
+      let delta = end_px - start_px;
+      Some(AnimatedValue::Length(Length::px(
+        cur_px + (iteration as f32) * delta,
+      )))
+    }
+    (
+      AnimatedValue::OutlineColor(OutlineColor::Color(cur)),
+      AnimatedValue::OutlineColor(OutlineColor::Color(start)),
+      AnimatedValue::OutlineColor(OutlineColor::Color(end)),
+    ) => {
+      if !cur.a.is_finite() || !start.a.is_finite() || !end.a.is_finite() {
+        return None;
+      }
+      let iter = iteration as i128;
+      let r = clamp_color_channel_i128(cur.r as i128 + iter * (end.r as i128 - start.r as i128));
+      let g = clamp_color_channel_i128(cur.g as i128 + iter * (end.g as i128 - start.g as i128));
+      let b = clamp_color_channel_i128(cur.b as i128 + iter * (end.b as i128 - start.b as i128));
+      let alpha = (cur.a + (iteration as f32) * (end.a - start.a)).clamp(0.0, 1.0);
+      if !alpha.is_finite() {
+        return None;
+      }
+      Some(AnimatedValue::OutlineColor(OutlineColor::Color(Rgba::new(
+        r, g, b, alpha,
+      ))))
+    }
+    (
+      AnimatedValue::BorderColor(cur),
+      AnimatedValue::BorderColor(start),
+      AnimatedValue::BorderColor(end),
+    ) => {
+      if !cur.iter().all(|c| c.a.is_finite())
+        || !start.iter().all(|c| c.a.is_finite())
+        || !end.iter().all(|c| c.a.is_finite())
+      {
+        return None;
+      }
+      let iter = iteration as i128;
+      let mut out = [Rgba::TRANSPARENT; 4];
+      for i in 0..4 {
+        let r = clamp_color_channel_i128(
+          cur[i].r as i128 + iter * (end[i].r as i128 - start[i].r as i128),
+        );
+        let g = clamp_color_channel_i128(
+          cur[i].g as i128 + iter * (end[i].g as i128 - start[i].g as i128),
+        );
+        let b = clamp_color_channel_i128(
+          cur[i].b as i128 + iter * (end[i].b as i128 - start[i].b as i128),
+        );
+        let alpha = (cur[i].a + (iteration as f32) * (end[i].a - start[i].a)).clamp(0.0, 1.0);
+        if !alpha.is_finite() {
+          return None;
+        }
+        out[i] = Rgba::new(r, g, b, alpha);
+      }
+      Some(AnimatedValue::BorderColor(out))
+    }
+    (
+      AnimatedValue::BorderWidth(cur),
+      AnimatedValue::BorderWidth(start),
+      AnimatedValue::BorderWidth(end),
+    ) => {
+      let mut out = [Length::px(0.0); 4];
+      for i in 0..4 {
+        let cur_px = cur[i].to_px();
+        let start_px = start[i].to_px();
+        let end_px = end[i].to_px();
+        if !cur_px.is_finite() || !start_px.is_finite() || !end_px.is_finite() {
+          return None;
+        }
+        let delta = end_px - start_px;
+        out[i] = Length::px(cur_px + (iteration as f32) * delta);
+      }
+      Some(AnimatedValue::BorderWidth(out))
+    }
+    (
+      AnimatedValue::BorderRadius(cur),
+      AnimatedValue::BorderRadius(start),
+      AnimatedValue::BorderRadius(end),
+    ) => {
+      let mut out = [BorderCornerRadius::default(); 4];
+      for i in 0..4 {
+        let cx = cur[i].x.to_px();
+        let cy = cur[i].y.to_px();
+        let sx = start[i].x.to_px();
+        let sy = start[i].y.to_px();
+        let ex = end[i].x.to_px();
+        let ey = end[i].y.to_px();
+        if !cx.is_finite() || !cy.is_finite() || !sx.is_finite() || !sy.is_finite() {
+          return None;
+        }
+        if !ex.is_finite() || !ey.is_finite() {
+          return None;
+        }
+        out[i] = BorderCornerRadius {
+          x: Length::px(cx + (iteration as f32) * (ex - sx)),
+          y: Length::px(cy + (iteration as f32) * (ey - sy)),
+        };
+      }
+      Some(AnimatedValue::BorderRadius(out))
     }
     (
       AnimatedValue::Translate(cur),
@@ -4772,7 +5001,11 @@ fn resolved_view_timeline_inset(
   axis: TimelineAxis,
 ) -> ViewTimelineInset {
   let horizontal = axis_is_horizontal(axis, scroll_container.writing_mode);
-  let positive = axis_is_positive(axis, scroll_container.writing_mode, scroll_container.direction);
+  let positive = axis_is_positive(
+    axis,
+    scroll_container.writing_mode,
+    scroll_container.direction,
+  );
   let (auto_start, auto_end) = if horizontal {
     if positive {
       (
@@ -6160,17 +6393,17 @@ fn transition_value_for_custom_property(
   let sampled = (can_interpolate
     .then(|| interpolate_custom_property(&from_val, &to_val, progress, start_style, style, ctx))
     .flatten())
-    .or_else(|| {
-      if allow_discrete {
-        if progress >= 0.5 {
-          Some(to_val.clone())
-        } else {
-          Some(from_val.clone())
-        }
+  .or_else(|| {
+    if allow_discrete {
+      if progress >= 0.5 {
+        Some(to_val.clone())
       } else {
-        None
+        Some(from_val.clone())
       }
-    })?;
+    } else {
+      None
+    }
+  })?;
 
   Some((sampled, progress, delay, duration))
 }

@@ -283,6 +283,72 @@ fn repaint_with_animation_composition_add_combines_scale() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_animation_composition_add_combines_background_color() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background-color: rgb(0, 0, 0);
+        animation-name: c1, c2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-composition: add;
+      }
+      @keyframes c1 { from { background-color: rgb(10, 0, 0); } to { background-color: rgb(10, 0, 0); } }
+      @keyframes c2 { from { background-color: rgb(10, 0, 0); } to { background-color: rgb(10, 0, 0); } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(20, 20))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  // Each animation contributes +10 red, so `animation-composition: add` should yield 20.
+  assert_eq!(pixel(&mid, 5, 5), (20, 0, 0, 255));
+  assert_eq!(pixel(&mid, 15, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_add_combines_outline_width() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        outline-style: solid;
+        outline-color: rgb(0, 0, 0);
+        outline-width: 0px;
+        animation-name: o1, o2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-composition: add;
+      }
+      @keyframes o1 { from { outline-width: 1px; } to { outline-width: 1px; } }
+      @keyframes o2 { from { outline-width: 1px; } to { outline-width: 1px; } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(40, 40))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  // The box is at (10,10) with size 10x10, so a 2px outline reaches x=8.
+  // If composition was incorrectly treated as replace, the outline would be only 1px thick and
+  // this pixel would remain white.
+  assert_eq!(pixel(&mid, 8, 15), (0, 0, 0, 255));
+  assert_eq!(pixel(&mid, 7, 15), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_translate_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
@@ -536,6 +602,47 @@ fn repaint_with_animation_composition_accumulate_accumulates_scale_iterations() 
   // expanding to 40x40.
   assert_eq!(pixel(&end, 30, 5), (255, 0, 0, 255));
   assert_eq!(pixel(&end, 45, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_accumulate_accumulates_outline_width_iterations() -> Result<()>
+{
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        outline-style: solid;
+        outline-color: rgb(0, 0, 0);
+        outline-width: 0px;
+        animation-name: outline;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes outline {
+        from { outline-width: 0px; }
+        to { outline-width: 10px; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(60, 60))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // At t=1500ms we are halfway through the second iteration: 5px + (10px - 0px) = 15px.
+  assert_eq!(pixel(&mid_second, 6, 25), (0, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 4, 25), (255, 255, 255, 255));
   Ok(())
 }
 
