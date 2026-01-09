@@ -5337,7 +5337,9 @@ impl<'a> ElementRef<'a> {
         && !t.eq_ignore_ascii_case("button")
         && !t.eq_ignore_ascii_case("reset")
         && !t.eq_ignore_ascii_case("submit")
-        && !t.eq_ignore_ascii_case("image");
+        && !t.eq_ignore_ascii_case("image")
+        && !t.eq_ignore_ascii_case("range")
+        && !t.eq_ignore_ascii_case("color");
     }
 
     false
@@ -11509,6 +11511,43 @@ mod tests {
     };
     assert!(!matches(&submit_input, &[], &PseudoClass::Required));
     assert!(!matches(&submit_input, &[], &PseudoClass::Optional));
+
+    let range_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "range".to_string())],
+      },
+      children: vec![],
+    };
+    assert!(
+      !matches(&range_input, &[], &PseudoClass::Required),
+      "required does not apply to range inputs"
+    );
+    assert!(
+      !matches(&range_input, &[], &PseudoClass::Optional),
+      "optional does not apply to range inputs"
+    );
+
+    let color_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "color".to_string()),
+          ("required".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(
+      !matches(&color_input, &[], &PseudoClass::Required),
+      "required does not apply to color inputs"
+    );
+    assert!(
+      !matches(&color_input, &[], &PseudoClass::Optional),
+      "optional does not apply to color inputs"
+    );
 
     let select = DomNode {
       node_type: DomNodeType::Element {
