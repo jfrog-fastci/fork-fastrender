@@ -17897,6 +17897,7 @@ mod tests {
   use crate::style::types::ListStyleType;
   use crate::style::types::Overflow;
   use crate::style::types::ScrollbarColor;
+  use crate::style::types::TextAlign;
   use crate::style::types::TextCombineUpright;
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextOrientation;
@@ -18048,6 +18049,18 @@ mod tests {
     };
     let styled_button = apply_styles(&button_dom, &stylesheet);
     assert_eq!(styled_button.styles.cursor, CursorKeyword::Pointer);
+    assert_eq!(styled_button.styles.text_align, TextAlign::Center);
+
+    let submit_input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "submit".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_submit_input = apply_styles(&submit_input_dom, &stylesheet);
+    assert_eq!(styled_submit_input.styles.text_align, TextAlign::Center);
 
     let hidden_input_dom = DomNode {
       node_type: DomNodeType::Element {
