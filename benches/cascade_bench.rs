@@ -129,6 +129,7 @@ fn generate_balanced_dom(depth: usize, fan_out: usize, payload_bytes: usize) -> 
   let dom = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {

@@ -39,6 +39,7 @@ fn cascade_survives_rule_index_allocation_failure() {
   let dom = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: selectors::context::QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {
