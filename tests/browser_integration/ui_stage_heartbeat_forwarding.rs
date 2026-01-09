@@ -2,8 +2,8 @@
 
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::RenderWorker;
 use fastrender::ui::spawn_ui_worker;
-use fastrender::ui::worker::RenderWorker;
 use fastrender::{PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
@@ -455,4 +455,3 @@ fn stage_heartbeats_forwarded_from_history_ui_worker_for_navigation_and_repaints
   drop(ui_tx);
   join.join().expect("join ui worker thread");
 }
-

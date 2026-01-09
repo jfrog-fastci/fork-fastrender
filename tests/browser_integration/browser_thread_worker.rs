@@ -6,6 +6,7 @@ use super::support::{
 };
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
@@ -18,8 +19,25 @@ fn file_url(path: &Path) -> String {
 
 fn create_tab(h: &WorkerHarness, viewport: (u32, u32)) -> TabId {
   let tab_id = TabId::new();
-  h.send(create_tab_msg(tab_id, None));
+  // The canonical UI worker does not auto-navigate when `initial_url` is `None`. These tests
+  // exercise interactions against a live document, so start tabs at `about:newtab` explicitly.
+  h.send(create_tab_msg(tab_id, Some("about:newtab".to_string())));
   h.send(viewport_changed_msg(tab_id, viewport, 1.0));
+  // When `ViewportChanged` arrives while the initial navigation is preparing, the worker may emit an
+  // initial frame at the default viewport and then repaint at the requested viewport. Wait until we
+  // observe a frame at the desired dimensions so subsequent scroll/clamp assertions are deterministic.
+  let deadline = Instant::now() + Duration::from_secs(10);
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+      panic!("timed out waiting for initial frame at viewport {viewport:?}");
+    }
+    let (frame, events) = h.wait_for_frame(tab_id, remaining);
+    if frame.viewport_css == viewport {
+      let _ = drain_after_frame(h, events);
+      break;
+    }
+  }
   tab_id
 }
 
@@ -264,7 +282,7 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
     NavigationReason::TypedUrl,
   ));
 
-  let events = h.wait_for_event(std::time::Duration::from_secs(2), |ev| {
+  let events = h.wait_for_event(std::time::Duration::from_secs(5), |ev| {
     matches!(ev, WorkerToUiEvent::NavigationFailed { .. })
   });
   assert!(
@@ -276,12 +294,12 @@ fn navigation_unsupported_scheme_rejects_with_failed() {
     "expected NavigationFailed with error, got {events:?}"
   );
 
-  let drained = h.drain_default();
+  // Unsupported URL schemes should fail fast without rendering a new `about:error` frame; the tab
+  // should keep showing the previous page.
+  let drained = h.drain_events(std::time::Duration::from_millis(200));
   assert!(
-    drained
-      .iter()
-      .all(|ev| !matches!(ev, WorkerToUiEvent::FrameReady { .. })),
-    "expected no FrameReady after unsupported navigation, got {drained:?}"
+    !drained.iter().any(|ev| matches!(ev, WorkerToUiEvent::FrameReady { .. })),
+    "expected no FrameReady after unsupported-scheme navigation; got {drained:?}"
   );
 }
 
@@ -321,7 +339,7 @@ fn history_back_forward_emits_committed_urls() {
     } => Some((url.as_str(), *can_go_back, *can_go_forward)),
     _ => None,
   });
-  assert_eq!(back_commit, Some((a_url.as_str(), false, true)));
+  assert_eq!(back_commit, Some((a_url.as_str(), true, true)));
 
   let (_, forward_events) = h.send_and_wait_for_frame(tab_id, UiToWorker::GoForward { tab_id });
   let forward_events = drain_after_frame(&h, forward_events);
@@ -398,13 +416,20 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   std::fs::write(
     &path,
     r#"<!doctype html>
-      <style>
-        html, body { margin: 0; padding: 0; }
-        html { scroll-snap-type: y mandatory; }
-        .snap { height: 100px; scroll-snap-align: start; }
-      </style>
-      <div class="snap" style="background: rgb(255,0,0)"></div>
-      <div class="snap" style="background: rgb(0,0,255)"></div>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            html { scroll-snap-type: y mandatory; }
+            .snap { height: 100px; scroll-snap-align: start; }
+          </style>
+        </head>
+        <body>
+          <div class="snap" style="background: rgb(255,0,0)"></div>
+          <div class="snap" style="background: rgb(0,0,255)"></div>
+          <div class="snap" style="background: rgb(0,255,0)"></div>
+        </body>
+      </html>
     "#,
   )
   .unwrap();
@@ -412,7 +437,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
 
   let h = WorkerHarness::spawn();
   let tab_id = create_tab(&h, (100, 100));
-  let (_, events) = h.send_and_wait_for_frame(
+  let (_nav_frame, events) = h.send_and_wait_for_frame(
     tab_id,
     navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
@@ -434,7 +459,7 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
     "expected scroll snap to ~100, got {scroll_y}"
   );
 
-  // Scroll beyond the end; should clamp to max scroll (100px for 2x100px content in 100px viewport).
+  // Scroll beyond the end; should clamp to max scroll (200px for 3x100px content in 100px viewport).
   let (_frame, clamp_events) = h.send_and_wait_for_frame(
     tab_id,
     scroll_viewport(tab_id, (0.0, 10_000.0)),
@@ -446,8 +471,8 @@ fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   });
   let clamp_y = clamp_y.expect("ScrollStateUpdated after clamp");
   assert!(
-    (clamp_y - 100.0).abs() < 1.0,
-    "expected clamp to ~100, got {clamp_y}"
+    (clamp_y - 200.0).abs() < 1.0,
+    "expected clamp to ~200, got {clamp_y}"
   );
 }
 

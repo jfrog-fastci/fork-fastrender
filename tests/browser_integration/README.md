@@ -156,7 +156,7 @@ Existing modules:
   `FASTR_TEST_BROWSER_HEADLESS_SMOKE=1` mode and asserts the `HEADLESS_SMOKE_OK` marker is printed.
 - `ui_render_worker_thread_builder_test.rs` (`browser_ui`): asserts the UI render worker thread is
   spawned via `std::thread::Builder` (name + large stack size).
-- `ui_worker_*` (`browser_ui`): headless UI↔worker protocol tests using `spawn_ui_worker(...)`.
+- `ui_worker_*` (`browser_ui`): headless UI↔worker protocol tests (prefer `spawn_browser_worker()`).
 - `ui_stage_heartbeat_forwarding.rs` (`browser_ui`): validates stage heartbeat forwarding and cleanup
   is tab-scoped.
 

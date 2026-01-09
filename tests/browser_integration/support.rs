@@ -108,6 +108,23 @@ pub fn deterministic_factory() -> fastrender::api::FastRenderFactory {
   .expect("build deterministic factory")
 }
 
+/// Spawn the production browser worker thread for integration tests.
+///
+/// Returns the raw channel endpoints and join handle for convenience.
+#[cfg(feature = "browser_ui")]
+pub fn spawn_browser_worker_named(
+  name: impl Into<String>,
+) -> (
+  std::sync::mpsc::Sender<fastrender::ui::messages::UiToWorker>,
+  std::sync::mpsc::Receiver<fastrender::ui::messages::WorkerToUi>,
+  std::thread::JoinHandle<()>,
+) {
+  ensure_bundled_fonts_loaded();
+  let handle = fastrender::ui::render_worker::spawn_browser_worker_with_name(name)
+    .expect("spawn browser worker");
+  (handle.tx, handle.rx, handle.join)
+}
+
 /// Receive from `rx` until `pred` returns `true`, or the timeout elapses.
 ///
 /// This repeatedly calls `recv_timeout` in small slices so tests are responsive and don't get stuck

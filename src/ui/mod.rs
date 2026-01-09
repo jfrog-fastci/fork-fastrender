@@ -43,6 +43,7 @@ pub use render_worker::{
   spawn_test_browser_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory,
   BrowserWorkerHandle, UiThreadWorkerHandle,
 };
+pub use worker::RenderWorker;
 #[cfg(any(test, feature = "browser_ui"))]
 pub use render_worker::spawn_browser_worker_for_test;
 

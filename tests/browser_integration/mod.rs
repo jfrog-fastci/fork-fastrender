@@ -109,7 +109,7 @@ mod ui_worker_tabs;
 mod ui_worker_title;
 mod ui_worker_viewport_changed;
 mod worker_harness;
-mod worker_runtime;
+mod browser_thread_worker;
 mod ui_worker_protocol_smoke;
 mod ui_worker_unsupported_scheme;
 

@@ -436,7 +436,7 @@ impl BrowserRuntime {
 
       // Scroll events can arrive in rapid bursts. If we are about to repaint due to scrolling,
       // briefly coalesce immediately-following scroll messages so only the latest scroll position
-      // produces a frame (see `worker_runtime::cancellation_rapid_scroll_coalesces_to_last_frame`).
+      // produces a frame (see `browser_thread_worker::cancellation_rapid_scroll_coalesces_to_last_frame`).
       //
       // Avoid doing this while a navigation is pending: navigation already drains queued messages
       // before preparing, and we don't want scroll coalescing to add latency to navigations.
