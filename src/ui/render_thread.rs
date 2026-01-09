@@ -504,14 +504,17 @@ impl BrowserRenderThread {
     };
 
     let scroll_state = doc.scroll_state();
-    let mut fragments = prepared.fragment_tree().clone();
-    apply_scroll_offsets(&mut fragments, &scroll_state);
+    let fragments = prepared.fragment_tree().clone();
 
     // Avoid borrow conflicts with `doc.mutate_dom`.
     let box_tree = prepared.box_tree().clone();
 
-    let page_point = Point::new(pos_css.0 + scroll_state.viewport.x, pos_css.1 + scroll_state.viewport.y);
-    let changed = doc.mutate_dom(|dom| tab.interaction.pointer_move(dom, &box_tree, &fragments, page_point));
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let changed = doc.mutate_dom(|dom| {
+      tab
+        .interaction
+        .pointer_move(dom, &box_tree, &fragments, &scroll_state, viewport_point)
+    });
     if changed {
       tab.cancel.bump_paint();
       repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
@@ -533,12 +536,15 @@ impl BrowserRenderThread {
     };
 
     let scroll_state = doc.scroll_state();
-    let mut fragments = prepared.fragment_tree().clone();
-    apply_scroll_offsets(&mut fragments, &scroll_state);
+    let fragments = prepared.fragment_tree().clone();
     let box_tree = prepared.box_tree().clone();
 
-    let page_point = Point::new(pos_css.0 + scroll_state.viewport.x, pos_css.1 + scroll_state.viewport.y);
-    let changed = doc.mutate_dom(|dom| tab.interaction.pointer_down(dom, &box_tree, &fragments, page_point));
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let changed = doc.mutate_dom(|dom| {
+      tab
+        .interaction
+        .pointer_down(dom, &box_tree, &fragments, &scroll_state, viewport_point)
+    });
     if changed {
       tab.cancel.bump_paint();
       repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
@@ -563,12 +569,10 @@ impl BrowserRenderThread {
       };
 
       let scroll_state = doc.scroll_state();
-      let mut fragments = prepared.fragment_tree().clone();
-      apply_scroll_offsets(&mut fragments, &scroll_state);
+      let fragments = prepared.fragment_tree().clone();
       let box_tree = prepared.box_tree().clone();
 
-      let page_point =
-        Point::new(pos_css.0 + scroll_state.viewport.x, pos_css.1 + scroll_state.viewport.y);
+      let viewport_point = Point::new(pos_css.0, pos_css.1);
       let base_url = tab
         .base_url
         .as_deref()
@@ -580,7 +584,7 @@ impl BrowserRenderThread {
         let (dom_changed, act) =
           tab
             .interaction
-            .pointer_up(dom, &box_tree, &fragments, page_point, base_url);
+            .pointer_up(dom, &box_tree, &fragments, &scroll_state, viewport_point, base_url);
         action = act;
         dom_changed
       });

@@ -501,19 +501,12 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let page_point = Point::new(
-      tab.scroll_state.viewport.x + pos_css.0,
-      tab.scroll_state.viewport.y + pos_css.1,
-    );
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let scroll = &tab.scroll_state;
+    let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scroll_state = tab.scroll_state.clone();
-      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
-        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
-      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = tab
-        .interaction
-        .pointer_move(dom, box_tree, fragment_tree, page_point);
+      let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
       (changed, changed)
     }) {
       Ok(changed) => changed,
@@ -535,19 +528,12 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let page_point = Point::new(
-      tab.scroll_state.viewport.x + pos_css.0,
-      tab.scroll_state.viewport.y + pos_css.1,
-    );
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let scroll = &tab.scroll_state;
+    let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scroll_state = tab.scroll_state.clone();
-      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
-        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
-      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
-      let changed = tab
-        .interaction
-        .pointer_down(dom, box_tree, fragment_tree, page_point);
+      let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
       (changed, changed)
     }) {
       Ok(changed) => changed,
@@ -567,22 +553,15 @@ impl BrowserRuntime {
       return;
     };
     let base_url = base_url_for_links(tab).to_string();
-    let page_point = Point::new(
-      tab.scroll_state.viewport.x + pos_css.0,
-      tab.scroll_state.viewport.y + pos_css.1,
-    );
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let scroll = &tab.scroll_state;
+    let engine = &mut tab.interaction;
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
     let (dom_changed, action) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let scroll_state = tab.scroll_state.clone();
-      let fragment_tree_scrolled = (!scroll_state.elements.is_empty())
-        .then(|| crate::interaction::fragment_tree_with_scroll(fragment_tree, &scroll_state));
-      let fragment_tree = fragment_tree_scrolled.as_ref().unwrap_or(fragment_tree);
       let (dom_changed, action) =
-        tab
-          .interaction
-          .pointer_up(dom, box_tree, fragment_tree, page_point, &base_url);
+        engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url);
       (dom_changed, (dom_changed, action))
     }) {
       Ok(result) => result,

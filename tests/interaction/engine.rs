@@ -7,6 +7,7 @@ use fastrender::geometry::Rect;
 use fastrender::interaction::InteractionAction;
 use fastrender::interaction::InteractionEngine;
 use fastrender::interaction::KeyAction;
+use fastrender::scroll::ScrollState;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::ComputedStyle;
 use fastrender::style::types::Appearance;
@@ -167,13 +168,20 @@ fn radio_click_is_scoped_to_nearest_form() {
 
   let mut engine = InteractionEngine::new();
   assert!(
-    engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0)),
+    engine.pointer_down(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(10.0, 10.0),
+    ),
     "expected pointer_down to set active state"
   );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://x/",
   );
@@ -251,7 +259,13 @@ fn hover_chain_applies_to_ancestors() {
 
   let mut engine = InteractionEngine::new();
   assert!(
-    engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(15.0, 15.0)),
+    engine.pointer_move(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(15.0, 15.0),
+    ),
     "pointer_move should set hover attrs"
   );
   for id in ["inner", "outer", "body", "html"] {
@@ -267,6 +281,7 @@ fn hover_chain_applies_to_ancestors() {
       &mut dom,
       &box_tree,
       &fragment_tree,
+      &ScrollState::default(),
       Point::new(150.0, 150.0)
     ),
     "moving off target should clear hover attrs"
@@ -330,7 +345,13 @@ fn active_chain_sets_on_down_and_clears_on_up() {
 
   let mut engine = InteractionEngine::new();
   assert!(
-    engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(15.0, 15.0)),
+    engine.pointer_down(
+      &mut dom,
+      &box_tree,
+      &fragment_tree,
+      &ScrollState::default(),
+      Point::new(15.0, 15.0),
+    ),
     "pointer_down should set active attrs"
   );
   for id in ["inner", "outer", "body", "html"] {
@@ -345,6 +366,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(15.0, 15.0),
     "https://x/",
   );
@@ -391,11 +413,18 @@ fn link_click_emits_navigation_with_resolved_url() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/base/",
   );
@@ -444,11 +473,18 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/base/",
   );
@@ -498,11 +534,18 @@ fn link_click_with_non_ascii_href_does_not_panic() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/base/",
   );
@@ -555,11 +598,18 @@ fn checkbox_click_toggles_checked_attribute() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -623,11 +673,18 @@ fn label_click_activates_associated_checkbox() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -679,11 +736,18 @@ fn radio_click_checks_and_focuses() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -749,11 +813,18 @@ fn clicking_outside_focusable_blurs_current_focus() {
   let mut engine = InteractionEngine::new();
 
   // Focus the input.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, _) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -769,12 +840,14 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 60.0),
   );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 60.0),
     "https://x/",
   );
@@ -831,11 +904,18 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -923,11 +1003,18 @@ fn submit_click_marks_form_user_validity() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -1002,7 +1089,13 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
 
   let mut engine = InteractionEngine::new();
 
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_move(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   assert_eq!(
     attr_value(&dom, "link", "data-fastr-hover").as_deref(),
     Some("true"),
@@ -1013,11 +1106,18 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     "overlay should not be hovered"
   );
 
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/",
   );
@@ -1151,11 +1251,18 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (changed, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -1214,11 +1321,18 @@ fn inert_link_does_not_navigate() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(10.0, 10.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/",
   );
@@ -1265,11 +1379,18 @@ fn disabled_checkbox_does_not_toggle_checked() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -1321,11 +1442,18 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -1404,11 +1532,18 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
   let mut engine = InteractionEngine::new();
 
   // Disabled input.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
   );
@@ -1417,11 +1552,18 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
   assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("hi"));
 
   // Readonly input.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 45.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 45.0),
+  );
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 45.0),
     "https://x/",
   );
@@ -1525,11 +1667,18 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 15.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 15.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 15.0),
     "https://x/",
   );
@@ -1553,17 +1702,124 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
   assert!(has_attr(&dom, "o2", "selected"), "clicked row should be selected");
 
   // Clicking a disabled option row must not change selection.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 25.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 25.0),
+  );
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &ScrollState::default(),
     Point::new(5.0, 25.0),
     "https://x/",
   );
   assert_eq!(action, InteractionAction::None);
   assert!(has_attr(&dom, "o2", "selected"));
   assert!(!has_attr(&dom, "o3", "selected"));
+}
+
+#[test]
+fn listbox_select_click_accounts_for_element_scroll_offset() {
+  let option_ids = [
+    "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
+  ];
+  let options = option_ids
+    .iter()
+    .map(|&id| el("option", vec![("id", id)], vec![]))
+    .collect();
+
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("select", vec![("id", "s"), ("size", "3")], options)],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "s");
+  let items = Arc::new(
+    option_ids
+      .iter()
+      .enumerate()
+      .map(|(idx, &id)| SelectItem::Option {
+        node_id: node_id(&dom, id),
+        label: format!("Option {idx}"),
+        value: idx.to_string(),
+        selected: idx == 0,
+        disabled: false,
+        in_optgroup: false,
+      })
+      .collect::<Vec<_>>(),
+  );
+
+  let control = FormControlKind::Select(SelectControl {
+    multiple: false,
+    size: 3,
+    items,
+    selected: vec![0],
+  });
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(FormControl {
+      control,
+      appearance: Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    }),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+
+  // Height=30px, size=3 => 10px per row.
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut elements = std::collections::HashMap::new();
+  // Scroll down by 2 rows; clicking at y=5 should select row index 2 (<option id=o2>).
+  elements.insert(select_box_id, Point::new(0.0, 20.0));
+  let scroll = ScrollState::from_parts(Point::ZERO, elements);
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+
+  assert!(has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o0", "selected"));
 }
 
 #[test]
@@ -1825,20 +2081,21 @@ fn range_input_drag_updates_value_and_clamps_to_max() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
 
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(25.0, 10.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(25.0, 10.0));
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("3"));
   assert!(
     has_attr(&dom, "r", "data-fastr-user-validity"),
     "changing a range value should mark user validity"
   );
 
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(75.0, 10.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(75.0, 10.0));
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("8"));
 
   // Drag beyond the right edge: clamp at max.
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(150.0, 10.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(150.0, 10.0));
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("10"));
 }
 
@@ -1885,35 +2142,39 @@ fn range_click_sets_min_max_and_snaps_to_step() {
   ));
 
   let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
 
   // Left edge should set min.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(0.0, 10.0),
     "https://x/",
   );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("0"));
 
   // Near 56% should snap to the nearest step.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(56.0, 10.0));
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(56.0, 10.0));
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(56.0, 10.0),
     "https://x/",
   );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("60"));
 
   // Right edge should set max.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 10.0));
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(100.0, 10.0),
     "https://x/",
   );
@@ -1989,14 +2250,16 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   ));
 
   let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
 
   // Disabled range.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 10.0));
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 10.0));
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 10.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 10.0));
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(100.0, 10.0),
     "https://x/",
   );
@@ -2007,12 +2270,13 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
   );
 
   // Readonly range.
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(0.0, 50.0));
-  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(100.0, 50.0));
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(0.0, 50.0));
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(100.0, 50.0));
   engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(100.0, 50.0),
     "https://x/",
   );
@@ -2058,11 +2322,13 @@ fn range_click_focuses_input() {
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(10.0, 10.0));
   let (_, action) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(10.0, 10.0),
     "https://x/",
   );
@@ -2130,11 +2396,13 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
   ));
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
   let (changed, _) = engine.pointer_up(
     &mut dom,
     &box_tree,
     &fragment_tree,
+    &scroll,
     Point::new(5.0, 5.0),
     "https://x/",
   );

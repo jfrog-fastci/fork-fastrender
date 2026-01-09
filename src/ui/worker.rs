@@ -146,13 +146,6 @@ impl TabState {
     }
   }
 
-  fn page_point_for_viewport_pos(&self, pos_css: (f32, f32)) -> Point {
-    Point::new(
-      pos_css.0 + self.scroll_state.viewport.x,
-      pos_css.1 + self.scroll_state.viewport.y,
-    )
-  }
-
   fn effective_base_url(&self) -> Option<&str> {
     self
       .document
@@ -334,14 +327,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let page_point = tab.page_point_for_viewport_pos(pos_css);
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll_state;
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };
 
         let _ = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let changed = engine.pointer_move(dom, box_tree, fragment_tree, page_point);
+          let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
         });
         repaint_if_needed(tab_id, tab, &tx);
@@ -357,14 +351,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let page_point = tab.page_point_for_viewport_pos(pos_css);
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll_state;
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };
 
         let _ = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let changed = engine.pointer_down(dom, box_tree, fragment_tree, page_point);
+          let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
         });
         repaint_if_needed(tab_id, tab, &tx);
@@ -380,23 +375,16 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let page_point = tab.page_point_for_viewport_pos(pos_css);
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll_state;
         let base_url = tab.effective_base_url().unwrap_or("").to_string();
-        let scroll_state = tab.scroll_state.clone();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };
 
         let action = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up_with_scroll(
-            dom,
-            box_tree,
-            fragment_tree,
-            &scroll_state,
-            page_point,
-            &base_url,
-          )
+          engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url)
         }) {
           Ok(action) => action,
           Err(_) => continue,

@@ -1,5 +1,5 @@
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
-use fastrender::interaction::{fragment_tree_with_scroll, InteractionEngine};
+use fastrender::interaction::InteractionEngine;
 use fastrender::interaction::absolute_bounds_for_box_id;
 use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
 
@@ -148,16 +148,8 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
 
   let mut engine = InteractionEngine::new();
   doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let scrolled_fragments = fragment_tree_with_scroll(fragment_tree, &scroll_state);
-    let _ = engine.pointer_down(dom, box_tree, &scrolled_fragments, page_point);
-    let (changed, _action) = engine.pointer_up_with_scroll(
-      dom,
-      box_tree,
-      &scrolled_fragments,
-      &scroll_state,
-      page_point,
-      "",
-    );
+    let _ = engine.pointer_down(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point);
+    let (changed, _action) = engine.pointer_up(dom, box_tree, fragment_tree, &scroll_state, click_viewport_point, "");
     (changed, ())
   })?;
 

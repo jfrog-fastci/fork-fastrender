@@ -887,11 +887,6 @@ fn apply_select_listbox_click(
     return false;
   }
 
-  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
-  if !scroll_y.is_finite() {
-    scroll_y = 0.0;
-  }
-
   let row_height = if size == 0 {
     0.0
   } else {
@@ -903,6 +898,10 @@ fn apply_select_listbox_click(
 
   let viewport_height = select_rect.height().max(0.0);
   let content_height = row_height * rows.len() as f32;
+  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
+  if !scroll_y.is_finite() {
+    scroll_y = 0.0;
+  }
   let max_scroll_y = (content_height - viewport_height).max(0.0);
   scroll_y = scroll_y.clamp(0.0, max_scroll_y);
 
@@ -1131,17 +1130,23 @@ impl InteractionEngine {
   }
 
   /// Update hover state (data-fastr-hover on target + ancestors).
-  ///
-  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
-  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
-  /// so hit testing matches what is painted.
+  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
+  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
   pub fn pointer_move(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
     fragment_tree: &FragmentTree,
-    page_point: Point,
+    scroll: &ScrollState,
+    viewport_point: Point,
   ) -> bool {
+    let page_point = viewport_point.translate(scroll.viewport);
+    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
+      let mut tree = fragment_tree.clone();
+      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
+      tree
+    });
+    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
     if let Some(state) = self.range_drag {
@@ -1166,20 +1171,27 @@ impl InteractionEngine {
   }
 
   /// Begin active state (data-fastr-active on target + ancestors) and set modality=Pointer.
-  ///
-  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
-  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
-  /// so hit testing matches what is painted.
+  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
+  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
   pub fn pointer_down(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
     fragment_tree: &FragmentTree,
-    page_point: Point,
+    scroll: &ScrollState,
+    viewport_point: Point,
   ) -> bool {
     self.modality = InputModality::Pointer;
 
     self.range_drag = None;
+
+    let page_point = viewport_point.translate(scroll.viewport);
+    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
+      let mut tree = fragment_tree.clone();
+      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
+      tree
+    });
+    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
 
     let down_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
@@ -1279,37 +1291,27 @@ impl InteractionEngine {
   /// - checkbox/radio: toggle/activate
   /// - text control/textarea: focus
   /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
-  ///
-  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
-  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
-  /// so hit testing matches what is painted.
+  /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
+  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
   pub fn pointer_up(
     &mut self,
     dom: &mut DomNode,
     box_tree: &BoxTree,
     fragment_tree: &FragmentTree,
-    page_point: Point,
-    base_url: &str,
-  ) -> (bool, InteractionAction) {
-    // This legacy convenience wrapper does not incorporate element scroll offsets. Call
-    // `pointer_up_with_scroll` when the embedding maintains a full `ScrollState`.
-    let scroll_state = ScrollState::default();
-    self.pointer_up_with_scroll(dom, box_tree, fragment_tree, &scroll_state, page_point, base_url)
-  }
-
-  /// Like [`InteractionEngine::pointer_up`], but also takes the current scroll state so listbox
-  /// `<select>` controls can map clicks through their scroll offset.
-  pub fn pointer_up_with_scroll(
-    &mut self,
-    dom: &mut DomNode,
-    box_tree: &BoxTree,
-    fragment_tree: &FragmentTree,
-    scroll_state: &ScrollState,
-    page_point: Point,
+    scroll: &ScrollState,
+    viewport_point: Point,
     base_url: &str,
   ) -> (bool, InteractionAction) {
     let range_drag = self.range_drag.take();
     let prev_focus = self.focused;
+
+    let page_point = viewport_point.translate(scroll.viewport);
+    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
+      let mut tree = fragment_tree.clone();
+      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
+      tree
+    });
+    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
 
     let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);
@@ -1373,7 +1375,7 @@ impl InteractionEngine {
                   page_point,
                   target_id,
                 hit.box_id,
-                scroll_state,
+                scroll,
               );
             }
           }

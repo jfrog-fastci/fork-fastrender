@@ -190,22 +190,27 @@ impl BrowserTabController {
   }
 
   fn handle_pointer_move(&mut self, pos_css: (f32, f32)) -> Result<Vec<WorkerToUi>> {
-    let (box_tree_ptr, mut fragment_tree_scrolled) = {
+    let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
-      crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
-      (box_tree_ptr, fragment_tree_scrolled)
+      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      (box_tree_ptr, fragment_tree_ptr)
     };
 
-    let page_point = Point::new(pos_css.0, pos_css.1).translate(self.scroll_state.viewport);
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
 
     let changed = self.document.mutate_dom(|dom| {
       self
         .interaction
-        .pointer_move(dom, unsafe { &*box_tree_ptr }, &fragment_tree_scrolled, page_point)
+        .pointer_move(
+          dom,
+          unsafe { &*box_tree_ptr },
+          unsafe { &*fragment_tree_ptr },
+          &self.scroll_state,
+          viewport_point,
+        )
     });
     if changed {
       self.paint_if_needed()
@@ -219,22 +224,27 @@ impl BrowserTabController {
       return Ok(Vec::new());
     }
 
-    let (box_tree_ptr, mut fragment_tree_scrolled) = {
+    let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
-      crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
-      (box_tree_ptr, fragment_tree_scrolled)
+      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      (box_tree_ptr, fragment_tree_ptr)
     };
 
-    let page_point = Point::new(pos_css.0, pos_css.1).translate(self.scroll_state.viewport);
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
 
     let changed = self.document.mutate_dom(|dom| {
       self
         .interaction
-        .pointer_down(dom, unsafe { &*box_tree_ptr }, &fragment_tree_scrolled, page_point)
+        .pointer_down(
+          dom,
+          unsafe { &*box_tree_ptr },
+          unsafe { &*fragment_tree_ptr },
+          &self.scroll_state,
+          viewport_point,
+        )
     });
     if changed {
       self.paint_if_needed()
@@ -248,25 +258,25 @@ impl BrowserTabController {
       return Ok(Vec::new());
     }
 
-    let (box_tree_ptr, mut fragment_tree_scrolled) = {
+    let (box_tree_ptr, fragment_tree_ptr) = {
       let Some(prepared) = self.document.prepared() else {
         return Ok(Vec::new());
       };
       let box_tree_ptr = prepared.box_tree() as *const crate::BoxTree;
-      let mut fragment_tree_scrolled = prepared.fragment_tree().clone();
-      crate::scroll::apply_scroll_offsets(&mut fragment_tree_scrolled, &self.scroll_state);
-      (box_tree_ptr, fragment_tree_scrolled)
+      let fragment_tree_ptr = prepared.fragment_tree() as *const crate::tree::fragment_tree::FragmentTree;
+      (box_tree_ptr, fragment_tree_ptr)
     };
 
-    let page_point = Point::new(pos_css.0, pos_css.1).translate(self.scroll_state.viewport);
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
 
     let mut action = InteractionAction::None;
     let changed = self.document.mutate_dom(|dom| {
       let (dom_changed, next_action) = self.interaction.pointer_up(
         dom,
         unsafe { &*box_tree_ptr },
-        &fragment_tree_scrolled,
-        page_point,
+        unsafe { &*fragment_tree_ptr },
+        &self.scroll_state,
+        viewport_point,
         &self.base_url,
       );
       action = next_action;

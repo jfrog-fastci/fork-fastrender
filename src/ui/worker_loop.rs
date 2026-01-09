@@ -71,13 +71,6 @@ fn sanitize_pointer(v: (f32, f32)) -> Option<(f32, f32)> {
   (v.0.is_finite() && v.1.is_finite()).then_some(v)
 }
 
-fn page_point_for(tab: &TabState, pos_css: (f32, f32)) -> Point {
-  Point::new(
-    pos_css.0 + tab.scroll.viewport.x,
-    pos_css.1 + tab.scroll.viewport.y,
-  )
-}
-
 fn effective_base_url(tab: &TabState) -> &str {
   tab
     .document
@@ -547,11 +540,12 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let page_point = page_point_for(tab, pos_css);
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
 
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let changed = engine.pointer_move(dom, box_tree, fragment_tree, page_point);
+          let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
         });
         repaint_if_needed(tab_id, tab, &ui_tx);
@@ -567,11 +561,12 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let page_point = page_point_for(tab, pos_css);
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
 
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          let changed = engine.pointer_down(dom, box_tree, fragment_tree, page_point);
+          let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
           (changed, ())
         });
         repaint_if_needed(tab_id, tab, &ui_tx);
@@ -588,22 +583,13 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           continue;
         };
         let base_url = effective_base_url(tab).to_string();
-        let page_point = page_point_for(tab, pos_css);
-        let scroll_state = tab.scroll.clone();
+        let viewport_point = Point::new(pos_css.0, pos_css.1);
+        let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
 
-        let action = match tab
-          .document
-          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-            engine.pointer_up_with_scroll(
-              dom,
-              box_tree,
-              fragment_tree,
-              &scroll_state,
-              page_point,
-              &base_url,
-            )
-          }) {
+        let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url)
+        }) {
           Ok(action) => action,
           Err(_) => continue,
         };
