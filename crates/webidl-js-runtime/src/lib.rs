@@ -3,6 +3,9 @@
 //! Web IDL conversions and overload resolution are specified in terms of ECMAScript abstract
 //! operations. This crate defines a small runtime trait boundary ([`JsRuntime`]/[`WebIdlJsRuntime`])
 //! and provides a concrete implementation backed by `ecma-rs`'s `vm-js` value types.
+//!
+//! Note: core WebIDL types like [`InterfaceId`], [`WebIdlHooks`], and [`WebIdlLimits`] are re-exported
+//! from `engines/ecma-rs/webidl` so FastRender does not maintain duplicated definitions across crates.
 
 pub mod conversions;
 pub mod ecma_runtime;

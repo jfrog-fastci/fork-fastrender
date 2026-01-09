@@ -18,6 +18,12 @@ how to update it.
   - FastRender re-exports this API surface as `fastrender::js::webidl` so generated bindings can
     depend on a single path and we do not fork/duplicate WebIDL algorithms between repos.
   - The `vm-js` embedding adapter lives in `engines/ecma-rs/webidl-vm-js`.
+- **Binding installation / host scaffolding (temporary)**: `crates/webidl-js-runtime`
+  - This provides a minimal `vm-js`-backed value/object model (`VmJsRuntime`) and a host-facing
+    trait (`WebIdlBindingsRuntime`) used by early generated bindings to install functions onto a
+    global object.
+  - It intentionally reuses `engines/ecma-rs/webidl`’s core types (`InterfaceId`, `WebIdlHooks`,
+    `WebIdlLimits`) so FastRender only has one set of WebIDL “core” identifiers/limits/hook traits.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.
