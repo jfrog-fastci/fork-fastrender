@@ -11,8 +11,10 @@ use crate::js::{
 };
 use crate::resource::{FetchDestination, FetchRequest};
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
 
@@ -33,6 +35,31 @@ struct ScriptEntry {
   spec: ScriptElementSpec,
 }
 
+/// RAII guard that increments a host-local "JS execution depth" counter.
+///
+/// HTML gates certain microtask checkpoints based on whether the **JavaScript execution context
+/// stack is empty**. Parsing and navigation can run inside event-loop tasks, so the event loop's
+/// "currently running task" state is not equivalent to the JS execution context stack.
+struct JsExecutionGuard {
+  depth: Rc<Cell<usize>>,
+}
+
+impl JsExecutionGuard {
+  fn enter(depth: &Rc<Cell<usize>>) -> Self {
+    depth.set(depth.get().saturating_add(1));
+    Self {
+      depth: Rc::clone(depth),
+    }
+  }
+}
+
+impl Drop for JsExecutionGuard {
+  fn drop(&mut self) {
+    let current = self.depth.get();
+    self.depth.set(current.saturating_sub(1));
+  }
+}
+
 pub struct BrowserTabHost {
   trace: TraceHandle,
   document: BrowserDocumentDom2,
@@ -46,6 +73,7 @@ pub struct BrowserTabHost {
   document_url: Option<String>,
   external_script_sources: HashMap<String, String>,
   js_execution_options: JsExecutionOptions,
+  js_execution_depth: Rc<Cell<usize>>,
 }
 
 impl BrowserTabHost {
@@ -68,6 +96,7 @@ impl BrowserTabHost {
       document_url: None,
       external_script_sources: HashMap::new(),
       js_execution_options,
+      js_execution_depth: Rc::new(Cell::new(0)),
     }
   }
 
@@ -95,6 +124,7 @@ impl BrowserTabHost {
     self.executed.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url;
+    self.js_execution_depth.set(0);
   }
 
   fn discover_scripts_best_effort(&self, document_url: Option<&str>) -> Vec<(NodeId, ScriptElementSpec)> {
@@ -223,6 +253,12 @@ impl BrowserTabHost {
     base_url_at_discovery: Option<String>,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
+    // HTML `</script>` handling performs a microtask checkpoint *before* preparing the script, but
+    // only when the JS execution context stack is empty.
+    if spec.parser_inserted && self.js_execution_depth.get() == 0 {
+      event_loop.perform_microtask_checkpoint(self)?;
+    }
+
     let spec_for_table = spec.clone();
     if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
       self
@@ -272,11 +308,21 @@ impl BrowserTabHost {
           source_text,
           ..
         } => {
-          let result = self.execute_script(script_id, &source_text, event_loop);
-          // Ensure a script failure doesn't leave parsing blocked forever.
-          self.finish_script_execution(script_id);
+          let result = {
+            let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
+            let result = self.execute_script(script_id, &source_text, event_loop);
+            // Ensure a script failure doesn't leave parsing blocked forever.
+            self.finish_script_execution(script_id);
+            result
+          };
           result?;
-          event_loop.perform_microtask_checkpoint(self)?;
+
+          // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+          // execution context stack is empty. Nested (re-entrant) script execution must not drain
+          // microtasks until the outermost script returns.
+          if self.js_execution_depth.get() == 0 {
+            event_loop.perform_microtask_checkpoint(self)?;
+          }
         }
         ScriptSchedulerAction::QueueTask {
           script_id,
@@ -284,6 +330,7 @@ impl BrowserTabHost {
           ..
         } => {
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+            let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
             let result = host.execute_script(script_id, &source_text, event_loop);
             host.finish_script_execution(script_id);
             result
@@ -691,5 +738,110 @@ impl BrowserTab {
     }
 
     self.on_parsing_completed()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use std::cell::RefCell;
+  use std::rc::Rc;
+
+  struct TestExecutor {
+    log: Rc<RefCell<Vec<String>>>,
+  }
+
+  impl BrowserTabJsExecutor for TestExecutor {
+    fn execute_classic_script(
+      &mut self,
+      script_text: &str,
+      _spec: &ScriptElementSpec,
+      _current_script: Option<NodeId>,
+      _document: &mut BrowserDocumentDom2,
+      event_loop: &mut EventLoop<BrowserTabHost>,
+    ) -> Result<()> {
+      self
+        .log
+        .borrow_mut()
+        .push(format!("script:{script_text}"));
+      let log = Rc::clone(&self.log);
+      let name = script_text.to_string();
+      event_loop.queue_microtask(move |_host, _event_loop| {
+        log.borrow_mut().push(format!("microtask:{name}"));
+        Ok(())
+      })?;
+      Ok(())
+    }
+  }
+
+  fn build_host(html: &str, log: Rc<RefCell<Vec<String>>>) -> Result<(BrowserTabHost, EventLoop<BrowserTabHost>)> {
+    let document = BrowserDocumentDom2::from_html(html, RenderOptions::default())?;
+    let mut host = BrowserTabHost::new(
+      document,
+      Box::new(TestExecutor { log }),
+      TraceHandle::default(),
+      JsExecutionOptions::default(),
+    );
+    host.reset_scripting_state(None);
+    Ok((host, EventLoop::new()))
+  }
+
+  #[test]
+  fn microtasks_run_at_parser_script_boundaries_when_js_stack_empty() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script>A</script>", Rc::clone(&log))?;
+
+    event_loop.queue_microtask({
+      let log = Rc::clone(&log);
+      move |_host, _event_loop| {
+        log.borrow_mut().push("pre".to_string());
+        Ok(())
+      }
+    })?;
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "pre".to_string(),
+        "script:A".to_string(),
+        "microtask:A".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn microtask_checkpoint_after_execute_now_is_gated_on_js_execution_depth() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let (mut host, mut event_loop) = build_host("<script>B</script>", Rc::clone(&log))?;
+
+    let _outer_guard = JsExecutionGuard::enter(&host.js_execution_depth);
+
+    let mut discovered = host.discover_scripts_best_effort(None);
+    assert_eq!(discovered.len(), 1);
+    let (node_id, spec) = discovered.pop().unwrap();
+    let base_url_at_discovery = spec.base_url.clone();
+
+    host.register_and_schedule_script(node_id, spec, base_url_at_discovery, &mut event_loop)?;
+
+    assert_eq!(&*log.borrow(), &["script:B".to_string()]);
+    assert_eq!(event_loop.pending_microtask_count(), 1);
+
+    drop(_outer_guard);
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
   }
 }
