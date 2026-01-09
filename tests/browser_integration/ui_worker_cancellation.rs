@@ -3,6 +3,7 @@
 use super::support::{
   create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg,
 };
+use fastrender::render_control::StageHeartbeat;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::scroll::ScrollState;
@@ -347,9 +348,25 @@ fn rapid_scroll_cancels_stale_paint() {
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .unwrap();
-  // Give the worker thread a chance to begin painting the first scroll. The per-thread render delay
-  // ensures the paint stays in-flight long enough to reliably cancel.
-  std::thread::sleep(Duration::from_millis(20));
+
+  // Wait for the scroll repaint to enter the paint stages so we can cancel it mid-flight.
+  let is_paint_stage = |msg: &WorkerToUi| {
+    matches!(
+      msg,
+      WorkerToUi::Stage { tab_id: msg_tab, stage }
+        if *msg_tab == tab_id
+          && matches!(
+            stage,
+            StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+          )
+    )
+  };
+  let paint_stage_msgs = recv_until(&ui_rx, MAX_WAIT, |msg| is_paint_stage(msg));
+  assert!(
+    paint_stage_msgs.iter().any(is_paint_stage),
+    "expected paint stage heartbeat during first scroll repaint (messages={paint_stage_msgs:?})"
+  );
+
   cancel_gens.bump_paint();
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
