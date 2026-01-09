@@ -303,9 +303,54 @@ struct AccuracyEntry {
   stem: String,
   diff_percent: f64,
   perceptual: f64,
+  first_mismatch: Option<AccuracyFirstMismatch>,
 }
 
-fn print_top_worst_accuracy(snapshot: &BTreeMap<String, String>, n: usize) -> Result<()> {
+#[derive(Debug)]
+struct AccuracyFirstMismatch {
+  x: u32,
+  y: u32,
+  baseline_rgba: Option<[u8; 4]>,
+  rendered_rgba: Option<[u8; 4]>,
+}
+
+fn parse_rgba_array(value: &Value) -> Option<[u8; 4]> {
+  let arr = value.as_array()?;
+  if arr.len() != 4 {
+    return None;
+  }
+  let mut out = [0u8; 4];
+  for (idx, item) in arr.iter().enumerate() {
+    let channel = item.as_u64()?;
+    if channel > u8::MAX as u64 {
+      return None;
+    }
+    out[idx] = channel as u8;
+  }
+  Some(out)
+}
+
+fn parse_first_mismatch(value: &Value) -> Option<AccuracyFirstMismatch> {
+  let obj = value.as_object()?;
+  let x = obj.get("x")?.as_u64()?;
+  let y = obj.get("y")?.as_u64()?;
+  let x = u32::try_from(x).ok()?;
+  let y = u32::try_from(y).ok()?;
+  let baseline_rgba = obj
+    .get("baseline_rgba")
+    .and_then(parse_rgba_array);
+  let rendered_rgba = obj
+    .get("rendered_rgba")
+    .and_then(parse_rgba_array);
+  Some(AccuracyFirstMismatch {
+    x,
+    y,
+    baseline_rgba,
+    rendered_rgba,
+  })
+}
+
+fn format_top_worst_accuracy(snapshot: &BTreeMap<String, String>, n: usize) -> Result<String> {
   let mut entries = Vec::<AccuracyEntry>::new();
   for (stem, raw) in snapshot {
     let json: Value =
@@ -328,10 +373,14 @@ fn print_top_worst_accuracy(snapshot: &BTreeMap<String, String>, n: usize) -> Re
       .get("perceptual")
       .and_then(|v| v.as_f64())
       .unwrap_or(0.0);
+    let first_mismatch = accuracy
+      .get("first_mismatch")
+      .and_then(parse_first_mismatch);
     entries.push(AccuracyEntry {
       stem: stem.clone(),
       diff_percent,
       perceptual,
+      first_mismatch,
     });
   }
 
@@ -347,12 +396,85 @@ fn print_top_worst_accuracy(snapshot: &BTreeMap<String, String>, n: usize) -> Re
       .then_with(|| a.stem.cmp(&b.stem))
   });
 
-  println!("Top {n} worst accuracy entries (status=ok):");
+  let mut out = String::new();
+  out.push_str(&format!("Top {n} worst accuracy entries (status=ok):\n"));
   for entry in entries.into_iter().take(n) {
-    println!(
+    let mut line = format!(
       "  - {}: diff_percent={:.4}%, perceptual={:.4}",
       entry.stem, entry.diff_percent, entry.perceptual
     );
+    if let Some(mismatch) = entry.first_mismatch.as_ref() {
+      line.push_str(&format!(" first_mismatch=({}, {})", mismatch.x, mismatch.y));
+      if let (Some(baseline), Some(rendered)) = (mismatch.baseline_rgba, mismatch.rendered_rgba) {
+        line.push_str(&format!(
+          " baseline_rgba={baseline:?} rendered_rgba={rendered:?}"
+        ));
+      }
+    }
+    out.push_str(&line);
+    out.push('\n');
   }
+  Ok(out)
+}
+
+fn print_top_worst_accuracy(snapshot: &BTreeMap<String, String>, n: usize) -> Result<()> {
+  print!("{}", format_top_worst_accuracy(snapshot, n)?);
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn format_top_worst_accuracy_includes_first_mismatch_when_available() {
+    let mut snapshot = BTreeMap::<String, String>::new();
+    snapshot.insert(
+      "a".to_string(),
+      serde_json::json!({
+        "status": "ok",
+        "accuracy": {
+          "diff_percent": 50.0,
+          "perceptual": 0.5,
+          "first_mismatch": {
+            "x": 1,
+            "y": 2,
+            "baseline_rgba": [1, 2, 3, 4],
+            "rendered_rgba": [250, 251, 252, 253]
+          }
+        }
+      })
+      .to_string(),
+    );
+    snapshot.insert(
+      "b".to_string(),
+      serde_json::json!({
+        "status": "ok",
+        "accuracy": {
+          "diff_percent": 60.0,
+          "perceptual": 0.2
+        }
+      })
+      .to_string(),
+    );
+    snapshot.insert(
+      "c".to_string(),
+      serde_json::json!({
+        "status": "error",
+        "accuracy": {
+          "diff_percent": 99.0,
+          "perceptual": 1.0
+        }
+      })
+      .to_string(),
+    );
+
+    let formatted = format_top_worst_accuracy(&snapshot, 2).expect("format");
+    let expected = concat!(
+      "Top 2 worst accuracy entries (status=ok):\n",
+      "  - b: diff_percent=60.0000%, perceptual=0.2000\n",
+      "  - a: diff_percent=50.0000%, perceptual=0.5000 first_mismatch=(1, 2) baseline_rgba=[1, 2, 3, 4] rendered_rgba=[250, 251, 252, 253]\n",
+    );
+    assert_eq!(formatted, expected);
+  }
 }
