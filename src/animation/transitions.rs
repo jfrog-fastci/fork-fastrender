@@ -47,24 +47,23 @@ pub(super) struct TransitionRecord {
 
 impl TransitionRecord {
   fn raw_progress(&self, now_ms: f32) -> f32 {
-    if self.duration_ms <= 0.0 {
-      return 1.0;
-    }
+    let duration_ms = self.duration_ms.max(0.0);
     let elapsed = now_ms - self.start_time_ms - self.delay_ms;
     if elapsed <= 0.0 {
       return 0.0;
     }
-    if elapsed >= self.duration_ms {
+    if duration_ms <= 0.0 {
       return 1.0;
     }
-    (elapsed / self.duration_ms).clamp(0.0, 1.0)
+    if elapsed >= duration_ms {
+      return 1.0;
+    }
+    (elapsed / duration_ms).clamp(0.0, 1.0)
   }
 
   fn is_finished(&self, now_ms: f32) -> bool {
-    if self.duration_ms <= 0.0 {
-      return true;
-    }
-    now_ms - self.start_time_ms - self.delay_ms >= self.duration_ms
+    let duration_ms = self.duration_ms.max(0.0);
+    now_ms - self.start_time_ms - self.delay_ms >= duration_ms
   }
 
   fn extract_value(style: &ComputedStyle, name: &str, ctx: &AnimationResolveContext) -> Option<TransitionValue> {
@@ -205,19 +204,16 @@ impl TransitionRecord {
   }
 
   pub(super) fn sample(&self, now_ms: f32, ctx: &AnimationResolveContext) -> Option<SampledTransition> {
-    if self.duration_ms <= 0.0 {
-      return None;
-    }
-
+    let duration_ms = self.duration_ms.max(0.0);
     let elapsed = now_ms - self.start_time_ms - self.delay_ms;
-    if elapsed >= self.duration_ms {
+    if elapsed >= duration_ms {
       return None;
     }
 
-    let raw_progress = if elapsed <= 0.0 {
+    let raw_progress = if elapsed <= 0.0 || duration_ms <= 0.0 {
       0.0
     } else {
-      (elapsed / self.duration_ms).clamp(0.0, 1.0)
+      (elapsed / duration_ms).clamp(0.0, 1.0)
     };
     let progress = self.timing_function.value_at(raw_progress);
 
@@ -233,7 +229,7 @@ impl TransitionRecord {
       value,
       progress,
       delay_ms: self.delay_ms,
-      duration_ms: self.duration_ms,
+      duration_ms,
     })
   }
 }
@@ -539,11 +535,13 @@ impl TransitionState {
           };
 
           let duration = super::pick(&after_style.transition_durations, idx, 0.0);
-          if duration <= 0.0 {
+          let delay = super::pick(&after_style.transition_delays, idx, 0.0);
+          let duration_clamped = duration.max(0.0);
+          let combined_duration = duration_clamped + delay;
+          if combined_duration <= 0.0 {
             element.completed.remove(&name_arc);
             continue;
           }
-          let delay = super::pick(&after_style.transition_delays, idx, 0.0);
           let timing = super::pick(
             &after_style.transition_timing_functions,
             idx,
@@ -580,11 +578,7 @@ impl TransitionState {
             let new_factor = new_factor.clamp(0.0, 1.0);
 
             let scaled_delay = if delay >= 0.0 { delay } else { delay * new_factor };
-            let scaled_duration = duration * new_factor;
-            if scaled_duration <= 0.0 {
-              element.completed.remove(&name_arc);
-              continue;
-            }
+            let scaled_duration = duration_clamped * new_factor;
 
             let record = start_transition_record(
               name_arc.clone(),
@@ -613,7 +607,7 @@ impl TransitionState {
               &before_value,
               now_ms,
               delay,
-              duration,
+              duration_clamped,
               timing,
               behavior,
               allow_discrete,
@@ -672,12 +666,10 @@ impl TransitionState {
         }
 
         let duration = super::pick(&after_style.transition_durations, idx, 0.0);
-        if duration <= 0.0 {
-          element.completed.remove(&name_arc);
-          continue;
-        }
         let delay = super::pick(&after_style.transition_delays, idx, 0.0);
-        if duration.max(0.0) + delay <= 0.0 {
+        let duration_clamped = duration.max(0.0);
+        let combined_duration = duration_clamped + delay;
+        if combined_duration <= 0.0 {
           element.completed.remove(&name_arc);
           continue;
         }
@@ -702,7 +694,7 @@ impl TransitionState {
           property: name_arc.clone(),
           start_time_ms: event_time_ms,
           delay_ms: delay,
-          duration_ms: duration,
+          duration_ms: duration_clamped,
           timing_function: timing,
           transition_behavior: behavior,
           allow_discrete,
@@ -1311,6 +1303,66 @@ mod tests {
       .map(|el| el.running.contains_key("visibility"))
       .unwrap_or(false);
     assert!(has_visibility, "expected visibility transition when allow-discrete is enabled");
+  }
+
+  #[test]
+  fn transition_does_not_start_when_negative_delay_exceeds_duration() {
+    let before_tree = make_box_tree(make_opacity_style(0.0));
+    let after_tree = make_box_tree(make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      -1500.0,
+      TransitionTimingFunction::Linear,
+    ));
+    let state = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let element = state.elements.get(&key);
+    assert!(
+      element.is_none()
+        || (!element.unwrap().running.contains_key("opacity") && !element.unwrap().completed.contains_key("opacity")),
+      "expected no transition record when combined duration is non-positive"
+    );
+  }
+
+  #[test]
+  fn retarget_cancels_when_new_combined_duration_nonpositive() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+
+    let tree_c = make_box_tree(make_opacity_style_with_transition(
+      0.5,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      -2000.0,
+      TransitionTimingFunction::Linear,
+    ));
+    let state_bc =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_c, 200.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let element = state_bc.elements.get(&key);
+    assert!(
+      element.is_none()
+        || (!element.unwrap().running.contains_key("opacity") && !element.unwrap().completed.contains_key("opacity")),
+      "expected retarget to cancel without creating a new transition record when combined duration is non-positive"
+    );
+
+    // Ensure no transition record appears as completed on later style changes.
+    let state_later =
+      TransitionState::update_for_style_change(Some(&state_bc), Some(&tree_c), &tree_c, 300.0);
+    assert!(
+      state_later.elements.is_empty(),
+      "expected no completed transition record after retarget with non-positive combined duration"
+    );
   }
 
   #[test]
