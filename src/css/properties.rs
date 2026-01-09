@@ -6190,6 +6190,14 @@ mod tests {
       .resolve_with_context(None, 1000.0, 800.0, 16.0, 16.0)
       .expect("resolve clamp polyfill");
     assert!((resolved - 30.0).abs() < 1e-6);
+
+    // Alternative clamp polyfill: `min(MAX, max(MIN, VAL))`.
+    let polyfill_rev = parse_length("min(2rem, max(1rem, 3vw))").expect("clamp polyfill rev");
+    assert_eq!(polyfill_rev.to_css(), "clamp(1rem, 3vw, 2rem)");
+    let resolved = polyfill_rev
+      .resolve_with_context(None, 1000.0, 800.0, 16.0, 16.0)
+      .expect("resolve clamp polyfill rev");
+    assert!((resolved - 30.0).abs() < 1e-6);
   }
 
   #[test]
@@ -6927,43 +6935,69 @@ fn parse_clamp<'i, 't>(
   }
 }
 
-fn try_rewrite_max_min_length_to_clamp(args: &[CalcLength]) -> Option<CalcLength> {
-  use crate::style::values::CalcLengthKind;
+fn split_calc_length_two_args(func: CalcLength) -> Option<(CalcLength, CalcLength)> {
   use crate::style::values::LengthUnit;
+
+  let mut first = CalcLength::empty();
+  let mut second = CalcLength::empty();
+  let mut current = &mut first;
+  let mut saw_separator = false;
+
+  for term in func.terms() {
+    if term.unit == LengthUnit::Calc {
+      if saw_separator {
+        return None;
+      }
+      saw_separator = true;
+      current = &mut second;
+      continue;
+    }
+
+    let term_calc = CalcLength::single(term.unit, term.value);
+    let updated = current.add_scaled(&term_calc, 1.0)?;
+    *current = updated;
+  }
+
+  saw_separator.then_some((first, second))
+}
+
+fn try_rewrite_clamp_polyfill_length(args: &[CalcLength], outer: MathFn) -> Option<CalcLength> {
+  use crate::style::values::CalcLengthKind;
 
   // `clamp(MIN, VAL, MAX)` is defined as `max(MIN, min(VAL, MAX))`.
   //
   // Sites commonly use `max()` + nested `min()` as a clamp polyfill, e.g.
-  // `max(1rem, min(3vw, 2rem))`. Our `CalcLength` encoding intentionally avoids recursive
-  // function trees, so rewrite this pattern into a single `clamp()` encoding when possible.
+  // `max(1rem, min(3vw, 2rem))`. Another common polyfill is `min(MAX, max(MIN, VAL))`.
+  //
+  // Our `CalcLength` encoding intentionally avoids recursive function trees, so rewrite these
+  // patterns into a single `clamp()` encoding when possible.
   if args.len() != 2 {
     return None;
   }
 
-  let (min_bound, inner_min) = match (args[0].kind(), args[1].kind()) {
-    (CalcLengthKind::Linear, CalcLengthKind::Min) => (args[0], args[1]),
-    (CalcLengthKind::Min, CalcLengthKind::Linear) => (args[1], args[0]),
-    _ => return None,
-  };
-
-  let mut extracted: Vec<CalcLength> = Vec::with_capacity(2);
-  let mut current = CalcLength::empty();
-  for term in inner_min.terms() {
-    if term.unit == LengthUnit::Calc {
-      extracted.push(current);
-      current = CalcLength::empty();
-      continue;
+  match outer {
+    MathFn::Max => {
+      let (min_bound, inner_min) = match (args[0].kind(), args[1].kind()) {
+        (CalcLengthKind::Linear, CalcLengthKind::Min) => (args[0], args[1]),
+        (CalcLengthKind::Min, CalcLengthKind::Linear) => (args[1], args[0]),
+        _ => return None,
+      };
+      let (preferred, max_bound) = split_calc_length_two_args(inner_min)?;
+      CalcLength::clamp_function(min_bound, preferred, max_bound)
     }
-    let term_calc = CalcLength::single(term.unit, term.value);
-    current = current.add_scaled(&term_calc, 1.0)?;
-  }
-  extracted.push(current);
+    MathFn::Min => {
+      let (max_bound, inner_max) = match (args[0].kind(), args[1].kind()) {
+        (CalcLengthKind::Linear, CalcLengthKind::Max) => (args[0], args[1]),
+        (CalcLengthKind::Max, CalcLengthKind::Linear) => (args[1], args[0]),
+        _ => return None,
+      };
 
-  if extracted.len() != 2 {
-    return None;
+      // `min(MAX, max(MIN, VAL))` matches `clamp(MIN, VAL, MAX)` assuming `MIN <= MAX`
+      // (the usual case for clamp polyfills in real-world stylesheets).
+      let (min_bound, preferred) = split_calc_length_two_args(inner_max)?;
+      CalcLength::clamp_function(min_bound, preferred, max_bound)
+    }
   }
-
-  CalcLength::clamp_function(min_bound, extracted[0], extracted[1])
 }
 
 fn reduce_components<'i>(
@@ -7033,10 +7067,8 @@ fn reduce_components<'i>(
         }
       }
 
-      if matches!(func, MathFn::Max) {
-        if let Some(clamp) = try_rewrite_max_min_length_to_clamp(&lengths) {
-          return Ok(CalcComponent::Length(clamp));
-        }
+      if let Some(clamp) = try_rewrite_clamp_polyfill_length(&lengths, func) {
+        return Ok(CalcComponent::Length(clamp));
       }
 
       // Otherwise, preserve the `min()`/`max()` function so it can be resolved later with viewport
