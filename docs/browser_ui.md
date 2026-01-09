@@ -22,8 +22,9 @@ bash scripts/run_limited.sh --as 64G -- \
   bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
-If you try to build/run it without the feature, Cargo will refuse because the target has
-`required-features = ["browser_ui"]` in [`Cargo.toml`](../Cargo.toml).
+If you run the `browser` binary without the feature, it will print a short message and exit
+(the real implementation is behind the `browser_ui` feature gate; see
+[`src/bin/browser.rs`](../src/bin/browser.rs)).
 
 When running the browser UI against arbitrary real-world pages, consider using the repo’s resource
 limit wrapper (especially on multi-agent hosts):
