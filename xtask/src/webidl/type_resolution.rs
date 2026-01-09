@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use webidl_ir::{
   parse_default_value, parse_idl_type, parse_idl_type_complete, DictionaryMemberSchema,
-  DictionarySchema, DefaultValue, IdlType, NamedType, NamedTypeKind, TypeAnnotation, TypeContext,
+  DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeAnnotation, TypeContext,
 };
 
 /// Build a `webidl_ir::TypeContext` from a resolved WebIDL world.
@@ -359,6 +359,7 @@ pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlTyp
 #[cfg(test)]
 mod tests {
   use super::*;
+  use webidl_ir::DefaultValue;
   use crate::webidl::overload_ir;
 
   fn test_world() -> ResolvedWebIdlWorld {
@@ -496,6 +497,56 @@ mod tests {
     assert!(
       !overload_ir::are_distinguishable(&cb_ty, &dict_ty, &world),
       "callback function with LegacyTreatNonObjectAsNull must not be distinguishable from a dictionary"
+    );
+  }
+
+  #[test]
+  fn parse_type_supports_bigint_symbol_and_nested_annotations() {
+    let world = test_world();
+
+    assert_eq!(
+      parse_type_with_world(&world, "bigint", &[]).unwrap(),
+      IdlType::BigInt
+    );
+    assert_eq!(
+      parse_type_with_world(&world, "symbol", &[]).unwrap(),
+      IdlType::Symbol
+    );
+
+    // Nested named-type resolution inside generic types.
+    assert_eq!(
+      parse_type_with_world(&world, "sequence<I>", &[]).unwrap(),
+      IdlType::Sequence(Box::new(IdlType::Named(NamedType {
+        name: "I".to_string(),
+        kind: NamedTypeKind::Interface,
+      })))
+    );
+
+    // Nested type annotations inside type expressions (not just argument-level ext attrs).
+    assert_eq!(
+      parse_type_with_world(&world, "sequence<[Clamp] unsigned long>", &[]).unwrap(),
+      IdlType::Sequence(Box::new(IdlType::Annotated {
+        annotations: vec![TypeAnnotation::Clamp],
+        inner: Box::new(IdlType::Numeric(webidl_ir::NumericType::UnsignedLong)),
+      }))
+    );
+
+    // Extra annotations are merged with any annotations present in the type string.
+    let enforced = parse_type_with_world(
+      &world,
+      "[Clamp] unsigned long",
+      &[ExtendedAttribute {
+        name: "EnforceRange".to_string(),
+        value: None,
+      }],
+    )
+    .unwrap();
+    assert_eq!(
+      enforced,
+      IdlType::Annotated {
+        annotations: vec![TypeAnnotation::EnforceRange, TypeAnnotation::Clamp],
+        inner: Box::new(IdlType::Numeric(webidl_ir::NumericType::UnsignedLong)),
+      }
     );
   }
 }
