@@ -38,7 +38,7 @@
 //! 9. Mix-blend-mode (except normal)
 //! 10. Isolation: isolate
 //! 11. Perspective property (except none)
-//! 12. Backface-visibility: hidden
+//! 12. Backface-visibility: hidden on an element participating in a 3D rendering context
 //! 13. Backdrop-filter property (except none)
 //! 14. Containment properties (contain: layout|paint|strict|content)
 //! 15. Flex items with z-index (child of flex container with z-index)
@@ -60,6 +60,7 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::paint::css_transforms::used_transform_style;
 use crate::paint::display_list::ResolvedFilter;
 use crate::paint::display_list::Transform3D;
 use crate::paint::filter_outset::filter_outset_with_bounds;
@@ -70,7 +71,7 @@ use crate::scroll::ScrollState;
 use crate::style::display::Display;
 use crate::style::position::Position;
 use crate::style::types::Overflow;
-use crate::style::types::{FilterColor, FilterFunction};
+use crate::style::types::{FilterColor, FilterFunction, TransformStyle};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
@@ -254,11 +255,12 @@ pub enum StackingContextReason {
   /// Forced stacking context for synthetic fragments (e.g. paged-media wrappers/margin boxes).
   Forced,
 
-  /// Has `backface-visibility: hidden`.
+  /// Has `backface-visibility: hidden` while participating in a 3D rendering context.
   ///
-  /// WPT expects `backface-visibility: hidden` to establish a stacking context even when the
-  /// element is not participating in a 3D rendering context (e.g. no `transform-style: preserve-3d`
-  /// ancestor).
+  /// Per CSS Transforms Level 2:
+  /// "A computed value of `backface-visibility/hidden` for `backface-visibility` on a
+  /// transformable element that participates in a 3D rendering context establishes both a
+  /// stacking context and a containing block for all descendants."
   BackfaceVisibility,
 
   /// Positioned element (relative/absolute/fixed/sticky) with z-index != auto
@@ -834,11 +836,13 @@ pub fn creates_stacking_context(
     return true;
   }
 
-  // `backface-visibility: hidden` establishes a stacking context.
+  // CSS Transforms 2: `backface-visibility: hidden` establishes a stacking context only when the
+  // element participates in a 3D rendering context (i.e. its parent preserves 3D).
   if matches!(
     style.backface_visibility,
     crate::style::types::BackfaceVisibility::Hidden
-  ) {
+  ) && participates_in_3d_rendering_context(parent_style)
+  {
     return true;
   }
 
@@ -952,7 +956,8 @@ pub fn get_stacking_context_reason(
   if matches!(
     style.backface_visibility,
     crate::style::types::BackfaceVisibility::Hidden
-  ) {
+  ) && participates_in_3d_rendering_context(parent_style)
+  {
     return Some(StackingContextReason::BackfaceVisibility);
   }
 
@@ -1007,6 +1012,11 @@ pub fn get_stacking_context_reason(
   }
 
   None
+}
+
+fn participates_in_3d_rendering_context(parent_style: Option<&ComputedStyle>) -> bool {
+  parent_style
+    .is_some_and(|parent| matches!(used_transform_style(parent), TransformStyle::Preserve3d))
 }
 
 /// Checks if an element is positioned (not static)
@@ -2482,12 +2492,10 @@ mod tests {
   fn test_creates_stacking_context_backface_visibility_hidden() {
     let mut style = ComputedStyle::default();
     style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
-
-    assert!(creates_stacking_context(&style, None, false));
-    assert_eq!(
-      get_stacking_context_reason(&style, None, false),
-      Some(StackingContextReason::BackfaceVisibility)
-    );
+    // `backface-visibility: hidden` only establishes a stacking context when the element
+    // participates in a 3D rendering context (i.e. its parent preserves 3D).
+    assert!(!creates_stacking_context(&style, None, false));
+    assert_eq!(get_stacking_context_reason(&style, None, false), None);
 
     let mut parent_style = ComputedStyle::default();
     parent_style.transform_style = crate::style::types::TransformStyle::Preserve3d;

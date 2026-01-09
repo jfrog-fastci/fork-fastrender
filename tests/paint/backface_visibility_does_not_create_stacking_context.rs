@@ -70,4 +70,3 @@ fn backface_visibility_hidden_wrapper_does_not_isolate_stacking_contexts() {
   // Outside all content remains white.
   assert_eq!(pixel(&pixmap, 59, 59), (255, 255, 255, 255));
 }
-
