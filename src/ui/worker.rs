@@ -453,8 +453,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
 }
 
 fn url_fragment(url: &str) -> Option<&str> {
-  url.split_once('#')
-    .and_then(|(_, fragment)| (!fragment.is_empty()).then_some(fragment))
+  url.split_once('#').map(|(_, fragment)| fragment)
 }
 
 fn urls_match_except_fragment(a: &str, b: &str) -> bool {
@@ -479,13 +478,21 @@ fn navigate_tab(
   tx: &Sender<WorkerToUi>,
 ) {
   if let (Some(current), Some(doc)) = (tab.current_url.as_deref(), tab.document.as_mut()) {
-    // Fragment-only navigation within the same document. This is intentionally treated as a
-    // scroll-only update (no full navigation messages) so callers can use `Navigate` for
-    // same-document `#hash` links.
+    // Fragment-only navigation within the same document.
     //
-    // `Reload` must not take this path because the caller expects a full reload with
-    // `NavigationStarted`/`NavigationCommitted`.
+    // We intentionally avoid a full reload (re-prepare/re-layout) and instead:
+    // - update the tab/document URL,
+    // - compute a new scroll position using existing layout artifacts,
+    // - emit navigation messages so the UI updates its address bar/history,
+    // - repaint at the new scroll offset.
+    //
+    // `Reload` must not take this path because the caller expects a full reload.
     if reason != NavigationReason::Reload && current != url && urls_match_except_fragment(current, &url) {
+      let _ = tx.send(WorkerToUi::NavigationStarted {
+        tab_id,
+        url: url.clone(),
+      });
+
       tab.current_url = Some(url.clone());
       match reason {
         NavigationReason::BackForward | NavigationReason::Reload => {}
@@ -493,29 +500,48 @@ fn navigate_tab(
       }
       doc.set_document_url_without_invalidation(Some(url.clone()));
 
-      if let Some(fragment) = url_fragment(&url) {
-        if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
-          let offset = doc
-            .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-              let viewport = fragment_tree.viewport_size();
-              let offset = crate::interaction::scroll_offset_for_fragment_target(
-                dom,
-                box_tree,
-                fragment_tree,
-                fragment,
-                viewport,
-              );
-              (false, offset)
-            })
-            .ok()
-            .flatten();
-          if let Some(offset) = offset {
-            tab.scroll_state.viewport = offset;
+      if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+        let computed = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+          let viewport = fragment_tree.viewport_size();
+          let fragment = url_fragment(&url).unwrap_or("");
+          let offset = crate::interaction::scroll_offset_for_fragment_target(
+            dom,
+            box_tree,
+            fragment_tree,
+            fragment,
+            viewport,
+          );
+          (false, offset)
+        });
+
+        // When the fragment is empty or missing, or the target cannot be found, scroll to the top
+        // of the document (matching common browser `href=\"#\"` behavior).
+        let offset = match computed {
+          Ok(Some(offset)) => offset,
+          Ok(None) => Point::ZERO,
+          Err(err) => {
+            let _ = tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("fragment navigation scroll failed: {err}"),
+            });
+            tab.scroll_state.viewport
           }
-        }
+        };
+
+        tab.scroll_state.viewport = offset;
       }
 
       doc.set_scroll_state(tab.scroll_state.clone());
+
+      let title = crate::html::title::find_document_title(doc.dom());
+      let _ = tx.send(WorkerToUi::NavigationCommitted {
+        tab_id,
+        url: url.clone(),
+        title,
+        can_go_back: tab.history.can_go_back(),
+        can_go_forward: tab.history.can_go_forward(),
+      });
+
       repaint_force(tab_id, tab, tx);
       return;
     }

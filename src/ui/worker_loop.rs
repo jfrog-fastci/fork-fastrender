@@ -1,5 +1,6 @@
 use crate::api::{BrowserDocument, FastRender, RenderOptions};
 use crate::geometry::{Point, Size};
+use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::scroll::ScrollState;
@@ -11,6 +12,7 @@ use crate::ui::messages::{
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
+use url::Url;
 
 pub struct UiWorkerHandle {
   ui_tx: Option<Sender<UiToWorker>>,
@@ -88,6 +90,106 @@ fn render_options_for_navigation(tab: &TabState) -> RenderOptions {
   RenderOptions::new()
     .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
     .with_device_pixel_ratio(tab.dpr)
+}
+
+fn normalize_url_without_fragment(mut url: Url) -> Url {
+  url.set_fragment(None);
+  url
+}
+
+fn resolve_href_against(base: &Url, href: &str) -> Option<Url> {
+  Url::parse(href).ok().or_else(|| base.join(href).ok())
+}
+
+fn fragment_navigation_target(tab: &TabState, href: &str) -> Option<Url> {
+  let current = tab.url.as_deref()?;
+  let current_url = Url::parse(current).ok()?;
+
+  let target_url = resolve_href_against(&current_url, href)?;
+
+  let current_no_frag = normalize_url_without_fragment(current_url.clone());
+  let target_no_frag = normalize_url_without_fragment(target_url.clone());
+  let is_same_document = current_no_frag == target_no_frag;
+  if !is_same_document {
+    return None;
+  }
+
+  let is_fragment_only =
+    current_url.fragment().is_some() || target_url.fragment().is_some();
+  is_fragment_only.then_some(target_url)
+}
+
+fn navigate_fragment_in_place(
+  tab_id: TabId,
+  tab: &mut TabState,
+  ui_tx: &Sender<WorkerToUi>,
+  url: Url,
+) {
+  let url_string = url.to_string();
+
+  let _ = ui_tx.send(WorkerToUi::NavigationStarted {
+    tab_id,
+    url: url_string.clone(),
+  });
+
+  // Same-document fragment navigations should not reload the page; we only update the tab's URL
+  // and adjust scroll based on the existing layout cache.
+  tab.url = Some(url_string.clone());
+
+  let title = crate::html::title::find_document_title(tab.document.dom());
+  let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
+    tab_id,
+    url: url_string,
+    title,
+    can_go_back: false,
+    can_go_forward: false,
+  });
+
+  let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
+  let fragment = url.fragment().unwrap_or("");
+
+  let target_offset = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let offset = scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
+    (false, offset)
+  }) {
+    Ok(offset) => offset.unwrap_or(Point::ZERO),
+    Err(err) => {
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("fragment navigation scroll failed: {err}"),
+      });
+      return;
+    }
+  };
+
+  // If the fragment is empty or the target is not found, we fall back to scrolling to the top of
+  // the document (matching the common `href="#"` behavior in browsers).
+  let mut next_scroll = tab.scroll.clone();
+  next_scroll.viewport = target_offset;
+  tab.document.set_scroll_state(next_scroll);
+
+  let painted = match tab.document.render_if_needed_with_scroll_state() {
+    Ok(Some(frame)) => frame,
+    Ok(None) => match tab.document.render_frame_with_scroll_state() {
+      Ok(frame) => frame,
+      Err(err) => {
+        let _ = ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("paint failed after fragment navigation scroll: {err}"),
+        });
+        return;
+      }
+    },
+    Err(err) => {
+      let _ = ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("paint failed after fragment navigation scroll: {err}"),
+      });
+      return;
+    }
+  };
+
+  emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
 }
 
 fn emit_frame(
@@ -508,7 +610,11 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
 
         match action {
           InteractionAction::Navigate { href } => {
-            navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+            if let Some(url) = fragment_navigation_target(tab, &href) {
+              navigate_fragment_in_place(tab_id, tab, &ui_tx, url);
+            } else {
+              navigate_tab(tab_id, tab, &ui_tx, href, NavigationReason::LinkClick);
+            }
           }
           _ => {
             repaint_if_needed(tab_id, tab, &ui_tx);
