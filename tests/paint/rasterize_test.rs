@@ -629,6 +629,16 @@ mod box_shadow_tests {
   use super::*;
 
   #[test]
+  fn test_outset_shadow_zero_lengths_paints_nothing() {
+    let mut pixmap = create_pixmap(100, 100);
+    let radii = BorderRadii::zero();
+    let shadow = BoxShadow::new(0.0, 0.0, 0.0, 0.0, Rgba::from_rgba8(0, 0, 0, 128));
+    let result = render_box_shadow(&mut pixmap, 20.0, 20.0, 40.0, 40.0, &radii, &shadow).unwrap();
+    assert!(!result);
+    assert_eq!(count_colored_pixels(&pixmap), 0);
+  }
+
+  #[test]
   fn test_render_basic_shadow() {
     let mut pixmap = create_pixmap(100, 100);
     let radii = BorderRadii::zero();

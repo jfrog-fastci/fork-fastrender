@@ -78,6 +78,24 @@ struct Args {
   #[arg(long, value_name = "JSON")]
   dump_dom2_json: Option<PathBuf>,
 
+  /// Dump the computed custom property store for the styled root node to JSON.
+  ///
+  /// When used together with `--filter-selector/--filter-id`, this dumps the custom properties for
+  /// the matched node. The output is written into the `--dump-json` directory as
+  /// `custom_properties.json`.
+  #[arg(long, requires = "dump_json")]
+  dump_custom_properties: bool,
+
+  /// Only include custom properties whose name starts with this prefix (repeatable).
+  ///
+  /// When omitted, all custom properties are included.
+  #[arg(long, value_name = "PREFIX", requires = "dump_custom_properties")]
+  custom_property_prefix: Vec<String>,
+
+  /// Maximum number of custom properties to dump (after filtering/sorting).
+  #[arg(long, default_value_t = 512, value_name = "N", requires = "dump_custom_properties")]
+  custom_properties_limit: usize,
+
   /// Print a combined pipeline snapshot JSON to stdout.
   #[arg(long)]
   dump_snapshot: bool,
@@ -1075,6 +1093,7 @@ fn inspect_pipeline(
         _ => fastrender::dom::DomNode {
           node_type: DomNodeType::Document {
             quirks_mode: document_quirks_mode,
+            scripting_enabled: true,
           },
           children: vec![subtree],
         },
@@ -1223,6 +1242,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_pretty_json(&dir.join("box_tree.json"), &snapshot.box_tree)?;
     write_pretty_json(&dir.join("fragment_tree.json"), &snapshot.fragment_tree)?;
     write_pretty_json(&dir.join("display_list.json"), &snapshot.display_list)?;
+
+    if args.dump_custom_properties {
+      let include_all_prefixes = args.custom_property_prefix.is_empty();
+      let mut props: Vec<(String, String)> = output
+        .styled
+        .styles
+        .custom_properties
+        .iter()
+        .filter(|(name, _)| {
+          if include_all_prefixes {
+            return true;
+          }
+          let name = name.as_ref();
+          args
+            .custom_property_prefix
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        })
+        .map(|(name, value)| (name.as_ref().to_string(), value.value.clone()))
+        .collect();
+      props.sort_by(|a, b| a.0.cmp(&b.0));
+      if props.len() > args.custom_properties_limit {
+        props.truncate(args.custom_properties_limit);
+      }
+
+      let payload = serde_json::json!({
+        "node_id": output.styled.node_id,
+        "total_custom_properties": output.styled.styles.custom_properties.len(),
+        "included": props.len(),
+        "custom_properties": props
+          .into_iter()
+          .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+          .collect::<Vec<_>>(),
+      });
+      write_pretty_json(&dir.join("custom_properties.json"), &payload)?;
+    }
   }
 
   if let Some(path) = &args.dump_dom2_json {

@@ -35,6 +35,7 @@ fn collect_text_codepoints_skips_hidden_but_includes_inert() {
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![visible, hidden, inert, fastr_inert],
   };

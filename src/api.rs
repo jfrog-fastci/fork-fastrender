@@ -725,7 +725,7 @@ impl Default for FastRenderConfig {
       allowed_subresource_origins: Vec::new(),
       compat_profile: CompatProfile::default(),
       dom_compat_mode: DomCompatibilityMode::Standard,
-      dom_scripting_enabled: false,
+      dom_scripting_enabled: true,
       apply_meta_viewport: false,
       apply_meta_color_scheme: false,
       fragmentation: None,
@@ -21036,9 +21036,16 @@ mod tests {
   fn dom_equivalent(a: &DomNode, b: &DomNode) -> bool {
     fn node_type_equivalent(a: &DomNodeType, b: &DomNodeType) -> bool {
       match (a, b) {
-        (DomNodeType::Document { quirks_mode: a }, DomNodeType::Document { quirks_mode: b }) => {
-          a == b
-        }
+        (
+          DomNodeType::Document {
+            quirks_mode: a,
+            scripting_enabled: a_scripting,
+          },
+          DomNodeType::Document {
+            quirks_mode: b,
+            scripting_enabled: b_scripting,
+          },
+        ) => a == b && a_scripting == b_scripting,
         (
           DomNodeType::ShadowRoot {
             mode: a_mode,
@@ -21656,6 +21663,7 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -21723,6 +21731,7 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -21793,6 +21802,7 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: selectors::context::QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {

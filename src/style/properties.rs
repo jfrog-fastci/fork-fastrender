@@ -8255,8 +8255,10 @@ fn apply_custom_property_declaration(
   let raw_text = decl_raw_text(decl);
   let raw_trimmed = trim_ascii_whitespace(&raw_text);
 
-  // Unregistered custom properties behave like token streams (untyped), but they still accept
-  // CSS-wide keywords like `initial` / `inherit` / `revert`.
+  // Unregistered custom properties behave like token streams: keep the authored value verbatim and
+  // do not interpret most CSS syntax at computed-value time. However, CSS-wide keywords still
+  // apply at the cascade layer (matching browser behavior), so `--x: initial` clears an inherited
+  // value instead of storing the literal identifier.
   let rule = match styles.custom_property_registry.get(decl.property.as_str()).cloned() {
     Some(rule) => rule,
     None => {
@@ -24103,6 +24105,12 @@ mod tests {
       styles.custom_properties.get("--x").is_none(),
       "unregistered `--x: initial` should compute to the guaranteed-invalid value"
     );
+    let var_value = PropertyValue::Keyword("var(--x, 10px)".to_string());
+    let resolved = resolve_var_for_property(&var_value, &styles.custom_properties, "");
+    let VarResolutionResult::Resolved { css_text, .. } = resolved else {
+      panic!("expected resolved var() value, got {resolved:?}");
+    };
+    assert_eq!(css_text.as_ref(), "10px");
   }
 
   #[test]

@@ -105,7 +105,12 @@ pub struct DomParseOptions {
 impl Default for DomParseOptions {
   fn default() -> Self {
     Self {
-      scripting_enabled: false,
+      // Align default parsing semantics with mainstream browsers: scripting is enabled by default,
+      // even if FastRender does not currently execute script content.
+      //
+      // This affects parsing behavior for elements such as `<noscript>` (HTML parsing semantics
+      // differ depending on whether scripting is enabled).
+      scripting_enabled: true,
       compatibility_mode: DomCompatibilityMode::Standard,
     }
   }
@@ -255,6 +260,15 @@ pub struct AssignedSlot {
 pub enum DomNodeType {
   Document {
     quirks_mode: QuirksMode,
+    /// Whether the document was parsed with scripting enabled.
+    ///
+    /// This follows the HTML parser's "scripting flag" (HTML LS) and affects semantics such as
+    /// whether `<noscript>` contents participate in rendering.
+    ///
+    /// Note: This is distinct from whether scripts are actually executed; FastRender currently does
+    /// not execute scripts, but we still default to the parsing/rendering semantics of a typical
+    /// browser where scripting is enabled.
+    scripting_enabled: bool,
   },
   ShadowRoot {
     mode: ShadowRootMode,
@@ -769,7 +783,7 @@ pub fn build_selector_bloom_store(
   }
 
   let quirks_mode = match &root.node_type {
-    DomNodeType::Document { quirks_mode } => *quirks_mode,
+    DomNodeType::Document { quirks_mode, .. } => *quirks_mode,
     _ => QuirksMode::NoQuirks,
   };
   let raw_bits = selector_bloom_summary_bits();
@@ -2224,9 +2238,10 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
   fn convert_document_handle_to_root(
     handle: &Handle,
     quirks_mode: QuirksMode,
+    scripting_enabled: bool,
     deadline_counter: &mut usize,
   ) -> Result<DomNode> {
-    convert_handle_to_node(handle, quirks_mode, deadline_counter)?.ok_or_else(|| {
+    convert_handle_to_node(handle, quirks_mode, scripting_enabled, deadline_counter)?.ok_or_else(|| {
       Error::Parse(ParseError::InvalidHtml {
         message: "DOM conversion produced no document root node".to_string(),
         line: 0,
@@ -2236,7 +2251,12 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
 
   let convert_timer = dom_parse_diagnostics_timer();
   let mut deadline_counter = 0usize;
-  let mut root = convert_document_handle_to_root(&dom.document, quirks_mode, &mut deadline_counter)?;
+  let mut root = convert_document_handle_to_root(
+    &dom.document,
+    quirks_mode,
+    options.scripting_enabled,
+    &mut deadline_counter,
+  )?;
   if let Some(start) = convert_timer {
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     with_dom_parse_diagnostics(|diag| {
@@ -3964,15 +3984,18 @@ pub(crate) fn apply_dom_compatibility_mutations(
 fn convert_handle_to_node(
   handle: &Handle,
   document_quirks_mode: QuirksMode,
+  document_scripting_enabled: bool,
   deadline_counter: &mut usize,
 ) -> Result<Option<DomNode>> {
   fn node_type_for_handle(
     handle: &Handle,
     document_quirks_mode: QuirksMode,
+    document_scripting_enabled: bool,
   ) -> Option<DomNodeType> {
     match &handle.data {
       NodeData::Document => Some(DomNodeType::Document {
         quirks_mode: document_quirks_mode,
+        scripting_enabled: document_scripting_enabled,
       }),
       NodeData::Element { name, attrs, .. } => {
         let namespace = if name.ns.as_ref() == HTML_NAMESPACE {
@@ -4048,7 +4071,9 @@ fn convert_handle_to_node(
     RenderStage::DomParse,
   )?;
 
-  let Some(node_type) = node_type_for_handle(handle, document_quirks_mode) else {
+  let Some(node_type) =
+    node_type_for_handle(handle, document_quirks_mode, document_scripting_enabled)
+  else {
     return Ok(None);
   };
 
@@ -4105,7 +4130,9 @@ fn convert_handle_to_node(
         RenderStage::DomParse,
       )?;
 
-      let Some(child_type) = node_type_for_handle(&child_handle, document_quirks_mode) else {
+      let Some(child_type) =
+        node_type_for_handle(&child_handle, document_quirks_mode, document_scripting_enabled)
+      else {
         continue;
       };
 
@@ -4282,7 +4309,7 @@ impl DomNode {
   }
 
   pub fn document_quirks_mode(&self) -> QuirksMode {
-    if let DomNodeType::Document { quirks_mode } = &self.node_type {
+    if let DomNodeType::Document { quirks_mode, .. } = &self.node_type {
       *quirks_mode
     } else {
       debug_assert!(
@@ -8146,6 +8173,7 @@ mod tests {
     DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children,
     }
@@ -8548,6 +8576,7 @@ mod tests {
     let mut dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![],
     };
@@ -8640,7 +8669,7 @@ mod tests {
 
     let comment = comment.expect("expected html5ever to create a comment node");
     let mut deadline_counter = 0usize;
-    let converted = convert_handle_to_node(&comment, QuirksMode::NoQuirks, &mut deadline_counter)
+    let converted = convert_handle_to_node(&comment, QuirksMode::NoQuirks, true, &mut deadline_counter)
       .expect("convert handle");
     assert!(converted.is_none());
   }
@@ -10381,6 +10410,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
       },
       children: vec![element("div", vec![element("span", vec![])])],
     };
@@ -10428,6 +10458,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
       },
       children: vec![element(
         "div",
@@ -10677,6 +10708,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![
         element("div", vec![text("abc")]),
@@ -10806,6 +10838,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };
@@ -10883,6 +10916,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![html],
     };
@@ -10960,6 +10994,7 @@ mod tests {
     let document = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![element("html", vec![element("body", vec![])])],
     };

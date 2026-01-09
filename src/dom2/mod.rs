@@ -546,6 +546,9 @@ impl Document {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
+          // dom2 does not currently track the HTML scripting flag; default to scripting enabled
+          // semantics when snapshotting back to the renderer DOM.
+          scripting_enabled: true,
         },
         NodeKind::DocumentFragment => unreachable!(
           "DocumentFragment nodes should never appear in the renderer snapshot tree; fragments must remain detached/empty"
@@ -664,6 +667,7 @@ impl Document {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
+          scripting_enabled: true,
         },
         NodeKind::DocumentFragment => DomNodeType::Document {
           quirks_mode: QuirksMode::NoQuirks,

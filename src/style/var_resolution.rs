@@ -883,6 +883,9 @@ fn resolve_variable_reference<'a>(
         return Ok(resolved);
       }
       Err(err) => {
+        // If the referenced custom property is present but its computed value is invalid (for
+        // example because it references a missing variable), treat this like an "invalid at
+        // computed value time" custom property and fall back to the var() fallback argument.
         if let Some(fallback_value) = fallback {
           return resolve_fallback(fallback_value, stack);
         }
@@ -1314,6 +1317,22 @@ mod tests {
   fn test_resolve_var_with_fallback_used() {
     let props = CustomPropertyStore::default();
     let value = PropertyValue::Keyword("var(--missing, red)".to_string());
+    let resolved = resolve_var(&value, &props);
+
+    if let PropertyValue::Keyword(kw) = resolved {
+      assert_eq!(kw, "red");
+    } else {
+      panic!("Expected Keyword 'red', got {:?}", resolved);
+    }
+  }
+
+  #[test]
+  fn test_resolve_var_with_fallback_used_when_defined_custom_property_is_invalid() {
+    // `--a` exists but is invalid at computed-value time because its value references a missing
+    // variable with no fallback. var() should treat this like an invalid custom property and use
+    // the fallback argument.
+    let props = make_props(&[("--a", "var(--missing)")]);
+    let value = PropertyValue::Keyword("var(--a, red)".to_string());
     let resolved = resolve_var(&value, &props);
 
     if let PropertyValue::Keyword(kw) = resolved {

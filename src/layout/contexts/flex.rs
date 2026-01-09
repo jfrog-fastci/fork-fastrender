@@ -2041,6 +2041,25 @@ impl FormattingContext for FlexFormattingContext {
                         }
                     }
                     let mut constraints = this.constraints_from_taffy(known_dimensions, avail, None);
+                    // When Taffy asks for a flex item's size without a known inline size, it can
+                    // pass the container's definite available width. For items that establish a
+                    // *flex/grid formatting context* and have `width:auto`, feeding that definite width into the nested flex/grid
+                    // layout causes the item to "fill" the available width instead of returning
+                    // its max-content contribution. Override this to max-content so the parent
+                    // flex algorithm sees the correct flex base size; the final used size is
+                    // computed later when Taffy calls measure again with a known width.
+                    if container_main_axis_is_horizontal
+                      && matches!(fc_type, FormattingContextType::Flex | FormattingContextType::Grid)
+                      && constraints.used_border_box_width.is_none()
+                      && matches!(constraints.available_width, CrateAvailableSpace::Definite(_))
+                      && physical_width_is_auto(measure_style)
+                      && matches!(
+                        measure_style.flex_basis,
+                        FlexBasis::Auto | FlexBasis::Content
+                      )
+                    {
+                      constraints.available_width = CrateAvailableSpace::MaxContent;
+                    }
                     if log_small_avail {
                         if let CrateAvailableSpace::Definite(w) = constraints.available_width {
                             if w > 0.0 && w <= 100.0 {
@@ -6383,31 +6402,6 @@ impl FlexFormattingContext {
     value
   }
 
-  fn flex_container_inner_main_size(
-    &self,
-    container_style: &ComputedStyle,
-    constraints: &LayoutConstraints,
-  ) -> Option<f32> {
-    let main_axis_is_row = matches!(
-      container_style.flex_direction,
-      FlexDirection::Row | FlexDirection::RowReverse
-    );
-    let inline_is_horizontal = matches!(container_style.writing_mode, WritingMode::HorizontalTb);
-    let block_is_horizontal = !inline_is_horizontal;
-    let main_axis_is_horizontal = if main_axis_is_row {
-      inline_is_horizontal
-    } else {
-      block_is_horizontal
-    };
-
-    let inner = self.flex_container_inner_size(container_style, constraints);
-    if main_axis_is_horizontal {
-      inner.width
-    } else {
-      inner.height
-    }
-  }
-
   /// Returns the flex container's content-box size in physical axes, when definite.
   ///
   /// Percentage sizes on flex items resolve against this inner size (CSS Sizing / Flexbox).
@@ -7507,7 +7501,16 @@ impl FlexFormattingContext {
       if !rect.width().is_finite() || rect.width() <= rect_eps {
         if let Some(def_w) = resolved_definite_width() {
           rect.size.width = def_w;
-        } else if let Some(base) = constraints.inline_percentage_base.filter(|w| *w > rect_eps) {
+        } else if box_node.children.is_empty() {
+          // A legitimately empty flex container can resolve to a 0 main size (e.g. a flex item with
+          // `width:auto` and no in-flow children). Avoid inflating such boxes to the viewport width
+          // because it will then be clamped by parent flex layout and push following items off
+          // screen.
+          rect.size.width = 0.0;
+        } else if let Some(base) = constraints
+          .inline_percentage_base
+          .filter(|w| w.is_finite() && *w > rect_eps)
+        {
           rect.size.width = base;
         } else {
           rect.size.width = self.viewport_size.width;
@@ -7613,6 +7616,9 @@ impl FlexFormattingContext {
       layout_child_storage: Option<BoxNode>,
       layout_width: f32,
       layout_height: f32,
+      /// True when Taffy resolved the child's main-axis size to ~0px but intrinsic sizing indicates
+      /// it should be non-zero. Used to decide when to run max-content fallbacks.
+      needs_intrinsic_main: bool,
     }
 
     struct ChildLayoutWorkOutput {
@@ -7764,14 +7770,14 @@ impl FlexFormattingContext {
       let mut layout_height = child_layout.size.height;
       let raw_layout_width = layout_width;
       let raw_layout_height = layout_height;
-      let target_width = if raw_layout_width > eps {
+      let mut target_width = if raw_layout_width > eps {
         raw_layout_width
       } else if rect_w.is_finite() && rect_w > eps {
         rect_w
       } else {
         self.viewport_size.width
       };
-      let target_height = if raw_layout_height > eps {
+      let mut target_height = if raw_layout_height > eps {
         raw_layout_height
       } else if rect_h.is_finite() && rect_h > eps {
         rect_h
@@ -7906,6 +7912,13 @@ impl FlexFormattingContext {
       let needs_intrinsic_main = !zero_main_size_is_legitimate
         && ((main_axis_is_row && raw_layout_width <= eps)
           || (!main_axis_is_row && raw_layout_height <= eps));
+      if !needs_intrinsic_main {
+        if main_axis_is_row {
+          target_width = raw_layout_width.max(0.0);
+        } else {
+          target_height = raw_layout_height.max(0.0);
+        }
+      }
 
       child_metrics[dom_idx] = Some(ChildMetrics {
         child_loc_x,
@@ -8095,6 +8108,7 @@ impl FlexFormattingContext {
         layout_child_storage,
         layout_width,
         layout_height,
+        needs_intrinsic_main,
       });
     }
 
@@ -8221,8 +8235,9 @@ impl FlexFormattingContext {
         } else {
           work.used_border_box_height.is_some()
         };
-        let needs_max_content_fallback = (main_axis_is_row && work.layout_width <= eps)
-          || (!main_axis_is_row && work.layout_height <= eps);
+        let needs_max_content_fallback = work.needs_intrinsic_main
+          && ((main_axis_is_row && work.layout_width <= eps)
+            || (!main_axis_is_row && work.layout_height <= eps));
         if needs_max_content_fallback
           && !main_axis_has_used_border_box
           && !matches!(
@@ -10266,16 +10281,16 @@ impl FlexFormattingContext {
 
   fn display_to_taffy(&self, style: &ComputedStyle, is_root: bool) -> taffy::style::Display {
     // Root container is always Flex (that's why we're using FlexFormattingContext)
-    // Children use their actual display mode, defaulting to Block for flex items
+    // Children are represented as leaf nodes in the Taffy tree and their size is provided via
+    // the measure callback. Treat them as `Display::Block` so Taffy doesn't apply blockified
+    // flex/grid container sizing rules (e.g. `width:auto` → fill-available) to flex items that
+    // are themselves flex/grid containers (they must size to their max-content contribution
+    // instead of the container width).
     if is_root {
       taffy::style::Display::Flex
     } else {
-      // For children within a flex container, check if they're nested flex/grid
       match style.display {
-        Display::Flex | Display::InlineFlex => taffy::style::Display::Flex,
-        Display::Grid | Display::InlineGrid => taffy::style::Display::Grid,
         Display::None => taffy::style::Display::None,
-        // Regular items become flex items with block-level sizing
         _ => taffy::style::Display::Block,
       }
     }

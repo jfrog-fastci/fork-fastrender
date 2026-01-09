@@ -424,6 +424,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -478,6 +479,7 @@ mod tests {
     let mut dom = crate::dom::DomNode {
       node_type: crate::dom::DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![],
     };

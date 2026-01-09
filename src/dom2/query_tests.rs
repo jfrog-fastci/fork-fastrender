@@ -191,6 +191,7 @@ fn document_element_returns_first_element_child_of_document() {
   let root = crate::dom::DomNode {
     node_type: crate::dom::DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![
       crate::dom::DomNode {
@@ -314,6 +315,7 @@ fn get_element_by_id_matches_attribute_name_case_insensitively_only_in_html_name
   let root = crate::dom::DomNode {
     node_type: crate::dom::DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![
       // In HTML, attribute names are ASCII case-insensitive.

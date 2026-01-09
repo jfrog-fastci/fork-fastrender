@@ -5,7 +5,7 @@ use super::{Document, NodeKind};
 
 fn node_kind_from_dom_node_type(node_type: &DomNodeType) -> NodeKind {
   match node_type {
-    DomNodeType::Document { quirks_mode } => NodeKind::Document {
+    DomNodeType::Document { quirks_mode, .. } => NodeKind::Document {
       quirks_mode: *quirks_mode,
     },
     DomNodeType::ShadowRoot {
@@ -143,6 +143,7 @@ fn renderer_dom_mapping_handles_deep_trees_without_recursion_overflow() {
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![node],
   };
@@ -188,6 +189,7 @@ fn renderer_dom_mapping_models_wbr_synthetic_zwsp_nodes() {
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {

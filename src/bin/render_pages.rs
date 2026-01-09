@@ -1915,7 +1915,7 @@ fn write_pipeline_snapshot(base: &Path, name: &str, artifacts: &RenderArtifacts,
 
 fn serialize_dom(node: &DomNode) -> SerializableDomNode {
   let (kind, namespace, tag, attributes, text, quirks_mode) = match &node.node_type {
-    DomNodeType::Document { quirks_mode } => (
+    DomNodeType::Document { quirks_mode, .. } => (
       "document".to_string(),
       None,
       None,

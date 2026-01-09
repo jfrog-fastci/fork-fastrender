@@ -1155,6 +1155,16 @@ fn render_outset_shadow(
   let sigma = shadow.blur_radius.max(0.0);
   let spread = shadow.spread_radius;
   let box_radii = *radii;
+
+  // Outset shadows are rendered outside the border box. If there is no blur/spread and the shadow
+  // is not offset, then there is no region outside the box that can be painted.
+  if sigma <= f32::EPSILON
+    && shadow.offset_x.abs() <= f32::EPSILON
+    && shadow.offset_y.abs() <= f32::EPSILON
+    && spread <= f32::EPSILON
+  {
+    return Ok(false);
+  }
   let shadow_rect = Rect::from_xywh(
     x + shadow.offset_x - spread,
     y + shadow.offset_y - spread,

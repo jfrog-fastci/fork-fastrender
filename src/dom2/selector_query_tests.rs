@@ -185,6 +185,7 @@ fn query_selector_handles_wbr_synthetic_zwsp_nodes_and_scope() {
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![DomNode {
       node_type: DomNodeType::Element {

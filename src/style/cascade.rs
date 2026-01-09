@@ -187,7 +187,7 @@ const CASCADE_SELECTOR_DEADLINE_STRIDE: usize = 64;
 
 fn quirks_mode_for_dom(dom: &DomNode) -> QuirksMode {
   match &dom.node_type {
-    DomNodeType::Document { quirks_mode } => *quirks_mode,
+    DomNodeType::Document { quirks_mode, .. } => *quirks_mode,
     _ => QuirksMode::NoQuirks,
   }
 }
@@ -15249,6 +15249,15 @@ fn compute_base_styles<'a>(
   let inline_tree_scope = tree_scope_prefix_for_node(dom_maps, node_id);
   let unlayered_layer_order = scratch.unlayered_layer_order(inline_tree_scope);
   let is_root = is_root_element(ancestors);
+  let document_scripting_enabled = ancestors
+    .iter()
+    .find_map(|ancestor| match &ancestor.node_type {
+      DomNodeType::Document {
+        scripting_enabled, ..
+      } => Some(*scripting_enabled),
+      _ => None,
+    })
+    .unwrap_or(true);
   matching_rules.extend(ua_default_rules(
     node,
     parent_styles.direction,
@@ -15468,6 +15477,23 @@ fn compute_base_styles<'a>(
         .tag_name()
         .is_some_and(|tag| tag.eq_ignore_ascii_case("dialog")))
   {
+    styles.display = Display::None;
+  }
+
+  // HTML <noscript> elements are only rendered when scripting is disabled for the document.
+  //
+  // When scripting is enabled, browsers still parse <noscript> in the body, but the element is not
+  // rendered (HTML LS "The noscript element").
+  if document_scripting_enabled
+    && node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("noscript"))
+    && matches!(
+      node.namespace(),
+      Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+    )
+  {
+    ua_styles.display = Display::None;
     styles.display = Display::None;
   }
 
@@ -18672,6 +18698,7 @@ mod tests {
     DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![root_el],
     }
@@ -24166,6 +24193,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
       },
       children: vec![
         DomNode {
@@ -24843,6 +24871,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -24951,6 +24980,7 @@ mod tests {
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::Quirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {
@@ -27221,6 +27251,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let dom = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![DomNode {
         node_type: DomNodeType::Element {

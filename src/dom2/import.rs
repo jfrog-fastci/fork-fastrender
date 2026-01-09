@@ -12,7 +12,7 @@ struct Frame {
 fn push_imported_node(doc: &mut Document, parent: NodeId, src: &DomNode) -> NodeId {
   let inert_subtree = src.template_contents_are_inert();
   let kind = match &src.node_type {
-    DomNodeType::Document { quirks_mode } => NodeKind::Document {
+    DomNodeType::Document { quirks_mode, .. } => NodeKind::Document {
       quirks_mode: *quirks_mode,
     },
     DomNodeType::ShadowRoot {
@@ -83,7 +83,7 @@ fn import_subtree(doc: &mut Document, parent: NodeId, root: &DomNode) -> NodeId 
 impl Document {
   pub fn from_renderer_dom(root: &DomNode) -> Document {
     let quirks_mode = match &root.node_type {
-      DomNodeType::Document { quirks_mode } => *quirks_mode,
+      DomNodeType::Document { quirks_mode, .. } => *quirks_mode,
       _ => QuirksMode::NoQuirks,
     };
     let mut doc = Document::new(quirks_mode);
@@ -249,6 +249,7 @@ mod tests {
     let root = DomNode {
       node_type: DomNodeType::Document {
         quirks_mode: QuirksMode::NoQuirks,
+        scripting_enabled: true,
       },
       children: vec![node],
     };

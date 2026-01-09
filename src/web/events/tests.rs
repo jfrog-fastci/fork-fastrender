@@ -20,6 +20,7 @@ fn make_dom_abc() -> (Document, NodeId, NodeId, NodeId) {
   let root = DomNode {
     node_type: DomNodeType::Document {
       quirks_mode: QuirksMode::NoQuirks,
+      scripting_enabled: true,
     },
     children: vec![element("a", vec![element("b", vec![element("c", vec![])])])],
   };
