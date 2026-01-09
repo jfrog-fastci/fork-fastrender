@@ -2236,13 +2236,15 @@ impl MathLayoutContext {
     let metrics = self.base_font_metrics(base_style, style.font_size);
     let constants = self.default_math_constants(style, base_style, MathVariant::Normal);
 
-    let script_style = if style.display_style {
-      *style
+    let child_style = if style.display_style {
+      let mut next = *style;
+      next.display_style = false;
+      next
     } else {
       style.script_with_constants(constants.as_ref())
     };
-    let numerator = self.layout_node(num, &script_style, base_style);
-    let denominator = self.layout_node(den, &script_style, base_style);
+    let numerator = self.layout_node(num, &child_style, base_style);
+    let denominator = self.layout_node(den, &child_style, base_style);
 
     if bevelled {
       let x_height = metrics.x_height.unwrap_or(style.font_size * 0.5);
@@ -3443,6 +3445,7 @@ pub fn layout_mathml(node: &MathNode, style: &ComputedStyle, font_ctx: &FontCont
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::text::font_db::FontConfig;
 
   fn find_math_element<'a>(node: &'a crate::dom::DomNode) -> Option<&'a crate::dom::DomNode> {
     if node
@@ -3557,6 +3560,46 @@ mod tests {
     let layout = layout_mathml(&node, &style, &ctx);
     assert!(layout.width > 0.0);
     assert!(layout.height > 0.0);
+  }
+
+  #[test]
+  fn display_fraction_children_shrink_nested_fractions() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let parsed = parse_math_from_html(
+      "<math display=\"block\"><mfrac><mi>a</mi><mfrac><mi>b</mi><mi>c</mi></mfrac></mfrac></math>",
+    );
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let layout = layout_mathml(&parsed, &style, &ctx);
+
+    let mut sizes = std::collections::HashMap::<String, Vec<f32>>::new();
+    for fragment in &layout.fragments {
+      if let MathFragment::Glyph { run, .. } = fragment {
+        sizes.entry(run.text.clone()).or_default().push(run.font_size);
+      }
+    }
+
+    let a_size = sizes
+      .get("a")
+      .and_then(|v| v.iter().copied().reduce(f32::max))
+      .expect("glyph run for a");
+    let b_size = sizes
+      .get("b")
+      .and_then(|v| v.iter().copied().reduce(f32::max))
+      .expect("glyph run for b");
+    let c_size = sizes
+      .get("c")
+      .and_then(|v| v.iter().copied().reduce(f32::max))
+      .expect("glyph run for c");
+
+    assert!(
+      b_size < a_size && b_size <= a_size * 0.8,
+      "expected b to be script-sized relative to a (a_size={a_size}, b_size={b_size})"
+    );
+    assert!(
+      c_size < a_size && c_size <= a_size * 0.8,
+      "expected c to be script-sized relative to a (a_size={a_size}, c_size={c_size})"
+    );
   }
 
   #[test]
