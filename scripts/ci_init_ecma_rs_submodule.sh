@@ -17,5 +17,27 @@ git config --global core.longpaths true
 # Ensure any `.gitmodules` URL changes are reflected in `.git/config`.
 git submodule sync -- engines/ecma-rs
 
-git submodule update --init engines/ecma-rs
+# A submodule gitlink can briefly reference a commit that isn't yet visible on GitHub
+# (e.g. the ecma-rs push is still propagating), which manifests as:
+#   remote error: upload-pack: not our ref <sha>
+#
+# Retry a few times with exponential backoff to eliminate flaky CI failures while still
+# failing fast for genuinely-missing commits.
+max_attempts="${FASTR_ECMA_RS_SUBMODULE_ATTEMPTS:-5}"
+sleep_s=2
+attempt=1
+while true; do
+  if git submodule update --init engines/ecma-rs; then
+    exit 0
+  fi
 
+  if [[ "${attempt}" -ge "${max_attempts}" ]]; then
+    echo "Failed to init engines/ecma-rs submodule after ${max_attempts} attempts." >&2
+    exit 1
+  fi
+
+  echo "Retrying ecma-rs submodule init (${attempt}/${max_attempts}) in ${sleep_s}s..." >&2
+  sleep "${sleep_s}"
+  attempt=$((attempt + 1))
+  sleep_s=$((sleep_s * 2))
+done
