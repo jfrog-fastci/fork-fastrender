@@ -216,6 +216,37 @@ fn supports_position_try_shorthand() {
 }
 
 #[test]
+fn supports_position_try_shorthand_order_last() {
+  let target = styled_target(
+    r#"
+      @supports (position-try: flip-inline most-inline-size) {
+        #t { color: rgb(71, 72, 73); }
+      }
+      @supports not (position-try: flip-inline most-inline-size) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(71, 72, 73));
+}
+
+#[test]
+fn position_try_shorthand_parses_order_last_with_comment_separator() {
+  let target = styled_target(
+    r#"
+      #t { position-try: flip-inline/*comment*/most-width; }
+    "#,
+  );
+
+  assert_eq!(target.styles.position_try_order, PositionTryOrder::MostWidth);
+  assert_eq!(
+    target.styles.position_try_fallbacks,
+    vec!["flip-inline".to_string()]
+  );
+}
+
+#[test]
 fn supports_position_try_at_rule() {
   let target = styled_target(
     r#"

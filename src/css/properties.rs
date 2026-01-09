@@ -2365,6 +2365,11 @@ fn supports_position_try_value(raw_value: &str) -> bool {
     return false;
   }
 
+  // Shorthand accepts `<position-try-order>` alone (resets fallbacks to `none`).
+  if supports_position_try_order_value(raw_value) {
+    return true;
+  }
+
   let mut input = ParserInput::new(raw_value);
   let mut parser = Parser::new(&mut input);
   parser.skip_whitespace();
@@ -2476,7 +2481,39 @@ fn supports_position_try_value(raw_value: &str) -> bool {
   );
 
   if !is_order {
-    // No `position-try-order` prefix, just validate the fallbacks list.
+    // Try `<position-try-fallbacks> <position-try-order>` before validating as fallbacks-only.
+    let mut input = ParserInput::new(raw_value);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      let mut last_ident: Option<(cssparser::SourcePosition, String)> = None;
+      loop {
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          break;
+        }
+        let pos = parser.position();
+        let token = match parser.next_including_whitespace() {
+          Ok(token) => token,
+          Err(_) => return false,
+        };
+        if let Token::Ident(ident) = token {
+          last_ident = Some((pos, ident.as_ref().to_string()));
+        }
+      }
+
+      if let Some((order_pos, order_ident)) = last_ident {
+        if supports_position_try_order_value(&order_ident) {
+          let suffix = parser.slice_from(order_pos);
+          let prefix_len = raw_value.len().saturating_sub(suffix.len());
+          let prefix = raw_value.get(..prefix_len).unwrap_or("");
+          if supports_position_try_fallbacks_value(prefix) {
+            return true;
+          }
+        }
+      }
+    }
+
     return supports_position_try_fallbacks_value(raw_value);
   }
 
