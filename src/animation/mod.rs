@@ -8778,7 +8778,9 @@ fn apply_transition_state_to_fragment(
         }
 
         if !updates.is_empty() || !custom_updates.is_empty() {
-          let color_changed = updates.iter().any(|(name, _)| name == "color");
+          let color_changed = updates
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("color"));
           let mut updated_style = (*style_arc).clone();
           apply_animated_properties_ordered(&mut updated_style, &updates);
           let mut custom_properties_changed = false;

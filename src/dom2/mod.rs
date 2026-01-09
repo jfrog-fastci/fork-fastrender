@@ -1229,6 +1229,43 @@ impl Document {
 
     Ok(false)
   }
+
+  /// `Element.closest(selectors)` for a `dom2` element.
+  ///
+  /// This walks up the ancestor chain (including `element` itself) and returns the first element
+  /// that matches `selectors`.
+  ///
+  /// Inert `<template>` contents are treated as disconnected: traversal stops before the inert
+  /// template boundary so `closest()` does not see ancestors outside the template's `.content`
+  /// subtree.
+  pub fn closest(
+    &mut self,
+    element: NodeId,
+    selectors: &str,
+  ) -> Result<Option<NodeId>, DomException> {
+    if element.index() >= self.nodes.len() {
+      return Ok(None);
+    }
+    match &self.node(element).kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => return Ok(None),
+    }
+
+    let mut current = element;
+    loop {
+      if self.matches_selector(current, selectors)? {
+        return Ok(Some(current));
+      }
+
+      let Some(parent) = self.parent_node(current) else {
+        return Ok(None);
+      };
+      if self.node(parent).inert_subtree {
+        return Ok(None);
+      }
+      current = parent;
+    }
+  }
 }
 
 #[cfg(test)]
