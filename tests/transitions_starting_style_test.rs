@@ -16,6 +16,7 @@ use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
 use std::fs;
 use std::path::PathBuf;
+use svgtypes::{PathParser, PathSegment};
 
 fn prepare(html: &str, width: u32, height: u32) -> (BoxTree, FragmentTree, StyledNode) {
   let mut renderer = FastRender::new().expect("renderer");
@@ -229,6 +230,100 @@ fn fragment_clip_shape(tree: &FragmentTree, box_id: usize) -> BasicShape {
     ClipPath::BasicShape(shape, _) => shape.as_ref().clone(),
     other => panic!("expected basic shape clip-path, got {other:?}"),
   }
+}
+
+fn svg_path_nth_line_to_x(data: &str, n: usize) -> f32 {
+  let mut current = (0.0f32, 0.0f32);
+  let mut subpath_start = (0.0f32, 0.0f32);
+  let mut seen = 0usize;
+
+  for segment in PathParser::from(data) {
+    let seg = segment.expect("path parse");
+    match seg {
+      PathSegment::MoveTo { abs, x, y } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+        subpath_start = current;
+      }
+      PathSegment::LineTo { abs, x, y } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+        seen += 1;
+        if seen == n {
+          return nx;
+        }
+      }
+      PathSegment::HorizontalLineTo { abs, x } => {
+        let nx = if abs { x as f32 } else { current.0 + x as f32 };
+        current.0 = nx;
+        seen += 1;
+        if seen == n {
+          return nx;
+        }
+      }
+      PathSegment::VerticalLineTo { abs, y } => {
+        let ny = if abs { y as f32 } else { current.1 + y as f32 };
+        current.1 = ny;
+        seen += 1;
+        if seen == n {
+          return current.0;
+        }
+      }
+      PathSegment::CurveTo { abs, x, y, .. } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+      }
+      PathSegment::SmoothCurveTo { abs, x, y, .. } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+      }
+      PathSegment::Quadratic { abs, x, y, .. } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+      }
+      PathSegment::SmoothQuadratic { abs, x, y } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+      }
+      PathSegment::EllipticalArc { abs, x, y, .. } => {
+        let (nx, ny) = if abs {
+          (x as f32, y as f32)
+        } else {
+          (current.0 + x as f32, current.1 + y as f32)
+        };
+        current = (nx, ny);
+      }
+      PathSegment::ClosePath { .. } => {
+        current = subpath_start;
+      }
+    }
+  }
+
+  panic!("expected at least {n} line segments");
 }
 
 #[test]
@@ -1438,6 +1533,56 @@ fn transitions_interpolate_clip_path_polygon_over_time() {
   assert!((points[2].1.to_px() - 75.0).abs() < eps);
   assert!((points[3].0.to_px() - 0.0).abs() < eps);
   assert!((points[3].1.to_px() - 75.0).abs() < eps);
+}
+
+#[test]
+fn transitions_interpolate_clip_path_path_over_time() {
+  let html = r#"
+    <style>
+      @starting-style {
+        #box {
+          clip-path: path("M0 0 L50 0 L50 100 L0 100 Z");
+        }
+      }
+
+      #box {
+        width: 100px;
+        height: 100px;
+        clip-path: path("M0 0 L100 0 L100 100 L0 100 Z");
+        transition: clip-path 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let sample_line_to_x = |tree: &FragmentTree| -> f32 {
+    match fragment_clip_shape(tree, box_id) {
+      BasicShape::Path { fill, data } => {
+        assert_eq!(fill, FillRule::NonZero);
+        // Inspect the 2nd LineTo segment (L* *), which moves the right edge.
+        svg_path_nth_line_to_x(data.as_ref(), 2)
+      }
+      other => panic!("expected path() clip-path, got {other:?}"),
+    }
+  };
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!((sample_line_to_x(&start) - 50.0).abs() < 1e-3);
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((sample_line_to_x(&mid) - 75.0).abs() < 1e-3);
+
+  let mut end = fragment_tree.clone();
+  let viewport = end.viewport_size();
+  animation::apply_transitions(&mut end, 1000.0, viewport);
+  assert!((sample_line_to_x(&end) - 100.0).abs() < 1e-3);
 }
 
 #[test]

@@ -15,8 +15,10 @@ use crate::css::types::{
   TextShadow, TranslateValue,
 };
 use crate::debug::runtime;
+use crate::error::RenderStage;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::{Transform2D, Transform3D};
+use crate::render_control::check_active_periodic;
 use crate::scroll::ScrollState;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::properties::{
@@ -333,6 +335,11 @@ enum ResolvedClipPath {
     fill: FillRule,
     points: Vec<(f32, f32)>,
     reference: Option<ReferenceBox>,
+  },
+  Path {
+    fill: FillRule,
+    reference: Option<ReferenceBox>,
+    data: Arc<str>,
   },
 }
 
@@ -911,10 +918,461 @@ fn resolve_clip_path(
           reference: *reference,
         })
       }
-      // Path and unsupported shapes fall back to discrete animation.
-      BasicShape::Path { .. } => None,
+      BasicShape::Path { fill, data } => Some(ResolvedClipPath::Path {
+        fill: *fill,
+        reference: *reference,
+        data: Arc::clone(data),
+      }),
     },
   }
+}
+
+const CLIP_PATH_PATH_DEADLINE_STRIDE: usize = 256;
+
+#[derive(Debug, Clone)]
+enum CanonicalSvgPathSegment {
+  MoveTo { x: f32, y: f32 },
+  LineTo { x: f32, y: f32 },
+  CurveTo {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    x: f32,
+    y: f32,
+  },
+  Quadratic { x1: f32, y1: f32, x: f32, y: f32 },
+  ClosePath,
+}
+
+fn canonicalize_svg_path_data(data: &str) -> Option<Vec<CanonicalSvgPathSegment>> {
+  use svgtypes::PathParser;
+  use svgtypes::PathSegment;
+
+  let mut segments = Vec::new();
+  let mut current = (0.0f32, 0.0f32);
+  let mut subpath_start = (0.0f32, 0.0f32);
+  let mut last_cubic_ctrl: Option<(f32, f32)> = None;
+  let mut last_quad_ctrl: Option<(f32, f32)> = None;
+
+  let mut deadline_counter = 0usize;
+  let stage = crate::render_control::active_stage().unwrap_or(RenderStage::Paint);
+
+  let to_f32 = |v: f64| -> Option<f32> {
+    let out = v as f32;
+    out.is_finite().then_some(out)
+  };
+
+  for segment in PathParser::from(data) {
+    check_active_periodic(&mut deadline_counter, CLIP_PATH_PATH_DEADLINE_STRIDE, stage).ok()?;
+
+    let seg = segment.ok()?;
+    match seg {
+      PathSegment::MoveTo { abs, x, y } => {
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(nx.is_finite() && ny.is_finite()) {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::MoveTo { x: nx, y: ny });
+        current = (nx, ny);
+        subpath_start = current;
+        last_cubic_ctrl = None;
+        last_quad_ctrl = None;
+      }
+      PathSegment::LineTo { abs, x, y } => {
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(nx.is_finite() && ny.is_finite()) {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::LineTo { x: nx, y: ny });
+        current = (nx, ny);
+        last_cubic_ctrl = None;
+        last_quad_ctrl = None;
+      }
+      PathSegment::HorizontalLineTo { abs, x } => {
+        let x = to_f32(x)?;
+        let nx = if abs { x } else { current.0 + x };
+        if !nx.is_finite() {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::LineTo {
+          x: nx,
+          y: current.1,
+        });
+        current.0 = nx;
+        last_cubic_ctrl = None;
+        last_quad_ctrl = None;
+      }
+      PathSegment::VerticalLineTo { abs, y } => {
+        let y = to_f32(y)?;
+        let ny = if abs { y } else { current.1 + y };
+        if !ny.is_finite() {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::LineTo {
+          x: current.0,
+          y: ny,
+        });
+        current.1 = ny;
+        last_cubic_ctrl = None;
+        last_quad_ctrl = None;
+      }
+      PathSegment::CurveTo {
+        abs,
+        x1,
+        y1,
+        x2,
+        y2,
+        x,
+        y,
+      } => {
+        let x1 = to_f32(x1)?;
+        let y1 = to_f32(y1)?;
+        let x2 = to_f32(x2)?;
+        let y2 = to_f32(y2)?;
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (cx1, cy1) = if abs {
+          (x1, y1)
+        } else {
+          (current.0 + x1, current.1 + y1)
+        };
+        let (cx2, cy2) = if abs {
+          (x2, y2)
+        } else {
+          (current.0 + x2, current.1 + y2)
+        };
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(cx1.is_finite()
+          && cy1.is_finite()
+          && cx2.is_finite()
+          && cy2.is_finite()
+          && nx.is_finite()
+          && ny.is_finite())
+        {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::CurveTo {
+          x1: cx1,
+          y1: cy1,
+          x2: cx2,
+          y2: cy2,
+          x: nx,
+          y: ny,
+        });
+        current = (nx, ny);
+        last_cubic_ctrl = Some((cx2, cy2));
+        last_quad_ctrl = None;
+      }
+      PathSegment::SmoothCurveTo { abs, x2, y2, x, y } => {
+        let x2 = to_f32(x2)?;
+        let y2 = to_f32(y2)?;
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (cx1, cy1) = match last_cubic_ctrl {
+          Some((px, py)) => (2.0 * current.0 - px, 2.0 * current.1 - py),
+          None => current,
+        };
+        let (cx2, cy2) = if abs {
+          (x2, y2)
+        } else {
+          (current.0 + x2, current.1 + y2)
+        };
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(cx1.is_finite()
+          && cy1.is_finite()
+          && cx2.is_finite()
+          && cy2.is_finite()
+          && nx.is_finite()
+          && ny.is_finite())
+        {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::CurveTo {
+          x1: cx1,
+          y1: cy1,
+          x2: cx2,
+          y2: cy2,
+          x: nx,
+          y: ny,
+        });
+        current = (nx, ny);
+        last_cubic_ctrl = Some((cx2, cy2));
+        last_quad_ctrl = None;
+      }
+      PathSegment::Quadratic { abs, x1, y1, x, y } => {
+        let x1 = to_f32(x1)?;
+        let y1 = to_f32(y1)?;
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (cx1, cy1) = if abs {
+          (x1, y1)
+        } else {
+          (current.0 + x1, current.1 + y1)
+        };
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(cx1.is_finite() && cy1.is_finite() && nx.is_finite() && ny.is_finite()) {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::Quadratic {
+          x1: cx1,
+          y1: cy1,
+          x: nx,
+          y: ny,
+        });
+        current = (nx, ny);
+        last_quad_ctrl = Some((cx1, cy1));
+        last_cubic_ctrl = None;
+      }
+      PathSegment::SmoothQuadratic { abs, x, y } => {
+        let x = to_f32(x)?;
+        let y = to_f32(y)?;
+        let (cx1, cy1) = match last_quad_ctrl {
+          Some((px, py)) => (2.0 * current.0 - px, 2.0 * current.1 - py),
+          None => current,
+        };
+        let (nx, ny) = if abs {
+          (x, y)
+        } else {
+          (current.0 + x, current.1 + y)
+        };
+        if !(cx1.is_finite() && cy1.is_finite() && nx.is_finite() && ny.is_finite()) {
+          return None;
+        }
+        segments.push(CanonicalSvgPathSegment::Quadratic {
+          x1: cx1,
+          y1: cy1,
+          x: nx,
+          y: ny,
+        });
+        current = (nx, ny);
+        last_quad_ctrl = Some((cx1, cy1));
+        last_cubic_ctrl = None;
+      }
+      // We currently treat arcs as non-interpolatable. (`svg_path.rs` converts arcs to cubics for
+      // rendering; if we want to interpolate arcs in the future we'd need a similar canonicalisation
+      // pass here.)
+      PathSegment::EllipticalArc { .. } => return None,
+      PathSegment::ClosePath { .. } => {
+        segments.push(CanonicalSvgPathSegment::ClosePath);
+        current = subpath_start;
+        last_cubic_ctrl = None;
+        last_quad_ctrl = None;
+      }
+    }
+  }
+
+  Some(segments)
+}
+
+fn push_svg_path_number(out: &mut String, value: f32) -> Option<()> {
+  if !value.is_finite() {
+    return None;
+  }
+  let value = if value == 0.0 { 0.0 } else { value };
+  out.push_str(&value.to_string());
+  Some(())
+}
+
+fn serialize_svg_path_data(segments: &[CanonicalSvgPathSegment]) -> Option<Arc<str>> {
+  let mut out = String::new();
+  for (idx, seg) in segments.iter().enumerate() {
+    if idx > 0 {
+      out.push(' ');
+    }
+    match seg {
+      CanonicalSvgPathSegment::MoveTo { x, y } => {
+        out.push('M');
+        out.push(' ');
+        push_svg_path_number(&mut out, *x)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y)?;
+      }
+      CanonicalSvgPathSegment::LineTo { x, y } => {
+        out.push('L');
+        out.push(' ');
+        push_svg_path_number(&mut out, *x)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y)?;
+      }
+      CanonicalSvgPathSegment::CurveTo {
+        x1,
+        y1,
+        x2,
+        y2,
+        x,
+        y,
+      } => {
+        out.push('C');
+        out.push(' ');
+        push_svg_path_number(&mut out, *x1)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y1)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *x2)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y2)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *x)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y)?;
+      }
+      CanonicalSvgPathSegment::Quadratic { x1, y1, x, y } => {
+        out.push('Q');
+        out.push(' ');
+        push_svg_path_number(&mut out, *x1)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y1)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *x)?;
+        out.push(' ');
+        push_svg_path_number(&mut out, *y)?;
+      }
+      CanonicalSvgPathSegment::ClosePath => {
+        out.push('Z');
+      }
+    }
+  }
+
+  Some(Arc::from(out))
+}
+
+fn interpolate_svg_path_data(a: &str, b: &str, t: f32) -> Option<Arc<str>> {
+  if !t.is_finite() {
+    return None;
+  }
+
+  let a_segments = canonicalize_svg_path_data(a)?;
+  let b_segments = canonicalize_svg_path_data(b)?;
+  if a_segments.len() != b_segments.len() {
+    return None;
+  }
+  for (sa, sb) in a_segments.iter().zip(b_segments.iter()) {
+    if discriminant(sa) != discriminant(sb) {
+      return None;
+    }
+  }
+
+  let mut out = Vec::with_capacity(a_segments.len());
+  for (sa, sb) in a_segments.iter().zip(b_segments.iter()) {
+    let seg = match (sa, sb) {
+      (CanonicalSvgPathSegment::MoveTo { x: ax, y: ay }, CanonicalSvgPathSegment::MoveTo { x: bx, y: by }) => {
+        CanonicalSvgPathSegment::MoveTo {
+          x: lerp(*ax, *bx, t),
+          y: lerp(*ay, *by, t),
+        }
+      }
+      (CanonicalSvgPathSegment::LineTo { x: ax, y: ay }, CanonicalSvgPathSegment::LineTo { x: bx, y: by }) => {
+        CanonicalSvgPathSegment::LineTo {
+          x: lerp(*ax, *bx, t),
+          y: lerp(*ay, *by, t),
+        }
+      }
+      (
+        CanonicalSvgPathSegment::CurveTo {
+          x1: ax1,
+          y1: ay1,
+          x2: ax2,
+          y2: ay2,
+          x: ax,
+          y: ay,
+        },
+        CanonicalSvgPathSegment::CurveTo {
+          x1: bx1,
+          y1: by1,
+          x2: bx2,
+          y2: by2,
+          x: bx,
+          y: by,
+        },
+      ) => CanonicalSvgPathSegment::CurveTo {
+        x1: lerp(*ax1, *bx1, t),
+        y1: lerp(*ay1, *by1, t),
+        x2: lerp(*ax2, *bx2, t),
+        y2: lerp(*ay2, *by2, t),
+        x: lerp(*ax, *bx, t),
+        y: lerp(*ay, *by, t),
+      },
+      (
+        CanonicalSvgPathSegment::Quadratic {
+          x1: ax1,
+          y1: ay1,
+          x: ax,
+          y: ay,
+        },
+        CanonicalSvgPathSegment::Quadratic {
+          x1: bx1,
+          y1: by1,
+          x: bx,
+          y: by,
+        },
+      ) => CanonicalSvgPathSegment::Quadratic {
+        x1: lerp(*ax1, *bx1, t),
+        y1: lerp(*ay1, *by1, t),
+        x: lerp(*ax, *bx, t),
+        y: lerp(*ay, *by, t),
+      },
+      (CanonicalSvgPathSegment::ClosePath, CanonicalSvgPathSegment::ClosePath) => {
+        CanonicalSvgPathSegment::ClosePath
+      }
+      _ => return None,
+    };
+
+    // Ensure the interpolated numbers are finite so we don't emit invalid path data.
+    match &seg {
+      CanonicalSvgPathSegment::MoveTo { x, y } | CanonicalSvgPathSegment::LineTo { x, y } => {
+        if !(x.is_finite() && y.is_finite()) {
+          return None;
+        }
+      }
+      CanonicalSvgPathSegment::CurveTo {
+        x1,
+        y1,
+        x2,
+        y2,
+        x,
+        y,
+      } => {
+        if !(x1.is_finite() && y1.is_finite() && x2.is_finite() && y2.is_finite() && x.is_finite() && y.is_finite()) {
+          return None;
+        }
+      }
+      CanonicalSvgPathSegment::Quadratic { x1, y1, x, y } => {
+        if !(x1.is_finite() && y1.is_finite() && x.is_finite() && y.is_finite()) {
+          return None;
+        }
+      }
+      CanonicalSvgPathSegment::ClosePath => {}
+    }
+
+    out.push(seg);
+  }
+
+  serialize_svg_path_data(&out)
 }
 
 fn interpolate_clip_paths(
@@ -1022,6 +1480,25 @@ fn interpolate_clip_paths(
         reference: *refa,
       })
     }
+    (
+      ResolvedClipPath::Path {
+        fill: fa,
+        reference: refa,
+        data: da,
+      },
+      ResolvedClipPath::Path {
+        fill: fb,
+        reference: refb,
+        data: db,
+      },
+    ) if fa == fb && refa == refb => {
+      let data = interpolate_svg_path_data(da.as_ref(), db.as_ref(), t)?;
+      Some(ResolvedClipPath::Path {
+        fill: *fa,
+        reference: *refa,
+        data,
+      })
+    }
     _ => None,
   }
 }
@@ -1108,6 +1585,17 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
           .iter()
           .map(|(x, y)| (Length::px(*x), Length::px(*y)))
           .collect(),
+      }),
+      *reference,
+    ),
+    ResolvedClipPath::Path {
+      fill,
+      reference,
+      data,
+    } => ClipPath::BasicShape(
+      Box::new(BasicShape::Path {
+        fill: *fill,
+        data: Arc::clone(data),
       }),
       *reference,
     ),
@@ -1202,7 +1690,11 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
         points: points.iter().map(|(x, y)| (x.to_px(), y.to_px())).collect(),
         reference: *reference,
       }),
-      BasicShape::Path { .. } => None,
+      BasicShape::Path { fill, data } => Some(ResolvedClipPath::Path {
+        fill: *fill,
+        reference: *reference,
+        data: Arc::clone(data),
+      }),
     },
   }
 }
