@@ -542,10 +542,12 @@ impl BrowserTab {
           });
 
           // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
-          // microtask checkpoint when the JS execution context stack is empty. For this integration
-          // point, approximate that by checking whether the event loop is currently executing a
-          // task.
-          if self.event_loop.currently_running_task().is_none() {
+          // microtask checkpoint when the JS execution context stack is empty.
+          //
+          // Parsing may be driven outside the event loop (e.g. parse-time script execution) or
+          // inside event-loop tasks; use explicit JS execution depth tracking rather than
+          // `EventLoop::currently_running_task()`.
+          if self.host.js_execution_depth.get() == 0 {
             self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
           }
 
@@ -1022,6 +1024,46 @@ mod tests {
     assert_eq!(
       &*log.borrow(),
       &["script:B".to_string(), "microtask:B".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn streaming_parser_pre_script_checkpoint_is_gated_on_js_execution_depth() -> Result<()> {
+    let log = Rc::new(RefCell::new(Vec::<String>::new()));
+    let executor = TestExecutor {
+      log: Rc::clone(&log),
+    };
+    let mut tab = BrowserTab::from_html("", RenderOptions::default(), executor)?;
+
+    // Reset scripting state so parsing new HTML will schedule/execute scripts.
+    tab.host.reset_scripting_state(None);
+
+    tab.event_loop.queue_microtask({
+      let log = Rc::clone(&log);
+      move |_host, _event_loop| {
+        log.borrow_mut().push("pre".to_string());
+        Ok(())
+      }
+    })?;
+
+    // Simulate re-entrant parsing while already in JS execution (e.g. future document.write).
+    let outer_guard = JsExecutionGuard::enter(&tab.host.js_execution_depth);
+    tab.parse_html_streaming_and_schedule_scripts("<script>A</script>", None)?;
+
+    // No checkpoint should have run at the script boundary while the JS stack is non-empty.
+    assert_eq!(&*log.borrow(), &["script:A".to_string()]);
+
+    drop(outer_guard);
+    tab.event_loop.perform_microtask_checkpoint(&mut tab.host)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &[
+        "script:A".to_string(),
+        "pre".to_string(),
+        "microtask:A".to_string()
+      ]
     );
     Ok(())
   }
