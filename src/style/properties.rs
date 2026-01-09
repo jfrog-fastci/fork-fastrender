@@ -7644,8 +7644,8 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   use crate::style::types::FontVariantAlternateValue;
 
   let mut alt = FontVariantAlternates::default();
-  let mut seen_stylistic = false;
   let mut seen_historical_forms = false;
+  let mut seen_stylistic = false;
   let mut seen_stylesets = false;
   let mut seen_character_variants = false;
   let mut seen_swash = false;
@@ -7669,6 +7669,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let value = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      Token::Number { int_value: Some(n), .. } if (1..=u8::MAX as i32).contains(n) => {
+        FontVariantAlternateValue::Number(*n as u8)
+      }
       _ => return None,
     };
     parser.skip_whitespace();
@@ -7686,6 +7689,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let first = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
+        FontVariantAlternateValue::Number(*n as u8)
+      }
       _ => return None,
     };
 
@@ -7709,6 +7715,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       let tok = parser.next_including_whitespace().ok()?;
       let name = match tok {
         Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+        Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
+          FontVariantAlternateValue::Number(*n as u8)
+        }
         _ => return None,
       };
       names.push(name);
@@ -34736,7 +34745,7 @@ mod tests {
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword(
-        "stylistic(2) styleset(3, 4) character-variant(5, 6) swash(7) ornaments(8) annotation(9)"
+        "stylistic(2) styleset(0) character-variant(5, 6) swash(7) ornaments(8) annotation(9)"
           .to_string(),
       ),
       contains_var: false,
@@ -34770,6 +34779,71 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.annotation,
       Some(FontVariantAlternateValue::Name("KeepAnnotation".to_string()))
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_allows_large_numeric_single_arg_functions() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword(
+        "stylistic(255) swash(100) ornaments(200) annotation(254)".to_string(),
+      ),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylistic,
+      Some(FontVariantAlternateValue::Number(255))
+    );
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Number(100))
+    );
+    assert_eq!(
+      style.font_variant_alternates.ornaments,
+      Some(FontVariantAlternateValue::Number(200))
+    );
+    assert_eq!(
+      style.font_variant_alternates.annotation,
+      Some(FontVariantAlternateValue::Number(254))
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_large_numeric_list_args_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("Keep".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("styleset(100)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("Keep".to_string())]
+    );
+
+    style.font_variant_alternates.character_variants =
+      vec![FontVariantAlternateValue::Name("Keep2".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword("character-variant(100)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.character_variants,
+      vec![FontVariantAlternateValue::Name("Keep2".to_string())]
     );
   }
 
@@ -34850,13 +34924,13 @@ mod tests {
   }
 
   #[test]
-  fn font_variant_alternates_numeric_args_are_invalid() {
+  fn font_variant_alternates_zero_numeric_arg_invalidates_declaration() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.stylesets =
       vec![FontVariantAlternateValue::Name("Keep".to_string())];
     let decl = Declaration {
       property: "font-variant-alternates".into(),
-      value: PropertyValue::Keyword("styleset(1)".to_string()),
+      value: PropertyValue::Keyword("styleset(0)".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
