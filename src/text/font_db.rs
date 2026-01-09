@@ -268,6 +268,17 @@ const BUNDLED_EMOJI_FONTS: &[BundledFont] = &[BundledFont {
   data: include_bytes!("../../tests/fixtures/fonts/FastRenderEmoji.ttf"),
 }];
 
+pub(crate) fn bundled_font_data() -> impl Iterator<Item = &'static [u8]> {
+  // Exposed for other subsystems (e.g. usvg/resvg SVG rasterization) that want to load the same
+  // deterministic bundled fonts without depending on `FontDatabase` directly (which may use a
+  // different `fontdb` crate version than the consumer).
+  BUNDLED_FONTS.iter().map(|font| font.data)
+}
+
+pub(crate) fn bundled_emoji_font_data() -> impl Iterator<Item = &'static [u8]> {
+  BUNDLED_EMOJI_FONTS.iter().map(|font| font.data)
+}
+
 fn env_flag(var: &str) -> Option<bool> {
   std::env::var(var).ok().map(|v| {
     !matches!(v.as_str(), "0" | "false" | "False" | "FALSE" | "") && !v.eq_ignore_ascii_case("off")
@@ -276,6 +287,10 @@ fn env_flag(var: &str) -> Option<bool> {
 
 fn should_load_bundled_emoji_fonts() -> bool {
   env_flag("FASTR_BUNDLE_EMOJI_FONT").unwrap_or(true)
+}
+
+pub(crate) fn bundled_emoji_fonts_enabled() -> bool {
+  should_load_bundled_emoji_fonts()
 }
 
 /// Configuration for font discovery and loading.

@@ -30,6 +30,7 @@ use crate::svg::{
   svg_intrinsic_dimensions_from_attributes, svg_view_box_root_transform, SvgPreserveAspectRatio,
   SvgViewBox,
 };
+use crate::text::font_db::FontConfig;
 use crate::tree::box_tree::CrossOriginAttribute;
 use avif_decode::Decoder as AvifDecoder;
 use avif_decode::Image as AvifImage;
@@ -66,6 +67,67 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tiny_skia::{FilterQuality, IntSize, Pixmap};
 use url::Url;
+
+fn shared_svg_fontdb() -> Arc<resvg::usvg::fontdb::Database> {
+  static SVG_FONT_DB: OnceLock<Arc<resvg::usvg::fontdb::Database>> = OnceLock::new();
+  Arc::clone(SVG_FONT_DB.get_or_init(|| {
+    // usvg text shaping requires an explicit font database; otherwise `<text>` can be dropped
+    // entirely. Populate the fontdb once and share it across SVG parses.
+    //
+    // Note: resvg/usvg currently depend on `fontdb` v0.21, while FastRender's HTML text engine
+    // uses `fontdb` v0.23. The types are incompatible, so we load fonts directly into usvg's
+    // fontdb (reusing the same in-repo bundled font *bytes* for deterministic runs).
+    //
+    // Respect FastRender's "bundled fonts" mode in CI (`CI` or `FASTR_USE_BUNDLED_FONTS=1`) by
+    // skipping system font discovery when disabled.
+    let config = FontConfig::default();
+    let mut db = resvg::usvg::fontdb::Database::new();
+    if config.use_system_fonts {
+      db.load_system_fonts();
+    }
+    if config.use_bundled_fonts {
+      for data in crate::text::font_db::bundled_font_data() {
+        db.load_font_data(data.to_vec());
+      }
+      if crate::text::font_db::bundled_emoji_fonts_enabled() {
+        for data in crate::text::font_db::bundled_emoji_font_data() {
+          db.load_font_data(data.to_vec());
+        }
+      }
+      if !config.use_system_fonts {
+        // Match FastRender's bundled-font defaults: prefer stable Noto families for generic
+        // `serif`/`sans-serif`/`monospace` resolution in hermetic runs.
+        db.set_serif_family("Noto Serif".to_string());
+        db.set_sans_serif_family("Noto Sans".to_string());
+        db.set_monospace_family("Noto Sans Mono".to_string());
+        db.set_cursive_family("Noto Sans".to_string());
+        db.set_fantasy_family("Noto Sans".to_string());
+      }
+    }
+    // Always load a tiny deterministic fixture font so SVG text renders even in minimal
+    // environments (and tests remain hermetic).
+    db.load_font_data(include_bytes!("../tests/fixtures/fonts/Cantarell-Test.ttf").to_vec());
+    Arc::new(db)
+  }))
+}
+
+fn usvg_options_for_url(url: &str) -> resvg::usvg::Options<'_> {
+  let mut options = resvg::usvg::Options::default();
+  options.fontdb = shared_svg_fontdb();
+
+  if let Ok(parsed) = Url::parse(url) {
+    if parsed.scheme() == "file" {
+      if let Ok(path) = parsed.to_file_path() {
+        if let Some(dir) = path.parent() {
+          options.resources_dir =
+            std::fs::canonicalize(dir).ok().or_else(|| Some(dir.to_path_buf()));
+        }
+      }
+    }
+  }
+
+  options
+}
 
 fn fetch_credentials_mode_for_crossorigin(
   crossorigin: CrossOriginAttribute,
@@ -5086,18 +5148,7 @@ impl ImageCache {
       return Ok(pixmap);
     }
 
-    let mut options = usvg::Options::default();
-    if let Ok(parsed) = Url::parse(url) {
-      if parsed.scheme() == "file" {
-        if let Ok(path) = parsed.to_file_path() {
-          if let Some(dir) = path.parent() {
-            options.resources_dir = std::fs::canonicalize(dir)
-              .ok()
-              .or_else(|| Some(dir.to_path_buf()));
-          }
-        }
-      }
-    }
+    let options = usvg_options_for_url(url);
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_content, &options)
     })) {
@@ -6538,18 +6589,7 @@ impl ImageCache {
       svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
 
     // Parse SVG
-    let mut options = usvg::Options::default();
-    if let Ok(parsed) = Url::parse(url) {
-      if parsed.scheme() == "file" {
-        if let Ok(path) = parsed.to_file_path() {
-          if let Some(dir) = path.parent() {
-            options.resources_dir = std::fs::canonicalize(dir)
-              .ok()
-              .or_else(|| Some(dir.to_path_buf()));
-          }
-        }
-      }
-    }
+    let options = usvg_options_for_url(url);
     self.enforce_svg_resource_policy(svg_content, url)?;
     let svg_use_inlined = inline_svg_use_references(
       svg_content,
@@ -6816,6 +6856,27 @@ mod tests {
   use std::time::Duration;
   use std::time::SystemTime;
   use url::Url;
+
+  #[test]
+  fn svg_text_renders_with_fontdb_configured() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30">
+      <text x="0" y="20" font-family="Cantarell" font-size="20" fill="red">F</text>
+    </svg>"#;
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 80, 30, "svg-text", 1.0)
+      .expect("render svg pixmap");
+
+    let has_red_text_pixel = pixmap
+      .data()
+      .chunks_exact(4)
+      .any(|px| px[3] > 0 && px[0] > 0);
+    assert!(
+      has_red_text_pixel,
+      "expected SVG <text> to produce non-transparent red pixels; missing usvg fontdb?"
+    );
+  }
 
   #[test]
   fn resolve_against_base_normalizes_pipe_character() {
