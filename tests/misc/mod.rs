@@ -20,6 +20,7 @@ mod background_clip_text_parallel;
 mod base_url_dom_override;
 mod bench_limits_env_test;
 mod bot_mitigation_fetch_errors;
+mod browser_stub_feature_gate;
 mod canvas_transparent;
 mod caption_default_text_align;
 mod color_glyph_opacity;
