@@ -1,5 +1,6 @@
 use crate::layout::axis::FragmentAxes;
 use crate::style::content::{StringSetAssignment, StringSetValue};
+use crate::style::ComputedStyle;
 use crate::tree::box_tree::{BoxNode, BoxTree, BoxType, MarkerContent};
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
 use std::collections::{HashMap, HashSet};
@@ -29,10 +30,73 @@ fn box_is_in_style_containment(
 pub struct StringSetEvent {
   /// Absolute block-axis position of the assigning fragment.
   pub abs_block: f32,
+  /// Originating box id for the assignment, when known.
+  ///
+  /// This is used by pagination to avoid applying duplicate assignments when a box is fragmented
+  /// across pages/columns (the same box_id can appear in multiple fragment slices).
+  pub box_id: Option<usize>,
   /// Name of the string being assigned.
   pub name: String,
   /// Resolved value for the assignment.
   pub value: String,
+}
+
+/// Precomputed metadata for resolving `string-set` values.
+///
+/// This avoids rebuilding box_id→style and box_id→text maps when collecting string-set events from
+/// multiple layouts during pagination.
+#[derive(Debug, Clone)]
+pub struct StringSetEventCollector {
+  styles_by_id: HashMap<usize, Arc<ComputedStyle>>,
+  parent_by_id: HashMap<usize, usize>,
+  box_text: HashMap<usize, String>,
+}
+
+impl StringSetEventCollector {
+  pub fn new(box_tree: &BoxTree) -> Self {
+    let mut styles_by_id = HashMap::new();
+    collect_box_styles(&box_tree.root, &mut styles_by_id);
+
+    let mut parent_by_id = HashMap::new();
+    collect_box_parents(&box_tree.root, None, &mut parent_by_id);
+
+    let mut box_text = HashMap::new();
+    collect_box_text(&box_tree.root, &mut box_text);
+
+    Self {
+      styles_by_id,
+      parent_by_id,
+      box_text,
+    }
+  }
+
+  /// Collect string-set events from `root`, positioning them in the provided fragmentation axes.
+  pub fn collect(&self, root: &FragmentNode, axes: FragmentAxes) -> Vec<StringSetEvent> {
+    self.collect_with_abs_start(root, 0.0, axes)
+  }
+
+  /// Collect string-set events with a caller-provided absolute block-axis offset.
+  pub fn collect_with_abs_start(
+    &self,
+    root: &FragmentNode,
+    abs_start: f32,
+    axes: FragmentAxes,
+  ) -> Vec<StringSetEvent> {
+    let mut events = Vec::new();
+    let mut seen_boxes = HashSet::new();
+    collect_string_set_events_inner(
+      root,
+      abs_start,
+      axes.block_size(&root.logical_bounds()),
+      axes,
+      &mut events,
+      &self.styles_by_id,
+      &self.parent_by_id,
+      &self.box_text,
+      &mut seen_boxes,
+    );
+    events
+  }
 }
 
 /// Collect all string-set assignments from a laid-out fragment tree.
@@ -44,32 +108,10 @@ pub fn collect_string_set_events(
   box_tree: &BoxTree,
   axes: FragmentAxes,
 ) -> Vec<StringSetEvent> {
-  let mut styles_by_id = HashMap::new();
-  collect_box_styles(&box_tree.root, &mut styles_by_id);
-
-  let mut parent_by_id = HashMap::new();
-  collect_box_parents(&box_tree.root, None, &mut parent_by_id);
-
-  let mut box_text = HashMap::new();
-  collect_box_text(&box_tree.root, &mut box_text);
-
-  let mut events = Vec::new();
-  let mut seen_boxes = HashSet::new();
-  collect_string_set_events_inner(
-    root,
-    0.0,
-    axes.block_size(&root.logical_bounds()),
-    axes,
-    &mut events,
-    &styles_by_id,
-    &parent_by_id,
-    &box_text,
-    &mut seen_boxes,
-  );
-  events
+  StringSetEventCollector::new(box_tree).collect(root, axes)
 }
 
-fn collect_box_styles(node: &BoxNode, out: &mut HashMap<usize, Arc<crate::style::ComputedStyle>>) {
+fn collect_box_styles(node: &BoxNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
   out.insert(node.id, node.style.clone());
   for child in node.children.iter() {
     collect_box_styles(child, out);
@@ -114,7 +156,7 @@ fn collect_string_set_events_inner(
   parent_block_size: f32,
   axes: FragmentAxes,
   out: &mut Vec<StringSetEvent>,
-  styles_by_id: &HashMap<usize, Arc<crate::style::ComputedStyle>>,
+  styles_by_id: &HashMap<usize, Arc<ComputedStyle>>,
   parent_by_id: &HashMap<usize, usize>,
   box_text: &HashMap<usize, String>,
   seen_boxes: &mut HashSet<usize>,
@@ -170,6 +212,7 @@ fn collect_string_set_events_inner(
         let resolved = resolve_string_set_value(node, value, assignments_box_id, box_text);
         out.push(StringSetEvent {
           abs_block: start,
+          box_id: assignments_box_id,
           name: name.clone(),
           value: resolved,
         });
@@ -311,10 +354,12 @@ mod tests {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].name, "chapter");
     assert_eq!(events[0].value, "Box Value");
+    assert_eq!(events[0].box_id, Some(string_set_box.id));
     assert!((events[0].abs_block - 5.0).abs() < 0.001);
 
     assert_eq!(events[1].name, "note");
     assert_eq!(events[1].value, "Inline fallback");
+    assert_eq!(events[1].box_id, None);
     assert!((events[1].abs_block - 20.0).abs() < 0.001);
   }
 }

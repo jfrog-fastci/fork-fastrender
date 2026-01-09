@@ -3,7 +3,7 @@
 use std::cmp::Ordering;
 #[cfg(test)]
 use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::css::types::{CollectedPageRule, PageMarginArea};
@@ -21,7 +21,7 @@ use crate::layout::fragmentation::{
   FragmentAxis, FragmentationContext, TableRepetitionInfo,
 };
 use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
-use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
+use crate::layout::running_strings::{StringSetEvent, StringSetEventCollector};
 use crate::style::content::{
   ContentContext, ContentItem, ContentValue, CounterStyle, RunningElementValues,
   RunningStringValues,
@@ -118,7 +118,8 @@ fn best_in_flow_block_boundary(
 
     let (_child_abs_start, child_abs_end) =
       axis.flow_range(abs_start, parent_block_size, &child.bounds);
-    let (next_abs_start, next_abs_end) = axis.flow_range(abs_start, parent_block_size, &next.bounds);
+    let (next_abs_start, next_abs_end) =
+      axis.flow_range(abs_start, parent_block_size, &next.bounds);
 
     let mut boundary = child_abs_end;
     if let Some(meta) = child.block_metadata.as_ref() {
@@ -331,6 +332,7 @@ struct CachedLayout {
   table_repetitions: Vec<TableRepetitionInfo>,
   page_name_transitions: Vec<PageNameTransition>,
   box_axis_ranges: HashMap<usize, BoxAxisRange>,
+  string_set_events: Vec<StringSetEvent>,
 }
 
 impl CachedLayout {
@@ -339,6 +341,7 @@ impl CachedLayout {
     style: &ResolvedPageStyle,
     fallback_page_name: Option<&str>,
     axes: FragmentAxes,
+    string_set_collector: &StringSetEventCollector,
   ) -> Self {
     let axis = FragmentAxis {
       block_is_horizontal: axes.block_axis() == PhysicalAxis::X,
@@ -380,8 +383,12 @@ impl CachedLayout {
     );
     normalize_atomic_ranges(&mut atomic_ranges);
 
-    let content_height =
-      parallel_flow_content_extent(&root, axes, Some(style_block_size), FragmentationContext::Page);
+    let content_height = parallel_flow_content_extent(
+      &root,
+      axes,
+      Some(style_block_size),
+      FragmentationContext::Page,
+    );
     let total_height = if content_height > EPSILON {
       content_height
     } else {
@@ -407,6 +414,12 @@ impl CachedLayout {
       axes,
       &mut box_axis_ranges,
     );
+    let mut string_set_events = string_set_collector.collect(&root, axes);
+    string_set_events.sort_by(|a, b| {
+      a.abs_block
+        .partial_cmp(&b.abs_block)
+        .unwrap_or(Ordering::Equal)
+    });
 
     Self {
       root,
@@ -416,6 +429,7 @@ impl CachedLayout {
       table_repetitions,
       page_name_transitions,
       box_axis_ranges,
+      string_set_events,
     }
   }
 }
@@ -650,12 +664,19 @@ pub fn paginate_fragment_tree(
   let mut layouts: HashMap<PageLayoutKey, CachedLayout> = HashMap::new();
   let base_style_for_margins = Some(root_style.as_ref());
   let fallback_page_name = initial_page_name.as_deref();
+  let string_set_collector = StringSetEventCollector::new(box_tree);
 
   if let Some((style, root)) = initial_layout {
     let key = PageLayoutKey::new(style, style_hash, font_generation);
-    layouts
-      .entry(key)
-      .or_insert_with(|| CachedLayout::from_root(root.clone(), style, fallback_page_name, root_axes));
+    layouts.entry(key).or_insert_with(|| {
+      CachedLayout::from_root(
+        root.clone(),
+        style,
+        fallback_page_name,
+        root_axes,
+        &string_set_collector,
+      )
+    });
   }
 
   let mut first_page_side = if root_axes.page_progression_is_ltr() {
@@ -684,6 +705,7 @@ pub fn paginate_fragment_tree(
       font_ctx,
       fallback_page_name,
       root_axes,
+      &string_set_collector,
       enable_layout_cache,
     )?;
 
@@ -707,15 +729,10 @@ pub fn paginate_fragment_tree(
     );
   };
 
-  let mut string_set_events = collect_string_set_events(&base_root, box_tree, root_axes);
-  string_set_events.sort_by(|a, b| {
-    a.abs_block
-      .partial_cmp(&b.abs_block)
-      .unwrap_or(Ordering::Equal)
-  });
-  let mut string_event_idx = 0usize;
   let mut string_set_carry: HashMap<String, String> = HashMap::new();
   let mut running_element_state = crate::layout::running_elements::RunningElementState::default();
+  let mut string_set_seen_boxes: HashSet<usize> = HashSet::new();
+  let mut string_event_indices: HashMap<PageLayoutKey, usize> = HashMap::new();
 
   let mut block_axis_mappings: HashMap<PageLayoutKey, BlockAxisMapping> = HashMap::new();
   block_axis_mappings.insert(base_key, BlockAxisMapping::identity(base_total_height));
@@ -731,8 +748,7 @@ pub fn paginate_fragment_tree(
 
   loop {
     let start_in_base = consumed_base;
-    let mut page_name =
-      page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
+    let mut page_name = page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
     let side = page_side_for_index(page_index, first_page_side);
     let required_side = required_page_side(&base_forced, start_in_base);
     let is_blank_page = required_side.map_or(false, |required| required != side);
@@ -756,6 +772,7 @@ pub fn paginate_fragment_tree(
       font_ctx,
       fallback_page_name,
       root_axes,
+      &string_set_collector,
       enable_layout_cache,
     )?;
     let axis = root_axis;
@@ -781,6 +798,8 @@ pub fn paginate_fragment_tree(
     let mut page_running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
     let mut end_in_base = start_in_base;
+    let mut string_slice_start = 0.0f32;
+    let mut string_slice_end = 0.0f32;
 
     if !is_blank_page {
       let mut start = {
@@ -817,6 +836,7 @@ pub fn paginate_fragment_tree(
           font_ctx,
           fallback_page_name,
           root_axes,
+          &string_set_collector,
           enable_layout_cache,
         )?;
         total_height = layout.total_height;
@@ -937,8 +957,13 @@ pub fn paginate_fragment_tree(
           &axis,
         );
         let provisional_footnotes = collect_footnotes_for_page(&provisional, &axis);
-        let adjusted_end =
-          adjust_end_for_footnotes(start, end_candidate, page_block, &provisional_footnotes, &axis);
+        let adjusted_end = adjust_end_for_footnotes(
+          start,
+          end_candidate,
+          page_block,
+          &provisional_footnotes,
+          &axis,
+        );
         if adjusted_end > start + EPSILON {
           end = adjusted_end;
         }
@@ -1071,6 +1096,9 @@ pub fn paginate_fragment_tree(
         }
       }
 
+      string_slice_start = start;
+      string_slice_end = end;
+
       let mut mapped_end_in_base = {
         let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
           BlockAxisMapping::new(
@@ -1101,13 +1129,19 @@ pub fn paginate_fragment_tree(
       page_root.children_mut().push(fixed);
     }
 
-    let page_strings = running_strings_for_page(
-      &string_set_events,
-      &mut string_event_idx,
-      &mut string_set_carry,
-      start_in_base,
-      end_in_base,
-    );
+    let page_strings = if is_blank_page {
+      snapshot_running_strings(&string_set_carry)
+    } else {
+      let idx = string_event_indices.entry(key).or_insert(0);
+      running_strings_for_page(
+        &layout.string_set_events,
+        idx,
+        &mut string_set_carry,
+        &mut string_set_seen_boxes,
+        string_slice_start,
+        string_slice_end,
+      )
+    };
 
     if is_blank_page {
       // Blank pages still participate in margin box running element resolution by carrying the last
@@ -1180,7 +1214,11 @@ pub fn paginate_fragment_tree_with_options(
     enable_layout_cache,
   )?;
 
-  apply_page_stacking(&mut pages, box_tree.root.style.writing_mode, options.stacking);
+  apply_page_stacking(
+    &mut pages,
+    box_tree.root.style.writing_mode,
+    options.stacking,
+  );
 
   Ok(pages)
 }
@@ -1365,15 +1403,21 @@ fn collect_page_name_transitions(
     } else {
       inherited_used.to_string()
     };
-    let inherited_for_children = if applies { used.as_str() } else { inherited_used };
+    let inherited_for_children = if applies {
+      used.as_str()
+    } else {
+      inherited_used
+    };
 
     let mut child_starts: Vec<f32> = Vec::with_capacity(node.children.len());
     let mut child_ends: Vec<f32> = Vec::with_capacity(node.children.len());
-    let mut child_values: Vec<Option<PropagatedPageValues>> = Vec::with_capacity(node.children.len());
+    let mut child_values: Vec<Option<PropagatedPageValues>> =
+      Vec::with_capacity(node.children.len());
 
     for child in node.children.iter() {
       let child_block_size = axis.block_size(&child.bounds);
-      let (child_abs_start, child_abs_end) = axis.flow_range(abs_start, parent_block_size, &child.bounds);
+      let (child_abs_start, child_abs_end) =
+        axis.flow_range(abs_start, parent_block_size, &child.bounds);
       let values = propagate(
         child,
         child_abs_start,
@@ -1457,7 +1501,11 @@ fn collect_page_name_transitions(
     name: root_values.start,
   });
 
-  transitions.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(Ordering::Equal));
+  transitions.sort_by(|a, b| {
+    a.position
+      .partial_cmp(&b.position)
+      .unwrap_or(Ordering::Equal)
+  });
 
   let mut deduped: Vec<PageNameTransition> = Vec::new();
   for transition in transitions {
@@ -1533,30 +1581,28 @@ fn running_strings_for_page(
   events: &[StringSetEvent],
   idx: &mut usize,
   carry: &mut HashMap<String, String>,
+  seen_boxes: &mut HashSet<usize>,
   start: f32,
   end: f32,
 ) -> HashMap<String, RunningStringValues> {
   let start_boundary = start - EPSILON;
+  let mut emitted_boxes: HashSet<usize> = HashSet::new();
   while *idx < events.len() && events[*idx].abs_block < start_boundary {
     let event = &events[*idx];
-    carry.insert(event.name.clone(), event.value.clone());
+    if should_apply_string_set_event(event, seen_boxes, &mut emitted_boxes) {
+      carry.insert(event.name.clone(), event.value.clone());
+    }
     *idx += 1;
   }
 
-  let mut snapshot = HashMap::new();
-  for (name, value) in carry.iter() {
-    snapshot.insert(
-      name.clone(),
-      RunningStringValues {
-        start: Some(value.clone()),
-        first: None,
-        last: None,
-      },
-    );
-  }
+  let mut snapshot = snapshot_running_strings(carry);
 
   while *idx < events.len() && events[*idx].abs_block < end {
     let event = &events[*idx];
+    if !should_apply_string_set_event(event, seen_boxes, &mut emitted_boxes) {
+      *idx += 1;
+      continue;
+    }
     let entry = snapshot
       .entry(event.name.clone())
       .or_insert_with(|| RunningStringValues {
@@ -1576,6 +1622,42 @@ fn running_strings_for_page(
   }
 
   snapshot
+}
+
+fn snapshot_running_strings(
+  carry: &HashMap<String, String>,
+) -> HashMap<String, RunningStringValues> {
+  let mut snapshot = HashMap::new();
+  for (name, value) in carry.iter() {
+    snapshot.insert(
+      name.clone(),
+      RunningStringValues {
+        start: Some(value.clone()),
+        first: None,
+        last: None,
+      },
+    );
+  }
+  snapshot
+}
+
+fn should_apply_string_set_event(
+  event: &StringSetEvent,
+  seen_boxes: &mut HashSet<usize>,
+  emitted_boxes: &mut HashSet<usize>,
+) -> bool {
+  let Some(box_id) = event.box_id else {
+    return true;
+  };
+  if emitted_boxes.contains(&box_id) {
+    return true;
+  }
+  if seen_boxes.contains(&box_id) {
+    return false;
+  }
+  seen_boxes.insert(box_id);
+  emitted_boxes.insert(box_id);
+  true
 }
 
 #[derive(Debug, Clone)]
@@ -1630,7 +1712,13 @@ fn adjust_end_for_footnotes(
     return end_candidate;
   }
 
-  let block_size = |rect: &Rect| if axis.block_is_horizontal { rect.width() } else { rect.height() };
+  let block_size = |rect: &Rect| {
+    if axis.block_is_horizontal {
+      rect.width()
+    } else {
+      rect.height()
+    }
+  };
   // Simple, fixed separator rule: 1px solid currentColor.
   let separator_block = 1.0;
 
@@ -2108,6 +2196,7 @@ fn layout_for_style<'a>(
   font_ctx: &FontContext,
   fallback_page_name: Option<&str>,
   root_axes: FragmentAxes,
+  string_set_collector: &StringSetEventCollector,
   enable_layout_cache: bool,
 ) -> Result<&'a CachedLayout, LayoutError> {
   if !cache.contains_key(&key) {
@@ -2121,7 +2210,13 @@ fn layout_for_style<'a>(
     };
     let _hint = set_fragmentainer_block_size_hint(Some(block_size_hint));
     let layout_tree = engine.layout_tree(box_tree)?;
-    let layout = CachedLayout::from_root(layout_tree.root, style, fallback_page_name, root_axes);
+    let layout = CachedLayout::from_root(
+      layout_tree.root,
+      style,
+      fallback_page_name,
+      root_axes,
+      string_set_collector,
+    );
     cache.insert(key, layout);
   }
 

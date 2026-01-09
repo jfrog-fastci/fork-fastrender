@@ -280,7 +280,9 @@ fn page_rule_sets_size_and_margins() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 800, 1000, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 800, 1000, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -391,7 +393,9 @@ fn page_rule_left_and_right_offsets_differ() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -447,7 +451,9 @@ fn line_wrapping_respects_page_side_widths() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -551,7 +557,9 @@ fn named_pages_change_page_size() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!((page_roots[0].bounds.width() - 300.0).abs() < 0.1);
@@ -581,7 +589,9 @@ fn page_name_change_forces_page_boundary() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -728,7 +738,9 @@ fn nested_page_override_and_revert_forces_boundaries() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 3);
@@ -768,7 +780,9 @@ fn page_start_value_propagates_from_first_child() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -801,7 +815,9 @@ fn named_page_boundaries_follow_fragmentation_axis_in_vertical_writing_mode() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -846,7 +862,9 @@ fn multicol_pagination_uses_physical_height() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(
@@ -884,7 +902,9 @@ fn margin_box_content_is_positioned_in_margins() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   let page = page_roots[0];
 
@@ -924,7 +944,9 @@ fn running_header_carries_forward() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -1018,7 +1040,9 @@ fn element_last_uses_last_anchor_on_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let margin_texts: Vec<String> = page
@@ -1067,7 +1091,9 @@ fn running_element_in_flex_is_out_of_flow_and_available_to_margin_boxes() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -1126,7 +1152,9 @@ fn running_element_in_grid_is_available_to_margin_boxes() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -1178,7 +1206,9 @@ fn inline_running_element_used_in_margin_box() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let mut anchor_names = Vec::new();
@@ -1226,7 +1256,9 @@ fn content_descendants_use_local_coordinates() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 800, 1000, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 800, 1000, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   let page = page_roots[0];
   let content = page.children.first().expect("page content");
@@ -1267,7 +1299,9 @@ fn header_repeats_across_pages() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -1369,7 +1403,9 @@ fn string_defaults_to_first_assignment_on_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
   let margin_texts: Vec<String> = page
     .children
@@ -1417,7 +1453,9 @@ fn string_first_except_suppresses_assignment_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2, "expected at least two pages");
@@ -1462,10 +1500,15 @@ fn string_start_uses_assignment_only_at_page_start() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
-  assert!(page_roots.len() >= 2, "expected forced page break to create page 2");
+  assert!(
+    page_roots.len() >= 2,
+    "expected forced page break to create page 2"
+  );
   let page2 = page_roots[1];
   assert!(
     margin_boxes_contain_text(page2, "Chapter 2"),
@@ -1507,7 +1550,9 @@ fn element_start_uses_entry_value_unless_element_at_page_start() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2, "expected at least two pages");
@@ -1547,7 +1592,9 @@ fn string_set_from_split_inline_updates_once() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   let page = page_roots.first().expect("page");
   let expected = "Very long header text that wraps across lines";
@@ -1605,7 +1652,9 @@ fn start_vs_first() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -1643,6 +1692,164 @@ fn start_vs_first() {
 }
 
 #[test]
+fn running_strings_follow_page_relayout_left_right() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 220px 140px;
+            margin-top: 20px;
+            margin-bottom: 20px;
+            margin-left: 10px;
+            margin-right: 10px;
+            @top-left { content: string(chapter, start); }
+            @top-right { content: string(chapter); }
+          }
+          /* Make the left page narrower so the same paragraph wraps differently. */
+          @page :left { margin-left: 70px; margin-right: 10px; }
+
+          body { margin: 0; font-family: monospace; font-size: 10px; line-height: 10px; }
+          h1 { margin: 0; string-set: chapter content(); }
+          p { margin: 0; }
+        </style>
+      </head>
+      <body>
+        <h1>Chapter1</h1>
+        <p>
+          This paragraph is long enough to wrap differently on left vs right pages. This paragraph
+          is long enough to wrap differently on left vs right pages. This paragraph is long enough
+          to wrap differently on left vs right pages. This paragraph is long enough to wrap
+          differently on left vs right pages. This paragraph is long enough to wrap differently on
+          left vs right pages. This paragraph is long enough to wrap differently on left vs right
+          pages. This paragraph is long enough to wrap differently on left vs right pages.
+        </p>
+        <h1>Chapter2</h1>
+        <div style="height: 10px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+
+  // Find the page where Chapter2 appears in the main content area.
+  let mut target_page = None;
+  let mut content_y = f32::MAX;
+  for page in &page_roots {
+    let candidate = *page;
+    let candidate_content_y = candidate.bounds.y()
+      + candidate
+        .children
+        .first()
+        .map(|n| n.bounds.y())
+        .unwrap_or(f32::MAX);
+    let has_chapter_2_in_content =
+      find_text_position_matching(candidate, "Chapter2", (0.0, 0.0), &|pos| {
+        pos.1 >= candidate_content_y
+      })
+      .is_some();
+    if has_chapter_2_in_content {
+      target_page = Some(candidate);
+      content_y = candidate_content_y;
+      break;
+    }
+  }
+  let page = target_page.expect("page containing Chapter2");
+
+  // Chapter2 should not start at the top of the page (the paragraph continues onto the left page),
+  // so the page-start running string should still be Chapter1.
+  assert!(
+    find_text_position_matching(page, "Chapter1", (0.0, 0.0), &|pos| pos.1 < content_y).is_some(),
+    "expected string(chapter, start) to resolve to Chapter1 on the Chapter2 page; margin texts={:?}",
+    page
+      .children
+      .iter()
+      .skip(1)
+      .map(collected_text_compacted)
+      .collect::<Vec<_>>()
+  );
+  assert!(
+    find_text_position_matching(page, "Chapter2", (0.0, 0.0), &|pos| pos.1 < content_y).is_some(),
+    "expected string(chapter) to resolve to Chapter2 on the Chapter2 page"
+  );
+}
+
+#[test]
+fn running_strings_update_across_named_page_width_change() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 220px 140px; margin: 20px; @top-center { content: string(chapter, start); } }
+          @page wide { size: 320px 140px; margin: 20px; @top-center { content: string(chapter, start); } }
+
+          body { margin: 0; font-family: monospace; font-size: 10px; line-height: 10px; }
+          h1 { margin: 0; string-set: chapter content(); }
+          p { margin: 0; }
+
+          #wide { page: wide; }
+        </style>
+      </head>
+      <body>
+        <h1>Preface</h1>
+        <p>
+          Preface content that fills the first page so that the named page transition forces a new
+          page boundary. Preface content that fills the first page so that the named page transition
+          forces a new page boundary. Preface content that fills the first page so that the named
+          page transition forces a new page boundary.
+        </p>
+        <div id="wide">
+          <h1>ChapterWide</h1>
+          <div style="height: 10px"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+
+  // The named page transition should force ChapterWide to start on a new page.
+  let wide_page = page_roots
+    .iter()
+    .find(|page| find_text(*page, "ChapterWide").is_some())
+    .copied()
+    .expect("page containing ChapterWide");
+  let content_y = wide_page.bounds.y()
+    + wide_page
+      .children
+      .first()
+      .map(|n| n.bounds.y())
+      .unwrap_or(f32::MAX);
+
+  assert!(
+    find_text_position_matching(wide_page, "ChapterWide", (0.0, 0.0), &|pos| pos.1
+      >= content_y)
+    .is_some(),
+    "expected ChapterWide to appear in page content"
+  );
+  assert!(
+    find_text_position_matching(wide_page, "ChapterWide", (0.0, 0.0), &|pos| pos.1
+      < content_y)
+    .is_some(),
+    "expected running string to update at the named-page boundary"
+  );
+}
+
+#[test]
 fn margin_box_quotes_property_applies() {
   let html = r#"
     <html>
@@ -1664,7 +1871,9 @@ fn margin_box_quotes_property_applies() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let actual = collected_text_compacted(page);
@@ -1695,7 +1904,9 @@ fn margin_box_url_content_creates_replaced_fragment() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let first_page = pages(&tree)[0];
 
   assert!(
@@ -1726,7 +1937,9 @@ fn margin_box_uses_custom_counter_style() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -1768,7 +1981,9 @@ fn margin_boxes_follow_page_pseudos() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 3);
@@ -1803,7 +2018,9 @@ fn margin_box_inherits_body_color_and_font_size() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 200, MediaType::Print)
+    .unwrap();
   let page = *pages(&tree).first().expect("at least one page");
   let header = find_text(page, "X").expect("margin box text");
   let style = header.get_style().expect("margin text style");
@@ -1919,7 +2136,9 @@ fn margin_box_text_is_shaped() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   let page = page_roots[0];
 
@@ -1968,7 +2187,9 @@ fn margin_box_bounds_cover_all_areas() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page = *pages(&tree).first().expect("at least one page");
 
   let expectations = vec![
@@ -2018,7 +2239,9 @@ fn margin_box_page_counters_page_and_pages() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
   assert!(page_roots.len() >= 2);
 
@@ -2054,7 +2277,9 @@ fn paginated_pages_are_stacked_vertically() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -2150,7 +2375,9 @@ fn fixed_headers_repeat_per_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2);
@@ -2340,7 +2567,9 @@ fn page_break_before_forces_new_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -2394,7 +2623,9 @@ fn break_before_page_forces_new_page() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(find_text(page_roots[0], "A").is_some());
@@ -2425,7 +2656,9 @@ fn break_before_column_does_not_force_page_without_columns() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 200, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 1);
@@ -2453,7 +2686,9 @@ fn margin_box_without_content_is_not_generated() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let red = Rgba::rgb(255, 0, 0);
 
   for page in pages(&tree) {
@@ -2483,7 +2718,9 @@ fn margin_box_with_empty_string_content_is_generated() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let red = Rgba::rgb(255, 0, 0);
 
   let mut found = None;
@@ -2518,7 +2755,9 @@ fn margin_box_default_text_align_center_for_top_center() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 300, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 300, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let (margin_box, text) =
@@ -2552,7 +2791,9 @@ fn margin_box_default_text_align_right_for_top_right() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 300, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 300, MediaType::Print)
+    .unwrap();
   let page = pages(&tree)[0];
 
   let (margin_box, text) =
@@ -3106,7 +3347,9 @@ fn blank_page_inserted_for_forced_side() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 3);
@@ -3147,7 +3390,9 @@ fn blank_pseudo_outweighs_right_pseudo_in_specificity() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 4);
@@ -3188,7 +3433,9 @@ fn page_selector_requires_all_pseudo_classes_to_match() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert_eq!(page_roots.len(), 4);
@@ -3227,7 +3474,9 @@ fn paginated_trees_compute_scroll_metadata() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 200, 150, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 150, MediaType::Print)
+    .unwrap();
 
   assert!(
     !tree.additional_fragments.is_empty(),
@@ -3268,7 +3517,9 @@ fn var_in_string_set_is_used_in_running_header() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -3346,7 +3597,9 @@ fn var_in_string_argument_selects_last_running_string() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -3460,7 +3713,9 @@ fn vertical_writing_mode_paginate_along_block_axis() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 300, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 300, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -3502,7 +3757,9 @@ fn vertical_writing_forced_break_respected() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document_for_media(&dom, 300, 300, MediaType::Print).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 300, 300, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
