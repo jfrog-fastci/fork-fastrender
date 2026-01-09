@@ -72,6 +72,7 @@ mod flex_fragmentation_writing_modes;
 mod float_line_box_intrusion;
 mod float_logical_sides;
 mod float_shrink_to_min;
+mod intrinsic_float_children;
 mod button_inline_flex_children;
 mod form_control_baseline;
 mod progress_meter_intrinsic_sizing;

@@ -40,7 +40,7 @@ use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::contexts::positioned::PositionedLayout;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::float_context::FloatContext;
-use crate::layout::float_context::{resolve_clear_side, resolve_float_side};
+use crate::layout::float_context::{resolve_clear_side, resolve_float_side, FloatSide};
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_block_intrinsic_call;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
@@ -7505,6 +7505,11 @@ impl FormattingContext for BlockFormattingContext {
     let mut inline_max_width = 0.0f32;
     let mut block_min_width = 0.0f32;
     let mut block_max_width = 0.0f32;
+    let mut float_min_width = 0.0f32;
+    let mut float_max_width = 0.0f32;
+    let mut float_line_width = 0.0f32;
+    let mut float_line_has_left = false;
+    let mut float_line_has_right = false;
     let mut inline_run: Vec<&BoxNode> = Vec::new();
     let flush_inline_run = |run: &mut Vec<&BoxNode>,
                             widest_min: &mut f32,
@@ -7542,9 +7547,61 @@ impl FormattingContext for BlockFormattingContext {
         continue;
       }
 
-      // Floats are out-of-flow for intrinsic sizing; they shouldn't contribute to the
-      // parent’s min/max-content inline size.
       if child.style.float.is_floating() {
+        // Floats still affect the shrink-to-fit width of block containers (including inline-block)
+        // because they take up inline-axis space and can force subsequent content onto new lines.
+        //
+        // Bootstrap-style button groups are a common example: they use `float:left` for each button
+        // and rely on the parent's shrink-to-fit width to encompass all floated children.
+        flush_inline_run(
+          &mut inline_run,
+          &mut inline_min_width,
+          &mut inline_max_width,
+        )?;
+
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (child_min, child_max) = if fc_type == FormattingContextType::Block {
+          self.compute_intrinsic_inline_sizes(child)?
+        } else {
+          factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
+        };
+
+        let (margin_start_side, margin_end_side) = inline_axis_sides(&child.style);
+        let margin_start = resolve_margin_side(
+          &child.style,
+          margin_start_side,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let margin_end = resolve_margin_side(
+          &child.style,
+          margin_end_side,
+          0.0,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let outer_min = (child_min + margin_start + margin_end).max(0.0);
+        let outer_max = (child_max + margin_start + margin_end).max(0.0);
+
+        float_min_width = float_min_width.max(outer_min);
+        let clear_side = resolve_clear_side(child.style.clear, style.writing_mode, style.direction);
+        if (clear_side.clears_left() && float_line_has_left)
+          || (clear_side.clears_right() && float_line_has_right)
+        {
+          float_max_width = float_max_width.max(float_line_width);
+          float_line_width = 0.0;
+          float_line_has_left = false;
+          float_line_has_right = false;
+        }
+        float_line_width += outer_max;
+        match resolve_float_side(child.style.float, style.writing_mode, style.direction) {
+          Some(FloatSide::Left) => float_line_has_left = true,
+          Some(FloatSide::Right) => float_line_has_right = true,
+          None => {}
+        }
         continue;
       }
 
@@ -7601,8 +7658,11 @@ impl FormattingContext for BlockFormattingContext {
       &mut inline_max_width,
     )?;
 
-    let min_content_width = inline_min_width.max(block_min_width);
-    let max_content_width = inline_max_width.max(block_max_width);
+    let min_content_width = inline_min_width.max(block_min_width).max(float_min_width);
+    float_max_width = float_max_width.max(float_line_width);
+    let max_content_width = block_max_width
+      .max(float_max_width)
+      .max(inline_max_width + float_max_width);
 
     // Add this box's own padding and borders.
     let mut min_width = min_content_width + edges;
@@ -7644,13 +7704,15 @@ impl FormattingContext for BlockFormattingContext {
         );
       }
       eprintln!(
-        "[intrinsic-widths] id={} selector={} inline_min={:.2} inline_max={:.2} block_min={:.2} block_max={:.2} edges={:.2} min={:.2} max={:.2} result_min={:.2} result_max={:.2}",
+        "[intrinsic-widths] id={} selector={} inline_min={:.2} inline_max={:.2} block_min={:.2} block_max={:.2} float_min={:.2} float_max={:.2} edges={:.2} min={:.2} max={:.2} result_min={:.2} result_max={:.2}",
         box_node.id,
         selector,
         inline_min_width,
         inline_max_width,
         block_min_width,
         block_max_width,
+        float_min_width,
+        float_max_width,
         edges,
         min_constraint,
         max_constraint,
