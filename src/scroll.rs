@@ -941,20 +941,51 @@ pub fn apply_scroll_snap(tree: &mut FragmentTree, scroll: &ScrollState) -> Scrol
   ScrollSnapResult { state, updates }
 }
 
-fn apply_element_scroll_offsets(node: &mut FragmentNode, scroll: &ScrollState) {
+fn apply_element_scroll_offsets(
+  node: &mut FragmentNode,
+  scroll: &ScrollState,
+  cumulative_translation: Point,
+  has_fixed_cb_ancestor: bool,
+) {
+  let style = node.style.as_deref();
+  let establishes_fixed_cb = style.is_some_and(|style| style.establishes_fixed_containing_block());
+
+  let is_viewport_fixed = style.is_some_and(|style| {
+    matches!(style.position, crate::style::position::Position::Fixed) && !has_fixed_cb_ancestor
+  });
+  let (cumulative_translation, has_fixed_cb_ancestor) = if is_viewport_fixed {
+    if cumulative_translation != Point::ZERO {
+      node.translate_root_in_place(Point::new(-cumulative_translation.x, -cumulative_translation.y));
+    }
+    (Point::ZERO, false)
+  } else {
+    (cumulative_translation, has_fixed_cb_ancestor)
+  };
+
   let offset = fragment_box_id(node)
     .and_then(|id| scroll.elements.get(&id))
     .copied()
     .unwrap_or(Point::ZERO);
+  let delta = Point::new(-offset.x, -offset.y);
+  let mut child_cumulative_translation = cumulative_translation;
   if offset != Point::ZERO {
-    let delta = Point::new(-offset.x, -offset.y);
     for child in node.children_mut() {
       child.translate_root_in_place(delta);
     }
+    child_cumulative_translation = Point::new(
+      child_cumulative_translation.x + delta.x,
+      child_cumulative_translation.y + delta.y,
+    );
   }
 
+  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
   for child in node.children_mut() {
-    apply_element_scroll_offsets(child, scroll);
+    apply_element_scroll_offsets(
+      child,
+      scroll,
+      child_cumulative_translation,
+      has_fixed_cb_ancestor_for_children,
+    );
   }
 }
 
@@ -964,9 +995,9 @@ fn apply_element_scroll_offsets(node: &mut FragmentNode, scroll: &ScrollState) {
 /// The tree is mutated in place and should typically be a clone of a prepared layout tree to avoid
 /// leaking state across paints.
 pub fn apply_scroll_offsets(tree: &mut FragmentTree, scroll: &ScrollState) {
-  apply_element_scroll_offsets(&mut tree.root, scroll);
+  apply_element_scroll_offsets(&mut tree.root, scroll, Point::ZERO, false);
   for fragment in &mut tree.additional_fragments {
-    apply_element_scroll_offsets(fragment, scroll);
+    apply_element_scroll_offsets(fragment, scroll, Point::ZERO, false);
   }
 }
 

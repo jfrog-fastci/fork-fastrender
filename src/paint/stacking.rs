@@ -1324,6 +1324,8 @@ where
     &mut backface_depth,
     get_style,
     false,
+    Point::ZERO,
+    false,
     scroll_state,
   );
 
@@ -1356,6 +1358,8 @@ where
     &mut clip_stack,
     &mut backface_depth,
     get_style,
+    false,
+    Point::ZERO,
     false,
     deadline_counter,
     scroll_state,
@@ -1492,6 +1496,8 @@ fn build_stacking_tree_with_styles_internal_checked<F>(
   backface_depth: &mut usize,
   get_style: &F,
   skip_viewport_scroll_cancel: bool,
+  applied_element_scroll: Point,
+  has_fixed_cb_ancestor: bool,
   deadline_counter: &mut usize,
   scroll_state: Option<&ScrollState>,
 ) -> Result<StackingContext>
@@ -1512,6 +1518,22 @@ where
   let establishes_fixed_cb = style
     .as_deref()
     .is_some_and(|style| style.establishes_fixed_containing_block());
+  let is_viewport_fixed = style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !has_fixed_cb_ancestor;
+  let (offset_from_parent_context, applied_element_scroll) = if is_viewport_fixed {
+    (
+      Point::new(
+        offset_from_parent_context.x - applied_element_scroll.x,
+        offset_from_parent_context.y - applied_element_scroll.y,
+      ),
+      Point::ZERO,
+    )
+  } else {
+    (offset_from_parent_context, applied_element_scroll)
+  };
+  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
   let needs_viewport_scroll_cancel = style
     .as_deref()
     .is_some_and(|style| matches!(style.position, Position::Fixed))
@@ -1552,7 +1574,12 @@ where
     };
     context.fragments.push(fragment.clone());
 
-    let base_offset = Point::ZERO;
+    let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let base_offset = Point::new(-element_scroll.x, -element_scroll.y);
+    let applied_element_scroll_for_children = Point::new(
+      applied_element_scroll.x + base_offset.x,
+      applied_element_scroll.y + base_offset.y,
+    );
     let mut child_clip_stack = Vec::new();
     let mut child_backface_depth = 0usize;
     for child in fragment.children.iter() {
@@ -1572,6 +1599,8 @@ where
         &mut child_backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         deadline_counter,
         scroll_state,
       )?;
@@ -1591,8 +1620,12 @@ where
           is_positioned(style) && !creates_stacking_context(style, None, false)
         });
         if !child_is_positioned {
+          let mut translated = child.clone();
+          if base_offset != Point::ZERO {
+            translated.translate_root_in_place(base_offset);
+          }
           context.add_fragment_to_layer(
-            child.clone(),
+            translated,
             child_style.as_deref(),
             child_context.tree_order,
           );
@@ -1652,9 +1685,14 @@ where
     }
 
     let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
     let base_offset = Point::new(
-      offset_from_parent_context.x - element_scroll.x,
-      offset_from_parent_context.y - element_scroll.y,
+      offset_from_parent_context.x + scroll_delta.x,
+      offset_from_parent_context.y + scroll_delta.y,
+    );
+    let applied_element_scroll_for_children = Point::new(
+      applied_element_scroll.x + scroll_delta.x,
+      applied_element_scroll.y + scroll_delta.y,
     );
     for child in fragment.children.iter() {
       let child_style = get_style(child);
@@ -1673,6 +1711,8 @@ where
         backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         deadline_counter,
         scroll_state,
       )?;
@@ -1724,6 +1764,8 @@ fn build_stacking_tree_with_styles_internal<F>(
   backface_depth: &mut usize,
   get_style: &F,
   skip_viewport_scroll_cancel: bool,
+  applied_element_scroll: Point,
+  has_fixed_cb_ancestor: bool,
   scroll_state: Option<&ScrollState>,
 ) -> StackingContext
 where
@@ -1740,6 +1782,22 @@ where
   let establishes_fixed_cb = style
     .as_deref()
     .is_some_and(|style| style.establishes_fixed_containing_block());
+  let is_viewport_fixed = style
+    .as_deref()
+    .is_some_and(|style| matches!(style.position, Position::Fixed))
+    && !has_fixed_cb_ancestor;
+  let (offset_from_parent_context, applied_element_scroll) = if is_viewport_fixed {
+    (
+      Point::new(
+        offset_from_parent_context.x - applied_element_scroll.x,
+        offset_from_parent_context.y - applied_element_scroll.y,
+      ),
+      Point::ZERO,
+    )
+  } else {
+    (offset_from_parent_context, applied_element_scroll)
+  };
+  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
   let needs_viewport_scroll_cancel = style
     .as_deref()
     .is_some_and(|style| matches!(style.position, Position::Fixed))
@@ -1780,7 +1838,12 @@ where
     };
     context.fragments.push(fragment.clone());
 
-    let base_offset = Point::ZERO;
+    let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let base_offset = Point::new(-element_scroll.x, -element_scroll.y);
+    let applied_element_scroll_for_children = Point::new(
+      applied_element_scroll.x + base_offset.x,
+      applied_element_scroll.y + base_offset.y,
+    );
     let mut child_clip_stack = Vec::new();
     let mut child_backface_depth = 0usize;
     for child in fragment.children.iter() {
@@ -1800,6 +1863,8 @@ where
         &mut child_backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         scroll_state,
       );
 
@@ -1818,8 +1883,12 @@ where
           is_positioned(style) && !creates_stacking_context(style, None, false)
         });
         if !child_is_positioned {
+          let mut translated = child.clone();
+          if base_offset != Point::ZERO {
+            translated.translate_root_in_place(base_offset);
+          }
           context.add_fragment_to_layer(
-            child.clone(),
+            translated,
             child_style.as_deref(),
             child_context.tree_order,
           );
@@ -1879,9 +1948,14 @@ where
     }
 
     let element_scroll = element_scroll_offset(fragment, scroll_state);
+    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
     let base_offset = Point::new(
-      offset_from_parent_context.x - element_scroll.x,
-      offset_from_parent_context.y - element_scroll.y,
+      offset_from_parent_context.x + scroll_delta.x,
+      offset_from_parent_context.y + scroll_delta.y,
+    );
+    let applied_element_scroll_for_children = Point::new(
+      applied_element_scroll.x + scroll_delta.x,
+      applied_element_scroll.y + scroll_delta.y,
     );
     for child in fragment.children.iter() {
       let child_style = get_style(child);
@@ -1900,6 +1974,8 @@ where
         backface_depth,
         get_style,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         scroll_state,
       );
 

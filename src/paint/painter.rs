@@ -1496,6 +1496,8 @@ impl Painter {
           None,
           true,
           false,
+          Point::ZERO,
+          false,
           root_paint,
           &mut items,
           &mut svg_filter_resolver,
@@ -2006,6 +2008,8 @@ impl Painter {
     parent_style: Option<&ComputedStyle>,
     is_root_context: bool,
     skip_viewport_scroll_cancel: bool,
+    applied_element_scroll: Point,
+    has_fixed_cb_ancestor: bool,
     root_paint: RootPaintOptions,
     items: &mut Vec<DisplayCommand>,
     svg_filters: &mut SvgFilterResolver,
@@ -2030,6 +2034,18 @@ impl Painter {
     let style_ref = fragment.style.as_deref();
     let establishes_fixed_cb =
       style_ref.is_some_and(|style| style.establishes_fixed_containing_block());
+    let is_viewport_fixed = style_ref
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+      && !has_fixed_cb_ancestor;
+    let (offset, applied_element_scroll) = if is_viewport_fixed {
+      (
+        offset.translate(Point::new(-applied_element_scroll.x, -applied_element_scroll.y)),
+        Point::ZERO,
+      )
+    } else {
+      (offset, applied_element_scroll)
+    };
+    let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
     let needs_viewport_scroll_cancel =
       style_ref.is_some_and(|style| matches!(style.position, Position::Fixed))
         && !skip_viewport_scroll_cancel;
@@ -2093,10 +2109,12 @@ impl Painter {
       .map(|s| creates_stacking_context(s, parent_style, is_root_context))
       .unwrap_or(is_root_context);
     let element_scroll = self.element_scroll_offset(fragment);
+    let scroll_delta = Point::new(-element_scroll.x, -element_scroll.y);
     let child_offset = Point::new(
-      abs_bounds.x() - element_scroll.x,
-      abs_bounds.y() - element_scroll.y,
+      abs_bounds.x() + scroll_delta.x,
+      abs_bounds.y() + scroll_delta.y,
     );
+    let applied_element_scroll_for_children = applied_element_scroll.translate(scroll_delta);
 
     // Collect commands for this subtree locally so we can wrap the context (opacity, etc.)
     let mut local_commands = Vec::new();
@@ -2160,6 +2178,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2174,6 +2194,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2186,6 +2208,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2198,6 +2222,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2210,6 +2236,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2224,6 +2252,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2238,6 +2268,8 @@ impl Painter {
           style_ref,
           false,
           skip_viewport_scroll_cancel_for_children,
+          applied_element_scroll_for_children,
+          has_fixed_cb_ancestor_for_children,
           root_paint,
           &mut local_commands,
           svg_filters,
@@ -2325,6 +2357,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2340,6 +2374,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2352,6 +2388,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2364,6 +2402,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2376,6 +2416,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2390,6 +2432,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -2404,6 +2448,8 @@ impl Painter {
         style_ref,
         false,
         skip_viewport_scroll_cancel_for_children,
+        applied_element_scroll_for_children,
+        has_fixed_cb_ancestor_for_children,
         root_paint,
         &mut local_commands,
         svg_filters,
@@ -16592,6 +16638,8 @@ mod tests {
         Point::ZERO,
         None,
         true,
+        false,
+        Point::ZERO,
         false,
         RootPaintOptions {
           use_root_background: false,

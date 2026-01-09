@@ -4,7 +4,10 @@ use std::sync::Arc;
 use fastrender::api::RenderOptions;
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::paint::painter::paint_tree_display_list_with_resources_scaled_offset;
+use fastrender::paint::painter::{
+  paint_tree_display_list_with_resources_scaled_offset, paint_tree_with_resources_scaled_offset_backend,
+  PaintBackend,
+};
 use fastrender::scroll::ScrollState;
 use fastrender::style::color::Rgba;
 use fastrender::style::types::{InsetValue, Overflow};
@@ -282,5 +285,162 @@ fn sticky_in_scroller_honors_element_scroll_offsets() {
     ),
     (0, 255, 0, 255),
     "content below the sticky header should still scroll into view"
+  );
+}
+
+#[test]
+fn fixed_inside_scroller_ignores_element_scroll_offsets() {
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      #scroller { width: 80px; height: 40px; overflow: scroll; }
+      #fixed { position: fixed; top: 0; left: 0; width: 80px; height: 20px; background: rgb(255, 0, 0); }
+      #stripe { height: 60px; background: rgb(0, 0, 255); }
+      #content { height: 200px; background: rgb(0, 255, 0); }
+    </style>
+    <div id="scroller">
+      <div id="fixed"></div>
+      <div id="stripe"></div>
+      <div id="content"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(80, 40);
+  let prepared = renderer
+    .prepare_html(html, options.clone())
+    .expect("prepare fixed html");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  let scrolls = HashMap::from([(scroller_id, Point::new(0.0, 25.0))]);
+  let pixmap = renderer
+    .render_html_with_options(html, options.with_element_scroll_offsets(scrolls))
+    .expect("render with scroll");
+
+  let top_pixel = pixmap.pixel(5, 5).expect("top pixel");
+  assert_eq!(
+    (top_pixel.red(), top_pixel.green(), top_pixel.blue(), top_pixel.alpha()),
+    (255, 0, 0, 255),
+    "viewport-fixed element should not be shifted by element scroll offsets"
+  );
+
+  // The blue stripe is 60px tall; scrolling by 25px means that the bottom row of the scroller
+  // (y=39) now lands in the green block instead of the stripe.
+  let scrolled_pixel = pixmap.pixel(5, 39).expect("scrolled pixel");
+  assert_eq!(
+    (
+      scrolled_pixel.red(),
+      scrolled_pixel.green(),
+      scrolled_pixel.blue(),
+      scrolled_pixel.alpha()
+    ),
+    (0, 255, 0, 255),
+    "content should still scroll underneath a viewport-fixed descendant"
+  );
+}
+
+#[test]
+fn fixed_inside_scroller_backend_parity() {
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      #scroller { width: 80px; height: 40px; overflow: scroll; }
+      #fixed { position: fixed; top: 0; left: 0; width: 80px; height: 20px; background: rgb(255, 0, 0); }
+      #stripe { height: 60px; background: rgb(0, 0, 255); }
+      #content { height: 200px; background: rgb(0, 255, 0); }
+    </style>
+    <div id="scroller">
+      <div id="fixed"></div>
+      <div id="stripe"></div>
+      <div id="content"></div>
+    </div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(80, 40);
+  let prepared = renderer
+    .prepare_html(html, options.clone())
+    .expect("prepare fixed html");
+  let scroller_id =
+    box_id_by_element_id(&prepared.box_tree().root, "scroller").expect("scroller box id");
+
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 25.0))]),
+  );
+
+  let legacy = paint_tree_with_resources_scaled_offset_backend(
+    prepared.fragment_tree(),
+    80,
+    40,
+    Rgba::WHITE,
+    FontContext::new(),
+    fastrender::image_loader::ImageCache::new(),
+    1.0,
+    Point::ZERO,
+    PaintParallelism::default(),
+    &scroll_state,
+    PaintBackend::Legacy,
+  )
+  .expect("legacy paint");
+  let display_list = paint_tree_with_resources_scaled_offset_backend(
+    prepared.fragment_tree(),
+    80,
+    40,
+    Rgba::WHITE,
+    FontContext::new(),
+    fastrender::image_loader::ImageCache::new(),
+    1.0,
+    Point::ZERO,
+    PaintParallelism::default(),
+    &scroll_state,
+    PaintBackend::DisplayList,
+  )
+  .expect("display list paint");
+
+  for pixmap in [&legacy, &display_list] {
+    let top_pixel = pixmap.pixel(5, 5).expect("top pixel");
+    assert_eq!(
+      (top_pixel.red(), top_pixel.green(), top_pixel.blue(), top_pixel.alpha()),
+      (255, 0, 0, 255),
+      "viewport-fixed element should remain at the top of the viewport"
+    );
+    let scrolled_pixel = pixmap.pixel(5, 39).expect("scrolled pixel");
+    assert_eq!(
+      (
+        scrolled_pixel.red(),
+        scrolled_pixel.green(),
+        scrolled_pixel.blue(),
+        scrolled_pixel.alpha()
+      ),
+      (0, 255, 0, 255),
+      "content should scroll underneath the fixed element"
+    );
+  }
+
+  let legacy_top = legacy.pixel(5, 5).expect("legacy top pixel");
+  let dl_top = display_list.pixel(5, 5).expect("display list top pixel");
+  assert_eq!(
+    (legacy_top.red(), legacy_top.green(), legacy_top.blue(), legacy_top.alpha()),
+    (dl_top.red(), dl_top.green(), dl_top.blue(), dl_top.alpha()),
+    "backends should paint identical fixed-in-scroller results"
+  );
+  let legacy_scrolled = legacy.pixel(5, 39).expect("legacy scrolled pixel");
+  let dl_scrolled = display_list.pixel(5, 39).expect("display list scrolled pixel");
+  assert_eq!(
+    (
+      legacy_scrolled.red(),
+      legacy_scrolled.green(),
+      legacy_scrolled.blue(),
+      legacy_scrolled.alpha()
+    ),
+    (
+      dl_scrolled.red(),
+      dl_scrolled.green(),
+      dl_scrolled.blue(),
+      dl_scrolled.alpha()
+    ),
+    "backends should paint identical scrolled content under fixed descendants"
   );
 }

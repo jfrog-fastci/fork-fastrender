@@ -2730,13 +2730,7 @@ impl DisplayListBuilder {
     );
 
     let root_fragment = context.fragments.first();
-    let element_scroll = root_fragment
-      .map(|fragment| self.element_scroll_offset(fragment))
-      .unwrap_or(Point::ZERO);
-    let descendant_content_offset = Point::new(
-      descendant_offset.x - element_scroll.x,
-      descendant_offset.y - element_scroll.y,
-    );
+    let descendant_content_offset = descendant_offset;
     let root_style = root_fragment.and_then(|f| f.style.as_deref());
     let root_opacity = root_style.map(|s| s.opacity).unwrap_or(1.0);
     if root_opacity <= f32::EPSILON {

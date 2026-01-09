@@ -15,10 +15,14 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   (px.red(), px.green(), px.blue(), px.alpha())
 }
 
-fn render(promote_as_stacking_context: bool) -> tiny_skia::Pixmap {
+fn render(promote_as_stacking_context: bool, scroller_is_stacking_context: bool) -> tiny_skia::Pixmap {
   let mut scroller_style = ComputedStyle::default();
   scroller_style.overflow_x = Overflow::Hidden;
   scroller_style.overflow_y = Overflow::Scroll;
+  if scroller_is_stacking_context {
+    scroller_style.position = Position::Relative;
+    scroller_style.z_index = Some(0);
+  }
   let scroller_style = Arc::new(scroller_style);
 
   let mut red_style = ComputedStyle::default();
@@ -78,7 +82,7 @@ fn render(promote_as_stacking_context: bool) -> tiny_skia::Pixmap {
 
 #[test]
 fn element_scroll_offsets_translate_promoted_stacking_contexts() {
-  let pixmap = render(true);
+  let pixmap = render(true, false);
 
   // Outside the scroller remains white.
   assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
@@ -91,10 +95,18 @@ fn element_scroll_offsets_translate_promoted_stacking_contexts() {
 
 #[test]
 fn element_scroll_offsets_translate_promoted_positioned_descendants() {
-  let pixmap = render(false);
+  let pixmap = render(false, false);
 
   assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 3, 3), (0, 0, 255, 255));
   assert_eq!(pixel(&pixmap, 3, 4), (0, 0, 255, 255));
 }
 
+#[test]
+fn element_scroll_offsets_translate_descendants_when_scroller_is_a_stacking_context() {
+  let pixmap = render(true, true);
+
+  assert_eq!(pixel(&pixmap, 1, 1), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 3, 3), (0, 0, 255, 255));
+  assert_eq!(pixel(&pixmap, 3, 4), (0, 0, 255, 255));
+}
