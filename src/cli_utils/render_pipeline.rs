@@ -1014,6 +1014,21 @@ pub fn log_diagnostics(diagnostics: &RenderDiagnostics, mut log: impl FnMut(&str
       fetch_error.url, fetch_error.message
     ));
   }
+
+  for exception in &diagnostics.js_exceptions {
+    log(&format!("JS exception: {}", exception.message));
+    if let Some(stack) = &exception.stack {
+      log(&format!("  stack: {stack}"));
+    }
+  }
+
+  for message in &diagnostics.console_messages {
+    log(&format!(
+      "Console[{}]: {}",
+      message.level.as_str(),
+      message.message
+    ));
+  }
 }
 
 /// Format an error, optionally including its source chain.

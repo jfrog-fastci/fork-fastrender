@@ -224,9 +224,9 @@ mod tests {
         vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log2.lock().unwrap().push("job2");
           Ok(())
-        }),
-        None,
-      );
+          }),
+          None,
+        );
       let enqueue_err = hooks.finish(host);
       if let Some(err) = enqueue_err {
         return Err(err);

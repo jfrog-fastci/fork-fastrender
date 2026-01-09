@@ -25,6 +25,7 @@ pub mod ecma_microtasks;
 pub mod host_document;
 pub mod html_scripting;
 pub mod orchestrator;
+pub mod browser_tab;
 pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
 pub mod runtime;
@@ -54,6 +55,7 @@ pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
 };
+pub use browser_tab::{BrowserTab, BrowserTabHost};
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader, ScriptScheduler,

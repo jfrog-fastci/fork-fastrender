@@ -394,6 +394,30 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  /// Run until there are no more queued tasks/microtasks, but treat task errors as uncaught
+  /// exceptions that are surfaced via `on_error` and do not abort the run.
+  ///
+  /// This matches browser behavior more closely than [`EventLoop::run_until_idle`]: an exception
+  /// thrown from an event loop task is reported (e.g. via `console.error`) but does not stop the
+  /// event loop from running subsequent tasks.
+  pub fn run_until_idle_handling_errors<F>(
+    &mut self,
+    host: &mut Host,
+    limits: RunLimits,
+    mut on_error: F,
+  ) -> Result<RunUntilIdleOutcome>
+  where
+    F: FnMut(Error),
+  {
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
+
+    match self.run_until_idle_handling_errors_inner(host, &mut run_state, &mut on_error) {
+      Ok(outcome) => Ok(outcome),
+      Err(RunStepError::Stop(reason)) => Ok(RunUntilIdleOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
   fn run_until_idle_inner(
     &mut self,
     host: &mut Host,
@@ -411,6 +435,32 @@ impl<Host: 'static> EventLoop<Host> {
       }
 
       if self.run_next_task_limited(host, run_state)? {
+        continue;
+      }
+
+      return Ok(RunUntilIdleOutcome::Idle);
+    }
+  }
+
+  fn run_until_idle_handling_errors_inner<F>(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    on_error: &mut F,
+  ) -> RunStepResult<RunUntilIdleOutcome>
+  where
+    F: FnMut(Error),
+  {
+    loop {
+      run_state.check_deadline()?;
+      self.queue_due_timers().map_err(RunStepError::Error)?;
+
+      if !self.microtask_queue.is_empty() {
+        self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error)?;
+        continue;
+      }
+
+      if self.run_next_task_limited_handling_errors(host, run_state, on_error)? {
         continue;
       }
 
@@ -453,6 +503,48 @@ impl<Host: 'static> EventLoop<Host> {
     Ok(true)
   }
 
+  fn run_next_task_limited_handling_errors<F>(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    on_error: &mut F,
+  ) -> RunStepResult<bool>
+  where
+    F: FnMut(Error),
+  {
+    self.queue_due_timers().map_err(RunStepError::Error)?;
+
+    let Some(task) = self.pop_next_task() else {
+      return Ok(false);
+    };
+
+    run_state.check_deadline()?;
+    run_state.before_task()?;
+
+    let previous_timer_nesting_level = self.timer_nesting_level;
+    if task.source != TaskSource::Timer {
+      self.timer_nesting_level = 0;
+    }
+
+    let previous_running_task = self.currently_running_task;
+    self.currently_running_task = Some(RunningTask {
+      source: task.source,
+      is_microtask: false,
+    });
+    let task_result = task.run(host, self);
+    self.currently_running_task = None;
+    if let Err(err) = task_result {
+      on_error(err);
+    }
+
+    let microtask_result =
+      self.perform_microtask_checkpoint_limited_handling_errors(host, run_state, on_error);
+    self.timer_nesting_level = previous_timer_nesting_level;
+    self.currently_running_task = previous_running_task;
+    microtask_result?;
+    Ok(true)
+  }
+
   fn perform_microtask_checkpoint_limited(
     &mut self,
     host: &mut Host,
@@ -482,6 +574,47 @@ impl<Host: 'static> EventLoop<Host> {
           is_microtask: true,
         });
         task.run(host, self).map_err(RunStepError::Error)?;
+      }
+      Ok(())
+    })();
+
+    self.currently_running_task = previous_running_task;
+    self.performing_microtask_checkpoint = false;
+    result
+  }
+
+  fn perform_microtask_checkpoint_limited_handling_errors<F>(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    on_error: &mut F,
+  ) -> RunStepResult<()>
+  where
+    F: FnMut(Error),
+  {
+    if self.performing_microtask_checkpoint {
+      return Ok(());
+    }
+
+    self.performing_microtask_checkpoint = true;
+    let previous_running_task = self.currently_running_task.take();
+
+    let result = (|| -> RunStepResult<()> {
+      while !self.microtask_queue.is_empty() {
+        run_state.check_deadline()?;
+        run_state.before_microtask()?;
+
+        let task = self
+          .microtask_queue
+          .pop_front()
+          .expect("microtask queue must be non-empty");
+        self.currently_running_task = Some(RunningTask {
+          source: task.source,
+          is_microtask: true,
+        });
+        if let Err(err) = task.run(host, self) {
+          on_error(err);
+        }
       }
       Ok(())
     })();
@@ -625,16 +758,10 @@ impl<Host: 'static> EventLoop<Host> {
     // `run_next_task` performs after this task returns).
     self.timer_nesting_level = (nesting_level + 1).min(5);
 
-    if let Err(err) = (callback)(host, self) {
-      if let Some(timer) = self.timers.get_mut(&id) {
-        // Only restore the callback if this is still the same logical timer.
-        if timer.schedule_seq != generation {
-          return Err(err);
-        }
-        timer.callback = Some(callback);
-      }
-      return Err(err);
-    }
+    let callback_err = match (callback)(host, self) {
+      Ok(()) => None,
+      Err(err) => Some(err),
+    };
 
     match kind {
       TimerKind::Timeout => {
@@ -662,10 +789,10 @@ impl<Host: 'static> EventLoop<Host> {
 
         // Post-handler validation: the callback may have cleared (or reused) this timer.
         let Some(timer) = self.timers.get_mut(&id) else {
-          return Ok(());
+          return callback_err.map_or(Ok(()), Err);
         };
         if timer.schedule_seq != generation {
-          return Ok(());
+          return callback_err.map_or(Ok(()), Err);
         }
         timer.callback = Some(callback);
         timer.due = due;
@@ -674,7 +801,8 @@ impl<Host: 'static> EventLoop<Host> {
         self.timer_queue.push(Reverse((due, schedule_seq, id)));
       }
     }
-    Ok(())
+
+    callback_err.map_or(Ok(()), Err)
   }
 
   pub fn spin_until(

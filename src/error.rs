@@ -66,7 +66,7 @@ impl ErrorKind {
 pub enum RenderStage {
   /// HTML parsing
   DomParse,
-  /// JavaScript / script execution (including event loop tasks and microtasks).
+  /// JavaScript / script execution (including classic/module scripts, event loop tasks, and microtasks).
   Script,
   /// CSS fetch/parse/inlining
   Css,

@@ -43,6 +43,31 @@ impl BrowserWorker {
       }
     };
 
+    // Best-effort: surface JS errors/console output in the UI debug log so pages can be debugged
+    // without attaching a debugger.
+    for exception in &report.diagnostics.js_exceptions {
+      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!("JS exception: {}", exception.message),
+      });
+      if let Some(stack) = &exception.stack {
+        let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("  stack: {stack}"),
+        });
+      }
+    }
+    for message in &report.diagnostics.console_messages {
+      let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+        tab_id,
+        line: format!(
+          "Console[{}]: {}",
+          message.level.as_str(),
+          message.message
+        ),
+      });
+    }
+
     let painted = report.document.paint_with_options_frame(PreparedPaintOptions {
       scroll: None,
       viewport: None,

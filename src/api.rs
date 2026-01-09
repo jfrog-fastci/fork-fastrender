@@ -1190,6 +1190,44 @@ pub struct ContainerQueryDiagnostics {
   pub max_iterations: u32,
 }
 
+/// A captured uncaught JavaScript exception.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JsException {
+  pub message: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub stack: Option<String>,
+}
+
+/// Severity level for captured console output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsoleMessageLevel {
+  Log,
+  Info,
+  Warn,
+  Error,
+  Debug,
+}
+
+impl ConsoleMessageLevel {
+  pub fn as_str(self) -> &'static str {
+    match self {
+      ConsoleMessageLevel::Log => "log",
+      ConsoleMessageLevel::Info => "info",
+      ConsoleMessageLevel::Warn => "warn",
+      ConsoleMessageLevel::Error => "error",
+      ConsoleMessageLevel::Debug => "debug",
+    }
+  }
+}
+
+/// A captured console message emitted from JavaScript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleMessage {
+  pub level: ConsoleMessageLevel,
+  pub message: String,
+}
+
 /// Diagnostics collected during rendering.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RenderDiagnostics {
@@ -1219,6 +1257,12 @@ pub struct RenderDiagnostics {
   /// Container query iteration diagnostics, when `@container` rules were present.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub container_queries: Option<ContainerQueryDiagnostics>,
+  /// Uncaught JavaScript exceptions captured during script execution or task callbacks.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub js_exceptions: Vec<JsException>,
+  /// `console.*` output captured during JavaScript execution.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub console_messages: Vec<ConsoleMessage>,
 }
 
 impl RenderDiagnostics {
@@ -1307,6 +1351,23 @@ impl RenderDiagnostics {
     if self.failure_stage.is_none() {
       self.failure_stage = Some(stage);
     }
+  }
+
+  /// Record an uncaught JavaScript exception.
+  pub fn record_js_exception(&mut self, message: impl Into<String>, stack: Option<String>) {
+    self.js_exceptions.push(JsException {
+      message: message.into(),
+      stack,
+    });
+    self.note_failure_stage(RenderStage::Script);
+  }
+
+  /// Record a console message emitted from JavaScript.
+  pub fn record_console_message(&mut self, level: ConsoleMessageLevel, message: impl Into<String>) {
+    self.console_messages.push(ConsoleMessage {
+      level,
+      message: message.into(),
+    });
   }
 }
 
@@ -1473,6 +1534,68 @@ mod bot_mitigation_tests {
   }
 }
 
+#[cfg(test)]
+mod js_diagnostics_tests {
+  use super::*;
+
+  #[test]
+  fn js_diagnostics_recording_helpers_append_and_serialize_in_order() {
+    let mut diagnostics = RenderDiagnostics::default();
+    diagnostics.record_console_message(ConsoleMessageLevel::Log, "hello");
+    diagnostics.record_console_message(ConsoleMessageLevel::Error, "oops");
+    diagnostics.record_js_exception("boom", Some("stack".to_string()));
+    diagnostics.record_js_exception("boom2", None);
+
+    assert_eq!(diagnostics.failure_stage, Some(RenderStage::Script));
+    assert_eq!(
+      diagnostics.js_exceptions,
+      vec![
+        JsException {
+          message: "boom".to_string(),
+          stack: Some("stack".to_string()),
+        },
+        JsException {
+          message: "boom2".to_string(),
+          stack: None,
+        }
+      ]
+    );
+    assert_eq!(
+      diagnostics.console_messages,
+      vec![
+        ConsoleMessage {
+          level: ConsoleMessageLevel::Log,
+          message: "hello".to_string()
+        },
+        ConsoleMessage {
+          level: ConsoleMessageLevel::Error,
+          message: "oops".to_string()
+        }
+      ]
+    );
+
+    let value = serde_json::to_value(&diagnostics).expect("serialize diagnostics");
+    assert_eq!(value["js_exceptions"][0]["message"], "boom");
+    assert_eq!(value["js_exceptions"][1]["message"], "boom2");
+    assert_eq!(value["console_messages"][0]["level"], "log");
+    assert_eq!(value["console_messages"][0]["message"], "hello");
+    assert_eq!(value["console_messages"][1]["level"], "error");
+    assert_eq!(value["console_messages"][1]["message"], "oops");
+  }
+
+  #[test]
+  fn js_diagnostics_fields_are_optional_in_serde() {
+    let diagnostics: RenderDiagnostics =
+      serde_json::from_str(r#"{"fetch_errors":[]}"#).expect("deserialize minimal diagnostics");
+    assert!(diagnostics.js_exceptions.is_empty());
+    assert!(diagnostics.console_messages.is_empty());
+
+    let value = serde_json::to_value(&RenderDiagnostics::default()).expect("serialize defaults");
+    assert!(value.get("js_exceptions").is_none());
+    assert!(value.get("console_messages").is_none());
+  }
+}
+
 fn map_formatting_layout_error(err: FormattingLayoutError) -> Error {
   match err {
     FormattingLayoutError::Timeout { elapsed } => Error::Render(RenderError::Timeout {
@@ -1528,6 +1651,20 @@ impl SharedRenderDiagnostics {
   pub fn set_document_error(&self, message: impl Into<String>) {
     if let Ok(mut guard) = self.inner.lock() {
       guard.set_document_error(message);
+    }
+  }
+
+  /// Record an uncaught JavaScript exception.
+  pub fn record_js_exception(&self, message: impl Into<String>, stack: Option<String>) {
+    if let Ok(mut guard) = self.inner.lock() {
+      guard.record_js_exception(message, stack);
+    }
+  }
+
+  /// Record a JavaScript console message.
+  pub fn record_console_message(&self, level: ConsoleMessageLevel, message: impl Into<String>) {
+    if let Ok(mut guard) = self.inner.lock() {
+      guard.record_console_message(level, message);
     }
   }
 
