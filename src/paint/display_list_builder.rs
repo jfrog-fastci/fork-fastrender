@@ -1909,7 +1909,7 @@ impl DisplayListBuilder {
       ),
       fragment.bounds.size,
     );
-    let skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
+    let mut skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
       ContentVisibility::Hidden => true,
       ContentVisibility::Auto => visibility
         .rect
@@ -1952,6 +1952,14 @@ impl DisplayListBuilder {
             absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
           let rects = absolute_rects
             .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
+          // `overflow: hidden` clips to the padding box. When the padding box has no area in a
+          // clipped axis (e.g. `width: 0; overflow: hidden`), no descendant pixels can be visible,
+          // so skip content painting rather than treating this as "no clip".
+          if (clip_x && rects.padding.width() <= 0.0) || (clip_y && rects.padding.height() <= 0.0)
+          {
+            skip_contents = true;
+            None
+          } else {
           Self::overflow_clip_from_style_with_rects(
             style,
             rects,
@@ -1961,6 +1969,7 @@ impl DisplayListBuilder {
             self.viewport,
             self.build_breakdown.as_deref(),
           )
+          }
         } else {
           None
         },

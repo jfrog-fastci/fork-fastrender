@@ -1118,6 +1118,38 @@ mod tests {
   }
 
   #[test]
+  fn anonymous_inline_wrapper_does_not_inherit_position() {
+    let mut inline_style = (*default_style()).clone();
+    inline_style.display = Display::Inline;
+    inline_style.position = Position::Absolute;
+    let inline_style = Arc::new(inline_style);
+
+    let text = BoxNode::new_text(default_style(), "Hello".to_string());
+    let inline = BoxNode::new_inline(inline_style, vec![text]);
+    let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![inline]);
+
+    let fixed = fixup_tree(root);
+    let fixed_inline = fixed.children.first().expect("inline box");
+    assert_eq!(fixed_inline.children.len(), 1);
+
+    let anonymous = fixed_inline.children.first().expect("anonymous wrapper");
+    assert!(
+      matches!(
+        anonymous.box_type,
+        BoxType::Anonymous(AnonymousBox {
+          anonymous_type: AnonymousType::Inline,
+        })
+      ),
+      "expected text to be wrapped in an anonymous inline box"
+    );
+    assert_eq!(
+      anonymous.style.position,
+      Position::Static,
+      "anonymous inline wrappers should not inherit `position` from parent inline boxes"
+    );
+  }
+
+  #[test]
   fn marker_boxes_are_not_wrapped_in_anonymous_inlines() {
     let marker = BoxNode::new_marker(default_style(), MarkerContent::Text("•".to_string()));
     let text = BoxNode::new_text(default_style(), "Hello".to_string());

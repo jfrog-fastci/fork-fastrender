@@ -10895,6 +10895,15 @@ impl InlineFormattingContext {
     };
     let relative_cb_width = relative_cb_width.max(0.0);
     let relative_cb_height = relative_cb_height.max(0.0);
+    let relative_cb_block_base = style.height.as_ref().and_then(|h| {
+      resolve_length_with_percentage_inline(
+        *h,
+        available_height,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      )
+    });
     let relative_cb = ContainingBlock::with_viewport_and_bases(
       Rect::new(
         Point::ZERO,
@@ -10902,7 +10911,7 @@ impl InlineFormattingContext {
       ),
       self.viewport_size,
       Some(relative_cb_width),
-      relative_cb_height.is_finite().then_some(relative_cb_height),
+      relative_cb_block_base,
     );
     let mut anchor_positions: HashMap<usize, Point> = deferred_anchor_positions;
     let mut positioned_containing_blocks: HashMap<usize, ContainingBlock> = HashMap::new();
@@ -13320,6 +13329,48 @@ mod tests {
   }
 
   #[test]
+  fn intrinsic_max_content_width_includes_following_inline_block() {
+    let ifc = InlineFormattingContext::new();
+    let container_style = default_style();
+
+    let text = BoxNode::new_text(default_style(), "Hello".to_string());
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.font_size = 16.0;
+    inline_block_style.width = Some(Length::px(10.0));
+    inline_block_style.margin_left = Some(Length::px(8.0));
+    let inline_block = BoxNode::new_inline_block(
+      Arc::new(inline_block_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let children = vec![text, inline_block];
+
+    let (_, text_max) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&children[0]])
+      .expect("text intrinsic widths");
+    let (_, inline_block_max) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&children[1]])
+      .expect("inline-block intrinsic widths");
+
+    let (_, combined_max) = ifc
+      .intrinsic_widths_for_children(&container_style, &[&children[0], &children[1]])
+      .expect("combined intrinsic widths");
+
+    let expected = text_max + inline_block_max;
+    assert!(
+      (combined_max - expected).abs() < 0.5,
+      "expected max-content {:.2} (= text {:.2} + inline-block {:.2}), got {:.2}",
+      expected,
+      text_max,
+      inline_block_max,
+      combined_max
+    );
+  }
+
+  #[test]
   fn layout_inline_block_reuses_factory_caches() {
     let mut style = ComputedStyle::default();
     style.display = Display::InlineBlock;
@@ -14042,6 +14093,75 @@ mod tests {
     });
 
     assert!(matches!(result, Err(LayoutError::Timeout { .. })));
+  }
+
+  #[test]
+  fn relative_positioning_percentage_offsets_require_definite_block_percentage_base() {
+    let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::InlineBlock;
+    child_style.position = Position::Relative;
+    child_style.top = crate::style::types::InsetValue::Length(Length::percent(50.0));
+    child_style.width = Some(Length::px(10.0));
+    child_style.height = Some(Length::px(10.0));
+    child_style.width_keyword = None;
+    child_style.height_keyword = None;
+    let relative_child = BoxNode::new_inline_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let constraints = LayoutConstraints::definite(200.0, 800.0);
+
+    let mut root_style_auto = ComputedStyle::default();
+    root_style_auto.display = Display::Block;
+    root_style_auto.font_size = 16.0;
+    let mut root_auto = BoxNode::new_block(
+      Arc::new(root_style_auto),
+      FormattingContextType::Inline,
+      vec![make_text_box("anchor"), relative_child.clone()],
+    );
+    root_auto.id = 1;
+    let fragment_auto = ifc.layout(&root_auto, &constraints).expect("layout");
+    let rel_fragment_auto =
+      find_fragment_by_position(&fragment_auto, Position::Relative).expect("relative fragment");
+
+    // Without a definite block percentage base, `top: 50%` should resolve to `auto` (no shift).
+    assert!(
+      rel_fragment_auto.bounds.y().abs() < 50.0,
+      "expected auto-height CB to suppress large percentage shift; got y={}",
+      rel_fragment_auto.bounds.y()
+    );
+
+    let mut root_style_definite = ComputedStyle::default();
+    root_style_definite.display = Display::Block;
+    root_style_definite.font_size = 16.0;
+    root_style_definite.height = Some(Length::px(200.0));
+    root_style_definite.height_keyword = None;
+    let mut root_definite = BoxNode::new_block(
+      Arc::new(root_style_definite),
+      FormattingContextType::Inline,
+      vec![make_text_box("anchor"), relative_child],
+    );
+    root_definite.id = 2;
+    let constraints_definite =
+      constraints.with_used_border_box_size(None, Some(200.0));
+    let fragment_definite = ifc
+      .layout(&root_definite, &constraints_definite)
+      .expect("layout");
+    let rel_fragment_definite = find_fragment_by_position(&fragment_definite, Position::Relative)
+      .expect("relative fragment");
+
+    let delta = rel_fragment_definite.bounds.y() - rel_fragment_auto.bounds.y();
+    assert!(
+      (delta - 100.0).abs() < 10.0,
+      "expected explicit-height CB to shift relative positioned item by ~100px; got y_auto={}, y_definite={}, delta={}",
+      rel_fragment_auto.bounds.y(),
+      rel_fragment_definite.bounds.y(),
+      delta
+    );
   }
 
   #[test]
