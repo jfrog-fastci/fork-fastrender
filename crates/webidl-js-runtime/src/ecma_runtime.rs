@@ -34,6 +34,19 @@ fn is_ecma_whitespace(c: char) -> bool {
   )
 }
 
+fn parse_integer_radix_to_f64(digits: &str, radix: u32) -> Option<f64> {
+  if digits.is_empty() {
+    return None;
+  }
+  let radix_f: f64 = radix as f64;
+  let mut value: f64 = 0.0;
+  for ch in digits.chars() {
+    let digit = ch.to_digit(radix)? as f64;
+    value = value.mul_add(radix_f, digit);
+  }
+  Some(value)
+}
+
 #[derive(Clone)]
 enum HostObjectKind {
   PlatformObject {
@@ -548,8 +561,8 @@ impl VmJsRuntime {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
-      if let Ok(v) = u64::from_str_radix(rest, 16) {
-        return Ok(v as f64);
+      if let Some(v) = parse_integer_radix_to_f64(rest, 16) {
+        return Ok(v);
       }
       return Ok(f64::NAN);
     }
@@ -557,8 +570,8 @@ impl VmJsRuntime {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
-      if let Ok(v) = u64::from_str_radix(rest, 2) {
-        return Ok(v as f64);
+      if let Some(v) = parse_integer_radix_to_f64(rest, 2) {
+        return Ok(v);
       }
       return Ok(f64::NAN);
     }
@@ -566,8 +579,8 @@ impl VmJsRuntime {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
-      if let Ok(v) = u64::from_str_radix(rest, 8) {
-        return Ok(v as f64);
+      if let Some(v) = parse_integer_radix_to_f64(rest, 8) {
+        return Ok(v);
       }
       return Ok(f64::NAN);
     }
@@ -1541,6 +1554,17 @@ mod tests {
     assert!(rt.to_number(s).unwrap().is_nan());
     let s = rt.alloc_string_value("+0x10").unwrap();
     assert!(rt.to_number(s).unwrap().is_nan());
+
+    // Radix-prefixed integer literals can exceed `u64`. Ensure they still parse to a Number (f64)
+    // instead of incorrectly producing NaN.
+    let expected = 2f64.powi(64);
+    let s = rt.alloc_string_value("0x10000000000000000").unwrap();
+    assert_eq!(rt.to_number(s).unwrap(), expected);
+    let s = rt.alloc_string_value("0o2000000000000000000000").unwrap();
+    assert_eq!(rt.to_number(s).unwrap(), expected);
+    let bin = format!("0b1{}", "0".repeat(64));
+    let s = rt.alloc_string_value(&bin).unwrap();
+    assert_eq!(rt.to_number(s).unwrap(), expected);
 
     let err = rt
       .to_number(Value::BigInt(JsBigInt::from_u128(1)))
