@@ -39,7 +39,7 @@ pub struct Test262ParserArgs {
   )]
   pub report: PathBuf,
 
-  /// Path to a local checkout of the tc39/test262-parser-tests corpus (nested under ecma-rs).
+  /// Path to a local checkout of the tc39/test262-parser-tests corpus (nested submodule inside ecma-rs).
   #[arg(long, value_name = "DIR", default_value = DEFAULT_TEST262_DIR)]
   pub test262_dir: PathBuf,
 }
@@ -113,8 +113,11 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
 }
 
 fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path) -> Result<()> {
-  let pass_dir = test262_dir.join("pass");
-  if pass_dir.is_dir() {
+  let required_dirs = ["pass", "pass-explicit", "fail", "early"];
+  if required_dirs
+    .iter()
+    .all(|dir| test262_dir.join(dir).is_dir())
+  {
     return Ok(());
   }
 
@@ -131,7 +134,10 @@ fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path) -> Result<()> {
   }
 
   bail!(
-    "test262 parser checkout directory {} is missing expected folders (expected {}/pass)",
+    "test262 parser checkout directory {} is missing required folders (expected {}/pass, {}/pass-explicit, {}/fail, {}/early)",
+    test262_dir.display(),
+    test262_dir.display(),
+    test262_dir.display(),
     test262_dir.display(),
     test262_dir.display()
   );

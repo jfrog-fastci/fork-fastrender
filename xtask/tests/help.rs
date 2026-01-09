@@ -36,6 +36,27 @@ fn help_lists_commands() {
 }
 
 #[test]
+fn js_help_lists_subcommands() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["js", "--help"])
+    .output()
+    .expect("run cargo xtask js --help");
+
+  assert!(
+    output.status.success(),
+    "js help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("\n  test262 ")
+      && stdout.contains("test262-parser")
+      && stdout.contains("wpt-dom"),
+    "help output should list test262, test262-parser, and wpt-dom; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn js_test262_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["js", "test262", "--help"])
