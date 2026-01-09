@@ -81,8 +81,8 @@ fn make_test_page() -> (tempfile::TempDir, String) {
 fn scroll_without_pointer_updates_viewport_scroll() {
   let (_dir, url) = make_test_page();
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -138,8 +138,8 @@ fn scroll_without_pointer_updates_viewport_scroll() {
 fn scroll_with_pointer_updates_element_scroll_offsets() {
   let (_dir, url) = make_test_page();
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -199,8 +199,8 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
 fn scroll_clamps_to_zero() {
   let (_dir, url) = make_test_page();
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
+  let handle = spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
   ui_tx
     .send(UiToWorker::CreateTab {

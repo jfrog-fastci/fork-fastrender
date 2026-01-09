@@ -7,11 +7,46 @@ use crate::ui::about_pages;
 use crate::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
+use std::thread::JoinHandle;
 
 pub struct UiWorkerHandle {
-  pub ui_tx: Sender<UiToWorker>,
-  pub ui_rx: Receiver<WorkerToUi>,
-  pub join: std::thread::JoinHandle<()>,
+  ui_tx: Option<Sender<UiToWorker>>,
+  ui_rx: Option<Receiver<WorkerToUi>>,
+  join: Option<JoinHandle<()>>,
+}
+
+impl UiWorkerHandle {
+  pub fn shutdown(mut self) -> std::thread::Result<()> {
+    let _ = self.ui_tx.take();
+    let _ = self.ui_rx.take();
+    match self.join.take() {
+      Some(handle) => handle.join(),
+      None => Ok(()),
+    }
+  }
+
+  pub fn split(mut self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, JoinHandle<()>) {
+    let ui_tx = self.ui_tx.take().unwrap_or_else(|| {
+      let (tx, _rx) = std::sync::mpsc::channel();
+      tx
+    });
+    let ui_rx = self.ui_rx.take().unwrap_or_else(|| {
+      let (_tx, rx) = std::sync::mpsc::channel();
+      rx
+    });
+    let join = self.join.take().unwrap_or_else(|| std::thread::spawn(|| {}));
+    (ui_tx, ui_rx, join)
+  }
+}
+
+impl Drop for UiWorkerHandle {
+  fn drop(&mut self) {
+    let _ = self.ui_tx.take();
+    let _ = self.ui_rx.take();
+    if let Some(handle) = self.join.take() {
+      let _ = handle.join();
+    }
+  }
 }
 
 struct TabState {
@@ -145,9 +180,9 @@ pub fn spawn_ui_worker(name: impl Into<String>) -> std::io::Result<UiWorkerHandl
     .spawn(move || run_worker_loop(to_worker_rx, to_ui_tx))?;
 
   Ok(UiWorkerHandle {
-    ui_tx: to_worker_tx,
-    ui_rx: to_ui_rx,
-    join,
+    ui_tx: Some(to_worker_tx),
+    ui_rx: Some(to_ui_rx),
+    join: Some(join),
   })
 }
 
@@ -299,4 +334,3 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
     }
   }
 }
-
