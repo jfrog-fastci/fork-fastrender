@@ -12,6 +12,7 @@ use parse_js::ast::node::{literal_string_code_units, Node};
 use parse_js::ast::stmt::{BlockStmt, Stmt, ThrowStmt, WhileStmt};
 use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vm_js::{
@@ -170,16 +171,18 @@ pub struct VmJsScriptRealm {
   env: Env,
   host_functions: HashMap<GcObject, HostFunctionEntry>,
   interrupt_handle: InterruptHandle,
+  interrupt_flag: Arc<AtomicBool>,
 }
 
 impl VmJsScriptRealm {
   pub fn new(options: ScriptRealmOptions) -> Result<Self, ScriptError> {
+    let interrupt_flag = Arc::new(AtomicBool::new(false));
     let vm = Vm::new(VmOptions {
       max_stack_depth: options.max_stack_depth,
       default_fuel: options.default_fuel,
       default_deadline: options.default_deadline,
       check_time_every: options.check_time_every,
-      interrupt_flag: None,
+      interrupt_flag: Some(Arc::clone(&interrupt_flag)),
     });
     let interrupt_handle = vm.interrupt_handle();
     let heap = Heap::new(options.heap_limits);
@@ -190,6 +193,7 @@ impl VmJsScriptRealm {
       env: Env::default(),
       host_functions: HashMap::new(),
       interrupt_handle,
+      interrupt_flag,
     })
   }
 
@@ -244,7 +248,7 @@ impl ScriptRealm for VmJsScriptRealm {
   ) -> Result<ScriptValue, ScriptError> {
     // If a previous evaluation was interrupted, the VM interrupt token stays set until the host
     // resets it. Without this, all subsequent evaluations would immediately terminate.
-    self.interrupt_handle.reset();
+    self.interrupt_flag.store(false, Ordering::Relaxed);
 
     let render_deadline =
       crate::render_control::active_deadline().or_else(crate::render_control::root_deadline);
@@ -768,7 +772,7 @@ mod tests {
   ) -> Result<Value, ScriptError> {
     // Mirror `VmJsScriptRealm::eval_script_with_budget`, but return the raw vm-js `Value` so tests
     // can inspect heap-backed strings without lossy UTF-8 conversion.
-    realm.interrupt_handle.reset();
+    realm.interrupt_flag.store(false, Ordering::Relaxed);
     let budget = realm.derive_budget(None, &ScriptBudgetOverride::default());
     realm.vm.set_budget(budget);
 
