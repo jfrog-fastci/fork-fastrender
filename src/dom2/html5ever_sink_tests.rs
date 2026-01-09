@@ -2,7 +2,9 @@ use super::Dom2TreeSink;
 use super::{Document, NodeId, NodeKind};
 use crate::debug::snapshot::snapshot_dom;
 use crate::dom::{parse_html_with_options, DomParseOptions};
+use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 use html5ever::tendril::TendrilSink;
+use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::{parse_document, ParseOpts};
 
 fn parse_with_dom2_sink(html: &str) -> Document {
@@ -134,4 +136,137 @@ fn tokenizer_script_handles_remain_valid_in_final_document() {
       other => panic!("script handle should refer to an element node, got {other:?}"),
     }
   }
+}
+
+fn script_text(doc: &Document, script: NodeId) -> String {
+  let mut text = String::new();
+  for &child in &doc.node(script).children {
+    if let NodeKind::Text { content } = &doc.node(child).kind {
+      text.push_str(content);
+    }
+  }
+  text
+}
+
+#[test]
+fn pausable_parser_pauses_at_script_and_dom_is_partial() {
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  let mut parser = PausableHtml5everParser::new_document(Dom2TreeSink::new(None), opts);
+  parser.push_str("<!doctype html><script>1</script><div id=after></div>");
+  parser.set_eof();
+
+  let script_id = match parser.pump() {
+    Html5everPump::Script(id) => id,
+    _ => panic!("expected Script boundary"),
+  };
+
+  {
+    let doc = parser.sink().document();
+    assert_eq!(script_text(&doc, script_id), "1");
+    assert!(
+      doc.get_element_by_id("after").is_none(),
+      "parser should pause before parsing markup after </script>"
+    );
+  }
+
+  let doc = match parser.pump() {
+    Html5everPump::Finished(doc) => doc,
+    _ => panic!("expected Finished"),
+  };
+
+  assert!(
+    doc.get_element_by_id("after").is_some(),
+    "expected parser to resume and parse markup after </script>"
+  );
+}
+
+#[test]
+fn pausable_parser_yields_multiple_scripts_in_order() {
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  let mut parser = PausableHtml5everParser::new_document(Dom2TreeSink::new(None), opts);
+  parser.push_str("<!doctype html><script>a</script><p>x</p><script>b</script>");
+  parser.set_eof();
+
+  let s1 = match parser.pump() {
+    Html5everPump::Script(id) => id,
+    _ => panic!("expected first Script boundary"),
+  };
+  {
+    let doc = parser.sink().document();
+    assert_eq!(script_text(&doc, s1), "a");
+  }
+
+  let s2 = match parser.pump() {
+    Html5everPump::Script(id) => id,
+    _ => panic!("expected second Script boundary"),
+  };
+  {
+    let doc = parser.sink().document();
+    assert_eq!(script_text(&doc, s2), "b");
+  }
+
+  match parser.pump() {
+    Html5everPump::Finished(_) => {}
+    _ => panic!("expected Finished after scripts"),
+  }
+
+  assert_ne!(s1, s2);
+}
+
+#[test]
+fn pausable_parser_template_script_boundaries_are_inert() {
+  let opts = ParseOpts {
+    tree_builder: TreeBuilderOpts {
+      scripting_enabled: true,
+      ..Default::default()
+    },
+    ..Default::default()
+  };
+
+  let mut parser = PausableHtml5everParser::new_document(Dom2TreeSink::new(None), opts);
+  parser.push_str("<!doctype html><template><script>1</script></template><script>2</script>");
+  parser.set_eof();
+
+  let mut saw_connected_script = false;
+  let mut saw_inert_script = false;
+
+  loop {
+    match parser.pump() {
+      Html5everPump::Script(id) => {
+        let doc = parser.sink().document();
+        let text = script_text(&doc, id);
+        if doc.is_connected_for_scripting(id) {
+          saw_connected_script = true;
+          assert_eq!(text, "2");
+        } else {
+          saw_inert_script = true;
+          assert_eq!(text, "1");
+        }
+      }
+      Html5everPump::NeedMoreInput => panic!("unexpected NeedMoreInput"),
+      Html5everPump::Finished(_) => break,
+    }
+  }
+
+  assert!(
+    saw_connected_script,
+    "expected the light DOM script to yield a connected-for-scripting pause"
+  );
+  // Sinks may choose to suppress script pauses for template contents; if they don't, the yielded
+  // script must be inert.
+  let _ = saw_inert_script;
 }
