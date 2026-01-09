@@ -18,7 +18,9 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
 fastrender = { path = ".." }
-js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner" }
+# `xtask js wpt-dom` defaults to exercising the in-tree vm-js backend, so ensure that backend is
+# compiled in when building xtask.
+js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner", features = ["vmjs"] }
 webidl-ir = { path = "../crates/webidl-ir" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
