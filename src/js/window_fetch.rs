@@ -1312,7 +1312,10 @@ fn request_ctor_construct(
     CoreRequest::new("GET", url)
   };
 
-  if let Value::Object(init_obj) = init {
+  if !matches!(init, Value::Undefined | Value::Null) {
+    let Value::Object(init_obj) = init else {
+      return Err(VmError::TypeError("Request init must be an object"));
+    };
     let method_key = alloc_key(scope, "method")?;
     let method_val = vm.get(scope, init_obj, method_key)?;
     if !matches!(method_val, Value::Undefined | Value::Null) {
@@ -1767,7 +1770,10 @@ fn response_ctor_construct(
     )
   };
 
-  if let Value::Object(init_obj) = init {
+  if !matches!(init, Value::Undefined | Value::Null) {
+    let Value::Object(init_obj) = init else {
+      return Err(VmError::TypeError("Response init must be an object"));
+    };
     let status_key = alloc_key(scope, "status")?;
     let status_val = vm.get(scope, init_obj, status_key)?;
     if let Value::Number(n) = status_val {
@@ -1883,10 +1889,13 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       )?;
       let mut request = CoreRequest::new("GET", url);
       request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
-      request
-    };
+       request
+     };
 
-  if let Value::Object(init_obj) = init {
+  if !matches!(init, Value::Undefined | Value::Null) {
+    let Value::Object(init_obj) = init else {
+      return Err(VmError::TypeError("Request init must be an object"));
+    };
     let method_key = alloc_key(scope, "method")?;
     let method_val = vm.get(scope, init_obj, method_key)?;
     if !matches!(method_val, Value::Undefined | Value::Null) {
@@ -2678,6 +2687,153 @@ mod tests {
     );
 
     drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn request_ctor_rejects_non_object_init() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(request_ctor) = get_data_prop(&mut scope, global, "Request")? else {
+      return Err(VmError::InvariantViolation("Request constructor missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com")?;
+    scope.push_root(Value::String(url_s))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = request_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      request_ctor,
+      &[Value::String(url_s), Value::Number(1.0)],
+      Value::Object(request_ctor),
+    )
+    .expect_err("expected init type error");
+    assert!(
+      matches!(err, VmError::TypeError("Request init must be an object")),
+      "err={err}"
+    );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_rejects_non_object_init() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::Undefined, Value::Number(1.0)],
+      Value::Object(response_ctor),
+    )
+    .expect_err("expected init type error");
+    assert!(
+      matches!(err, VmError::TypeError("Response init must be an object")),
+      "err={err}"
+    );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn fetch_rejects_non_object_init() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(fetch_fn) = get_data_prop(&mut scope, global, "fetch")? else {
+      return Err(VmError::InvariantViolation("fetch function missing"));
+    };
+
+    let url_s = scope.alloc_string("https://example.com")?;
+    scope.push_root(Value::String(url_s))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = fetch_call::<DummyHost>(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      fetch_fn,
+      Value::Undefined,
+      &[Value::String(url_s), Value::Number(1.0)],
+    )
+    .expect_err("expected init type error");
+    assert!(
+      matches!(err, VmError::TypeError("Request init must be an object")),
+      "err={err}"
+    );
+
+    drop(scope);
+    drop(bindings);
     realm.teardown(&mut heap);
     Ok(())
   }
