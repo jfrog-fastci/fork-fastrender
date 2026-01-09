@@ -196,10 +196,13 @@ so it cannot support correct parser-time script execution.
 
 **Existing home:** `src/dom2/` (`dom2::Document`, `NodeId`, `NodeKind`).
 
-**Missing piece (still required for spec-correct parse-time JS):** an `html5ever::tree_builder::TreeSink`
-implementation backed by `dom2::Document`. This is the bridge between the tokenizer/tree-builder and
-our mutable DOM. Until this exists, the pausable parser path uses `markup5ever_rcdom` and converts to
-renderer DOM snapshots for callbacks.
+**Missing piece (still required for spec-correct parse-time JS):** an
+`html5ever::tree_builder::TreeSink` implementation backed by `dom2::Document`. This is the bridge
+between the tokenizer/tree-builder and our mutable DOM.
+
+Until this exists, the pausable parser path uses `markup5ever_rcdom` and converts to renderer DOM
+snapshots for callbacks; `dom2` documents are typically created by importing those renderer DOM
+snapshots via `src/dom2/import.rs`.
 
 **Mutable DOM invariants that must always hold:**
 
