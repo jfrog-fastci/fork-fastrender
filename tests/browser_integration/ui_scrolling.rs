@@ -8,9 +8,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support;
-
-const TIMEOUT: Duration = Duration::from_secs(10);
+use super::support::{create_tab_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn wait_for_message<F>(rx: &Receiver<WorkerToUi>, timeout: Duration, mut f: F) -> WorkerToUi
 where
@@ -65,23 +63,23 @@ fn scroll_snap_updates_viewport_scroll_state() {
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   ui_tx
-    .send(support::create_tab_msg(tab_id, Some(url)))
+    .send(create_tab_msg(tab_id, Some(url)))
     .unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
-    .send(support::viewport_changed_msg(tab_id, (100, 100), 1.0))
+    .send(viewport_changed_msg(tab_id, (100, 100), 1.0))
     .unwrap();
 
-  let _ = wait_for_message(&worker_rx, TIMEOUT, |msg| {
+  let _ = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id)
   });
   drain_worker(&worker_rx);
 
   ui_tx
-    .send(support::scroll_msg(tab_id, (0.0, 60.0), None))
+    .send(scroll_msg(tab_id, (0.0, 60.0), None))
     .unwrap();
 
-  let msg = wait_for_message(&worker_rx, TIMEOUT, |msg| match msg {
+  let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::ScrollStateUpdated { tab_id: t, scroll } if *t == tab_id => scroll.viewport.y > 0.0,
     _ => false,
   });
@@ -156,23 +154,23 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   ui_tx
-    .send(support::create_tab_msg(tab_id, Some(url)))
+    .send(create_tab_msg(tab_id, Some(url)))
     .unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
-    .send(support::viewport_changed_msg(tab_id, (200, 200), 1.0))
+    .send(viewport_changed_msg(tab_id, (200, 200), 1.0))
     .unwrap();
 
-  let _ = wait_for_message(&worker_rx, TIMEOUT, |msg| {
+  let _ = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { tab_id: t, .. } if *t == tab_id)
   });
   drain_worker(&worker_rx);
 
   ui_tx
-    .send(support::scroll_msg(tab_id, (0.0, 20.0), Some((10.0, 10.0))))
+    .send(scroll_msg(tab_id, (0.0, 20.0), Some((10.0, 10.0))))
     .unwrap();
 
-  let msg = wait_for_message(&worker_rx, TIMEOUT, |msg| match msg {
+  let msg = wait_for_message(&worker_rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::ScrollStateUpdated { tab_id: t, scroll } if *t == tab_id => {
       scroll.elements.contains_key(&expected_box_id)
     }

@@ -15,25 +15,25 @@ use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 
-struct EnvGuard(&'static str);
+struct TestRenderDelayGuard;
 
-impl EnvGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    std::env::set_var(key, value);
-    Self(key)
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    std::env::remove_var(self.0);
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
 #[test]
 fn compressed_resource_respects_render_timeout() {
   let _net_guard = net_test_lock();
-  let _guard = EnvGuard::set("FASTR_TEST_RENDER_DELAY_MS", "10");
+  let _guard = TestRenderDelayGuard::set(Some(10));
   let compressed = include_bytes!("../fixtures/large_timeout_payload.gz");
 
   let Some(listener) = try_bind_localhost("compressed_resource_respects_render_timeout") else {
@@ -95,7 +95,7 @@ fn renderer_times_out_while_decompressing_image() {
   let _net_guard = net_test_lock();
   // Use a delay larger than the overall timeout so a single deadline check reliably triggers a
   // timeout regardless of host speed/caching.
-  let _guard = EnvGuard::set("FASTR_TEST_RENDER_DELAY_MS", "50");
+  let _guard = TestRenderDelayGuard::set(Some(50));
   let compressed = include_bytes!("../fixtures/large_timeout_payload.gz");
 
   let Some(listener) = try_bind_localhost("renderer_times_out_while_decompressing_image") else {

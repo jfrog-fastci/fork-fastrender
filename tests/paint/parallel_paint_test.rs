@@ -23,18 +23,18 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tiny_skia::Pixmap;
 
-struct EnvGuard(&'static str);
+struct TestRenderDelayGuard;
 
-impl EnvGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    std::env::set_var(key, value);
-    Self(key)
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    std::env::remove_var(self.0);
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -3778,7 +3778,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
 
 #[test]
 fn parallel_paint_respects_deadline() {
-  let _delay_guard = EnvGuard::set("FASTR_TEST_RENDER_DELAY_MS", "20");
+  let _delay_guard = TestRenderDelayGuard::set(Some(20));
   let parallelism = PaintParallelism {
     tile_size: 16,
     log_timing: false,

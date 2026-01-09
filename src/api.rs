@@ -10211,76 +10211,82 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
   ) -> Result<LayoutIntermediates> {
-    let trace = TraceHandle::disabled();
-    let deadline = crate::render_control::active_deadline();
-    let shared_diagnostics = self
-      .diagnostics
-      .as_ref()
-      .map(|diag| SharedRenderDiagnostics {
-        inner: Arc::clone(diag),
-      });
-    let context = Some(self.build_resource_context(
-      self.document_url_hint(),
-      shared_diagnostics,
-      ReferrerPolicy::default(),
-    ));
-    let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
-    {
-      let needs_update = self
-        .resource_context
+    let toggles = Arc::clone(&self.runtime_toggles);
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceHandle::disabled();
+      let deadline = crate::render_control::active_deadline();
+      let shared_diagnostics = self
+        .diagnostics
         .as_ref()
-        .is_some_and(|ctx| ctx.referrer_policy != policy);
-      if needs_update {
-        if let Some(mut ctx) = self.resource_context.clone() {
-          ctx.referrer_policy = policy;
-          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
-          // resource context.
-          self.push_resource_context(Some(ctx));
-        }
-      }
-    }
-    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
-      if let Some(mut ctx) = self.resource_context.clone() {
-        let changed = match ctx.csp.as_mut() {
-          Some(existing) => existing.extend(meta_csp),
-          None => {
-            ctx.csp = Some(meta_csp);
-            true
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = Some(self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
           }
-        };
-        if changed {
-          self.push_resource_context(Some(ctx));
         }
       }
-    }
-    let artifacts_result = self.layout_document_for_media_with_artifacts(
-      dom,
-      width,
-      height,
-      media_type,
-      LayoutDocumentOptions::default(),
-      Point::ZERO,
-      deadline.as_ref(),
-      None,
-      &trace,
-      self.layout_parallelism,
-      None,
-    );
-    self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
-    let artifacts = artifacts_result?;
-    let LayoutArtifacts {
-      dom,
-      styled_tree,
-      box_tree,
-      fragment_tree,
-      ..
-    } = artifacts;
-    Ok(LayoutIntermediates {
-      dom,
-      styled_tree,
-      box_tree,
-      fragment_tree,
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+      let artifacts_result = self.layout_document_for_media_with_artifacts(
+        dom,
+        width,
+        height,
+        media_type,
+        LayoutDocumentOptions::default(),
+        Point::ZERO,
+        deadline.as_ref(),
+        None,
+        &trace,
+        self.layout_parallelism,
+        None,
+      );
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      let artifacts = artifacts_result?;
+      let LayoutArtifacts {
+        dom,
+        styled_tree,
+        box_tree,
+        fragment_tree,
+        ..
+      } = artifacts;
+      Ok(LayoutIntermediates {
+        dom,
+        styled_tree,
+        box_tree,
+        fragment_tree,
+      })
     })
   }
 
@@ -11900,71 +11906,77 @@ impl FastRender {
       }));
     }
 
-    let trace = TraceHandle::disabled();
-    let shared_diagnostics = self
-      .diagnostics
-      .as_ref()
-      .map(|diag| SharedRenderDiagnostics {
-        inner: Arc::clone(diag),
-      });
-    let context = Some(self.build_resource_context(
-      self.document_url_hint(),
-      shared_diagnostics,
-      ReferrerPolicy::default(),
-    ));
-    let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
-    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
-    {
-      let needs_update = self
-        .resource_context
+    let toggles = Arc::clone(&self.runtime_toggles);
+    runtime::with_runtime_toggles(toggles, || {
+      let trace = TraceHandle::disabled();
+      let shared_diagnostics = self
+        .diagnostics
         .as_ref()
-        .is_some_and(|ctx| ctx.referrer_policy != policy);
-      if needs_update {
-        if let Some(mut ctx) = self.resource_context.clone() {
-          ctx.referrer_policy = policy;
-          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
-          // resource context.
-          self.push_resource_context(Some(ctx));
-        }
-      }
-    }
-    if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)? {
-      if let Some(mut ctx) = self.resource_context.clone() {
-        let changed = match ctx.csp.as_mut() {
-          Some(existing) => existing.extend(meta_csp),
-          None => {
-            ctx.csp = Some(meta_csp);
-            true
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = Some(self.build_resource_context(
+        self.document_url_hint(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
           }
-        };
-        if changed {
-          self.push_resource_context(Some(ctx));
         }
       }
-    }
-    let artifacts_result = self.layout_document_for_media_with_artifacts(
-      dom,
-      width,
-      height,
-      MediaType::Screen,
-      LayoutDocumentOptions::default(),
-      Point::ZERO,
-      None,
-      None,
-      &trace,
-      self.layout_parallelism,
-      None,
-    );
-    self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
-    let artifacts = artifacts_result?;
+      if let Some(meta_csp) = crate::html::content_security_policy::extract_csp_with_deadline(dom)?
+      {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          let changed = match ctx.csp.as_mut() {
+            Some(existing) => existing.extend(meta_csp),
+            None => {
+              ctx.csp = Some(meta_csp);
+              true
+            }
+          };
+          if changed {
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+      let artifacts_result = self.layout_document_for_media_with_artifacts(
+        dom,
+        width,
+        height,
+        MediaType::Screen,
+        LayoutDocumentOptions::default(),
+        Point::ZERO,
+        None,
+        None,
+        &trace,
+        self.layout_parallelism,
+        None,
+      );
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      let artifacts = artifacts_result?;
 
-    crate::debug::inspect::inspect(
-      &artifacts.dom,
-      &artifacts.styled_tree,
-      &artifacts.box_tree.root,
-      &artifacts.fragment_tree,
-      query,
-    )
+      crate::debug::inspect::inspect(
+        &artifacts.dom,
+        &artifacts.styled_tree,
+        &artifacts.box_tree.root,
+        &artifacts.fragment_tree,
+        query,
+      )
+    })
   }
 
   /// Paints a fragment tree to a pixmap

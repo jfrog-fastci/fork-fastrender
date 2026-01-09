@@ -11,7 +11,6 @@ use fastrender::ui::{
 use super::support::{
   create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
 };
-use std::ffi::OsString;
 use std::time::Duration;
 
 fn factory_for_tests() -> FastRenderFactory {
@@ -19,25 +18,18 @@ fn factory_for_tests() -> FastRenderFactory {
   FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer)).unwrap()
 }
 
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -147,7 +139,7 @@ fn scroll_produces_scroll_update_and_frame() {
 #[test]
 fn navigation_cancellation_drops_stale_frame() {
   let _lock = super::stage_listener_test_lock();
-  let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "1");
+  let _delay = TestRenderDelayGuard::set(Some(1));
 
   let factory = factory_for_tests();
   let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
@@ -182,6 +174,9 @@ fn navigation_cancellation_drops_stale_frame() {
         tx.send(navigate_msg(tab_id, second_url.clone(), NavigationReason::TypedUrl))
           .unwrap();
         sent_second = true;
+        // Once the cancellation signal is sent, disable the synthetic slowdown so we can complete
+        // the follow-up navigation quickly.
+        fastrender::render_control::set_test_render_delay_ms(None);
       }
       WorkerToUi::NavigationCommitted { url, .. } => {
         last_committed = Some(url);

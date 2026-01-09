@@ -4,10 +4,8 @@ use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
-
 fn next_navigation_committed(rx: &std::sync::mpsc::Receiver<WorkerToUi>, tab_id: TabId) -> WorkerToUi {
-  support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+  support::recv_for_tab(rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
     matches!(
       msg,
       WorkerToUi::NavigationCommitted { .. } | WorkerToUi::NavigationFailed { .. }
@@ -20,7 +18,7 @@ fn next_frame_ready(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
+  let msg = support::recv_for_tab(rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
     matches!(msg, WorkerToUi::FrameReady { .. })
   })
   .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));

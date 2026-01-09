@@ -10,28 +10,55 @@ fn next_navigation_committed(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
 ) -> WorkerToUi {
-  support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(
-      msg,
-      WorkerToUi::NavigationCommitted { .. } | WorkerToUi::NavigationFailed { .. }
-    )
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for NavigationCommitted for tab {tab_id:?}"))
+  let deadline = Instant::now() + TIMEOUT;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+  while Instant::now() < deadline {
+    match rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        let done = matches!(
+          &msg,
+          WorkerToUi::NavigationCommitted { tab_id: got, .. } | WorkerToUi::NavigationFailed { tab_id: got, .. }
+            if *got == tab_id
+        );
+        if done {
+          return msg;
+        }
+        captured.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  captured.extend(support::drain_for(rx, Duration::from_millis(200)));
+  panic!(
+    "timed out waiting for NavigationCommitted for tab {tab_id:?}; messages:\n{}",
+    support::format_messages(&captured)
+  )
 }
 
 fn next_frame_ready(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
   tab_id: TabId,
 ) -> fastrender::ui::messages::RenderedFrame {
-  let msg = support::recv_for_tab(rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  })
-  .unwrap_or_else(|| panic!("timed out waiting for FrameReady for tab {tab_id:?}"));
-
-  match msg {
-    WorkerToUi::FrameReady { frame, .. } => frame,
-    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  let deadline = Instant::now() + TIMEOUT;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+  while Instant::now() < deadline {
+    match rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        match msg {
+          WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => return frame,
+          other => captured.push(other),
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
   }
+  captured.extend(support::drain_for(rx, Duration::from_millis(200)));
+  panic!(
+    "timed out waiting for FrameReady for tab {tab_id:?}; messages:\n{}",
+    support::format_messages(&captured)
+  );
 }
 
 #[test]

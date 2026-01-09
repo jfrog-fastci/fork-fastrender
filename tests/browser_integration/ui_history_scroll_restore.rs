@@ -35,6 +35,7 @@ fn describe_message(msg: &WorkerToUi) -> String {
     WorkerToUi::SelectDropdownClosed { .. } => "SelectDropdownClosed".to_string(),
     WorkerToUi::LoadingState { loading, .. } => format!("LoadingState({loading})"),
     WorkerToUi::DebugLog { line, .. } => format!("DebugLog({})", line.trim_end()),
+    other => format!("{other:?}"),
   }
 }
 
@@ -97,12 +98,7 @@ fn handle_worker_message(tab: &mut BrowserTabState, ui_tx: &Sender<UiToWorker>, 
       tab.pending_nav_url = None;
       tab.clear_scroll_restore();
     }
-    WorkerToUi::OpenSelectDropdown { .. }
-    | WorkerToUi::SelectDropdownOpened { .. }
-    | WorkerToUi::SelectDropdownClosed { .. }
-    | WorkerToUi::Stage { .. }
-    | WorkerToUi::LoadingState { .. }
-    | WorkerToUi::DebugLog { .. } => {}
+    _ => {}
   }
 }
 

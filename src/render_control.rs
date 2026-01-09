@@ -28,13 +28,61 @@ thread_local! {
 }
 
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
-thread_local! {
-  static TEST_RENDER_DELAY_MS: Cell<Option<u64>> = const { Cell::new(None) };
-}
+use std::sync::atomic::AtomicU64;
+
+// -----------------------------------------------------------------------------
+// Test-only render throttling
+// -----------------------------------------------------------------------------
+//
+// We support slowing down deadline checks to make cancellation/timeout tests deterministic.
+//
+// This used to be implemented by reading `FASTR_TEST_RENDER_DELAY_MS` inside every
+// `RenderDeadline::check` call. That can be extremely hot (deadline checks are called from many
+// inner loops), so cache the value and let tests override it programmatically.
+//
+// Priority:
+// 1) explicit override set via `set_test_render_delay_ms`
+// 2) cached env var `FASTR_TEST_RENDER_DELAY_MS`
+#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
+static TEST_RENDER_DELAY_OVERRIDE_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
+static TEST_RENDER_DELAY_ENV_CACHE_MS: AtomicU64 = AtomicU64::new(u64::MAX);
 
 #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
+fn resolved_test_render_delay_ms() -> u64 {
+  let override_ms = TEST_RENDER_DELAY_OVERRIDE_MS.load(Ordering::Relaxed);
+  if override_ms != u64::MAX {
+    return override_ms;
+  }
+
+  let cached = TEST_RENDER_DELAY_ENV_CACHE_MS.load(Ordering::Relaxed);
+  if cached != u64::MAX {
+    return cached;
+  }
+
+  let parsed = std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+    .ok()
+    .and_then(|v| v.parse::<u64>().ok())
+    .unwrap_or(0);
+  TEST_RENDER_DELAY_ENV_CACHE_MS.store(parsed, Ordering::Relaxed);
+  parsed
+}
+
+/// Override the global test render delay, in milliseconds.
+///
+/// This affects *all* threads that call `RenderDeadline::check` while compiled with
+/// `debug_assertions`, `cfg(test)` or `feature = "browser_ui"`.
+#[cfg(any(debug_assertions, test, feature = "browser_ui"))]
 pub fn set_test_render_delay_ms(ms: Option<u64>) {
-  TEST_RENDER_DELAY_MS.with(|cell| cell.set(ms));
+  match ms {
+    Some(ms) => TEST_RENDER_DELAY_OVERRIDE_MS.store(ms, Ordering::Relaxed),
+    None => {
+      // Clear the override and reset the env cache so a subsequent call can observe changes to the
+      // process environment (useful in tests that flip the env var).
+      TEST_RENDER_DELAY_OVERRIDE_MS.store(u64::MAX, Ordering::Relaxed);
+      TEST_RENDER_DELAY_ENV_CACHE_MS.store(u64::MAX, Ordering::Relaxed);
+    }
+  }
 }
 
 // Keep `set_test_render_delay_ms` callable in release builds without the optional UI/test hooks
@@ -324,12 +372,11 @@ impl RenderDeadline {
   /// Check for timeout or cancellation at the given stage.
   pub fn check(&self, stage: RenderStage) -> Result<(), RenderError> {
     #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
-    if let Some(delay) = TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
-      std::env::var("FASTR_TEST_RENDER_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    }) {
-      std::thread::sleep(Duration::from_millis(delay));
+    {
+      let delay = resolved_test_render_delay_ms();
+      if delay > 0 {
+        std::thread::sleep(Duration::from_millis(delay));
+      }
     }
     if let Some(cb) = &self.cancel {
       if cb() {

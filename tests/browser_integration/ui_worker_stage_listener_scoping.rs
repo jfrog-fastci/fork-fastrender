@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
@@ -7,10 +8,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
-
 fn wait_for_navigation_complete(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> bool {
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_frame = false;
   let mut saw_loading_done = false;
   let mut saw_stage = false;

@@ -6,26 +6,24 @@ use fastrender::style::cascade::apply_styles;
 use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
 use std::time::Duration;
 
-struct EnvVarGuard {
-  key: &'static str,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    std::env::set_var(key, value);
-    Self { key }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    std::env::remove_var(self.key);
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
 #[test]
 fn box_generation_times_out_with_active_deadline() {
-  let _guard = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "5");
+  let _guard = TestRenderDelayGuard::set(Some(5));
 
   let mut repeated = String::new();
   for _ in 0..5000 {

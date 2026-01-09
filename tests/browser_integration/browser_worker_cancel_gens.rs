@@ -3,30 +3,22 @@
 use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-struct EnvVarGuard {
-  key: &'static str,
-  previous: Option<OsString>,
-}
+struct TestRenderDelayGuard;
 
-impl EnvVarGuard {
-  fn set(key: &'static str, value: &str) -> Self {
-    let previous = std::env::var_os(key);
-    std::env::set_var(key, value);
-    Self { key, previous }
+impl TestRenderDelayGuard {
+  fn set(ms: Option<u64>) -> Self {
+    fastrender::render_control::set_test_render_delay_ms(ms);
+    Self
   }
 }
 
-impl Drop for EnvVarGuard {
+impl Drop for TestRenderDelayGuard {
   fn drop(&mut self) {
-    match self.previous.take() {
-      Some(value) => std::env::set_var(self.key, value),
-      None => std::env::remove_var(self.key),
-    }
+    fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
 
@@ -34,7 +26,7 @@ impl Drop for EnvVarGuard {
 fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
   let _lock = super::stage_listener_test_lock();
   // Slow down render stages to make cancellation deterministic.
-  let _env = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "1");
+  let _delay = TestRenderDelayGuard::set(Some(1));
 
   let site = support::TempSite::new();
 
@@ -141,6 +133,8 @@ fn browser_worker_cancel_navigation_via_ui_held_cancel_gens() {
   );
 
   cancel.bump_nav();
+  // Remove the synthetic slowdown so the follow-up navigation completes quickly.
+  fastrender::render_control::set_test_render_delay_ms(None);
   worker
     .tx
     .send(support::navigate_msg(
