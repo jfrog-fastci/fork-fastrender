@@ -152,6 +152,13 @@ pub trait WebIdlJsRuntime: JsRuntime {
   /// Returns true if the value is a platform object that implements the given WebIDL interface.
   fn implements_interface(&self, value: Self::JsValue, interface: &str) -> bool;
 
+  /// If the value is a platform object, returns its embedding-defined opaque id.
+  ///
+  /// This is useful for bindings that need to map JS wrappers back to host objects.
+  fn platform_object_opaque(&self, _value: Self::JsValue) -> Option<u64> {
+    None
+  }
+
   /// Returns true if the value is a String object (has `[[StringData]]`).
   fn is_string_object(&self, value: Self::JsValue) -> bool;
 

@@ -1036,6 +1036,10 @@ impl WebIdlJsRuntime for VmJsRuntime {
     VmJsRuntime::implements_interface(self, value, interface)
   }
 
+  fn platform_object_opaque(&self, value: Value) -> Option<u64> {
+    VmJsRuntime::platform_object_opaque(self, value)
+  }
+
   fn is_string_object(&self, value: Value) -> bool {
     let Value::Object(obj) = value else {
       return false;
