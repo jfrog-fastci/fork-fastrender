@@ -4922,6 +4922,27 @@ fn paint_fragment_tree_with_state(
   let viewport_size = viewport_override.unwrap_or_else(|| fragment_tree.viewport_size());
   let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
   scroll_state = scroll_result.state;
+  // Clamp/sanitize viewport scroll offsets even when they were set programmatically. This keeps the
+  // paint pipeline consistent with user-driven scrolling (wheel/anchor), and prevents
+  // viewport-fixed descendants from incorrectly inflating the scroll range.
+  scroll_state.viewport = Point::new(
+    if scroll_state.viewport.x.is_finite() {
+      scroll_state.viewport.x
+    } else {
+      0.0
+    },
+    if scroll_state.viewport.y.is_finite() {
+      scroll_state.viewport.y
+    } else {
+      0.0
+    },
+  );
+  if let Some(bounds) = crate::scroll::build_scroll_chain(&fragment_tree.root, viewport_size, &[])
+    .first()
+    .map(|state| state.bounds)
+  {
+    scroll_state.viewport = bounds.clamp(scroll_state.viewport);
+  }
   let scroll = scroll_state.viewport;
 
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before

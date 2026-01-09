@@ -1033,6 +1033,46 @@ mod tests {
   }
 
   #[test]
+  fn paint_clamps_programmatic_viewport_scroll_to_bounds_excluding_fixed() -> Result<()> {
+    let html = r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #spacer { height: 2000px; }
+      #fixed { position: fixed; top: 50000px; width: 10px; height: 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="spacer"></div>
+    <div id="fixed"></div>
+  </body>
+</html>"#;
+    let mut document =
+      BrowserDocument::from_html(html, RenderOptions::default().with_viewport(100, 100))?;
+    // Prime the layout cache so we can repaint after changing scroll offsets.
+    document.render_frame()?;
+
+    // Overshoot far beyond the real scroll range; the viewport-fixed element should not inflate the
+    // maximum scroll offset.
+    document.set_scroll(0.0, 50000.0);
+    let frame = document.paint_from_cache_frame_with_deadline(None)?;
+
+    let expected_max_y = 2000.0 - 100.0;
+    assert!(
+      (frame.scroll_state.viewport.y - expected_max_y).abs() < 0.5,
+      "expected scroll_y to clamp to {expected_max_y}, got {}",
+      frame.scroll_state.viewport.y
+    );
+    assert!(
+      (document.scroll_state().viewport.y - expected_max_y).abs() < 0.5,
+      "expected BrowserDocument scroll state to be updated to {expected_max_y}, got {}",
+      document.scroll_state().viewport.y
+    );
+    Ok(())
+  }
+
+  #[test]
   fn base_url_reflects_base_href_after_prepare() -> Result<()> {
     fn set_base_href(dom: &mut DomNode, href: &str) -> bool {
       let mut stack = vec![dom];
