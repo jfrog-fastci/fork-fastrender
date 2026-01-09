@@ -1,7 +1,7 @@
 use fastrender::dom2::{Document, NodeId, NodeKind};
 use fastrender::js::{
-  CurrentScriptHost, CurrentScriptState, EventLoop, RunLimits, ScriptBlockExecutor, ScriptOrchestrator,
-  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, ScriptBlockExecutor,
+  ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
 };
 use fastrender::{Error, Result};
 use rquickjs::{Context, Ctx, Object, Runtime, Value};
@@ -124,7 +124,7 @@ struct JsHost {
   js_rt: Runtime,
   js_ctx: Context,
 
-  script_state: CurrentScriptState,
+  script_state: CurrentScriptStateHandle,
   orchestrator: ScriptOrchestrator,
 
   // Script source text, keyed by the script element NodeId.
@@ -140,7 +140,7 @@ impl JsHost {
       dom,
       js_rt,
       js_ctx,
-      script_state: CurrentScriptState::default(),
+      script_state: CurrentScriptStateHandle::default(),
       orchestrator: ScriptOrchestrator::new(),
       script_segments: HashMap::new(),
       nested: None,
@@ -187,12 +187,8 @@ impl JsHost {
 }
 
 impl CurrentScriptHost for JsHost {
-  fn current_script_state(&self) -> &CurrentScriptState {
+  fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.script_state
-  }
-
-  fn current_script_state_mut(&mut self) -> &mut CurrentScriptState {
-    &mut self.script_state
   }
 }
 
@@ -592,7 +588,7 @@ fn disconnected_scripts_do_not_modify_current_script_when_already_set() -> Resul
   let mut host = JsHost::new(dom, &[inert, live])?;
 
   // Simulate an already-executing script (both host-side and in the JS `document`).
-  host.script_state.current_script = Some(live);
+  host.script_state.borrow_mut().current_script = Some(live);
   host.js_ctx.with(|ctx| -> Result<()> {
     ctx
       .eval::<(), _>(format!(

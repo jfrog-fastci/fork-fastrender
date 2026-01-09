@@ -4,5 +4,5 @@
 // `tests/tree_tests.rs`. Having a dedicated integration test crate allows
 // running `cargo test --test shadow_dom` for faster iteration on slotting logic.
 
-#[path = "tree/shadow_dom.rs"]
+#[path = "../tree/shadow_dom.rs"]
 mod shadow_dom;

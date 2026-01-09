@@ -57,6 +57,5 @@ fn web_url_search_params_failure_does_not_mutate_url_query() {
     max_total_query_bytes: 1024,
   };
   assert!(url.set_search("a=b&a=b&a=b", &failing_limits).is_err());
-  assert_eq!(url.query(), Some("ok=1"));
+  assert_eq!(url.query().unwrap().as_deref(), Some("ok=1"));
 }
-

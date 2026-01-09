@@ -1,149 +1,102 @@
-use fastrender::js::{
-  install_time_bindings, EventLoop, JsObject, JsRuntime, JsValue, NativeFunction, VirtualClock,
-  WebTime,
-};
-use fastrender::{Error, Result};
-use std::collections::HashMap;
+use fastrender::js::{install_time_bindings, Clock, EventLoop, VirtualClock, WebTime};
 use std::sync::Arc;
 use std::time::Duration;
+use vm_js::{Heap, PropertyKey, Realm, Value, Vm, VmOptions};
 
-struct TestRuntime<Host> {
-  globals: HashMap<String, TestValue<Host>>,
+fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
+  let mut scope = heap.scope();
+  let key_s = scope.alloc_string(name).expect("alloc key string");
+  scope.push_root(Value::String(key_s));
+  let key = PropertyKey::from_string(key_s);
+  let global = realm.global_object();
+  scope
+    .heap()
+    .object_get_own_data_property_value(global, &key)
+    .expect("get global property")
+    .unwrap_or_else(|| panic!("missing global property {name}"))
 }
 
-impl<Host> Default for TestRuntime<Host> {
-  fn default() -> Self {
-    Self {
-      globals: HashMap::new(),
-    }
-  }
+fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Value {
+  let mut scope = heap.scope();
+  let key_s = scope.alloc_string(name).expect("alloc key string");
+  scope.push_root(Value::String(key_s));
+  let key = PropertyKey::from_string(key_s);
+  scope
+    .heap()
+    .object_get_own_data_property_value(obj, &key)
+    .expect("get object property")
+    .unwrap_or_else(|| panic!("missing property {name}"))
 }
 
-enum TestValue<Host> {
-  Function(NativeFunction<Host>),
-  Object(TestObject<Host>),
-}
-
-struct TestObject<Host> {
-  props: HashMap<String, TestValue<Host>>,
-}
-
-impl<Host> Default for TestObject<Host> {
-  fn default() -> Self {
-    Self {
-      props: HashMap::new(),
-    }
-  }
-}
-
-impl<Host> JsObject<Host> for TestObject<Host> {
-  fn define_method(&mut self, name: &str, func: NativeFunction<Host>) {
-    self.props.insert(name.to_string(), TestValue::Function(func));
-  }
-}
-
-impl<Host> JsRuntime<Host> for TestRuntime<Host> {
-  type Object = TestObject<Host>;
-
-  fn global_object(&mut self, name: &str) -> &mut Self::Object {
-    let entry = self
-      .globals
-      .entry(name.to_string())
-      .or_insert_with(|| TestValue::Object(TestObject::default()));
-    match entry {
-      TestValue::Object(obj) => obj,
-      TestValue::Function(_) => panic!("global `{name}` is not an object"),
-    }
-  }
-
-  fn define_global_function(&mut self, name: &str, func: NativeFunction<Host>) {
-    self.globals.insert(name.to_string(), TestValue::Function(func));
-  }
-}
-
-impl<Host> TestRuntime<Host> {
-  fn call_global_method_number(
-    &self,
-    object: &str,
-    method: &str,
-    host: &mut Host,
-    event_loop: &mut EventLoop<Host>,
-  ) -> Result<f64> {
-    let obj = match self.globals.get(object) {
-      Some(TestValue::Object(obj)) => obj,
-      Some(TestValue::Function(_)) => {
-        return Err(Error::Other(format!("global `{object}` is not an object")));
-      }
-      None => return Err(Error::Other(format!("missing global `{object}`"))),
-    };
-
-    let func = match obj.props.get(method) {
-      Some(TestValue::Function(func)) => func,
-      Some(TestValue::Object(_)) => {
-        return Err(Error::Other(format!(
-          "property `{object}.{method}` is not a function"
-        )));
-      }
-      None => return Err(Error::Other(format!("missing property `{object}.{method}`"))),
-    };
-
-    let value = func(host, event_loop)?;
-    match value {
-      JsValue::Number(n) => Ok(n),
-    }
-  }
+fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
+  let mut scope = heap.scope();
+  vm
+    .call(&mut scope, callee, this, &[])
+    .expect("call should succeed")
 }
 
 #[test]
-fn date_now_and_performance_now_follow_event_loop_clock() -> Result<()> {
-  #[derive(Default)]
-  struct Host;
-
-  let mut host = Host::default();
+fn date_now_and_performance_now_follow_event_loop_clock() {
   let clock = Arc::new(VirtualClock::new());
-  let mut event_loop = EventLoop::<Host>::with_clock(clock.clone());
-  let mut runtime = TestRuntime::<Host>::default();
+  let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+  let clock_for_loop: Arc<dyn Clock> = clock.clone();
+  let event_loop = EventLoop::<()>::with_clock(clock_for_loop);
 
-  install_time_bindings(
-    &mut runtime,
-    WebTime {
-      time_origin_unix_ms: 1_000,
-    },
-  );
+  let mut vm = Vm::new(VmOptions::default());
+  let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+  let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
 
-  assert_eq!(
-    runtime.call_global_method_number("performance", "now", &mut host, &mut event_loop)?,
-    0.0
-  );
-  assert_eq!(
-    runtime.call_global_method_number("Date", "now", &mut host, &mut event_loop)?,
-    1_000.0
-  );
+  let web_time = WebTime::new(1_000);
+  let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
+    .expect("install time bindings");
 
-  assert_eq!(
-    runtime.call_global_method_number("performance", "now", &mut host, &mut event_loop)?,
-    0.0
-  );
+  // Start at a deterministic time.
+  clock.set_now(Duration::from_millis(0));
+  assert_eq!(event_loop.now(), Duration::from_millis(0));
 
-  clock.advance(Duration::from_micros(1500));
-  assert_eq!(
-    runtime.call_global_method_number("performance", "now", &mut host, &mut event_loop)?,
-    1.5
-  );
-  assert_eq!(
-    runtime.call_global_method_number("Date", "now", &mut host, &mut event_loop)?,
-    1_001.0
-  );
+  let date = get_global_property(&mut heap, &realm, "Date");
+  let performance = get_global_property(&mut heap, &realm, "performance");
 
-  clock.advance(Duration::from_millis(10));
+  let date_obj = match date {
+    Value::Object(o) => o,
+    _ => panic!("Date should be an object"),
+  };
+  let performance_obj = match performance {
+    Value::Object(o) => o,
+    _ => panic!("performance should be an object"),
+  };
+
+  let date_now = get_object_property(&mut heap, date_obj, "now");
+  let perf_now = get_object_property(&mut heap, performance_obj, "now");
+
+  let v = call0(&mut vm, &mut heap, date_now, Value::Object(date_obj));
   assert_eq!(
-    runtime.call_global_method_number("performance", "now", &mut host, &mut event_loop)?,
-    11.5
-  );
-  assert_eq!(
-    runtime.call_global_method_number("Date", "now", &mut host, &mut event_loop)?,
-    1_011.0
+    v,
+    Value::Number(web_time.date_now(&event_loop) as f64),
+    "Date.now should incorporate WebTime origin + EventLoop clock"
   );
 
-  Ok(())
+  let v = call0(&mut vm, &mut heap, perf_now, Value::Object(performance_obj));
+  assert_eq!(
+    v,
+    Value::Number(web_time.performance_now(&event_loop)),
+    "performance.now should track EventLoop clock"
+  );
+
+  // Advance the virtual clock to a non-integer millisecond.
+  clock.set_now(Duration::from_nanos(1_234_567_890)); // 1234.56789ms
+  assert_eq!(event_loop.now(), Duration::from_nanos(1_234_567_890));
+
+  let v = call0(&mut vm, &mut heap, date_now, Value::Object(date_obj));
+  // Date.now() is millisecond-granularity.
+  assert_eq!(v, Value::Number(web_time.date_now(&event_loop) as f64));
+
+  let v = call0(&mut vm, &mut heap, perf_now, Value::Object(performance_obj));
+  let Value::Number(n) = v else {
+    panic!("performance.now should return a number");
+  };
+  assert!((n - web_time.performance_now(&event_loop)).abs() < 1e-9);
+
+  // `vm-js` realms own persistent GC roots that must be explicitly removed.
+  realm.teardown(&mut heap);
 }

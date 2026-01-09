@@ -4,7 +4,7 @@
 //   cargo test --test backdrop_root_triggers_test
 //
 #[path = "paint/rayon_test_util.rs"]
-use crate::rayon_test_util;
+mod rayon_test_util;
 
 #[path = "paint/backdrop_root_triggers_test.rs"]
 mod backdrop_root_triggers_test;

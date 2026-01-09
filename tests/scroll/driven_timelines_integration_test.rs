@@ -341,7 +341,7 @@ fn view_timeline_progress_includes_sticky_offsets() -> Result<()> {
   let viewport_width = 200;
   let viewport_height = 200;
   let mut renderer = FastRender::new()?;
-  let html = include_str!("pages/fixtures/view_timeline_sticky_range_px/index.html");
+  let html = include_str!("../pages/fixtures/view_timeline_sticky_range_px/index.html");
 
   let prepared = renderer.prepare_html(
     html,

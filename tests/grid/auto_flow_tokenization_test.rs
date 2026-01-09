@@ -3,6 +3,5 @@
 // Run with:
 //   cargo test --test grid_auto_flow_tokenization_test
 //
-#[path = "style/grid_auto_flow_tokenization_test.rs"]
+#[path = "../style/grid_auto_flow_tokenization_test.rs"]
 mod grid_auto_flow_tokenization_test;
-
