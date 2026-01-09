@@ -48,9 +48,13 @@ enum PageNamedSize {
   A5,
   A4,
   A3,
+  B5,
+  B4,
+  JisB5,
+  JisB4,
   Letter,
   Legal,
-  Tabloid,
+  Ledger,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -514,9 +518,15 @@ fn named_size(value: &str) -> Option<PageNamedSize> {
     "a5" => Some(PageNamedSize::A5),
     "a4" => Some(PageNamedSize::A4),
     "a3" => Some(PageNamedSize::A3),
+    "b5" => Some(PageNamedSize::B5),
+    "b4" => Some(PageNamedSize::B4),
+    "jis-b5" => Some(PageNamedSize::JisB5),
+    "jis-b4" => Some(PageNamedSize::JisB4),
     "letter" => Some(PageNamedSize::Letter),
     "legal" => Some(PageNamedSize::Legal),
-    "tabloid" => Some(PageNamedSize::Tabloid),
+    // CSS Paged Media 3 defines `ledger` as 11in×17in. Accept `tabloid` as a common alias
+    // used by author stylesheets and tooling.
+    "ledger" | "tabloid" => Some(PageNamedSize::Ledger),
     _ => None,
   }
 }
@@ -752,9 +762,13 @@ impl PageNamedSize {
       PageNamedSize::A5 => Size::new(mm_to_px(148.0), mm_to_px(210.0)),
       PageNamedSize::A4 => Size::new(mm_to_px(210.0), mm_to_px(297.0)),
       PageNamedSize::A3 => Size::new(mm_to_px(297.0), mm_to_px(420.0)),
+      PageNamedSize::B5 => Size::new(mm_to_px(176.0), mm_to_px(250.0)),
+      PageNamedSize::B4 => Size::new(mm_to_px(250.0), mm_to_px(353.0)),
+      PageNamedSize::JisB5 => Size::new(mm_to_px(182.0), mm_to_px(257.0)),
+      PageNamedSize::JisB4 => Size::new(mm_to_px(257.0), mm_to_px(364.0)),
       PageNamedSize::Letter => Size::new(in_to_px(8.5), in_to_px(11.0)),
       PageNamedSize::Legal => Size::new(in_to_px(8.5), in_to_px(14.0)),
-      PageNamedSize::Tabloid => Size::new(in_to_px(11.0), in_to_px(17.0)),
+      PageNamedSize::Ledger => Size::new(in_to_px(11.0), in_to_px(17.0)),
     }
   }
 }
@@ -816,5 +830,70 @@ mod tests {
 
     let iterated: Vec<PageMarginArea> = style.margin_boxes.keys().copied().collect();
     assert_eq!(iterated, canonical);
+  }
+
+  #[test]
+  fn page_size_parses_named_sizes_from_css_page_3() {
+    let cases: &[(&str, PageNamedSize, Size)] = &[
+      ("A5", PageNamedSize::A5, Size::new(mm_to_px(148.0), mm_to_px(210.0))),
+      ("A4", PageNamedSize::A4, Size::new(mm_to_px(210.0), mm_to_px(297.0))),
+      ("A3", PageNamedSize::A3, Size::new(mm_to_px(297.0), mm_to_px(420.0))),
+      ("B5", PageNamedSize::B5, Size::new(mm_to_px(176.0), mm_to_px(250.0))),
+      ("B4", PageNamedSize::B4, Size::new(mm_to_px(250.0), mm_to_px(353.0))),
+      ("JIS-B5", PageNamedSize::JisB5, Size::new(mm_to_px(182.0), mm_to_px(257.0))),
+      ("JIS-B4", PageNamedSize::JisB4, Size::new(mm_to_px(257.0), mm_to_px(364.0))),
+      ("letter", PageNamedSize::Letter, Size::new(in_to_px(8.5), in_to_px(11.0))),
+      ("legal", PageNamedSize::Legal, Size::new(in_to_px(8.5), in_to_px(14.0))),
+      ("ledger", PageNamedSize::Ledger, Size::new(in_to_px(11.0), in_to_px(17.0))),
+      // `tabloid` is a widely-used alias for `ledger` and should parse to the same dimensions.
+      ("tabloid", PageNamedSize::Ledger, Size::new(in_to_px(11.0), in_to_px(17.0))),
+    ];
+
+    for (keyword, expected_named, expected_size) in cases {
+      let spec = parse_page_size_value(&PropertyValue::Keyword((*keyword).to_string()))
+        .unwrap_or_else(|| panic!("expected parse_page_size_value({keyword}) to succeed"));
+      assert_eq!(
+        spec.named,
+        Some(*expected_named),
+        "expected {keyword} to map to {:?}, got {:?}",
+        expected_named,
+        spec.named
+      );
+
+      let actual_size = expected_named.dimensions();
+      assert!(
+        (actual_size.width - expected_size.width).abs() < 0.01
+          && (actual_size.height - expected_size.height).abs() < 0.01,
+        "expected {keyword} to resolve to {:?}, got {:?}",
+        expected_size,
+        actual_size
+      );
+    }
+  }
+
+  #[test]
+  fn page_size_orientation_applies_to_named_sizes() {
+    let spec = parse_page_size_value(&PropertyValue::Multiple(vec![
+      PropertyValue::Keyword("B5".into()),
+      PropertyValue::Keyword("landscape".into()),
+    ]))
+    .expect("parse size spec");
+
+    let props = PageProperties {
+      size: Some(spec),
+      ..PageProperties::default()
+    };
+
+    let fallback = Size::new(800.0, 600.0);
+    let (width, height) = resolve_page_size(&props, fallback, 16.0);
+    let dims = PageNamedSize::B5.dimensions();
+    assert!(
+      (width - dims.height).abs() < 0.01 && (height - dims.width).abs() < 0.01,
+      "expected B5 landscape to swap axes: got {}x{}, expected {}x{}",
+      width,
+      height,
+      dims.height,
+      dims.width
+    );
   }
 }
