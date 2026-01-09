@@ -7,7 +7,8 @@
 use crate::runtime::WebIdlJsRuntime;
 
 use webidl_ir::{
-  IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext, WebIdlValue,
+  eval_default_value, IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext,
+  WebIdlException, WebIdlValue,
 };
 
 const BYTESTRING_INVALID_CODE_UNITS: &str =
@@ -363,6 +364,9 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   let Some(schema) = ctx.flattened_dictionary_members(name) else {
     return Err(rt.throw_type_error("unknown dictionary type"));
   };
+  if schema.len() > limits.max_dictionary_entries {
+    return Err(rt.throw_range_error("dictionary schema exceeds maximum entry count"));
+  }
 
   // Validate provided member names before allocating the output object.
   // This matches WebIDL's dictionary model: only schema-declared members are allowed.
@@ -387,15 +391,31 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   // Define properties in schema declaration order (including inherited members), which gives the
   // most spec-shaped and deterministic property insertion order.
   for member in &schema {
-    let Some(v) = members.get(&member.name) else {
+    let v = if let Some(v) = members.get(&member.name) {
+      Some(std::borrow::Cow::Borrowed(v))
+    } else if let Some(default) = &member.default {
+      let v = eval_default_value(&member.ty, default, ctx)
+        .map_err(|e| throw_webidl_exception(rt, e))?;
+      Some(std::borrow::Cow::Owned(v))
+    } else {
+      None
+    };
+    let Some(v) = v else {
       continue;
     };
-    let js_value = to_js_with_limits(rt, ctx, &member.ty, v, limits)?;
+    let js_value = to_js_with_limits(rt, ctx, &member.ty, &v, limits)?;
     let prop_key = rt.property_key_from_str(&member.name)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
 
   Ok(obj)
+}
+
+fn throw_webidl_exception<R: WebIdlJsRuntime>(rt: &mut R, err: WebIdlException) -> R::Error {
+  match err {
+    WebIdlException::TypeError { message } => rt.throw_type_error(&message),
+    WebIdlException::RangeError { message } => rt.throw_range_error(&message),
+  }
 }
 
 fn to_js_record<R: WebIdlJsRuntime>(
@@ -468,8 +488,8 @@ mod tests {
   use std::collections::BTreeMap;
   use vm_js::Value;
   use webidl_ir::{
-    parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema, NamedType, NamedTypeKind,
-    PlatformObject,
+    parse_default_value, parse_idl_type_complete, DictionaryMemberSchema, DictionarySchema, NamedType,
+    NamedTypeKind, PlatformObject,
   };
 
   #[test]
@@ -594,6 +614,39 @@ mod tests {
     };
     assert_eq!(rt.heap().get_string(handle)?.to_utf8_lossy(), "ok");
 
+    Ok(())
+  }
+
+  #[test]
+  fn dictionary_applies_member_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "Opts".to_string(),
+      inherits: None,
+      members: vec![DictionaryMemberSchema {
+        name: "flag".to_string(),
+        required: false,
+        ty: parse_idl_type_complete("boolean")?,
+        default: Some(parse_default_value("true")?),
+      }],
+    });
+
+    let ty = parse_idl_type_complete("Opts")?;
+    let value = WebIdlValue::Dictionary {
+      name: "Opts".to_string(),
+      members: std::collections::BTreeMap::new(),
+    };
+
+    let mut rt = VmJsRuntime::new();
+    let obj = to_js(&mut rt, &ctx, &ty, &value)?;
+
+    let key = rt.property_key_from_str("flag")?;
+    let got = rt.get(obj, key)?;
+    assert_eq!(rt.to_boolean(got)?, true);
+    let desc = rt
+      .get_own_property(obj, key)?
+      .ok_or_else(|| "missing defaulted dictionary property")?;
+    assert!(desc.enumerable);
     Ok(())
   }
 
