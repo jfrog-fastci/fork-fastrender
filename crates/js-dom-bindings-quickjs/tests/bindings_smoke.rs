@@ -107,11 +107,42 @@ fn class_list_add_remove_toggle() {
 
   let doc = dom.borrow();
   let x = doc.get_element_by_id("x").unwrap();
-  let class_attr = doc.get_attribute(x, "class").unwrap_or("");
+  let class_attr = doc.get_attribute(x, "class").unwrap().unwrap_or("");
   // Order is not specified by the MVP; we only require membership.
   let tokens: std::collections::HashSet<&str> = class_attr.split_whitespace().collect();
   assert!(tokens.contains("b"));
   assert!(tokens.contains("c"));
   assert!(!tokens.contains("a"));
   assert!(!tokens.contains("d"));
+}
+
+#[test]
+fn document_head_and_body_getters_work() {
+  let dom = make_dom(r#"<!doctype html><html><head></head><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r#"
+        (() => {
+          try {
+            if (!document.head || !document.body) return "missing";
+            const headOk = String(document.head.tagName || "").toLowerCase() === "head";
+            const bodyOk = String(document.body.tagName || "").toLowerCase() === "body";
+            document.body.appendChild(document.createElement("div"));
+            return headOk && bodyOk ? "ok" : "bad_tag";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "#,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "document.head/body JS threw: {outcome}");
+  });
 }

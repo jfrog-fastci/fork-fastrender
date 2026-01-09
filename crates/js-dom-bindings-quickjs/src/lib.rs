@@ -212,6 +212,20 @@ impl Node {
         content.push_str(&value);
         return Ok(());
       }
+      NodeKind::Comment { content } => {
+        content.clear();
+        content.push_str(&value);
+        return Ok(());
+      }
+      NodeKind::ProcessingInstruction { data, .. } => {
+        data.clear();
+        data.push_str(&value);
+        return Ok(());
+      }
+      NodeKind::Doctype { .. } => {
+        // `DocumentType.textContent` is `null` in the DOM spec; setting it is a no-op.
+        return Ok(());
+      }
       NodeKind::Document { .. }
       | NodeKind::Element { .. }
       | NodeKind::Slot { .. }
@@ -248,6 +262,20 @@ impl Node {
   fn document_element<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
     self.ensure_document(ctx.clone())?;
     let id = self.state.dom.borrow().document_element();
+    id.map(|id| self.state.wrap_node(ctx, id)).transpose()
+  }
+
+  #[qjs(get, rename = "head")]
+  fn head<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    self.ensure_document(ctx.clone())?;
+    let id = self.state.dom.borrow().head();
+    id.map(|id| self.state.wrap_node(ctx, id)).transpose()
+  }
+
+  #[qjs(get, rename = "body")]
+  fn body<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    self.ensure_document(ctx.clone())?;
+    let id = self.state.dom.borrow().body();
     id.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
@@ -328,7 +356,10 @@ impl Node {
   fn get_attribute<'js>(&self, ctx: Ctx<'js>, name: String) -> JsResult<Option<String>> {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
-    Ok(dom.get_attribute(self.node_id, &name).map(|v: &str| v.to_string()))
+    let value = dom
+      .get_attribute(self.node_id, &name)
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
+    Ok(value.map(|v| v.to_string()))
   }
 
   #[qjs(rename = "setAttribute")]
@@ -359,7 +390,8 @@ impl Node {
   fn id_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
-    Ok(dom.id(self.node_id).unwrap_or("").to_string())
+    let value = dom.id(self.node_id).map_err(|e| dom_error_to_js(&ctx, e))?;
+    Ok(value.unwrap_or("").to_string())
   }
 
   #[qjs(set, rename = "id")]
@@ -378,7 +410,10 @@ impl Node {
   fn class_name_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
-    Ok(dom.class_name(self.node_id).unwrap_or("").to_string())
+    let value = dom
+      .class_name(self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?;
+    Ok(value.unwrap_or("").to_string())
   }
 
   #[qjs(set, rename = "className")]
@@ -464,6 +499,7 @@ impl DOMTokenList {
       .dom
       .borrow()
       .class_name(self.element_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
       .unwrap_or("")
       .to_string();
     let contains = split_classes(&class).any(|t| t == token);
@@ -551,6 +587,7 @@ impl DOMTokenList {
       .dom
       .borrow()
       .class_name(self.element_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
       .unwrap_or("")
       .to_string();
     let mut list: Vec<String> = split_classes(&current).map(|s| s.to_string()).collect();
