@@ -79,8 +79,9 @@ fn label_click_toggles_checkbox_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = format!("file://{}", html_path.display());
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-interaction-a")
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId::new();
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -160,8 +161,9 @@ fn text_input_updates_focused_input_value_and_repaints() {
   std::fs::write(&html_path, html).expect("write html");
   let file_url = format!("file://{}", html_path.display());
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-interaction-b")
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId::new();
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -261,8 +263,9 @@ fn link_click_triggers_navigation_to_resolved_url() {
   let page1_url = format!("file://{}", page1_path.display());
   let page2_url = format!("file://{}", page2_path.display());
 
-  let fastrender::ui::worker_loop::UiWorkerHandle { ui_tx, ui_rx, join } =
-    spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-interaction-c")
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId::new();
   ui_tx
     .send(UiToWorker::CreateTab {
