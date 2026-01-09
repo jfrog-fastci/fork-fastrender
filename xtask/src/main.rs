@@ -75,6 +75,9 @@ fn main() -> Result<()> {
     }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
     Commands::WebIdlCodegen(args) => webidl_codegen::run_webidl_codegen(args),
+    Commands::WebIdlBindingsCodegen(args) => {
+      xtask::webidl_bindings_codegen::run_webidl_bindings_codegen(args)
+    }
   }
 }
 
@@ -152,6 +155,9 @@ enum Commands {
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
   WebIdlCodegen(webidl_codegen::WebIdlCodegenArgs),
+  /// Generate deterministic WebIDL-shaped JS binding glue from vendored WHATWG specs.
+  #[command(alias = "webidl-bindings")]
+  WebIdlBindingsCodegen(xtask::webidl_bindings_codegen::WebIdlBindingsCodegenArgs),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

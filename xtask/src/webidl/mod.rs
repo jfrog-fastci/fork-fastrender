@@ -28,6 +28,13 @@ pub use parse::{parse_idl_type, parse_interface_member};
 pub use parse_dictionary::{parse_dictionary_member, ParsedDictionaryMember};
 pub use semantic::{SemanticDiagnostic, SemanticWorld};
 
+/// Internal delimiter inserted between extracted WebIDL blocks when building a combined IDL input.
+///
+/// This allows [`parse_webidl`] to parse each block independently, preventing malformed/unbalanced
+/// blocks (common in WHATWG HTML sources due to embedded HTML comments) from corrupting statement
+/// splitting for subsequent blocks.
+const WEBIDL_BLOCK_SEPARATOR: &str = "\n//__FASTR_WEBIDL_BLOCK_SEPARATOR__\n";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedAttribute {
   pub name: String,
@@ -396,9 +403,11 @@ fn find_matching_pre_close(source: &str, content_start: usize) -> Option<(usize,
 
 pub fn parse_webidl(idl: &str) -> Result<ParsedWebIdlWorld> {
   let mut world = ParsedWebIdlWorld::default();
-  for stmt in split_top_level_statements(idl) {
-    if let Some(def) = parse_definition(&stmt) {
-      world.definitions.push(def);
+  for chunk in idl.split(WEBIDL_BLOCK_SEPARATOR) {
+    for stmt in split_top_level_statements(chunk) {
+      if let Some(def) = parse_definition(&stmt) {
+        world.definitions.push(def);
+      }
     }
   }
   Ok(world)
@@ -1205,8 +1214,6 @@ fn split_semicolon_terminated(input: &str) -> Vec<String> {
   let mut i = 0usize;
 
   let mut curly = 0u32;
-  let mut bracket = 0u32;
-  let mut paren = 0u32;
 
   let mut in_string: Option<u8> = None;
   let mut in_line_comment = false;
@@ -1277,37 +1284,34 @@ fn split_semicolon_terminated(input: &str) -> Vec<String> {
         i += 1;
       }
       b'[' => {
-        bracket += 1;
+        // Historically we tracked bracket/paren depth to avoid splitting in places like extended
+        // attribute blocks. In practice WebIDL terminators are robustly expressed via curly braces
+        // (`interface { ... };`) and semicolons at top-level/member-level, and WHATWG HTML embeds
+        // commented-out IDL using HTML comments. Those comments can be lossy when stripping tags and
+        // may leave unbalanced parens/brackets, which would previously prevent us from splitting the
+        // rest of the file and effectively drop later definitions (e.g. URL).
+        //
+        // We still count braces (`{}`), but we intentionally do *not* make statement splitting
+        // contingent on `[]`/`()` balancing.
         i += 1;
       }
       b']' => {
-        bracket = bracket.saturating_sub(1);
         i += 1;
       }
       b'(' => {
-        paren += 1;
         i += 1;
       }
       b')' => {
-        paren = paren.saturating_sub(1);
         i += 1;
       }
       b';' => {
         i += 1;
-        // Be forgiving: in spec sources we occasionally see malformed fragments (especially when
-        // scraping HTML) that leave `[`/`(`/`)` counters unbalanced. Those should not prevent us
-        // from splitting the overall IDL stream at top-level statement boundaries.
-        //
-        // Curly braces still gate splitting so interface/dictionary bodies (and `{}` default
-        // values) don't get broken up.
         if curly == 0 {
           let seg = input[start..i].trim();
           if !seg.is_empty() {
             out.push(seg.to_string());
           }
           start = i;
-          bracket = 0;
-          paren = 0;
         }
       }
       _ => i += 1,

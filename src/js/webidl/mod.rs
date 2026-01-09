@@ -5,6 +5,6 @@
 //! pulling in additional crates directly.
 
 pub use webidl_js_runtime::{
-  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, VmJsRuntime,
-  WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, NativeHostFunction,
+  VmJsRuntime, WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };

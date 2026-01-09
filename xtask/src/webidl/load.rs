@@ -40,14 +40,13 @@ pub fn load_combined_webidl(
   repo_root: &Path,
   sources: &[WebIdlSource<'_>],
 ) -> Result<LoadCombinedWebIdlResult> {
-  let mut combined = String::new();
+  let mut parts: Vec<String> = Vec::new();
 
   // Prelude.
   let prelude_path = repo_root.join(WEBIDL_PRELUDE_REL_PATH);
   let prelude = std::fs::read_to_string(&prelude_path)
     .with_context(|| format!("read WebIDL prelude {}", prelude_path.display()))?;
-  combined.push_str(&prelude);
-  combined.push('\n');
+  parts.push(prelude);
 
   // Overrides.
   let overrides_dir = repo_root.join(WEBIDL_OVERRIDES_REL_DIR);
@@ -61,8 +60,7 @@ pub fn load_combined_webidl(
     entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     for path in entries {
       let src = std::fs::read_to_string(&path).with_context(|| format!("read override {}", path.display()))?;
-      combined.push_str(&src);
-      combined.push('\n');
+      parts.push(src);
     }
   }
 
@@ -77,13 +75,12 @@ pub fn load_combined_webidl(
     let src = std::fs::read_to_string(&path)
       .with_context(|| format!("read spec source {} ({})", source.label, path.display()))?;
     for block in extract_webidl_blocks(&src) {
-      combined.push_str(&block);
-      combined.push('\n');
+      parts.push(block);
     }
   }
 
   Ok(LoadCombinedWebIdlResult {
-    combined_idl: combined,
+    combined_idl: parts.join(super::WEBIDL_BLOCK_SEPARATOR),
     missing_sources: missing,
   })
 }

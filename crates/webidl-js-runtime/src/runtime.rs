@@ -264,3 +264,67 @@ pub trait WebIdlJsRuntime: JsRuntime {
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;
 }
+
+/// Host-facing runtime API used by generated WebIDL bindings.
+///
+/// This sits *above* [`WebIdlJsRuntime`]. The `WebIdlJsRuntime` trait is intentionally scoped to the
+/// ECMAScript abstract operations required by WebIDL conversion algorithms. Bindings generation
+/// needs additional capabilities:
+/// - creating host objects/functions,
+/// - defining properties/prototype chains, and
+/// - constructing primitive JS values for return values.
+///
+/// The binding callbacks are expressed as plain function pointers rather than closures so they can
+/// take an explicit `&mut Host` parameter. This keeps the binding layer free of global state and
+/// avoids needing runtime-specific "host pointer" plumbing in generated code.
+pub type NativeHostFunction<R, Host> = fn(
+  rt: &mut R,
+  host: &mut Host,
+  this: <R as JsRuntime>::JsValue,
+  args: &[<R as JsRuntime>::JsValue],
+) -> Result<<R as JsRuntime>::JsValue, <R as JsRuntime>::Error>;
+
+pub trait WebIdlBindingsRuntime<Host>: WebIdlJsRuntime {
+  fn js_bool(&self, value: bool) -> Self::JsValue {
+    self.js_boolean(value)
+  }
+
+  fn js_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error> {
+    self.alloc_string(value)
+  }
+
+  /// Convert a JS string value to a Rust `String` (UTF-8, lossy).
+  fn js_string_to_rust_string(&mut self, value: Self::JsValue) -> Result<String, Self::Error> {
+    self.string_to_utf8_lossy(value)
+  }
+
+  /// Create a property key from an ASCII/UTF-8 string.
+  fn property_key(&mut self, name: &str) -> Result<Self::PropertyKey, Self::Error> {
+    self.property_key_from_str(name)
+  }
+
+  fn create_object(&mut self) -> Result<Self::JsValue, Self::Error> {
+    self.alloc_object()
+  }
+
+  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Self::JsValue, Self::Error>;
+
+  fn set_prototype(
+    &mut self,
+    obj: Self::JsValue,
+    proto: Option<Self::JsValue>,
+  ) -> Result<(), Self::Error>;
+
+  fn global_object(&mut self) -> Result<Self::JsValue, Self::Error>;
+
+  fn define_data_property_str(
+    &mut self,
+    obj: Self::JsValue,
+    name: &str,
+    value: Self::JsValue,
+    enumerable: bool,
+  ) -> Result<(), Self::Error> {
+    let key = self.property_key_from_str(name)?;
+    self.define_data_property(obj, key, value, enumerable)
+  }
+}

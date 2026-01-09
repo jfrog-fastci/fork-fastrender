@@ -18,6 +18,6 @@ pub use overload_resolution::{
 };
 pub use runtime::{
   InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlHooks,
-  WebIdlJsRuntime, WebIdlLimits,
+  WebIdlJsRuntime, WebIdlLimits, NativeHostFunction, WebIdlBindingsRuntime,
 };
 pub use to_js::{to_js, to_js_with_limits, ToJsLimits};
