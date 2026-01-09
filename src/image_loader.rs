@@ -4298,9 +4298,17 @@ impl ImageCache {
             .unwrap_or(attr.name());
           let value = attr.value();
 
-          if local_name == "href"
-            || (local_name == "src" && node.tag_name().name() == "image")
-          {
+          let tag_name = node.tag_name().name();
+          // SVG uses `href` in a variety of places (e.g. `<a href="...">` hyperlinks). We only
+          // enforce the image subresource policy for elements that can actually trigger resource
+          // fetches in our pipeline.
+          let is_image_href = local_name == "href"
+            && (tag_name.eq_ignore_ascii_case("image")
+              || tag_name.eq_ignore_ascii_case("use")
+              || tag_name.eq_ignore_ascii_case("feimage"));
+          let is_image_src =
+            local_name == "src" && tag_name.eq_ignore_ascii_case("image");
+          if is_image_href || is_image_src {
             check_url(value, &base, ResourceKind::Image)?;
             continue;
           }
@@ -10022,6 +10030,48 @@ mod tests {
     assert!(
       fetcher.requests().iter().all(|(url, _, _)| url != img_url),
       "blocked image should not be fetched"
+    );
+  }
+
+  #[test]
+  fn svg_anchor_href_not_blocked_by_policy() {
+    let doc_url = "https://example.test/";
+    let main_url = "https://example.test/main.svg";
+    let cross_url = "https://cross.test/";
+
+    let main_svg = format!(
+      r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><a href="{cross_url}"><rect width="1" height="1" fill="red"/></a></svg>"#
+    );
+
+    let mut main_res = FetchedResource::new(
+      main_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(main_url.to_string(), main_res)]);
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let image = cache.load(main_url).expect("SVG with <a href> should not be blocked");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "<a href> hyperlink should not affect rendered output"
+    );
+
+    assert!(
+      fetcher.requests().iter().all(|(url, _)| url != cross_url),
+      "hyperlink should not be fetched"
     );
   }
 
