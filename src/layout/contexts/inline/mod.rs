@@ -13384,19 +13384,26 @@ mod tests {
       .layout_inline_block(&inline_block, 300.0, None)
       .expect("layout inline-block");
 
-    fn find_replaced<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+    // Fragment bounds are stored in their parent's coordinate space. To assert where the replaced
+    // content ends up inside the inline-block we must accumulate x-offsets through the subtree.
+    fn find_replaced_with_absolute_x<'a>(
+      node: &'a FragmentNode,
+      absolute_x: f32,
+    ) -> Option<(f32, &'a FragmentNode)> {
       if matches!(node.content, FragmentContent::Replaced { .. }) {
-        return Some(node);
+        return Some((absolute_x, node));
       }
       for child in node.children.iter() {
-        if let Some(found) = find_replaced(child) {
+        let child_absolute_x = absolute_x + child.bounds.x();
+        if let Some(found) = find_replaced_with_absolute_x(child, child_absolute_x) {
           return Some(found);
         }
       }
       None
     }
 
-    let replaced = find_replaced(&item.fragment).expect("expected replaced fragment child");
+    let (replaced_abs_x, replaced) =
+      find_replaced_with_absolute_x(&item.fragment, 0.0).expect("expected replaced fragment child");
     let expected_padding_left = resolve_length_for_width(
       inline_block_style.padding_left,
       300.0,
@@ -13405,9 +13412,10 @@ mod tests {
       ifc.viewport_size,
     );
     assert!(
-      (replaced.bounds.x() - expected_padding_left).abs() < 0.5,
-      "expected replaced child to be offset by padding-left {:.2}, got x={:.2} (fragment={:?})",
+      (replaced_abs_x - expected_padding_left).abs() < 0.5,
+      "expected replaced child to be offset by padding-left {:.2}, got x={:.2} (local_x={:.2}, fragment={:?})",
       expected_padding_left,
+      replaced_abs_x,
       replaced.bounds.x(),
       replaced.content
     );
@@ -16373,6 +16381,53 @@ mod tests {
     let span = max_x - min_x;
     assert!(
       (span - first_line.bounds.width()).abs() < 0.5,
+      "justified line should fill its line box (span={span:.2} box={:.2})",
+      first_line.bounds.width()
+    );
+  }
+
+  #[test]
+  fn inter_character_justify_does_not_explode_fragments_on_long_cjk_text() {
+    let mut root_style = ComputedStyle::default();
+    root_style.text_align = TextAlign::Justify;
+    root_style.text_justify = TextJustify::InterCharacter;
+    root_style.white_space = WhiteSpace::PreWrap;
+    root_style.text_align_last = TextAlignLast::Justify;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.white_space = WhiteSpace::PreWrap;
+    // Keep the run short enough to fit on one line so the assertion covers a single line fragment.
+    text_style.font_size = 0.5;
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        Arc::new(text_style),
+        "漢".repeat(1000),
+      )],
+    );
+    let constraints = LayoutConstraints::definite_width(800.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let first_line = fragment.children.first().expect("first line");
+
+    let count = first_line.children.len();
+    assert!(
+      count <= 4,
+      "inter-character justify should not split long CJK into per-cluster fragments; count={count}"
+    );
+
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    for child in &first_line.children {
+      min_x = min_x.min(child.bounds.min_x());
+      max_x = max_x.max(child.bounds.max_x());
+    }
+    let span = max_x - min_x;
+    assert!(
+      (span - first_line.bounds.width()).abs() < 1.0,
       "justified line should fill its line box (span={span:.2} box={:.2})",
       first_line.bounds.width()
     );
@@ -21106,16 +21161,21 @@ mod tests {
     let fragment = ifc.layout(&root, &constraints).expect("layout");
     assert_eq!(fragment.children.len(), 1);
     let line = fragment.children.first().expect("line fragment");
-    let gaps: Vec<f32> = line
-      .children
-      .windows(2)
-      .map(|pair| pair[1].bounds.x() - (pair[0].bounds.x() + pair[0].bounds.width()))
-      .collect();
-    let max_gap = gaps.iter().copied().fold(0.0_f32, f32::max);
+
+    // Inter-word justification should expand the space between words. Modern inline layout applies
+    // this in-place within a `TextItem` instead of splitting it into separate fragments, so assert
+    // on the overall line coverage rather than child-to-child gaps.
+    let mut min_x = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    for child in &line.children {
+      min_x = min_x.min(child.bounds.min_x());
+      max_x = max_x.max(child.bounds.max_x());
+    }
+    let span = max_x - min_x;
     assert!(
-      max_gap > 10.0,
-      "expected justification to insert a noticeable gap: {:?}",
-      gaps
+      (span - line.bounds.width()).abs() < 1.0,
+      "expected justification to expand content to fill the line box (span={span:.2} line_width={:.2})",
+      line.bounds.width()
     );
   }
 
@@ -21391,9 +21451,11 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let fragment = ifc.layout(&root, &constraints).expect("layout");
     let last_line = fragment.children.last().expect("last line");
-    assert!(last_line.children.len() >= 2);
-    let last_child = last_line.children.last().expect("child");
-    let right_edge = last_child.bounds.x() + last_child.bounds.width();
+    let right_edge = last_line
+      .children
+      .iter()
+      .map(|child| child.bounds.x() + child.bounds.width())
+      .fold(0.0, f32::max);
     assert!(
       right_edge > last_line.bounds.width() * 0.8,
       "justify-all should stretch content toward the end of the line; right_edge={}, line_width={}",
@@ -21681,9 +21743,11 @@ mod tests {
     let ifc = InlineFormattingContext::new();
     let fragment = ifc.layout(&root, &constraints).expect("layout");
     let last_line = fragment.children.last().expect("last line");
-    assert!(last_line.children.len() >= 2);
-    let last_child = last_line.children.last().expect("text fragment");
-    let right_edge = last_child.bounds.x() + last_child.bounds.width();
+    let right_edge = last_line
+      .children
+      .iter()
+      .map(|child| child.bounds.x() + child.bounds.width())
+      .fold(0.0, f32::max);
     assert!(
       right_edge > last_line.bounds.width() * 0.8,
       "justify-all should stretch the final line by default; right_edge={}, line_width={}",
