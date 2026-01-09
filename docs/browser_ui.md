@@ -226,7 +226,9 @@ CPU by stopping stale work early.
 
 ## Known limitations (as of now)
 
-- **No author JavaScript**: `<script>` does not execute.
+- **No author JavaScript in the browser UI yet**: `<script>` does not run in the windowed `browser`
+  app today. (See [javascript.md](javascript.md) and
+  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream.)
 - **Interaction gaps** (non-JS): the windowed UI forwards pointer/keyboard input to the browser
   worker, which applies basic hit-testing + form interactions. Some interactions are still
   incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).

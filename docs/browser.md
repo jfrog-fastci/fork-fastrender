@@ -21,8 +21,9 @@ Code lives in:
 
 - A “real” web browser engine (no multi-process architecture, no extensions/devtools/service
   workers, etc.).
-- A JavaScript-capable browser: there is currently **no author JS engine** and `<script>` does not
-  execute. (See [docs/javascript.md](javascript.md) for the separate JS workstream.)
+- A JavaScript-capable browser (yet): the `browser` binary does not currently execute author
+  JavaScript (`<script>` does not run in the GUI today). See [javascript.md](javascript.md) and
+  [html_script_processing.md](html_script_processing.md) for the in-tree JS workstream.
 
 ## Build / run
 
