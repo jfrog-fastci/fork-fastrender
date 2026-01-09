@@ -114,6 +114,7 @@ impl DomExceptionClass {
         self.new_instance(rt, message, "NoModificationAllowedError")
       }
       DomException::NotSupportedError { message } => self.new_instance(rt, message, "NotSupportedError"),
+      DomException::InvalidStateError { message } => self.new_instance(rt, message, "InvalidStateError"),
     }
   }
 }

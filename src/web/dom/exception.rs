@@ -12,6 +12,8 @@ pub enum DomException {
   NoModificationAllowedError { message: String },
   #[error("NotSupportedError: {message}")]
   NotSupportedError { message: String },
+  #[error("InvalidStateError: {message}")]
+  InvalidStateError { message: String },
 }
 
 impl DomException {
@@ -29,6 +31,12 @@ impl DomException {
 
   pub fn not_supported_error(message: impl Into<String>) -> Self {
     Self::NotSupportedError {
+      message: message.into(),
+    }
+  }
+
+  pub fn invalid_state_error(message: impl Into<String>) -> Self {
+    Self::InvalidStateError {
       message: message.into(),
     }
   }

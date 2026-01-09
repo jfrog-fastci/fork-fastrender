@@ -177,7 +177,7 @@ fn outer_html_setter_replaces_node_in_parent_children() {
 }
 
 #[test]
-fn outer_html_setter_is_noop_when_node_is_detached() {
+fn outer_html_setter_no_parent_is_noop() {
   let root = parse_html(
     "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
   )
@@ -208,7 +208,7 @@ fn outer_html_setter_is_noop_when_node_is_detached() {
 }
 
 #[test]
-fn outer_html_setter_throws_when_parent_is_document() {
+fn outer_html_setter_parent_document_throws_no_modification_allowed() {
   let root = parse_html("<!doctype html><html><body>hi</body></html>").unwrap();
   let mut doc = Document::from_renderer_dom(&root);
   let html = find_first_element_by_tag(&doc, "html");
@@ -223,7 +223,7 @@ fn outer_html_setter_throws_when_parent_is_document() {
 }
 
 #[test]
-fn outer_html_setter_parses_in_body_context_when_parent_is_document_fragment() {
+fn outer_html_setter_parent_document_fragment_parses_with_body_context() {
   let root = parse_html("<!doctype html><html><body></body></html>").unwrap();
   let mut doc = Document::from_renderer_dom(&root);
 
@@ -247,6 +247,37 @@ fn outer_html_setter_parses_in_body_context_when_parent_is_document_fragment() {
     matches!(&doc.node(children[0]).kind, NodeKind::Text { content } if content == "x"),
     "expected <tr>/<td> tags to be ignored in body context, got {:#?}",
     doc.node(children[0]).kind,
+  );
+}
+
+#[test]
+fn inner_html_setter_on_template_replaces_template_contents() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let template = doc.create_element("template", HTML_NAMESPACE);
+  let old_child = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(template, old_child).unwrap();
+  assert!(
+    doc.node(template).inert_subtree,
+    "template contents must remain inert"
+  );
+
+  doc
+    .set_inner_html(template, "<span>new</span>")
+    .expect("set_inner_html");
+
+  assert_eq!(doc.node(old_child).parent, None, "old contents should detach");
+  let children = doc.children(template).unwrap();
+  assert_eq!(children.len(), 1, "template contents should be replaced");
+  assert!(
+    matches!(
+      &doc.node(children[0]).kind,
+      NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("span")
+    ),
+    "expected template contents to be replaced with a <span> element"
+  );
+  assert!(
+    doc.node(template).inert_subtree,
+    "template contents must remain inert"
   );
 }
 

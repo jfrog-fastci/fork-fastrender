@@ -555,6 +555,9 @@ fn throw_web_dom_exception<'a, T>(
     DomException::NotSupportedError { message } => {
       throw_dom_exception(scope, host, "NotSupportedError", &message)
     }
+    DomException::InvalidStateError { message } => {
+      throw_dom_exception(scope, host, "InvalidStateError", &message)
+    }
   }
 }
 
