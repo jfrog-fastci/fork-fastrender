@@ -210,9 +210,80 @@ pub(crate) fn inline_svg_for_mask_id(
   Some(out)
 }
 
+pub(crate) fn inline_svg_for_clip_path_id(
+  defs: &HashMap<String, String>,
+  clip_id: &str,
+  width: u32,
+  height: u32,
+) -> Option<String> {
+  if !defs.contains_key(clip_id) {
+    return None;
+  }
+
+  let mut required: HashSet<String> = HashSet::new();
+  let mut queue: VecDeque<String> = VecDeque::new();
+  required.insert(clip_id.to_string());
+  queue.push_back(clip_id.to_string());
+
+  while let Some(id) = queue.pop_front() {
+    let Some(fragment) = defs.get(&id) else {
+      continue;
+    };
+    for reference in collect_svg_fragment_references(fragment) {
+      if !defs.contains_key(&reference) {
+        continue;
+      }
+      if required.insert(reference.clone()) {
+        queue.push_back(reference);
+      }
+    }
+  }
+
+  let mut nested: HashSet<String> = HashSet::new();
+  for id in required.iter() {
+    let Some(fragment) = defs.get(id) else {
+      continue;
+    };
+    for contained_id in collect_svg_fragment_ids(fragment) {
+      if contained_id != *id && required.contains(&contained_id) {
+        nested.insert(contained_id);
+      }
+    }
+  }
+
+  let mut include: Vec<&String> = required
+    .iter()
+    .filter(|id| !nested.contains(*id))
+    .collect();
+  include.sort();
+
+  let mut out = String::new();
+  out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+  out.push_str(&width.to_string());
+  out.push_str("\" height=\"");
+  out.push_str(&height.to_string());
+  out.push_str("\" viewBox=\"0 0 ");
+  out.push_str(&width.to_string());
+  out.push(' ');
+  out.push_str(&height.to_string());
+  out.push_str("\"><defs>");
+  for id in include {
+    if let Some(serialized) = defs.get(id) {
+      out.push_str(serialized);
+    }
+  }
+  out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" clip-path=\"url(#");
+  out.push_str(clip_id);
+  out.push_str(")\"/></svg>");
+  Some(out)
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_mask_id};
+  use super::{
+    collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_clip_path_id,
+    inline_svg_for_mask_id,
+  };
   use std::collections::HashMap;
 
   #[test]
@@ -233,6 +304,13 @@ mod tests {
     let defs = HashMap::from([("mask".to_string(), invalid.to_string())]);
     let inlined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       inline_svg_for_mask_id(&defs, "mask", 10, 10)
+    }));
+    assert!(inlined.is_ok());
+    assert!(inlined.unwrap().is_some());
+
+    let defs = HashMap::from([("clip".to_string(), invalid.to_string())]);
+    let inlined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      inline_svg_for_clip_path_id(&defs, "clip", 10, 10)
     }));
     assert!(inlined.is_ok());
     assert!(inlined.unwrap().is_some());
@@ -268,5 +346,24 @@ mod tests {
       !refs.contains("ref"),
       "href refs should not trim non-ASCII whitespace like NBSP"
     );
+  }
+
+  #[test]
+  fn svg_clip_path_image_inlines_transitive_references() {
+    let clip = r##"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><use href="#shape"/><path d="M0 0H10V10Z" fill="url(#paint)"/></clipPath>"##;
+    let shape = r##"<rect xmlns="http://www.w3.org/2000/svg" id="shape" width="10" height="10"/>"##;
+    let paint = r##"<linearGradient xmlns="http://www.w3.org/2000/svg" id="paint"><stop offset="0" stop-color="white"/></linearGradient>"##;
+    let defs = HashMap::from([
+      ("clip".to_string(), clip.to_string()),
+      ("shape".to_string(), shape.to_string()),
+      ("paint".to_string(), paint.to_string()),
+    ]);
+
+    let svg = inline_svg_for_clip_path_id(&defs, "clip", 12, 12).expect("expected svg");
+
+    assert!(svg.contains(clip));
+    assert!(svg.contains(shape));
+    assert!(svg.contains(paint));
+    assert!(svg.contains("clip-path=\"url(#clip)\""));
   }
 }
