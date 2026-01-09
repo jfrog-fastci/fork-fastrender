@@ -1373,6 +1373,7 @@ mod tests {
     assert!(got.is_some());
     assert_eq!(calls.get(), 1);
   }
+
   #[test]
   fn call_function_invokes_host_function_with_this_and_args() {
     let mut rt = VmJsRuntime::new();
@@ -1529,6 +1530,30 @@ mod tests {
       assert!(rt.heap().property_key_eq(got, expected));
     }
 
+    Ok(())
+  }
+
+  #[test]
+  fn inherited_accessor_get_uses_receiver_as_this() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+    let proto = rt.alloc_object_value()?;
+    let instance = rt.alloc_object_value()?;
+    rt.set_prototype(instance, Some(proto))?;
+
+    let seen_this = std::rc::Rc::new(std::cell::Cell::new(Value::Undefined));
+    let seen_this_for_getter = seen_this.clone();
+    let getter = rt.alloc_function_value(move |_rt, this, _args| {
+      seen_this_for_getter.set(this);
+      Ok(Value::Undefined)
+    })?;
+
+    let key = rt.property_key_from_str("x")?;
+    rt.define_accessor_property(proto, key, getter, Value::Undefined, true)?;
+
+    let key = rt.property_key_from_str("x")?;
+    let _ = rt.get(instance, key)?;
+    assert_eq!(seen_this.get(), instance);
     Ok(())
   }
 }

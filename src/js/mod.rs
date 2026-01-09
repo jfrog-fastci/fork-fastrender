@@ -45,6 +45,7 @@ pub mod streaming_pipeline;
 pub mod webidl;
 pub mod bindings;
 pub mod window_realm;
+pub mod dom_bindings;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
@@ -68,6 +69,7 @@ pub use orchestrator::{
   ScriptExecutionLog, ScriptExecutionLogEntry, ScriptOrchestrator, ScriptSourceSnapshot,
 };
 pub use browser_tab::{BrowserTab, BrowserTabHost};
+pub use dom_bindings::DomJsRealm;
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,
