@@ -1,6 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -56,12 +56,12 @@ fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
     .expect("send Navigate");
 
   // Drain the initial frame rendered as part of navigation.
-  let _ = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
+  let _ = recv_frame_ready(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 50), 1.0))
     .expect("send ViewportChanged 1.0");
-  let frame1 = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
+  let frame1 = recv_frame_ready(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   assert_eq!(frame1.viewport_css, (100, 50));
   assert_close(frame1.dpr, 1.0, 0.01, "frame1.dpr");
   let (w1, h1) = (frame1.pixmap.width(), frame1.pixmap.height());
@@ -70,7 +70,7 @@ fn viewport_changed_updates_frame_dpr_and_pixmap_size() {
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 50), 2.0))
     .expect("send ViewportChanged 2.0");
-  let frame2 = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
+  let frame2 = recv_frame_ready(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   assert_eq!(frame2.viewport_css, (100, 50));
   assert_close(frame2.dpr, 2.0, 0.01, "frame2.dpr");
   let (w2, h2) = (frame2.pixmap.width(), frame2.pixmap.height());
@@ -101,12 +101,12 @@ fn invalid_dpr_is_sanitized() {
     .expect("send Navigate");
 
   // Drain the initial frame rendered as part of navigation.
-  let _ = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
+  let _ = recv_frame_ready(&ui_rx, tab_id, DEFAULT_TIMEOUT);
 
   ui_tx
     .send(viewport_changed_msg(tab_id, (100, 50), 0.0))
     .expect("send ViewportChanged invalid dpr");
-  let frame = recv_frame_ready(&ui_rx, tab_id, Duration::from_secs(10));
+  let frame = recv_frame_ready(&ui_rx, tab_id, DEFAULT_TIMEOUT);
   assert_eq!(frame.viewport_css, (100, 50));
   assert!(
     frame.dpr.is_finite() && frame.dpr >= 0.1,

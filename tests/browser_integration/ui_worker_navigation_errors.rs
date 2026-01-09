@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-use super::support::{create_tab_msg, navigate_msg};
+use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 
 fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<WorkerToUi> {
   loop {
@@ -59,7 +59,7 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
 
   let mut expect = Expect::Started;
   let mut saw_frame = false;
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
 
   while !matches!(expect, Expect::Done) {
     let Some(msg) = recv_until_deadline(&ui_rx, deadline) else {
@@ -143,7 +143,7 @@ fn unknown_about_page_still_commits_and_renders_error_page() {
     .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .expect("send navigate");
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_commit = false;
   let mut saw_frame = false;
 
