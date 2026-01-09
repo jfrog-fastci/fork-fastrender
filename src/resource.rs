@@ -878,6 +878,30 @@ impl FetchDestination {
     }
   }
 
+  /// Returns the default credentials mode for this destination.
+  ///
+  /// This is **not** derivable from `Sec-Fetch-Mode` alone:
+  ///
+  /// - `fetch()` requests are sent in `cors` mode but default to `"same-origin"` credentials per
+  ///   the Fetch API.
+  /// - HTML CORS settings attributes (e.g. `<img crossorigin>` / `<link rel=stylesheet crossorigin>`)
+  ///   also use `cors` mode; the default/empty keyword maps to `"same-origin"` credentials.
+  /// - Fonts are currently kept at the historical default of `omit` until audited against browser
+  ///   behavior/specs. (This impacts caching and cookie sending, so we keep the existing behavior
+  ///   for now.)
+  const fn default_credentials_mode(self) -> FetchCredentialsMode {
+    match self {
+      Self::Fetch | Self::StyleCors | Self::ImageCors => FetchCredentialsMode::SameOrigin,
+      Self::Font => FetchCredentialsMode::Omit,
+      Self::Document
+      | Self::DocumentNoUser
+      | Self::Iframe
+      | Self::Style
+      | Self::Image
+      | Self::Other => FetchCredentialsMode::Include,
+    }
+  }
+
   fn sec_fetch_dest(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser => "document",
@@ -1119,6 +1143,16 @@ pub struct FetchRequest<'a> {
 
 impl<'a> FetchRequest<'a> {
   /// Create a new request for the given URL and destination.
+  ///
+  /// The default [`FetchCredentialsMode`] depends on the destination:
+  ///
+  /// - [`FetchDestination::Fetch`] (JavaScript `fetch()`) defaults to `same-origin`, matching the
+  ///   Fetch API.
+  /// - [`FetchDestination::StyleCors`] and [`FetchDestination::ImageCors`] are CORS-mode requests
+  ///   initiated via HTML CORS settings attributes (e.g. `<link rel=stylesheet crossorigin>` /
+  ///   `<img crossorigin>`). The default/empty keyword corresponds to the `"anonymous"` state,
+  ///   which maps to `same-origin` credentials.
+  /// - Other destinations keep the historical default.
   pub fn new(url: &'a str, destination: FetchDestination) -> Self {
     Self {
       url,
@@ -1126,11 +1160,7 @@ impl<'a> FetchRequest<'a> {
       referrer_url: None,
       client_origin: None,
       referrer_policy: ReferrerPolicy::default(),
-      credentials_mode: if destination.sec_fetch_mode() == "cors" {
-        FetchCredentialsMode::Omit
-      } else {
-        FetchCredentialsMode::Include
-      },
+      credentials_mode: destination.default_credentials_mode(),
     }
   }
 
@@ -9917,6 +9947,32 @@ mod tests {
     assert!(
       policy.ensure_url_allowed("\u{00A0}").is_ok(),
       "NBSP-only URLs should not be rejected as empty"
+    );
+  }
+
+  #[test]
+  fn fetch_request_new_defaults_credentials_mode_by_destination() {
+    let url = "https://example.com/resource";
+
+    assert_eq!(
+      FetchRequest::new(url, FetchDestination::Fetch).credentials_mode,
+      FetchCredentialsMode::SameOrigin,
+      "Fetch API default is credentials: same-origin"
+    );
+    assert_eq!(
+      FetchRequest::new(url, FetchDestination::StyleCors).credentials_mode,
+      FetchCredentialsMode::SameOrigin,
+      "HTML crossorigin (anonymous/empty) defaults to credentials: same-origin"
+    );
+    assert_eq!(
+      FetchRequest::new(url, FetchDestination::ImageCors).credentials_mode,
+      FetchCredentialsMode::SameOrigin,
+      "HTML crossorigin (anonymous/empty) defaults to credentials: same-origin"
+    );
+    assert_eq!(
+      FetchRequest::new(url, FetchDestination::Document).credentials_mode,
+      FetchCredentialsMode::Include,
+      "Document navigations remain credentialed by default"
     );
   }
 
