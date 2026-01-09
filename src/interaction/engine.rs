@@ -904,6 +904,7 @@ fn update_range_value_from_pointer(
 }
 
 fn apply_select_listbox_click(
+  dom: &mut DomNode,
   index: &mut DomIndexMut,
   fragment_tree: &FragmentTree,
   page_point: Point,
@@ -956,36 +957,15 @@ fn apply_select_listbox_click(
   row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
   let row = rows[row_idx as usize];
 
-  let mut changed = false;
   match row {
-    SelectRow::OptGroupLabel { .. } => {}
+    SelectRow::OptGroupLabel { .. } => false,
     SelectRow::Option { node_id, disabled } => {
-      if disabled {
+      if disabled || index.node(node_id).is_none() {
         return false;
       }
-
-      if multiple {
-        let selected = index
-          .node(node_id)
-          .and_then(|node| node.get_attribute_ref("selected"))
-          .is_some();
-        if let Some(node_mut) = index.node_mut(node_id) {
-          changed |= dom_mutation::set_bool_attr(node_mut, "selected", !selected);
-        }
-      } else {
-        for row in rows {
-          let SelectRow::Option { node_id: id, .. } = row else {
-            continue;
-          };
-          if let Some(node_mut) = index.node_mut(id) {
-            changed |= dom_mutation::set_bool_attr(node_mut, "selected", id == node_id);
-          }
-        }
-      }
+      dom_mutation::activate_select_option(dom, select_id, node_id, multiple)
     }
   }
-
-  changed
 }
 
 fn select_control_snapshot_from_box_tree(
@@ -1429,13 +1409,14 @@ impl InteractionEngine {
 
           let disabled = is_disabled_or_inert(&index, target_id) || computed_disabled;
 
-          if !disabled {
-            if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
-              dom_changed |= apply_select_listbox_click(
-                &mut index,
-                fragment_tree,
-                page_point,
-                target_id,
+            if !disabled {
+              if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
+                dom_changed |= apply_select_listbox_click(
+                  dom,
+                  &mut index,
+                  fragment_tree,
+                  page_point,
+                  target_id,
                 hit.box_id,
                 scroll_state,
               );
