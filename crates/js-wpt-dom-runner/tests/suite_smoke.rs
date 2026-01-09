@@ -26,6 +26,7 @@ fn backend_quickjs_or_vmjs() -> BackendSelection {
 fn suite_smoke_report_classifies_expected_failures() {
   let corpus_root = corpus_root();
 
+  let backend = backend_quickjs_or_vmjs();
   let report = run_suite(&SuiteConfig {
     wpt_root: corpus_root.clone(),
     manifest_path: corpus_root.join("expectations.toml"),
@@ -35,7 +36,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     timeout: Duration::from_millis(500),
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
-    backend: backend_quickjs_or_vmjs(),
+    backend,
   })
   .expect("run suite");
 
@@ -71,6 +72,25 @@ fn suite_smoke_report_classifies_expected_failures() {
     uncaught_exception.expected_mismatch,
     "expected xfail should be marked expected_mismatch: {uncaught_exception:#?}"
   );
+
+  let dom_shims = report
+    .results
+    .iter()
+    .find(|r| r.id == "smoke/dom_shims.window.js")
+    .expect("missing dom_shims.window.js");
+  match backend {
+    BackendSelection::VmJs => assert_eq!(
+      dom_shims.outcome,
+      TestOutcome::Skipped,
+      "vm-js suite should skip dom_shims.window.js: {dom_shims:#?}"
+    ),
+    BackendSelection::QuickJs => assert_eq!(
+      dom_shims.outcome,
+      TestOutcome::Passed,
+      "QuickJS suite should run dom_shims.window.js: {dom_shims:#?}"
+    ),
+    BackendSelection::Auto => unreachable!("suite_smoke should choose explicit backend"),
+  }
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
   assert_eq!(mismatches.expected, 3, "expected mismatches");

@@ -4,6 +4,7 @@
 # - Each `[[expectations]]` entry matches `id` (exact), `glob`, or `regex`.
 # - `status` can be: "pass" | "skip" | "xfail" | "flaky".
 # - `reason` is recommended for anything other than `pass`.
+# - `backend` (optional) limits an entry to a specific JS backend: "vmjs" | "quickjs".
 #
 # If this file is empty, all tests are treated as expected `pass`.
 
@@ -24,5 +25,6 @@ reason = "Intentional harness-level error used to validate uncaught exception cl
 
 [[expectations]]
 id = "smoke/dom_shims.window.js"
+backend = "vmjs"
 status = "skip"
-reason = "QuickJS-only DOMParsing smoke test; the default vm-js backend does not implement Element.innerHTML/outerHTML yet."
+reason = "DOM shim smoke test; the default vm-js backend does not implement Element.innerHTML/outerHTML yet."

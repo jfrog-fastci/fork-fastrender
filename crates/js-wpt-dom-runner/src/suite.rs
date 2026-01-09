@@ -1,12 +1,13 @@
 use crate::{
-  discover_tests, BackendSelection, RunError, RunOutcome, Runner, RunnerConfig, TestCase, TestKind,
-  WptFs, WptReport,
+  discover_tests, BackendKind, BackendSelection, RunError, RunOutcome, Runner, RunnerConfig,
+  TestCase, TestKind, WptFs, WptReport,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use conformance_harness::{AppliedExpectation, ExpectationKind, Expectations, FailOn, Shard};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -228,7 +229,8 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     }
   }
 
-  let expectations = Expectations::from_path(&config.manifest_path)
+  let backend_kind = resolve_suite_backend(config.backend)?;
+  let expectations = load_expectations_filtered(&config.manifest_path, backend_kind)
     .with_context(|| format!("load expectations {}", config.manifest_path.display()))?;
 
   let runner = Runner::new(
@@ -255,6 +257,111 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     summary,
     results,
   })
+}
+
+fn resolve_suite_backend(selection: BackendSelection) -> Result<BackendKind> {
+  // Mirror the backend resolution logic in `Runner` so expectation filtering stays in sync with the
+  // actual backend used for test execution.
+  let selection = if selection == BackendSelection::Auto {
+    BackendSelection::from_env()
+      .map_err(|err| anyhow!(err))?
+      .unwrap_or(BackendSelection::Auto)
+  } else {
+    selection
+  };
+  Ok(selection.resolve())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawManifest {
+  #[serde(default)]
+  expectations: Vec<RawEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawEntry {
+  id: Option<String>,
+  glob: Option<String>,
+  regex: Option<String>,
+  #[serde(alias = "expectation")]
+  status: Option<ExpectationKind>,
+  reason: Option<String>,
+  tracking_issue: Option<String>,
+  #[serde(alias = "backends")]
+  backend: Option<BackendConstraint>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum BackendConstraint {
+  One(String),
+  Many(Vec<String>),
+}
+
+impl BackendConstraint {
+  fn matches(&self, backend: BackendKind) -> Result<bool> {
+    let matches_one = |raw: &str| -> Result<bool> {
+      let normalized = raw.trim().to_ascii_lowercase();
+      let kind = match normalized.as_str() {
+        "vmjs" | "vm-js" | "vm_js" => BackendKind::VmJs,
+        "quickjs" | "quick-js" | "quick_js" => BackendKind::QuickJs,
+        other => {
+          bail!("unknown backend selector {other:?} (expected vmjs|quickjs)");
+        }
+      };
+      Ok(kind == backend)
+    };
+
+    match self {
+      BackendConstraint::One(s) => matches_one(s),
+      BackendConstraint::Many(values) => {
+        for value in values {
+          if matches_one(value)? {
+            return Ok(true);
+          }
+        }
+        Ok(false)
+      }
+    }
+  }
+}
+
+fn load_expectations_filtered(path: &std::path::Path, backend: BackendKind) -> Result<Expectations> {
+  let raw =
+    std::fs::read_to_string(path).with_context(|| format!("read manifest {}", path.display()))?;
+
+  let manifest = match toml::from_str::<RawManifest>(&raw) {
+    Ok(manifest) => manifest,
+    Err(toml_err) => serde_json::from_str::<RawManifest>(&raw).map_err(|json_err| {
+      anyhow!("failed to parse manifest as TOML ({toml_err}) or JSON ({json_err})")
+    })?,
+  };
+
+  let mut filtered = Vec::new();
+  for entry in manifest.expectations {
+    let keep = match &entry.backend {
+      None => true,
+      Some(constraint) => constraint
+        .matches(backend)
+        .with_context(|| "invalid backend expectation selector")?,
+    };
+    if !keep {
+      continue;
+    }
+
+    filtered.push(json!({
+      "id": entry.id,
+      "glob": entry.glob,
+      "regex": entry.regex,
+      "status": entry.status,
+      "reason": entry.reason,
+      "tracking_issue": entry.tracking_issue,
+    }));
+  }
+
+  let json_manifest = serde_json::to_string(&json!({ "expectations": filtered }))
+    .context("serialize filtered expectations manifest")?;
+  Expectations::from_str(&json_manifest).map_err(|err| anyhow!("{}: {err}", path.display()))
 }
 
 fn run_single(runner: &Runner, test: &TestCase, expectation: AppliedExpectation) -> TestResult {
