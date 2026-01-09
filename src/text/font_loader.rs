@@ -3941,6 +3941,23 @@ mod tests {
       );
     }
 
+    // Default behavior: enforce Access-Control-Allow-Origin for cross-origin fonts.
+    {
+      let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())));
+
+      let ctx = make_context(None, "https://example.com/");
+      let err = ctx
+        .load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None)
+        .expect_err("expected missing ACAO to block cross-origin font by default");
+      match err {
+        Error::Font(FontError::LoadFailed { reason, .. }) => assert_eq!(
+          reason,
+          "blocked by CORS: missing Access-Control-Allow-Origin"
+        ),
+        other => panic!("expected FontError::LoadFailed, got {other:?}"),
+      }
+    }
+
     // Toggle enabled: enforce Access-Control-Allow-Origin for cross-origin fonts.
     {
       let toggles = HashMap::from([("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string())]);

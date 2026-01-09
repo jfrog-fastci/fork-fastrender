@@ -12,9 +12,16 @@ pub enum CorsMode {
 
 /// Returns true when subresource CORS enforcement is enabled.
 ///
-/// Controlled by `FASTR_FETCH_ENFORCE_CORS` (truthy/falsey). Defaults to `false`.
+/// Controlled by `FASTR_FETCH_ENFORCE_CORS` (truthy/falsey). Defaults to `true`.
 pub fn cors_enforcement_enabled() -> bool {
-  runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_ENFORCE_CORS", false)
+  let toggles = runtime::runtime_toggles();
+  let Some(raw) = toggles.get("FASTR_FETCH_ENFORCE_CORS") else {
+    return true;
+  };
+  !matches!(
+    raw.trim().to_ascii_lowercase().as_str(),
+    "0" | "false" | "no" | "off"
+  )
 }
 
 /// Validate the `Access-Control-Allow-Origin` response header for a fetched resource.
@@ -96,8 +103,31 @@ pub fn validate_cors_allow_origin(
 
 #[cfg(test)]
 mod tests {
-  use super::{validate_cors_allow_origin, CorsMode};
+  use super::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use crate::resource::{origin_from_url, FetchedResource};
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  #[test]
+  fn cors_enforcement_enabled_defaults_to_true() {
+    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+      assert!(cors_enforcement_enabled());
+    });
+  }
+
+  #[test]
+  fn cors_enforcement_enabled_honors_falsey_values() {
+    for raw in ["0", "false", "no", "off", "  OFF  "] {
+      let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FETCH_ENFORCE_CORS".to_string(),
+        raw.to_string(),
+      )])));
+      with_thread_runtime_toggles(toggles, || {
+        assert!(!cors_enforcement_enabled(), "expected {raw:?} to disable CORS enforcement");
+      });
+    }
+  }
 
   #[test]
   fn allows_null_origin_for_anonymous_non_http_documents() {

@@ -137,3 +137,61 @@ fn web_font_cors_enforcement_is_runtime_gated() {
   // Toggle ON: ACAO matching the document origin is permitted (default-port normalization).
   run_case(true, Some("https://a.test"), true, true);
 }
+
+#[test]
+fn web_font_cors_enforcement_is_enabled_by_default() {
+  let data = match fixture_font_bytes() {
+    Some(bytes) => bytes,
+    None => return,
+  };
+
+  // No `FASTR_FETCH_ENFORCE_CORS` entry => default behavior.
+  let _guard = runtime::set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())));
+
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(CorsFetcher {
+    data,
+    access_control_allow_origin: None,
+  });
+  let (ctx, fallback_family) = context_with_fetcher(fetcher).expect("fixture font should be loadable");
+
+  let face = FontFaceRule {
+    family: Some("CorsDefault".to_string()),
+    sources: vec![FontFaceSource::url("https://b.test/font.ttf".to_string())],
+    display: FontDisplay::Block,
+    ..Default::default()
+  };
+
+  let options = WebFontLoadOptions {
+    policy: WebFontPolicy::BlockUntilLoaded {
+      timeout: Duration::from_secs(1),
+    },
+  };
+
+  let report = ctx
+    .load_web_fonts_with_options(&[face], None, None, options)
+    .expect("web font load should not hard-fail");
+
+  let status = report
+    .events
+    .iter()
+    .find(|event| event.family == "CorsDefault")
+    .map(|event| &event.status)
+    .expect("expected web font load event");
+  assert!(
+    matches!(status, FontLoadStatus::Failed { .. }),
+    "expected cross-origin web font without ACAO to be blocked by default, got {status:?}"
+  );
+
+  let resolved = ctx
+    .get_font_full(
+      &["CorsDefault".to_string(), fallback_family],
+      400,
+      FontStyle::Normal,
+      FontStretch::Normal,
+    )
+    .expect("resolve font with fallback");
+  assert_ne!(
+    resolved.family, "CorsDefault",
+    "blocked font should not be selectable"
+  );
+}
