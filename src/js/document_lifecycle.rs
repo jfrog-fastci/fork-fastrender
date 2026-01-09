@@ -44,7 +44,21 @@ pub trait DocumentLifecycleHost {
       fire_ready_state_change(self)?;
     }
 
-    self.document_lifecycle_mut().parsing_completed(event_loop)
+    // Queue DOMContentLoaded/load tasks (or mark parsing as complete so they can be queued once any
+    // pending deferred scripts have executed).
+    self.document_lifecycle_mut().parsing_completed(event_loop)?;
+
+    // If parsing completion is signalled from outside an event-loop task turn, perform a microtask
+    // checkpoint immediately. This matches the HTML expectation that microtasks queued during the
+    // parsing completion steps (e.g. from a `readystatechange` listener) run before the next task.
+    //
+    // When called from within an event-loop task, `EventLoop::run_next_task` will perform the
+    // checkpoint after the task returns, so doing it here would be too early.
+    if event_loop.currently_running_task().is_none() {
+      event_loop.perform_microtask_checkpoint(self)?;
+    }
+
+    Ok(())
   }
 
   /// Dispatch a DOM event to `target`.
@@ -629,6 +643,51 @@ mod tests {
     assert_eq!(host.dom.ready_state().as_str(), "complete");
 
     assert!(!event_loop.run_next_task(&mut host)?);
+    Ok(())
+  }
+
+  #[test]
+  fn parsing_completed_outside_a_task_turn_drains_microtasks() -> Result<()> {
+    let mut host = Host::new();
+    let mut event_loop = EventLoop::<Host>::new();
+    let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let rs_listener = ListenerId::new(1);
+    host.invoker.register(rs_listener, {
+      let log = Rc::clone(&log);
+      move |_event| {
+        log.borrow_mut().push("rs".to_string());
+        Ok(())
+      }
+    });
+    assert!(
+      host.dom.events().add_event_listener(
+        EventTargetId::Document,
+        "readystatechange",
+        rs_listener,
+        AddEventListenerOptions::default(),
+      ),
+      "expected readystatechange listener to be inserted",
+    );
+
+    // Queue a microtask before signalling parsing completion. When parsing completion is notified
+    // from outside an event-loop task turn, the helper should run a microtask checkpoint
+    // immediately so these microtasks drain before subsequent tasks.
+    {
+      let log = Rc::clone(&log);
+      event_loop.queue_microtask(move |_host, _event_loop| {
+        log.borrow_mut().push("microtask".to_string());
+        Ok(())
+      })?;
+    }
+
+    host.notify_parsing_completed(&mut event_loop)?;
+
+    assert_eq!(
+      &*log.borrow(),
+      &vec!["rs".to_string(), "microtask".to_string()]
+    );
+    assert_eq!(event_loop.pending_microtask_count(), 0);
     Ok(())
   }
 
