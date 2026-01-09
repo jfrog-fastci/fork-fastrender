@@ -20,7 +20,7 @@ fn js_wpt_dom_cli_runs_single_test_and_writes_report() {
       "--fail-on",
       "all",
       "--backend",
-      "quickjs",
+      "vmjs",
       "--report",
     ])
     .arg(&report_path)

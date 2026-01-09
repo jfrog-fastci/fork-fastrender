@@ -17,8 +17,6 @@ const DEFAULT_LONG_TIMEOUT_MS: u64 = 30_000;
 pub enum WptDomBackend {
   /// Prefer the best backend available in the current build (vm-js when enabled).
   Auto,
-  /// QuickJS backend (deterministic host timers + JS shims).
-  QuickJs,
   /// vm-js backend (FastRender in-tree JS runtime; currently feature-gated).
   VmJs,
 }
@@ -27,7 +25,6 @@ impl WptDomBackend {
   fn to_selection(self) -> BackendSelection {
     match self {
       WptDomBackend::Auto => BackendSelection::Auto,
-      WptDomBackend::QuickJs => BackendSelection::QuickJs,
       WptDomBackend::VmJs => BackendSelection::VmJs,
     }
   }
