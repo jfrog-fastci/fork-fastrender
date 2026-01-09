@@ -79,6 +79,7 @@ fn make_test_page() -> (tempfile::TempDir, String) {
 
 #[test]
 fn scroll_without_pointer_updates_viewport_scroll() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
@@ -136,6 +137,7 @@ fn scroll_without_pointer_updates_viewport_scroll() {
 
 #[test]
 fn scroll_with_pointer_updates_element_scroll_offsets() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
@@ -197,6 +199,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
 
 #[test]
 fn scroll_clamps_to_zero() {
+  let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
 
   let handle = spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");

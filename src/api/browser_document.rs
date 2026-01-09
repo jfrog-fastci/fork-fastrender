@@ -243,6 +243,28 @@ impl BrowserDocument {
     }
   }
 
+  /// Updates the document URL used for origin/referrer policy decisions **without** invalidating
+  /// cached style/layout/paint state.
+  ///
+  /// This is intended for same-document fragment navigations (e.g. `#target`) where the document
+  /// identity has not changed and the UI wants to reuse the cached layout artifacts for scrolling.
+  ///
+  /// Note: since this does not mark the document dirty, `:target` styling will only update once a
+  /// later operation triggers style/layout invalidation.
+  pub fn set_document_url_without_invalidation(&mut self, url: Option<String>) {
+    let sanitized =
+      url.and_then(|url| (!super::trim_ascii_whitespace(&url).is_empty()).then_some(url));
+    if sanitized != self.document_url {
+      // Keep the renderer's internal document URL hint in sync so any subsequent fetches or
+      // pipeline re-runs use the updated value.
+      match sanitized.as_deref() {
+        Some(url) => self.renderer.set_document_url(url.to_string()),
+        None => self.renderer.clear_document_url(),
+      }
+      self.document_url = sanitized;
+    }
+  }
+
   /// Returns the document URL used for origin/referrer policy decisions.
   pub fn document_url(&self) -> Option<&str> {
     self.document_url.as_deref()

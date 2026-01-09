@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use url::Url;
 
 /// Install a stage listener that forwards heartbeats to the UI for the lifetime of the returned
 /// guard.
@@ -332,6 +333,25 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
   }
 }
 
+fn url_fragment(url: &str) -> Option<&str> {
+  url.split_once('#')
+    .and_then(|(_, fragment)| (!fragment.is_empty()).then_some(fragment))
+}
+
+fn urls_match_except_fragment(a: &str, b: &str) -> bool {
+  let Ok(a_url) = Url::parse(a) else {
+    return false;
+  };
+  let Ok(b_url) = Url::parse(b) else {
+    return false;
+  };
+  let mut a_no_frag = a_url.clone();
+  a_no_frag.set_fragment(None);
+  let mut b_no_frag = b_url.clone();
+  b_no_frag.set_fragment(None);
+  a_no_frag == b_no_frag
+}
+
 fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
@@ -339,6 +359,41 @@ fn navigate_tab(
   reason: NavigationReason,
   tx: &Sender<WorkerToUi>,
 ) {
+  if let (Some(current), Some(doc)) = (tab.current_url.as_deref(), tab.document.as_mut()) {
+    if urls_match_except_fragment(current, &url) {
+      tab.current_url = Some(url.clone());
+      match reason {
+        NavigationReason::BackForward | NavigationReason::Reload => {}
+        NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(url.clone()),
+      }
+      doc.set_document_url_without_invalidation(Some(url.clone()));
+
+      if let Some(fragment) = url_fragment(&url) {
+        let offset = doc
+          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+            let viewport = fragment_tree.viewport_size();
+            let offset = crate::interaction::scroll_offset_for_fragment_target(
+              dom,
+              box_tree,
+              fragment_tree,
+              fragment,
+              viewport,
+            );
+            (false, offset)
+          })
+          .ok()
+          .flatten();
+        if let Some(offset) = offset {
+          tab.scroll_state.viewport = offset;
+          doc.set_scroll_state(tab.scroll_state.clone());
+        }
+      }
+
+      repaint_force(tab_id, tab, tx);
+      return;
+    }
+  }
+
   let _ = tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url.clone(),
@@ -390,6 +445,23 @@ fn navigate_tab(
       return;
     }
   };
+
+  let mut doc = doc;
+  if let Some(fragment) = url_fragment(&final_url) {
+    let offset = doc.prepared().and_then(|prepared| {
+      crate::interaction::scroll_offset_for_fragment_target(
+        doc.dom(),
+        prepared.box_tree(),
+        prepared.fragment_tree(),
+        fragment,
+        prepared.layout_viewport(),
+      )
+    });
+    if let Some(offset) = offset {
+      tab.scroll_state.viewport = offset;
+      doc.set_scroll_state(tab.scroll_state.clone());
+    }
+  }
 
   tab.current_url = Some(final_url.clone());
   tab.document = Some(doc);

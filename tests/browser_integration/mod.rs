@@ -15,6 +15,7 @@ mod ui_worker_scroll;
 mod ui_worker_scroll_hit_test;
 mod ui_worker_tabs;
 mod ui_worker_shutdown;
+mod ui_worker_fragment_navigation;
 
 // `GlobalStageListenerGuard` is process-global, so tests that use stage heartbeats must not run
 // concurrently within this test binary.
