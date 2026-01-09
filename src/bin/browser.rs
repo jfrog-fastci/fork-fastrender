@@ -57,9 +57,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .build(&event_loop)?;
 
   let worker = fastrender::ui::spawn_browser_worker()?;
-  let ui_to_worker_tx = worker.tx.clone();
-  let raw_rx = worker.rx;
-  let _worker_join = worker.join;
+  let fastrender::ui::BrowserWorkerHandle {
+    tx: ui_to_worker_tx,
+    rx: raw_rx,
+    join: worker_join,
+  } = worker;
 
   let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx))?;
   app.startup();
@@ -69,24 +71,51 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
   // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
   // frame/message arrives.
-  std::thread::spawn({
-    let event_loop_proxy = event_loop_proxy.clone();
-    move || {
-      while let Ok(msg) = raw_rx.recv() {
-        if ui_tx.send(msg).is_err() {
-          break;
+  let bridge_join = std::thread::Builder::new()
+    .name("browser_worker_bridge".to_string())
+    .spawn({
+      let event_loop_proxy = event_loop_proxy.clone();
+      move || {
+        while let Ok(msg) = raw_rx.recv() {
+          if ui_tx.send(msg).is_err() {
+            break;
+          }
+          // Ignore failures during shutdown (event loop already dropped).
+          let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
         }
-        // Ignore failures during shutdown (event loop already dropped).
-        let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
       }
-    }
-  });
+    })?;
 
   // Kick the first frame so the window shows chrome immediately even before the worker responds.
   app.window.request_redraw();
 
+  let mut app = Some(app);
+  let mut worker_join = Some(worker_join);
+  let mut bridge_join = Some(bridge_join);
+
   event_loop.run(move |event, _, control_flow| {
     *control_flow = ControlFlow::Wait;
+
+    // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
+    // threads) explicitly when the loop is torn down.
+    if matches!(event, Event::LoopDestroyed) {
+      // Dropping the UI sender closes the worker's receiver, letting it exit cleanly.
+      if let Some(mut app) = app.take() {
+        app.destroy_all_textures();
+      }
+
+      if let Some(join) = worker_join.take() {
+        let _ = join.join();
+      }
+      if let Some(join) = bridge_join.take() {
+        let _ = join.join();
+      }
+      return;
+    }
+
+    let Some(app) = app.as_mut() else {
+      return;
+    };
 
     match event {
       Event::WindowEvent { window_id, event } if window_id == app.window.id() => {

@@ -147,7 +147,6 @@ impl Env {
     match self.globals.get(name).copied() {
       Some(root) => {
         heap.set_root(root, value);
-        Ok(())
       }
       None => {
         // Avoid aborting on OOM: pre-allocate the key string + HashMap capacity before rooting.
@@ -163,9 +162,9 @@ impl Env {
 
         let root = heap.add_root(value)?;
         self.globals.insert(owned, root);
-        Ok(())
       }
     }
+    Ok(())
   }
 }
 
