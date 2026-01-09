@@ -102,6 +102,54 @@ fn inserting_empty_document_fragment_is_a_noop() {
 }
 
 #[test]
+fn inserting_document_fragment_moves_children_and_empties_fragment() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let frag = doc.create_document_fragment();
+  let a = doc.create_element("a", "");
+  let b = doc.create_text("b");
+  doc.append_child(frag, a).unwrap();
+  doc.append_child(frag, b).unwrap();
+
+  assert_eq!(doc.append_child(parent, frag).unwrap(), true);
+
+  assert_eq!(doc.parent(frag).unwrap(), None);
+  assert_eq!(doc.children(frag).unwrap(), &[]);
+  assert_eq!(doc.children(parent).unwrap(), &[a, b]);
+  assert_eq!(doc.parent(a).unwrap(), Some(parent));
+  assert_eq!(doc.parent(b).unwrap(), Some(parent));
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn inserting_document_fragment_into_document_is_atomic() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let frag = doc.create_document_fragment();
+  let a = doc.create_element("a", "");
+  let b = doc.create_element("b", "");
+  doc.append_child(frag, a).unwrap();
+  doc.append_child(frag, b).unwrap();
+
+  let frag_children = doc.children(frag).unwrap().to_vec();
+  assert_eq!(
+    doc.append_child(root, frag),
+    Err(DomError::HierarchyRequestError)
+  );
+
+  assert_eq!(doc.children(root).unwrap(), &[]);
+  assert_eq!(doc.children(frag).unwrap(), frag_children.as_slice());
+  assert_eq!(doc.parent(a).unwrap(), Some(frag));
+  assert_eq!(doc.parent(b).unwrap(), Some(frag));
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
 fn append_child_sets_parent_and_updates_children() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
