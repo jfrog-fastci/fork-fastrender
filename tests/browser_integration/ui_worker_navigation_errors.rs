@@ -237,13 +237,15 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
     Started,
     LoadingTrue,
     Failed,
+    ErrorFrame,
     LoadingFalse,
     Done,
   }
 
   let mut expect = Expect::Started;
   let mut saw_frame = false;
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let mut saw_scroll_update = false;
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
 
   while !matches!(expect, Expect::Done) {
     let Some(msg) = recv_until_deadline(&ui_rx, deadline) else {
@@ -291,10 +293,20 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
         );
         assert_eq!(url, missing_url);
         assert!(!error.is_empty(), "expected non-empty error string");
-        expect = Expect::LoadingFalse;
+        expect = Expect::ErrorFrame;
+      }
+      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        if matches!(expect, Expect::ErrorFrame | Expect::LoadingFalse) {
+          saw_scroll_update = true;
+        }
       }
       WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        assert!(
+          matches!(expect, Expect::ErrorFrame),
+          "FrameReady should be emitted after NavigationFailed (current state: {expect:?})"
+        );
         saw_frame = true;
+        expect = Expect::LoadingFalse;
       }
       WorkerToUi::NavigationCommitted { tab_id: msg_tab, .. } if msg_tab == tab_id => {
         panic!("missing-file navigation should not commit");
@@ -304,6 +316,10 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
   }
 
   assert!(saw_frame, "expected an error page frame to be rendered");
+  assert!(
+    saw_scroll_update,
+    "expected ScrollStateUpdated for the about:error fallback frame"
+  );
 
   drop(ui_tx);
   join.join().expect("join UiWorker");
