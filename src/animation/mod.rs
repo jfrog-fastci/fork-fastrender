@@ -6,6 +6,9 @@
 //! wiring a full animation engine.
 
 pub mod timing;
+mod state_store;
+
+pub use state_store::AnimationStateStore;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -6136,6 +6139,11 @@ fn view_progress_for_function(
   Some((raw_progress(scroll_offset, start, end), resolver))
 }
 
+struct AnimationApplyContext<'a> {
+  animation_time_ms: Option<f32>,
+  state_store: Option<&'a mut AnimationStateStore>,
+}
+
 fn apply_animations_to_node_scoped(
   node: &mut FragmentNode,
   origin: Point,
@@ -6144,7 +6152,7 @@ fn apply_animations_to_node_scoped(
   root_context: ScrollContainerContext,
   scroll_state: &ScrollState,
   keyframes: &HashMap<String, KeyframesRule>,
-  animation_time_ms: Option<f32>,
+  apply_ctx: &mut AnimationApplyContext<'_>,
   scope: &mut TimelineScope,
   ancestor_scroll_containers: &mut Vec<ScrollContainerContext>,
   plan: TimelineScopePlanNode,
@@ -6303,8 +6311,25 @@ fn apply_animations_to_node_scoped(
 
         let mut view_timeline_keyframe_resolver: Option<ViewTimelineKeyframeResolver> = None;
         let progress = match timeline_ref {
-          AnimationTimeline::Auto => match animation_time_ms {
-            Some(time_ms) => time_based_animation_state_impl(&*style_arc, idx, time_ms, true),
+          AnimationTimeline::Auto => match apply_ctx.animation_time_ms {
+            Some(timeline_time_ms) => {
+              if let Some(store) = apply_ctx.state_store.as_deref_mut() {
+                if let Some(box_id) = node.box_id() {
+                  let current_time_ms = store.sample_time_based_animation(
+                    box_id,
+                    idx,
+                    name,
+                    timeline_time_ms,
+                    play_state,
+                  );
+                  time_based_animation_state_impl(&*style_arc, idx, current_time_ms, false)
+                } else {
+                  time_based_animation_state_impl(&*style_arc, idx, timeline_time_ms, true)
+                }
+              } else {
+                time_based_animation_state_impl(&*style_arc, idx, timeline_time_ms, true)
+              }
+            }
             None => settled_time_based_animation_state(&*style_arc, idx),
           },
           AnimationTimeline::None => None,
@@ -6617,19 +6642,19 @@ fn apply_animations_to_node_scoped(
       child_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
     }
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
-    apply_animations_to_node_scoped(
-      child,
-      child_offset,
-      viewport,
-      Some(parent_for_children),
-      root_context,
-      scroll_state,
-      keyframes,
-      animation_time_ms,
-      scope,
-      ancestor_scroll_containers,
-      child_plan,
-    );
+      apply_animations_to_node_scoped(
+        child,
+        child_offset,
+        viewport,
+        Some(parent_for_children),
+        root_context,
+        scroll_state,
+        keyframes,
+        apply_ctx,
+        scope,
+        ancestor_scroll_containers,
+        child_plan,
+      );
   }
   debug_assert!(
     child_plans.next().is_none(),
@@ -6657,7 +6682,7 @@ fn apply_animations_to_node_scoped(
       root_context,
       scroll_state,
       keyframes,
-      animation_time_ms,
+      apply_ctx,
       scope,
       ancestor_scroll_containers,
       snapshot_plan,
@@ -6694,6 +6719,10 @@ pub fn apply_animations(
   }
 
   let animation_time_ms = animation_time.map(|time| time.as_secs_f32() * 1000.0);
+  let mut apply_ctx = AnimationApplyContext {
+    animation_time_ms,
+    state_store: None,
+  };
   let viewport = Rect::from_xywh(
     0.0,
     0.0,
@@ -6757,7 +6786,7 @@ pub fn apply_animations(
       root_context,
       scroll_state,
       &tree.keyframes,
-      animation_time_ms,
+      &mut apply_ctx,
       &mut scope,
       &mut scroll_containers,
       plan,
@@ -6777,12 +6806,129 @@ pub fn apply_animations(
       root_context,
       scroll_state,
       &tree.keyframes,
-      animation_time_ms,
+      &mut apply_ctx,
       &mut scope,
       &mut scroll_containers,
       plan,
     );
   }
+}
+
+/// Applies CSS animations to a fragment tree while persisting per-animation timing state across
+/// frames.
+///
+/// This API is intended for multi-frame rendering pipelines that want time-based CSS animations
+/// (`animation-timeline: auto`) to pause/resume correctly when `animation-play-state` changes. The
+/// supplied `AnimationStateStore` should be kept and reused across frames.
+pub fn apply_animations_with_state(
+  tree: &mut FragmentTree,
+  scroll_state: &ScrollState,
+  animation_time: Duration,
+  state: &mut AnimationStateStore,
+) {
+  state.begin_frame();
+  if tree.keyframes.is_empty() {
+    state.sweep();
+    return;
+  }
+
+  let animation_time_ms = animation_time.as_secs_f32() * 1000.0;
+  let viewport = Rect::from_xywh(
+    0.0,
+    0.0,
+    tree.viewport_size().width,
+    tree.viewport_size().height,
+  );
+  let content = tree.content_size();
+
+  let root_writing_mode = tree
+    .root
+    .style
+    .as_deref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+  let root_direction = tree
+    .root
+    .style
+    .as_deref()
+    .map(|s| s.direction)
+    .unwrap_or(Direction::Ltr);
+  let (scroll_padding_top, scroll_padding_right, scroll_padding_bottom, scroll_padding_left) = tree
+    .root
+    .style
+    .as_deref()
+    .map(|s| {
+      (
+        s.scroll_padding_top,
+        s.scroll_padding_right,
+        s.scroll_padding_bottom,
+        s.scroll_padding_left,
+      )
+    })
+    .unwrap_or((
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+    ));
+  let root_context = root_scroll_container_context(
+    scroll_state,
+    viewport,
+    content,
+    root_writing_mode,
+    root_direction,
+    scroll_padding_top,
+    scroll_padding_right,
+    scroll_padding_bottom,
+    scroll_padding_left,
+  );
+
+  {
+    let mut apply_ctx = AnimationApplyContext {
+      animation_time_ms: Some(animation_time_ms),
+      state_store: Some(state),
+    };
+
+    let root_offset = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
+    let plan = build_timeline_scope_plan(&tree.root, root_offset, root_context, scroll_state);
+    let mut scope = TimelineScope::new();
+    let mut scroll_containers = Vec::new();
+    apply_animations_to_node_scoped(
+      &mut tree.root,
+      root_offset,
+      viewport,
+      None,
+      root_context,
+      scroll_state,
+      &tree.keyframes,
+      &mut apply_ctx,
+      &mut scope,
+      &mut scroll_containers,
+      plan,
+    );
+
+    for frag in &mut tree.additional_fragments {
+      let offset = Point::new(frag.bounds.x(), frag.bounds.y());
+      let plan = build_timeline_scope_plan(&*frag, offset, root_context, scroll_state);
+      let mut scope = TimelineScope::new();
+      let mut scroll_containers = Vec::new();
+      apply_animations_to_node_scoped(
+        frag,
+        offset,
+        viewport,
+        None,
+        root_context,
+        scroll_state,
+        &tree.keyframes,
+        &mut apply_ctx,
+        &mut scope,
+        &mut scroll_containers,
+        plan,
+      );
+    }
+  }
+
+  state.sweep();
 }
 
 /// Applies scroll/view timeline-driven animations (and settles time-based animations) to a fragment
@@ -8027,6 +8173,67 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn time_based_animation_state_store_freezes_and_resumes_when_play_state_changes() {
+    let rule = fade_rule();
+
+    let mut store = AnimationStateStore::new();
+
+    let tree_with_play_state = |play_state: AnimationPlayState| -> FragmentTree {
+      let mut style = ComputedStyle::default();
+      style.animation_names = vec![Some("fade".to_string())];
+      style.animation_durations = vec![1000.0].into();
+      style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+      style.animation_play_states = vec![play_state].into();
+
+      let style = Arc::new(style);
+      let mut animated =
+        FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 50.0, 50.0), 1, vec![]);
+      animated.style = Some(style);
+
+      let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![animated]);
+      let mut tree = FragmentTree::new(root);
+      tree.keyframes.insert(rule.name.clone(), rule.clone());
+      tree
+    };
+
+    let sample = |store: &mut AnimationStateStore,
+                  play_state: AnimationPlayState,
+                  time_ms: u64|
+     -> f32 {
+      let mut tree = tree_with_play_state(play_state);
+      apply_animations_with_state(
+        &mut tree,
+        &ScrollState::default(),
+        Duration::from_millis(time_ms),
+        store,
+      );
+      tree.root.children[0]
+        .style
+        .as_ref()
+        .expect("animated style present")
+        .opacity
+    };
+
+    let opacity_0 = sample(&mut store, AnimationPlayState::Running, 0);
+    assert!((opacity_0 - 0.0).abs() < 1e-6, "opacity_0={opacity_0}");
+
+    let opacity_500 = sample(&mut store, AnimationPlayState::Running, 500);
+    assert!((opacity_500 - 0.5).abs() < 1e-3, "opacity_500={opacity_500}");
+
+    let opacity_600 = sample(&mut store, AnimationPlayState::Paused, 600);
+    assert!((opacity_600 - 0.6).abs() < 1e-3, "opacity_600={opacity_600}");
+
+    let opacity_900 = sample(&mut store, AnimationPlayState::Paused, 900);
+    assert!((opacity_900 - 0.6).abs() < 1e-3, "opacity_900={opacity_900}");
+
+    let opacity_1000 = sample(&mut store, AnimationPlayState::Running, 1000);
+    assert!((opacity_1000 - 0.6).abs() < 1e-3, "opacity_1000={opacity_1000}");
+
+    let opacity_1100 = sample(&mut store, AnimationPlayState::Running, 1100);
+    assert!((opacity_1100 - 0.7).abs() < 1e-3, "opacity_1100={opacity_1100}");
   }
 
   #[test]
