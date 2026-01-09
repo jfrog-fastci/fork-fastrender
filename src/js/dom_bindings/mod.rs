@@ -945,6 +945,29 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.node, "appendChild", append_child)?;
 
+    // insertBefore
+    let dom_for_insert = dom.clone();
+    let platform_objects_for_insert = platform_objects.clone();
+    let insert_before = rt.alloc_function_value(move |rt, this, args| {
+      let parent_id = extract_node_id(rt, &platform_objects_for_insert, this)?;
+      let child = args
+        .get(0)
+        .copied()
+        .ok_or_else(|| rt.throw_type_error("insertBefore: missing newChild"))?;
+      let child_id = extract_node_id(rt, &platform_objects_for_insert, child)?;
+      let reference = args.get(1).copied().unwrap_or(Value::Null);
+      let reference_id = match reference {
+        Value::Undefined | Value::Null => None,
+        other => Some(extract_node_id(rt, &platform_objects_for_insert, other)?),
+      };
+      dom_for_insert
+        .borrow_mut()
+        .insert_before(parent_id, child_id, reference_id)
+        .map_err(|e| rt.throw_type_error(&format!("insertBefore: {e}")))?;
+      Ok(child)
+    })?;
+    define_method(rt, prototypes.node, "insertBefore", insert_before)?;
+
     // removeChild
     let dom_for_remove = dom.clone();
     let platform_objects_for_remove = platform_objects.clone();
@@ -962,6 +985,29 @@ fn install_constructors(
       Ok(child)
     })?;
     define_method(rt, prototypes.node, "removeChild", remove_child)?;
+
+    // replaceChild
+    let dom_for_replace = dom.clone();
+    let platform_objects_for_replace = platform_objects.clone();
+    let replace_child = rt.alloc_function_value(move |rt, this, args| {
+      let parent_id = extract_node_id(rt, &platform_objects_for_replace, this)?;
+      let new_child = args
+        .get(0)
+        .copied()
+        .ok_or_else(|| rt.throw_type_error("replaceChild: missing newChild"))?;
+      let old_child = args
+        .get(1)
+        .copied()
+        .ok_or_else(|| rt.throw_type_error("replaceChild: missing oldChild"))?;
+      let new_child_id = extract_node_id(rt, &platform_objects_for_replace, new_child)?;
+      let old_child_id = extract_node_id(rt, &platform_objects_for_replace, old_child)?;
+      dom_for_replace
+        .borrow_mut()
+        .replace_child(parent_id, new_child_id, old_child_id)
+        .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?;
+      Ok(old_child)
+    })?;
+    define_method(rt, prototypes.node, "replaceChild", replace_child)?;
 
     // parentNode
     let dom_for_parent = dom.clone();
@@ -1741,6 +1787,81 @@ mod tests {
     assert_eq!(dom.node(dom.root()).children.len(), 1);
     let child = dom.node(dom.root()).children[0];
     assert!(matches!(dom.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }));
+  }
+
+  #[test]
+  fn insert_before_inserts_at_reference_and_allows_null_reference() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let div_id = realm.dom.borrow_mut().create_element("div", "");
+    let span_id = realm.dom.borrow_mut().create_element("span", "");
+    let p_id = realm.dom.borrow_mut().create_element("p", "");
+
+    realm
+      .dom
+      .borrow_mut()
+      .append_child(div_id, span_id)
+      .unwrap();
+
+    let div = realm.wrap_node(div_id).unwrap();
+    let span = realm.wrap_node(span_id).unwrap();
+    let p = realm.wrap_node(p_id).unwrap();
+
+    let insert_before_key = pk(&mut realm.rt, "insertBefore");
+    let insert_before = realm.rt.get(div, insert_before_key).unwrap();
+    realm
+      .rt
+      .call_function(insert_before, div, &[p, span])
+      .unwrap();
+
+    {
+      let dom_ref = realm.dom.borrow();
+      assert_eq!(dom_ref.children(div_id).unwrap(), &[p_id, span_id]);
+    }
+
+    // `null` should append.
+    let q_id = realm.dom.borrow_mut().create_element("q", "");
+    let q = realm.wrap_node(q_id).unwrap();
+    realm
+      .rt
+      .call_function(insert_before, div, &[q, Value::Null])
+      .unwrap();
+
+    let dom_ref = realm.dom.borrow();
+    assert_eq!(dom_ref.children(div_id).unwrap(), &[p_id, span_id, q_id]);
+  }
+
+  #[test]
+  fn replace_child_replaces_and_returns_old_child() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let div_id = realm.dom.borrow_mut().create_element("div", "");
+    let span_id = realm.dom.borrow_mut().create_element("span", "");
+    let p_id = realm.dom.borrow_mut().create_element("p", "");
+
+    realm
+      .dom
+      .borrow_mut()
+      .append_child(div_id, span_id)
+      .unwrap();
+
+    let div = realm.wrap_node(div_id).unwrap();
+    let span = realm.wrap_node(span_id).unwrap();
+    let p = realm.wrap_node(p_id).unwrap();
+
+    let replace_child_key = pk(&mut realm.rt, "replaceChild");
+    let replace_child = realm.rt.get(div, replace_child_key).unwrap();
+    let returned = realm
+      .rt
+      .call_function(replace_child, div, &[p, span])
+      .unwrap();
+    assert_eq!(returned, span);
+
+    let dom_ref = realm.dom.borrow();
+    assert_eq!(dom_ref.children(div_id).unwrap(), &[p_id]);
+    assert_eq!(dom_ref.parent(span_id).unwrap(), None);
   }
 
   #[test]
