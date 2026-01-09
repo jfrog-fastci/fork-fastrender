@@ -1,4 +1,5 @@
 use fastrender::css::parser::parse_stylesheet;
+use fastrender::css::types::CssRule;
 use fastrender::dom;
 use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
 use fastrender::style::media::MediaContext;
@@ -99,4 +100,37 @@ fn namespace_prefixed_selectors_match_mathml() {
 
   let mi = find_by_id(&styled, "m").expect("mi");
   assert_eq!(display(mi), "none");
+}
+
+#[test]
+fn import_rules_after_namespace_rules_are_ignored() {
+  let css = r#"
+    @namespace svg "http://www.w3.org/2000/svg";
+    @import "ignored.css";
+    svg|rect { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  assert!(
+    !stylesheet
+      .rules
+      .iter()
+      .any(|rule| matches!(rule, CssRule::Import(_)))
+  );
+}
+
+#[test]
+fn import_rules_inside_media_rules_are_ignored() {
+  let css = r#"
+    @media all {
+      @import "ignored.css";
+      div { display: none; }
+    }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let Some(CssRule::Media(media)) = stylesheet.rules.first() else {
+    panic!("expected stylesheet to contain a @media rule");
+  };
+
+  assert!(!media.rules.iter().any(|rule| matches!(rule, CssRule::Import(_))));
+  assert!(media.rules.iter().any(|rule| matches!(rule, CssRule::Style(_))));
 }

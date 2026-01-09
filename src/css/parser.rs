@@ -492,6 +492,7 @@ pub fn parse_stylesheet_with_media_cached_by_url_arc(
 
 #[derive(Debug, Clone)]
 struct NamespaceParseState {
+  imports_allowed: bool,
   namespaces_allowed: bool,
   namespaces: CssNamespaces,
 }
@@ -499,6 +500,7 @@ struct NamespaceParseState {
 impl Default for NamespaceParseState {
   fn default() -> Self {
     Self {
+      imports_allowed: true,
       namespaces_allowed: true,
       namespaces: CssNamespaces::default(),
     }
@@ -630,14 +632,26 @@ fn parse_rule<'i, 't>(
     };
 
     let kw = kw.as_ref();
-    if is_top_level
-      && !kw.eq_ignore_ascii_case("import")
-      && !kw.eq_ignore_ascii_case("charset")
-      && !kw.eq_ignore_ascii_case("namespace")
-    {
-      namespace_state.namespaces_allowed = false;
+    if is_top_level {
+      // The `@import` rule is only valid in the initial stylesheet prelude (before any rules other
+      // than `@charset`). `@namespace` rules can appear in that prelude, but once we see the first
+      // `@namespace` rule, `@import` rules are no longer valid.
+      if !kw.eq_ignore_ascii_case("import") && !kw.eq_ignore_ascii_case("charset") {
+        namespace_state.imports_allowed = false;
+      }
+      // The `@namespace` rule is only valid before any non-`@import` rules in a stylesheet.
+      if !kw.eq_ignore_ascii_case("import")
+        && !kw.eq_ignore_ascii_case("charset")
+        && !kw.eq_ignore_ascii_case("namespace")
+      {
+        namespace_state.namespaces_allowed = false;
+      }
     }
     if kw.eq_ignore_ascii_case("import") {
+      if !is_top_level || !namespace_state.imports_allowed {
+        skip_at_rule(parser);
+        return Ok(None);
+      }
       return parse_import_rule(parser);
     }
     if kw.eq_ignore_ascii_case("charset") {
@@ -746,6 +760,7 @@ fn parse_rule<'i, 't>(
   }
 
   if is_top_level {
+    namespace_state.imports_allowed = false;
     namespace_state.namespaces_allowed = false;
   }
   // Parse style rule
