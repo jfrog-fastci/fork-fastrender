@@ -77,6 +77,7 @@ mod shadow_host_selectors_test;
 mod shadow_host_specificity_test;
 mod shadow_part_shadow_scope_test;
 mod shadow_part_test;
+mod shadow_exportparts_pseudo_test;
 mod shadow_slot_focus_within_test;
 mod shadow_slotted_specificity_test;
 mod shadow_slotted_test;

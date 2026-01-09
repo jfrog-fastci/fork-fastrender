@@ -263,7 +263,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
   );
 
   let type_ = "test";
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Document,
     type_,
     doc_capture,
@@ -272,7 +272,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       ..Default::default()
     },
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(parent),
     type_,
     parent_capture,
@@ -281,7 +281,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       ..Default::default()
     },
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     type_,
     target_capture,
@@ -291,19 +291,19 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
     },
   )?;
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     type_,
     target_bubble,
     AddEventListenerOptions::default(),
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(parent),
     type_,
     parent_bubble,
     AddEventListenerOptions::default(),
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Document,
     type_,
     doc_bubble,
@@ -386,13 +386,13 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
     },
   );
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     stopper,
     AddEventListenerOptions::default(),
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(parent),
     "test",
     parent_bubble,
@@ -461,13 +461,13 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     },
   );
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     first,
     AddEventListenerOptions::default(),
   )?;
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     second,
@@ -517,7 +517,7 @@ fn js_once_listener_runs_only_once() -> Result<()> {
     },
   );
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     once,
@@ -573,7 +573,7 @@ fn js_passive_listener_cannot_prevent_default() -> Result<()> {
     },
   );
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     passive,
@@ -629,7 +629,7 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
     })
     .expect("alloc function");
 
-  js.add_js_event_listener(
+  let _ = js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     listener,

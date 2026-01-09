@@ -9,7 +9,7 @@ fn dataset_get_set_delete_reflects_to_data_attributes() {
   assert_eq!(doc.dataset_get(el, "rtc"), None);
   assert_eq!(doc.dataset_set(el, "rtc", "1").unwrap(), true);
   assert_eq!(doc.dataset_get(el, "rtc"), Some("1"));
-  assert_eq!(doc.get_attribute(el, "data-rtc"), Some("1"));
+  assert_eq!(doc.get_attribute(el, "data-rtc").unwrap(), Some("1"));
 
   // Writing the attribute directly is observable via the camelCase dataset property.
   doc.set_attribute(el, "data-foo-bar", "baz").unwrap();
@@ -17,12 +17,12 @@ fn dataset_get_set_delete_reflects_to_data_attributes() {
 
   assert_eq!(doc.dataset_delete(el, "rtc").unwrap(), true);
   assert_eq!(doc.dataset_get(el, "rtc"), None);
-  assert_eq!(doc.get_attribute(el, "data-rtc"), None);
+  assert_eq!(doc.get_attribute(el, "data-rtc").unwrap(), None);
 
   // Invalid property names should not panic and should not mutate.
   assert_eq!(doc.dataset_set(el, "Foo", "x").unwrap(), false);
   assert_eq!(doc.dataset_set(el, "foo-bar", "x").unwrap(), false);
-  assert_eq!(doc.get_attribute(el, "data-foo"), None);
+  assert_eq!(doc.get_attribute(el, "data-foo").unwrap(), None);
 }
 
 #[test]
@@ -62,36 +62,42 @@ fn reflected_idl_attributes_map_to_dom2_attributes() {
 
   doc.set_element_id(script, "boot").unwrap();
   assert_eq!(doc.element_id(script), "boot");
-  assert_eq!(doc.get_attribute(script, "id"), Some("boot"));
+  assert_eq!(doc.get_attribute(script, "id").unwrap(), Some("boot"));
 
   doc.set_element_class_name(script, "a b").unwrap();
   assert_eq!(doc.element_class_name(script), "a b");
-  assert_eq!(doc.get_attribute(script, "class"), Some("a b"));
+  assert_eq!(doc.get_attribute(script, "class").unwrap(), Some("a b"));
 
   doc.set_element_src(script, "https://example.com/app.js").unwrap();
   assert_eq!(doc.element_src(script), "https://example.com/app.js");
-  assert_eq!(doc.get_attribute(script, "src"), Some("https://example.com/app.js"));
+  assert_eq!(
+    doc.get_attribute(script, "src").unwrap(),
+    Some("https://example.com/app.js")
+  );
 
   assert!(!doc.element_async(script));
   doc.set_element_async(script, true).unwrap();
   assert!(doc.element_async(script));
-  assert!(doc.has_attribute(script, "async"));
+  assert!(doc.has_attribute(script, "async").unwrap());
   doc.set_element_async(script, false).unwrap();
   assert!(!doc.element_async(script));
-  assert!(!doc.has_attribute(script, "async"));
+  assert!(!doc.has_attribute(script, "async").unwrap());
 
   doc.set_element_defer(script, true).unwrap();
   assert!(doc.element_defer(script));
-  assert!(doc.has_attribute(script, "defer"));
+  assert!(doc.has_attribute(script, "defer").unwrap());
 
   doc.set_element_type(script, "module").unwrap();
-  assert_eq!(doc.get_attribute(script, "type"), Some("module"));
+  assert_eq!(doc.get_attribute(script, "type").unwrap(), Some("module"));
 
   doc.set_element_charset(script, "utf-8").unwrap();
-  assert_eq!(doc.get_attribute(script, "charset"), Some("utf-8"));
+  assert_eq!(doc.get_attribute(script, "charset").unwrap(), Some("utf-8"));
 
   doc.set_element_cross_origin(script, "anonymous").unwrap();
-  assert_eq!(doc.get_attribute(script, "crossorigin"), Some("anonymous"));
+  assert_eq!(
+    doc.get_attribute(script, "crossorigin").unwrap(),
+    Some("anonymous")
+  );
   assert_eq!(doc.element_cross_origin(script), "anonymous");
 }
 
@@ -121,4 +127,3 @@ fn bootstrap_like_element_mutations_do_not_error() {
   doc.set_element_width(iframe, "0").unwrap();
   doc.append_child(body, iframe).unwrap();
 }
-

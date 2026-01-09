@@ -1,4 +1,5 @@
 use crate::css::selectors::FastRenderSelectorImpl;
+use crate::css::selectors::ExportedPartTarget;
 use crate::css::selectors::PartExportMap;
 use crate::css::selectors::PseudoClass;
 use crate::css::selectors::PseudoElement;
@@ -3056,10 +3057,14 @@ pub fn composed_dom_snapshot(root: &DomNode) -> Result<DomNode> {
   composed_dom_snapshot_with_ids_and_assignment(root, &ids, &assignment)
 }
 
-fn push_part_export(exports: &mut HashMap<String, Vec<usize>>, name: &str, node_id: usize) {
+fn push_part_export(
+  exports: &mut HashMap<String, Vec<ExportedPartTarget>>,
+  name: &str,
+  target: ExportedPartTarget,
+) {
   let entry = exports.entry(name.to_string()).or_default();
-  if !entry.contains(&node_id) {
-    entry.push(node_id);
+  if !entry.contains(&target) {
+    entry.push(target);
   }
 }
 
@@ -3122,10 +3127,24 @@ pub fn compute_part_export_map_with_ids(
       continue;
     };
 
-    let mut exports: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut exports: HashMap<String, Vec<ExportedPartTarget>> = HashMap::new();
 
     let mut shadow_stack: Vec<&DomNode> = Vec::new();
     shadow_stack.push(shadow_root);
+
+    let exportable_pseudo = |internal: &str| -> Option<PseudoElement> {
+      if internal.eq_ignore_ascii_case("::before") {
+        Some(PseudoElement::Before)
+      } else if internal.eq_ignore_ascii_case("::after") {
+        Some(PseudoElement::After)
+      } else if internal.eq_ignore_ascii_case("::marker") {
+        Some(PseudoElement::Marker)
+      } else if internal.eq_ignore_ascii_case("::backdrop") {
+        Some(PseudoElement::Backdrop)
+      } else {
+        None
+      }
+    };
 
     while let Some(node) = shadow_stack.pop() {
       check_active_periodic(
@@ -3143,7 +3162,32 @@ pub fn compute_part_export_map_with_ids(
             RenderStage::Cascade,
           )
           .map_err(Error::Render)?;
-          push_part_export(&mut exports, part, node_id);
+          push_part_export(&mut exports, part, ExportedPartTarget::Element(node_id));
+        }
+      }
+
+      if let Some(mapping) = node.get_attribute_ref("exportparts") {
+        let node_id = ids.get(&(node as *const DomNode)).copied().unwrap_or(0);
+        for (internal, alias) in parse_exportparts(mapping) {
+          check_active_periodic(
+            &mut deadline_counter,
+            SHADOW_MAP_DEADLINE_STRIDE,
+            RenderStage::Cascade,
+          )
+          .map_err(Error::Render)?;
+          let Some(pseudo) = exportable_pseudo(&internal) else {
+            continue;
+          };
+          // `exportparts` pseudo forwarding requires an explicit outer ident; ignore identity/invalid
+          // mappings like `::before` or `::before:` which would surface as `alias == internal`.
+          if alias.starts_with("::") {
+            continue;
+          }
+          push_part_export(
+            &mut exports,
+            &alias,
+            ExportedPartTarget::Pseudo { node_id, pseudo },
+          );
         }
       }
 
@@ -3166,7 +3210,7 @@ pub fn compute_part_export_map_with_ids(
                     RenderStage::Cascade,
                   )
                   .map_err(Error::Render)?;
-                  push_part_export(&mut exports, &alias, *target);
+                  push_part_export(&mut exports, &alias, target.clone());
                 }
               }
             }
@@ -4351,12 +4395,28 @@ pub(crate) fn parse_exportparts(value: &str) -> Vec<(String, String)> {
       continue;
     }
 
-    let mut parts = entry.splitn(2, ':');
-    let internal = parts
-      .next()
-      .map(trim_ascii_whitespace_html)
-      .unwrap_or_default();
-    let exported = parts.next().map(trim_ascii_whitespace_html);
+    // `exportparts` uses a colon separator between internal and exported names, but the internal
+    // token can itself start with a `::pseudo-element` name. Handle that by ignoring the leading
+    // `::` prefix when locating the separator.
+    //
+    // Spec example:
+    //   exportparts="::before : preceding-text"
+    //
+    // A naive `splitn(':')` would treat the first colon of the `::` prefix as the separator and
+    // drop the mapping entirely.
+    let split_idx = if entry.starts_with("::") {
+      entry[2..].find(':').map(|idx| idx + 2)
+    } else {
+      entry.find(':')
+    };
+    let (internal, exported) = match split_idx {
+      Some(idx) => {
+        let internal = trim_ascii_whitespace_html(&entry[..idx]);
+        let exported = trim_ascii_whitespace_html(&entry[idx + 1..]);
+        (internal, Some(exported))
+      }
+      None => (trim_ascii_whitespace_html(entry), None),
+    };
     if internal.is_empty() {
       continue;
     }
@@ -8596,8 +8656,8 @@ mod tests {
 
     let exports = map.exports_for_host(host_id).expect("host export map");
     let targets = exports.get("x").expect("part targets");
-    assert!(targets.contains(&real_id));
-    assert!(!targets.contains(&template_id));
+    assert!(targets.contains(&ExportedPartTarget::Element(real_id)));
+    assert!(!targets.contains(&ExportedPartTarget::Element(template_id)));
   }
 
   #[test]
@@ -10644,6 +10704,17 @@ mod tests {
       element.imported_part(&CssString::from("label")),
       None,
       "NBSP must not be treated as whitespace when parsing exportparts"
+    );
+  }
+
+  #[test]
+  fn parse_exportparts_supports_pseudo_element_mappings() {
+    assert_eq!(
+      parse_exportparts("::before : preceding-text, ::after:following-text"),
+      vec![
+        ("::before".to_string(), "preceding-text".to_string()),
+        ("::after".to_string(), "following-text".to_string()),
+      ]
     );
   }
 

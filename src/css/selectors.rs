@@ -291,18 +291,35 @@ impl<'a> SlotAssignmentMap<'a> {
   }
 }
 
-/// Mapping from shadow hosts to their `exportparts` mappings.
+/// A target in a shadow root's part map.
+///
+/// `::part()` selectors can match both real elements (via `part="..."`) and fully-styleable
+/// pseudo-elements that have been forwarded via `exportparts="::before: name"` etc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportedPartTarget {
+  Element(usize),
+  Pseudo { node_id: usize, pseudo: PseudoElement },
+}
+
+/// Mapping from shadow hosts to their resolved part element maps.
 #[derive(Debug, Default, Clone)]
 pub struct PartExportMap {
-  hosts: HashMap<usize, HashMap<String, Vec<usize>>>,
+  hosts: HashMap<usize, HashMap<String, Vec<ExportedPartTarget>>>,
 }
 
 impl PartExportMap {
-  pub fn exports_for_host(&self, host: usize) -> Option<&HashMap<String, Vec<usize>>> {
+  pub fn exports_for_host(
+    &self,
+    host: usize,
+  ) -> Option<&HashMap<String, Vec<ExportedPartTarget>>> {
     self.hosts.get(&host)
   }
 
-  pub fn insert_host_exports(&mut self, host: usize, exports: HashMap<String, Vec<usize>>) {
+  pub fn insert_host_exports(
+    &mut self,
+    host: usize,
+    exports: HashMap<String, Vec<ExportedPartTarget>>,
+  ) {
     self.hosts.insert(host, exports);
   }
 }

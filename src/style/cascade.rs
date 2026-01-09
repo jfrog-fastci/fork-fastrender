@@ -13265,6 +13265,47 @@ fn part_names(node: &DomNode) -> Vec<CssString> {
   names
 }
 
+fn exportparts_pseudo_internal_name(pseudo: &PseudoElement) -> Option<&'static str> {
+  // `exportparts="::pseudo: name"` only accepts fully-styleable pseudo-elements.
+  //
+  // FastRender currently models full pseudo-element style computation for generated-box pseudos;
+  // exclude restricted pseudos like ::first-line/::first-letter.
+  match pseudo {
+    PseudoElement::Before => Some("::before"),
+    PseudoElement::After => Some("::after"),
+    PseudoElement::Marker => Some("::marker"),
+    PseudoElement::Backdrop => Some("::backdrop"),
+    _ => None,
+  }
+}
+
+fn exported_pseudo_part_names(node_id: usize, pseudo: &PseudoElement, dom_maps: &DomMaps) -> Vec<CssString> {
+  let Some(internal_name) = exportparts_pseudo_internal_name(pseudo) else {
+    return Vec::new();
+  };
+  let Some(mappings) = dom_maps.exportparts_map.get(&node_id) else {
+    return Vec::new();
+  };
+
+  let mut exported = Vec::new();
+  let mut seen: HashSet<&str> = HashSet::new();
+  for (internal, alias) in mappings.iter() {
+    if !internal.eq_ignore_ascii_case(internal_name) {
+      continue;
+    }
+    // Ignore identity/invalid mappings like `::before` or `::before:` (parse_exportparts will
+    // surface those as `alias == internal`).
+    if alias.starts_with("::") {
+      continue;
+    }
+    if seen.insert(alias.as_str()) {
+      exported.push(CssString::from(alias.as_str()));
+    }
+  }
+
+  exported
+}
+
 fn exported_part_names(
   host_id: usize,
   names: &[CssString],
@@ -13286,6 +13327,176 @@ fn exported_part_names(
   }
 
   Some(exported)
+}
+
+fn match_exported_pseudo_part_rules<'a>(
+  _node: &DomNode,
+  node_id: usize,
+  ancestors: &[&DomNode],
+  ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
+  scopes: &'a RuleScopes<'a>,
+  selector_caches: &mut SelectorCaches,
+  scratch: &mut CascadeScratch,
+  dom_maps: &DomMaps,
+  sibling_cache: &SiblingListCache,
+  element_attr_cache: &'a ElementAttrCache,
+  slot_map_for_host: &dyn Fn(usize) -> Option<&'a SlotAssignmentMap<'a>>,
+  current_slot_map: Option<&SlotAssignmentMap<'a>>,
+  pseudo: &PseudoElement,
+) -> Vec<MatchedRule<'a>> {
+  // Only elements within a shadow tree can be targeted by ::part() rules, and template contents are
+  // treated as inert for part-map computation.
+  if !ancestors
+    .iter()
+    .any(|ancestor| matches!(ancestor.node_type, DomNodeType::ShadowRoot { .. }))
+    || ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert())
+  {
+    return Vec::new();
+  }
+
+  let has_part_rules = !scopes.document.part_pseudos.is_empty()
+    || scopes
+      .shadows
+      .values()
+      .any(|index| !index.part_pseudos.is_empty());
+  if !has_part_rules {
+    return Vec::new();
+  }
+
+  let mut names = exported_pseudo_part_names(node_id, pseudo, dom_maps);
+  if names.is_empty() {
+    return Vec::new();
+  }
+
+  let mut matched: Vec<MatchedRule<'a>> = Vec::new();
+  let mut matched_by_order: HashMap<usize, usize> = HashMap::new();
+
+  let mut idx = ancestors.len();
+  while idx > 0 {
+    idx -= 1;
+    if !matches!(ancestors[idx].node_type, DomNodeType::ShadowRoot { .. }) {
+      continue;
+    }
+    if idx == 0 {
+      break;
+    }
+
+    let host_idx = idx - 1;
+    let host = ancestors[host_idx];
+    let host_ancestors = &ancestors[..host_idx];
+
+    let host_id = ancestor_ids.get(host_idx).copied().unwrap_or(0);
+    let containing_scope_host = dom_maps
+      .containing_shadow_root(host_id)
+      .and_then(|shadow_root| dom_maps.shadow_host_for_root(shadow_root));
+
+    let exported = exported_part_names(host_id, &names, dom_maps);
+    let exported_some = exported.is_some();
+    let mapped_names = exported.unwrap_or_default();
+    let visible_names: &[CssString] = if exported_some {
+      mapped_names.as_slice()
+    } else {
+      names.as_slice()
+    };
+
+    if let Some((rules, allow_shadow_host)) =
+      scope_rule_index_with_shadow_host(scopes, containing_scope_host)
+    {
+      if rules.part_pseudos.is_empty() {
+        names = mapped_names;
+        if names.is_empty() {
+          break;
+        }
+        continue;
+      }
+
+      scratch.part_candidates.clear();
+      scratch.part_seen.reset();
+      for name in visible_names.iter() {
+        let key = selector_bucket_part(name.as_str());
+        if let Some(list) = rules.part_lookup.get(&key) {
+          for &idx in list {
+            if scratch.part_seen.mark_seen_bounded(idx) {
+              scratch.part_candidates.push(idx);
+            }
+          }
+        }
+      }
+
+      if !scratch.part_candidates.is_empty() {
+        let mut name_set: HashSet<&str> = HashSet::new();
+        for name in visible_names.iter() {
+          name_set.insert(name.as_str());
+        }
+
+        let slot_map = match containing_scope_host {
+          Some(scope_host_id) => slot_map_for_host(scope_host_id),
+          None => current_slot_map,
+        };
+
+        let host_keys = dom_maps.selector_keys(host_id);
+        let candidates = scratch.part_candidates.clone();
+        for idx in candidates {
+          let info = &rules.part_pseudos[idx];
+          let required = match &info.pseudo {
+            PseudoElement::Part(names) => names.as_ref(),
+            _ => continue,
+          };
+          if !required
+            .iter()
+            .all(|name| name_set.contains(name.as_str()))
+          {
+            continue;
+          }
+
+          let part_matches = find_pseudo_element_rules(
+            host,
+            host_id,
+            host_keys,
+            rules,
+            selector_caches,
+            scratch,
+            host_ancestors,
+            ancestor_bloom,
+            node_id,
+            ancestor_ids,
+            container_ctx,
+            slot_map,
+            dom_maps.selector_blooms(),
+            Some(&dom_maps.id_map),
+            Some(element_attr_cache),
+            Some(&dom_maps.form_validity_index),
+            sibling_cache,
+            &info.pseudo,
+            allow_shadow_host,
+            false,
+            scopes.quirks_mode,
+          );
+
+          for rule in part_matches {
+            if let Some(pos) = matched_by_order.get(&rule.order).copied() {
+              if rule.specificity > matched[pos].specificity {
+                matched[pos].specificity = rule.specificity;
+              }
+            } else {
+              matched_by_order.insert(rule.order, matched.len());
+              matched.push(rule);
+            }
+          }
+        }
+      }
+    }
+
+    names = mapped_names;
+    if names.is_empty() {
+      break;
+    }
+  }
+
+  scratch.part_seen.reset();
+  matched
 }
 
 fn match_part_rules<'a>(
@@ -13763,6 +13974,24 @@ fn collect_pseudo_matching_rules<'a>(
       scopes.quirks_mode,
     ));
   }
+
+  matches.extend(match_exported_pseudo_part_rules(
+    node,
+    node_id,
+    ancestors,
+    ancestor_bloom,
+    ancestor_ids,
+    container_ctx,
+    scopes,
+    selector_caches,
+    scratch,
+    dom_maps,
+    sibling_cache,
+    element_attr_cache,
+    &slot_map_for_host,
+    current_slot_map,
+    pseudo,
+  ));
 
   matches
 }
@@ -14288,6 +14517,10 @@ fn compute_pseudo_styles(
   } else {
     Cow::Borrowed(ancestor_ids)
   };
+  let exportparts_pseudo_allowed =
+    !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let has_exported_backdrop_part = exportparts_pseudo_allowed
+    && !exported_pseudo_part_names(node_id, &PseudoElement::Backdrop, dom_maps).is_empty();
   let mut backdrop_styles = None;
   if styles.top_layer.is_some()
     && (styles.top_layer.map(|k| k.is_modal()).unwrap_or(false)
@@ -14297,7 +14530,8 @@ fn compute_pseudo_styles(
         node_id,
         dom_maps,
         &PseudoElement::Backdrop,
-      ))
+      )
+      || has_exported_backdrop_part)
   {
     backdrop_styles = compute_pseudo_element_styles(
       node,
@@ -14391,7 +14625,9 @@ fn compute_pseudo_styles(
     node_id,
     dom_maps,
     &PseudoElement::Before,
-  ) {
+  ) || (exportparts_pseudo_allowed
+    && !exported_pseudo_part_names(node_id, &PseudoElement::Before, dom_maps).is_empty())
+  {
     compute_pseudo_element_styles(
       node,
       rule_scopes,
@@ -14425,7 +14661,9 @@ fn compute_pseudo_styles(
     node_id,
     dom_maps,
     &PseudoElement::After,
-  ) {
+  ) || (exportparts_pseudo_allowed
+    && !exported_pseudo_part_names(node_id, &PseudoElement::After, dom_maps).is_empty())
+  {
     compute_pseudo_element_styles(
       node,
       rule_scopes,
@@ -34591,7 +34829,11 @@ fn compute_pseudo_element_styles(
   pseudo: &PseudoElement,
   include_starting_style: bool,
 ) -> Option<ComputedStyle> {
-  if !scope_has_pseudo_rules(rule_scopes, scope_host, node_id, dom_maps, pseudo) {
+  let has_pseudo_rules = scope_has_pseudo_rules(rule_scopes, scope_host, node_id, dom_maps, pseudo);
+  let exportparts_allows = !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let has_exported_pseudo_part =
+    exportparts_allows && !exported_pseudo_part_names(node_id, pseudo, dom_maps).is_empty();
+  if !has_pseudo_rules && !has_exported_pseudo_part {
     return None;
   }
   // Find rules matching this pseudo-element
@@ -35137,13 +35379,19 @@ fn compute_marker_styles(
     return None;
   }
 
-  let matching_rules = if scope_has_pseudo_rules(
+  let has_marker_rules = scope_has_pseudo_rules(
     rule_scopes,
     scope_host,
     node_id,
     dom_maps,
     &PseudoElement::Marker,
-  ) {
+  );
+  let exportparts_pseudo_allowed =
+    !ancestors.iter().any(|ancestor| ancestor.template_contents_are_inert());
+  let has_exported_part = exportparts_pseudo_allowed
+    && !exported_pseudo_part_names(node_id, &PseudoElement::Marker, dom_maps).is_empty();
+
+  let matching_rules = if has_marker_rules || has_exported_part {
     collect_pseudo_matching_rules(
       node,
       rule_scopes,
