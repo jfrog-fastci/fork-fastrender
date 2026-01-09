@@ -1,9 +1,36 @@
 use crate::dom2::{Document, NodeId, NodeKind};
 use rustc_hash::FxHashMap;
 use vm_js::{
-  GcObject, GcSymbol, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value, Vm,
+  GcObject, HostSlots, PropertyDescriptor, PropertyKey, PropertyKind, RootId, Scope, Value, Vm,
   VmError, VmHost, VmHostHooks, WeakGcObject,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+enum WrapperKind {
+  Node = 0,
+  Element = 1,
+  Document = 2,
+}
+
+impl WrapperKind {
+  fn for_node_kind(kind: &NodeKind) -> Self {
+    match kind {
+      NodeKind::Document { .. } => Self::Document,
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => Self::Element,
+      _ => Self::Node,
+    }
+  }
+
+  fn from_u64(n: u64) -> Option<Self> {
+    match n {
+      0 => Some(Self::Node),
+      1 => Some(Self::Element),
+      2 => Some(Self::Document),
+      _ => None,
+    }
+  }
+}
 
 #[derive(Debug)]
 pub struct DomBindingsContext {
@@ -13,9 +40,6 @@ pub struct DomBindingsContext {
   ///
   /// This must not keep JS wrappers alive; we only store weak handles.
   node_wrappers: FxHashMap<NodeId, WeakGcObject>,
-
-  // Internal slot key used to store the underlying `NodeId` index on wrapper objects.
-  node_id_symbol: Option<GcSymbol>,
 
   // Prototypes. These are rooted in the heap via `prototype_roots` because this host struct is not
   // traced by the GC.
@@ -35,7 +59,6 @@ impl DomBindingsContext {
     Self {
       dom,
       node_wrappers: FxHashMap::default(),
-      node_id_symbol: None,
       event_target_prototype: None,
       node_prototype: None,
       element_prototype: None,
@@ -54,14 +77,9 @@ impl DomBindingsContext {
   }
 
   pub fn init(&mut self, vm: &mut Vm, scope: &mut Scope<'_>) -> Result<(), VmError> {
-    if self.node_id_symbol.is_some() {
+    if self.node_prototype.is_some() {
       return Ok(());
     }
-
-    // Create a stable symbol for the "internal slot" that stores the underlying node id.
-    let key = scope.alloc_string("fastrender.dom.NodeId")?;
-    let sym = scope.heap_mut().symbol_for(key)?;
-    self.node_id_symbol = Some(sym);
 
     let event_target_proto = scope.alloc_object()?;
     scope.push_root(Value::Object(event_target_proto))?;
@@ -150,19 +168,14 @@ impl DomBindingsContext {
     let proto = self.prototype_for_node(node_id)?;
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-    let sym = self
-      .node_id_symbol
-      .ok_or(VmError::Unimplemented("DomBindingsContext not initialized"))?;
-    let key = PropertyKey::from_symbol(sym);
-    let desc = PropertyDescriptor {
-      enumerable: false,
-      configurable: false,
-      kind: PropertyKind::Data {
-        value: Value::Number(node_id.index() as f64),
-        writable: false,
+    let kind = WrapperKind::for_node_kind(&self.dom.node(node_id).kind);
+    scope.heap_mut().object_set_host_slots(
+      obj,
+      HostSlots {
+        a: node_id.index() as u64,
+        b: kind as u64,
       },
-    };
-    scope.define_property(obj, key, desc)?;
+    )?;
 
     self.node_wrappers.insert(node_id, WeakGcObject::from(obj));
     Ok(obj)
@@ -170,7 +183,7 @@ impl DomBindingsContext {
 
   fn prototype_for_node(&self, node_id: NodeId) -> Result<GcObject, VmError> {
     let node = self.dom.node(node_id);
-    let obj = match node.kind {
+    let obj = match &node.kind {
       NodeKind::Document { .. } => self.document_prototype,
       NodeKind::Element { .. } | NodeKind::Slot { .. } => self.element_prototype,
       _ => self.node_prototype,
@@ -181,20 +194,17 @@ impl DomBindingsContext {
   }
 
   fn node_id_from_wrapper(&self, heap: &vm_js::Heap, obj: GcObject) -> Result<NodeId, VmError> {
-    let sym = self
-      .node_id_symbol
-      .ok_or(VmError::Unimplemented("DomBindingsContext not initialized"))?;
-    let key = PropertyKey::from_symbol(sym);
-    let value = heap
-      .object_get_own_data_property_value(obj, &key)?
-      .ok_or(VmError::Unimplemented("DOM wrapper missing NodeId slot"))?;
-    let Value::Number(n) = value else {
-      return Err(VmError::Unimplemented("DOM wrapper NodeId slot is not a number"));
-    };
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 {
-      return Err(VmError::Unimplemented("DOM wrapper NodeId slot is not an integer"));
+    let slots = heap
+      .object_host_slots(obj)?
+      .ok_or(VmError::Unimplemented("DOM wrapper missing NodeId host slots"))?;
+    let _kind = WrapperKind::from_u64(slots.b)
+      .ok_or(VmError::Unimplemented("DOM wrapper host slots kind is invalid"))?;
+
+    let idx_u64 = slots.a;
+    if idx_u64 > (usize::MAX as u64) {
+      return Err(VmError::InvalidHandle);
     }
-    let idx = n as usize;
+    let idx = idx_u64 as usize;
     if idx >= self.dom.nodes_len() {
       return Err(VmError::InvalidHandle);
     }
