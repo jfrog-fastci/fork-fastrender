@@ -100,4 +100,6 @@ fn preserve_3d_inherited_clip_path_is_projected_with_transform() {
   // The translated clip should cover x=40..90, so these points should both be visible.
   assert_eq!(pixel(&pixmap, 45, 50), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 70, 50), (255, 0, 0, 255));
+  // And pixels outside of that range should remain background-colored.
+  assert_eq!(pixel(&pixmap, 20, 50), (255, 255, 255, 255));
 }
