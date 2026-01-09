@@ -6,6 +6,7 @@ use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGu
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::text::font_db::FontConfig;
+use crate::tree::box_tree::{BoxNode, BoxTree, GeneratedPseudoElement};
 use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
@@ -41,6 +42,83 @@ impl Drop for LoadingStateGuard {
       loading: false,
     });
   }
+}
+
+fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
+  // Match `src/bin/browser.rs` semantics: the UI may send a sentinel `(-1, -1)` position when the
+  // pointer leaves the page image so hover/click state can be cleared.
+  //
+  // `InteractionEngine` converts viewport points into page points by translating with
+  // `scroll.viewport`. If we passed the sentinel directly it would translate to
+  // `(scroll_x-1, scroll_y-1)` and still hit-test within the page.
+  if pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0 {
+    Point::new(pos_css.0, pos_css.1)
+  } else {
+    Point::new(-scroll.viewport.x - 1.0, -scroll.viewport.y - 1.0)
+  }
+}
+
+type StableBoxKey = (usize, Option<GeneratedPseudoElement>);
+
+fn stable_box_key_for_id(box_tree: &BoxTree, box_id: usize) -> Option<StableBoxKey> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.id == box_id {
+      let styled_node_id = node.styled_node_id?;
+      return Some((styled_node_id, node.generated_pseudo));
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn box_ids_by_key(box_tree: &BoxTree) -> HashMap<StableBoxKey, usize> {
+  let mut out: HashMap<StableBoxKey, usize> = HashMap::new();
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if let Some(styled_node_id) = node.styled_node_id {
+      out
+        .entry((styled_node_id, node.generated_pseudo))
+        .or_insert(node.id);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  out
+}
+
+fn remap_element_scroll_offsets(
+  elements: &HashMap<usize, Point>,
+  old_box_tree: &BoxTree,
+  new_box_tree: &BoxTree,
+) -> HashMap<usize, Point> {
+  if elements.is_empty() {
+    return HashMap::new();
+  }
+
+  let new_by_key = box_ids_by_key(new_box_tree);
+  let mut out: HashMap<usize, Point> = HashMap::new();
+
+  for (old_box_id, offset) in elements {
+    if let Some(key) = stable_box_key_for_id(old_box_tree, *old_box_id) {
+      if let Some(new_box_id) = new_by_key.get(&key) {
+        out.insert(*new_box_id, *offset);
+        continue;
+      }
+    }
+    out.insert(*old_box_id, *offset);
+  }
+
+  out
 }
 
 struct TabState {
@@ -552,7 +630,7 @@ impl BrowserWorkerRuntime {
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let viewport_point = viewport_point_for_pos_css(&tab.scroll, pos_css);
     let changed = tab.interaction.pointer_down(
       dom,
       prepared.box_tree(),
@@ -572,7 +650,7 @@ impl BrowserWorkerRuntime {
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let viewport_point = viewport_point_for_pos_css(&tab.scroll, pos_css);
     let changed = tab.interaction.pointer_move(
       dom,
       prepared.box_tree(),
@@ -599,7 +677,7 @@ impl BrowserWorkerRuntime {
     let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
       return;
     };
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let viewport_point = viewport_point_for_pos_css(&tab.scroll, pos_css);
 
     let (dom_changed, action) = tab.interaction.pointer_up_with_scroll(
       dom,
@@ -766,7 +844,14 @@ impl BrowserWorkerRuntime {
       };
       match renderer.prepare_dom_with_options(dom.clone(), tab.url.as_deref(), opts) {
         Ok(report) => {
-          tab.prepared = Some(report.document);
+          let new_prepared = report.document;
+          if !tab.scroll.elements.is_empty() {
+            if let Some(old_prepared) = tab.prepared.as_ref() {
+              tab.scroll.elements =
+                remap_element_scroll_offsets(&tab.scroll.elements, old_prepared.box_tree(), new_prepared.box_tree());
+            }
+          }
+          tab.prepared = Some(new_prepared);
           tab.base_url = report.base_url.or_else(|| tab.base_url.clone());
           tab.dirty = false;
         }

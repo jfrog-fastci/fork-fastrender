@@ -119,6 +119,22 @@ fn scroll_state_from_history(scroll_x: f32, scroll_y: f32) -> ScrollState {
   ))
 }
 
+fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
+  // Match `src/bin/browser.rs` semantics: the UI may send a sentinel `(-1, -1)` position when the
+  // pointer leaves the page image so hover/click state can be cleared.
+  //
+  // `InteractionEngine` converts viewport points into page points by translating with
+  // `scroll.viewport`. If we passed the sentinel directly it would translate to
+  // `(scroll_x-1, scroll_y-1)` and still hit-test within the page.
+  if pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0 {
+    Point::new(pos_css.0, pos_css.1)
+  } else {
+    let sx = if scroll.viewport.x.is_finite() { scroll.viewport.x } else { 0.0 };
+    let sy = if scroll.viewport.y.is_finite() { scroll.viewport.y } else { 0.0 };
+    Point::new(-sx - 1.0, -sy - 1.0)
+  }
+}
+
 fn page_point_for(tab: &TabState, pos_css: (f32, f32)) -> Point {
   Point::new(
     pos_css.0 + tab.scroll.viewport.x,
@@ -1227,8 +1243,8 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
+        let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
         let engine = &mut tab.interaction;
  
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -1249,8 +1265,8 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
+        let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
         let engine = &mut tab.interaction;
  
         let _ = tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -1277,8 +1293,8 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
           .unwrap_or(about_pages::ABOUT_BASE_URL)
           .to_string();
         let base_url = effective_base_url(tab).to_string();
-        let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
+        let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
         let engine = &mut tab.interaction;
  
         let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {

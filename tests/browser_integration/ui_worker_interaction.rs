@@ -38,41 +38,58 @@ fn recv_until_frame(
   deadline: Instant,
 ) -> RenderedFrame {
   let mut can_accept_frame = wait_for_navigation_committed_url.is_none();
+  let mut last_msgs: std::collections::VecDeque<String> =
+    std::collections::VecDeque::with_capacity(32);
   loop {
     let now = Instant::now();
     if now >= deadline {
-      panic!("timed out waiting for FrameReady");
+      let mut dump = String::new();
+      if !last_msgs.is_empty() {
+        dump.push_str("\nlast worker messages:\n");
+        for line in last_msgs {
+          dump.push_str("  ");
+          dump.push_str(&line);
+          dump.push('\n');
+        }
+      }
+      panic!("timed out waiting for FrameReady{dump}");
     }
     let remaining = deadline.saturating_duration_since(now);
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
-      Ok(msg) => match msg {
-        WorkerToUi::NavigationCommitted {
-          tab_id: msg_tab,
-          url,
-          ..
-        } if msg_tab == tab_id => {
-          if wait_for_navigation_committed_url.map_or(false, |expected| expected == url) {
-            can_accept_frame = true;
+      Ok(msg) => {
+        if last_msgs.len() == last_msgs.capacity() {
+          last_msgs.pop_front();
+        }
+        last_msgs.push_back(format!("{msg:?}"));
+        match msg {
+          WorkerToUi::NavigationCommitted {
+            tab_id: msg_tab,
+            url,
+            ..
+          } if msg_tab == tab_id => {
+            if wait_for_navigation_committed_url.map_or(false, |expected| expected == url) {
+              can_accept_frame = true;
+            }
           }
-        }
-        WorkerToUi::NavigationFailed {
-          tab_id: msg_tab,
-          url,
-          error,
-          ..
-        } if msg_tab == tab_id => {
-          panic!("navigation failed for {url}: {error}");
-        }
-        WorkerToUi::FrameReady {
-          tab_id: msg_tab,
-          frame,
-        } if msg_tab == tab_id => {
-          if can_accept_frame {
-            return frame;
+          WorkerToUi::NavigationFailed {
+            tab_id: msg_tab,
+            url,
+            error,
+            ..
+          } if msg_tab == tab_id => {
+            panic!("navigation failed for {url}: {error}");
           }
+          WorkerToUi::FrameReady {
+            tab_id: msg_tab,
+            frame,
+          } if msg_tab == tab_id => {
+            if can_accept_frame {
+              return frame;
+            }
+          }
+          _ => {}
         }
-        _ => {}
-      },
+      }
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
         panic!("worker channel disconnected while waiting for FrameReady");

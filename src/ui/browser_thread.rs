@@ -83,6 +83,21 @@ fn clamp_viewport((w, h): (u32, u32)) -> (u32, u32) {
   (w.max(1), h.max(1))
 }
 
+fn viewport_point_for_pos_css(scroll: &ScrollState, pos_css: (f32, f32)) -> Point {
+  // The UI uses a sentinel `(-1, -1)` position to indicate that the pointer left the page image.
+  //
+  // `InteractionEngine` converts viewport points into page points by translating with
+  // `scroll.viewport`. If we passed the sentinel directly it would translate to
+  // `(scroll_x-1, scroll_y-1)` and still hit-test within the page.
+  if pos_css.0.is_finite() && pos_css.1.is_finite() && pos_css.0 >= 0.0 && pos_css.1 >= 0.0 {
+    Point::new(pos_css.0, pos_css.1)
+  } else {
+    let sx = if scroll.viewport.x.is_finite() { scroll.viewport.x } else { 0.0 };
+    let sy = if scroll.viewport.y.is_finite() { scroll.viewport.y } else { 0.0 };
+    Point::new(-sx - 1.0, -sy - 1.0)
+  }
+}
+
 fn base_url_for_links(tab: &TabState) -> &str {
   tab
     .last_base_url
@@ -803,8 +818,8 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
     let scroll = &tab.scroll_state;
+    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -830,8 +845,8 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
     let scroll = &tab.scroll_state;
+    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
@@ -860,8 +875,8 @@ impl BrowserRuntime {
       .as_deref()
       .unwrap_or(about_pages::ABOUT_BASE_URL)
       .to_string();
-    let viewport_point = Point::new(pos_css.0, pos_css.1);
     let scroll = &tab.scroll_state;
+    let viewport_point = viewport_point_for_pos_css(scroll, pos_css);
     let engine = &mut tab.interaction;
     let Some(doc) = tab.document.as_mut() else {
       return;

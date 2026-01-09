@@ -420,6 +420,7 @@ struct App {
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
   last_cursor_pos_points: Option<egui::Pos2>,
+  cursor_in_page: bool,
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
@@ -530,6 +531,7 @@ impl App {
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
       last_cursor_pos_points: None,
+      cursor_in_page: false,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
@@ -629,8 +631,8 @@ impl App {
   fn set_pixels_per_point(&mut self, ppp: f32) {
     self.pixels_per_point = ppp;
     self.egui_ctx.set_pixels_per_point(ppp);
-    // Force a `ViewportChanged` message on the next frame: changing the DPI scale factor affects
-    // the effective device pixel ratio used for rendering.
+    // Invalidate the cached viewport so the worker receives the new DPR: changing the DPI scale
+    // factor affects the effective device pixel ratio used for rendering.
     self.viewport_cache_tab = None;
   }
 
@@ -642,6 +644,8 @@ impl App {
     self.surface_config.width = new_size.width;
     self.surface_config.height = new_size.height;
     self.surface.configure(&self.device, &self.surface_config);
+    // Invalidate the cached viewport so the worker sees the new dimensions on the next frame.
+    self.viewport_cache_tab = None;
   }
 
   fn destroy_all_textures(&mut self) {
@@ -1128,24 +1132,40 @@ impl App {
         }
 
         let Some(rect) = self.page_rect_points else {
+          self.cursor_in_page = false;
           return;
         };
-        let Some(_viewport_css) = self.page_viewport_css else {
-          return;
-        };
+        let now_in_page = rect.contains(pos_points);
+
+        // `page_input_mapping`/`page_input_tab` are populated during the most recent paint. When
+        // they are missing, we cannot reliably map points→CSS, so we just track whether the cursor
+        // is inside the page rect.
         let Some(tab_id) = self.page_input_tab else {
+          self.cursor_in_page = now_in_page;
           return;
         };
         let Some(mapping) = self.page_input_mapping else {
+          self.cursor_in_page = now_in_page;
           return;
         };
 
-        if !self.pointer_captured && !rect.contains(pos_points) {
+        // Send pointer moves for:
+        // - hover updates while inside the page rect,
+        // - a single sentinel move when leaving the page to clear hover,
+        // - all moves while a button is held down (captured), even outside the rect.
+        let should_send = self.pointer_captured || now_in_page || self.cursor_in_page;
+        if !should_send {
+          self.cursor_in_page = false;
           return;
         }
 
-        let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
-          return;
+        let pos_css = if now_in_page {
+          let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+            return;
+          };
+          pos_css
+        } else {
+          (-1.0, -1.0)
         };
 
         let button = if self.pointer_captured {
@@ -1158,6 +1178,7 @@ impl App {
           pos_css,
           button,
         });
+        self.cursor_in_page = now_in_page;
       }
       WindowEvent::MouseInput { state, button, .. } => {
         let mapped_button = map_mouse_button(*button);
@@ -1217,6 +1238,7 @@ impl App {
             self.page_has_focus = true;
             self.pointer_captured = true;
             self.captured_button = mapped_button;
+            self.cursor_in_page = true;
             self.send_worker_msg(fastrender::ui::UiToWorker::PointerDown {
               tab_id,
               pos_css,
@@ -1230,7 +1252,7 @@ impl App {
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
 
-            let Some(_rect) = self.page_rect_points else {
+            let Some(rect) = self.page_rect_points else {
               return;
             };
             let Some(_viewport_css) = self.page_viewport_css else {
@@ -1242,14 +1264,21 @@ impl App {
             let Some(mapping) = self.page_input_mapping else {
               return;
             };
-            let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
-              return;
+            let in_page = rect.contains(pos_points);
+            let pos_css = if in_page {
+              let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
+                return;
+              };
+              pos_css
+            } else {
+              (-1.0, -1.0)
             };
             self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
               tab_id,
               pos_css,
               button: mapped_button,
             });
+            self.cursor_in_page = in_page;
           }
         }
       }
@@ -1384,6 +1413,9 @@ impl App {
           self.browser_state.chrome.address_bar_text = initial_url.clone();
           self.page_has_focus = false;
           self.viewport_cache_tab = None;
+          self.pointer_captured = false;
+          self.captured_button = fastrender::ui::PointerButton::None;
+          self.cursor_in_page = false;
 
           self.send_worker_msg(UiToWorker::CreateTab {
             tab_id,
@@ -1406,12 +1438,22 @@ impl App {
             tex.destroy(&mut self.egui_renderer);
           }
 
+          let was_active = self.browser_state.active_tab_id() == Some(tab_id);
           if let Some(cancel) = self.tab_cancel.remove(&tab_id) {
             cancel.bump_nav();
           }
           self.send_worker_msg(UiToWorker::CloseTab { tab_id });
 
           let close_result = self.browser_state.remove_tab(tab_id);
+
+          if was_active {
+            self.viewport_cache_tab = None;
+            self.page_has_focus = false;
+            self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
+            self.cursor_in_page = false;
+            self.last_cursor_pos_points = None;
+          }
 
           if let Some(created_tab) = close_result.created_tab {
             let initial_url = "about:newtab".to_string();
@@ -1452,6 +1494,9 @@ impl App {
           if self.browser_state.set_active_tab(tab_id) {
             self.page_has_focus = false;
             self.viewport_cache_tab = None;
+            self.pointer_captured = false;
+            self.captured_button = fastrender::ui::PointerButton::None;
+            self.cursor_in_page = false;
             self.send_worker_msg(UiToWorker::SetActiveTab { tab_id });
             self.send_worker_msg(UiToWorker::RequestRepaint {
               tab_id,

@@ -948,11 +948,7 @@ mod tests {
   #[test]
   fn set_device_pixel_ratio_triggers_layout() -> Result<()> {
     let mut document =
-      BrowserDocument::new(
-        renderer_for_tests(),
-        "<div>hi</div>",
-        RenderOptions::default().with_viewport(32, 32),
-      )?;
+      BrowserDocument::new(renderer_for_tests(), "<div>hi</div>", RenderOptions::default().with_viewport(32, 32))?;
     document.render_frame()?;
 
     document.set_device_pixel_ratio(2.0);

@@ -308,7 +308,10 @@ impl Default for FontConfig {
   fn default() -> Self {
     let bundled = env_flag("FASTR_USE_BUNDLED_FONTS")
       .or_else(|| env_flag("CI"))
-      .unwrap_or(false);
+      // The `browser_ui` feature is primarily used for interactive/headless browser UI builds
+      // (including integration tests). Prefer bundled fonts by default in that configuration so
+      // headless environments without a reliable system font database still render deterministically.
+      .unwrap_or(cfg!(feature = "browser_ui"));
     Self {
       // In CI we prefer deterministic bundled fonts unless explicitly overridden.
       use_system_fonts: !bundled,

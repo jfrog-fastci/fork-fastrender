@@ -150,11 +150,31 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
     PointerButton::Primary,
   ));
 
-  let (frame, events) = h.send_and_wait_for_frame(
+  // PointerDown may repaint (active/focus styling), so `send_and_wait_for_frame` after PointerUp
+  // could observe the earlier PointerDown frame. Keep waiting until the click-driven selection
+  // change shows up.
+  let (mut frame, events) = h.send_and_wait_for_frame(
     tab_id,
     support::pointer_up(tab_id, click_pos, PointerButton::Primary),
   );
   let _ = drain_after_frame(&h, events);
+
+  if support::rgba_at(&frame.pixmap, 10, 80) != [0, 0, 255, 255] {
+    let deadline = std::time::Instant::now() + support::DEFAULT_TIMEOUT;
+    loop {
+      let now = std::time::Instant::now();
+      if now >= deadline {
+        panic!("timed out waiting for listbox click to update marker");
+      }
+      let remaining = deadline.saturating_duration_since(now);
+      let (next_frame, events) = h.wait_for_frame(tab_id, remaining);
+      let _ = drain_after_frame(&h, events);
+      frame = next_frame;
+      if support::rgba_at(&frame.pixmap, 10, 80) == [0, 0, 255, 255] {
+        break;
+      }
+    }
+  }
 
   assert_eq!(
     support::rgba_at(&frame.pixmap, 10, 80),

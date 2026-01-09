@@ -10575,13 +10575,13 @@ impl FastRender {
     // configured toggles in thread-local storage so callers can override env-derived behavior
     // without mutating process environment variables.
     //
-    // Important: layout may be executed on a larger-stack helper thread in debug builds. When the
-    // render pipeline already installed a process-wide toggle override (via
-    // `runtime::with_runtime_toggles`), attempting to reinstall the global override from the helper
-    // thread can deadlock (the parent thread holds the global override lock while waiting to join
-    // the helper thread). We only need thread-local overrides here.
-    let runtime_toggles = Arc::clone(&self.runtime_toggles);
-    runtime::with_thread_runtime_toggles(runtime_toggles, || {
+    // Important: layout may run on a temporary "large stack" helper thread in debug builds / print
+    // mode (see `layout_document_for_media_with_artifacts`). At higher levels the render pipeline
+    // may already have installed a process-wide runtime toggle override via
+    // `runtime::with_runtime_toggles(...)`. Re-installing that global override inside the helper
+    // thread would deadlock (the parent thread holds the global override lock while waiting for the
+    // helper thread to finish). We only need thread-local overrides here.
+    runtime::with_thread_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       let inherited_deadline = crate::render_control::active_deadline();
       let deadline = deadline.or(inherited_deadline.as_ref());
       let _deadline_guard = DeadlineGuard::install(deadline);
