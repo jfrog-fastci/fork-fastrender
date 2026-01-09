@@ -147,6 +147,7 @@ mod table_fixup_wrapper;
 mod table_fragmentation;
 mod table_large_layout;
 mod table_percentage_padding;
+mod table_rowspan_zero;
 mod table_visibility_collapse_layout;
 mod taffy_usage_guards;
 mod template_inert;

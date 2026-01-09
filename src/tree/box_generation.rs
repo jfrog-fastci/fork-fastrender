@@ -3280,7 +3280,7 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
   box_node.styled_node_id = Some(styled.node_id);
   const HTML_TABLE_SPAN_MAX: u16 = 1000;
 
-  fn parse_html_table_span_attr(raw: Option<&str>) -> u16 {
+  fn parse_html_table_span_attr_min_1(raw: Option<&str>) -> u16 {
     let Some(raw) = raw else {
       return 1;
     };
@@ -3318,21 +3318,58 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
     }
   }
 
+  fn parse_html_table_rowspan_attr(raw: Option<&str>) -> u16 {
+    let Some(raw) = raw else {
+      return 1;
+    };
+
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() {
+      return 1;
+    }
+
+    let mut value: u32 = 0;
+    let mut saw_digit = false;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if !b.is_ascii_digit() {
+        break;
+      }
+      saw_digit = true;
+      if value < HTML_TABLE_SPAN_MAX as u32 {
+        value = value.saturating_mul(10).saturating_add((b - b'0') as u32);
+        if value > HTML_TABLE_SPAN_MAX as u32 {
+          value = HTML_TABLE_SPAN_MAX as u32;
+        }
+      }
+      i += 1;
+    }
+
+    if !saw_digit {
+      1
+    } else {
+      value as u16
+    }
+  }
+
   if let Some(tag) = styled.node.tag_name() {
     // Populate table span metadata (not debug-only). Table layout must not depend on `DebugInfo`,
     // since debug info is disabled by default in `--release`.
     if tag.eq_ignore_ascii_case("td") || tag.eq_ignore_ascii_case("th") {
       box_node.table_cell_span = Some(TableCellSpan {
-        colspan: parse_html_table_span_attr(styled.node.get_attribute_ref("colspan")),
-        rowspan: parse_html_table_span_attr(styled.node.get_attribute_ref("rowspan")),
+        colspan: parse_html_table_span_attr_min_1(styled.node.get_attribute_ref("colspan")),
+        rowspan: parse_html_table_rowspan_attr(styled.node.get_attribute_ref("rowspan")),
       });
     } else {
       box_node.table_cell_span = None;
     }
     if tag.eq_ignore_ascii_case("col") || tag.eq_ignore_ascii_case("colgroup") {
-      box_node.table_column_span = Some(parse_html_table_span_attr(
-        styled.node.get_attribute_ref("span"),
-      ));
+      box_node.table_column_span =
+        Some(parse_html_table_span_attr_min_1(styled.node.get_attribute_ref("span")));
     } else {
       box_node.table_column_span = None;
     }

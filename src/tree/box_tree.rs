@@ -1441,6 +1441,13 @@ impl BoxNode {
     }
   }
 
+  /// Raw table cell `rowspan` attribute value.
+  ///
+  /// Returns `Some(0)` for `rowspan="0"` (span to end of the current row group).
+  pub fn table_rowspan_raw(&self) -> Option<u16> {
+    self.table_cell_span.map(|span| span.rowspan)
+  }
+
   /// Table column span (`<col span>` / `<colgroup span>`).
   ///
   /// Defaults to `1` when not present/applicable.

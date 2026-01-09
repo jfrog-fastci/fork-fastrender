@@ -1858,12 +1858,15 @@ impl TableStructure {
       }
     }
 
-    for (_child_idx, child) in table_box
+    let table_children: Vec<&BoxNode> = table_box
       .children
       .iter()
       .filter(|child| child.style.running_position.is_none())
-      .enumerate()
-    {
+      .collect();
+
+    let mut child_idx = 0usize;
+    while child_idx < table_children.len() {
+      let child = table_children[child_idx];
       let element_type = Self::get_table_element_type(child);
       match element_type {
         TableElementType::RowGroup
@@ -1894,6 +1897,17 @@ impl TableStructure {
           } else {
             None
           };
+          let group_row_count = child
+            .children
+            .iter()
+            .filter(|row_child| {
+              matches!(
+                Self::get_table_element_type(row_child),
+                TableElementType::Row
+              )
+            })
+            .count();
+          let group_end = current_row + group_row_count;
           // Process rows within the group
           for row_child in &child.children {
             if matches!(
@@ -1939,6 +1953,7 @@ impl TableStructure {
                 row_child,
                 current_row,
                 !matches!(row_visibility, Visibility::Collapse),
+                group_end,
                 &mut row_span_remaining,
                 &mut occupied_columns,
                 &mut max_cols,
@@ -1947,46 +1962,64 @@ impl TableStructure {
               current_row += 1;
             }
           }
+          child_idx += 1;
         }
         TableElementType::Row => {
-          let spec_height = Self::length_to_specified_height_opt(
-            child.style.height.as_ref(),
-            child.style.font_size,
-            child.style.root_font_size,
-          );
-          let min_h = Self::length_to_specified_height_opt(
-            child.style.min_height.as_ref(),
-            child.style.font_size,
-            child.style.root_font_size,
-          );
-          let max_h = Self::length_to_specified_height_opt(
-            child.style.max_height.as_ref(),
-            child.style.font_size,
-            child.style.root_font_size,
-          );
-          row_visibilities.push(child.style.visibility);
-          let row_vertical_align = if child.style.vertical_align_specified {
-            Some(child.style.vertical_align)
-          } else {
-            None
-          };
-          row_vertical_aligns.push(row_vertical_align);
-          row_heights.push(spec_height);
-          row_min_heights.push(min_h);
-          row_max_heights.push(max_h);
-          body_rows.push(current_row);
-          Self::process_row(
-            child,
-            current_row,
-            !matches!(child.style.visibility, Visibility::Collapse),
-            &mut row_span_remaining,
-            &mut occupied_columns,
-            &mut max_cols,
-            &mut cell_data,
-          );
-          current_row += 1;
+          let mut run_len = 0usize;
+          while child_idx + run_len < table_children.len()
+            && matches!(
+              Self::get_table_element_type(table_children[child_idx + run_len]),
+              TableElementType::Row
+            )
+          {
+            run_len += 1;
+          }
+          let run_end = current_row + run_len;
+          for offset in 0..run_len {
+            let row = table_children[child_idx + offset];
+            let spec_height = Self::length_to_specified_height_opt(
+              row.style.height.as_ref(),
+              row.style.font_size,
+              row.style.root_font_size,
+            );
+            let min_h = Self::length_to_specified_height_opt(
+              row.style.min_height.as_ref(),
+              row.style.font_size,
+              row.style.root_font_size,
+            );
+            let max_h = Self::length_to_specified_height_opt(
+              row.style.max_height.as_ref(),
+              row.style.font_size,
+              row.style.root_font_size,
+            );
+            row_visibilities.push(row.style.visibility);
+            let row_vertical_align = if row.style.vertical_align_specified {
+              Some(row.style.vertical_align)
+            } else {
+              None
+            };
+            row_vertical_aligns.push(row_vertical_align);
+            row_heights.push(spec_height);
+            row_min_heights.push(min_h);
+            row_max_heights.push(max_h);
+            body_rows.push(current_row);
+            Self::process_row(
+              row,
+              current_row,
+              !matches!(row.style.visibility, Visibility::Collapse),
+              run_end,
+              &mut row_span_remaining,
+              &mut occupied_columns,
+              &mut max_cols,
+              &mut cell_data,
+            );
+            current_row += 1;
+          }
+          child_idx += run_len;
         }
-        _ => {}
+        _ => {
+          child_idx += 1;
+        }
       }
     }
 
@@ -2447,6 +2480,7 @@ impl TableStructure {
     row: &BoxNode,
     row_idx: usize,
     row_visible: bool,
+    row_group_end: usize,
     row_span_remaining: &mut Vec<usize>,
     occupied: &mut Vec<bool>,
     max_cols: &mut usize,
@@ -2474,7 +2508,11 @@ impl TableStructure {
         let percent_sensitive =
           Self::style_has_percent_sensitive_column_constraints(&cell_child.style);
         let colspan = cell_child.table_colspan();
-        let rowspan = cell_child.table_rowspan();
+        let rowspan = match cell_child.table_rowspan_raw() {
+          Some(0) => row_group_end.saturating_sub(row_idx).max(1),
+          Some(span) => span.max(1) as usize,
+          None => 1,
+        };
 
         // Find the first free block of columns that can fit the span in linear time. Start each
         // search from the current insertion point so cell placement remains source-order stable.
