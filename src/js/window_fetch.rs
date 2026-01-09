@@ -1325,7 +1325,7 @@ fn response_body_used_get_native(
   _args: &[Value],
 ) -> Result<Value, VmError> {
   let Value::Object(obj) = this else {
-    return Ok(Value::Bool(false));
+    return Err(VmError::TypeError("Response: illegal invocation"));
   };
   let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
   let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
@@ -2059,6 +2059,7 @@ mod tests {
   use super::*;
 
   use vm_js::{HeapLimits, VmOptions};
+  use vm_js::{Job, RealmId, VmHostHooks};
 
   struct DummyHost;
 
@@ -2091,6 +2092,39 @@ mod tests {
       .lock()
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .contains_key(&env_id));
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_body_used_getter_rejects_invalid_this() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let mut scope = heap.scope();
+
+    let callee = scope.alloc_object()?;
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_body_used_get_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Undefined,
+      &[],
+    )
+    .expect_err("expected illegal invocation TypeError");
+    assert!(matches!(err, VmError::TypeError(_)), "err={err}");
+
+    drop(scope);
     realm.teardown(&mut heap);
     Ok(())
   }
