@@ -1,7 +1,7 @@
 use super::Dom2TreeSink;
 use super::{Document, NodeId, NodeKind};
 use crate::debug::snapshot::snapshot_dom;
-use crate::dom::{parse_html_with_options, DomParseOptions};
+use crate::dom::{parse_html_with_options, DomParseOptions, MATHML_NAMESPACE};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 use html5ever::tendril::TendrilSink;
 use html5ever::tree_builder::TreeBuilderOpts;
@@ -298,4 +298,50 @@ fn pausable_parser_template_script_boundaries_are_inert() {
   // Sinks may choose to suppress script pauses for template contents; if they don't, the yielded
   // script must be inert.
   let _ = saw_inert_script;
+}
+
+#[test]
+fn mathml_annotation_xml_integration_point_allows_html_parsing_inside_annotation_xml() {
+  let html = r#"<!doctype html>
+    <html><body>
+      <math>
+        <annotation-xml encoding="text/html"><div>ok</div></annotation-xml>
+      </math>
+    </body></html>"#;
+
+  let doc = parse_with_dom2_sink(html);
+
+  let mut saw_annotation_xml = None::<NodeId>;
+  let mut saw_html_div = false;
+
+  let mut stack: Vec<NodeId> = vec![doc.root()];
+  while let Some(id) = stack.pop() {
+    let node = doc.node(id);
+    if let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &node.kind
+    {
+      if tag_name == "annotation-xml" && namespace == MATHML_NAMESPACE {
+        saw_annotation_xml = Some(id);
+      }
+      if tag_name == "div" && namespace.is_empty() {
+        saw_html_div = true;
+      }
+    }
+    for &child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  let annotation_xml_id = saw_annotation_xml.expect("expected MathML annotation-xml element");
+  assert!(
+    doc.node(annotation_xml_id).mathml_annotation_xml_integration_point,
+    "annotation-xml node should be marked as a MathML annotation-xml integration point"
+  );
+  assert!(
+    saw_html_div,
+    "expected <div> inside annotation-xml to be parsed as an HTML element"
+  );
 }
