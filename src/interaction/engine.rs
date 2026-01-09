@@ -3,7 +3,12 @@ use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
+use crate::tree::box_tree::BoxType;
+use crate::tree::box_tree::FormControlKind;
+use crate::tree::box_tree::ReplacedType;
+use crate::tree::box_tree::SelectControl;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use url::Url;
@@ -22,6 +27,10 @@ pub enum InteractionAction {
   None,
   Navigate { href: String },
   FocusChanged { node_id: Option<usize> },
+  OpenSelectDropdown {
+    select_node_id: usize,
+    control: crate::tree::box_tree::SelectControl,
+  },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -623,6 +632,35 @@ fn apply_select_listbox_click(
   changed
 }
 
+fn select_control_snapshot_from_box_tree(
+  box_tree: &BoxTree,
+  select_node_id: usize,
+) -> Option<(SelectControl, bool)> {
+  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(select_node_id) {
+      if let BoxType::Replaced(replaced) = &node.box_type {
+        if let ReplacedType::FormControl(form_control) = &replaced.replaced_type {
+          if let FormControlKind::Select(control) = &form_control.control {
+            return Some((control.clone(), form_control.disabled));
+          }
+        }
+      }
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+// `SelectControl` uses Strings/Vecs and does not contain floats, so its derived `PartialEq` is a
+// full equivalence relation. Mark it as `Eq` so interaction actions can remain `Eq` as well.
+impl Eq for SelectControl {}
+
 impl InteractionEngine {
   pub fn new() -> Self {
     Self {
@@ -766,6 +804,7 @@ impl InteractionEngine {
   /// - link: return Navigate
   /// - checkbox/radio: toggle/activate
   /// - text control/textarea: focus
+  /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
   ///
   /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
   /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
@@ -837,7 +876,11 @@ impl InteractionEngine {
         } else if index.node(target_id).is_some_and(is_select) {
           dom_changed |= self.set_focus(&mut index, Some(target_id), false);
 
-          if !node_is_disabled(&index, target_id) {
+          let snapshot = select_control_snapshot_from_box_tree(box_tree, target_id);
+          let computed_disabled = snapshot.as_ref().is_some_and(|(_, disabled)| *disabled);
+          let disabled = node_is_disabled(&index, target_id) || computed_disabled;
+
+          if !disabled {
             if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
               dom_changed |= apply_select_listbox_click(
                 &mut index,
@@ -846,6 +889,18 @@ impl InteractionEngine {
                 target_id,
                 hit.box_id,
               );
+            }
+          }
+
+          if !disabled {
+            if let Some((control, _)) = snapshot {
+              let is_dropdown = !control.multiple && control.size == 1;
+              if is_dropdown {
+                action = InteractionAction::OpenSelectDropdown {
+                  select_node_id: target_id,
+                  control,
+                };
+              }
             }
           }
         } else if index.node(target_id).is_some_and(is_focusable_text_control) {
@@ -861,7 +916,8 @@ impl InteractionEngine {
       }
     }
 
-    if !matches!(action, InteractionAction::Navigate { .. }) && self.focused != prev_focus {
+    // `OpenSelectDropdown` includes the focus update; do not replace it with `FocusChanged`.
+    if matches!(action, InteractionAction::None) && self.focused != prev_focus {
       action = InteractionAction::FocusChanged {
         node_id: self.focused,
       };

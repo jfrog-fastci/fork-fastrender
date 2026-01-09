@@ -771,6 +771,149 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
 }
 
 #[test]
+fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel")],
+        vec![
+          el(
+            "option",
+            vec![("value", "a")],
+            vec![DomNode {
+              node_type: DomNodeType::Text {
+                content: "Alpha".to_string(),
+              },
+              children: vec![],
+            }],
+          ),
+          el(
+            "option",
+            vec![("value", "b"), ("disabled", "")],
+            vec![DomNode {
+              node_type: DomNodeType::Text {
+                content: "Beta".to_string(),
+              },
+              children: vec![],
+            }],
+          ),
+          el(
+            "option",
+            vec![("value", "c")],
+            vec![DomNode {
+              node_type: DomNodeType::Text {
+                content: "Gamma".to_string(),
+              },
+              children: vec![],
+            }],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "sel");
+  let expected_control = SelectControl {
+    multiple: false,
+    size: 1,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        label: "Alpha".to_string(),
+        value: "a".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+      },
+      SelectItem::Option {
+        label: "Beta".to_string(),
+        value: "b".to_string(),
+        selected: false,
+        disabled: true,
+        in_optgroup: false,
+      },
+      SelectItem::Option {
+        label: "Gamma".to_string(),
+        value: "c".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+      },
+    ]),
+    selected: vec![0],
+  };
+
+  let form_control = FormControl {
+    control: FormControlKind::Select(expected_control.clone()),
+    appearance: Appearance::Auto,
+    placeholder_style: None,
+    slider_thumb_style: None,
+    slider_track_style: None,
+    file_selector_button_style: None,
+    disabled: false,
+    focused: false,
+    focus_visible: false,
+    required: false,
+    invalid: false,
+  };
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(form_control),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(
+    action,
+    InteractionAction::OpenSelectDropdown {
+      select_node_id: select_dom_id,
+      control: expected_control.clone(),
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "clicking a select should focus it"
+  );
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+}
+
+#[test]
 fn inert_link_does_not_navigate() {
   let mut dom = doc(vec![el(
     "html",
