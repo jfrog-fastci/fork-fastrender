@@ -806,10 +806,39 @@ impl BrowserTab {
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
+    let run_limits = self.host.js_execution_options.event_loop_run_limits;
     if self.event_loop.pending_microtask_count() > 0 {
-      self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+      // Drain microtasks only (HTML microtask checkpoint), but do not run any tasks.
+      let microtask_limits = RunLimits {
+        max_tasks: 0,
+        max_microtasks: run_limits.max_microtasks,
+        max_wall_time: run_limits.max_wall_time,
+      };
+      match self.event_loop.run_until_idle(&mut self.host, microtask_limits)? {
+        RunUntilIdleOutcome::Idle
+        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
+        RunUntilIdleOutcome::Stopped(reason) => {
+          return Err(Error::Other(format!(
+            "BrowserTab::tick_frame microtask checkpoint stopped: {reason:?}"
+          )))
+        }
+      }
     } else {
-      let _ = self.event_loop.run_next_task(&mut self.host)?;
+      // Run exactly one task turn (a task + its post-task microtask checkpoint).
+      let one_task_limits = RunLimits {
+        max_tasks: 1,
+        max_microtasks: run_limits.max_microtasks,
+        max_wall_time: run_limits.max_wall_time,
+      };
+      match self.event_loop.run_until_idle(&mut self.host, one_task_limits)? {
+        RunUntilIdleOutcome::Idle
+        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
+        RunUntilIdleOutcome::Stopped(reason) => {
+          return Err(Error::Other(format!(
+            "BrowserTab::tick_frame task turn stopped: {reason:?}"
+          )))
+        }
+      }
     }
     self.render_if_needed()
   }

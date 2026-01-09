@@ -108,10 +108,39 @@ impl BrowserDocumentJs {
       .take()
       .ok_or_else(|| Error::Other("BrowserDocumentJs event loop is unavailable".to_string()))?;
 
+    let run_limits = self.js_execution_options.event_loop_run_limits;
     if event_loop.pending_microtask_count() > 0 {
-      event_loop.perform_microtask_checkpoint(self)?;
+      let microtask_limits = RunLimits {
+        max_tasks: 0,
+        max_microtasks: run_limits.max_microtasks,
+        max_wall_time: run_limits.max_wall_time,
+      };
+      match event_loop.run_until_idle(self, microtask_limits)? {
+        RunUntilIdleOutcome::Idle
+        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
+        RunUntilIdleOutcome::Stopped(reason) => {
+          self.event_loop = Some(event_loop);
+          return Err(crate::error::Error::Other(format!(
+            "BrowserDocumentJs::tick_frame microtask checkpoint stopped: {reason:?}"
+          )));
+        }
+      }
     } else {
-      let _ = event_loop.run_next_task(self)?;
+      let one_task_limits = RunLimits {
+        max_tasks: 1,
+        max_microtasks: run_limits.max_microtasks,
+        max_wall_time: run_limits.max_wall_time,
+      };
+      match event_loop.run_until_idle(self, one_task_limits)? {
+        RunUntilIdleOutcome::Idle
+        | RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
+        RunUntilIdleOutcome::Stopped(reason) => {
+          self.event_loop = Some(event_loop);
+          return Err(crate::error::Error::Other(format!(
+            "BrowserDocumentJs::tick_frame task turn stopped: {reason:?}"
+          )));
+        }
+      }
     }
     self.event_loop = Some(event_loop);
     self.render_if_needed()
@@ -347,6 +376,17 @@ mod tests {
     content.push_str(new_text);
   }
 
+  fn queue_self_requeue_microtask(
+    event_loop: &mut EventLoop<BrowserDocumentJs>,
+    counter: Rc<RefCell<usize>>,
+  ) -> Result<()> {
+    event_loop.queue_microtask(move |_host, event_loop| {
+      *counter.borrow_mut() += 1;
+      queue_self_requeue_microtask(event_loop, Rc::clone(&counter))?;
+      Ok(())
+    })
+  }
+
   fn find_script_elements(dom: &Dom2Document) -> Vec<NodeId> {
     let mut out = Vec::new();
     let mut stack = vec![dom.root()];
@@ -445,6 +485,38 @@ mod tests {
 
     assert!(runtime.tick_frame()?.is_none(), "expected no further work");
     assert!(!runtime.document().is_dirty());
+    Ok(())
+  }
+
+  #[test]
+  fn tick_frame_respects_microtask_run_limits() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut js_options = JsExecutionOptions::default();
+    js_options.event_loop_run_limits = RunLimits {
+      max_tasks: 100,
+      max_microtasks: 5,
+      max_wall_time: None,
+    };
+    let mut runtime = BrowserDocumentJs::with_js_execution_options(
+      BrowserDocumentDom2::new(
+        renderer,
+        "<!doctype html><html><body><div>Hello</div></body></html>",
+        super::super::RenderOptions::new().with_viewport(32, 32),
+      )?,
+      js_options,
+    );
+
+    let counter: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+    queue_self_requeue_microtask(runtime.event_loop_mut(), Rc::clone(&counter))?;
+
+    let err = runtime
+      .tick_frame()
+      .expect_err("expected tick_frame to stop an infinite microtask chain");
+    match err {
+      crate::error::Error::Other(msg) => assert!(msg.contains("MaxMicrotasks"), "{msg}"),
+      other => panic!("expected Error::Other, got {other:?}"),
+    }
+    assert_eq!(*counter.borrow(), 5);
     Ok(())
   }
 
