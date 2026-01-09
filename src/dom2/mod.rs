@@ -72,24 +72,58 @@ pub struct Document {
 
 #[derive(Debug, Clone)]
 pub struct RendererDomMapping {
-  preorder_to_node_id: Vec<NodeId>,
+  /// 1-based pre-order id (as produced by `crate::dom::enumerate_dom_ids`) -> `dom2` [`NodeId`].
+  ///
+  /// Index 0 is always `None` so renderer ids can be used directly as indexes.
+  preorder_to_node_id: Vec<Option<NodeId>>,
+  /// `dom2` [`NodeId`] index -> 1-based pre-order id.
+  ///
+  /// Uses 0 for nodes that are not reachable from the document root.
   node_id_to_preorder: Vec<usize>,
 }
 
 impl RendererDomMapping {
-  /// Translate a 1-based preorder id (as produced by `to_renderer_dom_with_mapping`) back into a
-  /// `dom2` [`NodeId`].
+  /// Translate a 1-based renderer pre-order id (as produced by [`crate::dom::enumerate_dom_ids`])
+  /// back into a `dom2` [`NodeId`].
   pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
-    if preorder_id == 0 {
-      return None;
-    }
-    self.preorder_to_node_id.get(preorder_id).copied()
+    self
+      .preorder_to_node_id
+      .get(preorder_id)
+      .copied()
+      .flatten()
   }
 
-  /// Translate a `dom2` [`NodeId`] to its 1-based preorder id.
+  /// Translate a `dom2` [`NodeId`] to its 1-based renderer pre-order id.
   ///
-  /// Returns `None` when the node is in a subtree that is not traversed for selector matching
-  /// (currently: inert template contents).
+  /// Returns `None` for nodes that are not reachable from the document root (detached subtrees).
+  pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
+    self
+      .node_id_to_preorder
+      .get(node_id.index())
+      .copied()
+      .and_then(|v| (v != 0).then_some(v))
+  }
+}
+
+#[derive(Debug, Clone)]
+struct SelectorDomMapping {
+  preorder_to_node_id: Vec<Option<NodeId>>,
+  node_id_to_preorder: Vec<usize>,
+}
+
+impl SelectorDomMapping {
+  pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
+    self
+      .preorder_to_node_id
+      .get(preorder_id)
+      .copied()
+      .flatten()
+  }
+
+  /// Translate a `dom2` [`NodeId`] to its selector-matching pre-order id.
+  ///
+  /// Returns `None` when the node is either detached or lives under an inert `<template>` subtree
+  /// that is skipped for selector matching.
   pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
     self
       .node_id_to_preorder
@@ -248,23 +282,20 @@ impl Document {
     root
   }
 
-  fn build_preorder_mapping(&self) -> RendererDomMapping {
+  fn build_renderer_preorder_mapping(&self) -> RendererDomMapping {
     // Preorder ids are 1-based (index 0 unused), matching `crate::dom::enumerate_dom_ids` and the
     // debug inspector.
-    let mut preorder_to_node_id: Vec<NodeId> = Vec::with_capacity(self.nodes.len() + 1);
-    preorder_to_node_id.push(NodeId(usize::MAX));
+    let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
+    preorder_to_node_id.push(None);
     let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
 
     let mut stack: Vec<NodeId> = vec![self.root];
     while let Some(id) = stack.pop() {
       let preorder_id = preorder_to_node_id.len();
-      preorder_to_node_id.push(id);
+      preorder_to_node_id.push(Some(id));
       node_id_to_preorder[id.0] = preorder_id;
 
       let node = self.node(id);
-      if node.inert_subtree {
-        continue;
-      }
       // Push children in reverse so we traverse in tree order.
       for child in node.children.iter().rev() {
         stack.push(*child);
@@ -277,10 +308,39 @@ impl Document {
     }
   }
 
+  fn build_selector_preorder_mapping(&self) -> SelectorDomMapping {
+    // Preorder ids are 1-based (index 0 unused), matching selector-matching traversals in this
+    // module (e.g. `query_selector`).
+    let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
+    preorder_to_node_id.push(None);
+    let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
+
+    let mut stack: Vec<NodeId> = vec![self.root];
+    while let Some(id) = stack.pop() {
+      let preorder_id = preorder_to_node_id.len();
+      preorder_to_node_id.push(Some(id));
+      node_id_to_preorder[id.0] = preorder_id;
+
+      let node = self.node(id);
+      if node.inert_subtree {
+        continue;
+      }
+      // Push children in reverse so we traverse in tree order.
+      for child in node.children.iter().rev() {
+        stack.push(*child);
+      }
+    }
+
+    SelectorDomMapping {
+      preorder_to_node_id,
+      node_id_to_preorder,
+    }
+  }
+
   pub fn to_renderer_dom_with_mapping(&self) -> RendererDomSnapshot {
     RendererDomSnapshot {
       dom: self.to_renderer_dom(),
-      mapping: self.build_preorder_mapping(),
+      mapping: self.build_renderer_preorder_mapping(),
     }
   }
 
@@ -290,13 +350,14 @@ impl Document {
     scope: Option<NodeId>,
   ) -> Result<Option<NodeId>, DomException> {
     let selector_list = parse_selector_list(selectors)?;
-    let snapshot = self.to_renderer_dom_with_mapping();
-    let quirks_mode = snapshot.dom.document_quirks_mode();
+    let snapshot = self.to_renderer_dom();
+    let mapping = self.build_selector_preorder_mapping();
+    let quirks_mode = snapshot.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
+    let scope_preorder = scope.and_then(|id| mapping.preorder_for_node_id(id));
     if scope.is_some() && scope_preorder.is_none() {
       return Ok(None);
     }
@@ -310,7 +371,7 @@ impl Document {
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot.dom,
+      node: &snapshot,
       exiting: false,
       node_id: NodeId(usize::MAX),
     });
@@ -329,8 +390,7 @@ impl Document {
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = snapshot
-        .mapping
+      let dom2_id = mapping
         .node_id_for_preorder(preorder_id)
         .unwrap_or(self.root);
 
@@ -381,13 +441,14 @@ impl Document {
     scope: Option<NodeId>,
   ) -> Result<Vec<NodeId>, DomException> {
     let selector_list = parse_selector_list(selectors)?;
-    let snapshot = self.to_renderer_dom_with_mapping();
-    let quirks_mode = snapshot.dom.document_quirks_mode();
+    let snapshot = self.to_renderer_dom();
+    let mapping = self.build_selector_preorder_mapping();
+    let quirks_mode = snapshot.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let scope_preorder = scope.and_then(|id| snapshot.mapping.preorder_for_node_id(id));
+    let scope_preorder = scope.and_then(|id| mapping.preorder_for_node_id(id));
     if scope.is_some() && scope_preorder.is_none() {
       return Ok(Vec::new());
     }
@@ -402,7 +463,7 @@ impl Document {
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot.dom,
+      node: &snapshot,
       exiting: false,
       node_id: NodeId(usize::MAX),
     });
@@ -421,8 +482,7 @@ impl Document {
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = snapshot
-        .mapping
+      let dom2_id = mapping
         .node_id_for_preorder(preorder_id)
         .unwrap_or(self.root);
 
@@ -481,13 +541,14 @@ impl Document {
       _ => return Ok(false),
     }
 
-    let snapshot = self.to_renderer_dom_with_mapping();
-    let quirks_mode = snapshot.dom.document_quirks_mode();
+    let snapshot = self.to_renderer_dom();
+    let mapping = self.build_selector_preorder_mapping();
+    let quirks_mode = snapshot.document_quirks_mode();
 
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let element_preorder = snapshot.mapping.preorder_for_node_id(element);
+    let element_preorder = mapping.preorder_for_node_id(element);
     let Some(target_preorder) = element_preorder else {
       // The element lives in an inert subtree that is not traversed for selector matching.
       return Ok(false);
@@ -502,7 +563,7 @@ impl Document {
     let mut ancestors: Vec<&DomNode> = Vec::new();
     let mut stack: Vec<StackItem<'_>> = Vec::new();
     stack.push(StackItem {
-      node: &snapshot.dom,
+      node: &snapshot,
       exiting: false,
       node_id: NodeId(usize::MAX),
     });
@@ -516,8 +577,7 @@ impl Document {
 
       let preorder_id = next_preorder_id;
       next_preorder_id += 1;
-      let dom2_id = snapshot
-        .mapping
+      let dom2_id = mapping
         .node_id_for_preorder(preorder_id)
         .unwrap_or(self.root);
 
@@ -561,3 +621,6 @@ impl Document {
     Ok(false)
   }
 }
+
+#[cfg(test)]
+mod mapping_tests;
