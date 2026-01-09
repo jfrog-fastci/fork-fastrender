@@ -39,6 +39,10 @@ smoke mode (`FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`; see [env-vars.md](env-vars.md
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
+  - Also contains the current in-binary render worker thread (`spawn_default_render_worker`) that
+    handles basic navigation/scroll/paint for the windowed UI.
+  - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
+    [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
   [`src/ui/`](../src/ui/)
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
@@ -120,7 +124,7 @@ render job at a time; concurrent renders would need per-job routing.
 FastRender cancellation is *cooperative*: `RenderDeadline` can carry a `cancel_callback` that is
 polled throughout the pipeline (see [`RenderDeadline::check`](../src/render_control.rs)).
 
-The browser UI scaffolding uses a generation-counter approach in [`src/ui/cancel.rs`](../src/ui/cancel.rs):
+The browser UI uses a generation-counter approach in [`src/ui/cancel.rs`](../src/ui/cancel.rs):
 
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
