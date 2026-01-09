@@ -60,6 +60,16 @@ fn effective_referrer_policy(request: &Request, ctx: WebFetchExecutionContext<'_
   }
 }
 
+fn origin_from_url_tolerant(url: &str) -> Option<DocumentOrigin> {
+  origin_from_url(url).or_else(|| {
+    let normalized = normalize_http_url_for_resolution(url);
+    if normalized.as_ref() == url {
+      return None;
+    }
+    origin_from_url(normalized.as_ref())
+  })
+}
+
 fn url_base_for_origin(origin: &DocumentOrigin) -> Option<Url> {
   // `DocumentOrigin` stores only scheme/host/port (no path), so the best we can do is treat the
   // origin as the base directory.
@@ -155,7 +165,12 @@ pub fn execute_web_fetch<'a>(
   }
 
   let referrer_url = effective_referrer_url(request, ctx);
-  let client_origin = ctx.client_origin;
+  let referrer_origin = ctx
+    .client_origin
+    .is_none()
+    .then(|| referrer_url.and_then(origin_from_url_tolerant))
+    .flatten();
+  let client_origin = ctx.client_origin.or(referrer_origin.as_ref());
 
   let mut requested_url_storage: Option<String> = None;
   let requested_url = resolve_request_url(
@@ -1579,12 +1594,10 @@ mod tests {
     // percent-encode them during URL resolution. We normalize such referrers so relative request
     // URLs still resolve against the full path instead of falling back to the origin root.
     let fetcher = UrlAssertingFetcher;
-    let origin = origin_from_url("https://example.com/").expect("origin");
     let mut request = Request::new("GET", "sub");
     request.mode = RequestMode::SameOrigin;
     let ctx = WebFetchExecutionContext {
       referrer_url: Some("https://example.com/dir/page?x=1|2"),
-      client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
     let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
