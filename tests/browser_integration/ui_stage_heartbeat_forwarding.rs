@@ -253,6 +253,14 @@ fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
+  // Allow any trailing stage heartbeats enqueued by background threads to arrive.
+  while let Ok(msg) = ui_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+    if let WorkerToUi::Stage { tab_id: got, stage } = msg {
+      if got == tab_id {
+        stages_after_input.push(stage);
+      }
+    }
+  }
   assert!(saw_frame_after_input, "expected FrameReady after PointerMove");
   assert!(
     !stages_after_input.is_empty(),
@@ -413,6 +421,14 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_for_navigation_and_repain
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  // Allow any trailing stage heartbeats enqueued by background threads to arrive.
+  while let Ok(msg) = ui_rx.recv_timeout(std::time::Duration::from_millis(50)) {
+    if let WorkerToUi::Stage { tab_id: got, stage } = msg {
+      if got == tab_id {
+        stages_after_scroll.push(stage);
+      }
     }
   }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");

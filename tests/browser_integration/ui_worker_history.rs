@@ -154,11 +154,21 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
+  // New tabs always perform an initial `about:newtab` navigation. Wait for it to complete so this
+  // test has deterministic history state.
+  let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert_eq!(url, "about:newtab");
+  assert!(!can_go_back);
+  assert!(!can_go_forward);
+  let _ = next_frame_ready(&rx, tab_id);
+  let _ = next_scroll_state_updated(&rx, tab_id);
+  while rx.try_recv().is_ok() {}
+
   tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
-  assert!(!can_go_back);
+  assert!(can_go_back);
   assert!(!can_go_forward);
   let frame_a = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_a, (255, 0, 0, 255));
@@ -175,7 +185,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   tx.send(UiToWorker::GoBack { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
-  assert!(!can_go_back);
+  assert!(can_go_back);
   assert!(can_go_forward);
   let frame_back = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_back, (255, 0, 0, 255));
@@ -205,6 +215,15 @@ fn reload_does_not_create_new_history_entry() {
   tx.send(viewport_changed_msg(tab_id, (64, 64), 1.0))
   .unwrap();
 
+  // Wait for the initial about:newtab navigation so history state is stable.
+  let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert_eq!(url, "about:newtab");
+  assert!(!can_go_back);
+  assert!(!can_go_forward);
+  let _ = next_frame_ready(&rx, tab_id);
+  let _ = next_scroll_state_updated(&rx, tab_id);
+  while rx.try_recv().is_ok() {}
+
   tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::TypedUrl))
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
@@ -219,7 +238,7 @@ fn reload_does_not_create_new_history_entry() {
   tx.send(UiToWorker::GoBack { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
-  assert!(!can_go_back);
+  assert!(can_go_back);
   assert!(can_go_forward);
   let frame = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame, (255, 0, 0, 255));
@@ -227,7 +246,7 @@ fn reload_does_not_create_new_history_entry() {
   tx.send(UiToWorker::Reload { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
-  assert!(!can_go_back);
+  assert!(can_go_back);
   assert!(can_go_forward);
   let frame = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame, (255, 0, 0, 255));

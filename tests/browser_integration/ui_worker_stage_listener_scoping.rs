@@ -121,6 +121,14 @@ fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
       Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
   }
+  // Allow any trailing stage heartbeats enqueued by background threads to arrive.
+  while let Ok(msg) = ui_rx.recv_timeout(Duration::from_millis(50)) {
+    if let WorkerToUi::Stage { tab_id: got, stage } = msg {
+      if got == tab_id {
+        stages_after_scroll.push(stage);
+      }
+    }
+  }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
     !stages_after_scroll.is_empty(),

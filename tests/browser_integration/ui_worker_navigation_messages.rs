@@ -84,6 +84,14 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
     .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .expect("viewport");
 
+  // Drain the initial about:newtab navigation so subsequent assertions don't race it.
+  let (url, back, forward) = next_navigation_committed(&handle.ui_rx, tab_id);
+  assert_eq!(url, "about:newtab");
+  assert!(!back);
+  assert!(!forward);
+  let _ = next_scroll_state_updated(&handle.ui_rx, tab_id);
+  while handle.ui_rx.try_recv().is_ok() {}
+
   handle
     .ui_tx
     .send(support::navigate_msg(
@@ -94,7 +102,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
     .expect("navigate a");
   let (url, back, forward) = next_navigation_committed(&handle.ui_rx, tab_id);
   assert_eq!(url, url_a);
-  assert!(!back);
+  assert!(back);
   assert!(!forward);
   let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 0.0);
@@ -134,7 +142,7 @@ fn history_navigation_messages_update_history_and_restore_scroll() {
     .expect("go back");
   let (url, back, forward) = next_navigation_committed(&handle.ui_rx, tab_id);
   assert_eq!(url, url_a);
-  assert!(!back);
+  assert!(back);
   assert!(forward);
   let scroll = next_scroll_state_updated(&handle.ui_rx, tab_id);
   assert_eq!(scroll.viewport.y, 120.0);

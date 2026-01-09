@@ -321,7 +321,7 @@ fn history_back_forward_emits_committed_urls() {
     } => Some((url.as_str(), *can_go_back, *can_go_forward)),
     _ => None,
   });
-  assert_eq!(back_commit, Some((a_url.as_str(), false, true)));
+  assert_eq!(back_commit, Some((a_url.as_str(), true, true)));
 
   let (_, forward_events) = h.send_and_wait_for_frame(tab_id, UiToWorker::GoForward { tab_id });
   let forward_events = drain_after_frame(&h, forward_events);

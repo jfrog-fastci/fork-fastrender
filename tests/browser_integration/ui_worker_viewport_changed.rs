@@ -154,20 +154,11 @@ fn viewport_changed_does_not_repaint_before_first_navigation() {
     .send(support::viewport_changed_msg(tab_id, (200, 100), 2.0))
     .expect("ViewportChanged");
 
-  // ViewportChanged should not emit frames until we have navigated at least once. Emitting a blank
-  // frame is wasteful and creates UI flakiness for clients that wait on the first navigation frame.
-  let msgs = support::drain_for(&ui_rx, Duration::from_millis(300));
-  let saw_frame = msgs.iter().any(|msg| {
-    matches!(
-      msg,
-      WorkerToUi::FrameReady { tab_id: got, .. } if *got == tab_id
-    )
-  });
-  assert!(
-    !saw_frame,
-    "unexpected FrameReady before navigation for tab {tab_id:?}:\n{}",
-    support::format_messages(&msgs)
-  );
+  // `CreateTab` triggers an initial `about:newtab` navigation. Ensure the first rendered frame uses
+  // the updated viewport size + device pixel ratio, even when the `ViewportChanged` message arrives
+  // immediately after `CreateTab`.
+  let frame = wait_for_frame_with_meta(&ui_rx, tab_id, (200, 100), 2.0);
+  assert_pixmap_matches_viewport(&frame);
 
   drop(ui_tx);
   join.join().unwrap();

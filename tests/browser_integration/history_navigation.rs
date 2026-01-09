@@ -120,6 +120,14 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
   worker_tx
     .send(create_tab_msg(tab_id, None))
     .expect("send CreateTab");
+
+  // New tabs always perform an initial `about:newtab` navigation. Wait for it to commit so the rest
+  // of this test has deterministic history state (and so subsequent navigations don't race it).
+  let (committed_newtab, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
+  assert_eq!(committed_newtab, "about:newtab");
+  assert!(!can_back);
+  assert!(!can_forward);
+
   worker_tx
     .send(navigate_msg(
       tab_id,
@@ -129,7 +137,7 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
     .expect("send Navigate a");
   let (committed_a, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(committed_a, "https://example.test/a");
-  assert!(!can_back);
+  assert!(can_back);
   assert!(!can_forward);
 
   worker_tx
@@ -149,7 +157,23 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
     .expect("send GoBack");
   let (back_to_a, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
   assert_eq!(back_to_a, "https://example.test/a");
+  assert!(can_back);
+  assert!(can_forward);
+
+  worker_tx
+    .send(UiToWorker::GoBack { tab_id })
+    .expect("send GoBack to newtab");
+  let (back_to_newtab, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
+  assert_eq!(back_to_newtab, "about:newtab");
   assert!(!can_back);
+  assert!(can_forward);
+
+  worker_tx
+    .send(UiToWorker::GoForward { tab_id })
+    .expect("send GoForward");
+  let (forward_to_a, can_back, can_forward) = recv_nav_committed(&worker_rx, tab_id);
+  assert_eq!(forward_to_a, "https://example.test/a");
+  assert!(can_back);
   assert!(can_forward);
 
   worker_tx

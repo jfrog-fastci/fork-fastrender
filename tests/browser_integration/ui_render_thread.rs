@@ -307,15 +307,44 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     .unwrap();
   tx.send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
-  tx.send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+  tx.send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
-  let frame = match super::support::recv_for_tab(&rx, tab_id, DEFAULT_TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
-  }) {
-    Some(WorkerToUi::FrameReady { frame, .. }) => frame,
-    Some(other) => panic!("expected FrameReady, got {other:?}"),
-    None => panic!("timed out waiting for FrameReady"),
+  // A newly created tab may emit an initial `about:newtab` navigation+frame before we get our
+  // explicit `Navigate` message through. Wait specifically for the file:// navigation to commit and
+  // then for its first frame.
+  let mut committed = false;
+  let frame = loop {
+    match rx.recv_timeout(DEFAULT_TIMEOUT) {
+      Ok(msg) => match msg {
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_id,
+          url: committed_url,
+          ..
+        } if msg_id == tab_id && committed_url == url => {
+          committed = true;
+        }
+        WorkerToUi::NavigationFailed {
+          tab_id: msg_id,
+          url: failed_url,
+          error,
+          ..
+        } if msg_id == tab_id && failed_url == url => {
+          panic!("navigation failed for {failed_url}: {error}");
+        }
+        WorkerToUi::FrameReady {
+          tab_id: msg_id,
+          frame,
+        } if committed && msg_id == tab_id => break frame,
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+        panic!("timed out waiting for NavigationCommitted+FrameReady for {url}");
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        panic!("worker disconnected while waiting for initial FrameReady for {url}");
+      }
+    }
   };
   assert_eq!(rgba_at_css(&frame, 10, 50), [255, 0, 0, 255]);
 

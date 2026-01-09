@@ -44,6 +44,15 @@ fn missing_file_navigation_emits_navigation_failed_renders_error_frame_and_stops
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("viewport");
+
+  // `CreateTab` with `initial_url: None` triggers an initial `about:newtab` navigation. Drain it so
+  // this test can focus on the missing-file navigation flow.
+  super::support::recv_for_tab(&ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("initial about:newtab FrameReady");
+  while ui_rx.try_recv().is_ok() {}
+
   ui_tx
     .send(navigate_msg(
       tab_id,
