@@ -24,7 +24,10 @@ const MAX_SCRIPT_LEVEL: u8 = 8;
 const MIN_SCRIPT_FONT_SIZE_PX: f32 = 6.0;
 
 fn is_ascii_whitespace_mathml(c: char) -> bool {
-  matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  matches!(
+    c,
+    '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'
+  )
 }
 
 fn trim_ascii_whitespace(value: &str) -> &str {
@@ -440,6 +443,12 @@ pub enum MathNode {
     form: Option<OperatorForm>,
     /// `<mo stretchy="...">` override. If omitted, the operator dictionary default is used.
     stretchy: Option<bool>,
+    /// `<mo symmetric="...">` override. If omitted, the operator dictionary default is used.
+    symmetric: Option<bool>,
+    /// `<mo minsize="...">` override.
+    minsize: Option<MathLength>,
+    /// `<mo maxsize="...">` override.
+    maxsize: Option<MathLength>,
     /// `<mo lspace="...">` override.
     lspace: Option<MathLengthOrKeyword>,
     /// `<mo rspace="...">` override.
@@ -917,14 +926,16 @@ fn parse_row_align_list(value: Option<&str>) -> Vec<RowAlign> {
   value
     .map(|v| {
       v.split(|c| c == ' ' || c == ',')
-        .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
-          "axis" => Some(RowAlign::Axis),
-          "top" => Some(RowAlign::Top),
-          "bottom" => Some(RowAlign::Bottom),
-          "center" | "centre" | "middle" => Some(RowAlign::Center),
-          "baseline" => Some(RowAlign::Baseline),
-          _ => None,
-        })
+        .filter_map(
+          |item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
+            "axis" => Some(RowAlign::Axis),
+            "top" => Some(RowAlign::Top),
+            "bottom" => Some(RowAlign::Bottom),
+            "center" | "centre" | "middle" => Some(RowAlign::Center),
+            "baseline" => Some(RowAlign::Baseline),
+            _ => None,
+          },
+        )
         .collect()
     })
     .unwrap_or_default()
@@ -934,12 +945,14 @@ fn parse_column_align_list(value: Option<&str>) -> Vec<ColumnAlign> {
   value
     .map(|v| {
       v.split(|c| c == ' ' || c == ',')
-        .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
-          "left" => Some(ColumnAlign::Left),
-          "center" | "centre" => Some(ColumnAlign::Center),
-          "right" => Some(ColumnAlign::Right),
-          _ => None,
-        })
+        .filter_map(
+          |item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
+            "left" => Some(ColumnAlign::Left),
+            "center" | "centre" => Some(ColumnAlign::Center),
+            "right" => Some(ColumnAlign::Right),
+            _ => None,
+          },
+        )
         .collect()
     })
     .unwrap_or_default()
@@ -955,21 +968,23 @@ fn parse_menclose_notation(value: Option<&str>) -> Vec<MencloseNotation> {
   };
   let parsed: Vec<MencloseNotation> = raw
     .split(|c| c == ' ' || c == ',')
-    .filter_map(|item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
-      "box" => Some(MencloseNotation::Box),
-      "roundedbox" => Some(MencloseNotation::RoundedBox),
-      "circle" => Some(MencloseNotation::Circle),
-      "top" => Some(MencloseNotation::Top),
-      "bottom" => Some(MencloseNotation::Bottom),
-      "left" => Some(MencloseNotation::Left),
-      "right" => Some(MencloseNotation::Right),
-      "horizontalstrike" => Some(MencloseNotation::HorizontalStrike),
-      "verticalstrike" => Some(MencloseNotation::VerticalStrike),
-      "updiagonalstrike" => Some(MencloseNotation::UpDiagonalStrike),
-      "downdiagonalstrike" => Some(MencloseNotation::DownDiagonalStrike),
-      "longdiv" => Some(MencloseNotation::LongDiv),
-      _ => None,
-    })
+    .filter_map(
+      |item| match trim_ascii_whitespace(item).to_ascii_lowercase().as_str() {
+        "box" => Some(MencloseNotation::Box),
+        "roundedbox" => Some(MencloseNotation::RoundedBox),
+        "circle" => Some(MencloseNotation::Circle),
+        "top" => Some(MencloseNotation::Top),
+        "bottom" => Some(MencloseNotation::Bottom),
+        "left" => Some(MencloseNotation::Left),
+        "right" => Some(MencloseNotation::Right),
+        "horizontalstrike" => Some(MencloseNotation::HorizontalStrike),
+        "verticalstrike" => Some(MencloseNotation::VerticalStrike),
+        "updiagonalstrike" => Some(MencloseNotation::UpDiagonalStrike),
+        "downdiagonalstrike" => Some(MencloseNotation::DownDiagonalStrike),
+        "longdiv" => Some(MencloseNotation::LongDiv),
+        _ => None,
+      },
+    )
     .collect();
   if parsed.is_empty() {
     vec![MencloseNotation::Box]
@@ -1156,6 +1171,9 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         }),
         "mo" => normalized_text(node, false).map(|text| {
           let stretchy = parse_display_style(node.get_attribute_ref("stretchy"));
+          let symmetric = parse_display_style(node.get_attribute_ref("symmetric"));
+          let minsize = parse_math_length(node.get_attribute_ref("minsize"));
+          let maxsize = parse_math_length(node.get_attribute_ref("maxsize"));
           let form = parse_operator_form(node.get_attribute_ref("form"));
           let lspace = parse_math_space(node.get_attribute_ref("lspace"));
           let rspace = parse_math_space(node.get_attribute_ref("rspace"));
@@ -1163,6 +1181,9 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             text,
             form,
             stretchy,
+            symmetric,
+            minsize,
+            maxsize,
             lspace,
             rspace,
             variant: parse_mathvariant(node),
@@ -1357,47 +1378,55 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           };
           let inner = parse_children(node);
           if inner.is_empty() {
-            None
-          } else {
-            let mut row = Vec::new();
-            row.push(MathNode::Operator {
-              text: open,
-              form: None,
-              stretchy: Some(true),
-              lspace: None,
-              rspace: None,
-              variant: Some(MathVariant::Normal),
-            });
-            for (idx, child) in inner.into_iter().enumerate() {
-              if idx > 0 {
-                if let Some(separators) = &separators {
-                  let sep = separators
-                    .get(idx - 1)
-                    .or_else(|| separators.last())
-                    .copied()
-                    .unwrap_or(',');
-                  row.push(MathNode::Operator {
-                    text: sep.to_string(),
-                    form: None,
-                    stretchy: Some(false),
-                    lspace: None,
-                    rspace: None,
-                    variant: Some(MathVariant::Normal),
-                  });
-                }
-              }
-              row.push(child);
-            }
-            row.push(MathNode::Operator {
-              text: close,
-              form: None,
-              stretchy: Some(true),
-              lspace: None,
-              rspace: None,
-              variant: Some(MathVariant::Normal),
-            });
-            Some(MathNode::Row(row))
+            return None;
           }
+          let mut row = Vec::new();
+          row.push(MathNode::Operator {
+            text: open,
+            form: None,
+            stretchy: Some(true),
+            symmetric: None,
+            minsize: None,
+            maxsize: None,
+            lspace: None,
+            rspace: None,
+            variant: Some(MathVariant::Normal),
+          });
+          for (idx, child) in inner.into_iter().enumerate() {
+            if idx > 0 {
+              if let Some(separators) = &separators {
+                let sep = separators
+                  .get(idx - 1)
+                  .or_else(|| separators.last())
+                  .copied()
+                  .unwrap_or(',');
+                row.push(MathNode::Operator {
+                  text: sep.to_string(),
+                  form: None,
+                  stretchy: Some(false),
+                  symmetric: None,
+                  minsize: None,
+                  maxsize: None,
+                  lspace: None,
+                  rspace: None,
+                  variant: Some(MathVariant::Normal),
+                });
+              }
+            }
+            row.push(child);
+          }
+          row.push(MathNode::Operator {
+            text: close,
+            form: None,
+            stretchy: Some(true),
+            symmetric: None,
+            minsize: None,
+            maxsize: None,
+            lspace: None,
+            rspace: None,
+            variant: Some(MathVariant::Normal),
+          });
+          Some(MathNode::Row(row))
         }
         "menclose" => {
           let notation = parse_menclose_notation(node.get_attribute_ref("notation"));
@@ -1503,6 +1532,9 @@ struct OperatorProperties {
   stretchy: bool,
   large_op: bool,
   movable_limits: bool,
+  symmetric: bool,
+  minsize: Option<MathLength>,
+  maxsize: Option<MathLength>,
   lspace: MathLengthOrKeyword,
   rspace: MathLengthOrKeyword,
 }
@@ -1512,6 +1544,9 @@ struct OperatorLike<'a> {
   text: &'a str,
   form: Option<OperatorForm>,
   stretchy: Option<bool>,
+  symmetric: Option<bool>,
+  minsize: Option<MathLength>,
+  maxsize: Option<MathLength>,
   lspace: Option<MathLengthOrKeyword>,
   rspace: Option<MathLengthOrKeyword>,
 }
@@ -1524,6 +1559,9 @@ impl OperatorProperties {
       stretchy: false,
       large_op: false,
       movable_limits: false,
+      symmetric: false,
+      minsize: None,
+      maxsize: None,
       lspace: MathLengthOrKeyword::Zero,
       rspace: MathLengthOrKeyword::Zero,
     }
@@ -1634,6 +1672,10 @@ impl MathLayoutContext {
         stretchy: props.stretchy,
         large_op: props.large_op,
         movable_limits: props.movable_limits,
+        // MathML Core: common delimiters default symmetric stretching.
+        symmetric: props.fence,
+        minsize: None,
+        maxsize: None,
         lspace: props.lspace,
         rspace: props.rspace,
       })
@@ -1646,6 +1688,9 @@ impl MathLayoutContext {
         text,
         form,
         stretchy,
+        symmetric,
+        minsize,
+        maxsize,
         lspace,
         rspace,
         ..
@@ -1653,6 +1698,9 @@ impl MathLayoutContext {
         text: text.as_str(),
         form: *form,
         stretchy: *stretchy,
+        symmetric: *symmetric,
+        minsize: *minsize,
+        maxsize: *maxsize,
         lspace: *lspace,
         rspace: *rspace,
       }),
@@ -1864,9 +1912,11 @@ impl MathLayoutContext {
     layout: MathLayout,
     target_ascent: f32,
     target_descent: f32,
+    baseline_shift: f32,
   ) -> MathLayout {
     let desired_height = (target_ascent + target_descent).max(layout.height);
-    let offset_y = target_ascent - layout.baseline + (desired_height - layout.height) * 0.5;
+    let offset_y =
+      (target_ascent - baseline_shift) - layout.baseline + (desired_height - layout.height) * 0.5;
     let fragments = layout
       .fragments
       .into_iter()
@@ -2029,6 +2079,7 @@ impl MathLayoutContext {
     base_style: &ComputedStyle,
     apply_delimited_min_height: bool,
     apply_display_operator_min_height: bool,
+    baseline_shift: f32,
   ) -> Option<MathLayout> {
     let required_height = target_ascent + target_descent;
     let (runs, _base_metrics) = self.shape_text(text, base_style, style, variant);
@@ -2077,7 +2128,7 @@ impl MathLayoutContext {
         },
         style.font_size,
       ) {
-        return Some(self.align_stretch(layout, target_ascent, target_descent));
+        return Some(self.align_stretch(layout, target_ascent, target_descent, baseline_shift));
       }
     }
     let current_height = metrics.ascent + metrics.descent;
@@ -2092,7 +2143,7 @@ impl MathLayoutContext {
       let resolved_variant =
         self.resolve_variant(Some(variant), &stretch_style, MathVariant::Normal);
       let layout = self.layout_glyphs(text, base_style, &stretch_style, resolved_variant);
-      return Some(self.align_stretch(layout, target_ascent, target_descent));
+      return Some(self.align_stretch(layout, target_ascent, target_descent, baseline_shift));
     }
     None
   }
@@ -2422,16 +2473,17 @@ impl MathLayoutContext {
     }
   }
 
-  fn layout_row(
+  fn layout_row_children_and_properties(
     &mut self,
     children: &[MathNode],
     style: &MathStyle,
     base_style: &ComputedStyle,
-  ) -> MathLayout {
+  ) -> (Vec<MathLayout>, Vec<Option<OperatorProperties>>) {
     let mut layouts = Vec::with_capacity(children.len());
     for child in children {
       layouts.push(self.layout_node(child, style, base_style));
     }
+
     // Determine default operator properties. These drive both stretching and spacing.
     let mut operator_props: Vec<Option<OperatorProperties>> = vec![None; children.len()];
     for (idx, child) in children.iter().enumerate() {
@@ -2441,6 +2493,9 @@ impl MathLayoutContext {
       let form = Self::inferred_operator_form(children, idx);
       let mut props = Self::operator_default_properties(op.text, form);
       props.stretchy = op.stretchy.unwrap_or(props.stretchy);
+      props.symmetric = op.symmetric.unwrap_or(props.symmetric);
+      props.minsize = op.minsize.or(props.minsize);
+      props.maxsize = op.maxsize.or(props.maxsize);
       props.lspace = op.lspace.unwrap_or(props.lspace);
       props.rspace = op.rspace.unwrap_or(props.rspace);
       operator_props[idx] = Some(props);
@@ -2476,6 +2531,7 @@ impl MathLayoutContext {
           base_style,
           false,
           true,
+          0.0,
         ) {
           if let Some(slot) = layouts.get_mut(idx) {
             *slot = layout;
@@ -2495,7 +2551,9 @@ impl MathLayoutContext {
         props.filter(|props| props.stretchy).map(|_| idx)
       })
       .collect();
+
     if !stretchy_indices.is_empty() {
+      let metrics = self.base_font_metrics(base_style, style.font_size);
       let mut stretchy_mask = vec![false; layouts.len()];
       for idx in &stretchy_indices {
         if let Some(slot) = stretchy_mask.get_mut(*idx) {
@@ -2525,27 +2583,85 @@ impl MathLayoutContext {
         target_descent = style.font_size * 0.2;
       }
 
+      let base_total = target_ascent + target_descent;
+
       for idx in stretchy_indices {
         let Some(props) = operator_props.get(idx).and_then(|p| *p) else {
           continue;
         };
-        if let MathNode::Operator { text, variant, .. } = &children[idx] {
-          let resolved_variant = self.resolve_variant(*variant, style, MathVariant::Normal);
-          if let Some(layout) = self.stretch_operator_vertical(
-            text,
-            resolved_variant,
-            target_ascent,
-            target_descent,
-            style,
-            base_style,
-            props.fence,
-            props.large_op && style.display_style,
-          ) {
-            layouts[idx] = layout;
+        let MathNode::Operator { text, variant, .. } = &children[idx] else {
+          continue;
+        };
+
+        let resolved_variant = self.resolve_variant(*variant, style, MathVariant::Normal);
+        let constants = self.default_math_constants(style, base_style, resolved_variant);
+
+        let mut total = base_total;
+        if props.fence {
+          if let Some(min) = constants
+            .as_ref()
+            .and_then(|c| c.delimited_sub_formula_min_height)
+          {
+            total = total.max(min);
           }
+        }
+        if props.large_op && style.display_style {
+          if let Some(min) = constants
+            .as_ref()
+            .and_then(|c| c.display_operator_min_height)
+          {
+            total = total.max(min);
+          }
+        }
+        if let Some(min) = props.minsize {
+          total = total.max(self.resolve_length(min, style, &metrics));
+        }
+        if let Some(max) = props.maxsize {
+          total = total.min(self.resolve_length(max, style, &metrics));
+        }
+
+        let (target_ascent, target_descent, baseline_shift) = if props.symmetric {
+          let axis = constants
+            .as_ref()
+            .and_then(|c| c.axis_height)
+            .unwrap_or(0.0);
+          let half = (total * 0.5).max(0.0);
+          let axis = axis.min(half);
+          (half + axis, half - axis, axis)
+        } else if base_total > 0.0 {
+          let factor = total / base_total;
+          (target_ascent * factor, target_descent * factor, 0.0)
+        } else {
+          (target_ascent, target_descent, 0.0)
+        };
+
+        if let Some(layout) = self.stretch_operator_vertical(
+          text,
+          resolved_variant,
+          target_ascent,
+          target_descent,
+          style,
+          base_style,
+          false,
+          false,
+          baseline_shift,
+        ) {
+          layouts[idx] = layout;
         }
       }
     }
+
+    (layouts, operator_props)
+  }
+
+  fn layout_row(
+    &mut self,
+    children: &[MathNode],
+    style: &MathStyle,
+    base_style: &ComputedStyle,
+  ) -> MathLayout {
+    let (layouts, operator_props) =
+      self.layout_row_children_and_properties(children, style, base_style);
     if layouts.is_empty() {
       return self.layout_glyphs("", base_style, style, MathVariant::Normal);
     }
@@ -2689,6 +2805,7 @@ impl MathLayoutContext {
           base_style,
           false,
           false,
+          0.0,
         )
         .unwrap_or_else(|| self.layout_glyphs(slash_text, base_style, style, MathVariant::Normal));
 
@@ -3078,7 +3195,6 @@ impl MathLayoutContext {
     let constants =
       self.math_constants_for_layout(&base_layout, style, base_style, MathVariant::Normal);
     let script_style = style.script_with_constants(constants.as_ref());
-
     let italic_correction = base_layout
       .annotations
       .trailing_glyph
@@ -3100,33 +3216,47 @@ impl MathLayoutContext {
       .unwrap_or_else(|| self.base_font_metrics(base_style, style.font_size));
     let x_height = base_metrics.x_height.unwrap_or(style.font_size * 0.5);
 
-    let mut layout_script = |n: &MathNode, script_style: &MathStyle| -> MathLayout {
+    let mut layout_script = |n: &MathNode, node_style: &MathStyle| -> MathLayout {
       match n {
         MathNode::Operator {
           text,
           form,
           stretchy,
+          minsize,
+          maxsize,
           variant,
           ..
         } => {
-          let resolved = self.resolve_variant(*variant, script_style, MathVariant::Normal);
-          let default =
+          let resolved = self.resolve_variant(*variant, node_style, MathVariant::Normal);
+          let mut props =
             Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
-          if (*stretchy).unwrap_or(default.stretchy) {
+          props.stretchy = (*stretchy).unwrap_or(props.stretchy);
+          props.minsize = (*minsize).or(props.minsize);
+          props.maxsize = (*maxsize).or(props.maxsize);
+          if props.stretchy {
+            let metrics = self.base_font_metrics(base_style, node_style.font_size);
+            let mut target = stretch_target;
+            if let Some(min) = props.minsize {
+              target = target.max(self.resolve_length(min, node_style, &metrics));
+            }
+            if let Some(max) = props.maxsize {
+              target = target.min(self.resolve_length(max, node_style, &metrics));
+            }
             self
-              .stretch_operator_horizontal(text, resolved, stretch_target, script_style, base_style)
-              .unwrap_or_else(|| self.layout_node(n, script_style, base_style))
+              .stretch_operator_horizontal(text, resolved, target, node_style, base_style)
+              .unwrap_or_else(|| self.layout_node(n, node_style, base_style))
           } else {
-            self.layout_node(n, script_style, base_style)
+            self.layout_node(n, node_style, base_style)
           }
         }
-        _ => self.layout_node(n, script_style, base_style),
+        _ => self.layout_node(n, node_style, base_style),
       }
     };
 
-    let under_layout = under.map(|n| layout_script(n, if under_is_accent { style } else { &script_style }));
-    let over_layout = over.map(|n| layout_script(n, if over_is_accent { style } else { &script_style }));
-
+    let under_layout =
+      under.map(|n| layout_script(n, if under_is_accent { style } else { &script_style }));
+    let over_layout =
+      over.map(|n| layout_script(n, if over_is_accent { style } else { &script_style }));
     let over_gap = constants
       .as_ref()
       .and_then(|c| c.stretch_stack_gap_above_min)
@@ -3329,10 +3459,11 @@ impl MathLayoutContext {
         base_style,
         true,
         false,
+        0.0,
       )
       .unwrap_or_else(|| self.layout_glyphs("√", base_style, style, radical_variant));
     if (radical.height - target_height).abs() > style.font_size * 0.05 {
-      radical = self.align_stretch(radical, target_ascent, target_descent);
+      radical = self.align_stretch(radical, target_ascent, target_descent, 0.0);
     }
 
     let offset_x = radical.width + padding;
@@ -4019,6 +4150,7 @@ impl MathLayoutContext {
               base_style,
               false,
               true,
+              0.0,
             ) {
               layout = stretched;
             }
@@ -4422,6 +4554,40 @@ mod tests {
       total_glyphs > 0,
       "expected shaped glyphs (non-empty runs) for mapped variants"
     );
+  }
+
+  fn first_row_operator_height(
+    node: &MathNode,
+    style: &ComputedStyle,
+    font_ctx: &FontContext,
+    operator_text: &str,
+  ) -> f32 {
+    let MathNode::Math {
+      display_style,
+      children,
+    } = node
+    else {
+      panic!("expected math root");
+    };
+    let row_children = match children.get(0) {
+      Some(MathNode::Row(children)) => children.as_slice(),
+      Some(other) => std::slice::from_ref(other),
+      None => panic!("expected math content"),
+    };
+
+    let mut ctx = MathLayoutContext::new(font_ctx.clone());
+    let mut math_style = MathStyle::from_computed(style);
+    math_style.display_style = *display_style;
+
+    let (layouts, _) = ctx.layout_row_children_and_properties(row_children, &math_style, style);
+    for (node, layout) in row_children.iter().zip(layouts.iter()) {
+      if let Some(op) = MathLayoutContext::operator_like(node) {
+        if op.text == operator_text {
+          return layout.height;
+        }
+      }
+    }
+    panic!("operator {operator_text:?} not found in row");
   }
 
   #[test]
@@ -5044,6 +5210,38 @@ mod tests {
   }
 
   #[test]
+  fn mo_maxsize_caps_vertical_stretching() {
+    let ctx = bundled_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let with_maxsize = parse_math_from_html(
+      r#"<math display="block"><mrow>
+          <mo stretchy="true" maxsize="1em">(</mo>
+          <mfrac><mrow><mi>a</mi><mi>b</mi></mrow><mrow><mi>c</mi><mi>d</mi></mrow></mfrac>
+          <mo stretchy="true" maxsize="1em">)</mo>
+        </mrow></math>"#,
+    );
+    let without_maxsize = parse_math_from_html(
+      r#"<math display="block"><mrow>
+          <mo stretchy="true">(</mo>
+          <mfrac><mrow><mi>a</mi><mi>b</mi></mrow><mrow><mi>c</mi><mi>d</mi></mrow></mfrac>
+          <mo stretchy="true">)</mo>
+        </mrow></math>"#,
+    );
+
+    let capped = first_row_operator_height(&with_maxsize, &style, &ctx, "(");
+    let uncapped = first_row_operator_height(&without_maxsize, &style, &ctx, "(");
+    assert!(
+      capped < uncapped * 0.75,
+      "expected maxsize to cap stretchy delimiter height: capped={}, uncapped={}",
+      capped,
+      uncapped
+    );
+  }
+
+  #[test]
   fn identifier_default_variant_is_italic_for_single_character() {
     let ctx = bundled_font_context();
     let mut style = ComputedStyle::default();
@@ -5083,6 +5281,36 @@ mod tests {
       "non-accent overscript should be shrunk (over={}, base={})",
       over_run.font_size,
       base_run.font_size
+    );
+  }
+
+  #[test]
+  fn mo_minsize_enforces_minimum_vertical_stretching() {
+    let ctx = bundled_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let with_minsize = parse_math_from_html(
+      r#"<math display="block"><mrow>
+          <mo stretchy="true" minsize="3em">(</mo>
+          <mi>x</mi>
+        </mrow></math>"#,
+    );
+    let without_minsize = parse_math_from_html(
+      r#"<math display="block"><mrow>
+          <mo stretchy="true">(</mo>
+          <mi>x</mi>
+        </mrow></math>"#,
+    );
+
+    let enforced = first_row_operator_height(&with_minsize, &style, &ctx, "(");
+    let baseline = first_row_operator_height(&without_minsize, &style, &ctx, "(");
+    assert!(
+      enforced > baseline * 1.25,
+      "expected minsize to increase stretchy delimiter height: enforced={}, baseline={}",
+      enforced,
+      baseline
     );
   }
 }
