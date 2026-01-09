@@ -38,6 +38,7 @@ struct Prototypes {
   element: Value,
   document: Value,
   event: Value,
+  custom_event: Value,
   dom_exception: Value,
 }
 
@@ -68,6 +69,7 @@ pub struct DomJsRealm {
 
   next_event_id: Rc<Cell<u64>>,
   events: Rc<RefCell<FxHashMap<u64, events::Event>>>,
+  event_detail_roots: Rc<RefCell<FxHashMap<u64, RootId>>>,
   active_events: ActiveEventMap,
 
   prototypes: Prototypes,
@@ -89,6 +91,8 @@ impl DomJsRealm {
       Rc::new(RefCell::new(FxHashMap::default()));
     let next_event_id: Rc<Cell<u64>> = Rc::new(Cell::new(1));
     let events_map: Rc<RefCell<FxHashMap<u64, events::Event>>> =
+      Rc::new(RefCell::new(FxHashMap::default()));
+    let event_detail_roots: Rc<RefCell<FxHashMap<u64, RootId>>> =
       Rc::new(RefCell::new(FxHashMap::default()));
     let active_events: ActiveEventMap = Rc::new(RefCell::new(FxHashMap::default()));
 
@@ -116,6 +120,8 @@ impl DomJsRealm {
     let _ = rt.heap_mut().add_root(document_proto)?;
     let event_proto = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(event_proto)?;
+    let custom_event_proto = rt.alloc_object_value()?;
+    let _ = rt.heap_mut().add_root(custom_event_proto)?;
     let dom_exception_proto = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(dom_exception_proto)?;
 
@@ -125,6 +131,7 @@ impl DomJsRealm {
     rt.set_prototype(element_proto, Some(node_proto))?;
     rt.set_prototype(document_proto, Some(node_proto))?;
     rt.set_prototype(event_proto, Some(object_proto))?;
+    rt.set_prototype(custom_event_proto, Some(event_proto))?;
     rt.set_prototype(dom_exception_proto, Some(object_proto))?;
 
     let prototypes = Prototypes {
@@ -134,6 +141,7 @@ impl DomJsRealm {
       element: element_proto,
       document: document_proto,
       event: event_proto,
+      custom_event: custom_event_proto,
       dom_exception: dom_exception_proto,
     };
 
@@ -177,6 +185,7 @@ impl DomJsRealm {
       listener_callbacks.clone(),
       next_event_id.clone(),
       events_map.clone(),
+      event_detail_roots.clone(),
       active_events.clone(),
       dom.clone(),
       node_wrapper_cache.clone(),
@@ -196,6 +205,7 @@ impl DomJsRealm {
       listener_callbacks,
       next_event_id,
       events: events_map,
+      event_detail_roots,
       active_events,
       prototypes,
     })
@@ -261,6 +271,7 @@ impl DomJsRealm {
     let event_listeners = self.event_listeners.clone();
     let listener_callbacks = self.listener_callbacks.clone();
     let events_map = self.events.clone();
+    let event_detail_roots = self.event_detail_roots.clone();
     let active_events = self.active_events.clone();
     let prototypes = self.prototypes;
     let window = self.window;
@@ -272,12 +283,21 @@ impl DomJsRealm {
     // Allocate a fresh Event wrapper identity and store the Rust `Event` in our per-realm table.
     let event_id = self.next_event_id.get();
     self.next_event_id.set(event_id.wrapping_add(1));
+    let is_custom_event = event.detail.is_some();
+    set_event_detail_root(rt, &event_detail_roots, event_id, event.detail)?;
     events_map.borrow_mut().insert(event_id, event);
 
     let event_value = rt.alloc_object_value()?;
     // The Rust event table is not traced by the GC, so keep wrapper objects rooted.
     let _ = rt.heap_mut().add_root(event_value)?;
-    rt.set_prototype(event_value, Some(prototypes.event))?;
+    rt.set_prototype(
+      event_value,
+      Some(if is_custom_event {
+        prototypes.custom_event
+      } else {
+        prototypes.event
+      }),
+    )?;
     let Value::Object(event_obj) = event_value else {
       return Err(VmError::InvariantViolation(
         "alloc_object_value must return an object",
@@ -875,6 +895,29 @@ fn with_event<R>(
   Ok(f(event))
 }
 
+fn value_needs_gc_root(value: &Value) -> bool {
+  matches!(*value, Value::String(_) | Value::Symbol(_) | Value::Object(_))
+}
+
+fn set_event_detail_root(
+  rt: &mut VmJsRuntime,
+  event_detail_roots: &Rc<RefCell<FxHashMap<u64, RootId>>>,
+  event_id: u64,
+  detail: Option<Value>,
+) -> Result<(), VmError> {
+  let old_root = event_detail_roots.borrow_mut().remove(&event_id);
+  if let Some(old_root) = old_root {
+    rt.heap_mut().remove_root(old_root);
+  }
+
+  let Some(detail) = detail.filter(value_needs_gc_root) else {
+    return Ok(());
+  };
+  let root = rt.heap_mut().add_root(detail)?;
+  event_detail_roots.borrow_mut().insert(event_id, root);
+  Ok(())
+}
+
 fn wrap_event_target(
   rt: &mut VmJsRuntime,
   dom: &Rc<RefCell<dom2::Document>>,
@@ -965,6 +1008,7 @@ fn install_constructors(
   listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
   next_event_id: Rc<Cell<u64>>,
   events_map: Rc<RefCell<FxHashMap<u64, events::Event>>>,
+  event_detail_roots: Rc<RefCell<FxHashMap<u64, RootId>>>,
   active_events: ActiveEventMap,
   dom: Rc<RefCell<dom2::Document>>,
   node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
@@ -1074,6 +1118,71 @@ fn install_constructors(
   };
   define_data_property_str(rt, event_ctor, "prototype", event_proto, false)?;
   define_data_property_str(rt, global, "Event", event_ctor, false)?;
+
+  // CustomEvent constructor: produces a platform-backed CustomEvent object.
+  //
+  // Note: like Event above, this does not currently enforce `new` (calling as a function returns a
+  // new object). The MVP binding layer prioritizes compatibility over strict WebIDL `[[Call]]`
+  // semantics.
+  let custom_event_proto = prototypes.custom_event;
+  let custom_event_ctor = {
+    let platform_objects = platform_objects.clone();
+    let next_event_id = next_event_id.clone();
+    let events_map = events_map.clone();
+    let event_detail_roots = event_detail_roots.clone();
+    rt.alloc_function_value(move |rt, _this, args| {
+      let type_arg = args.get(0).copied().unwrap_or(Value::Undefined);
+      let type_ = to_rust_string(rt, type_arg)?;
+
+      let mut init = events::CustomEventInit::default();
+      if let Some(init_value) = args.get(1).copied() {
+        if matches!(init_value, Value::Object(_)) {
+          let bubbles_key = prop_key_str(rt, "bubbles")?;
+          let bubbles_value = rt.get(init_value, bubbles_key)?;
+          init.bubbles = rt.to_boolean(bubbles_value)?;
+
+          let cancelable_key = prop_key_str(rt, "cancelable")?;
+          let cancelable_value = rt.get(init_value, cancelable_key)?;
+          init.cancelable = rt.to_boolean(cancelable_value)?;
+
+          let composed_key = prop_key_str(rt, "composed")?;
+          let composed_value = rt.get(init_value, composed_key)?;
+          init.composed = rt.to_boolean(composed_value)?;
+
+          let detail_key = prop_key_str(rt, "detail")?;
+          let detail_value = rt.get(init_value, detail_key)?;
+          // WebIDL dictionary conversion treats `undefined` as "missing", so use the default.
+          init.detail = if matches!(detail_value, Value::Undefined) {
+            Value::Null
+          } else {
+            detail_value
+          };
+        }
+      }
+
+      let event = events::Event::new_custom_event(type_, init);
+      let event_id = next_event_id.get();
+      next_event_id.set(event_id.wrapping_add(1));
+      set_event_detail_root(rt, &event_detail_roots, event_id, event.detail)?;
+      events_map.borrow_mut().insert(event_id, event);
+
+      let obj = rt.alloc_object_value()?;
+      // Keep Event wrapper objects alive even when only referenced from Rust-side tables.
+      let _ = rt.heap_mut().add_root(obj)?;
+      rt.set_prototype(obj, Some(custom_event_proto))?;
+      let Value::Object(obj_handle) = obj else {
+        return Err(VmError::InvariantViolation(
+          "alloc_object_value must return an object",
+        ));
+      };
+      platform_objects
+        .borrow_mut()
+        .insert(WeakGcObject::from(obj_handle), PlatformObjectKind::Event { event_id });
+      Ok(obj)
+    })?
+  };
+  define_data_property_str(rt, custom_event_ctor, "prototype", custom_event_proto, false)?;
+  define_data_property_str(rt, global, "CustomEvent", custom_event_ctor, false)?;
 
   // EventTarget.prototype
   {
@@ -2802,6 +2911,59 @@ fn install_constructors(
       Value::Undefined,
     )?;
 
+    // Legacy DOM Events factory: `document.createEvent(interfaceName)`.
+    let dom_for_create_event = dom.clone();
+    let platform_objects_for_create_event = platform_objects.clone();
+    let next_event_id_for_create_event = next_event_id.clone();
+    let events_map_for_create_event = events_map.clone();
+    let event_detail_roots_for_create_event = event_detail_roots.clone();
+    let dom_ex_for_create_event = dom_exception;
+    let create_event = rt.alloc_function_value(move |rt, this, args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_create_event, this)?;
+      let interface_name = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+      let event = match dom_for_create_event.borrow().create_event(&interface_name) {
+        Ok(ev) => ev,
+        Err(err) => {
+          let exc = dom_ex_for_create_event.from_dom_exception(rt, &err)?;
+          return Err(VmError::Throw(exc));
+        }
+      };
+
+      let is_custom_event = event.detail.is_some();
+      let event_id = next_event_id_for_create_event.get();
+      next_event_id_for_create_event.set(event_id.wrapping_add(1));
+      set_event_detail_root(
+        rt,
+        &event_detail_roots_for_create_event,
+        event_id,
+        event.detail,
+      )?;
+      events_map_for_create_event.borrow_mut().insert(event_id, event);
+
+      let obj = rt.alloc_object_value()?;
+      // Keep wrapper objects alive even when only referenced from Rust-side tables.
+      let _ = rt.heap_mut().add_root(obj)?;
+      rt.set_prototype(
+        obj,
+        Some(if is_custom_event {
+          prototypes.custom_event
+        } else {
+          prototypes.event
+        }),
+      )?;
+      let Value::Object(obj_handle) = obj else {
+        return Err(VmError::InvariantViolation(
+          "alloc_object_value must return an object",
+        ));
+      };
+      platform_objects_for_create_event.borrow_mut().insert(
+        WeakGcObject::from(obj_handle),
+        PlatformObjectKind::Event { event_id },
+      );
+      Ok(obj)
+    })?;
+    define_method(rt, prototypes.document, "createEvent", create_event)?;
+
     let dom_for_create_element = dom.clone();
     let platform_objects_for_create_element = platform_objects.clone();
     let node_wrapper_cache_for_create_element = node_wrapper_cache.clone();
@@ -3307,6 +3469,78 @@ fn install_constructors(
       Ok(Value::Undefined)
     })?;
     define_method(rt, prototypes.event, "preventDefault", prevent_default)?;
+
+    let platform_objects_for_init_event = platform_objects.clone();
+    let events_map_for_init_event = events_map.clone();
+    let active_events_for_init_event = active_events.clone();
+    let init_event = rt.alloc_function_value(move |rt, this, args| {
+      let event_id = extract_event_id(rt, &platform_objects_for_init_event, this)?;
+      let type_ = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+      let bubbles = rt.to_boolean(args.get(1).copied().unwrap_or(Value::Undefined))?;
+      let cancelable = rt.to_boolean(args.get(2).copied().unwrap_or(Value::Undefined))?;
+      with_event(
+        rt,
+        &active_events_for_init_event,
+        &events_map_for_init_event,
+        event_id,
+        move |event| {
+          event.init_event(type_, bubbles, cancelable);
+        },
+      )?;
+      Ok(Value::Undefined)
+    })?;
+    define_method(rt, prototypes.event, "initEvent", init_event)?;
+  }
+
+  // CustomEvent.prototype
+  {
+    let platform_objects_for_detail = platform_objects.clone();
+    let events_map_for_detail = events_map.clone();
+    let active_events_for_detail = active_events.clone();
+    let detail_get = rt.alloc_function_value(move |rt, this, _args| {
+      let event_id = extract_event_id(rt, &platform_objects_for_detail, this)?;
+      let detail = with_event(
+        rt,
+        &active_events_for_detail,
+        &events_map_for_detail,
+        event_id,
+        |e| e.detail.unwrap_or(Value::Null),
+      )?;
+      Ok(detail)
+    })?;
+    define_accessor(rt, prototypes.custom_event, "detail", detail_get, Value::Undefined)?;
+
+    let platform_objects_for_init_custom = platform_objects.clone();
+    let events_map_for_init_custom = events_map.clone();
+    let active_events_for_init_custom = active_events.clone();
+    let event_detail_roots_for_init_custom = event_detail_roots.clone();
+    let init_custom_event = rt.alloc_function_value(move |rt, this, args| {
+      let event_id = extract_event_id(rt, &platform_objects_for_init_custom, this)?;
+      let type_ = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+      let bubbles = rt.to_boolean(args.get(1).copied().unwrap_or(Value::Undefined))?;
+      let cancelable = rt.to_boolean(args.get(2).copied().unwrap_or(Value::Undefined))?;
+      let detail = args.get(3).copied().unwrap_or(Value::Undefined);
+
+      // Root the new detail payload so it survives GC even though it is stored only in Rust tables.
+      set_event_detail_root(
+        rt,
+        &event_detail_roots_for_init_custom,
+        event_id,
+        Some(detail),
+      )?;
+
+      with_event(
+        rt,
+        &active_events_for_init_custom,
+        &events_map_for_init_custom,
+        event_id,
+        move |event| {
+          event.init_custom_event(type_, bubbles, cancelable, detail);
+        },
+      )?;
+      Ok(Value::Undefined)
+    })?;
+    define_method(rt, prototypes.custom_event, "initCustomEvent", init_custom_event)?;
   }
 
   Ok(())
@@ -4316,6 +4550,141 @@ mod tests {
       realm.rt.get(frag_nodes, length_key).unwrap(),
       Value::Number(0.0)
     );
+  }
+
+  #[test]
+  fn document_create_event_and_init_event_populates_event_fields() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_event_key = pk(&mut realm.rt, "createEvent");
+    let create_event = realm.rt.get(document, create_event_key).unwrap();
+    let iface = realm.rt.alloc_string_value("Event").unwrap();
+    let event = realm
+      .rt
+      .call_function(create_event, document, &[iface])
+      .unwrap();
+
+    let init_event_key = pk(&mut realm.rt, "initEvent");
+    let init_event = realm.rt.get(event, init_event_key).unwrap();
+    let type_x = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(init_event, event, &[type_x, Value::Bool(true), Value::Bool(true)])
+      .unwrap();
+
+    let type_key = pk(&mut realm.rt, "type");
+    let bubbles_key = pk(&mut realm.rt, "bubbles");
+    let cancelable_key = pk(&mut realm.rt, "cancelable");
+
+    let type_value = realm.rt.get(event, type_key).unwrap();
+    assert_eq!(as_str(&realm.rt, type_value), "x");
+    assert_eq!(realm.rt.get(event, bubbles_key).unwrap(), Value::Bool(true));
+    assert_eq!(
+      realm.rt.get(event, cancelable_key).unwrap(),
+      Value::Bool(true)
+    );
+  }
+
+  #[test]
+  fn document_create_custom_event_and_init_custom_event_sets_detail() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_event_key = pk(&mut realm.rt, "createEvent");
+    let create_event = realm.rt.get(document, create_event_key).unwrap();
+    let iface = realm.rt.alloc_string_value("CustomEvent").unwrap();
+    let event = realm
+      .rt
+      .call_function(create_event, document, &[iface])
+      .unwrap();
+
+    let init_custom_key = pk(&mut realm.rt, "initCustomEvent");
+    let init_custom = realm.rt.get(event, init_custom_key).unwrap();
+    let type_x = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(
+        init_custom,
+        event,
+        &[type_x, Value::Bool(true), Value::Bool(true), Value::Number(123.0)],
+      )
+      .unwrap();
+
+    let detail_key = pk(&mut realm.rt, "detail");
+    assert_eq!(realm.rt.get(event, detail_key).unwrap(), Value::Number(123.0));
+  }
+
+  #[test]
+  fn custom_event_constructor_roots_object_detail_across_gc() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let ctor_key = pk(&mut realm.rt, "CustomEvent");
+    let ctor = realm.rt.get(realm.window(), ctor_key).unwrap();
+    let type_x = realm.rt.alloc_string_value("x").unwrap();
+
+    // Basic `detail` propagation.
+    let init_num = realm.rt.alloc_object_value().unwrap();
+    define_data_property_str(&mut realm.rt, init_num, "detail", Value::Number(1.0), true).unwrap();
+    let ev_num = realm
+      .rt
+      .call_function(ctor, Value::Undefined, &[type_x, init_num])
+      .unwrap();
+    let detail_key = pk(&mut realm.rt, "detail");
+    assert_eq!(realm.rt.get(ev_num, detail_key).unwrap(), Value::Number(1.0));
+
+    // Object `detail` should survive a GC cycle even if it is not referenced from JS, since the
+    // platform-backed Event table is not traced.
+    let detail_obj = realm.rt.alloc_object_value().unwrap();
+    define_data_property_str(&mut realm.rt, detail_obj, "x", Value::Number(1.0), true).unwrap();
+    let init_obj = realm.rt.alloc_object_value().unwrap();
+    define_data_property_str(&mut realm.rt, init_obj, "detail", detail_obj, true).unwrap();
+
+    let type_y = realm.rt.alloc_string_value("y").unwrap();
+    let ev_obj = realm
+      .rt
+      .call_function(ctor, Value::Undefined, &[type_y, init_obj])
+      .unwrap();
+
+    realm.rt.heap_mut().collect_garbage();
+
+    let detail_key = pk(&mut realm.rt, "detail");
+    let detail = realm.rt.get(ev_obj, detail_key).unwrap();
+    let Value::Object(obj) = detail else {
+      panic!("expected object detail, got {detail:?}");
+    };
+    assert!(
+      realm.rt.heap().is_valid_object(obj),
+      "expected detail object to be kept alive by CustomEvent"
+    );
+    let x_key = pk(&mut realm.rt, "x");
+    assert_eq!(realm.rt.get(detail, x_key).unwrap(), Value::Number(1.0));
+  }
+
+  #[test]
+  fn document_create_event_unsupported_interface_throws_not_supported_error() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_event_key = pk(&mut realm.rt, "createEvent");
+    let create_event = realm.rt.get(document, create_event_key).unwrap();
+    let iface = realm.rt.alloc_string_value("Nope").unwrap();
+    let err = realm
+      .rt
+      .call_function(create_event, document, &[iface])
+      .expect_err("expected NotSupportedError");
+
+    let thrown = match err {
+      VmError::Throw(value) => value,
+      other => panic!("expected VmError::Throw, got {other:?}"),
+    };
+    let name_key = pk(&mut realm.rt, "name");
+    let name = realm.rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, name), "NotSupportedError");
   }
 
   #[test]
