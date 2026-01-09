@@ -2,7 +2,6 @@ use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
-use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::ui::normalize_user_url;
 use std::collections::VecDeque;
@@ -79,30 +78,12 @@ pub struct BrowserTabState {
   pub can_go_forward: bool,
   pub scroll_state: ScrollState,
   pub latest_frame_meta: Option<LatestFrameMeta>,
-  pub history: TabHistory,
-  /// When navigating via Back/Forward/Reload, the UI restores the scroll offset stored in history
-  /// by sending a follow-up `UiToWorker::Scroll` after navigation has committed.
-  ///
-  /// The restore is intentionally tracked in the UI (rather than in the worker protocol) so that
-  /// history remains UI-owned.
-  pub pending_restore_scroll: Option<(f32, f32)>,
-  // Internal bookkeeping so we restore at the *later* of:
-  // - the first `FrameReady` for the new page (ensures we don't clobber history scroll with a
-  //   pre-restore scroll=0 frame), and
-  // - `NavigationCommitted` (ensures we don't restore before navigation has committed).
-  pub pending_restore_nav_committed: bool,
-  pub pending_restore_frame_ready: bool,
-  /// The URL most recently sent to the worker for navigation.
-  ///
-  /// Used to associate `NavigationCommitted`/`NavigationFailed` messages with the initiating URL.
-  pub pending_nav_url: Option<String>,
   debug_log: VecDeque<String>,
 }
 
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
-    let history = TabHistory::with_initial(initial_url.clone());
-    let mut tab = Self {
+    Self {
       id: tab_id,
       cancel: CancelGens::new(),
       title: None,
@@ -114,88 +95,12 @@ impl BrowserTabState {
       can_go_forward: false,
       scroll_state: ScrollState::default(),
       latest_frame_meta: None,
-      history,
-      pending_restore_scroll: None,
-      pending_restore_nav_committed: false,
-      pending_restore_frame_ready: false,
-      pending_nav_url: None,
       debug_log: VecDeque::new(),
-    };
-    tab.sync_nav_flags_from_history();
-    tab
+    }
   }
 
   pub fn current_url(&self) -> Option<&str> {
     self.current_url.as_deref()
-  }
-
-  fn sanitize_scroll_restore_target(value: f32) -> f32 {
-    if value.is_finite() { value.max(0.0) } else { 0.0 }
-  }
-
-  pub fn begin_scroll_restore(&mut self, scroll_x: f32, scroll_y: f32) {
-    self.pending_restore_scroll = Some((
-      Self::sanitize_scroll_restore_target(scroll_x),
-      Self::sanitize_scroll_restore_target(scroll_y),
-    ));
-    self.pending_restore_nav_committed = false;
-    self.pending_restore_frame_ready = false;
-  }
-
-  pub fn clear_scroll_restore(&mut self) {
-    self.pending_restore_scroll = None;
-    self.pending_restore_nav_committed = false;
-    self.pending_restore_frame_ready = false;
-  }
-
-  pub fn note_scroll_restore_nav_committed(&mut self) {
-    if self.pending_restore_scroll.is_some() {
-      self.pending_restore_nav_committed = true;
-    }
-  }
-
-  pub fn note_scroll_restore_frame_ready(&mut self) {
-    // Ignore `FrameReady` signals until we've seen `NavigationCommitted` for the navigation we're
-    // restoring. This prevents a late frame from the *previous* page (e.g. from a recent scroll)
-    // from being mistaken as the first frame of the new navigation and causing us to compute the
-    // restore delta against the wrong baseline.
-    if self.pending_restore_scroll.is_some() && self.pending_restore_nav_committed {
-      self.pending_restore_frame_ready = true;
-    }
-  }
-
-  /// Returns a scroll delta needed to restore the pending target, clearing the pending restore.
-  ///
-  /// Restoration is ready once we've seen both:
-  /// - `NavigationCommitted`, and
-  /// - a `FrameReady` for the new page (so pre-restore frames don't overwrite history scroll).
-  pub fn take_scroll_restore_delta_if_ready(&mut self) -> Option<(f32, f32)> {
-    let Some((target_x, target_y)) = self.pending_restore_scroll else {
-      return None;
-    };
-    if !(self.pending_restore_nav_committed && self.pending_restore_frame_ready) {
-      return None;
-    }
-
-    let current = self.scroll_state.viewport;
-    let current_x = if current.x.is_finite() { current.x } else { 0.0 };
-    let current_y = if current.y.is_finite() { current.y } else { 0.0 };
-    let mut delta_x = target_x - current_x;
-    let mut delta_y = target_y - current_y;
-    if !delta_x.is_finite() {
-      delta_x = 0.0;
-    }
-    if !delta_y.is_finite() {
-      delta_y = 0.0;
-    }
-
-    self.clear_scroll_restore();
-    Some((delta_x, delta_y))
-  }
-
-  pub fn sync_nav_flags_from_history(&mut self) {
-    self.can_go_back = self.history.can_go_back();
-    self.can_go_forward = self.history.can_go_forward();
   }
 
   pub fn display_title(&self) -> String {
@@ -208,38 +113,13 @@ impl BrowserTabState {
       .unwrap_or_else(|| "New Tab".to_string())
   }
 
-  pub fn apply_navigation_started(&mut self, url: String) {
-    self.current_url = Some(url.clone());
-    self.loading = true;
-    self.error = None;
-    self.stage = None;
-    self.pending_nav_url = Some(url);
-  }
-
-  pub fn apply_navigation_committed(
-    &mut self,
-    url: String,
-    title: Option<String>,
-    can_go_back: bool,
-    can_go_forward: bool,
-  ) {
-    self.current_url = Some(url);
-    self.title = title;
-    self.can_go_back = can_go_back;
-    self.can_go_forward = can_go_forward;
-    self.loading = false;
-    self.error = None;
-    self.stage = None;
-    self.pending_nav_url = None;
-  }
-
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///
   /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting
   /// `javascript:` and unknown schemes. On failure, the returned error is intended for
   /// user-facing display.
   ///
-  /// On success, this marks the tab as loading, updates `current_url`, and sets `pending_nav_url`.
+  /// On success, this marks the tab as loading and updates `current_url`.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
     let raw_trimmed = raw.trim();
 
@@ -258,14 +138,10 @@ impl BrowserTabState {
     };
     validate_typed_url_scheme(&normalized)?;
 
-    self.history.push(normalized.clone());
-    self.sync_nav_flags_from_history();
-
     self.current_url = Some(normalized.clone());
     self.loading = true;
     self.error = None;
     self.title = None;
-    self.pending_nav_url = Some(normalized.clone());
 
     Ok(UiToWorker::Navigate {
       tab_id: self.id,
@@ -307,7 +183,6 @@ mod tab_tests {
     let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
     let before = tab.current_url.clone();
     assert!(tab.navigate_typed("javascript:alert(1)").is_err());
-    assert_eq!(tab.pending_nav_url, None);
     assert!(!tab.loading);
     assert_eq!(tab.current_url, before);
   }
@@ -317,7 +192,6 @@ mod tab_tests {
     let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
     let before = tab.current_url.clone();
     assert!(tab.navigate_typed("foo:bar").is_err());
-    assert_eq!(tab.pending_nav_url, None);
     assert!(!tab.loading);
     assert_eq!(tab.current_url, before);
   }
@@ -342,7 +216,6 @@ mod tab_tests {
     }
 
     assert_eq!(tab.current_url(), Some("about:blank"));
-    assert_eq!(tab.pending_nav_url.as_deref(), Some("about:blank"));
     assert!(tab.loading);
   }
 
@@ -366,10 +239,6 @@ mod tab_tests {
     }
 
     assert_eq!(tab.current_url(), Some("https://example.com/page.html#target"));
-    assert_eq!(
-      tab.pending_nav_url.as_deref(),
-      Some("https://example.com/page.html#target")
-    );
     assert!(tab.loading);
   }
 }
@@ -587,7 +456,6 @@ impl BrowserAppState {
       tab.loading = true;
       tab.error = None;
       tab.stage = None;
-      tab.pending_nav_url = Some(normalized.clone());
     }
 
     Ok(normalized)
@@ -666,7 +534,6 @@ impl BrowserAppState {
           tab.loading = true;
           tab.error = None;
           tab.stage = None;
-          tab.pending_nav_url = Some(url.clone());
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;
@@ -686,7 +553,6 @@ impl BrowserAppState {
           tab.loading = false;
           tab.error = None;
           tab.stage = None;
-          tab.pending_nav_url = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
         }
@@ -706,7 +572,6 @@ impl BrowserAppState {
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
-          tab.pending_nav_url = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
         }
@@ -891,41 +756,8 @@ mod browser_app_tests {
     assert_eq!((ready.pixmap.width(), ready.pixmap.height()), (2, 3));
   }
 
-  #[test]
-  fn browser_tab_state_starts_without_pending_scroll_restore() {
-    let tab = BrowserTabState::new(TabId(1), "about:blank".to_string());
-    assert_eq!(tab.pending_restore_scroll, None);
-    assert!(!tab.pending_restore_nav_committed);
-    assert!(!tab.pending_restore_frame_ready);
-  }
-
-  #[test]
-  fn browser_tab_state_pending_scroll_restore_can_be_set_and_cleared() {
-    let mut tab = BrowserTabState::new(TabId(1), "about:blank".to_string());
-    tab.begin_scroll_restore(10.0, 20.0);
-    assert_eq!(tab.pending_restore_scroll, Some((10.0, 20.0)));
-    assert!(!tab.pending_restore_nav_committed);
-    assert!(!tab.pending_restore_frame_ready);
-
-    tab.clear_scroll_restore();
-    assert_eq!(tab.pending_restore_scroll, None);
-    assert!(!tab.pending_restore_nav_committed);
-    assert!(!tab.pending_restore_frame_ready);
-  }
-
-  #[test]
-  fn browser_tab_state_scroll_restore_does_not_use_old_frames() {
-    let mut tab = BrowserTabState::new(TabId(1), "about:blank".to_string());
-    tab.begin_scroll_restore(10.0, 20.0);
-
-    // A FrameReady from before the navigation commits should not be used as the restore trigger.
-    tab.note_scroll_restore_frame_ready();
-    assert!(!tab.pending_restore_frame_ready);
-
-    tab.note_scroll_restore_nav_committed();
-    tab.note_scroll_restore_frame_ready();
-    assert!(tab.pending_restore_frame_ready);
-  }
+  // Note: scroll restoration is worker-owned (see `ui::worker_loop`), so the windowed UI state
+  // model has no pending scroll restore bookkeeping to unit test here.
 }
 
 #[cfg(test)]

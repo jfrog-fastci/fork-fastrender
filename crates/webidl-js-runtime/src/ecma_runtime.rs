@@ -1083,13 +1083,13 @@ impl JsRuntime for VmJsRuntime {
             } else {
               rt.alloc_string_handle("false")?
             }
-        } else if let Some(number_data) = rt.number_object_data(obj)? {
-          rt.to_string_from_number(number_data)?
-        } else if let Some(bigint_data) = rt.bigint_object_data(obj)? {
-          rt.alloc_string_handle(&bigint_data.to_decimal_string())?
-        } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
-          return Err(rt.throw_symbol_to_string(symbol_data));
-        } else if rt.heap.is_valid_object(obj) {
+          } else if let Some(number_data) = rt.number_object_data(obj)? {
+            rt.to_string_from_number(number_data)?
+          } else if let Some(bigint_data) = rt.bigint_object_data(obj)? {
+            rt.alloc_string_handle(&bigint_data.to_decimal_string())?
+          } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
+            return Err(rt.throw_symbol_to_string(symbol_data));
+          } else if rt.heap.is_valid_object(obj) {
             match rt.host_objects.get(&WeakGcObject::from(obj)) {
               Some(HostObjectKind::Error { name }) => {
                 let name_str = (*name).to_string();

@@ -10,6 +10,7 @@ use crate::text::font_db::FontConfig;
 use crate::ui::cancel::CancelGens;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
+use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
@@ -83,6 +84,7 @@ impl Drop for UiWorkerHandle {
 }
 
 struct TabState {
+  history: TabHistory,
   document: BrowserDocument,
   viewport_css: (u32, u32),
   dpr: f32,
@@ -103,6 +105,17 @@ fn sanitize_delta(v: f32) -> f32 {
 
 fn sanitize_pointer(v: (f32, f32)) -> Option<(f32, f32)> {
   (v.0.is_finite() && v.1.is_finite()).then_some(v)
+}
+
+fn sanitize_scroll_pos(v: f32) -> f32 {
+  if v.is_finite() { v.max(0.0) } else { 0.0 }
+}
+
+fn scroll_state_from_history(scroll_x: f32, scroll_y: f32) -> ScrollState {
+  ScrollState::with_viewport(Point::new(
+    sanitize_scroll_pos(scroll_x),
+    sanitize_scroll_pos(scroll_y),
+  ))
 }
 
 fn page_point_for(tab: &TabState, pos_css: (f32, f32)) -> Point {
@@ -314,6 +327,11 @@ fn navigate_fragment_in_place(
 ) {
   let url_string = url.to_string();
 
+  tab
+    .history
+    .update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
+  tab.history.push(url_string.clone());
+
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
     tab_id,
     url: url_string.clone(),
@@ -326,12 +344,15 @@ fn navigate_fragment_in_place(
   tab.document.set_document_url(Some(url_string.clone()));
 
   let title = crate::html::title::find_document_title(tab.document.dom());
+  if let Some(title) = title.clone() {
+    tab.history.set_title(title);
+  }
   let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
     tab_id,
     url: url_string,
     title,
-    can_go_back: false,
-    can_go_forward: false,
+    can_go_back: tab.history.can_go_back(),
+    can_go_forward: tab.history.can_go_forward(),
   });
 
   let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
@@ -417,6 +438,9 @@ fn emit_frame(
   scroll_state: ScrollState,
 ) {
   tab.scroll = scroll_state.clone();
+  tab
+    .history
+    .update_scroll(scroll_state.viewport.x, scroll_state.viewport.y);
   let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
     tab_id,
     scroll: scroll_state.clone(),
@@ -465,6 +489,7 @@ fn repaint_force(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>) 
 fn render_navigation_error_page(tab_id: TabId, tab: &mut TabState, ui_tx: &Sender<WorkerToUi>, message: &str) {
   let html = about_pages::error_page_html("Navigation failed", message);
 
+  tab.scroll = ScrollState::default();
   tab.url = Some(about_pages::ABOUT_ERROR.to_string());
   tab.document.set_navigation_urls(
     Some(about_pages::ABOUT_ERROR.to_string()),
@@ -484,15 +509,22 @@ fn render_navigation_error_page(tab_id: TabId, tab: &mut TabState, ui_tx: &Sende
   }
 }
 
-fn navigate_tab(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavigationOutcome {
+  Committed,
+  Failed,
+  Cancelled,
+}
+
+fn perform_navigation(
   tab_id: TabId,
   tab: &mut TabState,
   ui_tx: &Sender<WorkerToUi>,
   cancel_gens: &CancelGens,
   url: String,
-  _reason: NavigationReason,
-) {
-  let fragment_target = non_empty_url_fragment(&url);
+  apply_fragment_scroll: bool,
+) -> NavigationOutcome {
+  let fragment_target = apply_fragment_scroll.then(|| non_empty_url_fragment(&url)).flatten();
   let viewport_size_css = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
 
   let prepare_snapshot = cancel_gens.snapshot_prepare();
@@ -507,15 +539,8 @@ fn navigate_tab(
     loading: true,
   });
 
-  tab.scroll = ScrollState::default();
   tab.interaction = InteractionEngine::new();
-
-  enum NavigationOutcome {
-    Completed,
-    Cancelled,
-  }
-
-  let outcome = (|| {
+  let outcome = {
     // Forward render stage heartbeats for the duration of this navigation job only.
     //
     // The stage listener is global across the process, so it must be scoped to avoid leaking
@@ -529,9 +554,10 @@ fn navigate_tab(
       let html = about_pages::html_for_about_url(&url).unwrap_or_else(|| {
         about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
       });
-      tab
-        .document
-        .set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
+      tab.document.set_navigation_urls(
+        Some(url.clone()),
+        Some(about_pages::ABOUT_BASE_URL.to_string()),
+      );
       tab.document.set_document_url(Some(url.clone()));
       if let Err(err) = tab.document.reset_with_html(&html, options) {
         tab.document.set_cancel_callback(None);
@@ -547,7 +573,7 @@ fn navigate_tab(
           can_go_forward: false,
         });
         render_navigation_error_page(tab_id, tab, ui_tx, &err);
-        return NavigationOutcome::Completed;
+        return NavigationOutcome::Failed;
       }
       url.clone()
     } else {
@@ -567,7 +593,7 @@ fn navigate_tab(
             can_go_forward: false,
           });
           render_navigation_error_page(tab_id, tab, ui_tx, &err);
-          return NavigationOutcome::Completed;
+          return NavigationOutcome::Failed;
         }
       }
     };
@@ -599,7 +625,7 @@ fn navigate_tab(
           can_go_forward: false,
         });
         render_navigation_error_page(tab_id, tab, ui_tx, &err);
-        return NavigationOutcome::Completed;
+        return NavigationOutcome::Failed;
       }
     };
 
@@ -637,27 +663,108 @@ fn navigate_tab(
     }
 
     tab.url = Some(committed_url.clone());
+    let _ = tab.history.commit_navigation(&url, Some(&committed_url));
 
     let title = crate::html::title::find_document_title(tab.document.dom());
+    if let Some(title) = title.clone() {
+      tab.history.set_title(title);
+    }
+
     let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
       tab_id,
       url: committed_url,
       title,
-      can_go_back: false,
-      can_go_forward: false,
+      can_go_back: tab.history.can_go_back(),
+      can_go_forward: tab.history.can_go_forward(),
     });
 
     emit_frame(tab_id, tab, ui_tx, painted.pixmap, painted.scroll_state);
 
-    NavigationOutcome::Completed
-  })();
+    NavigationOutcome::Committed
+  };
 
-  // LoadingState(false) is emitted after the job's stage listener guard has been dropped.
-  if matches!(outcome, NavigationOutcome::Completed) {
+  // Emit LoadingState(false) after the stage listener guard has been dropped.
+  if !matches!(outcome, NavigationOutcome::Cancelled) {
     let _ = ui_tx.send(WorkerToUi::LoadingState {
       tab_id,
       loading: false,
     });
+  }
+
+  outcome
+}
+
+fn navigate_tab(
+  tab_id: TabId,
+  tab: &mut TabState,
+  ui_tx: &Sender<WorkerToUi>,
+  cancel_gens: &CancelGens,
+  url: String,
+  reason: NavigationReason,
+) {
+  // Allow in-place fragment navigations (e.g. `#anchor`) for fresh navigations, but ensure reload
+  // always performs a full fetch/reprepare.
+  if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+    if let Some(target_url) = fragment_navigation_target(tab, &url) {
+      navigate_fragment_in_place(tab_id, tab, ui_tx, target_url);
+      return;
+    }
+  }
+
+  // Persist current scroll for the active history entry before changing history index/entries.
+  tab
+    .history
+    .update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
+
+  let prev_history = tab.history.clone();
+  let prev_scroll = tab.scroll.clone();
+
+  let (nav_url, apply_fragment_scroll) = match reason {
+    NavigationReason::TypedUrl | NavigationReason::LinkClick => {
+      tab.history.push(url.clone());
+      tab.scroll = ScrollState::default();
+      (url, true)
+    }
+    NavigationReason::Reload => match tab.history.reload_target() {
+      Some(entry) => (entry.url.clone(), false),
+      None => {
+        // No current history entry; treat this like a fresh navigation.
+        tab.history.push(url.clone());
+        tab.scroll = ScrollState::default();
+        (url, true)
+      }
+    },
+    NavigationReason::BackForward => {
+      let Some((target_url, scroll_x, scroll_y)) = tab
+        .history
+        .go_back_forward_to(&url)
+        .map(|entry| (entry.url.clone(), entry.scroll_x, entry.scroll_y))
+      else {
+        let _ = ui_tx.send(WorkerToUi::DebugLog {
+          tab_id,
+          line: format!("cannot go back/forward to {url}: target not adjacent in history"),
+        });
+        return;
+      };
+      tab.scroll = scroll_state_from_history(scroll_x, scroll_y);
+      (target_url, false)
+    }
+  };
+
+  match perform_navigation(
+    tab_id,
+    tab,
+    ui_tx,
+    cancel_gens,
+    nav_url,
+    apply_fragment_scroll,
+  ) {
+    NavigationOutcome::Cancelled => {
+      tab.history = prev_history;
+      tab.scroll = prev_scroll;
+      tab.document.set_scroll_state(tab.scroll.clone());
+    }
+    NavigationOutcome::Committed | NavigationOutcome::Failed => {}
   }
 }
 
@@ -749,6 +856,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         };
 
         let tab = TabState {
+          history: TabHistory::new(),
           document,
           viewport_css: (800, 600),
           dpr: 1.0,
@@ -809,20 +917,88 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
           repaint_if_needed(tab_id, tab, &ui_tx);
         }
       }
-      UiToWorker::GoBack { tab_id } | UiToWorker::GoForward { tab_id } => {
-        // This legacy worker loop intentionally does not implement per-tab navigation history.
-        // Back/forward/reload semantics are covered by the history-aware `ui::worker` loop.
-        let _ = ui_tx.send(WorkerToUi::DebugLog {
-          tab_id,
-          line: "navigation history is not tracked by this worker loop; ignoring back/forward"
-            .to_string(),
-        });
+      UiToWorker::GoBack { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        tab
+          .history
+          .update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
+
+        let prev_history = tab.history.clone();
+        let prev_scroll = tab.scroll.clone();
+
+        let Some((nav_url, scroll_x, scroll_y)) = tab
+          .history
+          .go_back()
+          .map(|entry| (entry.url.clone(), entry.scroll_x, entry.scroll_y))
+        else {
+          continue;
+        };
+        tab.scroll = scroll_state_from_history(scroll_x, scroll_y);
+
+        if matches!(
+          perform_navigation(
+            tab_id,
+            tab,
+            &ui_tx,
+            &cancel_gens,
+            nav_url,
+            false,
+          ),
+          NavigationOutcome::Cancelled
+        ) {
+          tab.history = prev_history;
+          tab.scroll = prev_scroll;
+          tab.document.set_scroll_state(tab.scroll.clone());
+        }
+      }
+      UiToWorker::GoForward { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        tab
+          .history
+          .update_scroll(tab.scroll.viewport.x, tab.scroll.viewport.y);
+
+        let prev_history = tab.history.clone();
+        let prev_scroll = tab.scroll.clone();
+
+        let Some((nav_url, scroll_x, scroll_y)) = tab
+          .history
+          .go_forward()
+          .map(|entry| (entry.url.clone(), entry.scroll_x, entry.scroll_y))
+        else {
+          continue;
+        };
+        tab.scroll = scroll_state_from_history(scroll_x, scroll_y);
+
+        if matches!(
+          perform_navigation(
+            tab_id,
+            tab,
+            &ui_tx,
+            &cancel_gens,
+            nav_url,
+            false,
+          ),
+          NavigationOutcome::Cancelled
+        ) {
+          tab.history = prev_history;
+          tab.scroll = prev_scroll;
+          tab.document.set_scroll_state(tab.scroll.clone());
+        }
       }
       UiToWorker::Reload { tab_id } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let Some(url) = tab.url.clone() else {
+        let Some(url) = tab
+          .history
+          .reload_target()
+          .map(|entry| entry.url.clone())
+          .or_else(|| tab.url.clone())
+        else {
           continue;
         };
         navigate_tab(

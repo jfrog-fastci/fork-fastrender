@@ -683,30 +683,12 @@ impl App {
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) {
     match msg {
       fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
-        let mut restore_scroll: Option<(f32, f32)> = None;
-        let Some(tab) = self.browser_state.tab_mut(tab_id) else {
-          return;
-        };
-        tab.scroll_state = frame.scroll_state.clone();
-        tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
-          pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
-          viewport_css: frame.viewport_css,
-          dpr: frame.dpr,
-        });
-        if tab.pending_restore_scroll.is_some() {
-          tab.note_scroll_restore_frame_ready();
-        }
-
-        if let Some(delta) = tab.take_scroll_restore_delta_if_ready() {
-          if delta.0.abs() > 1e-3 || delta.1.abs() > 1e-3 {
-            restore_scroll = Some(delta);
-          }
-        }
-        if let Some(delta) = restore_scroll {
-          self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-            tab_id,
-            delta_css: delta,
-            pointer_css: None,
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.scroll_state = frame.scroll_state.clone();
+          tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
+            pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
+            viewport_css: frame.viewport_css,
+            dpr: frame.dpr,
           });
         }
 
@@ -807,9 +789,11 @@ impl App {
           self.close_select_dropdown();
         }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.apply_navigation_started(url.clone());
           tab.title = None;
-          tab.clear_scroll_restore();
+          tab.current_url = Some(url.clone());
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
         }
         if self.browser_state.active_tab_id() == Some(tab_id) && !self.browser_state.chrome.address_bar_editing {
           self.browser_state.chrome.address_bar_text = url;
@@ -829,23 +813,14 @@ impl App {
         {
           self.close_select_dropdown();
         }
-        let mut restore_scroll: Option<(f32, f32)> = None;
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.apply_navigation_committed(url.clone(), title, can_go_back, can_go_forward);
-
-          tab.note_scroll_restore_nav_committed();
-          if let Some(delta) = tab.take_scroll_restore_delta_if_ready() {
-            if delta.0.abs() > 1e-3 || delta.1.abs() > 1e-3 {
-              restore_scroll = Some(delta);
-            }
-          }
-        }
-        if let Some(delta) = restore_scroll {
-          self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-            tab_id,
-            delta_css: delta,
-            pointer_css: None,
-          });
+          tab.current_url = Some(url.clone());
+          tab.title = title;
+          tab.loading = false;
+          tab.error = None;
+          tab.stage = None;
+          tab.can_go_back = can_go_back;
+          tab.can_go_forward = can_go_forward;
         }
         if self.browser_state.active_tab_id() == Some(tab_id)
           && !self.browser_state.chrome.address_bar_editing
@@ -871,18 +846,13 @@ impl App {
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
-          tab.pending_nav_url = None;
           tab.can_go_back = can_go_back;
           tab.can_go_forward = can_go_forward;
-          tab.clear_scroll_restore();
         }
       }
       fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.scroll_state = scroll.clone();
-          if tab.pending_restore_scroll.is_none() {
-            tab.history.update_scroll(scroll.viewport.x, scroll.viewport.y);
-          }
         }
       }
       fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
@@ -1399,15 +1369,13 @@ impl App {
               continue;
             };
             tab.stage = None;
-            tab.clear_scroll_restore();
-            let msg = match tab.navigate_typed(&raw) {
+            match tab.navigate_typed(&raw) {
               Ok(msg) => msg,
               Err(err) => {
                 tab.error = Some(err);
                 continue;
               }
-            };
-            msg
+            }
           };
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
@@ -1423,8 +1391,6 @@ impl App {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.pending_nav_url = None;
-            tab.clear_scroll_restore();
           }
 
           self.page_has_focus = false;
@@ -1446,8 +1412,6 @@ impl App {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.pending_nav_url = None;
-            tab.clear_scroll_restore();
           }
           self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoBack { tab_id });
@@ -1467,8 +1431,6 @@ impl App {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.pending_nav_url = None;
-            tab.clear_scroll_restore();
           }
           self.page_has_focus = false;
           self.send_worker_msg(UiToWorker::GoForward { tab_id });

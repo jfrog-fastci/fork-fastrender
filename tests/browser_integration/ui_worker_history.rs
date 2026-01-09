@@ -2,8 +2,8 @@
 
 use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::WorkerToUi;
-use fastrender::ui::{NavigationReason, RenderedFrame, TabId, UiToWorker, UiWorker};
-use fastrender::FastRender;
+use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::{NavigationReason, RenderedFrame, TabId, UiToWorker};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -15,29 +15,25 @@ use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_
 // flakes under CPU contention.
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
-  let idx = (y * pixmap.width() + x) as usize * 4;
-  (
-    pixmap.data()[idx],
-    pixmap.data()[idx + 1],
-    pixmap.data()[idx + 2],
-    pixmap.data()[idx + 3],
-  )
-}
-
 fn assert_frame_has_color(frame: &RenderedFrame, expected: (u8, u8, u8, u8)) {
   let pixmap = &frame.pixmap;
   assert!(pixmap.width() > 0 && pixmap.height() > 0, "expected non-empty pixmap");
-  // Sample pixels away from the right/bottom edges to avoid flaking when scrollbars are rendered.
+
+  // Avoid sampling the right/bottom edges: viewport scrollbars may reserve/paint over them.
   let x1 = if pixmap.width() > 1 { 1 } else { 0 };
   let y1 = if pixmap.height() > 1 { 1 } else { 0 };
   let samples = [
-    pixel(pixmap, x1, y1),
-    pixel(pixmap, pixmap.width() / 2, pixmap.height() / 2),
-    pixel(pixmap, x1, pixmap.height() / 2),
-    pixel(pixmap, pixmap.width() / 2, y1),
+    (x1, y1),
+    (pixmap.width() / 2, pixmap.height() / 2),
+    (x1, pixmap.height() / 2),
+    (pixmap.width() / 2, y1),
   ];
-  for (idx, sample) in samples.into_iter().enumerate() {
+
+  for (idx, (x, y)) in samples.into_iter().enumerate() {
+    let sample = pixmap
+      .pixel(x, y)
+      .map(|p| (p.red(), p.green(), p.blue(), p.alpha()))
+      .unwrap_or((0, 0, 0, 0));
     assert_eq!(
       sample, expected,
       "expected sample {idx} to match {expected:?}; got {sample:?}"
@@ -111,12 +107,8 @@ fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Scroll
 }
 
 fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
-  let renderer = FastRender::new().expect("renderer");
-  let (to_ui_tx, to_ui_rx) = std::sync::mpsc::channel();
-  let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel();
-  let worker = UiWorker::new(renderer, to_ui_tx);
-  let handle = std::thread::spawn(move || worker.run(to_worker_rx));
-  (to_worker_tx, to_ui_rx, handle)
+  let handle = spawn_ui_worker("fastr-ui-worker-history-test").expect("spawn ui worker");
+  handle.split()
 }
 
 fn write_fixtures(dir: &std::path::Path) -> (String, String) {
@@ -126,8 +118,7 @@ fn write_fixtures(dir: &std::path::Path) -> (String, String) {
 <html>
   <head>
     <style>
-      html, body {{ margin: 0; padding: 0; }}
-      body {{ background: {color}; }}
+      html, body {{ margin: 0; padding: 0; background: {color}; }}
       #spacer {{ height: 2000px; }}
     </style>
   </head>
@@ -181,8 +172,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_b = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_b, (0, 0, 255, 255));
 
-  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::BackForward))
-  .unwrap();
+  tx.send(UiToWorker::GoBack { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, a_url);
   assert!(!can_go_back);
@@ -190,8 +180,7 @@ fn back_forward_toggles_can_go_flags_and_restores_page() {
   let frame_back = next_frame_ready(&rx, tab_id);
   assert_frame_has_color(&frame_back, (255, 0, 0, 255));
 
-  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::BackForward))
-  .unwrap();
+  tx.send(UiToWorker::GoForward { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
   assert!(can_go_back);
@@ -226,8 +215,24 @@ fn reload_does_not_create_new_history_entry() {
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
 
-  tx.send(navigate_msg(tab_id, b_url.clone(), NavigationReason::Reload))
-  .unwrap();
+  // Move back so we have forward history, then ensure reload preserves it.
+  tx.send(UiToWorker::GoBack { tab_id }).unwrap();
+  let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert_eq!(url, a_url);
+  assert!(!can_go_back);
+  assert!(can_go_forward);
+  let frame = next_frame_ready(&rx, tab_id);
+  assert_frame_has_color(&frame, (255, 0, 0, 255));
+
+  tx.send(UiToWorker::Reload { tab_id }).unwrap();
+  let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
+  assert_eq!(url, a_url);
+  assert!(!can_go_back);
+  assert!(can_go_forward);
+  let frame = next_frame_ready(&rx, tab_id);
+  assert_frame_has_color(&frame, (255, 0, 0, 255));
+
+  tx.send(UiToWorker::GoForward { tab_id }).unwrap();
   let (url, can_go_back, can_go_forward) = next_navigation_committed(&rx, tab_id);
   assert_eq!(url, b_url);
   assert!(can_go_back);
@@ -256,9 +261,14 @@ fn scroll_is_restored_when_going_back() {
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
+  // `FrameReady` is followed by `ScrollStateUpdated`; drain it so subsequent scroll assertions do
+  // not accidentally observe the initial (0,0) state from navigation.
+  let _ = next_scroll_state_updated(&rx, tab_id);
 
   tx.send(scroll_msg(tab_id, (0.0, 400.0), None))
   .unwrap();
+  // Scroll repaint emits `FrameReady` then `ScrollStateUpdated`.
+  let frame_scrolled = next_frame_ready(&rx, tab_id);
   let scrolled = next_scroll_state_updated(&rx, tab_id);
   assert!(
     scrolled.viewport.y > 0.0,
@@ -266,7 +276,6 @@ fn scroll_is_restored_when_going_back() {
     scrolled.viewport
   );
   let saved_scroll_y = scrolled.viewport.y;
-  let frame_scrolled = next_frame_ready(&rx, tab_id);
   assert!(
     (frame_scrolled.scroll_state.viewport.y - saved_scroll_y).abs() < 1.0,
     "frame scroll should match ScrollStateUpdated (frame={:?}, saved={saved_scroll_y})",
@@ -277,14 +286,34 @@ fn scroll_is_restored_when_going_back() {
   .unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let _ = next_frame_ready(&rx, tab_id);
+  let _ = next_scroll_state_updated(&rx, tab_id);
 
-  tx.send(navigate_msg(tab_id, a_url.clone(), NavigationReason::BackForward))
+  tx.send(scroll_msg(tab_id, (0.0, 240.0), None))
   .unwrap();
+  let _frame_scrolled_b = next_frame_ready(&rx, tab_id);
+  let scrolled_b = next_scroll_state_updated(&rx, tab_id);
+  let saved_scroll_y_b = scrolled_b.viewport.y;
+  assert!(
+    saved_scroll_y_b > 0.0,
+    "expected scroll on b to increase, got {:?}",
+    scrolled_b.viewport
+  );
+
+  tx.send(UiToWorker::GoBack { tab_id }).unwrap();
   let _ = next_navigation_committed(&rx, tab_id);
   let frame = next_frame_ready(&rx, tab_id);
   assert!(
     (frame.scroll_state.viewport.y - saved_scroll_y).abs() < 1.0,
     "expected scroll restoration when going back (got {:?}, expected {saved_scroll_y})",
+    frame.scroll_state.viewport
+  );
+
+  tx.send(UiToWorker::GoForward { tab_id }).unwrap();
+  let _ = next_navigation_committed(&rx, tab_id);
+  let frame = next_frame_ready(&rx, tab_id);
+  assert!(
+    (frame.scroll_state.viewport.y - saved_scroll_y_b).abs() < 1.0,
+    "expected forward history entry to restore its own scroll (got {:?}, expected {saved_scroll_y_b})",
     frame.scroll_state.viewport
   );
 
