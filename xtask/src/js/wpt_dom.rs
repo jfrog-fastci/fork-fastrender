@@ -1,8 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use conformance_harness::{FailOn as HarnessFailOn, Shard};
+use conformance_harness::{write_json_report, FailOn as HarnessFailOn, Shard};
 use js_wpt_dom_runner::{run_suite, BackendSelection, SuiteConfig};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -57,11 +56,11 @@ impl FailOn {
 
 #[derive(Args, Debug)]
 pub struct WptDomArgs {
-  /// Path to the offline WPT DOM corpus root (defaults to `tests/wpt_dom`).
+  /// Root directory of the offline WPT DOM corpus (contains `tests/` + `resources/`).
   #[arg(long, value_name = "DIR", default_value = DEFAULT_WPT_ROOT)]
   pub wpt_root: PathBuf,
 
-  /// Override the expectations manifest (skip/xfail/flaky).
+  /// Expectations manifest (pass/skip/xfail/flaky).
   #[arg(long, value_name = "PATH", default_value = DEFAULT_MANIFEST_PATH)]
   pub manifest: PathBuf,
 
@@ -69,7 +68,8 @@ pub struct WptDomArgs {
   #[arg(long, value_parser = crate::parse_shard)]
   pub shard: Option<(usize, usize)>,
 
-  /// Filter test ids using a glob (preferred) or regex.
+  /// Filter tests by id. If the pattern parses as a glob, use glob matching; otherwise treat it as
+  /// a regex.
   #[arg(long, value_name = "PATTERN")]
   pub filter: Option<String>,
 
@@ -77,7 +77,7 @@ pub struct WptDomArgs {
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, value_name = "MS")]
   pub timeout_ms: u64,
 
-  /// Per-test timeout for `timeout=long` tests (milliseconds).
+  /// Per-test timeout used for `// META: timeout=long` tests (milliseconds).
   #[arg(long, default_value_t = DEFAULT_LONG_TIMEOUT_MS, value_name = "MS")]
   pub long_timeout_ms: u64,
 
@@ -108,20 +108,19 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   }
 
   let repo_root = crate::repo_root();
-  let wpt_root = resolve_repo_path(&repo_root, &args.wpt_root);
-  let manifest_path = resolve_repo_path(&repo_root, &args.manifest);
-  let report_path = resolve_repo_path(&repo_root, &args.report);
 
-  if !wpt_root.is_dir() {
-    bail!("wpt corpus root {} does not exist", wpt_root.display());
-  }
+  let wpt_root = resolve_repo_path(&repo_root, &args.wpt_root);
+  ensure_wpt_root(&wpt_root)?;
+
+  let manifest_path = resolve_repo_path(&repo_root, &args.manifest);
   if !manifest_path.is_file() {
-    bail!("expectations manifest {} does not exist", manifest_path.display());
+    bail!(
+      "expectations manifest {} does not exist",
+      manifest_path.display()
+    );
   }
-  if let Some(parent) = report_path.parent() {
-    fs::create_dir_all(parent)
-      .with_context(|| format!("failed to create report directory {}", parent.display()))?;
-  }
+
+  let report_path = resolve_repo_path(&repo_root, &args.report);
 
   let shard = args
     .shard
@@ -130,6 +129,7 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   let fail_on = args.fail_on.to_harness();
   let backend = args.backend.to_selection();
 
+  println!("Running WPT DOM suite...");
   let report = run_suite(&SuiteConfig {
     wpt_root: wpt_root.clone(),
     manifest_path: manifest_path.clone(),
@@ -142,31 +142,30 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   })
   .context("run WPT DOM suite")?;
 
-  let json = serde_json::to_string_pretty(&report).context("serialize report")?;
-  fs::write(&report_path, json).with_context(|| format!("write {}", report_path.display()))?;
+  write_json_report(&report_path, &report)
+    .with_context(|| format!("write report to {}", report_path.display()))?;
 
-  println!(
-    "WPT DOM suite done: total={}, passed={}, failed={}, timed_out={}, errored={}, skipped={}",
-    report.summary.total,
-    report.summary.passed,
-    report.summary.failed,
-    report.summary.timed_out,
-    report.summary.errored,
-    report.summary.skipped
-  );
+  println!("WPT DOM suite summary:");
+  println!("  total: {}", report.summary.total);
+  println!("  passed: {}", report.summary.passed);
+  println!("  failed: {}", report.summary.failed);
+  println!("  timed_out: {}", report.summary.timed_out);
+  println!("  errored: {}", report.summary.errored);
+  println!("  skipped: {}", report.summary.skipped);
   if let Some(m) = &report.summary.mismatches {
-    println!(
-      "Mismatches: expected={}, unexpected={}, flaky={}, total={}",
-      m.expected,
-      m.unexpected,
-      m.flaky,
-      m.total()
-    );
+    println!("  mismatches:");
+    println!("    expected: {}", m.expected);
+    println!("    unexpected: {}", m.unexpected);
+    println!("    flaky: {}", m.flaky);
   }
   println!("JSON report: {}", report_path.display());
 
-  if js_wpt_dom_runner::should_fail(&report.summary, fail_on) {
-    bail!("wpt-dom suite has mismatches (see {})", report_path.display());
+  if report.summary.should_fail(fail_on) {
+    bail!(
+      "WPT DOM suite reported mismatches (fail-on={:?}); report: {}",
+      args.fail_on,
+      report_path.display()
+    );
   }
 
   Ok(())
@@ -180,3 +179,16 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
   }
 }
 
+fn ensure_wpt_root(wpt_root: &Path) -> Result<()> {
+  let tests_dir = wpt_root.join("tests");
+  let resources_dir = wpt_root.join("resources");
+  if tests_dir.is_dir() && resources_dir.is_dir() {
+    return Ok(());
+  }
+  bail!(
+    "WPT DOM corpus root {} is missing required directories (expected {}/ and {}/)",
+    wpt_root.display(),
+    tests_dir.display(),
+    resources_dir.display()
+  );
+}

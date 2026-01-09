@@ -7,7 +7,9 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
+conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
 fastrender = { path = ".." }
+js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner" }
 webidl-ir = { path = "../crates/webidl-ir" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -19,5 +21,3 @@ tempfile = "3.10"
 cssparser = "0.35"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pathdiff = "0.2"
-js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner" }
-conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
