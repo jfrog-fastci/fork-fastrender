@@ -163,6 +163,24 @@ const DOM_SHIM: &str = r#"
     return child;
   };
 
+  Node.prototype.contains = function (other) {
+    nodeIdFromThis(this);
+    if (other === null || other === undefined) return false;
+    if (typeof other !== "object" || other === null) {
+      throw new TypeError("Failed to execute 'contains' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+    var otherId = other[NODE_ID];
+    if (typeof otherId !== "number") {
+      throw new TypeError("Failed to execute 'contains' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+    var cur = other;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parentNode;
+    }
+    return false;
+  };
+
   // Provide `document.head`/`document.body` for smoke tests.
   if (typeof g.__fastrender_dom_head_id === "number") {
     g.document.head = makeNode(Element.prototype, g.__fastrender_dom_head_id, "HEAD");

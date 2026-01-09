@@ -925,6 +925,7 @@ impl JsWptRuntime {
       .heap
       .object_set_prototype(node_proto, Some(event_target_proto))?;
     let append_child = self.alloc_native_function(native_node_append_child)?;
+    let contains = self.alloc_native_function(native_node_contains)?;
     let remove_child = self.alloc_native_function(native_dom_remove_child)?;
     let matches = self.alloc_native_function(native_dom_element_matches)?;
     let closest = self.alloc_native_function(native_dom_element_closest)?;
@@ -937,6 +938,10 @@ impl JsWptRuntime {
     let remove_child_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("removeChild")?)
+    };
+    let contains_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("contains")?)
     };
     let matches_key = {
       let mut scope = self.heap.scope();
@@ -960,6 +965,7 @@ impl JsWptRuntime {
       Value::Object(query_selector_all),
     )?;
     self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
+    self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
     self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
     self.define_data_prop(node_proto, matches_key, Value::Object(matches))?;
     self.define_data_prop(node_proto, closest_key, Value::Object(closest))?;
@@ -1010,6 +1016,7 @@ impl JsWptRuntime {
     if let Some(state) = self.dom_nodes.get_mut(&document_element) {
       state.children.push(head);
       state.children.push(body);
+      state.parent = Some(document);
     }
     if let Some(state) = self.dom_nodes.get_mut(&head) {
       state.parent = Some(document_element);
@@ -1021,6 +1028,7 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("parentNode")?)
     };
+    self.define_data_prop(document_element, parent_node_key, Value::Object(document))?;
     self.define_data_prop(head, parent_node_key, Value::Object(document_element))?;
     self.define_data_prop(body, parent_node_key, Value::Object(document_element))?;
     self.update_dom_child_nodes(document_element)?;
@@ -3087,6 +3095,30 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
   Ok(Value::Object(child))
 }
 
+fn native_node_contains(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let this_node = dom_require_node(rt, this, "contains")?;
+
+  let other_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let other = match other_value {
+    Value::Undefined | Value::Null => return Ok(Value::Bool(false)),
+    Value::Object(obj) if dom_is_node(rt, obj) => obj,
+    _ => {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: contains requires a Node",
+      )?)))
+    }
+  };
+
+  let mut current = Some(other);
+  while let Some(node) = current {
+    if node == this_node {
+      return Ok(Value::Bool(true));
+    }
+    current = dom_parent_for_contains(rt, node);
+  }
+  Ok(Value::Bool(false))
+}
+
 fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
   let Value::Object(obj) = this else {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
@@ -3847,6 +3879,38 @@ fn native_dom_remove_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -
   }
   rt.update_dom_child_nodes(parent)?;
   Ok(Value::Object(child))
+}
+
+fn dom_is_node(rt: &JsWptRuntime, obj: GcObject) -> bool {
+  if rt.dom_nodes.contains_key(&obj) {
+    return true;
+  }
+  matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == obj)
+}
+
+fn dom_parent_for_contains(rt: &JsWptRuntime, node: GcObject) -> Option<GcObject> {
+  let parent = rt.dom_nodes.get(&node).and_then(|s| s.parent)?;
+  let Some(parent_state) = rt.dom_nodes.get(&parent) else {
+    return Some(parent);
+  };
+  if parent_state.tag_name == "template" && parent_state.template_content.contains(&node) {
+    return None;
+  }
+  Some(parent)
+}
+
+fn dom_require_node(rt: &mut JsWptRuntime, value: Value, method: &str) -> Result<GcObject, JsError> {
+  let Value::Object(obj) = value else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+      "TypeError: {method} called on non-Node"
+    ))?)));
+  };
+  if dom_is_node(rt, obj) {
+    return Ok(obj);
+  }
+  Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+    "TypeError: {method} called on non-Node"
+  ))?)))
 }
 
 fn native_dom_element_matches(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
