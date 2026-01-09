@@ -64,9 +64,8 @@ use crate::layout::taffy_integration::{
   record_taffy_compute, record_taffy_invocation, record_taffy_measure_call,
   record_taffy_node_cache_hit, record_taffy_node_cache_miss, record_taffy_style_cache_hit,
   record_taffy_style_cache_miss, taffy_counters_enabled, taffy_flex_style_fingerprint,
-  taffy_template_cache_limit,
-  CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache, TaffyNodeCacheKey,
-  TAFFY_ABORT_CHECK_STRIDE,
+  taffy_template_cache_limit, CachedTaffyTemplate, SendSyncStyle, TaffyAdapterKind, TaffyNodeCache,
+  TaffyNodeCacheKey, TAFFY_ABORT_CHECK_STRIDE,
 };
 use crate::layout::utils::border_size_from_box_sizing;
 use crate::layout::utils::content_size_from_box_sizing;
@@ -818,7 +817,13 @@ impl FormattingContext for FlexFormattingContext {
       if let CrateAvailableSpace::Definite(w) = constraints.available_width {
         if let Ok(existing) = taffy_tree.style(root_node) {
           let mut updated = existing.clone();
-          updated.size.width = Dimension::length(w.max(0.0));
+          let border_box_width = w.max(0.0);
+          updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+            border_box_width,
+            style,
+            Axis::Horizontal,
+            border_box_width,
+          ));
           taffy_tree
             .set_style(root_node, updated)
             .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -834,18 +839,33 @@ impl FormattingContext for FlexFormattingContext {
       if let Ok(existing) = taffy_tree.style(root_node) {
         let mut updated = existing.clone();
         let mut changed = false;
+        let percentage_base = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .unwrap_or(self.viewport_size.width)
+          .max(0.0);
         if let Some(w) = constraints
           .used_border_box_width
           .filter(|w| w.is_finite() && *w >= 0.0)
         {
-          updated.size.width = Dimension::length(w);
+          updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+            w,
+            style,
+            Axis::Horizontal,
+            percentage_base,
+          ));
           changed = true;
         }
         if let Some(h) = constraints
           .used_border_box_height
           .filter(|h| h.is_finite() && *h >= 0.0)
         {
-          updated.size.height = Dimension::length(h);
+          updated.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+            h,
+            style,
+            Axis::Vertical,
+            percentage_base,
+          ));
           changed = true;
         }
         if changed {
@@ -875,6 +895,11 @@ impl FormattingContext for FlexFormattingContext {
       if let Ok(existing) = taffy_tree.style(root_node) {
         let mut updated = existing.clone();
         let mut changed = false;
+        let percentage_base = constraints
+          .inline_percentage_base
+          .or_else(|| constraints.width())
+          .unwrap_or(self.viewport_size.width)
+          .max(0.0);
 
         if constraints.used_border_box_width.is_none() {
           if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.width_keyword {
@@ -886,7 +911,12 @@ impl FormattingContext for FlexFormattingContext {
               limit,
             ) {
               Ok(Some(width)) if width.is_finite() && width >= 0.0 => {
-                updated.size.width = Dimension::length(width);
+                updated.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+                  width,
+                  style,
+                  Axis::Horizontal,
+                  percentage_base,
+                ));
                 changed = true;
               }
               Ok(_) => {}
@@ -906,7 +936,12 @@ impl FormattingContext for FlexFormattingContext {
               limit,
             ) {
               Ok(Some(height)) if height.is_finite() && height >= 0.0 => {
-                updated.size.height = Dimension::length(height);
+                updated.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+                  height,
+                  style,
+                  Axis::Vertical,
+                  percentage_base,
+                ));
                 changed = true;
               }
               Ok(_) => {}
@@ -1157,7 +1192,11 @@ impl FormattingContext for FlexFormattingContext {
             &constraints,
             &mut resolved_style,
           )?;
-          self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+          self.apply_calc_flex_basis(
+            child.style.as_ref(),
+            container_inner_main_size,
+            &mut resolved_style,
+          );
           self.apply_calc_sizing_properties(
             child.style.as_ref(),
             Some(container_inner_size),
@@ -1184,11 +1223,8 @@ impl FormattingContext for FlexFormattingContext {
       let measure_toggles = toggles.clone();
       let container_inline_positive = self.inline_axis_positive(style);
       let container_block_positive = self.block_axis_positive(style);
-      let container_flex_direction = self.flex_direction_to_taffy(
-        style,
-        container_inline_positive,
-        container_block_positive,
-      );
+      let container_flex_direction =
+        self.flex_direction_to_taffy(style, container_inline_positive, container_block_positive);
       let container_main_axis_is_horizontal = matches!(
         container_flex_direction,
         taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
@@ -2972,7 +3008,11 @@ impl FormattingContext for FlexFormattingContext {
           &constraints,
           &mut resolved_style,
         )?;
-        self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+        self.apply_calc_flex_basis(
+          child.style.as_ref(),
+          container_inner_main_size,
+          &mut resolved_style,
+        );
         self.apply_calc_sizing_properties(
           child.style.as_ref(),
           Some(container_inner_size),
@@ -3046,7 +3086,10 @@ impl FormattingContext for FlexFormattingContext {
       // `WrapReverse` is still incomplete for multi-line + `align-content`). Mirror the in-flow
       // flex item positions along the cross axis whenever the effective cross axis points in the
       // negative physical direction so line order and cross-axis alignment match CSS.
-      if matches!(box_node.style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) {
+      if matches!(
+        box_node.style.flex_wrap,
+        FlexWrap::Wrap | FlexWrap::WrapReverse
+      ) {
         let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
         let block_is_horizontal = !inline_is_horizontal;
         let main_is_inline = matches!(
@@ -3101,11 +3144,8 @@ impl FormattingContext for FlexFormattingContext {
             self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
           let padding_top =
             self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-          let padding_bottom = self.resolve_length_for_width(
-            box_node.style.padding_bottom,
-            cb_width,
-            &box_node.style,
-          );
+          let padding_bottom =
+            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
 
           let (cross_content_start, cross_content_end) = if cross_is_horizontal {
             (border_left + padding_left, border_right + padding_right)
@@ -3114,163 +3154,56 @@ impl FormattingContext for FlexFormattingContext {
           };
           let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
 
-           if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
-             for child in fragment.children_mut() {
-               check_layout_deadline(&mut deadline_counter)?;
-               let Some(style) = child.style.as_deref() else {
-                 continue;
-               };
-               if style.running_position.is_some()
-                 || matches!(style.position, Position::Absolute | Position::Fixed)
-               {
-                 continue;
-               }
-               let (cross_pos, child_cross) = if cross_is_horizontal {
-                 (child.bounds.x(), child.bounds.width())
-               } else {
-                 (child.bounds.y(), child.bounds.height())
-               };
-               if !cross_pos.is_finite() || !child_cross.is_finite() {
-                 continue;
-               }
-               let rel = cross_pos - cross_content_start;
-               let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
-               let delta = new_pos - cross_pos;
-               if delta.abs() <= 1e-6 {
-                 continue;
-               }
-               if cross_is_horizontal {
-                 translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
-               } else {
-                 translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
-               }
-             }
-
-             // Taffy's distributed `align-content` keywords fall back to "safe" alignment when there
-             // is no free space in the cross axis. In overflow, those safe variants resolve to
-             // physical `start` alignment.
-             //
-             // When we emulate `flex-wrap: wrap-reverse` by mirroring cross positions, we must not
-             // lose that "safe start" behaviour: mirroring converts a start-aligned layout into an
-             // end-aligned one. Detect the overflow case and shift the mirrored line stack back to
-             // the physical start edge.
-             if wrap_reverse
-               && matches!(
-                 box_node.style.align_content,
-                 AlignContent::Stretch
-                   | AlignContent::SpaceBetween
-                   | AlignContent::SpaceAround
-                   | AlignContent::SpaceEvenly
-               )
-             {
-               let mut min_rel = f32::INFINITY;
-               for child in fragment.children.iter() {
-                 check_layout_deadline(&mut deadline_counter)?;
-                 let Some(style) = child.style.as_deref() else {
-                   continue;
-                 };
-                 if style.running_position.is_some()
-                   || matches!(style.position, Position::Absolute | Position::Fixed)
-                 {
-                   continue;
-                 }
-                 let cross_pos = if cross_is_horizontal {
-                   child.bounds.x()
-                 } else {
-                   child.bounds.y()
-                 };
-                 if cross_pos.is_finite() {
-                   min_rel = min_rel.min(cross_pos - cross_content_start);
-                 }
-               }
-               if min_rel.is_finite() && min_rel < -1e-6 {
-                 let shift = -min_rel;
-                 for child in fragment.children_mut() {
-                   check_layout_deadline(&mut deadline_counter)?;
-                   let Some(style) = child.style.as_deref() else {
-                     continue;
-                   };
-                   if style.running_position.is_some()
-                     || matches!(style.position, Position::Absolute | Position::Fixed)
-                   {
-                     continue;
-                   }
-                   if cross_is_horizontal {
-                     translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
-                   } else {
-                     translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
-                   }
-                 }
-               }
+          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+            for child in fragment.children_mut() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let Some(style) = child.style.as_deref() else {
+                continue;
+              };
+              if style.running_position.is_some()
+                || matches!(style.position, Position::Absolute | Position::Fixed)
+              {
+                continue;
+              }
+              let (cross_pos, child_cross) = if cross_is_horizontal {
+                (child.bounds.x(), child.bounds.width())
+              } else {
+                (child.bounds.y(), child.bounds.height())
+              };
+              if !cross_pos.is_finite() || !child_cross.is_finite() {
+                continue;
+              }
+              let rel = cross_pos - cross_content_start;
+              let new_pos = cross_content_start + (cross_inner_size - child_cross - rel);
+              let delta = new_pos - cross_pos;
+              if delta.abs() <= 1e-6 {
+                continue;
+              }
+              if cross_is_horizontal {
+                translate_fragment_tree(child, Point::new(delta, 0.0), &mut deadline_counter)?;
+              } else {
+                translate_fragment_tree(child, Point::new(0.0, delta), &mut deadline_counter)?;
               }
             }
-          }
 
-          // Distributed `align-content` values fall back to "safe start" when there is no free space.
-          // That safe start alignment is defined in terms of the *physical* start edge, which can be
-          // the right/bottom edges in vertical writing modes or RTL.
-          //
-          // When `flex-wrap: wrap-reverse` cancels a negative cross axis (so we don't perform the
-          // mirror pass above), Taffy's internal fallback still start-aligns in its positive-axis
-          // coordinate space. Correct by shifting the in-flow items so the overflow is biased toward
-          // the physical end edge instead.
-          if wrap_reverse
-            && !should_mirror_cross
-            && !base_cross_positive
-            && matches!(
-              box_node.style.align_content,
-              AlignContent::Stretch
-                | AlignContent::SpaceBetween
-                | AlignContent::SpaceAround
-                | AlignContent::SpaceEvenly
-            )
-            && cross_size.is_finite()
-            && cross_size > 0.0
-          {
-            let cb_width = fragment.bounds.width();
-            let border_left = self.resolve_length_for_width(
-              box_node.style.used_border_left_width(),
-              cb_width,
-              &box_node.style,
-            );
-            let border_right = self.resolve_length_for_width(
-              box_node.style.used_border_right_width(),
-              cb_width,
-              &box_node.style,
-            );
-            let border_top = self.resolve_length_for_width(
-              box_node.style.used_border_top_width(),
-              cb_width,
-              &box_node.style,
-            );
-            let border_bottom = self.resolve_length_for_width(
-              box_node.style.used_border_bottom_width(),
-              cb_width,
-              &box_node.style,
-            );
-            let padding_left =
-              self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
-            let padding_right = self.resolve_length_for_width(
-              box_node.style.padding_right,
-              cb_width,
-              &box_node.style,
-            );
-            let padding_top =
-              self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
-            let padding_bottom = self.resolve_length_for_width(
-              box_node.style.padding_bottom,
-              cb_width,
-              &box_node.style,
-            );
-
-            let (cross_content_start, cross_content_end) = if cross_is_horizontal {
-              (border_left + padding_left, border_right + padding_right)
-            } else {
-              (border_top + padding_top, border_bottom + padding_bottom)
-            };
-            let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-            if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
-              let mut max_rel = f32::NEG_INFINITY;
+            // Taffy's distributed `align-content` keywords fall back to "safe" alignment when there
+            // is no free space in the cross axis. In overflow, those safe variants resolve to
+            // physical `start` alignment.
+            //
+            // When we emulate `flex-wrap: wrap-reverse` by mirroring cross positions, we must not
+            // lose that "safe start" behaviour: mirroring converts a start-aligned layout into an
+            // end-aligned one. Detect the overflow case and shift the mirrored line stack back to
+            // the physical start edge.
+            if wrap_reverse
+              && matches!(
+                box_node.style.align_content,
+                AlignContent::Stretch
+                  | AlignContent::SpaceBetween
+                  | AlignContent::SpaceAround
+                  | AlignContent::SpaceEvenly
+              )
+            {
+              let mut min_rel = f32::INFINITY;
               for child in fragment.children.iter() {
                 check_layout_deadline(&mut deadline_counter)?;
                 let Some(style) = child.style.as_deref() else {
@@ -3281,49 +3214,142 @@ impl FormattingContext for FlexFormattingContext {
                 {
                   continue;
                 }
-                let (cross_pos, child_cross) = if cross_is_horizontal {
-                  (child.bounds.x(), child.bounds.width())
+                let cross_pos = if cross_is_horizontal {
+                  child.bounds.x()
                 } else {
-                  (child.bounds.y(), child.bounds.height())
+                  child.bounds.y()
                 };
-                if !cross_pos.is_finite() || !child_cross.is_finite() {
-                  continue;
+                if cross_pos.is_finite() {
+                  min_rel = min_rel.min(cross_pos - cross_content_start);
                 }
-                max_rel = max_rel.max((cross_pos - cross_content_start) + child_cross);
               }
-
-              if max_rel.is_finite() && max_rel > cross_inner_size + 1e-6 {
-                let shift = cross_inner_size - max_rel;
-                if shift.is_finite() && shift.abs() > 1e-6 {
-                  for child in fragment.children_mut() {
-                    check_layout_deadline(&mut deadline_counter)?;
-                    let Some(style) = child.style.as_deref() else {
-                      continue;
-                    };
-                    if style.running_position.is_some()
-                      || matches!(style.position, Position::Absolute | Position::Fixed)
-                    {
-                      continue;
-                    }
-                    if cross_is_horizontal {
-                      translate_fragment_tree(
-                        child,
-                        Point::new(shift, 0.0),
-                        &mut deadline_counter,
-                      )?;
-                    } else {
-                      translate_fragment_tree(
-                        child,
-                        Point::new(0.0, shift),
-                        &mut deadline_counter,
-                      )?;
-                    }
+              if min_rel.is_finite() && min_rel < -1e-6 {
+                let shift = -min_rel;
+                for child in fragment.children_mut() {
+                  check_layout_deadline(&mut deadline_counter)?;
+                  let Some(style) = child.style.as_deref() else {
+                    continue;
+                  };
+                  if style.running_position.is_some()
+                    || matches!(style.position, Position::Absolute | Position::Fixed)
+                  {
+                    continue;
+                  }
+                  if cross_is_horizontal {
+                    translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
+                  } else {
+                    translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
                   }
                 }
               }
             }
           }
         }
+
+        // Distributed `align-content` values fall back to "safe start" when there is no free space.
+        // That safe start alignment is defined in terms of the *physical* start edge, which can be
+        // the right/bottom edges in vertical writing modes or RTL.
+        //
+        // When `flex-wrap: wrap-reverse` cancels a negative cross axis (so we don't perform the
+        // mirror pass above), Taffy's internal fallback still start-aligns in its positive-axis
+        // coordinate space. Correct by shifting the in-flow items so the overflow is biased toward
+        // the physical end edge instead.
+        if wrap_reverse
+          && !should_mirror_cross
+          && !base_cross_positive
+          && matches!(
+            box_node.style.align_content,
+            AlignContent::Stretch
+              | AlignContent::SpaceBetween
+              | AlignContent::SpaceAround
+              | AlignContent::SpaceEvenly
+          )
+          && cross_size.is_finite()
+          && cross_size > 0.0
+        {
+          let cb_width = fragment.bounds.width();
+          let border_left = self.resolve_length_for_width(
+            box_node.style.used_border_left_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_right = self.resolve_length_for_width(
+            box_node.style.used_border_right_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_top = self.resolve_length_for_width(
+            box_node.style.used_border_top_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let border_bottom = self.resolve_length_for_width(
+            box_node.style.used_border_bottom_width(),
+            cb_width,
+            &box_node.style,
+          );
+          let padding_left =
+            self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+          let padding_right =
+            self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
+          let padding_top =
+            self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+          let padding_bottom =
+            self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+
+          let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+            (border_left + padding_left, border_right + padding_right)
+          } else {
+            (border_top + padding_top, border_bottom + padding_bottom)
+          };
+          let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
+          if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
+            let mut max_rel = f32::NEG_INFINITY;
+            for child in fragment.children.iter() {
+              check_layout_deadline(&mut deadline_counter)?;
+              let Some(style) = child.style.as_deref() else {
+                continue;
+              };
+              if style.running_position.is_some()
+                || matches!(style.position, Position::Absolute | Position::Fixed)
+              {
+                continue;
+              }
+              let (cross_pos, child_cross) = if cross_is_horizontal {
+                (child.bounds.x(), child.bounds.width())
+              } else {
+                (child.bounds.y(), child.bounds.height())
+              };
+              if !cross_pos.is_finite() || !child_cross.is_finite() {
+                continue;
+              }
+              max_rel = max_rel.max((cross_pos - cross_content_start) + child_cross);
+            }
+
+            if max_rel.is_finite() && max_rel > cross_inner_size + 1e-6 {
+              let shift = cross_inner_size - max_rel;
+              if shift.is_finite() && shift.abs() > 1e-6 {
+                for child in fragment.children_mut() {
+                  check_layout_deadline(&mut deadline_counter)?;
+                  let Some(style) = child.style.as_deref() else {
+                    continue;
+                  };
+                  if style.running_position.is_some()
+                    || matches!(style.position, Position::Absolute | Position::Fixed)
+                  {
+                    continue;
+                  }
+                  if cross_is_horizontal {
+                    translate_fragment_tree(child, Point::new(shift, 0.0), &mut deadline_counter)?;
+                  } else {
+                    translate_fragment_tree(child, Point::new(0.0, shift), &mut deadline_counter)?;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
 
       // Baseline alignment is handled by Taffy once the measure callback provides the leaf node's
       // first baselines.
@@ -4916,7 +4942,11 @@ impl FlexFormattingContext {
         constraints,
         &mut resolved_style,
       )?;
-      self.apply_calc_flex_basis(child.style.as_ref(), container_inner_main_size, &mut resolved_style);
+      self.apply_calc_flex_basis(
+        child.style.as_ref(),
+        container_inner_main_size,
+        &mut resolved_style,
+      );
       self.apply_calc_sizing_properties(
         child.style.as_ref(),
         Some(container_inner_size),
@@ -5113,7 +5143,10 @@ impl FlexFormattingContext {
       inline_positive_item
     };
     let mirror_cross_axis = matches!(axis_source.display, Display::Flex | Display::InlineFlex)
-      && matches!(axis_source.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+      && matches!(
+        axis_source.flex_wrap,
+        FlexWrap::Wrap | FlexWrap::WrapReverse
+      )
       && (cross_positive_item_base == matches!(axis_source.flex_wrap, FlexWrap::WrapReverse));
     let cross_positive_item = if matches!(axis_source.display, Display::Flex | Display::InlineFlex)
       && !matches!(axis_source.flex_wrap, FlexWrap::NoWrap)
@@ -5131,7 +5164,8 @@ impl FlexFormattingContext {
       axis_source.writing_mode,
       axis_source.direction,
     );
-    let self_axes = FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
+    let self_axes =
+      FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
     let container_cross_axis = if axis_main_is_inline {
       container_axes.block_axis()
     } else {
@@ -5153,7 +5187,9 @@ impl FlexFormattingContext {
     let effective_align_self = if is_root {
       style.align_self
     } else {
-      style.align_self.or_else(|| containing_flex.map(|flex| flex.align_items))
+      style
+        .align_self
+        .or_else(|| containing_flex.map(|flex| flex.align_items))
     };
     let effective_justify_self = if is_root {
       style.justify_self
@@ -5199,19 +5235,26 @@ impl FlexFormattingContext {
       }
     };
 
-    let min_width_dimension =
-      self.length_option_to_dimension_box_sizing(style.min_width.as_ref(), style, Axis::Horizontal);
-    let min_height_dimension =
-      self.length_option_to_dimension_box_sizing(style.min_height.as_ref(), style, Axis::Vertical);
     let justify_content = match (style.justify_content, main_axis_positive_container) {
       (JustifyContent::Start, false) => JustifyContent::End,
       (JustifyContent::End, false) => JustifyContent::Start,
       (value, _) => value,
     };
 
+    let taffy_box_sizing = if style.box_sizing == BoxSizing::ContentBox {
+      taffy::style::BoxSizing::ContentBox
+    } else {
+      taffy::style::BoxSizing::BorderBox
+    };
+
     let mut taffy_style = taffy::style::Style {
       // Display mode - only root is Flex, children are Block (flex items)
       display: self.display_to_taffy(style, is_root),
+
+      // CSS `box-sizing` controls whether `width/height/min/max/flex-basis` apply to the border
+      // box or the content box. Use Taffy's native support instead of manually converting sizes
+      // (which breaks percentage sizing).
+      box_sizing: taffy_box_sizing,
 
       // Flex container properties
       flex_direction: self.flex_direction_to_taffy(
@@ -5251,20 +5294,12 @@ impl FlexFormattingContext {
       // to fill the available space (block-level behavior)
       size: self.compute_size(style, is_root),
       min_size: taffy::geometry::Size {
-        width: min_width_dimension,
-        height: min_height_dimension,
+        width: self.length_option_to_dimension(style.min_width.as_ref(), style),
+        height: self.length_option_to_dimension(style.min_height.as_ref(), style),
       },
       max_size: taffy::geometry::Size {
-        width: self.length_option_to_dimension_box_sizing(
-          style.max_width.as_ref(),
-          style,
-          Axis::Horizontal,
-        ),
-        height: self.length_option_to_dimension_box_sizing(
-          style.max_height.as_ref(),
-          style,
-          Axis::Vertical,
-        ),
+        width: self.length_option_to_dimension(style.max_width.as_ref(), style),
+        height: self.length_option_to_dimension(style.max_height.as_ref(), style),
       },
 
       // Spacing
@@ -5307,11 +5342,8 @@ impl FlexFormattingContext {
       let parent_style = containing_flex.unwrap_or(style);
       let parent_inline_positive = self.inline_axis_positive(parent_style);
       let parent_block_positive = self.block_axis_positive(parent_style);
-      let parent_direction = self.flex_direction_to_taffy(
-        parent_style,
-        parent_inline_positive,
-        parent_block_positive,
-      );
+      let parent_direction =
+        self.flex_direction_to_taffy(parent_style, parent_inline_positive, parent_block_positive);
       let main_axis_is_horizontal = matches!(
         parent_direction,
         taffy::style::FlexDirection::Row | taffy::style::FlexDirection::RowReverse
@@ -5361,6 +5393,7 @@ impl FlexFormattingContext {
     let mut edges_base0_h: Option<f32> = None;
     let mut edges_actual_w: Option<f32> = None;
     let mut edges_actual_h: Option<f32> = None;
+    let mut percentage_base_for_edges: Option<f32> = None;
     if let (Some(container_style), Some(constraints)) = (containing_flex, constraints) {
       let content_base = match self.fit_content_available_for_axis(
         Axis::Horizontal,
@@ -5371,6 +5404,7 @@ impl FlexFormattingContext {
         _ => None,
       };
       if let Some(content_base) = content_base {
+        percentage_base_for_edges = Some(content_base);
         let axis_edges = |axis: Axis, percentage_base: f32| -> f32 {
           let padding_left =
             self.resolve_length_for_width(style.padding_left, percentage_base, style);
@@ -5411,6 +5445,7 @@ impl FlexFormattingContext {
         border_box.max(0.0)
       }
     };
+    let percentage_base_for_edges = percentage_base_for_edges.unwrap_or(0.0);
 
     // When computing intrinsic sizes for an axis that is itself specified as an intrinsic keyword,
     // clear that size property to avoid self-recursion.
@@ -5479,7 +5514,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
-            taffy_style.size.width = Dimension::length(rebased);
+            taffy_style.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Horizontal,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5492,7 +5532,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
-            taffy_style.size.height = Dimension::length(rebased);
+            taffy_style.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Vertical,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5505,7 +5550,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
-            taffy_style.min_size.width = Dimension::length(rebased);
+            taffy_style.min_size.width = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Horizontal,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5518,7 +5568,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
-            taffy_style.min_size.height = Dimension::length(rebased);
+            taffy_style.min_size.height = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Vertical,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5531,7 +5586,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
-            taffy_style.max_size.width = Dimension::length(rebased);
+            taffy_style.max_size.width = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Horizontal,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5544,7 +5604,12 @@ impl FlexFormattingContext {
         Ok(border_box) => {
           if border_box.is_finite() {
             let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
-            taffy_style.max_size.height = Dimension::length(rebased);
+            taffy_style.max_size.height = Dimension::length(self.border_box_to_taffy_style_size(
+              rebased,
+              style,
+              Axis::Vertical,
+              percentage_base_for_edges,
+            ));
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -5634,6 +5699,10 @@ impl FlexFormattingContext {
       }
     };
 
+    let to_box_sizing_size = |border_box: f32, axis: Axis| -> f32 {
+      self.border_box_to_taffy_style_size(border_box, style, axis, inline_base)
+    };
+
     let mut intrinsic_w: Option<(f32, f32)> = None;
     let mut intrinsic_h: Option<(f32, f32)> = None;
     let resolve_fit_content = |axis: Axis,
@@ -5680,28 +5749,30 @@ impl FlexFormattingContext {
 
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.min_width_keyword {
       let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
-      taffy_style.min_size.width = Dimension::length(resolved);
+      taffy_style.min_size.width =
+        Dimension::length(to_box_sizing_size(resolved, Axis::Horizontal));
     }
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.max_width_keyword {
       let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
-      taffy_style.max_size.width = Dimension::length(resolved);
+      taffy_style.max_size.width =
+        Dimension::length(to_box_sizing_size(resolved, Axis::Horizontal));
     }
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.width_keyword {
       let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
-      taffy_style.size.width = Dimension::length(resolved);
+      taffy_style.size.width = Dimension::length(to_box_sizing_size(resolved, Axis::Horizontal));
     }
 
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.min_height_keyword {
       let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
-      taffy_style.min_size.height = Dimension::length(resolved);
+      taffy_style.min_size.height = Dimension::length(to_box_sizing_size(resolved, Axis::Vertical));
     }
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.max_height_keyword {
       let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
-      taffy_style.max_size.height = Dimension::length(resolved);
+      taffy_style.max_size.height = Dimension::length(to_box_sizing_size(resolved, Axis::Vertical));
     }
     if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.height_keyword {
       let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
-      taffy_style.size.height = Dimension::length(resolved);
+      taffy_style.size.height = Dimension::length(to_box_sizing_size(resolved, Axis::Vertical));
     }
 
     Ok(())
@@ -6027,14 +6098,26 @@ impl FlexFormattingContext {
       .unwrap_or(self.viewport_size.width)
       .max(0.0);
 
-    let border_left =
-      self.resolve_length_for_width(container_style.used_border_left_width(), inline_base, container_style);
-    let border_right =
-      self.resolve_length_for_width(container_style.used_border_right_width(), inline_base, container_style);
-    let border_top =
-      self.resolve_length_for_width(container_style.used_border_top_width(), inline_base, container_style);
-    let border_bottom =
-      self.resolve_length_for_width(container_style.used_border_bottom_width(), inline_base, container_style);
+    let border_left = self.resolve_length_for_width(
+      container_style.used_border_left_width(),
+      inline_base,
+      container_style,
+    );
+    let border_right = self.resolve_length_for_width(
+      container_style.used_border_right_width(),
+      inline_base,
+      container_style,
+    );
+    let border_top = self.resolve_length_for_width(
+      container_style.used_border_top_width(),
+      inline_base,
+      container_style,
+    );
+    let border_bottom = self.resolve_length_for_width(
+      container_style.used_border_bottom_width(),
+      inline_base,
+      container_style,
+    );
     let padding_left =
       self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
     let padding_right =
@@ -6068,7 +6151,10 @@ impl FlexFormattingContext {
       return;
     }
 
-    let percentage_base = len.has_percentage().then_some(container_inner_main_size).flatten();
+    let percentage_base = len
+      .has_percentage()
+      .then_some(container_inner_main_size)
+      .flatten();
     let resolved = resolve_length_with_percentage_metrics(
       *len,
       percentage_base,
@@ -6251,14 +6337,6 @@ impl FlexFormattingContext {
       if taffy_style.min_size.width == Dimension::AUTO
         && matches!(style.overflow_x, CssOverflow::Visible | CssOverflow::Clip)
       {
-        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
-          if let Some(min_candidate) = cached {
-            if min_candidate.is_finite() && min_candidate > 0.0 {
-              taffy_style.min_size.width = Dimension::length(min_candidate);
-            }
-          }
-          return Ok(());
-        }
         let container_content_width_base = container.width.as_ref().and_then(|len| {
           // Percentages on the flex item resolve against the flex container's inner size.
           // Only treat the container inline size as definite when it resolves without percentages
@@ -6266,7 +6344,8 @@ impl FlexFormattingContext {
           if len.has_percentage() {
             return None;
           }
-          let mut content = self.resolve_length_for_width(*len, self.viewport_size.width, container);
+          let mut content =
+            self.resolve_length_for_width(*len, self.viewport_size.width, container);
           if !content.is_finite() {
             return None;
           }
@@ -6275,6 +6354,29 @@ impl FlexFormattingContext {
           }
           Some(content.max(0.0))
         });
+        // The flex auto-min-size algorithm computes a used *border-box* size (CSS Flexbox §4.5).
+        // Convert that to the authored box for Taffy (content-box vs border-box) when writing it
+        // into `Style::min_size`.
+        let percentage_base_for_edges = container_content_width_base
+          .unwrap_or(self.viewport_size.width)
+          .max(0.0);
+        let min_size_for_taffy = |border_box: f32| -> f32 {
+          self.border_box_to_taffy_style_size(
+            border_box,
+            style.as_ref(),
+            Axis::Horizontal,
+            percentage_base_for_edges,
+          )
+        };
+
+        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
+          if let Some(min_candidate) = cached {
+            if min_candidate.is_finite() && min_candidate > 0.0 {
+              taffy_style.min_size.width = Dimension::length(min_size_for_taffy(min_candidate));
+            }
+          }
+          return Ok(());
+        }
         let specified_size_suggestion = style.width.as_ref().and_then(|len| {
           let px = if len.has_percentage() {
             let base = container_content_width_base?;
@@ -6282,9 +6384,8 @@ impl FlexFormattingContext {
           } else {
             self.resolve_length_px(len, style).or_else(|| {
               // Handle calc()/font-relative/etc lengths that don't require a percentage base.
-              (!len.has_percentage()).then(|| {
-                self.resolve_length_for_width(*len, self.viewport_size.width, style)
-              })
+              (!len.has_percentage())
+                .then(|| self.resolve_length_for_width(*len, self.viewport_size.width, style))
             })
           }?;
           if px <= 0.0 {
@@ -6301,23 +6402,23 @@ impl FlexFormattingContext {
             if ratio > 0.0 && ratio.is_finite() =>
           {
             style.height.as_ref().and_then(|len| {
-            let cross_px = self.resolve_length_px(len, style)?;
-            if !cross_px.is_finite() {
-              return None;
-            }
-            let mut cross_border_box = cross_px.max(0.0);
-            if style.box_sizing == BoxSizing::ContentBox {
-              cross_border_box += self.vertical_edges_px(style)?;
-            }
-            if !cross_border_box.is_finite() {
-              return None;
-            }
-            let transferred = cross_border_box * ratio;
-            if transferred.is_finite() {
-              Some(transferred.max(0.0))
-            } else {
-              None
-            }
+              let cross_px = self.resolve_length_px(len, style)?;
+              if !cross_px.is_finite() {
+                return None;
+              }
+              let mut cross_border_box = cross_px.max(0.0);
+              if style.box_sizing == BoxSizing::ContentBox {
+                cross_border_box += self.vertical_edges_px(style)?;
+              }
+              if !cross_border_box.is_finite() {
+                return None;
+              }
+              let transferred = cross_border_box * ratio;
+              if transferred.is_finite() {
+                Some(transferred.max(0.0))
+              } else {
+                None
+              }
             })
           }
           _ => None,
@@ -6362,7 +6463,7 @@ impl FlexFormattingContext {
             min_candidate = min_candidate.min(max_main);
           }
           if min_candidate.is_finite() && min_candidate > 0.0 {
-            taffy_style.min_size.width = Dimension::length(min_candidate);
+            taffy_style.min_size.width = Dimension::length(min_size_for_taffy(min_candidate));
           }
           flex_auto_min_cache_store(
             box_id,
@@ -6440,7 +6541,7 @@ impl FlexFormattingContext {
               min_candidate = min_candidate.min(max_main);
             }
             if min_candidate.is_finite() && min_candidate > 0.0 {
-              taffy_style.min_size.width = Dimension::length(min_candidate);
+              taffy_style.min_size.width = Dimension::length(min_size_for_taffy(min_candidate));
             }
             flex_auto_min_cache_store(
               box_id,
@@ -6459,10 +6560,35 @@ impl FlexFormattingContext {
     } else if taffy_style.min_size.height == Dimension::AUTO
       && matches!(style.overflow_y, CssOverflow::Visible | CssOverflow::Clip)
     {
+      let container_content_width_base = container.width.as_ref().and_then(|len| {
+        if len.has_percentage() {
+          return None;
+        }
+        let mut content = self.resolve_length_for_width(*len, self.viewport_size.width, container);
+        if !content.is_finite() {
+          return None;
+        }
+        if container.box_sizing == BoxSizing::BorderBox {
+          content = (content - self.horizontal_edges_px(container)?).max(0.0);
+        }
+        Some(content.max(0.0))
+      });
+      let percentage_base_for_edges = container_content_width_base
+        .unwrap_or(self.viewport_size.width)
+        .max(0.0);
+      let min_size_for_taffy = |border_box: f32| -> f32 {
+        self.border_box_to_taffy_style_size(
+          border_box,
+          style.as_ref(),
+          Axis::Vertical,
+          percentage_base_for_edges,
+        )
+      };
+
       if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents) {
         if let Some(min_candidate) = cached {
           if min_candidate.is_finite() && min_candidate > 0.0 {
-            taffy_style.min_size.height = Dimension::length(min_candidate);
+            taffy_style.min_size.height = Dimension::length(min_size_for_taffy(min_candidate));
           }
         }
         return Ok(());
@@ -6486,9 +6612,8 @@ impl FlexFormattingContext {
           Some(self.resolve_length_for_width(*len, base, style))
         } else {
           self.resolve_length_px(len, style).or_else(|| {
-            (!len.has_percentage()).then(|| {
-              self.resolve_length_for_width(*len, self.viewport_size.height, style)
-            })
+            (!len.has_percentage())
+              .then(|| self.resolve_length_for_width(*len, self.viewport_size.height, style))
           })
         }?;
         if px <= 0.0 {
@@ -6505,23 +6630,23 @@ impl FlexFormattingContext {
           if ratio > 0.0 && ratio.is_finite() =>
         {
           style.width.as_ref().and_then(|len| {
-          let cross_px = self.resolve_length_px(len, style)?;
-          if !cross_px.is_finite() {
-            return None;
-          }
-          let mut cross_border_box = cross_px.max(0.0);
-          if style.box_sizing == BoxSizing::ContentBox {
-            cross_border_box += self.horizontal_edges_px(style)?;
-          }
-          if !cross_border_box.is_finite() {
-            return None;
-          }
-          let transferred = cross_border_box / ratio;
-          if transferred.is_finite() {
-            Some(transferred.max(0.0))
-          } else {
-            None
-          }
+            let cross_px = self.resolve_length_px(len, style)?;
+            if !cross_px.is_finite() {
+              return None;
+            }
+            let mut cross_border_box = cross_px.max(0.0);
+            if style.box_sizing == BoxSizing::ContentBox {
+              cross_border_box += self.horizontal_edges_px(style)?;
+            }
+            if !cross_border_box.is_finite() {
+              return None;
+            }
+            let transferred = cross_border_box / ratio;
+            if transferred.is_finite() {
+              Some(transferred.max(0.0))
+            } else {
+              None
+            }
           })
         }
         _ => None,
@@ -6566,7 +6691,7 @@ impl FlexFormattingContext {
           min_candidate = min_candidate.min(max_main);
         }
         if min_candidate.is_finite() && min_candidate > 0.0 {
-          taffy_style.min_size.height = Dimension::length(min_candidate);
+          taffy_style.min_size.height = Dimension::length(min_size_for_taffy(min_candidate));
         }
         flex_auto_min_cache_store(
           box_id,
@@ -6636,7 +6761,7 @@ impl FlexFormattingContext {
             min_candidate = min_candidate.min(max_main);
           }
           if min_candidate.is_finite() && min_candidate > 0.0 {
-            taffy_style.min_size.height = Dimension::length(min_candidate);
+            taffy_style.min_size.height = Dimension::length(min_size_for_taffy(min_candidate));
           }
           flex_auto_min_cache_store(
             box_id,
@@ -6832,7 +6957,7 @@ impl FlexFormattingContext {
   fn compute_size(&self, style: &ComputedStyle, is_root: bool) -> taffy::geometry::Size<Dimension> {
     let is_block_level_root = is_root && matches!(style.display, Display::Flex);
     let width = match (style.width.as_ref(), style.width_keyword) {
-      (Some(len), _) => self.dimension_for_box_sizing(len, style, Axis::Horizontal),
+      (Some(len), _) => self.length_to_dimension(len, style),
       (None, Some(_)) => Dimension::auto(),
       (None, None) if is_block_level_root => {
         // Root flex container without explicit width: expand to fill
@@ -6843,7 +6968,7 @@ impl FlexFormattingContext {
     };
 
     let height = match (style.height.as_ref(), style.height_keyword) {
-      (Some(len), _) => self.dimension_for_box_sizing(len, style, Axis::Vertical),
+      (Some(len), _) => self.length_to_dimension(len, style),
       (None, Some(_)) => Dimension::auto(),
       (None, None) => Dimension::auto(), // Height always auto unless specified
     };
@@ -7361,8 +7486,7 @@ impl FlexFormattingContext {
           && ((main_axis_is_row && work.layout_width <= eps)
             || (!main_axis_is_row && work.layout_height <= eps));
         let intrinsic_size = if uses_content_base_size {
-          Self::fragment_descendant_span(&child_fragment, deadline_counter)?
-            .unwrap_or(Size::ZERO)
+          Self::fragment_descendant_span(&child_fragment, deadline_counter)?.unwrap_or(Size::ZERO)
         } else {
           Self::fragment_subtree_size(&child_fragment, deadline_counter)?
         };
@@ -7398,7 +7522,10 @@ impl FlexFormattingContext {
         let needs_max_content_fallback = (main_axis_is_row && work.layout_width <= eps)
           || (!main_axis_is_row && work.layout_height <= eps);
         if needs_max_content_fallback
-          && !matches!(work.child_box.style.flex_basis, crate::style::types::FlexBasis::Content)
+          && !matches!(
+            work.child_box.style.flex_basis,
+            crate::style::types::FlexBasis::Content
+          )
         {
           let mc_constraints = if main_axis_is_row {
             LayoutConstraints::new(
@@ -7442,7 +7569,8 @@ impl FlexFormattingContext {
               flex_profile::record_node_layout(work.child_box.id, mc_selector.as_deref(), mc_timer);
               let mc_fragment = mc_fragment;
               let mut mc_size = if uses_content_base_size {
-                Self::fragment_descendant_span(&mc_fragment, deadline_counter)?.unwrap_or(Size::ZERO)
+                Self::fragment_descendant_span(&mc_fragment, deadline_counter)?
+                  .unwrap_or(Size::ZERO)
               } else {
                 Self::fragment_subtree_size(&mc_fragment, deadline_counter)?
               };
@@ -7581,14 +7709,12 @@ impl FlexFormattingContext {
             Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
           let mut resolved_width = layout_width;
           let mut resolved_height = layout_height;
-          let allow_width_fallback =
-            !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-              && main_axis_is_horizontal
-              && resolved_width <= eps);
-          let allow_height_fallback =
-            !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-              && !main_axis_is_horizontal
-              && resolved_height <= eps);
+          let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+            && main_axis_is_horizontal
+            && resolved_width <= eps);
+          let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+            && !main_axis_is_horizontal
+            && resolved_height <= eps);
           if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
             resolved_width = intrinsic_size.width;
           }
@@ -7823,14 +7949,12 @@ impl FlexFormattingContext {
             // Position the child using the Taffy-computed coordinates (relative to parent).
             let mut resolved_width = layout_width;
             let mut resolved_height = layout_height;
-            let allow_width_fallback =
-              !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-                && main_axis_is_horizontal
-                && resolved_width <= eps);
-            let allow_height_fallback =
-              !(matches!(child_box.style.flex_basis, FlexBasis::Content)
-                && !main_axis_is_horizontal
-                && resolved_height <= eps);
+            let allow_width_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && main_axis_is_horizontal
+              && resolved_width <= eps);
+            let allow_height_fallback = !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && !main_axis_is_horizontal
+              && resolved_height <= eps);
             if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
               resolved_width = intrinsic_size.width;
             }
@@ -8904,8 +9028,18 @@ impl FlexFormattingContext {
 
     let mut root_style =
       self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
-    root_style.size.width = Dimension::length(container_width);
-    root_style.size.height = Dimension::length(container_height);
+    root_style.size.width = Dimension::length(self.border_box_to_taffy_style_size(
+      container_width,
+      container_style,
+      Axis::Horizontal,
+      container_width,
+    ));
+    root_style.size.height = Dimension::length(self.border_box_to_taffy_style_size(
+      container_height,
+      container_style,
+      Axis::Vertical,
+      container_width,
+    ));
     // Flexbox §abspos-items defines the cross-axis edges of the static-position rectangle as the
     // flex container's content edges. That intentionally ignores `align-content` (which would
     // otherwise shift the flex line(s) within the container in a wrapping flex container).
@@ -8924,11 +9058,15 @@ impl FlexFormattingContext {
     // axes in vertical writing modes). Abspos children are laid out after that mirroring pass, so
     // we must apply the same mirroring to the static-position probe results here.
     let cross_mirror: Option<(bool, f32, f32)> = {
-      let is_wrapping = matches!(container_style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse);
+      let is_wrapping = matches!(
+        container_style.flex_wrap,
+        FlexWrap::Wrap | FlexWrap::WrapReverse
+      );
       if !is_wrapping {
         None
       } else {
-        let inline_is_horizontal = matches!(container_style.writing_mode, WritingMode::HorizontalTb);
+        let inline_is_horizontal =
+          matches!(container_style.writing_mode, WritingMode::HorizontalTb);
         let block_is_horizontal = !inline_is_horizontal;
         let main_is_inline = matches!(
           container_style.flex_direction,
@@ -8960,22 +9098,43 @@ impl FlexFormattingContext {
             None
           } else {
             let cb_width = container_width;
-            let border_left =
-              self.resolve_length_for_width(container_style.used_border_left_width(), cb_width, container_style);
-            let border_right =
-              self.resolve_length_for_width(container_style.used_border_right_width(), cb_width, container_style);
-            let border_top =
-              self.resolve_length_for_width(container_style.used_border_top_width(), cb_width, container_style);
-            let border_bottom =
-              self.resolve_length_for_width(container_style.used_border_bottom_width(), cb_width, container_style);
-            let padding_left =
-              self.resolve_length_for_width(container_style.padding_left, cb_width, container_style);
-            let padding_right =
-              self.resolve_length_for_width(container_style.padding_right, cb_width, container_style);
+            let border_left = self.resolve_length_for_width(
+              container_style.used_border_left_width(),
+              cb_width,
+              container_style,
+            );
+            let border_right = self.resolve_length_for_width(
+              container_style.used_border_right_width(),
+              cb_width,
+              container_style,
+            );
+            let border_top = self.resolve_length_for_width(
+              container_style.used_border_top_width(),
+              cb_width,
+              container_style,
+            );
+            let border_bottom = self.resolve_length_for_width(
+              container_style.used_border_bottom_width(),
+              cb_width,
+              container_style,
+            );
+            let padding_left = self.resolve_length_for_width(
+              container_style.padding_left,
+              cb_width,
+              container_style,
+            );
+            let padding_right = self.resolve_length_for_width(
+              container_style.padding_right,
+              cb_width,
+              container_style,
+            );
             let padding_top =
               self.resolve_length_for_width(container_style.padding_top, cb_width, container_style);
-            let padding_bottom =
-              self.resolve_length_for_width(container_style.padding_bottom, cb_width, container_style);
+            let padding_bottom = self.resolve_length_for_width(
+              container_style.padding_bottom,
+              cb_width,
+              container_style,
+            );
 
             let (cross_content_start, cross_content_end) = if cross_is_horizontal {
               (border_left + padding_left, border_right + padding_right)
@@ -8983,8 +9142,11 @@ impl FlexFormattingContext {
               (border_top + padding_top, border_bottom + padding_bottom)
             };
             let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
-            (cross_inner_size.is_finite() && cross_inner_size > 0.0)
-              .then_some((cross_is_horizontal, cross_content_start, cross_inner_size))
+            (cross_inner_size.is_finite() && cross_inner_size > 0.0).then_some((
+              cross_is_horizontal,
+              cross_content_start,
+              cross_inner_size,
+            ))
           }
         }
       }
@@ -9012,15 +9174,15 @@ impl FlexFormattingContext {
       //
       // Compute the used border-box size using the absolute positioning algorithm (the static
       // position itself does not affect used sizes), and feed that into the flex probe.
+      let actual_horizontal = candidate.positioned_style.padding.left
+        + candidate.positioned_style.padding.right
+        + candidate.positioned_style.border_width.left
+        + candidate.positioned_style.border_width.right;
+      let actual_vertical = candidate.positioned_style.padding.top
+        + candidate.positioned_style.padding.bottom
+        + candidate.positioned_style.border_width.top
+        + candidate.positioned_style.border_width.bottom;
       let probe_size = {
-        let actual_horizontal = candidate.positioned_style.padding.left
-          + candidate.positioned_style.padding.right
-          + candidate.positioned_style.border_width.left
-          + candidate.positioned_style.border_width.right;
-        let actual_vertical = candidate.positioned_style.padding.top
-          + candidate.positioned_style.padding.bottom
-          + candidate.positioned_style.border_width.top
-          + candidate.positioned_style.border_width.bottom;
         let (intrinsic_horizontal, intrinsic_vertical) =
           crate::layout::absolute_positioning::intrinsic_edge_sizes(
             &candidate.original_style,
@@ -9059,8 +9221,20 @@ impl FlexFormattingContext {
           (result.size.height + actual_vertical).max(0.0),
         )
       };
-      style.size.width = Dimension::length(probe_size.width);
-      style.size.height = Dimension::length(probe_size.height);
+      style.size.width = Dimension::length(
+        if candidate.original_style.box_sizing == BoxSizing::ContentBox {
+          (probe_size.width - actual_horizontal).max(0.0)
+        } else {
+          probe_size.width
+        },
+      );
+      style.size.height = Dimension::length(
+        if candidate.original_style.box_sizing == BoxSizing::ContentBox {
+          (probe_size.height - actual_vertical).max(0.0)
+        } else {
+          probe_size.height
+        },
+      );
       style.flex_grow = 0.0;
       style.flex_shrink = 0.0;
       style.flex_basis = Dimension::auto();
@@ -9079,7 +9253,9 @@ impl FlexFormattingContext {
 
       let root = taffy
         .new_with_children(root_style.clone(), &[node])
-        .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e)))?;
+        .map_err(|e| {
+          LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e))
+        })?;
 
       taffy
         .compute_layout_with_measure_and_cancel(
@@ -9361,6 +9537,42 @@ impl FlexFormattingContext {
     Some(top + bottom + bt + bb)
   }
 
+  fn axis_padding_border_px(&self, style: &ComputedStyle, axis: Axis, percentage_base: f32) -> f32 {
+    let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
+    let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
+    let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+    let padding_bottom =
+      self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+    let border_left =
+      self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+    let border_right =
+      self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+    let border_top =
+      self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+    let border_bottom =
+      self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+    match axis {
+      Axis::Horizontal => padding_left + padding_right + border_left + border_right,
+      Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
+    }
+  }
+
+  fn border_box_to_taffy_style_size(
+    &self,
+    border_box: f32,
+    style: &ComputedStyle,
+    axis: Axis,
+    percentage_base: f32,
+  ) -> f32 {
+    let border_box = border_box.max(0.0);
+    if style.box_sizing == BoxSizing::ContentBox {
+      let edges = self.axis_padding_border_px(style, axis, percentage_base.max(0.0));
+      (border_box - edges).max(0.0)
+    } else {
+      border_box
+    }
+  }
+
   fn resolve_length_px(&self, len: &Length, style: &ComputedStyle) -> Option<f32> {
     match len.unit {
       LengthUnit::Calc => {
@@ -9390,20 +9602,6 @@ impl FlexFormattingContext {
     }
   }
 
-  fn dimension_for_box_sizing(&self, len: &Length, style: &ComputedStyle, axis: Axis) -> Dimension {
-    if style.box_sizing == BoxSizing::ContentBox {
-      if let Some(edges) = match axis {
-        Axis::Horizontal => self.horizontal_edges_px(style),
-        Axis::Vertical => self.vertical_edges_px(style),
-      } {
-        if let Some(px) = self.resolve_length_px(len, style) {
-          return Dimension::length((px + edges).max(0.0));
-        }
-      }
-    }
-    self.length_to_dimension(len, style)
-  }
-
   fn length_to_dimension(&self, len: &Length, style: &ComputedStyle) -> Dimension {
     match len.unit {
       LengthUnit::Px => Dimension::length(len.to_px()),
@@ -9418,19 +9616,6 @@ impl FlexFormattingContext {
     }
   }
 
-  fn length_option_to_dimension_box_sizing(
-    &self,
-    len: Option<&Length>,
-    style: &ComputedStyle,
-    axis: Axis,
-  ) -> Dimension {
-    match len {
-      Some(l) => self.dimension_for_box_sizing(l, style, axis),
-      None => Dimension::auto(),
-    }
-  }
-
-  #[allow(dead_code)]
   fn length_option_to_dimension(&self, len: Option<&Length>, style: &ComputedStyle) -> Dimension {
     match len {
       Some(l) => self.length_to_dimension(l, style),
@@ -12059,7 +12244,10 @@ mod tests {
       false,
     );
     assert_ne!(key_viewport, key_wider);
-    assert_eq!(snapped_avail_viewport.width, AvailableSpace::Definite(1200.0));
+    assert_eq!(
+      snapped_avail_viewport.width,
+      AvailableSpace::Definite(1200.0)
+    );
     match snapped_avail_wider.width {
       AvailableSpace::Definite(w) => assert!(w > viewport.width),
       other => panic!("expected definite available width, got {other:?}"),
@@ -12079,17 +12267,17 @@ mod tests {
     );
     let (key_known_viewport, snapped_known_viewport, _snapped_avail) =
       super::measure_cache_key_and_snap(
-      &taffy::geometry::Size {
-        width: Some(1200.0),
-        height: None,
-      },
-      &taffy::geometry::Size {
-        width: AvailableSpace::Definite(1200.0),
-        height: AvailableSpace::Definite(100.0),
-      },
-      viewport,
-      false,
-    );
+        &taffy::geometry::Size {
+          width: Some(1200.0),
+          height: None,
+        },
+        &taffy::geometry::Size {
+          width: AvailableSpace::Definite(1200.0),
+          height: AvailableSpace::Definite(100.0),
+        },
+        viewport,
+        false,
+      );
     assert_ne!(key_known_wider, key_known_viewport);
     assert!(snapped_known_wider.width.unwrap() > viewport.width);
     assert!(snapped_known_viewport.width.unwrap() <= viewport.width);
@@ -12936,7 +13124,7 @@ mod tests {
   #[test]
   fn writing_mode_vertical_align_flex_start_and_end_map_to_block_edges() {
     let fc = FlexFormattingContext::new();
- 
+
     let mut style = ComputedStyle::default();
     style.display = Display::Flex;
     style.flex_direction = FlexDirection::Row;
@@ -12944,17 +13132,17 @@ mod tests {
     style.align_items = AlignItems::FlexStart;
     style.width = Some(Length::px(100.0));
     style.width_keyword = None;
- 
+
     let child1 = BoxNode::new_block(
       create_item_style(20.0, 10.0),
       FormattingContextType::Block,
       vec![],
     );
- 
+
     let mut child2_style = (*create_item_style(20.0, 10.0)).clone();
     child2_style.align_self = Some(AlignItems::FlexEnd);
     let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
- 
+
     let container = BoxNode::new_block(
       Arc::new(style),
       FormattingContextType::Flex,
@@ -12962,15 +13150,15 @@ mod tests {
     );
     let constraints = LayoutConstraints::definite(100.0, 100.0);
     let fragment = fc.layout(&container, &constraints).unwrap();
- 
+
     assert_eq!(fragment.children[0].bounds.x(), 80.0);
     assert_eq!(fragment.children[1].bounds.x(), 0.0);
   }
- 
+
   #[test]
   fn rtl_column_align_flex_start_and_end_follow_inline_axis() {
     let fc = FlexFormattingContext::new();
- 
+
     let mut style = ComputedStyle::default();
     style.display = Display::Flex;
     style.flex_direction = FlexDirection::Column;
@@ -12978,17 +13166,17 @@ mod tests {
     style.align_items = AlignItems::FlexStart;
     style.width = Some(Length::px(100.0));
     style.width_keyword = None;
- 
+
     let child1 = BoxNode::new_block(
       create_item_style(20.0, 10.0),
       FormattingContextType::Block,
       vec![],
     );
- 
+
     let mut child2_style = (*create_item_style(20.0, 10.0)).clone();
     child2_style.align_self = Some(AlignItems::FlexEnd);
     let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
- 
+
     let container = BoxNode::new_block(
       Arc::new(style),
       FormattingContextType::Flex,
@@ -12996,11 +13184,11 @@ mod tests {
     );
     let constraints = LayoutConstraints::definite(100.0, 100.0);
     let fragment = fc.layout(&container, &constraints).unwrap();
- 
+
     assert_eq!(fragment.children[0].bounds.x(), 80.0);
     assert_eq!(fragment.children[1].bounds.x(), 0.0);
   }
- 
+
   #[test]
   fn writing_mode_vertical_row_justify_start_and_end_follow_inline_axis() {
     let fc = FlexFormattingContext::new();
