@@ -11349,10 +11349,16 @@ impl FastRender {
   /// because `<base href>` is allowed to change relative URL resolution without affecting the
   /// document fragment identifier.
   fn current_target_fragment(&self) -> Option<String> {
-    if let Some(url) = self.document_url.as_deref() {
-      return extract_fragment(url);
-    }
-    self.base_url.as_deref().and_then(extract_fragment)
+    self
+      .document_url
+      .as_deref()
+      .or_else(|| {
+        self
+          .resource_context
+          .as_ref()
+          .and_then(|ctx| ctx.document_url.as_deref())
+      })
+      .and_then(extract_fragment)
   }
 
   /// Fetch linked stylesheets and inject them into the document so they participate in cascade.

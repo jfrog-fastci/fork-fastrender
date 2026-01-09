@@ -260,6 +260,37 @@ fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_over
 }
 
 #[test]
+fn base_href_does_not_override_target_fragment() -> Result<()> {
+  // Regression test: `:target` must be based on the document URL fragment, not the effective base
+  // URL after applying `<base href>`.
+  let html = r#"<!doctype html><html><head>
+    <base href="https://example.com/no-fragment">
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #t { width: 32px; height: 32px; background: rgb(255, 0, 0); }
+      #t:target { background: rgb(0, 255, 0); }
+    </style>
+  </head><body><div id="t"></div></body></html>"#;
+
+  let document_url = "https://example.com/page#t";
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let mut doc = BrowserDocument::from_html(html, options)?;
+  doc.set_document_url(Some(document_url.to_string()));
+
+  let pixmap = doc.render_frame()?;
+  let px = pixmap.pixel(10, 10).expect("pixel inside #t");
+  assert!(
+    px.green() > 200 && px.red() < 80 && px.blue() < 80,
+    "expected :target element to be green, got rgba=({}, {}, {}, {})",
+    px.red(),
+    px.green(),
+    px.blue(),
+    px.alpha()
+  );
+  Ok(())
+}
+
+#[test]
 fn browser_document_cached_paint_respects_cancel_callback() -> Result<()> {
   let html = r#"<!doctype html>
     <html>
