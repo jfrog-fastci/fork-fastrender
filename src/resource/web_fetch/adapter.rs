@@ -189,11 +189,6 @@ pub fn execute_web_fetch<'a>(
       "web fetch request body is not allowed for GET/HEAD".to_string(),
     ));
   }
-  if request.mode == RequestMode::NoCors && !(method_is_get || method_is_head || method_is_post) {
-    return Err(Error::Other(format!(
-      "web fetch no-cors mode requires a CORS-safelisted method (GET/HEAD/POST); got {method:?}"
-    )));
-  }
 
   let referrer_url = effective_referrer_url(request, ctx);
   let referrer_origin = ctx
