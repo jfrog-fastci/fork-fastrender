@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{
-  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, TestRenderDelayGuard,
+  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg,
 };
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};

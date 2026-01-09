@@ -1,7 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::scroll::ScrollState;
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::{spawn_ui_worker, NavigationReason, RenderedFrame, TabId, UiToWorker};
 use std::sync::mpsc::{Receiver, Sender};
@@ -9,7 +8,7 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-use super::support::{self, create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
 
 // These tests run alongside other render-heavy integration tests; allow extra slack to avoid
 // flakes under CPU contention.

@@ -2,7 +2,6 @@
 
 use super::support;
 use fastrender::scroll::ScrollState;
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::spawn_ui_worker;
 use fastrender::ui::{NavigationReason, TabId, UiToWorker};

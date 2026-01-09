@@ -1,6 +1,5 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{RepaintReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::RecvTimeoutError;
