@@ -1677,6 +1677,12 @@ pub struct BorderImageItem {
   /// Current color for resolving `currentColor` stops.
   pub current_color: Rgba,
 
+  /// Whether the element's used color scheme is dark.
+  pub used_dark_color_scheme: bool,
+
+  /// Whether the UA is in forced-colors mode for this element.
+  pub forced_colors: bool,
+
   /// Font size at the element for resolving font-relative lengths.
   pub font_size: f32,
 
@@ -1709,6 +1715,12 @@ pub struct ResolvedMask {
 
   /// Current color for resolving `currentColor` stops.
   pub color: Rgba,
+
+  /// Whether the element's used color scheme is dark.
+  pub used_dark_color_scheme: bool,
+
+  /// Whether the UA is in forced-colors mode for this element.
+  pub forced_colors: bool,
 
   /// Font size at the element for resolving font-relative lengths.
   pub font_size: f32,

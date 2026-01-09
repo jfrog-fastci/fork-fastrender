@@ -60,7 +60,7 @@ use crate::error::Error;
 use crate::geometry::Size;
 use crate::render_control::check_active_periodic;
 use crate::render_control::RenderDeadline;
-use crate::style::color::{Color, Rgba};
+use crate::style::color::{Color, Rgba, SystemColor};
 use crate::style::custom_properties::CustomPropertyRegistry;
 use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::defaults::get_default_styles_for_element;
@@ -4131,6 +4131,78 @@ fn apply_color_scheme_palette(
 
   apply(styles);
   apply(ua_styles);
+}
+
+fn apply_forced_colors_overrides(styles: &mut ComputedStyle) {
+  use crate::style::types::BorderStyle;
+  use crate::style::types::ForcedColorAdjust;
+  use crate::style::types::OutlineColor;
+  use crate::style::types::OutlineStyle;
+
+  if !styles.forced_colors {
+    return;
+  }
+  if matches!(styles.forced_color_adjust, ForcedColorAdjust::None) {
+    return;
+  }
+
+  // Resolve deterministic forced-colors palette entries. `is_dark` is ignored when `forced_colors`
+  // is true but pass it through so the API is consistent with normal system palette selection.
+  let is_dark = styles.used_dark_color_scheme;
+  let canvas = SystemColor::Canvas.to_rgba(is_dark, true);
+  let canvas_text = SystemColor::CanvasText.to_rgba(is_dark, true);
+  let button_border = SystemColor::ButtonBorder.to_rgba(is_dark, true);
+  let highlight = SystemColor::Highlight.to_rgba(is_dark, true);
+
+  // Text color.
+  if matches!(styles.forced_color_adjust, ForcedColorAdjust::Auto) && !styles.color_is_system {
+    styles.color = canvas_text;
+    styles.color_is_system = true;
+  }
+
+  // Background color.
+  if !styles.background_color.is_transparent() && !styles.background_color_is_system {
+    styles.background_color = canvas;
+    styles.background_color_is_system = true;
+  }
+
+  // Border colors.
+  let border_is_visible = |width: crate::style::values::Length, style: BorderStyle, color: Rgba| {
+    width.to_px() > 0.0
+      && !matches!(style, BorderStyle::None | BorderStyle::Hidden)
+      && !color.is_transparent()
+  };
+  if border_is_visible(styles.border_top_width, styles.border_top_style, styles.border_top_color) {
+    styles.border_top_color = button_border;
+  }
+  if border_is_visible(
+    styles.border_right_width,
+    styles.border_right_style,
+    styles.border_right_color,
+  ) {
+    styles.border_right_color = button_border;
+  }
+  if border_is_visible(
+    styles.border_bottom_width,
+    styles.border_bottom_style,
+    styles.border_bottom_color,
+  ) {
+    styles.border_bottom_color = button_border;
+  }
+  if border_is_visible(
+    styles.border_left_width,
+    styles.border_left_style,
+    styles.border_left_color,
+  ) {
+    styles.border_left_color = button_border;
+  }
+
+  // Outline color.
+  if styles.outline_width.to_px() > 0.0
+    && !matches!(styles.outline_style, OutlineStyle::None | OutlineStyle::Hidden)
+  {
+    styles.outline_color = OutlineColor::Color(highlight);
+  }
 }
 
 fn collect_shadow_stylesheets(
@@ -11557,6 +11629,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   base_styles.position_try_registry = position_try_registry_document.clone();
   base_styles.custom_property_registry = custom_property_registry_document.clone();
   base_styles.custom_properties = initial_custom_properties.clone();
+  base_styles.forced_colors = media_ctx.forced_colors;
   let mut base_ua_styles = ComputedStyle::default();
   base_ua_styles.counter_styles = counter_styles;
   base_ua_styles.font_palettes = font_palettes;
@@ -11564,6 +11637,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   base_ua_styles.position_try_registry = position_try_registry_document.clone();
   base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
   base_ua_styles.custom_properties = initial_custom_properties;
+  base_ua_styles.forced_colors = media_ctx.forced_colors;
   let has_starting_styles = include_starting_style
     && (ua_stylesheet.has_starting_style_rules()
       || author_sheet.has_starting_style_rules()
@@ -12169,6 +12243,7 @@ impl<'a> PreparedCascade<'a> {
     base_styles.position_try_registry = position_try_registry_document.clone();
     base_styles.custom_property_registry = custom_property_registry_document.clone();
     base_styles.custom_properties = initial_custom_properties.clone();
+    base_styles.forced_colors = media_ctx.forced_colors;
     let mut base_ua_styles = ComputedStyle::default();
     base_ua_styles.counter_styles = counter_styles;
     base_ua_styles.font_palettes = font_palettes;
@@ -12176,6 +12251,7 @@ impl<'a> PreparedCascade<'a> {
     base_ua_styles.position_try_registry = position_try_registry_document.clone();
     base_ua_styles.custom_property_registry = custom_property_registry_document.clone();
     base_ua_styles.custom_properties = initial_custom_properties;
+    base_ua_styles.forced_colors = media_ctx.forced_colors;
 
     let has_starting_styles = include_starting_style
       && (ua_stylesheet.has_starting_style_rules()
@@ -15385,6 +15461,8 @@ fn compute_base_styles<'a>(
       }
     }
 
+    apply_forced_colors_overrides(&mut styles);
+
     return Ok(NodeBaseStyles {
       styles,
       ua_styles,
@@ -15685,6 +15763,7 @@ fn compute_base_styles<'a>(
       false,
     );
   }
+  apply_forced_colors_overrides(&mut styles);
 
   styles.inert = node_is_inert(node, ancestors);
   if styles.inert {
@@ -17512,9 +17591,17 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.color_scheme = parent.color_scheme.clone();
   styles.dynamic_range_limit = parent.dynamic_range_limit.clone();
 
+  // Forced-colors is a UA media state; keep it consistent across the tree.
+  styles.forced_colors = parent.forced_colors;
+
+  // `forced-color-adjust` is inherited (CSS Color Adjustment 1). This ensures opting out on a
+  // container disables forced-colors overrides for text nodes and descendants as well.
+  styles.forced_color_adjust = parent.forced_color_adjust;
+
   // Color inherits
   styles.color = parent.color;
   styles.color_is_inherited = true;
+  styles.color_is_system = parent.color_is_system;
   styles.webkit_text_fill_color = parent.webkit_text_fill_color.clone();
   styles.webkit_text_stroke_color = parent.webkit_text_stroke_color.clone();
   styles.webkit_text_stroke_width = parent.webkit_text_stroke_width;
@@ -36810,6 +36897,8 @@ fn compute_pseudo_element_styles(
     _ => {}
   }
 
+  apply_forced_colors_overrides(&mut styles);
+
   Some(styles)
 }
 
@@ -37013,6 +37102,8 @@ fn compute_first_line_styles(
     true,
   );
 
+  apply_forced_colors_overrides(&mut styles);
+
   Some((styles, ua_styles))
 }
 
@@ -37166,6 +37257,8 @@ fn compute_first_letter_styles(
     true,
   );
   styles.display = Display::Inline;
+
+  apply_forced_colors_overrides(&mut styles);
 
   Some(styles)
 }
@@ -37347,6 +37440,7 @@ fn compute_marker_styles(
     viewport,
     true,
   );
+  apply_forced_colors_overrides(&mut styles);
   Some(styles)
 }
 

@@ -306,8 +306,16 @@ fn interpolate_custom_property(
       CustomPropertyTypedValue::Angle(lerp(*a, *b, t))
     }
     (CustomPropertyTypedValue::Color(a), CustomPropertyTypedValue::Color(b)) => {
-      let from_rgba = a.to_rgba_with_scheme(from_style.color, from_style.used_dark_color_scheme);
-      let to_rgba = b.to_rgba_with_scheme(to_style.color, to_style.used_dark_color_scheme);
+      let from_rgba = a.to_rgba_with_scheme_and_forced_colors(
+        from_style.color,
+        from_style.used_dark_color_scheme,
+        from_style.forced_colors,
+      );
+      let to_rgba = b.to_rgba_with_scheme_and_forced_colors(
+        to_style.color,
+        to_style.used_dark_color_scheme,
+        to_style.forced_colors,
+      );
       let rgba = lerp_color(from_rgba, to_rgba, t);
       CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
     }

@@ -88,6 +88,8 @@ fn preserve_3d_root_mask_applies_to_composed_scene_output() {
       composite: layer_style.composite,
     }],
     color: Rgba::BLACK,
+    used_dark_color_scheme: false,
+    forced_colors: false,
     font_size: 16.0,
     root_font_size: 16.0,
     viewport: None,
@@ -129,4 +131,3 @@ fn preserve_3d_root_mask_applies_to_composed_scene_output() {
     "expected mask alpha=1 to preserve the composed preserve-3d scene output"
   );
 }
-

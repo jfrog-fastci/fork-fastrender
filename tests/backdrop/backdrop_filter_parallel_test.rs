@@ -165,6 +165,8 @@ fn patterned_mask(bounds: Rect) -> ResolvedMask {
       composite: MaskComposite::Add,
     }],
     color: Rgba::BLACK,
+    used_dark_color_scheme: false,
+    forced_colors: false,
     font_size: 16.0,
     root_font_size: 16.0,
     viewport: None,

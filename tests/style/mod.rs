@@ -62,6 +62,7 @@ mod media_at_rule_query_list_test;
 mod media_invalid_calc;
 mod media_invalid_type;
 mod media_test;
+mod forced_colors_test;
 mod mix_blend_mode_case_insensitive_test;
 mod motion_path_case_insensitive_test;
 mod namespace_pruning_order_test;

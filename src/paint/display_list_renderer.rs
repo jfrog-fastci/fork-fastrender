@@ -6625,6 +6625,8 @@ impl DisplayListRenderer {
         let Some(pixmap) = render_generated_border_image(
           bg,
           border_image.current_color,
+          border_image.used_dark_color_scheme,
+          border_image.forced_colors,
           img_w,
           img_h,
           border_image.font_size,
@@ -7482,6 +7484,8 @@ impl DisplayListRenderer {
                 let cropped = render_generated_border_image_subrect(
                   image,
                   mask.color,
+                  mask.used_dark_color_scheme,
+                  mask.forced_colors,
                   full_w,
                   full_h,
                   crop_x,
@@ -7512,6 +7516,8 @@ impl DisplayListRenderer {
             render_generated_border_image(
               image,
               mask.color,
+              mask.used_dark_color_scheme,
+              mask.forced_colors,
               full_w,
               full_h,
               mask.font_size,
@@ -15146,6 +15152,8 @@ fn normalize_color_stops(
   font_size: f32,
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
+  is_dark: bool,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -15176,13 +15184,24 @@ fn normalize_color_stops(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )
+      })
       .collect();
   }
 
@@ -15228,7 +15247,12 @@ fn normalize_color_stops(
     let pos = pos_opt.unwrap_or(prev);
     let clamped = pos.max(prev).clamp(0.0, 1.0);
     prev = clamped;
-    output.push((clamped, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      clamped,
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+    ));
   }
 
   output
@@ -15241,6 +15265,8 @@ fn normalize_color_stops_unclamped(
   font_size: f32,
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
+  is_dark: bool,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -15269,13 +15295,24 @@ fn normalize_color_stops_unclamped(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )
+      })
       .collect();
   }
   if positions.first().and_then(|p| *p).is_none() {
@@ -15319,7 +15356,12 @@ fn normalize_color_stops_unclamped(
     let pos = pos_opt.unwrap_or(prev);
     let unclamped = pos.max(prev);
     prev = unclamped;
-    output.push((unclamped, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      unclamped,
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+    ));
   }
 
   output
@@ -15484,6 +15526,8 @@ fn resolve_gradient_center(
 fn render_generated_border_image_subrect(
   bg: &BackgroundImage,
   current_color: Rgba,
+  is_dark: bool,
+  forced_colors: bool,
   full_width: u32,
   full_height: u32,
   crop_x: f32,
@@ -15512,8 +15556,16 @@ fn render_generated_border_image_subrect(
       let dx = rad.sin();
       let dy = -rad.cos();
       let gradient_length = rect.width() * dx.abs() + rect.height() * dy.abs();
-      let resolved =
-        normalize_color_stops(stops, current_color, gradient_length, font_size, root_font_size, viewport);
+      let resolved = normalize_color_stops(
+        stops,
+        current_color,
+        gradient_length,
+        font_size,
+        root_font_size,
+        viewport,
+        is_dark,
+        forced_colors,
+      );
       if resolved.is_empty() {
         return None;
       }
@@ -15542,8 +15594,16 @@ fn render_generated_border_image_subrect(
       let dx = rad.sin();
       let dy = -rad.cos();
       let gradient_length = rect.width() * dx.abs() + rect.height() * dy.abs();
-      let resolved =
-        normalize_color_stops(stops, current_color, gradient_length, font_size, root_font_size, viewport);
+      let resolved = normalize_color_stops(
+        stops,
+        current_color,
+        gradient_length,
+        font_size,
+        root_font_size,
+        viewport,
+        is_dark,
+        forced_colors,
+      );
       if resolved.is_empty() {
         return None;
       }
@@ -15589,6 +15649,8 @@ fn render_generated_border_image_subrect(
         font_size,
         root_font_size,
         viewport,
+        is_dark,
+        forced_colors,
       );
       if resolved.is_empty() {
         return None;
@@ -15659,6 +15721,8 @@ fn render_generated_border_image_subrect(
         font_size,
         root_font_size,
         viewport,
+        is_dark,
+        forced_colors,
       );
       if resolved.is_empty() {
         return None;
@@ -15718,8 +15782,16 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved =
-        normalize_color_stops_unclamped(stops, current_color, 1.0, font_size, root_font_size, viewport);
+      let resolved = normalize_color_stops_unclamped(
+        stops,
+        current_color,
+        1.0,
+        font_size,
+        root_font_size,
+        viewport,
+        is_dark,
+        forced_colors,
+      );
       if resolved.is_empty() {
         return None;
       }
@@ -15744,8 +15816,16 @@ fn render_generated_border_image_subrect(
       position,
       stops,
     } => {
-      let resolved =
-        normalize_color_stops_unclamped(stops, current_color, 1.0, font_size, root_font_size, viewport);
+      let resolved = normalize_color_stops_unclamped(
+        stops,
+        current_color,
+        1.0,
+        font_size,
+        root_font_size,
+        viewport,
+        is_dark,
+        forced_colors,
+      );
       if resolved.is_empty() {
         return None;
       }
@@ -15772,6 +15852,8 @@ fn render_generated_border_image_subrect(
 fn render_generated_border_image(
   bg: &BackgroundImage,
   current_color: Rgba,
+  is_dark: bool,
+  forced_colors: bool,
   width: u32,
   height: u32,
   font_size: f32,
@@ -15783,6 +15865,8 @@ fn render_generated_border_image(
   render_generated_border_image_subrect(
     bg,
     current_color,
+    is_dark,
+    forced_colors,
     width,
     height,
     0.0,
@@ -20215,6 +20299,8 @@ mod tests {
         crate::style::types::BorderImageRepeat::Stretch,
       ),
       current_color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: Some((8.0, 8.0)),
@@ -23021,6 +23107,8 @@ mod tests {
     let mask = ResolvedMask {
       layers: vec![resolved_layer],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23149,6 +23237,8 @@ mod tests {
     let mask = ResolvedMask {
       layers: resolved_layers,
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23230,6 +23320,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23298,6 +23390,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23363,6 +23457,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23406,6 +23502,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23451,6 +23549,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23516,6 +23616,8 @@ mod tests {
         composite: layer_style.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23583,6 +23685,8 @@ mod tests {
     let mask = ResolvedMask {
       layers: vec![layer.clone(), layer],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23642,6 +23746,8 @@ mod tests {
     let mask = ResolvedMask {
       layers: vec![layer],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23718,6 +23824,8 @@ mod tests {
         },
       ],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23786,6 +23894,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23845,6 +23955,8 @@ mod tests {
         },
       ],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,
@@ -23899,6 +24011,8 @@ mod tests {
         composite: layer.composite,
       }],
       color: Rgba::BLACK,
+      used_dark_color_scheme: false,
+      forced_colors: false,
       font_size: 16.0,
       root_font_size: 16.0,
       viewport: None,

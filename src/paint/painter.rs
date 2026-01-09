@@ -11099,6 +11099,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11140,6 +11142,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11190,6 +11194,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11246,6 +11252,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11292,6 +11300,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11334,6 +11344,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11405,6 +11417,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11444,6 +11458,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11493,6 +11509,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11551,6 +11569,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11599,6 +11619,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -11641,6 +11663,8 @@ impl Painter {
           style.font_size,
           style.root_font_size,
           (self.css_width, self.css_height),
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if resolved.is_empty() {
           return None;
@@ -15728,6 +15752,8 @@ fn normalize_color_stops(
   font_size: f32,
   root_font_size: f32,
   viewport: (f32, f32),
+  is_dark: bool,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -15763,13 +15789,24 @@ fn normalize_color_stops(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )
+      })
       .collect();
   }
 
@@ -15816,7 +15853,12 @@ fn normalize_color_stops(
     let pos = pos_opt.map_or(prev, |p| p);
     let clamped = pos.max(prev).clamp(0.0, 1.0);
     prev = clamped;
-    output.push((clamped, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      clamped,
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+    ));
   }
 
   output
@@ -15829,6 +15871,8 @@ fn normalize_color_stops_unclamped(
   font_size: f32,
   root_font_size: f32,
   viewport: (f32, f32),
+  is_dark: bool,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -15862,13 +15906,24 @@ fn normalize_color_stops_unclamped(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )
+      })
       .collect();
   }
   if positions.first().and_then(|p| *p).is_none() {
@@ -15912,7 +15967,12 @@ fn normalize_color_stops_unclamped(
     let pos = pos_opt.map_or(prev, |p| p);
     let monotonic = pos.max(prev);
     prev = monotonic;
-    output.push((monotonic, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      monotonic,
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+    ));
   }
   output
 }
@@ -19232,6 +19292,8 @@ mod tests {
       16.0,
       16.0,
       (100.0, 100.0),
+      false,
+      false,
     );
 
     assert_eq!(resolved.len(), 3);
@@ -19259,6 +19321,8 @@ mod tests {
       16.0,
       16.0,
       (100.0, 100.0),
+      false,
+      false,
     );
     assert_eq!(resolved.len(), 2);
     assert_eq!(resolved[0].1, Rgba::new(10, 20, 30, 1.0));

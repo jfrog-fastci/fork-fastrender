@@ -1147,6 +1147,11 @@ pub struct ComputedStyle {
 
   // Color and background
   pub forced_color_adjust: ForcedColorAdjust,
+  /// Whether the UA is in forced-colors mode (`@media (forced-colors: active)`).
+  ///
+  /// This is copied from the [`crate::style::media::MediaContext`] used during cascade so paint-
+  /// time color resolution (e.g. gradient stops) can resolve system colors deterministically.
+  pub forced_colors: bool,
   pub color_scheme: ColorSchemePreference,
   pub used_dark_color_scheme: bool,
   pub dynamic_range_limit: DynamicRangeLimit,
@@ -1161,6 +1166,9 @@ pub struct ComputedStyle {
   /// ancestor animates `color`, descendants that didn't specify `color` must inherit the updated
   /// value so `currentColor`-dependent properties stay correct.
   pub color_is_inherited: bool,
+  /// True when the computed `color` value originated from a system color keyword (or a color
+  /// function that references one).
+  pub color_is_system: bool,
   pub webkit_text_fill_color: Color,
   pub webkit_text_stroke_color: Color,
   pub webkit_text_stroke_width: Length,
@@ -1186,6 +1194,9 @@ pub struct ComputedStyle {
   pub svg_text_anchor: Option<SvgTextAnchor>,
 
   pub background_color: Rgba,
+  /// True when the computed `background-color` value originated from a system color keyword (or a
+  /// color function that references one).
+  pub background_color_is_system: bool,
   /// Author-specified background values (lists preserved for layer repetition rules)
   pub background_images: Arc<[Option<BackgroundImage>]>,
   pub background_positions: Arc<[BackgroundPosition]>,
@@ -1565,6 +1576,7 @@ impl Default for ComputedStyle {
       font_feature_values: Arc::new(FontFeatureValuesRegistry::default()),
       position_try_registry: Arc::new(PositionTryRegistry::default()),
       forced_color_adjust: ForcedColorAdjust::Auto,
+      forced_colors: false,
       color_scheme: ColorSchemePreference::Normal,
       used_dark_color_scheme: false,
       dynamic_range_limit: DynamicRangeLimit::NoLimit,
@@ -1572,6 +1584,7 @@ impl Default for ComputedStyle {
       accent_color: AccentColor::Auto,
       color: Rgba::BLACK,
       color_is_inherited: false,
+      color_is_system: false,
       webkit_text_fill_color: Color::CurrentColor,
       webkit_text_stroke_color: Color::CurrentColor,
       webkit_text_stroke_width: Length::px(0.0),
@@ -1594,6 +1607,7 @@ impl Default for ComputedStyle {
       svg_marker_end: None,
       svg_text_anchor: None,
       background_color: Rgba::TRANSPARENT,
+      background_color_is_system: false,
       background_images: vec![default_layer.image.clone()].into(),
       background_positions: vec![default_layer.position.clone()].into(),
       background_sizes: vec![default_layer.size.clone()].into(),

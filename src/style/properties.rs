@@ -6611,6 +6611,7 @@ pub(crate) fn apply_property_from_source(
     "color" => {
       styles.color = source.color;
       styles.color_is_inherited = source.color_is_inherited;
+      styles.color_is_system = source.color_is_system;
     }
     "-webkit-text-fill-color" => {
       styles.webkit_text_fill_color = source.webkit_text_fill_color.clone()
@@ -6623,7 +6624,10 @@ pub(crate) fn apply_property_from_source(
       styles.webkit_text_stroke_color = source.webkit_text_stroke_color.clone();
       styles.webkit_text_stroke_width = source.webkit_text_stroke_width;
     }
-    "background-color" => styles.background_color = source.background_color,
+    "background-color" => {
+      styles.background_color = source.background_color;
+      styles.background_color_is_system = source.background_color_is_system;
+    }
     "fill" => styles.svg_fill = source.svg_fill.clone(),
     "stroke" => styles.svg_stroke = source.svg_stroke.clone(),
     "stroke-width" => styles.svg_stroke_width = source.svg_stroke_width,
@@ -8703,7 +8707,11 @@ fn apply_declaration_with_base_internal_with_order(
 
   let resolve_color_value = |value: &PropertyValue| -> Option<Rgba> {
     match value {
-      PropertyValue::Color(c) => Some(c.to_rgba_with_scheme(styles.color, is_dark_color_scheme)),
+      PropertyValue::Color(c) => Some(c.to_rgba_with_scheme_and_forced_colors(
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )),
       PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(styles.color),
       _ => None,
     }
@@ -8761,7 +8769,11 @@ fn apply_declaration_with_base_internal_with_order(
         if let PropertyValue::Keyword(kw) = value {
           if let Ok(color) = Color::parse(kw) {
             return Some(ColorOrNone::Color(
-              color.to_rgba_with_scheme(styles.color, is_dark_color_scheme),
+              color.to_rgba_with_scheme_and_forced_colors(
+                styles.color,
+                is_dark_color_scheme,
+                styles.forced_colors,
+              ),
             ));
           }
         }
@@ -9490,7 +9502,11 @@ fn apply_declaration_with_base_internal_with_order(
       }
       PropertyValue::Color(c) => {
         styles.outline_color =
-          OutlineColor::Color(c.to_rgba_with_scheme(styles.color, is_dark_color_scheme));
+          OutlineColor::Color(c.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          ));
       }
       _ => {}
     },
@@ -9512,7 +9528,7 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "outline" => {
-      apply_outline_shorthand(styles, resolved_value, is_dark_color_scheme);
+      apply_outline_shorthand(styles, resolved_value, is_dark_color_scheme, styles.forced_colors);
     }
 
     // Width and height
@@ -10440,7 +10456,12 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(
+        values,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -10504,7 +10525,12 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(
+        values,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -10529,7 +10555,12 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(
+        values,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -10571,7 +10602,12 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(
+        values,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -10613,7 +10649,12 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(
+        values,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      )
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -12258,7 +12299,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-decoration-color" => {
       if let Some(color) =
-        parse_text_decoration_color(resolved_value, styles.color, is_dark_color_scheme)
+        parse_text_decoration_color(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
       {
         styles.text_decoration.color = color;
       }
@@ -12315,7 +12356,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-emphasis-color" => {
       if let Some(color) =
-        parse_text_emphasis_color(resolved_value, styles.color, is_dark_color_scheme)
+        parse_text_emphasis_color(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
       {
         styles.text_emphasis_color = color;
       }
@@ -12332,7 +12373,7 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "text-emphasis" => {
       if let Some((style_val, color_val)) =
-        parse_text_emphasis_shorthand(resolved_value, styles.color, is_dark_color_scheme)
+        parse_text_emphasis_shorthand(resolved_value, styles.color, is_dark_color_scheme, styles.forced_colors)
       {
         if let Some(emph_style) = style_val {
           styles.text_emphasis_style = emph_style;
@@ -12409,7 +12450,12 @@ fn apply_declaration_with_base_internal_with_order(
           decoration.style = style_val;
           continue;
         }
-        if let Some(color) = parse_text_decoration_color(&token, styles.color, is_dark_color_scheme)
+        if let Some(color) = parse_text_decoration_color(
+          &token,
+          styles.color,
+          is_dark_color_scheme,
+          styles.forced_colors,
+        )
         {
           if saw_color {
             return;
@@ -12846,8 +12892,11 @@ fn apply_declaration_with_base_internal_with_order(
         } else if let Some(c) = resolve_color_value(&PropertyValue::Keyword(kw.clone())) {
           styles.caret_color = CaretColor::Color(c);
         } else if let Ok(parsed) = Color::parse(kw) {
-          styles.caret_color =
-            CaretColor::Color(parsed.to_rgba_with_scheme(styles.color, is_dark_color_scheme));
+          styles.caret_color = CaretColor::Color(parsed.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          ));
         }
       } else if let Some(c) = resolve_color_value(resolved_value) {
         styles.caret_color = CaretColor::Color(c);
@@ -12860,8 +12909,11 @@ fn apply_declaration_with_base_internal_with_order(
         } else if let Some(c) = resolve_color_value(&PropertyValue::Keyword(kw.clone())) {
           styles.accent_color = AccentColor::Color(c);
         } else if let Ok(parsed) = Color::parse(kw) {
-          styles.accent_color =
-            AccentColor::Color(parsed.to_rgba_with_scheme(styles.color, is_dark_color_scheme));
+          styles.accent_color = AccentColor::Color(parsed.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          ));
         }
       } else if let Some(c) = resolve_color_value(resolved_value) {
         styles.accent_color = AccentColor::Color(c);
@@ -13595,9 +13647,49 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "color" => {
-      if let Some(c) = resolve_color_value(resolved_value) {
-        styles.color = c;
-        styles.color_is_inherited = false;
+      match resolved_value {
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
+          // `currentColor` in the `color` property resolves to the existing value (effectively a
+          // no-op), so do not reset the `color_is_system` / `color_is_inherited` flags.
+        }
+        PropertyValue::Color(c) if c.is_current_color() => {
+          // Same as the keyword case above.
+        }
+        PropertyValue::Color(c) => {
+          styles.color_is_inherited = false;
+          styles.color_is_system = c.uses_system_color();
+          styles.color = c.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          );
+        }
+        PropertyValue::Keyword(kw) => {
+          if let Ok(color) = Color::parse(kw) {
+            if color.is_current_color() {
+              // Same as the keyword case above.
+              return;
+            }
+            styles.color_is_inherited = false;
+            styles.color_is_system = color.uses_system_color();
+            styles.color = color.to_rgba_with_scheme_and_forced_colors(
+              styles.color,
+              is_dark_color_scheme,
+              styles.forced_colors,
+            );
+          } else if let Some(c) = resolve_color_value(resolved_value) {
+            styles.color_is_inherited = false;
+            styles.color_is_system = false;
+            styles.color = c;
+          }
+        }
+        _ => {
+          if let Some(c) = resolve_color_value(resolved_value) {
+            styles.color_is_inherited = false;
+            styles.color_is_system = false;
+            styles.color = c;
+          }
+        }
       }
     }
     "-webkit-text-fill-color" => match resolved_value {
@@ -13730,8 +13822,35 @@ fn apply_declaration_with_base_internal_with_order(
       styles.webkit_text_stroke_color = color.unwrap_or(Color::CurrentColor);
     },
     "background-color" => {
-      if let Some(c) = resolve_color_value(resolved_value) {
-        styles.background_color = c;
+      match resolved_value {
+        PropertyValue::Color(c) => {
+          styles.background_color_is_system = c.uses_system_color();
+          styles.background_color = c.to_rgba_with_scheme_and_forced_colors(
+            styles.color,
+            is_dark_color_scheme,
+            styles.forced_colors,
+          );
+        }
+        PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
+          styles.background_color_is_system = false;
+          styles.background_color = styles.color;
+        }
+        PropertyValue::Keyword(kw) => {
+          if let Ok(color) = Color::parse(kw) {
+            styles.background_color_is_system = color.uses_system_color();
+            styles.background_color = color.to_rgba_with_scheme_and_forced_colors(
+              styles.color,
+              is_dark_color_scheme,
+              styles.forced_colors,
+            );
+          }
+        }
+        _ => {
+          if let Some(c) = resolve_color_value(resolved_value) {
+            styles.background_color_is_system = false;
+            styles.background_color = c;
+          }
+        }
       }
     }
 
@@ -14558,6 +14677,7 @@ fn apply_declaration_with_base_internal_with_order(
           &layer_tokens,
           styles.color,
           is_dark_color_scheme,
+          styles.forced_colors,
           allow_color,
         ) {
           parsed_layers.push(parsed);
@@ -14567,10 +14687,9 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
 
-      styles.background_color = parsed_layers
-        .last()
-        .and_then(|p| p.color)
-        .unwrap_or(Rgba::TRANSPARENT);
+      let last = parsed_layers.last().expect("checked non-empty above");
+      styles.background_color = last.color.unwrap_or(Rgba::TRANSPARENT);
+      styles.background_color_is_system = last.color.is_some() && last.color_is_system;
 
       let mut layers = Vec::new();
       for parsed in parsed_layers {
@@ -20245,11 +20364,14 @@ fn parse_text_decoration_color(
   value: &PropertyValue,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Option<Option<Rgba>> {
   match value {
-    PropertyValue::Color(c) => Some(Some(
-      c.to_rgba_with_scheme(current_color, is_dark_color_scheme),
-    )),
+    PropertyValue::Color(c) => Some(Some(c.to_rgba_with_scheme_and_forced_colors(
+      current_color,
+      is_dark_color_scheme,
+      forced_colors,
+    ))),
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(None),
     _ => None,
   }
@@ -20473,17 +20595,24 @@ fn parse_text_emphasis_color(
   value: &PropertyValue,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Option<Option<Rgba>> {
   match value {
-    PropertyValue::Color(c) => Some(Some(
-      c.to_rgba_with_scheme(current_color, is_dark_color_scheme),
-    )),
+    PropertyValue::Color(c) => Some(Some(c.to_rgba_with_scheme_and_forced_colors(
+      current_color,
+      is_dark_color_scheme,
+      forced_colors,
+    ))),
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(None),
     PropertyValue::Keyword(kw) => crate::style::color::Color::parse(kw).ok().map(|color| {
       if color.is_current_color() {
         None
       } else {
-        Some(color.to_rgba_with_scheme(current_color, is_dark_color_scheme))
+        Some(color.to_rgba_with_scheme_and_forced_colors(
+          current_color,
+          is_dark_color_scheme,
+          forced_colors,
+        ))
       }
     }),
     _ => None,
@@ -20624,6 +20753,7 @@ fn parse_text_emphasis_shorthand(
   value: &PropertyValue,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Option<(Option<TextEmphasisStyle>, Option<Option<Rgba>>)> {
   let tokens: Vec<PropertyValue> = match value {
     PropertyValue::Multiple(vals) => vals.clone(),
@@ -20641,7 +20771,9 @@ fn parse_text_emphasis_shorthand(
   let mut style_tokens: Vec<PropertyValue> = Vec::new();
 
   for token in tokens {
-    if let Some(parsed) = parse_text_emphasis_color(&token, current_color, is_dark_color_scheme) {
+    if let Some(parsed) =
+      parse_text_emphasis_color(&token, current_color, is_dark_color_scheme, forced_colors)
+    {
       if color.is_some() {
         return None;
       }
@@ -21437,6 +21569,7 @@ fn parse_border_side_shorthand(
   values: &[PropertyValue],
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Option<ParsedBorderSideShorthand> {
   if values.is_empty() {
     return None;
@@ -21462,7 +21595,11 @@ fn parse_border_side_shorthand(
         }
       }
       PropertyValue::Color(c) => {
-        color = Some(c.to_rgba_with_scheme(current_color, is_dark_color_scheme));
+        color = Some(c.to_rgba_with_scheme_and_forced_colors(
+          current_color,
+          is_dark_color_scheme,
+          forced_colors,
+        ));
       }
       _ => {}
     }
@@ -21558,6 +21695,7 @@ fn apply_outline_shorthand(
   styles: &mut ComputedStyle,
   value: &PropertyValue,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) {
   // The outline shorthand resets color/style/width to their initial values
   // before applying provided tokens (offset is not part of the shorthand).
@@ -21579,7 +21717,7 @@ fn apply_outline_shorthand(
     match token {
       PropertyValue::Color(c) => {
         color = Some(OutlineColor::Color(
-          c.to_rgba_with_scheme(styles.color, is_dark_color_scheme),
+          c.to_rgba_with_scheme_and_forced_colors(styles.color, is_dark_color_scheme, forced_colors),
         ));
       }
       PropertyValue::Keyword(ref kw) if kw.eq_ignore_ascii_case("currentcolor") => {
@@ -31028,6 +31166,7 @@ mod tests {
       &[PropertyValue::Url(String::new())],
       Rgba::BLACK,
       false,
+      false,
       true,
     )
     .expect("background shorthand parsed");
@@ -34455,6 +34594,7 @@ fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
 #[derive(Default)]
 struct BackgroundShorthand {
   color: Option<Rgba>,
+  color_is_system: bool,
   image: Option<BackgroundImage>,
   repeat: Option<BackgroundRepeat>,
   position: Option<BackgroundPosition>,
@@ -34468,6 +34608,7 @@ fn parse_background_shorthand(
   tokens: &[PropertyValue],
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
   allow_color: bool,
 ) -> Option<BackgroundShorthand> {
   if tokens.is_empty() {
@@ -34534,17 +34675,24 @@ fn parse_background_shorthand(
     // Color
     if allow_color && shorthand.color.is_none() {
       let parsed_color = match token {
-        PropertyValue::Color(c) => Some(c.to_rgba_with_scheme(current_color, is_dark_color_scheme)),
+        PropertyValue::Color(c) => Some((
+          c.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+          c.uses_system_color(),
+        )),
         PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
-          Some(current_color)
+          Some((current_color, false))
         }
-        PropertyValue::Keyword(kw) => crate::style::color::Color::parse(kw)
-          .ok()
-          .map(|c| c.to_rgba_with_scheme(current_color, is_dark_color_scheme)),
+        PropertyValue::Keyword(kw) => crate::style::color::Color::parse(kw).ok().map(|c| {
+          (
+            c.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
+            c.uses_system_color(),
+          )
+        }),
         _ => None,
       };
-      if let Some(color) = parsed_color {
+      if let Some((color, is_system)) = parsed_color {
         shorthand.color = Some(color);
+        shorthand.color_is_system = is_system;
         idx += 1;
         continue;
       }

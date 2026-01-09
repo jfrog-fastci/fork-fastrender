@@ -15577,9 +15577,12 @@ fn hash_color_stop_alpha(
   stop: &crate::css::types::ColorStop,
   current_color: crate::style::color::Rgba,
   is_dark: bool,
+  forced_colors: bool,
   hasher: &mut DefaultHasher,
 ) {
-  let rgba = stop.color.to_rgba_with_scheme(current_color, is_dark);
+  let rgba = stop
+    .color
+    .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
   hash_f32(rgba.a, hasher);
   match stop.position {
     Some(crate::css::types::ColorStopPosition::Fraction(v)) => {
@@ -15598,6 +15601,7 @@ fn hash_shape_outside_image(
   image: &crate::style::types::BackgroundImage,
   current_color: crate::style::color::Rgba,
   is_dark: bool,
+  forced_colors: bool,
   hasher: &mut DefaultHasher,
 ) {
   use crate::style::types::BackgroundImage;
@@ -15613,7 +15617,7 @@ fn hash_shape_outside_image(
       hash_f32(*angle, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
     BackgroundImage::RepeatingLinearGradient { angle, stops } => {
@@ -15621,7 +15625,7 @@ fn hash_shape_outside_image(
       hash_f32(*angle, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
     BackgroundImage::RadialGradient {
@@ -15636,7 +15640,7 @@ fn hash_shape_outside_image(
       hash_background_position(position, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
     BackgroundImage::RepeatingRadialGradient {
@@ -15651,7 +15655,7 @@ fn hash_shape_outside_image(
       hash_background_position(position, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
     BackgroundImage::ConicGradient {
@@ -15664,7 +15668,7 @@ fn hash_shape_outside_image(
       hash_background_position(position, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
     BackgroundImage::RepeatingConicGradient {
@@ -15677,7 +15681,7 @@ fn hash_shape_outside_image(
       hash_background_position(position, hasher);
       stops.len().hash(hasher);
       for stop in stops {
-        hash_color_stop_alpha(stop, current_color, is_dark, hasher);
+        hash_color_stop_alpha(stop, current_color, is_dark, forced_colors, hasher);
       }
     }
   }
@@ -15709,7 +15713,13 @@ fn hash_shape_outside(
     }
     ShapeOutside::Image(image) => {
       3u8.hash(hasher);
-      hash_shape_outside_image(image, style.color, style.used_dark_color_scheme, hasher);
+      hash_shape_outside_image(
+        image,
+        style.color,
+        style.used_dark_color_scheme,
+        style.forced_colors,
+        hasher,
+      );
     }
   }
 }

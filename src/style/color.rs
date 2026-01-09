@@ -756,10 +756,10 @@ pub enum Color {
   /// HSLA color
   Hsla(Hsla),
 
-  /// CSS system color keyword (CSS Color 4/5).
+  /// A system color keyword (CSS Color 4/5).
   ///
   /// Browsers typically resolve system colors from the platform/theme. FastRender is a headless
-  /// renderer, so we use a deterministic built-in palette (see [`SystemColor`]).
+  /// renderer, so we use deterministic built-in palettes (light/dark + forced-colors).
   System(SystemColor),
 
   /// Interpolated color mix
@@ -790,7 +790,8 @@ pub enum Color {
 /// CSS system color keywords (CSS Color 4/5).
 ///
 /// In browsers these map to platform-specific theme colors. FastRender renders without access to a
-/// host OS theme, so we provide a stable palette for both light and dark color schemes.
+/// host OS theme, so we provide stable palettes for both light and dark color schemes as well as a
+/// deterministic forced-colors palette.
 ///
 /// Palette (sRGB):
 ///
@@ -823,7 +824,7 @@ pub enum Color {
 /// - `Highlight` = `#264f78`
 /// - `HighlightText` = `#ffffff`
 /// - `GrayText` = `#a0a0a0`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SystemColor {
   Canvas,
   CanvasText,
@@ -841,34 +842,90 @@ pub enum SystemColor {
 }
 
 impl SystemColor {
-  pub fn to_rgba(self, is_dark: bool) -> Rgba {
-    match (self, is_dark) {
-      (SystemColor::Canvas, false) => Rgba::WHITE,
-      (SystemColor::Canvas, true) => Rgba::rgb(16, 16, 16),
-      (SystemColor::CanvasText, false) => Rgba::BLACK,
-      (SystemColor::CanvasText, true) => Rgba::rgb(232, 232, 232),
-      (SystemColor::LinkText, false) => Rgba::rgb(0, 0, 238),
-      (SystemColor::LinkText, true) => Rgba::rgb(120, 180, 255),
-      (SystemColor::VisitedText, false) => Rgba::rgb(85, 26, 139),
-      (SystemColor::VisitedText, true) => Rgba::rgb(208, 160, 255),
-      (SystemColor::ActiveText, false) => Rgba::RED,
-      (SystemColor::ActiveText, true) => Rgba::rgb(255, 128, 128),
-      (SystemColor::ButtonFace, false) => Rgba::rgb(240, 240, 240),
-      (SystemColor::ButtonFace, true) => Rgba::rgb(24, 24, 24),
-      (SystemColor::ButtonText, false) => Rgba::BLACK,
-      (SystemColor::ButtonText, true) => Rgba::rgb(232, 232, 232),
-      (SystemColor::ButtonBorder, false) => Rgba::rgb(118, 118, 118),
-      (SystemColor::ButtonBorder, true) => Rgba::rgb(96, 96, 96),
-      (SystemColor::Field, false) => Rgba::WHITE,
-      (SystemColor::Field, true) => Rgba::rgb(24, 24, 24),
-      (SystemColor::FieldText, false) => Rgba::BLACK,
-      (SystemColor::FieldText, true) => Rgba::rgb(232, 232, 232),
-      (SystemColor::Highlight, false) => Rgba::rgb(0, 120, 215),
-      (SystemColor::Highlight, true) => Rgba::rgb(38, 79, 120),
-      (SystemColor::HighlightText, false) => Rgba::WHITE,
-      (SystemColor::HighlightText, true) => Rgba::WHITE,
-      (SystemColor::GrayText, false) => Rgba::rgb(128, 128, 128),
-      (SystemColor::GrayText, true) => Rgba::rgb(160, 160, 160),
+  pub fn parse(s: &str) -> Option<Self> {
+    let lower: std::borrow::Cow<'_, str> = if s.bytes().any(|b| b.is_ascii_uppercase()) {
+      std::borrow::Cow::Owned(s.to_ascii_lowercase())
+    } else {
+      std::borrow::Cow::Borrowed(s)
+    };
+    Some(match lower.as_ref() {
+      "canvas" => SystemColor::Canvas,
+      "canvastext" => SystemColor::CanvasText,
+      "linktext" => SystemColor::LinkText,
+      "visitedtext" => SystemColor::VisitedText,
+      "activetext" => SystemColor::ActiveText,
+      "buttonface" => SystemColor::ButtonFace,
+      "buttontext" => SystemColor::ButtonText,
+      "buttonborder" => SystemColor::ButtonBorder,
+      "field" => SystemColor::Field,
+      "fieldtext" => SystemColor::FieldText,
+      "highlight" => SystemColor::Highlight,
+      "highlighttext" => SystemColor::HighlightText,
+      "graytext" => SystemColor::GrayText,
+      _ => return None,
+    })
+  }
+
+  /// Resolve the system color to a concrete RGBA.
+  ///
+  /// - `is_dark` selects the UA's default light/dark system palette when `forced_colors == false`.
+  /// - When `forced_colors == true`, the forced-colors palette is used regardless of `is_dark`.
+  pub fn to_rgba(self, is_dark: bool, forced_colors: bool) -> Rgba {
+    if forced_colors {
+      // Deterministic forced-colors palette.
+      //
+      // This is intentionally small and high-contrast; it does not attempt to match any particular
+      // OS theme exactly. The goal is stable rendering for tests and predictable forced-colors
+      // behavior.
+      match self {
+        SystemColor::Canvas => Rgba::BLACK,
+        SystemColor::CanvasText => Rgba::WHITE,
+        SystemColor::LinkText => Rgba::rgb(0, 255, 255),
+        SystemColor::VisitedText => Rgba::rgb(255, 0, 255),
+        SystemColor::ActiveText => Rgba::RED,
+        SystemColor::ButtonFace => Rgba::rgb(32, 32, 32),
+        SystemColor::ButtonText => Rgba::WHITE,
+        SystemColor::ButtonBorder => Rgba::WHITE,
+        SystemColor::Field => Rgba::BLACK,
+        SystemColor::FieldText => Rgba::WHITE,
+        SystemColor::Highlight => Rgba::rgb(255, 255, 0),
+        SystemColor::HighlightText => Rgba::BLACK,
+        SystemColor::GrayText => Rgba::rgb(128, 128, 128),
+      }
+    } else if is_dark {
+      // Deterministic dark scheme system palette.
+      match self {
+        SystemColor::Canvas => Rgba::rgb(16, 16, 16),
+        SystemColor::CanvasText => Rgba::rgb(232, 232, 232),
+        SystemColor::LinkText => Rgba::rgb(120, 180, 255),
+        SystemColor::VisitedText => Rgba::rgb(208, 160, 255),
+        SystemColor::ActiveText => Rgba::rgb(255, 128, 128),
+        SystemColor::ButtonFace => Rgba::rgb(24, 24, 24),
+        SystemColor::ButtonText => Rgba::rgb(232, 232, 232),
+        SystemColor::ButtonBorder => Rgba::rgb(96, 96, 96),
+        SystemColor::Field => Rgba::rgb(24, 24, 24),
+        SystemColor::FieldText => Rgba::rgb(232, 232, 232),
+        SystemColor::Highlight => Rgba::rgb(38, 79, 120),
+        SystemColor::HighlightText => Rgba::WHITE,
+        SystemColor::GrayText => Rgba::rgb(160, 160, 160),
+      }
+    } else {
+      // Deterministic light scheme system palette.
+      match self {
+        SystemColor::Canvas => Rgba::WHITE,
+        SystemColor::CanvasText => Rgba::BLACK,
+        SystemColor::LinkText => Rgba::rgb(0, 0, 238),
+        SystemColor::VisitedText => Rgba::rgb(85, 26, 139),
+        SystemColor::ActiveText => Rgba::RED,
+        SystemColor::ButtonFace => Rgba::rgb(240, 240, 240),
+        SystemColor::ButtonText => Rgba::BLACK,
+        SystemColor::ButtonBorder => Rgba::rgb(118, 118, 118),
+        SystemColor::Field => Rgba::WHITE,
+        SystemColor::FieldText => Rgba::BLACK,
+        SystemColor::Highlight => Rgba::rgb(0, 120, 215),
+        SystemColor::HighlightText => Rgba::WHITE,
+        SystemColor::GrayText => Rgba::rgb(128, 128, 128),
+      }
     }
   }
 }
@@ -1008,28 +1065,42 @@ impl Color {
   /// assert_eq!(current.to_rgba(Rgba::BLUE), Rgba::BLUE);
   /// ```
   pub fn to_rgba(&self, current_color: Rgba) -> Rgba {
-    self.to_rgba_with_scheme(current_color, false)
+    self.to_rgba_with_scheme_and_forced_colors(current_color, false, false)
   }
 
   /// Converts to RGBA, resolving `light-dark()` using the given color scheme.
   ///
   /// `is_dark` should be true when the element's *used* color scheme is dark.
   pub fn to_rgba_with_scheme(&self, current_color: Rgba, is_dark: bool) -> Rgba {
+    self.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, false)
+  }
+
+  /// Converts to RGBA, resolving `light-dark()` and system colors using the provided context.
+  ///
+  /// `forced_colors` should be true when the UA is in forced-colors mode
+  /// (`@media (forced-colors: active)`).
+  pub fn to_rgba_with_scheme_and_forced_colors(
+    &self,
+    current_color: Rgba,
+    is_dark: bool,
+    forced_colors: bool,
+  ) -> Rgba {
     match self {
       Color::Rgba(rgba) => *rgba,
       Color::Hsla(hsla) => hsla.to_rgba(),
-      Color::System(system) => system.to_rgba(is_dark),
+      Color::System(system) => system.to_rgba(is_dark, forced_colors),
       Color::Mix { components, space } => mix_colors(
         *space,
         &components[0],
         &components[1],
         current_color,
         is_dark,
+        forced_colors,
       ),
       Color::Contrast { against, options } => {
         let background = against
           .as_ref()
-          .map(|c| c.to_rgba_with_scheme(current_color, is_dark))
+          .map(|c| c.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors))
           .unwrap_or(current_color);
         let visible_background = composite_over(background, Rgba::WHITE);
         if options.is_empty() {
@@ -1038,7 +1109,8 @@ impl Color {
 
         let mut best = None;
         for candidate in options {
-          let resolved = candidate.to_rgba_with_scheme(current_color, is_dark);
+          let resolved =
+            candidate.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
           let composited = composite_over(resolved, visible_background);
           let ratio = contrast_ratio(composited, visible_background);
           match best {
@@ -1049,20 +1121,40 @@ impl Color {
 
         best.map(|(c, _)| c).unwrap_or(visible_background)
       }
-      Color::Relative(relative) => relative.to_rgba_with_scheme(current_color, is_dark),
+      Color::Relative(relative) => relative.to_rgba_with_scheme_and_forced_colors(
+        current_color,
+        is_dark,
+        forced_colors,
+      ),
       Color::LightDark { light, dark } => {
         if is_dark {
-          dark.to_rgba_with_scheme(current_color, is_dark)
+          dark.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors)
         } else {
-          light.to_rgba_with_scheme(current_color, is_dark)
+          light.to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors)
         }
       }
       Color::CurrentColor => current_color,
     }
   }
 
-  /// Resolve scheme-dependent colors (`light-dark()` and system colors) to a concrete color based on
-  /// the used color scheme.
+  /// Returns true if this color value contains any system color keyword.
+  pub fn uses_system_color(&self) -> bool {
+    match self {
+      Color::System(_) => true,
+      Color::Mix { components, .. } => components.iter().any(|(c, _)| c.uses_system_color()),
+      Color::Contrast { against, options } => {
+        against
+          .as_ref()
+          .is_some_and(|c| c.uses_system_color())
+          || options.iter().any(|c| c.uses_system_color())
+      }
+      Color::Relative(relative) => relative.base.uses_system_color(),
+      Color::LightDark { light, dark } => light.uses_system_color() || dark.uses_system_color(),
+      _ => false,
+    }
+  }
+
+  /// Resolve `light-dark()` to a concrete color based on the used color scheme.
   ///
   /// This is useful for contexts where the chosen branch needs to be stored (e.g. gradient stops)
   /// and later resolved without access to the color scheme.
@@ -1070,8 +1162,8 @@ impl Color {
     match self {
       Color::Rgba(rgba) => Color::Rgba(*rgba),
       Color::Hsla(hsla) => Color::Hsla(*hsla),
+      Color::System(system) => Color::System(*system),
       Color::CurrentColor => Color::CurrentColor,
-      Color::System(system) => Color::Rgba(system.to_rgba(is_dark)),
       Color::LightDark { light, dark } => {
         if is_dark {
           dark.resolve_light_dark(is_dark)
@@ -1189,7 +1281,8 @@ impl Color {
       return Ok(Color::CurrentColor);
     }
 
-    if let Some(system) = parse_system_color(s) {
+    // System colors (CSS Color 4/5).
+    if let Some(system) = SystemColor::parse(s) {
       return Ok(Color::System(system));
     }
 
@@ -1265,8 +1358,15 @@ impl Color {
 }
 
 impl RelativeColor {
-  fn to_rgba_with_scheme(&self, current_color: Rgba, is_dark: bool) -> Rgba {
-    let base = self.base.to_rgba_with_scheme(current_color, is_dark);
+  fn to_rgba_with_scheme_and_forced_colors(
+    &self,
+    current_color: Rgba,
+    is_dark: bool,
+    forced_colors: bool,
+  ) -> Rgba {
+    let base = self
+      .base
+      .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors);
     let (source_channels, source_alpha) = rgba_to_relative_space(self.space, base);
 
     let mut channels = [0.0; 3];
@@ -1309,30 +1409,6 @@ impl fmt::Display for Color {
       Color::LightDark { .. } => write!(f, "light-dark(...)"),
       Color::CurrentColor => write!(f, "currentColor"),
     }
-  }
-}
-
-fn parse_system_color(s: &str) -> Option<SystemColor> {
-  let lower: std::borrow::Cow<'_, str> = if s.bytes().any(|b| b.is_ascii_uppercase()) {
-    std::borrow::Cow::Owned(s.to_ascii_lowercase())
-  } else {
-    std::borrow::Cow::Borrowed(s)
-  };
-  match lower.as_ref() {
-    "canvas" => Some(SystemColor::Canvas),
-    "canvastext" => Some(SystemColor::CanvasText),
-    "linktext" => Some(SystemColor::LinkText),
-    "visitedtext" => Some(SystemColor::VisitedText),
-    "activetext" => Some(SystemColor::ActiveText),
-    "buttonface" => Some(SystemColor::ButtonFace),
-    "buttontext" => Some(SystemColor::ButtonText),
-    "buttonborder" => Some(SystemColor::ButtonBorder),
-    "field" => Some(SystemColor::Field),
-    "fieldtext" => Some(SystemColor::FieldText),
-    "highlight" => Some(SystemColor::Highlight),
-    "highlighttext" => Some(SystemColor::HighlightText),
-    "graytext" => Some(SystemColor::GrayText),
-    _ => None,
   }
 }
 
@@ -3137,13 +3213,18 @@ fn mix_colors(
   second: &(Box<Color>, f32),
   current: Rgba,
   is_dark: bool,
+  forced_colors: bool,
 ) -> Rgba {
   let (w0, w1) = normalize_mix_weights(Some(first.1), Some(second.1));
 
   match space {
     ColorMixSpace::Srgb => {
-      let c0 = first.0.to_rgba_with_scheme(current, is_dark);
-      let c1 = second.0.to_rgba_with_scheme(current, is_dark);
+      let c0 = first
+        .0
+        .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors);
+      let c1 = second
+        .0
+        .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors);
       let premix = |c: u8, a: f32| (c as f32 / 255.0) * a;
       let alpha = (c0.a * w0 + c1.a * w1).clamp(0.0, 1.0);
       if alpha == 0.0 {
@@ -3160,8 +3241,12 @@ fn mix_colors(
       )
     }
     ColorMixSpace::SrgbLinear => {
-      let c0 = first.0.to_rgba_with_scheme(current, is_dark);
-      let c1 = second.0.to_rgba_with_scheme(current, is_dark);
+      let c0 = first
+        .0
+        .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors);
+      let c1 = second
+        .0
+        .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors);
       let premix = |c: u8, a: f32| srgb_to_linear_component(c) * a;
       let alpha = (c0.a * w0 + c1.a * w1).clamp(0.0, 1.0);
       if alpha == 0.0 {
@@ -3178,8 +3263,10 @@ fn mix_colors(
       )
     }
     ColorMixSpace::Lab => {
-      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme(current, is_dark));
-      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme(current, is_dark));
+      let (l0, a0, b0, alpha0) =
+        rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
+      let (l1, a1, b1, alpha1) =
+        rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -3187,8 +3274,10 @@ fn mix_colors(
       lab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Lch => {
-      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme(current, is_dark));
-      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme(current, is_dark));
+      let (l0, a0, b0, alpha0) =
+        rgba_to_lab(first.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
+      let (l1, a1, b1, alpha1) =
+        rgba_to_lab(second.0.to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors));
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);
@@ -3200,8 +3289,16 @@ fn mix_colors(
       lab_to_rgba(l, a_vec, b_vec, alpha)
     }
     ColorMixSpace::Oklab => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme(current, is_dark));
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme(current, is_dark));
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(
+        first
+          .0
+          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
+      );
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(
+        second
+          .0
+          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
+      );
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -3209,8 +3306,16 @@ fn mix_colors(
       oklab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Oklch => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme(current, is_dark));
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme(current, is_dark));
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(
+        first
+          .0
+          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
+      );
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(
+        second
+          .0
+          .to_rgba_with_scheme_and_forced_colors(current, is_dark, forced_colors),
+      );
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);

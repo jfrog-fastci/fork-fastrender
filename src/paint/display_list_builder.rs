@@ -4095,6 +4095,8 @@ impl DisplayListBuilder {
     Some(ResolvedMask {
       layers,
       color: style.color,
+      used_dark_color_scheme: style.used_dark_color_scheme,
+      forced_colors: style.forced_colors,
       font_size: style.font_size,
       root_font_size: style.root_font_size,
       viewport: self.viewport,
@@ -4294,6 +4296,8 @@ impl DisplayListBuilder {
     font_size: f32,
     root_font_size: f32,
     viewport: Option<(f32, f32)>,
+    is_dark: bool,
+    forced_colors: bool,
   ) -> Vec<(f32, Rgba)> {
     if stops.is_empty() {
       return Vec::new();
@@ -4324,13 +4328,24 @@ impl DisplayListBuilder {
       .collect();
     if positions.iter().all(|p| p.is_none()) {
       if stops.len() == 1 {
-        return vec![(0.0, stops[0].color.to_rgba(current_color))];
+        return vec![(
+          0.0,
+          stops[0]
+            .color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )];
       }
       let denom = (stops.len() - 1) as f32;
       return stops
         .iter()
         .enumerate()
-        .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+        .map(|(i, s)| {
+          (
+            i as f32 / denom,
+            s.color
+              .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+          )
+        })
         .collect();
     }
 
@@ -4371,7 +4386,12 @@ impl DisplayListBuilder {
       let pos = pos_opt.unwrap_or(prev);
       let clamped = pos.max(prev).clamp(0.0, 1.0);
       prev = clamped;
-      output.push((clamped, stops[idx].color.to_rgba(current_color)));
+      output.push((
+        clamped,
+        stops[idx]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      ));
     }
 
     output
@@ -4384,6 +4404,8 @@ impl DisplayListBuilder {
     font_size: f32,
     root_font_size: f32,
     viewport: Option<(f32, f32)>,
+    is_dark: bool,
+    forced_colors: bool,
   ) -> Vec<(f32, Rgba)> {
     if stops.is_empty() {
       return Vec::new();
@@ -4414,13 +4436,24 @@ impl DisplayListBuilder {
       .collect();
     if positions.iter().all(|p| p.is_none()) {
       if stops.len() == 1 {
-        return vec![(0.0, stops[0].color.to_rgba(current_color))];
+        return vec![(
+          0.0,
+          stops[0]
+            .color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+        )];
       }
       let denom = (stops.len() - 1) as f32;
       return stops
         .iter()
         .enumerate()
-        .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+        .map(|(i, s)| {
+          (
+            i as f32 / denom,
+            s.color
+              .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+          )
+        })
         .collect();
     }
 
@@ -4461,7 +4494,12 @@ impl DisplayListBuilder {
       let pos = pos_opt.unwrap_or(prev);
       let monotonic = pos.max(prev);
       prev = monotonic;
-      output.push((monotonic, stops[idx].color.to_rgba(current_color)));
+      output.push((
+        monotonic,
+        stops[idx]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
+      ));
     }
     output
   }
@@ -5330,8 +5368,11 @@ impl DisplayListBuilder {
         let current = style_opt.map(|s| s.color).unwrap_or(Rgba::BLACK);
         let color = style_opt
           .map(|s| {
-            s.webkit_text_fill_color
-              .to_rgba_with_scheme(current, s.used_dark_color_scheme)
+            s.webkit_text_fill_color.to_rgba_with_scheme_and_forced_colors(
+              current,
+              s.used_dark_color_scheme,
+              s.forced_colors,
+            )
           })
           .unwrap_or(current);
         let shadows = Self::text_shadows_from_style(style_opt, self.viewport);
@@ -5702,7 +5743,11 @@ impl DisplayListBuilder {
                   let current = color.unwrap_or(base_color);
                   let paint_color = style_ref
                     .webkit_text_fill_color
-                    .to_rgba_with_scheme(current, used_dark_color_scheme);
+                    .to_rgba_with_scheme_and_forced_colors(
+                      current,
+                      used_dark_color_scheme,
+                      style_ref.forced_colors,
+                    );
                   let scaled_run = Self::scale_run(&run, scale_x, scale_y);
                   let baseline_y = content_rect.y() + origin.y * scale_y;
                   let start_x = content_rect.x() + origin.x * scale_x;
@@ -5721,7 +5766,11 @@ impl DisplayListBuilder {
                   let current = color.unwrap_or(base_color);
                   let paint_color = style_ref
                     .webkit_text_fill_color
-                    .to_rgba_with_scheme(current, used_dark_color_scheme);
+                    .to_rgba_with_scheme_and_forced_colors(
+                      current,
+                      used_dark_color_scheme,
+                      style_ref.forced_colors,
+                    );
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + r.x() * scale_x,
                     content_rect.y() + r.y() * scale_y,
@@ -5742,7 +5791,11 @@ impl DisplayListBuilder {
                   let current = color.unwrap_or(base_color);
                   let paint_color = style_ref
                     .webkit_text_fill_color
-                    .to_rgba_with_scheme(current, used_dark_color_scheme);
+                    .to_rgba_with_scheme_and_forced_colors(
+                      current,
+                      used_dark_color_scheme,
+                      style_ref.forced_colors,
+                    );
                   let start = Point::new(
                     content_rect.x() + from.x * scale_x,
                     content_rect.y() + from.y * scale_y,
@@ -5777,7 +5830,11 @@ impl DisplayListBuilder {
                   let current = color.unwrap_or(base_color);
                   let paint_color = style_ref
                     .webkit_text_fill_color
-                    .to_rgba_with_scheme(current, used_dark_color_scheme);
+                    .to_rgba_with_scheme_and_forced_colors(
+                      current,
+                      used_dark_color_scheme,
+                      style_ref.forced_colors,
+                    );
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + stroke_rect.x() * scale_x,
                     content_rect.y() + stroke_rect.y() * scale_y,
@@ -5814,7 +5871,11 @@ impl DisplayListBuilder {
                   let current = color.unwrap_or(base_color);
                   let paint_color = style_ref
                     .webkit_text_fill_color
-                    .to_rgba_with_scheme(current, used_dark_color_scheme);
+                    .to_rgba_with_scheme_and_forced_colors(
+                      current,
+                      used_dark_color_scheme,
+                      style_ref.forced_colors,
+                    );
                   let scaled_rect = Rect::from_xywh(
                     content_rect.x() + stroke_rect.x() * scale_x,
                     content_rect.y() + stroke_rect.y() * scale_y,
@@ -7113,6 +7174,8 @@ impl DisplayListBuilder {
               style.font_size,
               style.root_font_size,
               self.viewport,
+              style.used_dark_color_scheme,
+              style.forced_colors,
             );
             if !resolved.is_empty() {
               let stops = Self::gradient_stops(&resolved);
@@ -7148,6 +7211,8 @@ impl DisplayListBuilder {
             style.font_size,
             style.root_font_size,
             self.viewport,
+            style.used_dark_color_scheme,
+            style.forced_colors,
           );
           if !resolved.is_empty() {
             let stops = Self::gradient_stops(&resolved);
@@ -7207,6 +7272,8 @@ impl DisplayListBuilder {
               style.font_size,
               style.root_font_size,
               self.viewport,
+              style.used_dark_color_scheme,
+              style.forced_colors,
             );
             if !resolved.is_empty() {
               let stops = Self::gradient_stops(&resolved);
@@ -7242,6 +7309,8 @@ impl DisplayListBuilder {
             style.font_size,
             style.root_font_size,
             self.viewport,
+            style.used_dark_color_scheme,
+            style.forced_colors,
           );
           if !resolved.is_empty() {
             let stops = Self::gradient_stops(&resolved);
@@ -7299,6 +7368,8 @@ impl DisplayListBuilder {
           style.font_size,
           style.root_font_size,
           self.viewport,
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if !resolved.is_empty() {
           let stops = Self::gradient_stops_unclamped(&resolved);
@@ -7387,6 +7458,8 @@ impl DisplayListBuilder {
           style.font_size,
           style.root_font_size,
           self.viewport,
+          style.used_dark_color_scheme,
+          style.forced_colors,
         );
         if !resolved.is_empty() {
           let stops = Self::gradient_stops_unclamped(&resolved);
@@ -7487,6 +7560,8 @@ impl DisplayListBuilder {
               style.font_size,
               style.root_font_size,
               self.viewport,
+              style.used_dark_color_scheme,
+              style.forced_colors,
             );
             if !resolved.is_empty() {
               let stops = Self::gradient_stops(&resolved);
@@ -7525,6 +7600,8 @@ impl DisplayListBuilder {
             style.font_size,
             style.root_font_size,
             self.viewport,
+            style.used_dark_color_scheme,
+            style.forced_colors,
           );
           if !resolved.is_empty() {
             let stops = Self::gradient_stops(&resolved);
@@ -7597,6 +7674,8 @@ impl DisplayListBuilder {
               style.font_size,
               style.root_font_size,
               self.viewport,
+              style.used_dark_color_scheme,
+              style.forced_colors,
             );
             if !resolved.is_empty() {
               let stops = Self::gradient_stops(&resolved);
@@ -7635,6 +7714,8 @@ impl DisplayListBuilder {
             style.font_size,
             style.root_font_size,
             self.viewport,
+            style.used_dark_color_scheme,
+            style.forced_colors,
           );
           if !resolved.is_empty() {
             let stops = Self::gradient_stops(&resolved);
@@ -8216,6 +8297,8 @@ impl DisplayListBuilder {
           outset: style.border_image.outset.clone(),
           repeat: style.border_image.repeat,
           current_color: style.color,
+          used_dark_color_scheme: style.used_dark_color_scheme,
+          forced_colors: style.forced_colors,
           font_size: style.font_size,
           root_font_size: style.root_font_size,
           viewport: self.viewport,

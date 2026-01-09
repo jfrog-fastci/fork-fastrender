@@ -544,6 +544,7 @@ fn image_mask(
         stops,
         style.color,
         style.used_dark_color_scheme,
+        style.forced_colors,
         width,
         height,
         style.font_size,
@@ -559,6 +560,7 @@ fn image_mask(
         stops,
         style.color,
         style.used_dark_color_scheme,
+        style.forced_colors,
         width,
         height,
         style.font_size,
@@ -741,6 +743,7 @@ fn render_linear_gradient(
   stops: &[ColorStop],
   current_color: Rgba,
   is_dark: bool,
+  forced_colors: bool,
   width: u32,
   height: u32,
   font_size: f32,
@@ -759,6 +762,7 @@ fn render_linear_gradient(
     font_size,
     root_font_size,
     Some((viewport.width, viewport.height)),
+    forced_colors,
   );
   if resolved.is_empty() {
     return None;
@@ -794,6 +798,7 @@ fn render_linear_gradient_repeat(
   stops: &[ColorStop],
   current_color: Rgba,
   is_dark: bool,
+  forced_colors: bool,
   width: u32,
   height: u32,
   font_size: f32,
@@ -812,6 +817,7 @@ fn render_linear_gradient_repeat(
     font_size,
     root_font_size,
     Some((viewport.width, viewport.height)),
+    forced_colors,
   );
   if resolved.is_empty() {
     return None;
@@ -882,6 +888,7 @@ fn render_radial_gradient_image(
     style.font_size,
     style.root_font_size,
     Some((viewport.width, viewport.height)),
+    style.forced_colors,
   );
   if resolved.is_empty() {
     return None;
@@ -938,6 +945,7 @@ fn render_conic_gradient_alpha(
     style.font_size,
     style.root_font_size,
     Some((viewport.width, viewport.height)),
+    style.forced_colors,
   );
   if resolved.is_empty() {
     return None;
@@ -1005,6 +1013,7 @@ fn normalize_color_stops(
   font_size: f32,
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -1037,7 +1046,9 @@ fn normalize_color_stops(
     if stops.len() == 1 {
       return vec![(
         0.0,
-        stops[0].color.to_rgba_with_scheme(current_color, is_dark),
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
       )];
     }
     let denom = (stops.len() - 1) as f32;
@@ -1047,7 +1058,8 @@ fn normalize_color_stops(
       .map(|(i, s)| {
         (
           i as f32 / denom,
-          s.color.to_rgba_with_scheme(current_color, is_dark),
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
         )
       })
       .collect();
@@ -1092,7 +1104,9 @@ fn normalize_color_stops(
     prev = clamped;
     output.push((
       clamped,
-      stops[idx].color.to_rgba_with_scheme(current_color, is_dark),
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
     ));
   }
   output
@@ -1118,6 +1132,7 @@ fn normalize_color_stops_unclamped(
   font_size: f32,
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
+  forced_colors: bool,
 ) -> Vec<(f32, Rgba)> {
   if stops.is_empty() {
     return Vec::new();
@@ -1150,7 +1165,9 @@ fn normalize_color_stops_unclamped(
     if stops.len() == 1 {
       return vec![(
         0.0,
-        stops[0].color.to_rgba_with_scheme(current_color, is_dark),
+        stops[0]
+          .color
+          .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
       )];
     }
     let denom = (stops.len() - 1) as f32;
@@ -1160,7 +1177,8 @@ fn normalize_color_stops_unclamped(
       .map(|(i, s)| {
         (
           i as f32 / denom,
-          s.color.to_rgba_with_scheme(current_color, is_dark),
+          s.color
+            .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
         )
       })
       .collect();
@@ -1205,7 +1223,9 @@ fn normalize_color_stops_unclamped(
     prev = monotonic;
     output.push((
       monotonic,
-      stops[idx].color.to_rgba_with_scheme(current_color, is_dark),
+      stops[idx]
+        .color
+        .to_rgba_with_scheme_and_forced_colors(current_color, is_dark, forced_colors),
     ));
   }
   output
