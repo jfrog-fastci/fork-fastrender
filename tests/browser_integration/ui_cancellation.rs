@@ -160,9 +160,9 @@ fn cancellation_on_scroll_drops_stale_frames() {
 
   // Trigger a scroll repaint, then cancel it mid-flight by bumping paint generation and sending a
   // second scroll. The worker should drop any stale paint output for the first scroll.
-  // Drain any straggler stage heartbeats from the navigation so the paint heartbeat below is tied
-  // to the first scroll.
-  let _ = support::drain_for(&ui_rx, Duration::from_millis(200));
+  // Drain any straggler stage heartbeats from the navigation so the paint-stage marker below is
+  // tied to the first scroll repaint.
+  while ui_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
 
   // Slow down deadline checks so the first scroll repaint remains in-flight long enough for the
   // UI to bump paint cancellation.
@@ -172,21 +172,23 @@ fn cancellation_on_scroll_drops_stale_frames() {
     .send(support::scroll_msg(tab_id, (0.0, 200.0), None))
     .unwrap();
 
-  // Wait until we observe the scroll repaint enter the paint stages so we can cancel it mid-flight.
+  // Wait for paint to begin (paint-stage heartbeat) before triggering cancellation so we cancel
+  // an in-flight job rather than a queued scroll.
   let mut pre_cancel: Vec<WorkerToUi> = Vec::new();
-  loop {
+  let mut saw_paint_stage = false;
+  while !saw_paint_stage {
     match ui_rx.recv_timeout(Duration::from_secs(10)) {
       Ok(msg) => {
-        let saw_paint_stage = matches!(
+        if matches!(
           &msg,
-          WorkerToUi::Stage { tab_id: msg_id, stage }
-            if *msg_id == tab_id
-              && matches!(*stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
-        );
-        pre_cancel.push(msg);
-        if saw_paint_stage {
-          break;
+          WorkerToUi::Stage {
+            tab_id: msg_id,
+            stage: StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+          } if *msg_id == tab_id
+        ) {
+          saw_paint_stage = true;
         }
+        pre_cancel.push(msg);
       }
       Err(err) => panic!("timed out waiting for paint stage heartbeat: {err}"),
     }
@@ -203,9 +205,10 @@ fn cancellation_on_scroll_drops_stale_frames() {
   let mut saw_scroll1_frame = false;
   let mut saw_scroll2_frame = false;
 
-  for msg in pre_cancel {
+  let mut messages = pre_cancel;
+  for msg in messages.iter() {
     if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = msg {
-      if msg_id != tab_id {
+      if *msg_id != tab_id {
         continue;
       }
       let y = frame.scroll_state.viewport.y;
@@ -219,28 +222,31 @@ fn cancellation_on_scroll_drops_stale_frames() {
   }
 
   while let Ok(msg) = ui_rx.recv_timeout(Duration::from_secs(30)) {
-    if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = msg {
-      if msg_id != tab_id {
-        continue;
-      }
-      let y = frame.scroll_state.viewport.y;
-      if (y - 200.0).abs() < 5.0 {
-        saw_scroll1_frame = true;
-      }
-      if (y - 400.0).abs() < 5.0 {
-        saw_scroll2_frame = true;
-        break;
+    if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = &msg {
+      if *msg_id == tab_id {
+        let y = frame.scroll_state.viewport.y;
+        if (y - 200.0).abs() < 5.0 {
+          saw_scroll1_frame = true;
+        }
+        if (y - 400.0).abs() < 5.0 {
+          saw_scroll2_frame = true;
+          messages.push(msg);
+          break;
+        }
       }
     }
+    messages.push(msg);
   }
 
   assert!(
     saw_scroll2_frame,
-    "expected a committed frame for the second scroll repaint"
+    "expected a committed frame for the second scroll repaint; got:\n{}",
+    support::format_messages(&messages)
   );
   assert!(
     !saw_scroll1_frame,
-    "stale frame from first scroll repaint should be dropped"
+    "stale frame from first scroll repaint should be dropped; got:\n{}",
+    support::format_messages(&messages)
   );
 
   drop(ui_tx);

@@ -86,21 +86,18 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
       [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
       `ChromeAction` type.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the browser UI worker loop ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs))
-      and the synchronous `BrowserWorker` helper ([`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)).
+    - Used by the canonical UI render worker runtime ([`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Browser UI worker loop (navigation/history + interaction + cancellation): [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
+  - Canonical UI render worker runtime (navigation/history + interaction + cancellation):
+    [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
     - `spawn_browser_worker` is the main worker used by the windowed `browser` app.
-    - `spawn_ui_worker` exposes the same message-driven worker loop for headless integration tests.
-    - `spawn_browser_ui_worker` is a small std::io wrapper around `spawn_browser_worker_with_name`.
-  - Render-thread utilities (stage heartbeat forwarding, large-stack thread helper): [`src/ui/worker.rs`](../src/ui/worker.rs)
-  - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
-    - Mostly used by unit tests and small helpers.
-  - Headless worker tests exercise the same `UiToWorker`/`WorkerToUi` protocol via the browser UI
-    worker loop (`spawn_ui_worker` in `render_worker.rs`).
+    - `spawn_ui_worker` / `spawn_ui_worker_with_factory` are headless entrypoints used by browser
+      integration tests (same runtime; no parallel worker loop).
+  - Render-thread utilities (stage heartbeat forwarding, large-stack thread builder):
+    [`src/ui/worker.rs`](../src/ui/worker.rs)
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers: [`src/ui/wgpu_pixmap_texture.rs`](../src/ui/wgpu_pixmap_texture.rs)
 - Renderer APIs used/expected to be used by the UI:
@@ -133,11 +130,10 @@ The browser UI should run rendering on a dedicated large-stack thread:
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - The windowed `browser` app spawns its worker via
-  [`spawn_browser_worker`](../src/ui/render_worker.rs), which uses `std::thread::Builder` +
-  `DEFAULT_RENDER_STACK_SIZE` to configure the stack size.
-- Headless UI worker spawns used by integration tests (`spawn_ui_worker*`) also use dedicated
-  large-stack threads (see `DEFAULT_RENDER_STACK_SIZE` usage in
-  [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
+  [`spawn_browser_worker`](../src/ui/render_worker.rs), which uses `std::thread::Builder` and
+  [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) to configure the stack size.
+- Headless UI worker loops used by integration tests (`spawn_ui_worker`, etc) use the same large-stack
+  configuration (see [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
 
 ### Message protocol (channels)
 

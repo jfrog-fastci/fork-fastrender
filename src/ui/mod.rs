@@ -1,14 +1,15 @@
 pub mod about_pages;
 pub mod browser_app;
 pub mod browser_tab_controller;
-pub mod browser_worker;
 // UI↔worker messaging lives in `messages.rs`.
 //
 // `render_worker` is the *single* production UI worker implementation. The `browser` binary and
 // browser integration tests are expected to use it.
 //
-// `browser_worker` is a synchronous helper (no channels/thread) used by some unit/integration
-// tests; it is not the production worker loop.
+// Ownership contracts:
+// - The worker owns per-tab navigation history. The UI drives it via `UiToWorker::{GoBack,GoForward,Reload}`.
+// - Cancellation is cooperative: the UI should retain the per-tab `CancelGens` from `CreateTab` and
+//   bump generations before sending new actions so in-flight work can be ignored/cancelled.
 //
 // `worker` contains small render-thread utilities (stage heartbeat forwarding, thread builder), but
 // does **not** implement a separate UI worker loop.

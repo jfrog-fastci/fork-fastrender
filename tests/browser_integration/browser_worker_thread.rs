@@ -379,7 +379,8 @@ fn cancellation_drops_stale_output() {
     })
     .expect("ViewportChanged");
 
-  let _ = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
+  let committed = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
+  assert_eq!(committed, "about:newtab");
   let _ = wait_for_frame(&worker.rx, tab_id, TIMEOUT);
   wait_for_loading_false(&worker.rx, tab_id, TIMEOUT);
   drain_available(&worker.rx);

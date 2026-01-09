@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::render_control::StageHeartbeat;
+use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
@@ -235,6 +235,16 @@ fn rapid_scroll_cancels_stale_paint() {
   // fast (so we don't flake on the first frame) while ensuring the scroll paint is slow enough that
   // we can deterministically cancel it after receiving a stage heartbeat.
   let delay_guard = support::TestRenderDelayGuard::set(Some(1));
+  // Scroll repaints intentionally do not forward `WorkerToUi::Stage` messages (stage forwarding is
+  // scoped to navigation jobs). Install a process-global stage listener so the test can observe when
+  // the first scroll paint enters the paint pipeline.
+  let (paint_stage_tx, paint_stage_rx) = std::sync::mpsc::channel::<StageHeartbeat>();
+  let _global_stage_guard = GlobalStageListenerGuard::new(std::sync::Arc::new(move |stage| {
+    if matches!(stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize) {
+      let _ = paint_stage_tx.send(stage);
+    }
+  }));
+  while paint_stage_rx.try_recv().is_ok() {}
 
   worker
     .tx
@@ -245,38 +255,14 @@ fn rapid_scroll_cancels_stale_paint() {
     })
     .expect("scroll 1");
 
-  // Wait until we observe the scroll repaint enter the paint stages so we can cancel it mid-flight.
+  // Capture messages for assertions/debugging across both scroll repaints.
   let mut frames = Vec::new();
   let mut captured = Vec::new();
-  let paint_stage_deadline = Instant::now() + MAX_WAIT;
-  let mut saw_paint_stage = false;
-  while Instant::now() < paint_stage_deadline && !saw_paint_stage {
-    match worker.rx.recv_timeout(Duration::from_millis(200)) {
-      Ok(msg) => {
-        if matches!(
-          &msg,
-          WorkerToUi::Stage { tab_id: got, stage }
-            if *got == tab_id
-              && matches!(*stage, StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize)
-        ) {
-          saw_paint_stage = true;
-        }
-        if let WorkerToUi::FrameReady { tab_id: got, frame } = &msg {
-          if *got == tab_id {
-            frames.push(frame.scroll_state.clone());
-          }
-        }
-        captured.push(msg);
-      }
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-    }
-  }
-  assert!(
-    saw_paint_stage,
-    "timed out waiting for paint stage heartbeat during scroll repaint; messages:\n{}",
-    support::format_messages(&captured)
-  );
+
+  // Wait until we see at least one paint-stage heartbeat during the first scroll paint, then cancel it.
+  let _ = paint_stage_rx
+    .recv_timeout(MAX_WAIT)
+    .expect("paint stage heartbeat during scroll paint");
 
   cancel.bump_paint();
   worker

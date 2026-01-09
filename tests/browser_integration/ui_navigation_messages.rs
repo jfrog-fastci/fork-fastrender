@@ -1,8 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::ui::browser_worker::BrowserWorker;
-use fastrender::ui::messages::{TabId, WorkerToUi};
-use fastrender::RenderOptions;
+use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
+use fastrender::ui::spawn_ui_worker_with_factory;
 use tempfile::tempdir;
 
 use super::support;
@@ -10,28 +9,49 @@ use super::support;
 #[test]
 fn navigation_invalid_url_emits_navigation_failed() {
   let _lock = super::stage_listener_test_lock();
-  let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let factory = support::deterministic_factory();
-  let mut worker = BrowserWorker::new(factory, tx);
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-navigation-invalid-url-test",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
 
   let url = "foo://example.com";
-  worker
-    .navigate(TabId(1), url, RenderOptions::new().with_viewport(32, 32))
-    .expect("navigate should render about:error frame");
+  let tab_id = TabId(1);
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("send CreateTab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
+    .expect("send ViewportChanged");
+  handle
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      url.to_string(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("send Navigate");
 
-  let messages: Vec<WorkerToUi> = rx.try_iter().collect();
-  let failed = messages.iter().find_map(|msg| match msg {
-    WorkerToUi::NavigationFailed { url: msg_url, error, .. } if msg_url == url => Some(error),
-    _ => None,
-  });
+  let msg = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::NavigationFailed { .. })
+  })
+  .unwrap_or_else(|| panic!("timed out waiting for NavigationFailed for {url:?}"));
 
-  let Some(error) = failed else {
-    panic!("expected NavigationFailed message for {url:?}, got {messages:?}");
+  let error = match msg {
+    WorkerToUi::NavigationFailed { url: msg_url, error, .. } => {
+      assert_eq!(msg_url, url);
+      error
+    }
+    other => panic!("expected NavigationFailed message, got {other:?}"),
   };
   assert!(
     !error.as_str().trim().is_empty(),
     "expected non-empty NavigationFailed error string"
   );
+
+  handle.join().expect("join ui worker");
 }
 
 #[test]
@@ -46,15 +66,74 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
   .expect("write html");
 
   let url = format!("file://{}/index.html", dir.path().display());
-  let (tx, rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let factory = support::deterministic_factory();
-  let mut worker = BrowserWorker::new(factory, tx);
+  let handle = spawn_ui_worker_with_factory(
+    "fastr-ui-navigation-file-url-test",
+    support::deterministic_factory(),
+  )
+  .expect("spawn ui worker");
+  let tab_id = TabId(1);
+  handle
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("send CreateTab");
+  handle
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (32, 32), 1.0))
+    .expect("send ViewportChanged");
 
-  worker
-    .navigate(TabId(1), &url, RenderOptions::new().with_viewport(32, 32))
-    .expect("navigate");
+  // `CreateTab` triggers an initial navigation (default `about:newtab`) which becomes the first
+  // history entry. Wait for it to finish so this test can make deterministic assertions about the
+  // subsequent file:// navigation messages and history flags.
+  let _ = support::recv_for_tab(&handle.ui_rx, tab_id, support::DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::LoadingState { loading: false, .. })
+  })
+  .expect("timed out waiting for initial about:newtab navigation completion");
 
-  let messages: Vec<WorkerToUi> = rx.try_iter().collect();
+  // Drain follow-up messages (FrameReady, etc) so the next collection only sees the file://
+  // navigation.
+  let _ = support::drain_for(&handle.ui_rx, std::time::Duration::from_millis(50));
+
+  handle
+    .ui_tx
+    .send(support::navigate_msg(
+      tab_id,
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("send Navigate");
+
+  // Collect messages until the navigation finishes (LoadingState(false)).
+  let deadline = std::time::Instant::now() + support::DEFAULT_TIMEOUT;
+  let mut messages = Vec::new();
+  loop {
+    let now = std::time::Instant::now();
+    if now >= deadline {
+      panic!(
+        "timed out waiting for navigation completion; got:\n{}",
+        support::format_messages(&messages)
+      );
+    }
+    let remaining = deadline.saturating_duration_since(now);
+    match handle
+      .ui_rx
+      .recv_timeout(remaining.min(std::time::Duration::from_millis(100)))
+    {
+      Ok(msg) => {
+        messages.push(msg);
+        if matches!(
+          messages.last(),
+          Some(WorkerToUi::LoadingState {
+            tab_id: got,
+            loading: false,
+          }) if *got == tab_id
+        ) {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
 
   let mut started_idx = None;
   let mut committed_idx = None;
@@ -75,13 +154,20 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
       } if msg_url == &url => {
         committed_idx.get_or_insert(idx);
         assert_eq!(title.as_deref(), Some("Hello"));
-        assert!(!can_go_back);
+        // We expect the user to be able to go back to the initial `about:newtab` entry.
+        assert!(*can_go_back);
         assert!(!can_go_forward);
       }
-      WorkerToUi::LoadingState { loading: true, .. } => {
+      WorkerToUi::LoadingState {
+        tab_id: got,
+        loading: true,
+      } if *got == tab_id => {
         loading_true_idx.get_or_insert(idx);
       }
-      WorkerToUi::LoadingState { loading: false, .. } => {
+      WorkerToUi::LoadingState {
+        tab_id: got,
+        loading: false,
+      } if *got == tab_id => {
         loading_false_idx.get_or_insert(idx);
       }
       _ => {}
@@ -109,4 +195,6 @@ fn navigation_file_url_emits_started_committed_and_loading_toggle() {
     loading_true_idx < loading_false_idx,
     "expected LoadingState true before false"
   );
+
+  handle.join().expect("join ui worker");
 }
