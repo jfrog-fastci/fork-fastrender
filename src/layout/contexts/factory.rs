@@ -109,6 +109,7 @@ pub struct FormattingContextFactory {
   viewport_size: crate::geometry::Size,
   viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
+  viewport_fixed_cb: ContainingBlock,
   nearest_fixed_cb: ContainingBlock,
   flex_measure_cache: std::sync::Arc<ShardedFlexCache>,
   flex_layout_cache: std::sync::Arc<ShardedFlexCache>,
@@ -240,13 +241,15 @@ impl FormattingContextFactory {
     flex_taffy_cache: std::sync::Arc<TaffyNodeCache>,
     grid_taffy_cache: std::sync::Arc<TaffyNodeCache>,
   ) -> Self {
+    let viewport_fixed_cb = ContainingBlock::viewport(viewport_size);
     Self {
       font_context,
       image_cache: ImageCache::new(),
       viewport_size,
       viewport_scroll: Point::ZERO,
       nearest_positioned_cb,
-      nearest_fixed_cb: ContainingBlock::viewport(viewport_size),
+      viewport_fixed_cb,
+      nearest_fixed_cb: viewport_fixed_cb,
       flex_measure_cache,
       flex_layout_cache,
       flex_taffy_cache,
@@ -306,7 +309,7 @@ impl FormattingContextFactory {
     // Viewport-fixed elements are painted in absolute (viewport) coordinates, so keep the initial
     // containing block un-translated when the nearest fixed CB is the viewport. Fixed-containing
     // blocks established by ancestors (e.g. transforms) still need translation.
-    let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size());
+    let viewport_fixed_cb = self.viewport_fixed_cb();
     let translated_fixed_cb = if self.nearest_fixed_cb() == viewport_fixed_cb {
       viewport_fixed_cb
     } else {
@@ -346,6 +349,32 @@ impl FormattingContextFactory {
     }
     let mut clone = self.clone();
     clone.nearest_fixed_cb = cb;
+    clone.reset_cached_contexts();
+    clone
+  }
+
+  /// Returns a copy of this factory with an updated viewport fixed containing block size.
+  ///
+  /// The viewport fixed containing block controls how `position: fixed` elements are sized and
+  /// positioned when no ancestor establishes a fixed containing block (e.g. via transforms).
+  ///
+  /// The factory's viewport size (used for resolving viewport-relative units like `vw`/`vh`) is
+  /// unchanged; the provided size only affects the fixed containing block rectangle and
+  /// percentage bases for fixed positioning.
+  pub fn with_viewport_fixed_size(&self, size: crate::geometry::Size) -> Self {
+    use crate::geometry::Rect;
+
+    let cb = ContainingBlock::with_viewport(Rect::new(Point::ZERO, size), self.viewport_size);
+    if cb == self.viewport_fixed_cb {
+      return self.clone();
+    }
+
+    let mut clone = self.clone();
+    let previous_viewport_fixed = self.viewport_fixed_cb;
+    clone.viewport_fixed_cb = cb;
+    if clone.nearest_fixed_cb == previous_viewport_fixed {
+      clone.nearest_fixed_cb = cb;
+    }
     clone.reset_cached_contexts();
     clone
   }
@@ -475,6 +504,12 @@ impl FormattingContextFactory {
   /// Returns the nearest fixed containing block threaded into newly constructed contexts.
   pub fn nearest_fixed_cb(&self) -> ContainingBlock {
     self.nearest_fixed_cb
+  }
+
+  /// Returns the viewport fixed containing block (used for `position: fixed` when no ancestor
+  /// establishes a fixed containing block).
+  pub fn viewport_fixed_cb(&self) -> ContainingBlock {
+    self.viewport_fixed_cb
   }
 
   /// Creates the appropriate FormattingContext for a box

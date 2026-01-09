@@ -10604,6 +10604,8 @@ impl FastRender {
         needs_top_layer_state,
         base_width,
         base_height,
+        base_width,
+        base_height,
         media_type,
         options,
         viewport_scroll,
@@ -10626,6 +10628,8 @@ impl FastRender {
         needs_top_layer_state,
         candidate_width,
         candidate_height,
+        base_width,
+        base_height,
         media_type,
         options,
         viewport_scroll,
@@ -10640,7 +10644,7 @@ impl FastRender {
 
       let params = resolve_viewport_scrollbar_params(&artifacts.styled_tree);
       let viewport = artifacts.fragment_tree.viewport_size();
-      let bounds = artifacts.fragment_tree.content_size();
+      let bounds = artifacts.fragment_tree.root.scroll_overflow;
       let epsilon = 0.01;
       let overflows_x = bounds.min_x() < -epsilon || bounds.max_x() > viewport.width + epsilon;
       let overflows_y = bounds.min_y() < -epsilon || bounds.max_y() > viewport.height + epsilon;
@@ -10705,6 +10709,8 @@ impl FastRender {
     needs_top_layer_state: bool,
     width: u32,
     height: u32,
+    viewport_fixed_width: u32,
+    viewport_fixed_height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
     viewport_scroll: Point,
@@ -11327,6 +11333,10 @@ impl FastRender {
     // work during flex/grid measurement (Taffy) on real pages. The cache is run-scoped and
     // guarded by conservative eligibility rules.
     let mut config = LayoutConfig::for_viewport(layout_viewport);
+    config.viewport_fixed_containing_block = Size::new(
+      viewport_fixed_width.max(1) as f32,
+      viewport_fixed_height.max(1) as f32,
+    );
     config.fragmentation = manual_fragmentation;
     config.viewport_scroll = viewport_scroll;
     config.enable_cache = !toggles.truthy("FASTR_DISABLE_LAYOUT_CACHE");
@@ -11934,6 +11944,10 @@ impl FastRender {
         rec.stats.layout.layout_absolute_calls = Some(layout_profile_totals.absolute_calls);
       }
     }
+
+    // Viewport scrollbar gutter sizing decisions should be driven by scrollable overflow, which
+    // requires the overflow metadata pass (it also excludes viewport-fixed elements).
+    fragment_tree.ensure_scroll_metadata();
 
     let layout_rss_end = memory_sampling_enabled
       .then(crate::memory::current_rss_bytes)

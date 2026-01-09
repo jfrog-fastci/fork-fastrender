@@ -492,6 +492,14 @@ pub struct LayoutConfig {
   /// and defines the available space for layout.
   pub initial_containing_block: Size,
 
+  /// Size of the viewport fixed containing block (`position: fixed` relative to the viewport).
+  ///
+  /// Most of the time this is identical to [`Self::initial_containing_block`]. It can differ when
+  /// the layout viewport is reduced by UI chrome such as classic scrollbar gutters: normal-flow
+  /// layout should use the reduced viewport while viewport-fixed elements continue to be sized
+  /// against the full visual viewport.
+  pub viewport_fixed_containing_block: Size,
+
   /// Scroll offset applied to the viewport when evaluating viewport-dependent layout features.
   ///
   /// This is primarily used for `content-visibility:auto` layout skipping so that layout decisions
@@ -534,6 +542,7 @@ impl LayoutConfig {
   pub fn new(initial_containing_block: Size) -> Self {
     Self {
       initial_containing_block,
+      viewport_fixed_containing_block: initial_containing_block,
       viewport_scroll: Point::ZERO,
       enable_cache: false,
       enable_incremental: false,
@@ -589,6 +598,12 @@ impl LayoutConfig {
   /// Enables layout fan-out with the provided parallelism configuration.
   pub fn with_parallelism(mut self, parallelism: LayoutParallelism) -> Self {
     self.parallelism = parallelism;
+    self
+  }
+
+  /// Overrides the size of the viewport fixed containing block (`position: fixed`).
+  pub fn with_viewport_fixed_containing_block(mut self, size: Size) -> Self {
+    self.viewport_fixed_containing_block = size;
     self
   }
 
@@ -810,6 +825,7 @@ impl LayoutEngine {
       font_context.clone(),
       config.initial_containing_block,
     )
+    .with_viewport_fixed_size(config.viewport_fixed_containing_block)
     .with_image_cache(image_cache)
     .with_viewport_scroll(config.viewport_scroll)
     .with_parallelism(config.parallelism);

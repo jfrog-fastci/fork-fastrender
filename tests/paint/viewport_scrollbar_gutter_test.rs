@@ -52,3 +52,58 @@ fn viewport_reserves_scrollbar_gutter_for_body_overflow_auto() {
   );
 }
 
+#[test]
+fn viewport_fixed_elements_paint_into_scrollbar_gutter() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer should construct");
+
+  // When classic scrollbars reserve a gutter, `position: fixed` elements are still sized relative
+  // to the full visual viewport (including the gutter). This matches Chrome's behavior and is
+  // required for fixed headers to span the scrollbar gutter.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; }
+      html { background: rgb(0, 0, 255); }
+      body { background: rgb(255, 0, 0); overflow-y: auto; }
+      .banner {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 10px;
+        background: rgb(0, 255, 0);
+      }
+      .tall { height: 200px; }
+    </style>
+    <div class="banner"></div>
+    <div class="tall"></div>
+  "#;
+
+  let pixmap = renderer
+    .render_html(html, 100, 100)
+    .expect("render should succeed");
+
+  let inside = pixmap.pixel(10, 5).expect("inside pixel");
+  assert!(
+    inside.green() > 200 && inside.red() < 80 && inside.blue() < 80,
+    "expected fixed banner background (green) inside the viewport, got rgba({}, {}, {}, {})",
+    inside.red(),
+    inside.green(),
+    inside.blue(),
+    inside.alpha()
+  );
+
+  let gutter = pixmap.pixel(99, 5).expect("gutter pixel");
+  assert!(
+    gutter.green() > 200 && gutter.red() < 80 && gutter.blue() < 80,
+    "expected fixed banner to paint into scrollbar gutter, got rgba({}, {}, {}, {})",
+    gutter.red(),
+    gutter.green(),
+    gutter.blue(),
+    gutter.alpha()
+  );
+}
