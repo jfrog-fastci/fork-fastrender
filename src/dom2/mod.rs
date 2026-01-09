@@ -1525,7 +1525,7 @@ mod template_inert_tests {
   }
 
   #[test]
-  fn matches_selector_returns_false_for_elements_inside_inert_templates() {
+  fn matches_selector_works_for_inert_template_descendants_but_does_not_cross_boundary() {
     let root = crate::dom::parse_html(
       "<!doctype html><html><body>\
        <template><div id=inside></div></template>\
@@ -1540,8 +1540,12 @@ mod template_inert_tests {
       "inside node should be inside inert template subtree"
     );
     assert!(
-      !doc.matches_selector(inside, "#inside").unwrap(),
-      "elements inside inert templates should not match selectors against the document tree"
+      doc.matches_selector(inside, "#inside").unwrap(),
+      "matches_selector should still work when querying inert template descendants directly"
+    );
+    assert!(
+      !doc.matches_selector(inside, "body #inside").unwrap(),
+      "matches_selector must not cross inert <template> boundaries into the document tree"
     );
   }
 
