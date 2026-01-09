@@ -75,16 +75,28 @@ pub struct WptDomArgs {
   pub shard: Option<(usize, usize)>,
 
   /// Filter tests by id using a glob or regex (glob is attempted first).
-  #[arg(long, value_name = "PATTERN")]
+  #[arg(long, value_name = "GLOB|REGEX")]
   pub filter: Option<String>,
 
   /// Per-test timeout (milliseconds).
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, value_name = "MS")]
   pub timeout_ms: u64,
 
+  /// Per-test timeout (seconds).
+  ///
+  /// Overrides `--timeout-ms` (which defaults to 5000ms).
+  #[arg(long, value_name = "SECS")]
+  pub timeout_secs: Option<u64>,
+
   /// Timeout used when a test specifies `timeout=long` (milliseconds).
   #[arg(long, default_value_t = DEFAULT_LONG_TIMEOUT_MS, value_name = "MS")]
   pub long_timeout_ms: u64,
+
+  /// Timeout used when a test specifies `timeout=long` (seconds).
+  ///
+  /// Overrides `--long-timeout-ms` (which defaults to 30000ms).
+  #[arg(long, value_name = "SECS")]
+  pub long_timeout_secs: Option<u64>,
 
   /// Control which mismatches cause a non-zero exit code.
   #[arg(long, default_value_t = FailOn::New, value_enum)]
@@ -105,12 +117,33 @@ pub struct WptDomArgs {
 }
 
 pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
-  if args.timeout_ms == 0 {
-    bail!("--timeout-ms must be > 0");
-  }
-  if args.long_timeout_ms == 0 {
-    bail!("--long-timeout-ms must be > 0");
-  }
+  let timeout_ms = if let Some(secs) = args.timeout_secs {
+    if secs == 0 {
+      bail!("--timeout-secs must be > 0");
+    }
+    secs
+      .checked_mul(1000)
+      .context("--timeout-secs overflow (value too large)")?
+  } else {
+    if args.timeout_ms == 0 {
+      bail!("--timeout-ms must be > 0");
+    }
+    args.timeout_ms
+  };
+
+  let long_timeout_ms = if let Some(secs) = args.long_timeout_secs {
+    if secs == 0 {
+      bail!("--long-timeout-secs must be > 0");
+    }
+    secs
+      .checked_mul(1000)
+      .context("--long-timeout-secs overflow (value too large)")?
+  } else {
+    if args.long_timeout_ms == 0 {
+      bail!("--long-timeout-ms must be > 0");
+    }
+    args.long_timeout_ms
+  };
 
   let repo_root = crate::repo_root();
 
@@ -140,8 +173,8 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
     manifest_path: manifest_path.clone(),
     shard,
     filter,
-    timeout: Duration::from_millis(args.timeout_ms),
-    long_timeout: Duration::from_millis(args.long_timeout_ms),
+    timeout: Duration::from_millis(timeout_ms),
+    long_timeout: Duration::from_millis(long_timeout_ms),
     fail_on: args.fail_on,
     backend: args.backend.to_selection(),
   })
@@ -192,7 +225,11 @@ fn ensure_wpt_root(wpt_root: &Path) -> Result<()> {
   }
 
   bail!(
-    "WPT DOM corpus root {} is missing required directories (expected {}/ and {}/)",
+    "WPT DOM corpus root {} is missing required directories.\n\
+     Expected:\n\
+       - {}/\n\
+       - {}/\n\
+     If you are missing this corpus, check out the FastRender repo with the bundled `tests/wpt_dom/` directory.",
     wpt_root.display(),
     tests_dir.display(),
     resources_dir.display()

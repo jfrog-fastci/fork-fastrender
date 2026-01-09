@@ -13,10 +13,10 @@ fn js_wpt_dom_cli_runs_single_test_and_writes_report() {
       "wpt-dom",
       "--filter",
       "smoke/sync-pass.html",
-      "--timeout-ms",
-      "5000",
-      "--long-timeout-ms",
-      "5000",
+      "--timeout-secs",
+      "5",
+      "--long-timeout-secs",
+      "5",
       "--fail-on",
       "all",
       "--backend",
@@ -52,4 +52,3 @@ fn js_wpt_dom_cli_runs_single_test_and_writes_report() {
   assert_eq!(result.outcome, TestOutcome::Passed);
   assert!(!result.mismatched);
 }
-

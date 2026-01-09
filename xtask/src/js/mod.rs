@@ -19,7 +19,7 @@ enum JsCommand {
   /// Run the tc39/test262-parser-tests harness (via ecma-rs `test262`).
   #[command(name = "test262-parser", alias = "test262_parser")]
   Test262Parser(test262_parser::Test262ParserArgs),
-  /// Run the offline WPT DOM (`testharness.js`) subset.
+  /// Run the offline WPT DOM (`testharness.js`) corpus under `tests/wpt_dom/`.
   #[command(name = "wpt-dom")]
   WptDom(wpt_dom::WptDomArgs),
 }

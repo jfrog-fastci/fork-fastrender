@@ -6,11 +6,32 @@ focused on DOM and event-loop behavior.
 It is intended to be run by FastRender's `xtask` harness:
 
 ```bash
-scripts/cargo_agent.sh xtask js wpt-dom
+bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
+
+By default, this writes a JSON report to:
+
+```text
+target/js/wpt_dom.json
+```
+
+See [`docs/js_wpt_dom.md`](../../docs/js_wpt_dom.md) for the full workflow and key flags.
 
 The goal is to keep a **stable, fully offline on-disk corpus** with a predictable directory
 layout that can grow alongside FastRender's JS + DOM implementation.
+
+## Runner scope
+
+The current runner executes:
+
+- JavaScript `testharness.js` tests:
+  - `*.window.js`
+  - `*.any.js` (executed in a window-like realm)
+- HTML testharness files:
+  - `*.html` / `*.htm` / `*.xhtml`
+
+Other JS variants (worker/serviceworker/sharedworker) are discovered but currently reported as
+**skipped**.
 
 ## Directory layout
 

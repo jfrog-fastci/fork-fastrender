@@ -131,7 +131,9 @@ fn js_wpt_dom_help_mentions_flags() {
       && stdout.contains("--shard")
       && stdout.contains("--filter")
       && stdout.contains("--timeout-ms")
+      && stdout.contains("--timeout-secs")
       && stdout.contains("--long-timeout-ms")
+      && stdout.contains("--long-timeout-secs")
       && stdout.contains("--fail-on")
       && stdout.contains("--report")
       && stdout.contains("--backend"),
