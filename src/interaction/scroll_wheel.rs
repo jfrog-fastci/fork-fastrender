@@ -146,7 +146,18 @@ fn select_listbox_max_scroll_y(
     return None;
   }
 
-  let line_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
+  // Mirror paint-time `line-height: normal` resolution so wheel scrolling uses the same row
+  // geometry as listbox paint/hit-testing.
+  //
+  // Only resolve full font metrics when needed. (This keeps listbox wheel interaction fast in the
+  // common case where `line-height` is numeric/absolute, while still handling `normal` accurately.)
+  let metrics = if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+    super::resolve_scaled_metrics_for_interaction(style)
+  } else {
+    None
+  };
+  let line_height =
+    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size));
   if line_height <= 0.0 || !line_height.is_finite() {
     return None;
   }

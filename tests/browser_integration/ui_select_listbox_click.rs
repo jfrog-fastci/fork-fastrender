@@ -89,7 +89,11 @@ fn listbox_select_click_updates_selected_option_and_rerenders() {
   );
 
   // Click the second row (row index 1) in the listbox.
-  let click_pos = (10.0_f32, 45.0_f32);
+  //
+  // The browser UI listbox rows are painted using the computed line-height (not stretched to fill
+  // the full control height), so choose a y-coordinate that reliably lands inside the second row
+  // under the default UA line-height.
+  let click_pos = (10.0_f32, 30.0_f32);
   worker
     .ui_tx
     .send(support::pointer_down(tab_id, click_pos, PointerButton::Primary))

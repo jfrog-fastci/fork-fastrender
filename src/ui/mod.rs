@@ -1,5 +1,4 @@
 pub mod about_pages;
-pub mod app_state;
 pub mod browser_app;
 pub mod browser_tab_controller;
 pub mod browser_worker;
@@ -47,14 +46,6 @@ pub use render_worker::{
 };
 #[cfg(any(test, feature = "browser_ui"))]
 pub use render_worker::spawn_browser_worker_for_test;
-
-// `pixmap_texture` depends on the optional egui stack, so keep it behind the
-// `browser_ui` feature gate.
-#[cfg(feature = "browser_ui")]
-pub mod pixmap_texture;
-
-#[cfg(feature = "browser_ui")]
-pub use pixmap_texture::PageTexture;
 
 #[cfg(feature = "browser_ui")]
 pub mod wgpu_pixmap_texture;

@@ -883,10 +883,19 @@ fn apply_select_listbox_click(
   let viewport_size = fragment_tree.viewport_size();
   let content_rect = content_rect_for_border_rect(select_rect, style, viewport_size);
   // Keep the click mapping consistent with the select listbox painter:
-  // - base row height from `line-height`,
+  // - base row height from `line-height` (mirroring paint-time `line-height: normal` resolution),
   // - but when the listbox is explicitly taller than its intrinsic size, stretch rows so exactly
   //   `size` rows fill the content rect (avoids dead whitespace and keeps tests deterministic).
-  let line_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
+  //
+  // Only resolve full font metrics when needed. (This keeps listbox interaction fast in the
+  // common case where `line-height` is numeric/absolute, while still handling `normal` accurately.)
+  let metrics = if matches!(style.line_height, crate::style::types::LineHeight::Normal) {
+    super::resolve_scaled_metrics_for_interaction(style)
+  } else {
+    None
+  };
+  let line_height =
+    compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport_size));
   if line_height <= 0.0 || !line_height.is_finite() {
     return false;
   }

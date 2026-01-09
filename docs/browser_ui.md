@@ -101,9 +101,7 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - Headless worker tests exercise the same `UiToWorker`/`WorkerToUi` protocol via the browser UI
     worker loop (`spawn_ui_worker` in `render_worker.rs`).
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
-  - Pixmap → egui texture helpers:
-    - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
-    - [`src/ui/wgpu_pixmap_texture.rs`](../src/ui/wgpu_pixmap_texture.rs) (fast wgpu upload path)
+  - Pixmap → egui texture helpers: [`src/ui/wgpu_pixmap_texture.rs`](../src/ui/wgpu_pixmap_texture.rs)
 - Renderer APIs used/expected to be used by the UI:
   - Public API surface: [`src/api.rs`](../src/api.rs) (`FastRender`, `RenderOptions`,
     `PreparedDocument`, `PreparedPaintOptions`)
