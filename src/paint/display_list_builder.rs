@@ -38,7 +38,9 @@ use crate::geometry::Size;
 use crate::image_loader::ImageCache;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem as InlineTextItem;
-use crate::layout::utils::{resolve_font_relative_length, resolve_scrollbar_width};
+use crate::layout::utils::{
+  resolve_font_relative_length, resolve_length_with_percentage_metrics, resolve_scrollbar_width,
+};
 use crate::math::{layout_mathml, MathFragment};
 use crate::paint::clip_path::resolve_clip_path;
 use crate::paint::display_list::BlendMode;
@@ -4405,18 +4407,27 @@ impl DisplayListBuilder {
     viewport: (f32, f32),
     font_ctx: &FontContext,
   ) -> Option<f32> {
-    let resolved = match len.unit {
-      LengthUnit::Percent => None,
-      unit if unit.is_font_relative() => Some(resolve_font_relative_length(*len, style, font_ctx)),
-      unit if unit.is_viewport_relative() => len.resolve_with_viewport(viewport.0, viewport.1),
-      unit if unit.is_absolute() => Some(len.to_px()),
-      _ => None,
-    }?;
-    if resolved.is_finite() {
-      Some(resolved)
-    } else {
-      None
+    if len.has_percentage() {
+      return None;
     }
+
+    if len.unit.is_container_query_relative()
+      || len.calc.is_some_and(|calc| calc.has_container_query_relative())
+    {
+      return None;
+    }
+
+    let resolved = resolve_length_with_percentage_metrics(
+      *len,
+      None,
+      Size::new(viewport.0, viewport.1),
+      style.font_size,
+      style.root_font_size,
+      Some(style),
+      Some(font_ctx),
+    )?;
+
+    resolved.is_finite().then_some(resolved)
   }
 
   fn compute_background_size(

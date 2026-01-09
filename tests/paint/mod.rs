@@ -3,6 +3,7 @@
 mod util;
 
 mod avif_test;
+mod backdrop_filter_clip_and_radius;
 mod backdrop_filter_determinism_regression;
 mod backdrop_filter_filter_interaction_test;
 mod backdrop_filter_mask_image_test;
@@ -42,6 +43,7 @@ mod display_list_renderer_test;
 mod display_list_skip_ink_test;
 mod display_list_svg_filter_defs_backend;
 mod display_list_test;
+mod filter_calc_length;
 mod filter_cache_regressions;
 mod filter_premultiplication;
 mod filter_url_svg_display_list;

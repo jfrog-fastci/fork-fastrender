@@ -39,7 +39,7 @@ use crate::geometry::Size;
 use crate::image_loader::ImageCache;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
-use crate::layout::utils::resolve_font_relative_length;
+use crate::layout::utils::{resolve_font_relative_length, resolve_length_with_percentage_metrics};
 use crate::math::MathFragment;
 use crate::paint::blur::apply_gaussian_blur;
 use crate::paint::canvas::draw_pixmap_with_plus_blend;
@@ -12166,13 +12166,27 @@ fn resolve_filter_length(
   viewport: (f32, f32),
   font_ctx: &FontContext,
 ) -> Option<f32> {
-  match len.unit {
-    LengthUnit::Percent => None,
-    unit if unit.is_font_relative() => Some(resolve_font_relative_length(*len, style, font_ctx)),
-    unit if unit.is_viewport_relative() => len.resolve_with_viewport(viewport.0, viewport.1),
-    unit if unit.is_absolute() => Some(len.to_px()),
-    _ => None,
+  if len.has_percentage() {
+    return None;
   }
+
+  if len.unit.is_container_query_relative()
+    || len.calc.is_some_and(|calc| calc.has_container_query_relative())
+  {
+    return None;
+  }
+
+  let resolved = resolve_length_with_percentage_metrics(
+    *len,
+    None,
+    Size::new(viewport.0, viewport.1),
+    style.font_size,
+    style.root_font_size,
+    Some(style),
+    Some(font_ctx),
+  )?;
+
+  resolved.is_finite().then_some(resolved)
 }
 
 fn apply_filters(

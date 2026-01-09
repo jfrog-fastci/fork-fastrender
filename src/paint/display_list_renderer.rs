@@ -1311,6 +1311,31 @@ where
     return Err(err);
   }
 
+  if let Some(mask) = clip_mask {
+    let region_origin_dest = (
+      clamped_x as i32 - dest_origin_in_src.0,
+      clamped_y as i32 - dest_origin_in_src.1,
+    );
+    match apply_mask_with_offset(&mut region, region_origin_dest, mask, clip_origin) {
+      Ok(applied) => {
+        if !applied {
+          scratch.region = Some(region);
+          BACKDROP_FILTER_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+          });
+          return Ok(());
+        }
+      }
+      Err(err) => {
+        scratch.region = Some(region);
+        BACKDROP_FILTER_SCRATCH.with(|cell| {
+          *cell.borrow_mut() = scratch;
+        });
+        return Err(err);
+      }
+    }
+  }
+
   let local_bbox = Rect::from_xywh(
     bounds_in_src.x() - clamped_x as f32,
     bounds_in_src.y() - clamped_y as f32,
