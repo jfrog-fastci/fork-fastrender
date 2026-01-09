@@ -607,20 +607,25 @@ mod tests {
   fn build_script_element_spec_ignores_inert_or_foreign_scripts() {
     let mut doc = Document::new(QuirksMode::NoQuirks);
 
-    let template = doc.create_element("template", "");
+    // `dom2::Document` enforces the DOM hierarchy rules for `Document` nodes (only one element child).
+    // Create an `<html>` documentElement up front, then attach our test elements underneath it.
+    let html = doc.create_element("html", HTML_NAMESPACE);
+    doc.append_child(doc.root(), html).expect("append_child");
+
+    let template = doc.create_element("template", HTML_NAMESPACE);
     doc.node_mut(template).inert_subtree = true;
-    let inert_script = doc.create_element("script", "");
+    let inert_script = doc.create_element("script", HTML_NAMESPACE);
     doc
       .set_attribute(inert_script, "src", "inert.js")
       .expect("set_attribute");
     doc.append_child(template, inert_script).expect("append_child");
-    doc.append_child(doc.root(), template).expect("append_child");
+    doc.append_child(html, template).expect("append_child");
 
     let foreign_script = doc.create_element("script", SVG_NAMESPACE);
     doc
       .set_attribute(foreign_script, "src", "foreign.js")
       .expect("set_attribute");
-    doc.append_child(doc.root(), foreign_script).expect("append_child");
+    doc.append_child(html, foreign_script).expect("append_child");
 
     let pipeline = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
     let base_url = Some("https://ex/doc.html".to_string());
@@ -812,6 +817,20 @@ mod tests {
     p.finish_input()?;
     p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
     assert!(p.state.borrow().parsing_finished());
+    Ok(())
+  }
+
+  #[test]
+  fn module_scripts_are_ignored_by_classic_pipeline() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script type="module" src="/a.js"></script><script>INLINE</script>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    // The classic pipeline only handles classic scripts; module scripts must be ignored.
+    assert!(host.started_fetches.is_empty());
+    assert_eq!(host.log, vec!["INLINE".to_string(), "mINLINE".to_string()]);
     Ok(())
   }
 }
