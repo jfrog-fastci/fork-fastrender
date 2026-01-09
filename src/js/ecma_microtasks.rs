@@ -12,7 +12,7 @@
 //! [`EventLoop::queue_microtask`]. As long as the embedding performs microtask checkpoints after
 //! script execution (see `script_scheduler`), `vm-js` jobs will be drained at the right times.
 
-use crate::error::{Error, Result};
+use crate::error::Error;
 
 use super::event_loop::EventLoop;
 
@@ -90,67 +90,15 @@ impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
   }
 }
 
-/// Adapter implementing `vm-js`'s lower-level [`vm_js::JobQueue`] API (used by Promise jobs and
-/// async/await continuations) on top of a FastRender [`EventLoop`]'s microtask queue.
-///
-/// This version is generic over the runtime state type `R`; for FastRender we typically set
-/// `R = Host` so jobs can directly mutate the host state.
-///
-/// ## Error handling
-///
-/// `vm-js`'s [`vm_js::JobQueue`] is infallible, but FastRender's [`EventLoop::queue_microtask`] is
-/// fallible due to queue limits. This adapter mirrors [`VmJsHostHooks`]' error strategy: it stores
-/// the first enqueue error and callers can retrieve it via [`VmJsJobQueue::take_error`].
-pub struct VmJsJobQueue<'a, Host: 'static> {
-  event_loop: &'a mut EventLoop<Host>,
-  enqueue_error: Option<Error>,
-}
-
-impl<'a, Host: 'static> VmJsJobQueue<'a, Host> {
-  pub fn new(event_loop: &'a mut EventLoop<Host>) -> Self {
-    Self {
-      event_loop,
-      enqueue_error: None,
-    }
-  }
-
-  pub fn take_error(&mut self) -> Option<Error> {
-    self.enqueue_error.take()
-  }
-}
-
-impl<Host: 'static> vm_js::JobQueue<Host> for VmJsJobQueue<'_, Host> {
-  fn enqueue_microtask(&mut self, job: vm_js::MicrotaskJob<Host>) {
-    if self.enqueue_error.is_some() {
-      return;
-    }
-
-    let result = self.event_loop.queue_microtask(move |host, event_loop| {
-      // Each job invocation receives its own queue adapter that can enqueue additional microtasks.
-      // Any enqueue failure is surfaced as the microtask's error result so the event loop stops.
-      let mut inner = VmJsJobQueue::new(event_loop);
-      job(host, &mut inner).map_err(|err| Error::Other(format!("vm-js microtask failed: {err}")))?;
-      if let Some(err) = inner.take_error() {
-        return Err(err);
-      }
-      Ok(())
-    });
-
-    if let Err(err) = result {
-      self.enqueue_error = Some(err);
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, TaskSource};
+  use crate::js::event_loop::{RunUntilIdleOutcome, TaskSource};
   use std::sync::{Arc, Mutex};
-  use vm_js::{JobQueue as _, VmHostHooks as _};
+  use vm_js::VmHostHooks as _;
 
   #[test]
-  fn vm_js_promise_jobs_run_after_a_task_and_before_the_next_task() -> Result<()> {
+  fn vm_js_promise_jobs_run_after_a_task_and_before_the_next_task() -> crate::Result<()> {
     #[derive(Clone)]
     struct Host {
       log: Arc<Mutex<Vec<&'static str>>>,
@@ -204,70 +152,5 @@ mod tests {
       &["task1", "job1", "job2", "task2"]
     );
     Ok(())
-  }
-
-  #[test]
-  fn vm_js_microtasks_enqueued_by_microtasks_run_in_the_same_checkpoint() -> Result<()> {
-    #[derive(Default)]
-    struct Host {
-      log: Vec<&'static str>,
-    }
-
-    let mut host = Host::default();
-    let mut event_loop = EventLoop::<Host>::new();
-
-    let mut queue = VmJsJobQueue::new(&mut event_loop);
-    queue.enqueue_microtask(Box::new(|host, queue| {
-      host.log.push("job1");
-      queue.enqueue_microtask(Box::new(|host, _queue| {
-        host.log.push("job2");
-        Ok(())
-      }));
-      Ok(())
-    }));
-    assert!(queue.take_error().is_none());
-    drop(queue);
-
-    event_loop.perform_microtask_checkpoint(&mut host)?;
-    assert_eq!(host.log, vec!["job1", "job2"]);
-    Ok(())
-  }
-
-  fn self_requeue_job() -> vm_js::MicrotaskJob<Host> {
-    Box::new(|host, queue| {
-      host.count += 1;
-      queue.enqueue_microtask(self_requeue_job());
-      Ok(())
-    })
-  }
-
-  #[derive(Default)]
-  struct Host {
-    count: usize,
-  }
-
-  #[test]
-  fn vm_js_infinite_microtask_chains_are_stopped_by_event_loop_run_limits() {
-    let mut host = Host::default();
-    let mut event_loop = EventLoop::<Host>::new();
-
-    let mut queue = VmJsJobQueue::new(&mut event_loop);
-    queue.enqueue_microtask(self_requeue_job());
-    assert!(queue.take_error().is_none());
-    drop(queue);
-
-    let result = event_loop.run_until_idle(
-      &mut host,
-      RunLimits {
-        max_tasks: 10,
-        max_microtasks: 5,
-        max_wall_time: None,
-      },
-    );
-    assert!(matches!(
-      result,
-      Ok(RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxMicrotasks { .. }))
-    ));
-    assert_eq!(host.count, 5);
   }
 }

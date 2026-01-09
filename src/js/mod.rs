@@ -39,7 +39,7 @@ pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
   TaskSource, TimerId,
 };
-pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext, VmJsJobQueue};
+pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
 };
