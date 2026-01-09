@@ -878,14 +878,13 @@ mod tests {
           Value::Null => CapturedConsoleArg::Null,
           Value::Bool(b) => CapturedConsoleArg::Bool(b),
           Value::Number(n) => CapturedConsoleArg::Number(n),
-          Value::BigInt(b) => CapturedConsoleArg::String(b.to_decimal_string()),
+          Value::BigInt(_) => CapturedConsoleArg::BigInt,
           Value::String(s) => CapturedConsoleArg::String(
             heap
               .get_string(s)
               .expect("string handle should be valid")
               .to_utf8_lossy(),
           ),
-          Value::BigInt(_) => CapturedConsoleArg::BigInt,
           Value::Object(_) => CapturedConsoleArg::Object,
           Value::Symbol(_) => CapturedConsoleArg::Symbol,
         })
