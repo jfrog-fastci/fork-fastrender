@@ -66,6 +66,11 @@ Work happens in two repos:
 
 Inside the submodule, make your change, commit it, and push it to GitHub.
 
+CI clones `ecma-rs` from GitHub and checks out the recorded gitlink SHA. If you bump FastRender to a
+SHA that exists only locally (or is otherwise unreachable from any ref in the remote), CI will fail
+with an error like `upload-pack: not our ref <sha>`. Always **push `ecma-rs` first** before
+committing the pointer bump in FastRender.
+
 Policy:
 
 - Prefer **rebase**, not merge, when syncing with upstream.
@@ -81,6 +86,32 @@ checked-out SHA changed). Record that pointer update by committing it in FastRen
 git add engines/ecma-rs
 git commit -m "chore(js): bump ecma-rs"
 ```
+
+## CI sanity check before landing an `ecma-rs` bump (required)
+
+FastRender CI always runs:
+
+1. `git submodule update --init engines/ecma-rs`
+2. a full `--all-features` build + test suite
+
+Before landing a submodule pointer bump, validate the same way **from a clean submodule checkout**
+(this catches “not our ref” issues and integration compile breaks):
+
+```bash
+# Simulate a clean clone (safe after you've committed + pushed any ecma-rs changes).
+git submodule deinit -f engines/ecma-rs
+rm -rf engines/ecma-rs
+git submodule update --init engines/ecma-rs
+
+# FastRender integration checks (scoped; use the agent wrapper).
+bash scripts/cargo_agent.sh check --all-features -p fastrender
+bash scripts/cargo_agent.sh build --all-features --bin browser
+bash scripts/cargo_agent.sh test --all-features -p fastrender --test browser_integration_tests
+```
+
+If `git submodule update` fails with `not our ref`, the recorded SHA is not fetchable from the
+submodule remote. Fix by pushing the `ecma-rs` commit (or tagging/branching it) and then bumping the
+pointer again.
 
 ## Running `ecma-rs` commands safely (resource limits)
 
