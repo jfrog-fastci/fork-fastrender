@@ -414,6 +414,40 @@ fn repaint_with_animation_composition_add_combines_box_shadow() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_animation_composition_add_combines_filter_drop_shadow() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        filter: none;
+        animation-name: f1, f2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-composition: add;
+      }
+      @keyframes f1 { from { filter: drop-shadow(1px 0px 0px rgb(0, 0, 0)); } to { filter: drop-shadow(1px 0px 0px rgb(0, 0, 0)); } }
+      @keyframes f2 { from { filter: drop-shadow(1px 0px 0px rgb(0, 0, 0)); } to { filter: drop-shadow(1px 0px 0px rgb(0, 0, 0)); } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(40, 40))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  // Two 1px drop-shadow offsets should add to a 2px offset.
+  assert_eq!(pixel(&mid, 15, 15), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid, 21, 15), (0, 0, 0, 255));
+  assert_eq!(pixel(&mid, 22, 15), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_translate_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
@@ -735,6 +769,45 @@ fn repaint_with_animation_composition_accumulate_accumulates_box_shadow_iteratio
       @keyframes shadow {
         from { box-shadow: 0px 0px 0px 0px rgb(0, 0, 0); }
         to { box-shadow: 10px 0px 0px 0px rgb(0, 0, 0); }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(40, 40))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // At t=1500ms we are halfway through the second iteration: 5px + (10px - 0px) = 15px.
+  assert_eq!(pixel(&mid_second, 25, 15), (0, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 30, 15), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_accumulate_accumulates_filter_drop_shadow_iterations(
+) -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 5px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        filter: drop-shadow(0px 0px 0px rgb(0, 0, 0));
+        animation-name: shadow;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes shadow {
+        from { filter: drop-shadow(0px 0px 0px rgb(0, 0, 0)); }
+        to { filter: drop-shadow(10px 0px 0px rgb(0, 0, 0)); }
       }
     </style>
     <div class="box"></div>

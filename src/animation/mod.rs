@@ -626,6 +626,170 @@ fn resolved_filters_from_functions(filters: &[FilterFunction]) -> Vec<ResolvedFi
     .collect()
 }
 
+fn filter_identity_like(filter: &ResolvedFilter) -> Option<ResolvedFilter> {
+  Some(match filter {
+    ResolvedFilter::Blur(_) => ResolvedFilter::Blur(0.0),
+    ResolvedFilter::DropShadow(shadow) => ResolvedFilter::DropShadow(ResolvedShadow {
+      offset_x: 0.0,
+      offset_y: 0.0,
+      blur: 0.0,
+      spread: 0.0,
+      color: Rgba::new(shadow.color.r, shadow.color.g, shadow.color.b, 0.0),
+    }),
+    _ => return None,
+  })
+}
+
+fn add_resolved_filter_list(a: &[ResolvedFilter], b: &[ResolvedFilter]) -> Option<Vec<ResolvedFilter>> {
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    match (a.get(idx), b.get(idx)) {
+      (Some(fa), Some(fb)) => {
+        let next = match (fa, fb) {
+          (ResolvedFilter::Blur(a), ResolvedFilter::Blur(b)) => {
+            if !a.is_finite() || !b.is_finite() {
+              return None;
+            }
+            ResolvedFilter::Blur((a + b).max(0.0))
+          }
+          (ResolvedFilter::DropShadow(a), ResolvedFilter::DropShadow(b)) => {
+            if !a.offset_x.is_finite()
+              || !a.offset_y.is_finite()
+              || !a.blur.is_finite()
+              || !a.spread.is_finite()
+              || !b.offset_x.is_finite()
+              || !b.offset_y.is_finite()
+              || !b.blur.is_finite()
+              || !b.spread.is_finite()
+              || !a.color.a.is_finite()
+              || !b.color.a.is_finite()
+            {
+              return None;
+            }
+            ResolvedFilter::DropShadow(ResolvedShadow {
+              offset_x: a.offset_x + b.offset_x,
+              offset_y: a.offset_y + b.offset_y,
+              blur: (a.blur + b.blur).max(0.0),
+              spread: a.spread + b.spread,
+              color: add_color(a.color, b.color),
+            })
+          }
+          _ => return None,
+        };
+        out.push(next);
+      }
+      (Some(fa), None) => out.push(fa.clone()),
+      (None, Some(fb)) => out.push(fb.clone()),
+      (None, None) => {}
+    }
+  }
+  Some(out)
+}
+
+fn add_filter_list(a: &[FilterFunction], b: &[FilterFunction]) -> Option<Vec<FilterFunction>> {
+  let ra = resolved_filters_from_functions(a);
+  let rb = resolved_filters_from_functions(b);
+  let combined = add_resolved_filter_list(&ra, &rb)?;
+  Some(resolved_filters_to_functions(&combined))
+}
+
+fn accumulate_resolved_filter_list(
+  current: &[ResolvedFilter],
+  start: &[ResolvedFilter],
+  end: &[ResolvedFilter],
+  iteration: u64,
+) -> Option<Vec<ResolvedFilter>> {
+  let max_len = current.len().max(start.len()).max(end.len());
+  let iter = iteration as f32;
+  let iter_i = iteration as i128;
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    let cur_entry = if let Some(f) = current.get(idx) {
+      f.clone()
+    } else if let Some(f) = start.get(idx) {
+      filter_identity_like(f)?
+    } else if let Some(f) = end.get(idx) {
+      filter_identity_like(f)?
+    } else {
+      continue;
+    };
+    let start_entry = if let Some(f) = start.get(idx) {
+      f.clone()
+    } else if let Some(f) = end.get(idx) {
+      filter_identity_like(f)?
+    } else {
+      continue;
+    };
+    let end_entry = if let Some(f) = end.get(idx) {
+      f.clone()
+    } else if let Some(f) = start.get(idx) {
+      filter_identity_like(f)?
+    } else {
+      continue;
+    };
+
+    let next = match (&cur_entry, &start_entry, &end_entry) {
+      (ResolvedFilter::Blur(cur), ResolvedFilter::Blur(start), ResolvedFilter::Blur(end)) => {
+        if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+          return None;
+        }
+        let delta = end - start;
+        ResolvedFilter::Blur((cur + iter * delta).max(0.0))
+      }
+      (
+        ResolvedFilter::DropShadow(cur),
+        ResolvedFilter::DropShadow(start),
+        ResolvedFilter::DropShadow(end),
+      ) => {
+        if !cur.offset_x.is_finite()
+          || !cur.offset_y.is_finite()
+          || !cur.blur.is_finite()
+          || !cur.spread.is_finite()
+          || !start.offset_x.is_finite()
+          || !start.offset_y.is_finite()
+          || !start.blur.is_finite()
+          || !start.spread.is_finite()
+          || !end.offset_x.is_finite()
+          || !end.offset_y.is_finite()
+          || !end.blur.is_finite()
+          || !end.spread.is_finite()
+          || !cur.color.a.is_finite()
+          || !start.color.a.is_finite()
+          || !end.color.a.is_finite()
+        {
+          return None;
+        }
+
+        let r = clamp_color_channel_i128(
+          cur.color.r as i128 + iter_i * (end.color.r as i128 - start.color.r as i128),
+        );
+        let g = clamp_color_channel_i128(
+          cur.color.g as i128 + iter_i * (end.color.g as i128 - start.color.g as i128),
+        );
+        let b = clamp_color_channel_i128(
+          cur.color.b as i128 + iter_i * (end.color.b as i128 - start.color.b as i128),
+        );
+        let alpha = (cur.color.a + iter * (end.color.a - start.color.a)).clamp(0.0, 1.0);
+        if !alpha.is_finite() {
+          return None;
+        }
+
+        ResolvedFilter::DropShadow(ResolvedShadow {
+          offset_x: cur.offset_x + iter * (end.offset_x - start.offset_x),
+          offset_y: cur.offset_y + iter * (end.offset_y - start.offset_y),
+          blur: (cur.blur + iter * (end.blur - start.blur)).max(0.0),
+          spread: cur.spread + iter * (end.spread - start.spread),
+          color: Rgba::new(r, g, b, alpha),
+        })
+      }
+      _ => return None,
+    };
+    out.push(next);
+  }
+  Some(out)
+}
+
 fn resolve_background_position_component(
   comp: &BackgroundPositionComponent,
   axis_base: f32,
@@ -5154,6 +5318,12 @@ fn apply_additive_animation_value(
     (AnimatedValue::TextShadow(under), AnimatedValue::TextShadow(effect)) => {
       add_text_shadow_list(under, effect).map(AnimatedValue::TextShadow)
     }
+    (AnimatedValue::Filter(under), AnimatedValue::Filter(effect)) => {
+      add_filter_list(under, effect).map(AnimatedValue::Filter)
+    }
+    (AnimatedValue::BackdropFilter(under), AnimatedValue::BackdropFilter(effect)) => {
+      add_filter_list(under, effect).map(AnimatedValue::BackdropFilter)
+    }
     _ => None,
   };
 
@@ -5620,6 +5790,28 @@ fn accumulate_iteration_value(
         });
       }
       Some(AnimatedValue::TextShadow(out))
+    }
+    (AnimatedValue::Filter(cur), AnimatedValue::Filter(start), AnimatedValue::Filter(end)) => {
+      let rc = resolved_filters_from_functions(cur);
+      let rs = resolved_filters_from_functions(start);
+      let re = resolved_filters_from_functions(end);
+      let accumulated = accumulate_resolved_filter_list(&rc, &rs, &re, iteration)?;
+      Some(AnimatedValue::Filter(resolved_filters_to_functions(
+        &accumulated,
+      )))
+    }
+    (
+      AnimatedValue::BackdropFilter(cur),
+      AnimatedValue::BackdropFilter(start),
+      AnimatedValue::BackdropFilter(end),
+    ) => {
+      let rc = resolved_filters_from_functions(cur);
+      let rs = resolved_filters_from_functions(start);
+      let re = resolved_filters_from_functions(end);
+      let accumulated = accumulate_resolved_filter_list(&rc, &rs, &re, iteration)?;
+      Some(AnimatedValue::BackdropFilter(resolved_filters_to_functions(
+        &accumulated,
+      )))
     }
     (
       AnimatedValue::Translate(cur),
