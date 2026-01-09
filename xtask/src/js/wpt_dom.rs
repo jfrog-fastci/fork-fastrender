@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
-use conformance_harness::{write_json_report, FailOn as HarnessFailOn, Shard};
+use conformance_harness::{write_json_report, FailOn, Shard};
 use js_wpt_dom_runner::{run_suite, BackendSelection, SuiteConfig};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -35,32 +35,33 @@ impl WptDomBackend {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
-pub enum FailOn {
-  /// Fail on any mismatch (including expected/xfail/flaky).
-  All,
-  /// Fail only on unexpected mismatches (default).
-  New,
-  /// Never fail based on mismatches (always exit 0).
-  None,
+pub enum WptDomSuite {
+  /// Run the full offline WPT DOM corpus under `tests/wpt_dom/tests`.
+  Curated,
+  /// Run a minimal smoke subset (`smoke/**`).
+  Smoke,
 }
 
-impl FailOn {
-  fn to_harness(self) -> HarnessFailOn {
+impl WptDomSuite {
+  fn default_filter(self) -> Option<&'static str> {
     match self {
-      FailOn::All => HarnessFailOn::All,
-      FailOn::New => HarnessFailOn::New,
-      FailOn::None => HarnessFailOn::None,
+      Self::Curated => None,
+      Self::Smoke => Some("smoke/**"),
     }
   }
 }
 
 #[derive(Args, Debug)]
 pub struct WptDomArgs {
-  /// Root directory of the offline WPT DOM corpus (contains `tests/` + `resources/`).
+  /// Select which preset suite to run.
+  #[arg(long, value_enum, default_value_t = WptDomSuite::Curated)]
+  pub suite: WptDomSuite,
+
+  /// Root directory containing the offline WPT DOM corpus (`tests/`, `resources/`, expectations).
   #[arg(long, value_name = "DIR", default_value = DEFAULT_WPT_ROOT)]
   pub wpt_root: PathBuf,
 
-  /// Expectations manifest (pass/skip/xfail/flaky).
+  /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
   #[arg(long, value_name = "PATH", default_value = DEFAULT_MANIFEST_PATH)]
   pub manifest: PathBuf,
 
@@ -68,8 +69,7 @@ pub struct WptDomArgs {
   #[arg(long, value_parser = crate::parse_shard)]
   pub shard: Option<(usize, usize)>,
 
-  /// Filter tests by id. If the pattern parses as a glob, use glob matching; otherwise treat it as
-  /// a regex.
+  /// Filter tests by id using a glob or regex (glob is attempted first).
   #[arg(long, value_name = "PATTERN")]
   pub filter: Option<String>,
 
@@ -77,7 +77,7 @@ pub struct WptDomArgs {
   #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, value_name = "MS")]
   pub timeout_ms: u64,
 
-  /// Per-test timeout used for `// META: timeout=long` tests (milliseconds).
+  /// Timeout used when a test specifies `timeout=long` (milliseconds).
   #[arg(long, default_value_t = DEFAULT_LONG_TIMEOUT_MS, value_name = "MS")]
   pub long_timeout_ms: u64,
 
@@ -125,20 +125,22 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   let shard = args
     .shard
     .map(|(index, total)| Shard { index, total });
+  let filter = args
+    .filter
+    .clone()
+    .or_else(|| args.suite.default_filter().map(ToString::to_string));
 
-  let fail_on = args.fail_on.to_harness();
-  let backend = args.backend.to_selection();
+  println!("Running WPT DOM suite ({:?})...", args.suite);
 
-  println!("Running WPT DOM suite...");
   let report = run_suite(&SuiteConfig {
     wpt_root: wpt_root.clone(),
     manifest_path: manifest_path.clone(),
     shard,
-    filter: args.filter.clone(),
+    filter,
     timeout: Duration::from_millis(args.timeout_ms),
     long_timeout: Duration::from_millis(args.long_timeout_ms),
-    fail_on,
-    backend,
+    fail_on: args.fail_on,
+    backend: args.backend.to_selection(),
   })
   .context("run WPT DOM suite")?;
 
@@ -160,9 +162,9 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
   }
   println!("JSON report: {}", report_path.display());
 
-  if report.summary.should_fail(fail_on) {
+  if report.summary.should_fail(args.fail_on) {
     bail!(
-      "WPT DOM suite reported mismatches (fail-on={:?}); report: {}",
+      "WPT DOM suite did not satisfy fail-on={:?}; see {}",
       args.fail_on,
       report_path.display()
     );
@@ -185,6 +187,7 @@ fn ensure_wpt_root(wpt_root: &Path) -> Result<()> {
   if tests_dir.is_dir() && resources_dir.is_dir() {
     return Ok(());
   }
+
   bail!(
     "WPT DOM corpus root {} is missing required directories (expected {}/ and {}/)",
     wpt_root.display(),

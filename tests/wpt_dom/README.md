@@ -3,8 +3,9 @@
 This directory is a **small, curated, fully offline** subset of Web Platform Tests (WPT)
 focused on DOM and event-loop behavior.
 
-It is intended to be run by `cargo xtask js wpt-dom`. The goal is to keep the **directory
-layout + fixtures** stable so the runner can be developed against a predictable on-disk corpus.
+It is intended to be run by `cargo xtask js wpt-dom`. The goal is to keep a **stable, fully
+offline on-disk corpus** with a predictable directory layout that can grow alongside
+FastRender's JS + DOM implementation.
 
 ## Directory layout
 
@@ -99,5 +100,5 @@ Payload shape (high level):
 Upstream WPT uses `resources/testharness.js` + `resources/testharnessreport.js`.
 
 In this repo these files are currently a **minimal compatible subset** sufficient for the
-`tests/smoke/` corpus. Once the `xtask js wpt-dom` runner exists, we should replace these
-with verbatim upstream copies and pin the upstream commit hash here.
+`tests/smoke/` corpus. As the WPT DOM suite grows, we should replace these with verbatim
+upstream copies and pin the upstream commit hash here.

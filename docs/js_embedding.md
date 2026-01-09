@@ -273,14 +273,20 @@ Notes:
 
 ### `cargo xtask js wpt-dom` (Web API behavior)
 
-There is an in-tree minimal WPT DOM runner:
+FastRender includes a minimal offline WPT (`testharness.js`) runner:
 
 - `crates/js-wpt-dom-runner`
 
-It is wired up as an xtask subcommand:
+Run the full curated corpus under `tests/wpt_dom/tests`:
 
 ```bash
 scripts/cargo_agent.sh xtask js wpt-dom
+```
+
+Run only the smoke subset:
+
+```bash
+scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
 ```
 
 ### (Future) `fetch_and_render --js` (page execution)

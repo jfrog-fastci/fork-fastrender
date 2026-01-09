@@ -86,7 +86,11 @@ pub fn run_test262_parser(args: Test262ParserArgs) -> Result<()> {
     .arg("--report-path")
     .arg(&report_path)
     .arg("--fail-on")
-    .arg(args.fail_on.as_cli_value());
+    .arg(match args.fail_on {
+      FailOn::All => "all",
+      FailOn::New => "new",
+      FailOn::None => "none",
+    });
 
   if let Some((idx, total)) = args.shard {
     cmd.arg("--shard").arg(format!("{idx}/{total}"));

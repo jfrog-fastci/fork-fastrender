@@ -120,3 +120,46 @@ exit 0
     report_path.display()
   );
 }
+
+#[test]
+fn js_wpt_dom_smoke_writes_report() {
+  let temp = tempdir().expect("tempdir");
+  let report_path = temp.path().join("wpt_dom.json");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "js",
+      "wpt-dom",
+      "--suite",
+      "smoke",
+      "--fail-on",
+      "none",
+      "--report",
+    ])
+    .arg(&report_path)
+    .output()
+    .expect("run xtask js wpt-dom smoke");
+
+  assert!(
+    output.status.success(),
+    "expected js wpt-dom smoke to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  assert!(
+    report_path.is_file(),
+    "expected report file to be created at {}",
+    report_path.display()
+  );
+
+  let json = fs::read_to_string(&report_path).expect("read report json");
+  let value: serde_json::Value = serde_json::from_str(&json).expect("parse report json");
+  let total = value
+    .get("summary")
+    .and_then(|summary| summary.get("total"))
+    .and_then(|n| n.as_u64())
+    .unwrap_or(0);
+  assert!(total > 0, "expected report summary.total > 0; got {total}");
+}

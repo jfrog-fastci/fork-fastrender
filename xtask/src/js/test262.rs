@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
+pub use conformance_harness::FailOn;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,27 +20,6 @@ pub enum Test262Suite {
   Curated,
   /// Minimal suite intended for quick wiring/smoke checks.
   Smoke,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
-#[clap(rename_all = "lowercase")]
-pub enum FailOn {
-  /// Fail on any mismatch (including expected/xfail/flaky).
-  All,
-  /// Fail only on unexpected mismatches (default).
-  New,
-  /// Never fail based on mismatches (always exit 0).
-  None,
-}
-
-impl FailOn {
-  pub(crate) fn as_cli_value(self) -> &'static str {
-    match self {
-      Self::All => "all",
-      Self::New => "new",
-      Self::None => "none",
-    }
-  }
 }
 
 #[derive(Args, Debug)]
@@ -121,6 +101,11 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
 
   let jobs = crate::cpu_budget().min(DEFAULT_JOBS_CAP).max(1);
   let shard_arg = args.shard.map(|(idx, total)| format!("{idx}/{total}"));
+  let fail_on_arg = match args.fail_on {
+    FailOn::All => "all",
+    FailOn::New => "new",
+    FailOn::None => "none",
+  };
 
   let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
@@ -141,7 +126,7 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
     .arg("--report-path")
     .arg(&report_path)
     .arg("--fail-on")
-    .arg(args.fail_on.as_cli_value());
+    .arg(fail_on_arg);
 
   if let Some(shard) = shard_arg {
     cmd.arg("--shard").arg(shard);

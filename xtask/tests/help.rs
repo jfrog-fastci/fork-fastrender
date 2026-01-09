@@ -119,7 +119,8 @@ fn js_wpt_dom_help_mentions_flags() {
 
   let stdout = String::from_utf8_lossy(&output.stdout);
   assert!(
-    stdout.contains("--wpt-root")
+    stdout.contains("--suite")
+      && stdout.contains("--wpt-root")
       && stdout.contains("--manifest")
       && stdout.contains("--shard")
       && stdout.contains("--filter")

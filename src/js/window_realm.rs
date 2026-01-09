@@ -403,8 +403,12 @@ mod tests {
       panic!("expected object");
     };
     let log = get_prop(&mut scope, console_obj, "log");
-    let call_result =
-      vm.call(&mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
+    let call_result = vm.call(
+      &mut scope,
+      log,
+      Value::Object(console_obj),
+      &[Value::Number(1.0), Value::Null],
+    )?;
     assert_eq!(call_result, Value::Undefined);
 
     Ok(())
