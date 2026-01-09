@@ -9,7 +9,7 @@ use crate::css::parser::{
   extract_scoped_css_sources, rel_list_contains_stylesheet, tokenize_rel_list, StylesheetSource,
 };
 use crate::debug::runtime;
-use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
+use crate::dom::{DomNode, DomNodeType, DomParseOptions, HTML_NAMESPACE};
 use crate::error::{RenderError, RenderStage, Result};
 use crate::resource::CorsMode;
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
@@ -2074,10 +2074,35 @@ pub fn extract_css_links_with_meta(
   base_url: &str,
   media_type: crate::style::media::MediaType,
 ) -> std::result::Result<Vec<CssLinkCandidate>, RenderError> {
-  let Ok(dom) = crate::dom::parse_html(html) else {
+  extract_css_links_with_meta_for_scripting_enabled(
+    html,
+    base_url,
+    media_type,
+    DomParseOptions::default().scripting_enabled,
+  )
+}
+
+pub(crate) fn extract_css_links_with_meta_for_scripting_enabled(
+  html: &str,
+  base_url: &str,
+  media_type: crate::style::media::MediaType,
+  scripting_enabled: bool,
+) -> std::result::Result<Vec<CssLinkCandidate>, RenderError> {
+  let Ok(dom) = crate::dom::parse_html_with_options(
+    html,
+    DomParseOptions::with_scripting_enabled(scripting_enabled),
+  ) else {
     return extract_css_links_without_dom_with_meta(html, base_url, media_type);
   };
 
+  extract_css_links_with_meta_from_dom(&dom, base_url, media_type)
+}
+
+fn extract_css_links_with_meta_from_dom(
+  dom: &DomNode,
+  base_url: &str,
+  media_type: crate::style::media::MediaType,
+) -> std::result::Result<Vec<CssLinkCandidate>, RenderError> {
   let mut css_links = Vec::new();
   let toggles = runtime::runtime_toggles();
   let debug = toggles.truthy("FASTR_LOG_CSS_LINKS");
@@ -4113,6 +4138,51 @@ mod tests {
         "#;
     let urls = extract_css_links(html, "https://example.com/", MediaType::Screen).unwrap();
     assert_eq!(urls, vec!["https://example.com/good.css".to_string()]);
+  }
+
+  #[test]
+  fn extract_css_links_respects_noscript_scripting_mode() {
+    let html = r#"
+      <head>
+        <link rel="stylesheet" href="/main.css">
+        <noscript><link rel="stylesheet" href="/noscript.css"></noscript>
+      </head>
+    "#;
+
+    let scripting_disabled = extract_css_links_with_meta_for_scripting_enabled(
+      html,
+      "https://example.com/",
+      MediaType::Screen,
+      false,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|candidate| candidate.url)
+    .collect::<Vec<_>>();
+    assert_eq!(
+      scripting_disabled,
+      vec![
+        "https://example.com/main.css".to_string(),
+        "https://example.com/noscript.css".to_string(),
+      ],
+      "scripting disabled should treat <noscript> contents as normal markup"
+    );
+
+    let scripting_enabled = extract_css_links_with_meta_for_scripting_enabled(
+      html,
+      "https://example.com/",
+      MediaType::Screen,
+      true,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|candidate| candidate.url)
+    .collect::<Vec<_>>();
+    assert_eq!(
+      scripting_enabled,
+      vec!["https://example.com/main.css".to_string()],
+      "scripting enabled should treat <noscript> contents as text and ignore nested <link> tags"
+    );
   }
 
   #[test]

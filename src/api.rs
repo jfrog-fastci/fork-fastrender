@@ -64,11 +64,11 @@ use crate::animation;
 use crate::compat::CompatProfile;
 use crate::css::encoding::{decode_css_bytes, decode_css_bytes_cow};
 use crate::css::loader::{
-  absolutize_css_urls_cow, extract_css_links_with_meta, extract_embedded_css_urls_with_meta,
-  inject_css_into_html, inline_imports_with_request_with_diagnostics,
-  link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
-  should_scan_embedded_css_urls, FetchedStylesheet, ImportFetchContext, InlineImportState,
-  StylesheetInlineBudget,
+  absolutize_css_urls_cow, extract_css_links_with_meta_for_scripting_enabled,
+  extract_embedded_css_urls_with_meta, inject_css_into_html,
+  inline_imports_with_request_with_diagnostics, link_rel_is_stylesheet_candidate, resolve_href,
+  resolve_href_with_base, should_scan_embedded_css_urls, FetchedStylesheet, ImportFetchContext,
+  InlineImportState, StylesheetInlineBudget,
 };
 use crate::css::parser::{
   extract_css_sources, extract_scoped_css_sources, parse_stylesheet_with_media, CssTreeScope,
@@ -12540,6 +12540,7 @@ impl FastRender {
     Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
       self.fetcher.as_ref(),
       self.runtime_toggles.as_ref(),
+      self.dom_scripting_enabled(),
       html,
       base_url,
       media_type,
@@ -12587,6 +12588,7 @@ impl FastRender {
       Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
         self.fetcher.as_ref(),
         self.runtime_toggles.as_ref(),
+        self.dom_scripting_enabled(),
         html,
         base_url.as_ref(),
         media_type,
@@ -12624,6 +12626,7 @@ impl FastRender {
       Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
         self.fetcher.as_ref(),
         self.runtime_toggles.as_ref(),
+        self.dom_scripting_enabled(),
         html,
         base_url.as_ref(),
         media_type,
@@ -12701,9 +12704,14 @@ impl FastRender {
     budget: StylesheetInlineBudget,
   ) -> std::result::Result<String, RenderError> {
     let toggles = runtime::runtime_toggles();
+    let dom_scripting_enabled = !matches!(
+      toggles.config().media.scripting.unwrap_or(Scripting::None),
+      Scripting::None
+    );
     Self::inline_stylesheets_for_html_with_context_with_budget_with_toggles(
       fetcher,
       toggles.as_ref(),
+      dom_scripting_enabled,
       html,
       base_url,
       media_type,
@@ -12719,6 +12727,7 @@ impl FastRender {
   fn inline_stylesheets_for_html_with_context_with_budget_with_toggles(
     fetcher: &dyn ResourceFetcher,
     runtime_toggles: &RuntimeToggles,
+    dom_scripting_enabled: bool,
     html: &str,
     base_url: &str,
     media_type: MediaType,
@@ -12732,7 +12741,12 @@ impl FastRender {
     let inlining_start = stats.as_deref().and_then(|rec| rec.timer());
     let fetch_link_css = runtime_toggles.truthy_with_default("FASTR_FETCH_LINK_CSS", true);
     let extract_links_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let mut css_links = extract_css_links_with_meta(html, base_url, media_type)?;
+    let mut css_links = extract_css_links_with_meta_for_scripting_enabled(
+      html,
+      base_url,
+      media_type,
+      dom_scripting_enabled,
+    )?;
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
         &mut rec.stats.timings.css_inline_extract_links_ms,
