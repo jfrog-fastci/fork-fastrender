@@ -16,8 +16,8 @@ pub struct JsArgs {
 enum JsCommand {
   /// Run a curated subset of tc39/test262 language semantics tests.
   Test262(test262::Test262Args),
-  /// Run the tc39/test262-parser-tests harness (ecma-rs `test262`).
-  #[command(name = "test262-parser")]
+  /// Run the tc39/test262-parser-tests harness (via ecma-rs `test262`).
+  #[command(name = "test262-parser", alias = "test262_parser")]
   Test262Parser(test262_parser::Test262ParserArgs),
   /// Run the offline WPT DOM (`testharness.js`) subset.
   #[command(name = "wpt-dom")]

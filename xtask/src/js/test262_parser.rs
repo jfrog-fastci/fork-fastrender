@@ -2,8 +2,6 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
 use super::test262::FailOn;
 
 const DEFAULT_TEST262_DIR: &str = "engines/ecma-rs/test262/data";
@@ -73,7 +71,7 @@ pub fn run_test262_parser(args: Test262ParserArgs) -> Result<()> {
       .with_context(|| format!("failed to create report directory {}", parent.display()))?;
   }
 
-  let mut cmd = Command::new("cargo");
+  let mut cmd = xtask::cmd::cargo_agent_command(&repo_root);
   cmd
     .arg("run")
     .arg("--release")

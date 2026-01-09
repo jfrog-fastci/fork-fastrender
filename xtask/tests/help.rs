@@ -13,6 +13,7 @@ fn help_lists_commands() {
   );
 
   let stdout = String::from_utf8_lossy(&output.stdout);
+  let js_count = stdout.matches("\n  js ").count();
   assert!(
     stdout.contains("render-page")
       && stdout.contains("update-goldens")
@@ -32,6 +33,11 @@ fn help_lists_commands() {
       && stdout.contains("recapture-page-fixtures")
       && stdout.contains("import-page-fixture"),
     "help output should mention available subcommands; got:\n{stdout}"
+  );
+
+  assert_eq!(
+    js_count, 1,
+    "expected exactly one `js` subcommand in `xtask --help` output; got {js_count}.\n{stdout}"
   );
 }
 

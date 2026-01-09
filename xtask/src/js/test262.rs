@@ -56,6 +56,10 @@ pub struct Test262Args {
   /// Path to a local checkout of the tc39/test262 repository.
   #[arg(long, value_name = "DIR", default_value = DEFAULT_TEST262_DIR)]
   pub test262_dir: PathBuf,
+
+  /// Extra arguments forwarded to the ecma-rs `test262-semantic` runner (use `--` before these).
+  #[arg(last = true)]
+  pub extra: Vec<String>,
 }
 
 pub fn run_test262(args: Test262Args) -> Result<()> {
@@ -130,6 +134,10 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
 
   if let Some(shard) = shard_arg {
     cmd.arg("--shard").arg(shard);
+  }
+
+  if !args.extra.is_empty() {
+    cmd.args(&args.extra);
   }
 
   cmd.current_dir(&ecma_rs_root);

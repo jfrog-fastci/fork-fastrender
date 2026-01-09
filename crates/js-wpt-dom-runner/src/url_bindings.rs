@@ -19,7 +19,10 @@ fn error_to_js(err: &WebUrlError) -> (&'static str, String) {
     WebUrlError::LimitExceeded { .. } => ("RangeError", err.to_string()),
     WebUrlError::OutOfMemory => ("RangeError", err.to_string()),
     WebUrlError::InvalidUtf8 => ("TypeError", err.to_string()),
-    WebUrlError::ParseError => ("TypeError", "Invalid URL".to_string()),
+    WebUrlError::ParseError
+    | WebUrlError::InvalidBase { .. }
+    | WebUrlError::Parse { .. }
+    | WebUrlError::SetterFailure { .. } => ("TypeError", "Invalid URL".to_string()),
   }
 }
 
@@ -88,7 +91,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |input: String, base: Option<String>| -> bool {
         let limits = &state.borrow().limits;
-        WebUrl::can_parse(&input, base.as_deref(), limits)
+        WebUrl::parse(&input, base.as_deref(), limits).is_ok()
       }
     })?,
   )?;
@@ -117,7 +120,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&handle) else {
           return String::new();
         };
-        url.href(&state.limits).unwrap_or_default()
+        url.href().unwrap_or_default()
       }
     })?,
   )?;
@@ -159,11 +162,10 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
           let state = state.clone();
           move |ctx: Ctx<'js>, handle: u32, value: String| -> rquickjs::Result<Object<'js>> {
             let mut state = state.borrow_mut();
-            let limits = state.limits.clone();
             let Some(url) = state.urls.get_mut(&handle) else {
               return make_err(ctx, "TypeError", "Invalid URL handle");
             };
-            match url.$method(&value, &limits) {
+            match url.$method(&value) {
               Ok(()) => make_ok(ctx),
               Err(err) => make_err_from_core(ctx, &err),
             }
@@ -210,22 +212,19 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, pairs: Vec<Vec<String>>| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let mut out_pairs: Vec<(String, String)> = Vec::new();
+        let params = WebUrlSearchParams::new(&state.limits);
         for pair in pairs {
           if pair.len() != 2 {
             return make_err(ctx, "TypeError", "Invalid URLSearchParams init sequence");
           }
-          out_pairs.push((pair[0].clone(), pair[1].clone()));
-        }
-        match WebUrlSearchParams::from_pairs(out_pairs, &state.limits) {
-          Ok(params) => {
-            let handle = state.next_sp_handle;
-            state.next_sp_handle = state.next_sp_handle.wrapping_add(1);
-            state.search_params.insert(handle, params);
-            make_ok_handle(ctx, handle)
+          if let Err(err) = params.append(&pair[0], &pair[1]) {
+            return make_err_from_core(ctx, &err);
           }
-          Err(err) => make_err_from_core(ctx, &err),
         }
+        let handle = state.next_sp_handle;
+        state.next_sp_handle = state.next_sp_handle.wrapping_add(1);
+        state.search_params.insert(handle, params);
+        make_ok_handle(ctx, handle)
       }
     })?,
   )?;
@@ -236,11 +235,10 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(params) = state.search_params.get_mut(&handle) else {
           return make_err(ctx, "TypeError", "Invalid URLSearchParams handle");
         };
-        match params.append(&name, &value, &limits) {
+        match params.append(&name, &value) {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -257,7 +255,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(params) = state.search_params.get_mut(&handle) else {
           return;
         };
-        params.delete(&name, value.as_deref());
+        let _ = params.delete(&name, value.as_deref());
       }
     })?,
   )?;
@@ -271,7 +269,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         state
           .search_params
           .get(&handle)
-          .and_then(|params| params.get(&name).map(str::to_string))
+          .and_then(|params| params.get(&name).ok().flatten())
       }
     })?,
   )?;
@@ -285,7 +283,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(params) = state.search_params.get(&handle) else {
           return Vec::new();
         };
-        params.get_all(&name).into_iter().map(str::to_string).collect()
+        params.get_all(&name).unwrap_or_default()
       }
     })?,
   )?;
@@ -299,7 +297,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(params) = state.search_params.get(&handle) else {
           return false;
         };
-        params.has(&name, value.as_deref())
+        params.has(&name, value.as_deref()).unwrap_or(false)
       }
     })?,
   )?;
@@ -310,11 +308,10 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(params) = state.search_params.get_mut(&handle) else {
           return make_err(ctx, "TypeError", "Invalid URLSearchParams handle");
         };
-        match params.set(&name, &value, &limits) {
+        match params.set(&name, &value) {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -331,7 +328,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(params) = state.search_params.get_mut(&handle) else {
           return;
         };
-        params.sort();
+        let _ = params.sort();
       }
     })?,
   )?;
@@ -342,7 +339,11 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |handle: u32| -> usize {
         let state = state.borrow();
-        state.search_params.get(&handle).map(|p| p.len()).unwrap_or(0)
+        state
+          .search_params
+          .get(&handle)
+          .and_then(|p| p.len().ok())
+          .unwrap_or(0)
       }
     })?,
   )?;
@@ -356,7 +357,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(params) = state.search_params.get(&handle) else {
           return make_ok_value(ctx, String::new());
         };
-        match params.serialize(&state.limits) {
+        match params.serialize() {
           Ok(s) => make_ok_value(ctx, s),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -375,8 +376,9 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         };
         params
           .pairs()
-          .iter()
-          .map(|(n, v)| vec![n.clone(), v.clone()])
+          .unwrap_or_default()
+          .into_iter()
+          .map(|(n, v)| vec![n, v])
           .collect()
       }
     })?,
@@ -389,19 +391,12 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(url) = state.urls.get_mut(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
-        let mut params = match url.search_params(&limits) {
-          Ok(p) => p,
-          Err(err) => return make_err_from_core(ctx, &err),
-        };
-        if let Err(err) = params.append(&name, &value, &limits) {
-          return make_err_from_core(ctx, &err);
-        }
-        match url.set_search_params(&params, &limits) {
+        let params = url.search_params();
+        match params.append(&name, &value) {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -415,17 +410,12 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: Option<String>| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(url) = state.urls.get_mut(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
-        let mut params = match url.search_params(&limits) {
-          Ok(p) => p,
-          Err(err) => return make_err_from_core(ctx, &err),
-        };
-        params.delete(&name, value.as_deref());
-        match url.set_search_params(&params, &limits) {
+        let params = url.search_params();
+        match params.delete(&name, value.as_deref()) {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -440,8 +430,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       move |url_handle: u32, name: String| -> Option<String> {
         let state = state.borrow();
         let url = state.urls.get(&url_handle)?;
-        let params = url.search_params(&state.limits).ok()?;
-        params.get(&name).map(str::to_string)
+        let params = url.search_params();
+        params.get(&name).ok().flatten()
       }
     })?,
   )?;
@@ -455,10 +445,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return Vec::new();
         };
-        let Ok(params) = url.search_params(&state.limits) else {
-          return Vec::new();
-        };
-        params.get_all(&name).into_iter().map(str::to_string).collect()
+        let params = url.search_params();
+        params.get_all(&name).unwrap_or_default()
       }
     })?,
   )?;
@@ -472,10 +460,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return false;
         };
-        let Ok(params) = url.search_params(&state.limits) else {
-          return false;
-        };
-        params.has(&name, value.as_deref())
+        let params = url.search_params();
+        params.has(&name, value.as_deref()).unwrap_or(false)
       }
     })?,
   )?;
@@ -486,19 +472,12 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(url) = state.urls.get_mut(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
-        let mut params = match url.search_params(&limits) {
-          Ok(p) => p,
-          Err(err) => return make_err_from_core(ctx, &err),
-        };
-        if let Err(err) = params.set(&name, &value, &limits) {
-          return make_err_from_core(ctx, &err);
-        }
-        match url.set_search_params(&params, &limits) {
+        let params = url.search_params();
+        match params.set(&name, &value) {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -512,16 +491,11 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        let limits = state.limits.clone();
         let Some(url) = state.urls.get_mut(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
-        let mut params = match url.search_params(&limits) {
-          Ok(p) => p,
-          Err(err) => return make_err_from_core(ctx, &err),
-        };
-        params.sort();
-        match url.set_search_params(&params, &limits) {
+        let params = url.search_params();
+        match params.sort() {
           Ok(()) => make_ok(ctx),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -538,10 +512,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return 0;
         };
-        url
-          .search_params(&state.limits)
-          .map(|p| p.len())
-          .unwrap_or(0)
+        url.search_params().len().unwrap_or(0)
       }
     })?,
   )?;
@@ -555,10 +526,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return make_ok_value(ctx, String::new());
         };
-        let Ok(params) = url.search_params(&state.limits) else {
-          return make_ok_value(ctx, String::new());
-        };
-        match params.serialize(&state.limits) {
+        let params = url.search_params();
+        match params.serialize() {
           Ok(s) => make_ok_value(ctx, s),
           Err(err) => make_err_from_core(ctx, &err),
         }
@@ -575,13 +544,12 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return Vec::new();
         };
-        let Ok(params) = url.search_params(&state.limits) else {
-          return Vec::new();
-        };
-        params
+        url
+          .search_params()
           .pairs()
-          .iter()
-          .map(|(n, v)| vec![n.clone(), v.clone()])
+          .unwrap_or_default()
+          .into_iter()
+          .map(|(n, v)| vec![n, v])
           .collect()
       }
     })?,
