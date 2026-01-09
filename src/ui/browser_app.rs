@@ -149,7 +149,16 @@ mod tests {
 #[derive(Debug, Default)]
 pub struct ChromeState {
   pub address_bar_text: String,
+  /// True while the user is actively editing the address bar.
+  ///
+  /// While this is true, we avoid auto-syncing the address bar text from navigation events so
+  /// in-progress input is not clobbered.
+  pub address_bar_editing: bool,
   pub address_bar_has_focus: bool,
+  /// One-frame request flag consumed by `chrome_ui` to focus the address bar.
+  pub request_focus_address_bar: bool,
+  /// One-frame request flag consumed by `chrome_ui` to select all text in the address bar.
+  pub request_select_all_address_bar: bool,
 }
 
 #[derive(Debug)]
@@ -205,6 +214,9 @@ impl BrowserAppState {
       return false;
     }
     self.active_tab = Some(tab_id);
+    // Switching tabs should always reflect the newly active tab URL in the address bar. If the
+    // user was typing, cancel that edit rather than carrying the partially typed URL across tabs.
+    self.chrome.address_bar_editing = false;
     self.sync_address_bar_to_active();
     true
   }
@@ -214,6 +226,7 @@ impl BrowserAppState {
     self.tabs.push(tab);
     if make_active || self.active_tab.is_none() {
       self.active_tab = Some(tab_id);
+      self.chrome.address_bar_editing = false;
       self.sync_address_bar_to_active();
     }
   }
@@ -255,6 +268,7 @@ impl BrowserAppState {
     // Prefer the tab that shifted into the removed index, otherwise the new last tab.
     let new_active = self.tabs.get(idx).or_else(|| self.tabs.last()).unwrap().id;
     self.active_tab = Some(new_active);
+    self.chrome.address_bar_editing = false;
     self.sync_address_bar_to_active();
     RemoveTabResult {
       new_active: Some(new_active),
@@ -263,6 +277,9 @@ impl BrowserAppState {
   }
 
   pub fn sync_address_bar_to_active(&mut self) {
+    if self.chrome.address_bar_editing {
+      return;
+    }
     let Some(active) = self.active_tab() else {
       self.chrome.address_bar_text.clear();
       return;
@@ -275,7 +292,7 @@ impl BrowserAppState {
 }
 
 #[cfg(test)]
-mod tests {
+mod browser_app_tests {
   use super::*;
 
   #[test]
@@ -322,5 +339,45 @@ mod tests {
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(app.active_tab_id(), Some(b));
     assert_eq!(result.new_active, Some(b));
+  }
+}
+
+#[cfg(test)]
+mod address_bar_tests {
+  use super::*;
+
+  #[test]
+  fn sync_address_bar_to_active_does_not_clobber_while_editing() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com/".to_string()),
+      true,
+    );
+
+    app.chrome.address_bar_text = "typed text".to_string();
+    app.chrome.address_bar_editing = true;
+    app.sync_address_bar_to_active();
+    assert_eq!(app.chrome.address_bar_text, "typed text");
+
+    app.chrome.address_bar_editing = false;
+    app.sync_address_bar_to_active();
+    assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn switching_tabs_cancels_address_bar_editing() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+
+    app.chrome.address_bar_text = "partially typed".to_string();
+    app.chrome.address_bar_editing = true;
+
+    assert!(app.set_active_tab(tab_b));
+    assert!(!app.chrome.address_bar_editing);
+    assert_eq!(app.chrome.address_bar_text, "https://b.example/");
   }
 }

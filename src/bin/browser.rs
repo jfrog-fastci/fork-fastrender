@@ -656,7 +656,9 @@ impl App {
           tab.pending_nav_url = Some(url.clone());
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
-          self.browser_state.chrome.address_bar_text = url;
+          if !self.browser_state.chrome.address_bar_editing {
+            self.browser_state.chrome.address_bar_text = url;
+          }
         }
       }
       fastrender::ui::WorkerToUi::NavigationCommitted {
@@ -680,7 +682,9 @@ impl App {
           tab.sync_nav_flags_from_history();
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
-          self.browser_state.chrome.address_bar_text = url;
+          if !self.browser_state.chrome.address_bar_editing {
+            self.browser_state.chrome.address_bar_text = url;
+          }
         }
       }
       fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {

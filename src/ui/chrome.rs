@@ -29,6 +29,17 @@ struct ChromeShortcuts {
 pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
 
+  // Ctrl/Cmd+L focuses the address bar (like a real browser).
+  //
+  // Don't steal focus if the user is already typing in a different egui text field; allow it if
+  // we're already focused (so Ctrl+L re-selects the URL).
+  let request_address_bar_shortcut = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::L))
+    && (!ctx.wants_keyboard_input() || app.chrome.address_bar_has_focus);
+  if request_address_bar_shortcut {
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.request_select_all_address_bar = true;
+  }
+
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     // Tabs row.
     ui.horizontal_wrapped(|ui| {
@@ -75,20 +86,48 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
         actions.push(ChromeAction::Reload);
       }
 
+      let address_bar_id = ui.make_persistent_id("address_bar");
       let response = ui.add(
         egui::TextEdit::singleline(&mut app.chrome.address_bar_text)
+          .id(address_bar_id)
           .desired_width(f32::INFINITY)
           .hint_text("Enter URL…"),
       );
 
+      if app.chrome.request_focus_address_bar {
+        response.request_focus();
+        app.chrome.request_focus_address_bar = false;
+      }
+
+      if app.chrome.request_select_all_address_bar {
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, address_bar_id) {
+          let end = app.chrome.address_bar_text.chars().count();
+          state.set_ccursor_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(end),
+          )));
+          state.store(ctx, address_bar_id);
+        }
+        app.chrome.request_select_all_address_bar = false;
+      }
+
       let has_focus = response.has_focus();
       if has_focus != app.chrome.address_bar_has_focus {
         app.chrome.address_bar_has_focus = has_focus;
+        app.chrome.address_bar_editing = has_focus;
         actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
       }
 
-      if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+      if has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.chrome.address_bar_editing = false;
+        app.sync_address_bar_to_active();
+        response.surrender_focus();
+      }
+
+      if has_focus && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        app.chrome.address_bar_editing = false;
         actions.push(ChromeAction::NavigateTo(app.chrome.address_bar_text.clone()));
+        response.surrender_focus();
       }
 
       if loading {
