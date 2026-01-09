@@ -286,4 +286,3 @@ pub(super) fn serialize_outer(doc: &Document, node: NodeId) -> String {
   serialize_nodes(doc, std::iter::once(node), false, &mut out);
   out
 }
-

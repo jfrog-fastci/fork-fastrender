@@ -1,5 +1,6 @@
-use crate::dom::{parse_html, parse_html_with_options, DomParseOptions};
+use crate::dom::parse_html;
 use crate::dom::HTML_NAMESPACE;
+use selectors::context::QuirksMode;
 
 use super::{Document, DomError, NodeId, NodeKind};
 
@@ -81,8 +82,10 @@ fn outer_html_getter_serializes_element() {
 
 #[test]
 fn outer_html_setter_replaces_node_in_parent_children() {
-  let root = parse_html("<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>")
-    .unwrap();
+  let root = parse_html(
+    "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
+  )
+  .unwrap();
   let mut doc = Document::from_renderer_dom(&root);
   let div = find_element_by_id(&doc, "root");
   let span = find_element_by_id(&doc, "child");
@@ -97,8 +100,10 @@ fn outer_html_setter_replaces_node_in_parent_children() {
 
 #[test]
 fn outer_html_setter_is_noop_when_node_is_detached() {
-  let root = parse_html("<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>")
-    .unwrap();
+  let root = parse_html(
+    "<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>",
+  )
+  .unwrap();
   let mut doc = Document::from_renderer_dom(&root);
   let div = find_element_by_id(&doc, "root");
   let span = find_element_by_id(&doc, "child");
@@ -233,50 +238,19 @@ fn inner_html_preserves_template_contents_and_marks_inert() {
 }
 
 #[test]
-fn inner_html_parses_noscript_as_text_when_scripting_enabled() {
-  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
-  let mut doc = Document::from_renderer_dom(&root);
-  let div = find_element_by_id(&doc, "target");
+fn inner_html_noscript_parses_markup_when_scripting_disabled() {
+  let mut doc = Document::new_with_scripting(QuirksMode::NoQuirks, false);
+
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(doc.root(), div).unwrap();
 
   doc
-    .set_inner_html(div, "<noscript><p>fallback</p></noscript>")
-    .unwrap();
-
-  // With scripting enabled, the HTML parser treats <noscript> as a raw text element.
-  // Our serializer currently escapes `<` inside text nodes.
-  assert_eq!(
-    doc.get_inner_html(div).unwrap(),
-    "<noscript>&lt;p>fallback&lt;/p></noscript>"
-  );
-
-  let noscript_id = find_first_element_by_tag(&doc, "noscript");
-  let children = doc.node(noscript_id).children.clone();
-  assert_eq!(children.len(), 1);
-  assert!(
-    matches!(&doc.node(children[0]).kind, NodeKind::Text { content } if content.contains("<p>fallback</p>")),
-    "expected noscript contents to be parsed as a single text node, got {:#?}",
-    doc.node(children[0]).kind
-  );
-}
-
-#[test]
-fn inner_html_parses_noscript_children_when_scripting_disabled() {
-  let options = DomParseOptions::with_scripting_enabled(false);
-  let root = parse_html_with_options(
-    "<!doctype html><html><body><div id=target></div></body></html>",
-    options,
-  )
-  .unwrap();
-  let mut doc = Document::from_renderer_dom(&root);
-  let div = find_element_by_id(&doc, "target");
-
-  doc
-    .set_inner_html(div, "<noscript><p>fallback</p></noscript>")
+    .set_inner_html(div, "<noscript><p>hi</p></noscript>")
     .unwrap();
 
   assert_eq!(
     doc.get_inner_html(div).unwrap(),
-    "<noscript><p>fallback</p></noscript>"
+    "<noscript><p>hi</p></noscript>"
   );
 
   let noscript_id = find_first_element_by_tag(&doc, "noscript");
@@ -289,6 +263,32 @@ fn inner_html_parses_noscript_children_when_scripting_disabled() {
       )
     }),
     "expected noscript contents to include a <p> element when scripting is disabled"
+  );
+}
+
+#[test]
+fn inner_html_noscript_treats_markup_as_text_when_scripting_enabled() {
+  let mut doc = Document::new_with_scripting(QuirksMode::NoQuirks, true);
+
+  let div = doc.create_element("div", HTML_NAMESPACE);
+  doc.append_child(doc.root(), div).unwrap();
+
+  doc
+    .set_inner_html(div, "<noscript><p>hi</p></noscript>")
+    .unwrap();
+
+  assert_eq!(
+    doc.get_inner_html(div).unwrap(),
+    "<noscript>&lt;p&gt;hi&lt;/p&gt;</noscript>"
+  );
+
+  let noscript_id = find_first_element_by_tag(&doc, "noscript");
+  let children = doc.node(noscript_id).children.clone();
+  assert_eq!(children.len(), 1);
+  assert!(
+    matches!(&doc.node(children[0]).kind, NodeKind::Text { content } if content.contains("<p>hi</p>")),
+    "expected noscript contents to be parsed as a single text node, got {:#?}",
+    doc.node(children[0]).kind
   );
 }
 
@@ -335,8 +335,8 @@ fn set_inner_html_preserves_shadow_root() {
     .copied()
     .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
     .expect("expected a ShadowRoot child under the host element");
-  let shadow_span = find_descendant_by_id(&doc, shadow_root, "shadow")
-    .expect("expected <span id=shadow> inside the shadow root");
+  let shadow_span =
+    find_descendant_by_id(&doc, shadow_root, "shadow").expect("expected <span id=shadow> inside the shadow root");
 
   // ShadowRoot has no outerHTML in the web platform.
   assert_eq!(doc.outer_html(shadow_root), Err(super::DomError::InvalidNodeType));
