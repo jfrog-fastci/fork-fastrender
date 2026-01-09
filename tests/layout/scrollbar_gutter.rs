@@ -163,3 +163,22 @@ fn scrollbar_auto_cross_axis_feedback_adds_both_scrollbars() {
   assert!((fragment.scrollbar_reservation.bottom - gutter).abs() < 1e-3);
   assert!((fragment.children[1].bounds.width() - (100.0 - gutter)).abs() < 1e-3);
 }
+
+#[test]
+fn overflow_x_scroll_does_not_inflate_fixed_height() {
+  let mut style = ComputedStyle::default();
+  style.overflow_x = Overflow::Scroll;
+  style.height = Some(Length::px(100.0));
+
+  let container = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 1000.0);
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
+
+  // Scrollbar gutters reserve space inside the scrollport without changing the outer border box
+  // size. Previously, adding a horizontal scrollbar gutter via overflow-x would effectively
+  // increase padding and inflate the border box for content-box definite heights.
+  assert!((fragment.bounds.height() - 100.0).abs() < 1e-3);
+}

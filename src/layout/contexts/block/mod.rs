@@ -662,12 +662,17 @@ impl BlockFormattingContext {
           style.overflow_x,
           Overflow::Hidden | Overflow::Auto | Overflow::Scroll
         ));
+    let mut reserved_horizontal_gutter = 0.0;
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
-      if style.scrollbar_gutter.both_edges {
-        padding_top += gutter;
+      if gutter > 0.0 {
+        if style.scrollbar_gutter.both_edges {
+          padding_top += gutter;
+          reserved_horizontal_gutter += gutter;
+        }
+        padding_bottom += gutter;
+        reserved_horizontal_gutter += gutter;
       }
-      padding_bottom += gutter;
     }
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
@@ -750,6 +755,12 @@ impl BlockFormattingContext {
     });
     specified_height =
       specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+    if reserved_horizontal_gutter > 0.0
+      && block_length.is_some()
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+    {
+      specified_height = specified_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
+    }
     if let Some(height_keyword) = block_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let used_border_box = match height_keyword {
@@ -6410,12 +6421,17 @@ impl FormattingContext for BlockFormattingContext {
           style.overflow_x,
           Overflow::Hidden | Overflow::Auto | Overflow::Scroll
         ));
+    let mut reserved_horizontal_gutter = 0.0;
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
-      if style.scrollbar_gutter.both_edges {
-        padding_top += gutter;
+      if gutter > 0.0 {
+        if style.scrollbar_gutter.both_edges {
+          padding_top += gutter;
+          reserved_horizontal_gutter += gutter;
+        }
+        padding_bottom += gutter;
+        reserved_horizontal_gutter += gutter;
       }
-      padding_bottom += gutter;
     }
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
@@ -6538,6 +6554,12 @@ impl FormattingContext for BlockFormattingContext {
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+    if reserved_horizontal_gutter > 0.0
+      && block_length.is_some()
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+    {
+      resolved_height = resolved_height.map(|h| (h - reserved_horizontal_gutter).max(0.0));
+    }
     if let Some(height_keyword) = block_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let used_border_box = match height_keyword {
