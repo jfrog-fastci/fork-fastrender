@@ -8180,37 +8180,98 @@ impl Painter {
           if control.invalid {
             select_style.color = accent;
           }
+
           let arrow_space = if matches!(control.appearance, Appearance::None) {
             0.0
           } else {
-            14.0_f32.min(rect.width().max(0.0))
+            14.0_f32.min(padding_rect.width().max(0.0))
           };
-          let label_rect = if arrow_space > 0.0 {
-            Rect::from_xywh(
-              rect.x(),
-              rect.y(),
-              (rect.width() - arrow_space).max(0.0),
-              rect.height(),
-            )
-          } else {
-            rect
-          };
-          let _ = self.paint_alt_text_raw(label, &select_style, label_rect, clip_mask);
-
+          // The `<select>` value is painted in the content box. The arrow affordance is a UA
+          // decoration that lives in the padding area when the author provides enough
+          // `padding-inline-end` space.
+          let mut value_rect = rect;
+          let mut arrow_rect: Option<Rect> = None;
+          let mut arrow_needs_content_reserve = false;
           if arrow_space > 0.0 {
-            let arrow_rect = Rect::from_xywh(
-              rect.max_x() - arrow_space,
-              rect.y(),
-              arrow_space,
-              rect.height(),
-            );
-            if arrow_rect.width() <= 0.0 {
+            use crate::style::types::Direction;
+
+            let padding_start = (content_rect.x() - padding_rect.x()).max(0.0);
+            let padding_end = (padding_rect.max_x() - content_rect.max_x()).max(0.0);
+            let padding_for_arrow = if style.direction == Direction::Rtl {
+              padding_start
+            } else {
+              padding_end
+            };
+
+            let (resolved_arrow_rect, needs_content_reserve) = if padding_for_arrow >= arrow_space {
+              // Enough padding space: paint entirely in the padding box.
+              let arrow_rect = if style.direction == Direction::Rtl {
+                Rect::from_xywh(padding_rect.x(), rect.y(), arrow_space, rect.height())
+              } else {
+                Rect::from_xywh(padding_rect.max_x() - arrow_space, rect.y(), arrow_space, rect.height())
+              };
+              (arrow_rect, false)
+            } else {
+              // Not enough padding space: fall back to painting in the content box and reserving
+              // width from the value so we don't overlap.
+              let arrow_rect = if style.direction == Direction::Rtl {
+                Rect::from_xywh(rect.x(), rect.y(), arrow_space, rect.height())
+              } else {
+                Rect::from_xywh(rect.max_x() - arrow_space, rect.y(), arrow_space, rect.height())
+              };
+              (arrow_rect, true)
+            };
+            arrow_rect = Some(resolved_arrow_rect);
+            arrow_needs_content_reserve = needs_content_reserve;
+
+            if arrow_needs_content_reserve {
+              value_rect = if style.direction == Direction::Rtl {
+                Rect::from_xywh(
+                  rect.x() + arrow_space,
+                  rect.y(),
+                  (rect.width() - arrow_space).max(0.0),
+                  rect.height(),
+                )
+              } else {
+                Rect::from_xywh(
+                  rect.x(),
+                  rect.y(),
+                  (rect.width() - arrow_space).max(0.0),
+                  rect.height(),
+                )
+              };
+            }
+          }
+          let _ = self.paint_alt_text_raw(label, &select_style, value_rect, clip_mask);
+
+          if let Some(arrow_rect) = arrow_rect {
+            if arrow_rect.width() <= 0.0 || arrow_rect.height() <= 0.0 {
               return true;
             }
+            let mut arrow_clip_mask_guard = None;
+            let arrow_clip_mask = if arrow_needs_content_reserve
+              || style.overflow_x != crate::style::types::Overflow::Visible
+              || style.overflow_y != crate::style::types::Overflow::Visible
+              || style.containment.paint
+            {
+              clip_mask
+            } else {
+              // Internal form-control clipping uses the content box by default so values don't
+              // bleed into padding. The `<select>` arrow lives in padding, so override the clip
+              // mask to the padding box.
+              let canvas_w = self.pixmap.width();
+              let canvas_h = self.pixmap.height();
+              let device_padding = self.device_rect(padding_rect);
+              arrow_clip_mask_guard = Some(BackgroundClipMaskGuard::take());
+              arrow_clip_mask_guard
+                .as_mut()
+                .and_then(|guard| guard.mask(device_padding, BorderRadii::ZERO, canvas_w, canvas_h))
+            };
             let mut arrow_style = select_style;
             arrow_style.color = muted_accent;
             arrow_style.font_size = (style.font_size * 0.9).max(8.0);
-            let _ = self.paint_alt_text_raw("▾", &arrow_style, arrow_rect, clip_mask);
+            arrow_style.text_align = crate::style::types::TextAlign::Center;
+            let _ = self.paint_alt_text_raw("▾", &arrow_style, arrow_rect, arrow_clip_mask);
           }
           true
         }
@@ -8225,18 +8286,35 @@ impl Painter {
           button_style.color = accent;
         }
 
-        let label_rect = if let Some(size) = self.measure_alt_text_raw(label, &button_style) {
-          let start_x = content_rect.x() + ((content_rect.width() - size.width).max(0.0) / 2.0);
-          Rect::from_xywh(
-            start_x,
-            content_rect.y(),
-            size.width.min(content_rect.width()),
-            content_rect.height(),
-          )
+        // Keep vertical centering (matching text inputs), but let `paint_alt_text_raw` compute the
+        // horizontal start position from computed `text-align` (and direction) via
+        // `aligned_text_start_x`/`effective_text_align`.
+        //
+        // Note: this preserves the historical centered default because the UA stylesheet sets
+        // `text-align: center` for input buttons.
+        let metrics_scaled = self.resolve_scaled_metrics(&button_style);
+        let line_height = compute_line_height_with_metrics_viewport(
+          &button_style,
+          metrics_scaled.as_ref(),
+          Some(Size::new(self.css_width, self.css_height)),
+        );
+        let baseline_offset_y = if line_height.is_finite() {
+          (content_rect.height() - line_height) / 2.0
         } else {
-          content_rect
+          0.0
         };
-        let _ = self.paint_alt_text_raw(label, &button_style, label_rect, clip_mask);
+        let baseline_offset_y = if baseline_offset_y.is_finite() {
+          baseline_offset_y
+        } else {
+          0.0
+        };
+        let centered_rect = Rect::from_xywh(
+          content_rect.x(),
+          content_rect.y() + baseline_offset_y,
+          content_rect.width(),
+          content_rect.height(),
+        );
+        let _ = self.paint_alt_text_raw(label, &button_style, centered_rect, clip_mask);
         true
       }
       FormControlKind::Checkbox {

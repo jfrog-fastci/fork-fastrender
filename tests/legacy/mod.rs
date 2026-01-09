@@ -14,3 +14,4 @@ mod projective_transform_origin_offset;
 mod range_pseudo_styles;
 mod range_slider_thumb_pseudo_style;
 mod select_arrow_padding_box;
+mod input_button_text_align;
