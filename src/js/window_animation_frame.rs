@@ -27,6 +27,9 @@ const RAF_REGISTRY_KEY: &str = "__fastrender_animation_frame_registry";
 const DEFAULT_CALLBACK_FUEL: u64 = 1_000_000;
 const DEFAULT_CHECK_TIME_EVERY: u32 = 100;
 
+// Native slot index on rAF host functions that stores the owning global object.
+const RAF_GLOBAL_SLOT: usize = 0;
+
 fn callback_budget_from_render_deadline() -> Budget {
   // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
   let deadline = render_control::root_deadline().and_then(|d| d.remaining_timeout());
@@ -338,11 +341,40 @@ fn normalize_animation_frame_id(heap: &mut Heap, value: Value) -> VmResult<Anima
   }
 }
 
+fn raf_global_from_callee(scope: &Scope<'_>, callee: vm_js::GcObject) -> VmResult<vm_js::GcObject> {
+  let slot = scope
+    .heap()
+    .get_function_native_slots(callee)?
+    .get(RAF_GLOBAL_SLOT)
+    .copied()
+    .unwrap_or(Value::Undefined);
+  match slot {
+    Value::Object(obj) => Ok(obj),
+    _ => Err(VmError::Unimplemented(
+      "requestAnimationFrame function missing global binding",
+    )),
+  }
+}
+
+fn raf_global_from_this(
+  scope: &Scope<'_>,
+  callee: vm_js::GcObject,
+  this: Value,
+  invalid_this_msg: &'static str,
+) -> VmResult<vm_js::GcObject> {
+  let global = raf_global_from_callee(scope, callee)?;
+  match this {
+    Value::Undefined | Value::Null => Ok(global),
+    Value::Object(obj) if obj == global => Ok(global),
+    _ => Err(throw_type_error(invalid_this_msg)),
+  }
+}
+
 fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
-  _callee: vm_js::GcObject,
+  callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
 ) -> VmResult<Value> {
@@ -354,11 +386,12 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
     return Err(throw_type_error(REQUEST_ANIMATION_FRAME_NOT_CALLABLE_ERROR));
   }
 
-  let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(
-      "requestAnimationFrame called with invalid this value",
-    ));
-  };
+  let global_obj = raf_global_from_this(
+    scope,
+    callee,
+    this,
+    "requestAnimationFrame called with invalid this value",
+  )?;
 
   let registry = get_raf_registry(scope, global_obj)?;
 
@@ -450,15 +483,16 @@ fn cancel_animation_frame_native<Host: WindowRealmHost + 'static>(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
   _host: &mut dyn VmHostHooks,
-  _callee: vm_js::GcObject,
+  callee: vm_js::GcObject,
   this: Value,
   args: &[Value],
 ) -> VmResult<Value> {
-  let Value::Object(global_obj) = this else {
-    return Err(throw_type_error(
-      "cancelAnimationFrame called with invalid this value",
-    ));
-  };
+  let global_obj = raf_global_from_this(
+    scope,
+    callee,
+    this,
+    "cancelAnimationFrame called with invalid this value",
+  )?;
   let registry = get_raf_registry(scope, global_obj)?;
 
   let id_value = args.get(0).copied().unwrap_or(Value::Undefined);
@@ -492,10 +526,12 @@ pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
   let registry_key = alloc_key(&mut scope, RAF_REGISTRY_KEY)?;
   scope.define_property(global, registry_key, data_desc(Value::Object(registry)))?;
 
+  let global_slots = [Value::Object(global)];
+
   let raf_id = vm.register_native_call(request_animation_frame_native::<Host>)?;
   let raf_name = scope.alloc_string("requestAnimationFrame")?;
   scope.push_root(Value::String(raf_name))?;
-  let raf = scope.alloc_native_function(raf_id, None, raf_name, 1)?;
+  let raf = scope.alloc_native_function_with_slots(raf_id, None, raf_name, 1, &global_slots)?;
   scope
     .heap_mut()
     .object_set_prototype(raf, Some(realm.intrinsics().function_prototype()))?;
@@ -504,7 +540,8 @@ pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
   let cancel_id = vm.register_native_call(cancel_animation_frame_native::<Host>)?;
   let cancel_name = scope.alloc_string("cancelAnimationFrame")?;
   scope.push_root(Value::String(cancel_name))?;
-  let cancel = scope.alloc_native_function(cancel_id, None, cancel_name, 1)?;
+  let cancel =
+    scope.alloc_native_function_with_slots(cancel_id, None, cancel_name, 1, &global_slots)?;
   scope.heap_mut().object_set_prototype(
     cancel,
     Some(realm.intrinsics().function_prototype()),
@@ -800,6 +837,54 @@ mod tests {
     assert_eq!(log, vec!["sync", "raf"]);
     assert_eq!(raf_ts, Value::Number(10.0));
     assert_eq!(raf_this_is_global, Value::Bool(true));
+    Ok(())
+  }
+
+  #[test]
+  fn request_animation_frame_can_be_called_as_identifier_in_scripts() -> RenderResult<()> {
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn crate::js::Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_animation_frame_bindings::<Host>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
+
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      with_event_loop(event_loop, || -> RenderResult<()> {
+        host
+          .window
+          .exec_script(
+            "globalThis.__raf_called = false;\n\
+             globalThis.__raf_ts = undefined;\n\
+             requestAnimationFrame(function(ts){ globalThis.__raf_called = true; globalThis.__raf_ts = ts; });\n",
+          )
+          .map_err(|e| Error::Other(e.to_string()))?;
+        Ok(())
+      })
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      crate::js::RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+
+    let (called, ts) = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      (get_prop(&mut scope, global, "__raf_called"), get_prop(&mut scope, global, "__raf_ts"))
+    };
+    assert_eq!(called, Value::Bool(true));
+    assert_eq!(ts, Value::Number(10.0));
     Ok(())
   }
 
