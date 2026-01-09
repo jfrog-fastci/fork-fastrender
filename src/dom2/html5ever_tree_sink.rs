@@ -372,7 +372,8 @@ impl TreeSink for Dom2TreeSink {
     let is_html_slot = name.local.as_ref().eq_ignore_ascii_case("slot")
       && Self::is_html_namespace(namespace.as_str());
 
-    let inert_subtree = name.local.as_ref().eq_ignore_ascii_case("template");
+    let inert_subtree = name.local.as_ref().eq_ignore_ascii_case("template")
+      && Self::is_html_namespace(namespace.as_str());
     let kind = if is_html_slot {
       NodeKind::Slot {
         namespace,
