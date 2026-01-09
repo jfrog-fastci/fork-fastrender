@@ -2,12 +2,28 @@ use crate::debug::runtime;
 use url::Url;
 
 use super::DocumentOrigin;
+use super::FetchCredentialsMode;
 use super::FetchedResource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CorsMode {
   Anonymous,
   UseCredentials,
+}
+
+impl CorsMode {
+  /// Maps an HTML "CORS settings attribute" value (e.g. `<img crossorigin>`) to the Fetch
+  /// credentials mode.
+  ///
+  /// Per the HTML spec, `crossorigin="anonymous"` uses the `same-origin` credentials mode: include
+  /// credentials only for same-origin requests, omitting them for cross-origin requests. This is
+  /// why browsers still send cookies for same-origin anonymous CORS requests.
+  pub const fn credentials_mode(self) -> FetchCredentialsMode {
+    match self {
+      Self::Anonymous => FetchCredentialsMode::SameOrigin,
+      Self::UseCredentials => FetchCredentialsMode::Include,
+    }
+  }
 }
 
 /// Returns true when subresource CORS enforcement is enabled.
@@ -29,18 +45,26 @@ pub fn cors_enforcement_enabled() -> bool {
 /// This is a best-effort approximation of Chromium's CORS checks for resources like web fonts.
 /// It is intentionally strict about invalid header values (notably comma-separated origins).
 pub fn validate_cors_allow_origin(
-  request_origin: &DocumentOrigin,
   resource: &FetchedResource,
   requested_url: &str,
-  mode: CorsMode,
+  request_origin: Option<&DocumentOrigin>,
+  credentials_mode: FetchCredentialsMode,
 ) -> std::result::Result<(), String> {
+  let Some(request_origin) = request_origin else {
+    // Without an origin for the initiating settings object, avoid over-blocking by skipping CORS
+    // enforcement. This matches how other policy checks behave when origin data is unavailable.
+    return Ok(());
+  };
+
   let effective_url = resource.final_url.as_deref().unwrap_or(requested_url);
-  let parsed = match Url::parse(effective_url) {
+  let parsed = match Url::parse(effective_url).or_else(|_| Url::parse(requested_url)) {
     Ok(parsed) => parsed,
     Err(_) => return Ok(()),
   };
 
   if !matches!(parsed.scheme(), "http" | "https") {
+    // CORS enforcement is defined for HTTP(S) responses; other schemes have no response header
+    // surface to validate.
     return Ok(());
   }
 
@@ -48,6 +72,8 @@ pub fn validate_cors_allow_origin(
   if target_origin.same_origin(request_origin) {
     return Ok(());
   }
+
+  let credentialed = credentials_mode == FetchCredentialsMode::Include;
 
   let raw = resource
     .access_control_allow_origin
@@ -57,13 +83,13 @@ pub fn validate_cors_allow_origin(
     .ok_or_else(|| "blocked by CORS: missing Access-Control-Allow-Origin".to_string())?;
 
   if raw == "*" {
-    return match mode {
-      CorsMode::Anonymous => Ok(()),
-      CorsMode::UseCredentials => Err(
+    if credentialed {
+      return Err(
         "blocked by CORS: Access-Control-Allow-Origin * is not allowed for credentialed requests"
           .to_string(),
-      ),
-    };
+      );
+    }
+    return Ok(());
   }
 
   // Chromium treats multiple origins as invalid even if one matches.
@@ -74,27 +100,27 @@ pub fn validate_cors_allow_origin(
   }
 
   if raw.eq_ignore_ascii_case("null") {
-    if matches!(mode, CorsMode::UseCredentials) && !resource.access_control_allow_credentials {
+    if credentialed && !resource.access_control_allow_credentials {
       return Err("blocked by CORS: missing Access-Control-Allow-Credentials: true".to_string());
     }
     if !request_origin.is_http_like() {
       return Ok(());
     }
     return Err(format!(
-      "blocked by CORS: Access-Control-Allow-Origin null does not match document origin {request_origin}"
+      "blocked by CORS: Access-Control-Allow-Origin null does not match request origin {request_origin}"
     ));
   }
 
-  let parsed_origin = Url::parse(raw)
-    .map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
+  let parsed_origin =
+    Url::parse(raw).map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
   let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_origin);
   if !allowed_origin.same_origin(request_origin) {
     return Err(format!(
-      "blocked by CORS: Access-Control-Allow-Origin {allowed_origin} does not match document origin {request_origin}"
+      "blocked by CORS: Access-Control-Allow-Origin {allowed_origin} does not match request origin {request_origin}"
     ));
   }
 
-  if matches!(mode, CorsMode::UseCredentials) && !resource.access_control_allow_credentials {
+  if credentialed && !resource.access_control_allow_credentials {
     return Err("blocked by CORS: missing Access-Control-Allow-Credentials: true".to_string());
   }
 
@@ -103,9 +129,9 @@ pub fn validate_cors_allow_origin(
 
 #[cfg(test)]
 mod tests {
-  use super::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
+  use super::{cors_enforcement_enabled, validate_cors_allow_origin};
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
-  use crate::resource::{origin_from_url, FetchedResource};
+  use crate::resource::{origin_from_url, FetchCredentialsMode, FetchedResource};
   use std::collections::HashMap;
   use std::sync::Arc;
 
@@ -124,7 +150,10 @@ mod tests {
         raw.to_string(),
       )])));
       with_thread_runtime_toggles(toggles, || {
-        assert!(!cors_enforcement_enabled(), "expected {raw:?} to disable CORS enforcement");
+        assert!(
+          !cors_enforcement_enabled(),
+          "expected {raw:?} to disable CORS enforcement"
+        );
       });
     }
   }
@@ -140,8 +169,13 @@ mod tests {
     );
     resource.access_control_allow_origin = Some("null".to_string());
 
-    validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::Anonymous)
-      .expect("null origin should be accepted for anonymous file origins");
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("null origin should be accepted for anonymous file origins");
   }
 
   #[test]
@@ -156,16 +190,26 @@ mod tests {
     resource.access_control_allow_origin = Some("null".to_string());
     resource.access_control_allow_credentials = false;
 
-    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::UseCredentials)
-      .expect_err("expected credentialed null origin without ACAC to fail");
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::Include,
+    )
+    .expect_err("expected credentialed null origin without ACAC to fail");
     assert!(
       err.contains("Access-Control-Allow-Credentials"),
       "unexpected error message: {err}"
     );
 
     resource.access_control_allow_credentials = true;
-    validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::UseCredentials)
-      .expect("credentialed null origin should succeed with ACAC=true");
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::Include,
+    )
+    .expect("credentialed null origin should succeed with ACAC=true");
   }
 
   #[test]
@@ -179,49 +223,17 @@ mod tests {
     );
     resource.access_control_allow_origin = Some("null".to_string());
 
-    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::Anonymous)
-      .expect_err("expected null ACAO to be rejected for http origins");
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("expected null ACAO to be rejected for http origins");
     assert!(
-      err.contains("does not match document origin"),
+      err.contains("does not match request origin"),
       "unexpected error: {err}"
     );
-  }
-
-  #[test]
-  fn wildcard_not_allowed_for_credentialed_requests() {
-    let doc_origin = origin_from_url("https://example.com/").expect("origin");
-    let url = "https://cross.example/image.png";
-    let mut resource = FetchedResource::with_final_url(
-      vec![1, 2, 3],
-      Some("image/png".to_string()),
-      Some(url.to_string()),
-    );
-    resource.access_control_allow_origin = Some("*".to_string());
-    resource.access_control_allow_credentials = true;
-
-    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::UseCredentials)
-      .expect_err("expected wildcard ACAO to be rejected for credentialed requests");
-    assert!(
-      err.contains("not allowed for credentialed requests"),
-      "unexpected error: {err}"
-    );
-  }
-
-  #[test]
-  fn multiple_allow_origin_values_are_rejected() {
-    let doc_origin = origin_from_url("https://example.com/").expect("origin");
-    let url = "https://cross.example/image.png";
-    let mut resource = FetchedResource::with_final_url(
-      vec![1, 2, 3],
-      Some("image/png".to_string()),
-      Some(url.to_string()),
-    );
-    resource.access_control_allow_origin =
-      Some("https://example.com, https://evil.example".to_string());
-
-    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::Anonymous)
-      .expect_err("expected multiple ACAO values to be rejected");
-    assert!(err.contains("multiple values"), "unexpected error: {err}");
   }
 
   #[test]
@@ -236,11 +248,111 @@ mod tests {
     );
     resource.access_control_allow_origin = Some(format!("{nbsp}*"));
 
-    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::Anonymous)
-      .expect_err("NBSP-prefixed ACAO wildcard must not be accepted");
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("NBSP-prefixed ACAO wildcard must not be accepted");
     assert!(
       err.contains("invalid Access-Control-Allow-Origin"),
       "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn anonymous_request_accepts_wildcard() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("*".to_string());
+
+    validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect("wildcard ACAO should be accepted for non-credentialed requests");
+  }
+
+  #[test]
+  fn credentialed_request_rejects_wildcard() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("*".to_string());
+    resource.access_control_allow_credentials = true;
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::Include,
+    )
+    .expect_err("credentialed request must reject ACAO=*");
+    assert!(
+      err.contains("not allowed for credentialed"),
+      "unexpected error message: {err}"
+    );
+  }
+
+  #[test]
+  fn credentialed_request_requires_allow_credentials() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("https://client.example".to_string());
+    resource.access_control_allow_credentials = false;
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::Include,
+    )
+    .expect_err("credentialed request without ACAC must fail");
+    assert!(
+      err.contains("Access-Control-Allow-Credentials"),
+      "unexpected error message: {err}"
+    );
+  }
+
+  #[test]
+  fn comma_separated_allow_origin_is_invalid() {
+    let doc_origin = origin_from_url("https://client.example/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin =
+      Some("https://client.example, https://other.example".to_string());
+
+    let err = validate_cors_allow_origin(
+      &resource,
+      url,
+      Some(&doc_origin),
+      FetchCredentialsMode::SameOrigin,
+    )
+    .expect_err("comma-separated ACAO must be rejected");
+    assert!(
+      err.contains("multiple values"),
+      "unexpected error message: {err}"
     );
   }
 }

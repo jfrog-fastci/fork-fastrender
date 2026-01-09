@@ -39,8 +39,8 @@ use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
-  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource, HttpFetcher,
-  HttpRetryPolicy, ReferrerPolicy, ResourceFetcher,
+  validate_cors_allow_origin, FetchCredentialsMode, FetchDestination, FetchRequest,
+  FetchedResource, HttpFetcher, HttpRetryPolicy, ReferrerPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -1877,7 +1877,7 @@ impl FontContext {
       });
       if let Some(origin) = request_origin.as_ref() {
         if let Err(message) =
-          validate_cors_allow_origin(origin, &resource, resolved_url, CorsMode::Anonymous)
+          validate_cors_allow_origin(&resource, resolved_url, Some(origin), FetchCredentialsMode::Omit)
         {
           let blocked = Error::Font(FontError::LoadFailed {
             family: family.to_string(),
@@ -3995,7 +3995,7 @@ mod tests {
       let doc_origin = crate::resource::origin_from_url("https://example.com/").unwrap();
       let other_origin = crate::resource::origin_from_url("https://evil.com").unwrap();
       let expected_reason = format!(
-        "blocked by CORS: Access-Control-Allow-Origin {other_origin} does not match document origin {doc_origin}"
+        "blocked by CORS: Access-Control-Allow-Origin {other_origin} does not match request origin {doc_origin}"
       );
 
       let ctx = make_context(Some("https://evil.com"), "https://example.com/");

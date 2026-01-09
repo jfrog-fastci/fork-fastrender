@@ -147,8 +147,8 @@ use crate::render_control::{
 use crate::resource::CachingFetcherConfig;
 use crate::resource::{
   cors_enforcement_enabled, ensure_http_success, ensure_stylesheet_mime_sane, origin_from_url,
-  validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchCredentialsMode,
-  FetchDestination, FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
+  validate_cors_allow_origin, CachingFetcher, CorsMode, DocumentOrigin, FetchDestination,
+  FetchRequest, HttpFetcher, PolicyError, ReferrerPolicy, ResourceAccessPolicy,
   ResourceFetcher, ResourcePolicy,
 };
 use crate::scroll::ScrollState;
@@ -9099,11 +9099,7 @@ impl FastRender {
             };
             let mut request = FetchRequest::new(url.as_str(), destination);
             if let Some(mode) = cors_mode {
-              let credentials_mode = match mode {
-                CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-                CorsMode::UseCredentials => FetchCredentialsMode::Include,
-              };
-              request = request.with_credentials_mode(credentials_mode);
+              request = request.with_credentials_mode(mode.credentials_mode());
             }
             if let Some(origin) = client_origin {
               request = request.with_client_origin(origin);
@@ -9154,7 +9150,12 @@ impl FastRender {
                   .as_ref()
                   .and_then(|ctx| ctx.policy.document_origin.as_ref()),
               ) {
-                if let Err(reason) = validate_cors_allow_origin(origin, &resource, &url, mode) {
+                if let Err(reason) = validate_cors_allow_origin(
+                  &resource,
+                  &url,
+                  Some(origin),
+                  mode.credentials_mode(),
+                ) {
                   let err = Error::Resource(ResourceError::new(url.clone(), reason));
                   if let Some(diag) = diagnostics.as_ref() {
                     if let Ok(mut guard) = diag.lock() {
@@ -9485,11 +9486,7 @@ impl FastRender {
           };
           let mut request = FetchRequest::new(stylesheet_url.as_str(), destination);
           if let Some(mode) = cors_mode {
-            let credentials_mode = match mode {
-              CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-              CorsMode::UseCredentials => FetchCredentialsMode::Include,
-            };
-            request = request.with_credentials_mode(credentials_mode);
+            request = request.with_credentials_mode(mode.credentials_mode());
           }
           if let Some(origin) = client_origin {
             request = request.with_client_origin(origin);
@@ -9523,13 +9520,15 @@ impl FastRender {
                 continue;
               }
               if cors_enforcement_enabled() {
-                if let (Some(mode), Some(origin)) = (
-                  cors_mode,
-                  resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()),
-                ) {
-                  if let Err(reason) =
-                    validate_cors_allow_origin(origin, &resource, &stylesheet_url, mode)
-                  {
+                if let (Some(mode), Some(origin)) =
+                  (cors_mode, resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()))
+                {
+                  if let Err(reason) = validate_cors_allow_origin(
+                    &resource,
+                    &stylesheet_url,
+                    Some(origin),
+                    mode.credentials_mode(),
+                  ) {
                     let err = Error::Resource(ResourceError::new(stylesheet_url.clone(), reason));
                     if let Some(diag) = &self.diagnostics {
                       if let Ok(mut guard) = diag.lock() {
@@ -12639,11 +12638,7 @@ impl FastRender {
       };
       let mut request = FetchRequest::new(css_url.as_str(), destination);
       if let Some(mode) = cors_mode {
-        let credentials_mode = match mode {
-          CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-          CorsMode::UseCredentials => FetchCredentialsMode::Include,
-        };
-        request = request.with_credentials_mode(credentials_mode);
+        request = request.with_credentials_mode(mode.credentials_mode());
       }
       if let Some(origin) = client_origin {
         request = request.with_client_origin(origin);
@@ -12691,7 +12686,12 @@ impl FastRender {
           }
           if cors_enforcement_enabled() {
             if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-              if let Err(reason) = validate_cors_allow_origin(origin, &res, &css_url, mode) {
+              if let Err(reason) = validate_cors_allow_origin(
+                &res,
+                &css_url,
+                Some(origin),
+                mode.credentials_mode(),
+              ) {
                 let err = Error::Resource(ResourceError::new(css_url.clone(), reason));
                 diagnostics.record_error(ResourceKind::Stylesheet, &css_url, &err);
                 continue;
@@ -12742,11 +12742,7 @@ impl FastRender {
                 };
                 let mut request = FetchRequest::new(u, destination);
                 if let Some(mode) = cors_mode {
-                  let credentials_mode = match mode {
-                    CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-                    CorsMode::UseCredentials => FetchCredentialsMode::Include,
-                  };
-                  request = request.with_credentials_mode(credentials_mode);
+                  request = request.with_credentials_mode(mode.credentials_mode());
                 }
                 if let Some(origin) = client_origin {
                   request = request.with_client_origin(origin);
@@ -12781,7 +12777,12 @@ impl FastRender {
                     }
                     if cors_enforcement_enabled() {
                       if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-                        if let Err(reason) = validate_cors_allow_origin(origin, &res, u, mode) {
+                        if let Err(reason) = validate_cors_allow_origin(
+                          &res,
+                          u,
+                          Some(origin),
+                          mode.credentials_mode(),
+                        ) {
                           let err = Error::Resource(ResourceError::new(u.to_string(), reason));
                           diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                           return Err(err);
@@ -14617,11 +14618,7 @@ impl CssImportLoader for CssImportFetcher {
     };
     let mut request = FetchRequest::new(resolved.as_str(), destination);
     if let Some(mode) = self.cors_mode {
-      let credentials_mode = match mode {
-        CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-        CorsMode::UseCredentials => FetchCredentialsMode::Include,
-      };
-      request = request.with_credentials_mode(credentials_mode);
+      request = request.with_credentials_mode(mode.credentials_mode());
     }
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
@@ -14678,7 +14675,12 @@ impl CssImportLoader for CssImportFetcher {
           .as_ref()
           .and_then(|ctx| ctx.policy.document_origin.as_ref()),
       ) {
-        if let Err(reason) = validate_cors_allow_origin(origin, &resource, &resolved, mode) {
+        if let Err(reason) = validate_cors_allow_origin(
+          &resource,
+          &resolved,
+          Some(origin),
+          mode.credentials_mode(),
+        ) {
           let err = Error::Resource(ResourceError::new(resolved.clone(), reason));
           if let Some(ctx) = &self.resource_context {
             if let Some(diag) = &ctx.diagnostics {
@@ -18230,8 +18232,8 @@ mod tests {
   use crate::layout::formatting_context::intrinsic_cache_clear;
   use crate::render_control::RenderDeadline;
   use crate::resource::{
-    origin_from_url, FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy,
-    ResourceAccessPolicy, ResourceFetcher,
+    origin_from_url, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+    ResourceAccessPolicy, ReferrerPolicy, ResourceFetcher,
   };
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;

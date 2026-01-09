@@ -2,7 +2,7 @@ use crate::debug::runtime;
 use crate::error::{Error, ResourceError, Result};
 use crate::html::content_security_policy::{CspDirective, CspPolicy};
 use crate::resource::{
-  origin_from_url, validate_cors_allow_origin, CorsMode, DocumentOrigin, FetchCredentialsMode,
+  origin_from_url, validate_cors_allow_origin, DocumentOrigin, FetchCredentialsMode,
   FetchDestination, FetchRequest, HttpRequest, ReferrerPolicy, ResourceFetcher,
 };
 use crate::url_normalize::{normalize_http_url_for_resolution, normalize_url_reference_for_resolution};
@@ -372,24 +372,18 @@ pub fn execute_web_fetch<'a>(
     // Fetch API `mode: "cors"` requests always validate CORS headers when we know the initiating
     // client origin. (Subresource CORS enforcement can be disabled via `FASTR_FETCH_ENFORCE_CORS`,
     // but `fetch()` should behave like browsers by default.)
-    if let Some(client_origin) = client_origin {
-      let cors_mode = match request.credentials {
-        RequestCredentials::Include => CorsMode::UseCredentials,
-        RequestCredentials::Omit | RequestCredentials::SameOrigin => CorsMode::Anonymous,
-      };
-      if let Err(message) =
-        validate_cors_allow_origin(client_origin, &resource, requested_url, cors_mode)
-      {
-        let mut err = ResourceError::new(requested_url, message)
-          .with_content_type(resource.content_type.clone());
-        if let Some(status) = resource.status {
-          err = err.with_status(status);
-        }
-        if let Some(final_url) = resource.final_url.as_deref() {
-          err = err.with_final_url(final_url.to_string());
-        }
-        return Err(Error::Resource(err));
+    if let Err(message) =
+      validate_cors_allow_origin(&resource, requested_url, client_origin, credentials_mode)
+    {
+      let mut err =
+        ResourceError::new(requested_url, message).with_content_type(resource.content_type.clone());
+      if let Some(status) = resource.status {
+        err = err.with_status(status);
       }
+      if let Some(final_url) = resource.final_url.as_deref() {
+        err = err.with_final_url(final_url.to_string());
+      }
+      return Err(Error::Resource(err));
     }
   }
 
@@ -548,6 +542,7 @@ fn opaque_response(r#type: ResponseType) -> Response {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::resource::web_fetch::RequestCredentials;
   use crate::resource::web_fetch::{WebFetchError, WebFetchLimits};
   use crate::resource::{origin_from_url, FetchedResource, HttpFetcher, HttpRetryPolicy};
   use std::io::{Read, Write};
@@ -1102,10 +1097,11 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-    let mut request = Request::new("GET", "https://other.example/res");
-    request.credentials = RequestCredentials::Include;
-    let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
-    assert!(err.to_string().contains("Access-Control-Allow-Origin * is not allowed"));
+    let err =
+      execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
+    assert!(err
+      .to_string()
+      .contains("Access-Control-Allow-Origin * is not allowed"));
   }
 
   #[test]
@@ -1133,8 +1129,9 @@ mod tests {
     let mut resource = FetchedResource::new(b"ok".to_vec(), None);
     resource.access_control_allow_origin = Some("https://client.example".to_string());
     resource.access_control_allow_credentials = false;
-    let fetcher = StaticFetcher { resource };
-
+    let fetcher = StaticFetcher {
+      resource: resource.clone(),
+    };
     let mut request = Request::new("GET", "https://other.example/res");
     request.credentials = RequestCredentials::Include;
     let origin = origin_from_url("https://client.example/").expect("origin");
@@ -1145,9 +1142,15 @@ mod tests {
 
     let err = execute_web_fetch(&fetcher, &request, ctx)
       .expect_err("expected credentialed CORS to require allow-credentials");
-    assert!(err
-      .to_string()
-      .contains("missing Access-Control-Allow-Credentials: true"));
+    assert!(err.to_string().contains("Access-Control-Allow-Credentials"));
+
+    resource.access_control_allow_credentials = true;
+    let fetcher = StaticFetcher { resource };
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected credentialed CORS pass");
   }
 
   #[test]

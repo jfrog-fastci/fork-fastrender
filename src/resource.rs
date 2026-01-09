@@ -2933,10 +2933,13 @@ pub fn ensure_cors_allows_origin_with<E>(
   mode: CorsMode,
   map_error: impl FnOnce(String) -> E,
 ) -> std::result::Result<(), E> {
-  let Some(request_origin) = request_origin else {
-    return Ok(());
-  };
-  validate_cors_allow_origin(request_origin, resource, requested_url, mode).map_err(map_error)
+  validate_cors_allow_origin(
+    resource,
+    requested_url,
+    request_origin,
+    mode.credentials_mode(),
+  )
+  .map_err(map_error)
 }
 
 /// Enforce Chromium-like CORS checks for cross-origin resources.

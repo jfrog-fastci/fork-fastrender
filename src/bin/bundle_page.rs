@@ -107,10 +107,7 @@ fn default_credentials_mode_for_destination(destination: FetchDestination) -> Fe
 }
 
 fn credentials_mode_for_stylesheet_crossorigin(mode: CorsMode) -> FetchCredentialsMode {
-  match mode {
-    CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
-    CorsMode::UseCredentials => FetchCredentialsMode::Include,
-  }
+  mode.credentials_mode()
 }
 #[derive(Parser, Debug)]
 #[command(
@@ -1772,9 +1769,11 @@ fn crawl_document(
       let (destination, credentials_mode) = match req.crossorigin {
         CrossOriginAttribute::None => (FetchDestination::Image, FetchCredentialsMode::Include),
         CrossOriginAttribute::Anonymous => {
-          (FetchDestination::ImageCors, FetchCredentialsMode::SameOrigin)
+          (FetchDestination::ImageCors, CorsMode::Anonymous.credentials_mode())
         }
-        CrossOriginAttribute::UseCredentials => (FetchDestination::ImageCors, FetchCredentialsMode::Include),
+        CrossOriginAttribute::UseCredentials => {
+          (FetchDestination::ImageCors, CorsMode::UseCredentials.credentials_mode())
+        }
       };
       let kind: FetchContextKind = destination.into();
       if !seen.insert((req.url.clone(), kind, credentials_mode)) {

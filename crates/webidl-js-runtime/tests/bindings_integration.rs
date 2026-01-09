@@ -138,7 +138,7 @@ fn alloc_symbol(rt: &mut VmJsRuntime, description: &str) -> Result<Value, VmErro
     return Err(VmError::Unimplemented("expected JS string value"));
   };
   let sym = rt.heap_mut().symbol_for(desc)?;
-  rt.heap_mut().add_root(Value::Symbol(sym))?;
+  let _ = rt.heap_mut().add_root(Value::Symbol(sym))?;
   Ok(Value::Symbol(sym))
 }
 

@@ -72,8 +72,8 @@ fn fetch_credentials_mode_for_crossorigin(
 ) -> FetchCredentialsMode {
   match crossorigin {
     CrossOriginAttribute::None => FetchCredentialsMode::Include,
-    CrossOriginAttribute::Anonymous => FetchCredentialsMode::SameOrigin,
-    CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
+    CrossOriginAttribute::Anonymous => crate::resource::CorsMode::Anonymous.credentials_mode(),
+    CrossOriginAttribute::UseCredentials => crate::resource::CorsMode::UseCredentials.credentials_mode(),
   }
 }
 
@@ -4009,13 +4009,14 @@ impl ImageCache {
       // Without a known document origin, avoid over-blocking.
       return Ok(());
     };
-    let mode = match crossorigin {
-      CrossOriginAttribute::Anonymous => crate::resource::CorsMode::Anonymous,
-      CrossOriginAttribute::UseCredentials => crate::resource::CorsMode::UseCredentials,
-      CrossOriginAttribute::None => return Ok(()),
-    };
+    let credentials_mode = fetch_credentials_mode_for_crossorigin(crossorigin);
     if let Err(reason) =
-      crate::resource::validate_cors_allow_origin(document_origin, resource, requested_url, mode)
+      crate::resource::validate_cors_allow_origin(
+        resource,
+        requested_url,
+        Some(document_origin),
+        credentials_mode,
+      )
     {
       return Err(Error::Image(ImageError::LoadFailed {
         url: requested_url.to_string(),
@@ -6825,7 +6826,7 @@ mod tests {
   #[derive(Clone, Default)]
   struct MapFetcher {
     responses: Arc<HashMap<String, FetchedResource>>,
-    requests: Arc<Mutex<Vec<(String, FetchDestination)>>>,
+    requests: Arc<Mutex<Vec<(String, FetchDestination, FetchCredentialsMode)>>>,
   }
 
   impl MapFetcher {
@@ -6836,7 +6837,7 @@ mod tests {
       }
     }
 
-    fn requests(&self) -> Vec<(String, FetchDestination)> {
+    fn requests(&self) -> Vec<(String, FetchDestination, FetchCredentialsMode)> {
       self
         .requests
         .lock()
@@ -6863,7 +6864,7 @@ mod tests {
         .requests
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push((req.url.to_string(), req.destination));
+        .push((req.url.to_string(), req.destination, req.credentials_mode));
       self.fetch(req.url)
     }
   }
@@ -6954,7 +6955,11 @@ mod tests {
     assert_eq!(img.dimensions(), (1, 1));
     assert_eq!(
       fetcher.requests(),
-      vec![(url.to_string(), FetchDestination::Image)]
+      vec![(
+        url.to_string(),
+        FetchDestination::Image,
+        FetchCredentialsMode::Include,
+      )]
     );
   }
 
@@ -7354,8 +7359,8 @@ mod tests {
     assert_eq!(
       requests
         .iter()
-        .filter(|(url, _)| url == cross_no_acao)
-        .map(|(_, dest)| *dest)
+        .filter(|(url, _, _)| url == cross_no_acao)
+        .map(|(_, dest, _)| *dest)
         .collect::<Vec<_>>(),
       vec![FetchDestination::Image, FetchDestination::ImageCors],
       "no-cors and cors-mode loads must not share the same fetch profile"
@@ -7363,8 +7368,16 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == same_no_acao && *dest == FetchDestination::ImageCors),
+        .any(|(url, dest, _)| url == same_no_acao && *dest == FetchDestination::ImageCors),
       "same-origin crossorigin images should still use ImageCors destination"
+    );
+    assert!(
+      requests.iter().any(|(url, dest, credentials)| {
+        url == cross_star
+          && *dest == FetchDestination::ImageCors
+          && *credentials == FetchCredentialsMode::SameOrigin
+      }),
+      "crossorigin=anonymous requests must use SameOrigin credentials mode"
     );
   }
 
@@ -10007,7 +10020,7 @@ mod tests {
     }
  
     assert!(
-      fetcher.requests().iter().all(|(url, _)| url != img_url),
+      fetcher.requests().iter().all(|(url, _, _)| url != img_url),
       "blocked image should not be fetched"
     );
   }
@@ -10092,7 +10105,7 @@ mod tests {
     }
 
     assert!(
-      fetcher.requests().iter().all(|(url, _)| url != sprite_url),
+      fetcher.requests().iter().all(|(url, _, _)| url != sprite_url),
       "blocked sprite should not be fetched"
     );
   }
@@ -10217,7 +10230,7 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == sprite_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == sprite_url && *dest == FetchDestination::Image),
       "expected fetch for xml:base sprite href {sprite_url}, got: {requests:?}"
     );
 
@@ -10270,13 +10283,13 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == sprite_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == sprite_url && *dest == FetchDestination::Image),
       "expected fetch for sprite URL {sprite_url}, got: {requests:?}"
     );
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for sprite-nested image URL {img_url}, got: {requests:?}"
     );
 
@@ -10321,7 +10334,7 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for image href {img_url}, got: {requests:?}"
     );
   }
@@ -10361,7 +10374,7 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for inline svg image href {img_url}, got: {requests:?}"
     );
   }
@@ -10396,7 +10409,7 @@ mod tests {
     assert!(
       requests
         .iter()
-        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+        .any(|(url, dest, _)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for xml:base image href {img_url}, got: {requests:?}"
     );
 
@@ -10585,7 +10598,7 @@ mod tests {
 
     let requests = fetcher.requests();
     assert!(
-      requests.iter().any(|(url, _)| *url == expected_url),
+      requests.iter().any(|(url, _, _)| *url == expected_url),
       "expected fetcher to request {expected_url}, got: {requests:?}"
     );
   }
