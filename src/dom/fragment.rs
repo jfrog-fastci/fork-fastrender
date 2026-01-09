@@ -88,7 +88,12 @@ pub fn parse_html_fragment(
   converted.reserve(handles.len());
   for handle in handles {
     if let Some(node) =
-      super::convert_handle_to_node(&handle, document_quirks, &mut deadline_counter)?
+      super::convert_handle_to_node(
+        &handle,
+        document_quirks,
+        options.scripting_enabled,
+        &mut deadline_counter,
+      )?
     {
       converted.push(node);
     }
