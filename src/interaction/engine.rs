@@ -2,11 +2,13 @@ use crate::dom::enumerate_dom_ids;
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
-use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use url::Url;
+
+use super::dom_mutation;
+use super::hit_test::hit_test_dom;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModality {
@@ -88,27 +90,6 @@ impl DomIndexMut {
   }
 }
 
-fn build_box_to_dom_map(box_tree: &BoxTree) -> Vec<Option<usize>> {
-  let mut map: Vec<Option<usize>> = vec![None; 1];
-  let mut stack: Vec<&BoxNode> = vec![&box_tree.root];
-
-  while let Some(node) = stack.pop() {
-    if node.id >= map.len() {
-      map.resize(node.id + 1, None);
-    }
-    map[node.id] = node.styled_node_id;
-
-    if let Some(body) = node.footnote_body.as_deref() {
-      stack.push(body);
-    }
-    for child in node.children.iter().rev() {
-      stack.push(child);
-    }
-  }
-
-  map
-}
-
 fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<usize> {
   while node_id != 0 {
     let node = index.node(node_id)?;
@@ -116,26 +97,6 @@ fn nearest_element_ancestor(index: &DomIndexMut, mut node_id: usize) -> Option<u
       return Some(node_id);
     }
     node_id = *index.parent.get(node_id).unwrap_or(&0);
-  }
-  None
-}
-
-fn hit_test_deepest_element(
-  index: &DomIndexMut,
-  box_to_dom: &[Option<usize>],
-  fragment_tree: &FragmentTree,
-  page_point: Point,
-) -> Option<usize> {
-  for fragment in fragment_tree.hit_test(page_point) {
-    let Some(box_id) = fragment.box_id() else {
-      continue;
-    };
-    let Some(dom_id) = box_to_dom.get(box_id).and_then(|id| *id) else {
-      continue;
-    };
-    if let Some(element_id) = nearest_element_ancestor(index, dom_id) {
-      return Some(element_id);
-    }
   }
   None
 }
@@ -200,18 +161,6 @@ fn set_data_flag(index: &mut DomIndexMut, node_id: usize, name: &str, on: bool) 
   };
   if on {
     set_node_attr(node, name, "true")
-  } else {
-    remove_node_attr(node, name)
-  }
-}
-
-fn set_bool_attr(index: &mut DomIndexMut, node_id: usize, name: &str, on: bool) -> bool {
-  let Some(node) = index.node_mut(node_id) else {
-    return false;
-  };
-  if on {
-    // Boolean HTML attributes: presence is significant; value is ignored.
-    set_node_attr(node, name, "")
   } else {
     remove_node_attr(node, name)
   }
@@ -306,23 +255,6 @@ fn is_focusable_text_control(node: &DomNode) -> bool {
   is_textarea(node) || is_text_input(node)
 }
 
-fn semantic_target(index: &DomIndexMut, deepest_element: usize) -> usize {
-  let mut current = deepest_element;
-  loop {
-    let Some(node) = index.node(current) else {
-      return deepest_element;
-    };
-    if is_label(node) || is_input(node) || is_textarea(node) || is_anchor_with_href(node) {
-      return current;
-    }
-    let parent = *index.parent.get(current).unwrap_or(&0);
-    if parent == 0 {
-      return deepest_element;
-    }
-    current = parent;
-  }
-}
-
 fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) -> bool {
   while node != 0 {
     if node == ancestor {
@@ -331,6 +263,42 @@ fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) ->
     node = *index.parent.get(node).unwrap_or(&0);
   }
   false
+}
+
+fn node_is_inert_like(node: &DomNode) -> bool {
+  if node.get_attribute_ref("inert").is_some() {
+    return true;
+  }
+  node
+    .get_attribute_ref("data-fastr-inert")
+    .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+}
+
+fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+    if node.is_element() && node_is_inert_like(node) {
+      return true;
+    }
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+  false
+}
+
+fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
+  index
+    .node(node_id)
+    .and_then(|node| node.get_attribute_ref("disabled"))
+    .is_some()
+}
+
+fn node_is_readonly(index: &DomIndexMut, node_id: usize) -> bool {
+  index
+    .node(node_id)
+    .and_then(|node| node.get_attribute_ref("readonly"))
+    .is_some()
 }
 
 fn resolve_url(base_url: &str, href: &str) -> Option<String> {
@@ -497,6 +465,10 @@ impl InteractionEngine {
   }
 
   /// Update hover state (data-fastr-hover on target + ancestors).
+  ///
+  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
+  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
+  /// so hit testing matches what is painted.
   pub fn pointer_move(
     &mut self,
     dom: &mut DomNode,
@@ -504,10 +476,10 @@ impl InteractionEngine {
     fragment_tree: &FragmentTree,
     page_point: Point,
   ) -> bool {
+    let hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let mut index = DomIndexMut::new(dom);
-    let box_to_dom = build_box_to_dom_map(box_tree);
-
-    let new_chain = hit_test_deepest_element(&index, &box_to_dom, fragment_tree, page_point)
+    let new_chain = hit
+      .and_then(|hit| nearest_element_ancestor(&index, hit.styled_node_id))
       .map(|target| collect_element_chain(&index, target))
       .unwrap_or_default();
 
@@ -522,6 +494,10 @@ impl InteractionEngine {
   }
 
   /// Begin active state (data-fastr-active on target + ancestors) and set modality=Pointer.
+  ///
+  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
+  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
+  /// so hit testing matches what is painted.
   pub fn pointer_down(
     &mut self,
     dom: &mut DomNode,
@@ -531,11 +507,8 @@ impl InteractionEngine {
   ) -> bool {
     self.modality = InputModality::Pointer;
 
+    let down_target = hit_test_dom(dom, box_tree, fragment_tree, page_point).map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
-    let box_to_dom = build_box_to_dom_map(box_tree);
-
-    let down_target = hit_test_deepest_element(&index, &box_to_dom, fragment_tree, page_point)
-      .map(|deepest| semantic_target(&index, deepest));
     let new_chain = down_target
       .map(|target| collect_element_chain(&index, target))
       .unwrap_or_default();
@@ -600,6 +573,10 @@ impl InteractionEngine {
   /// - link: return Navigate
   /// - checkbox/radio: toggle/activate
   /// - text control/textarea: focus
+  ///
+  /// Note: For pages with scroll containers, pass a fragment tree with element scroll offsets
+  /// applied (e.g. via `interaction::fragment_tree_with_scroll` / `scroll::apply_scroll_offsets`)
+  /// so hit testing matches what is painted.
   pub fn pointer_up(
     &mut self,
     dom: &mut DomNode,
@@ -610,11 +587,9 @@ impl InteractionEngine {
   ) -> (bool, InteractionAction) {
     let prev_focus = self.focused;
 
+    let up_semantic =
+      hit_test_dom(dom, box_tree, fragment_tree, page_point).map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
-    let box_to_dom = build_box_to_dom_map(box_tree);
-
-    let up_deepest = hit_test_deepest_element(&index, &box_to_dom, fragment_tree, page_point);
-    let up_semantic = up_deepest.map(|deepest| semantic_target(&index, deepest));
 
     let down_semantic = self.pointer_down_target;
 
@@ -645,38 +620,27 @@ impl InteractionEngine {
 
     if click_qualifies {
       if let Some(target_id) = click_target {
-        let anchor_href = index.node(target_id).and_then(|node| {
-          is_anchor_with_href(node)
-            .then(|| node.get_attribute_ref("href").unwrap_or("").to_string())
-        });
-
-        if let Some(href) = anchor_href {
-          if let Some(resolved) = resolve_url(base_url, &href) {
+        if node_or_ancestor_is_inert(&index, target_id) {
+          // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
+        } else if let Some(href) = index
+          .node(target_id)
+          .filter(|node| is_anchor_with_href(node))
+          .and_then(|node| node.get_attribute_ref("href"))
+        {
+          if let Some(resolved) = resolve_url(base_url, href) {
             dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
             action = InteractionAction::Navigate { href: resolved };
           }
         } else if index.node(target_id).is_some_and(is_checkbox_input) {
-          let checked = index
-            .node(target_id)
-            .and_then(|node| node.get_attribute_ref("checked"))
-            .is_some();
-          dom_changed |= set_bool_attr(&mut index, target_id, "checked", !checked);
-        } else if index.node(target_id).is_some_and(is_radio_input) {
-          let name = index
-            .node(target_id)
-            .and_then(|node| node.get_attribute_ref("name"))
-            .map(str::to_string);
-          if let Some(name) = name.as_deref() {
-            for id in 1..index.id_to_node.len() {
-              let should_clear = index.node(id).is_some_and(|radio| {
-                is_radio_input(radio) && radio.get_attribute_ref("name") == Some(name)
-              });
-              if should_clear {
-                dom_changed |= set_bool_attr(&mut index, id, "checked", false);
-              }
+          if !node_is_disabled(&index, target_id) {
+            if let Some(node_mut) = index.node_mut(target_id) {
+              dom_changed |= dom_mutation::toggle_checkbox(node_mut);
             }
           }
-          dom_changed |= set_bool_attr(&mut index, target_id, "checked", true);
+        } else if index.node(target_id).is_some_and(is_radio_input) {
+          if !node_is_disabled(&index, target_id) {
+            dom_changed |= dom_mutation::activate_radio(dom, target_id);
+          }
         } else if index.node(target_id).is_some_and(is_focusable_text_control) {
           dom_changed |= self.set_focus(&mut index, Some(target_id), false);
         }
@@ -712,6 +676,12 @@ impl InteractionEngine {
     changed |= self.set_focus(&mut index, Some(focused), true);
 
     if index.node(focused).is_some_and(is_text_input) {
+      if node_or_ancestor_is_inert(&index, focused)
+        || node_is_disabled(&index, focused)
+        || node_is_readonly(&index, focused)
+      {
+        return changed;
+      }
       let current = index
         .node(focused)
         .and_then(|node| node.get_attribute_ref("value"))
@@ -728,6 +698,12 @@ impl InteractionEngine {
     }
 
     if index.node(focused).is_some_and(is_textarea) {
+      if node_or_ancestor_is_inert(&index, focused)
+        || node_is_disabled(&index, focused)
+        || node_is_readonly(&index, focused)
+      {
+        return changed;
+      }
       let current = index
         .node(focused)
         .map(collect_text_children_value)
@@ -766,6 +742,12 @@ impl InteractionEngine {
     match key {
       KeyAction::Backspace => {
         if index.node(focused).is_some_and(is_text_input) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
           let current = index
             .node(focused)
             .and_then(|node| node.get_attribute_ref("value"))
@@ -780,6 +762,12 @@ impl InteractionEngine {
             );
           }
         } else if index.node(focused).is_some_and(is_textarea) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
           let current = index
             .node(focused)
             .map(collect_text_children_value)
@@ -801,6 +789,12 @@ impl InteractionEngine {
       }
       KeyAction::Enter => {
         if index.node(focused).is_some_and(is_textarea) {
+          if node_or_ancestor_is_inert(&index, focused)
+            || node_is_disabled(&index, focused)
+            || node_is_readonly(&index, focused)
+          {
+            return changed;
+          }
           let current = index
             .node(focused)
             .map(collect_text_children_value)

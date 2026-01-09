@@ -6,8 +6,10 @@ use fastrender::geometry::Point;
 use fastrender::geometry::Rect;
 use fastrender::interaction::InteractionAction;
 use fastrender::interaction::InteractionEngine;
+use fastrender::interaction::KeyAction;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::ComputedStyle;
+use fastrender::style::types::PointerEvents;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::box_tree::BoxTree;
 use fastrender::tree::fragment_tree::FragmentNode;
@@ -75,6 +77,12 @@ fn node_id(root: &DomNode, html_id: &str) -> usize {
 
 fn default_style() -> Arc<ComputedStyle> {
   Arc::new(ComputedStyle::default())
+}
+
+fn style_with_pointer_events(pointer_events: PointerEvents) -> Arc<ComputedStyle> {
+  let mut style = ComputedStyle::default();
+  style.pointer_events = pointer_events;
+  Arc::new(style)
 }
 
 fn find_box_id_for_styled_node(box_tree: &BoxTree, styled_node_id: usize) -> usize {
@@ -584,4 +592,333 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     attr_value(&dom, "txt", "data-fastr-focus-visible").as_deref(),
     Some("true")
   );
+}
+
+#[test]
+fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("a", vec![("id", "link"), ("href", "foo")], vec![]),
+        el("div", vec![("id", "overlay")], vec![]),
+      ],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let overlay_dom_id = node_id(&dom, "overlay");
+
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+
+  let mut overlay_box = BoxNode::new_block(
+    style_with_pointer_events(PointerEvents::None),
+    FormattingContextType::Block,
+    vec![],
+  );
+  overlay_box.styled_node_id = Some(overlay_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box, overlay_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let overlay_box_id = find_box_id_for_styled_node(&box_tree, overlay_dom_id);
+
+  // Overlay fragment is topmost but should be skipped due to pointer-events:none.
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+        link_box_id,
+        vec![],
+      ),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+        overlay_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  engine.pointer_move(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-hover").as_deref(),
+    Some("true"),
+    "link should be hovered through overlay"
+  );
+  assert!(
+    !has_attr(&dom, "overlay", "data-fastr-hover"),
+    "overlay should not be hovered"
+  );
+
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://example.com/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/foo".to_string()
+    }
+  );
+}
+
+#[test]
+fn inert_link_does_not_navigate() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", "foo"), ("inert", "")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let mut link_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![link_box],
+  ));
+
+  let link_box_id = find_box_id_for_styled_node(&box_tree, link_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      link_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(10.0, 10.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(10.0, 10.0),
+    "https://example.com/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert!(
+    !has_attr(&dom, "link", "data-fastr-visited"),
+    "inert link should not be marked visited"
+  );
+}
+
+#[test]
+fn disabled_checkbox_does_not_toggle_checked() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![("id", "cb"), ("type", "checkbox"), ("disabled", "")],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let cb_dom_id = node_id(&dom, "cb");
+  let mut cb_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  cb_box.styled_node_id = Some(cb_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![cb_box],
+  ));
+
+  let cb_box_id = find_box_id_for_styled_node(&box_tree, cb_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      cb_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert!(
+    !has_attr(&dom, "cb", "checked"),
+    "disabled checkbox must not toggle checked"
+  );
+}
+
+#[test]
+fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "input",
+        vec![
+          ("id", "cb"),
+          ("type", "checkbox"),
+          ("indeterminate", ""),
+          ("aria-checked", "mixed"),
+        ],
+        vec![],
+      )],
+    )],
+  )]);
+
+  let cb_dom_id = node_id(&dom, "cb");
+  let mut cb_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  cb_box.styled_node_id = Some(cb_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![cb_box],
+  ));
+
+  let cb_box_id = find_box_id_for_styled_node(&box_tree, cb_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      cb_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert!(has_attr(&dom, "cb", "checked"));
+  assert!(
+    !has_attr(&dom, "cb", "indeterminate"),
+    "toggle should clear indeterminate"
+  );
+  assert!(
+    !has_attr(&dom, "cb", "aria-checked"),
+    "toggle should clear aria-checked=mixed"
+  );
+}
+
+#[test]
+fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el(
+          "input",
+          vec![("id", "disabled"), ("value", "hi"), ("disabled", "")],
+          vec![],
+        ),
+        el(
+          "input",
+          vec![("id", "readonly"), ("value", "hi"), ("readonly", "")],
+          vec![],
+        ),
+      ],
+    )],
+  )]);
+
+  let disabled_dom_id = node_id(&dom, "disabled");
+  let readonly_dom_id = node_id(&dom, "readonly");
+
+  let mut disabled_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  disabled_box.styled_node_id = Some(disabled_dom_id);
+  let mut readonly_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  readonly_box.styled_node_id = Some(readonly_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![disabled_box, readonly_box],
+  ));
+
+  let disabled_box_id = find_box_id_for_styled_node(&box_tree, disabled_dom_id);
+  let readonly_box_id = find_box_id_for_styled_node(&box_tree, readonly_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+        disabled_box_id,
+        vec![],
+      ),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 40.0, 80.0, 20.0),
+        readonly_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Disabled input.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  engine.text_input(&mut dom, "X");
+  engine.key_action(&mut dom, KeyAction::Backspace);
+  assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("hi"));
+
+  // Readonly input.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 45.0));
+  engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 45.0),
+    "https://x/",
+  );
+  engine.text_input(&mut dom, "X");
+  engine.key_action(&mut dom, KeyAction::Backspace);
+  assert_eq!(attr_value(&dom, "readonly", "value").as_deref(), Some("hi"));
 }
