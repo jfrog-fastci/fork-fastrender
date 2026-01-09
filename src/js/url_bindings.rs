@@ -60,6 +60,95 @@ fn define_accessor(
   rt.define_accessor_property(obj, key, get, set, false)
 }
 
+fn array_to_iterator(
+  rt: &mut webidl_js_runtime::VmJsRuntime,
+  arr: Value,
+  len: usize,
+) -> Result<Value, VmError> {
+  // `vm-js` arrays do not have interpreter-backed iterator methods yet, so build a small host
+  // iterator object that yields values from `arr`.
+  let iter = rt.alloc_object_value()?;
+  let mut roots: Vec<RootId> = Vec::new();
+  let result = (|| -> Result<Value, VmError> {
+    roots.push(rt.heap_mut().add_root(iter)?);
+    roots.push(rt.heap_mut().add_root(arr)?);
+
+    let values_key = rt.property_key_from_str("__fastrender_iter_values")?;
+    rt.define_data_property(iter, values_key, arr, false)?;
+
+    let index_key = rt.property_key_from_str("__fastrender_iter_index")?;
+    rt.define_data_property(iter, index_key, Value::Number(0.0), false)?;
+
+    let len_key = rt.property_key_from_str("__fastrender_iter_len")?;
+    rt.define_data_property(iter, len_key, Value::Number(len as f64), false)?;
+
+    let next = rt.alloc_function_value(move |rt, this, _args| {
+      let obj = expect_object(rt, this, "Iterator")?;
+
+      let values_key = rt.property_key_from_str("__fastrender_iter_values")?;
+      let values = rt.get(Value::Object(obj), values_key)?;
+
+      let index_key = rt.property_key_from_str("__fastrender_iter_index")?;
+      let index = rt.get(Value::Object(obj), index_key)?;
+      let Value::Number(index) = index else {
+        return Err(type_error(rt, "Iterator: invalid index"));
+      };
+      if !index.is_finite() || index < 0.0 || index > u32::MAX as f64 {
+        return Err(type_error(rt, "Iterator: invalid index"));
+      }
+      let idx_u32: u32 = index as u32;
+      let idx_usize = idx_u32 as usize;
+
+      let len_key = rt.property_key_from_str("__fastrender_iter_len")?;
+      let len = rt.get(Value::Object(obj), len_key)?;
+      let Value::Number(len) = len else {
+        return Err(type_error(rt, "Iterator: invalid length"));
+      };
+      if !len.is_finite() || len < 0.0 || len > u32::MAX as f64 {
+        return Err(type_error(rt, "Iterator: invalid length"));
+      }
+      let len_u32: u32 = len as u32;
+      let len_usize = len_u32 as usize;
+
+      let (done, value) = if idx_usize >= len_usize {
+        (true, Value::Undefined)
+      } else {
+        let key = rt.property_key_from_u32(idx_u32)?;
+        let value = rt.get(values, key)?;
+
+        // Update `__fastrender_iter_index`.
+        let index_key = rt.property_key_from_str("__fastrender_iter_index")?;
+        rt.define_data_property(
+          Value::Object(obj),
+          index_key,
+          Value::Number((idx_usize + 1) as f64),
+          false,
+        )?;
+        (false, value)
+      };
+
+      let result = rt.alloc_object_value()?;
+      let result_root = rt.heap_mut().add_root(result)?;
+      let done_key = rt.property_key_from_str("done")?;
+      rt.define_data_property(result, done_key, Value::Bool(done), true)?;
+      let value_key = rt.property_key_from_str("value")?;
+      rt.define_data_property(result, value_key, value, true)?;
+      rt.heap_mut().remove_root(result_root);
+      Ok(result)
+    })?;
+    roots.push(rt.heap_mut().add_root(next)?);
+    let next_key = rt.property_key_from_str("next")?;
+    rt.define_data_property(iter, next_key, next, false)?;
+
+    Ok(iter)
+  })();
+
+  for id in roots {
+    rt.heap_mut().remove_root(id);
+  }
+  result
+}
+
 fn expect_object(rt: &mut webidl_js_runtime::VmJsRuntime, this: Value, class_name: &str) -> Result<GcObject, VmError> {
   let Value::Object(obj) = this else {
     return Err(type_error(
@@ -582,13 +671,179 @@ fn init_urlsearchparams_instance(
     })?;
     roots.push(rt.heap_mut().add_root(to_string)?);
 
+    let size_get = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        let size = params.size().map_err(|e| type_error(rt, &e.to_string()))?;
+        Ok(Value::Number(size as f64))
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(size_get)?);
+
+    let sort = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        params.sort().map_err(|e| type_error(rt, &e.to_string()))?;
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(sort)?);
+
+    let entries = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        let pairs = params.pairs().map_err(|e| type_error(rt, &e.to_string()))?;
+
+        let arr = rt.alloc_array()?;
+        let arr_root = rt.heap_mut().add_root(arr)?;
+        for (idx, (name, value)) in pairs.iter().enumerate() {
+          let idx_u32: u32 = idx
+            .try_into()
+            .map_err(|_| type_error(rt, "URLSearchParams.entries: index exceeds u32"))?;
+
+          let pair = rt.alloc_array()?;
+          let pair_root = rt.heap_mut().add_root(pair)?;
+          let name_value = rt.alloc_string_value(name)?;
+          let value_value = rt.alloc_string_value(value)?;
+          let key0 = rt.property_key_from_u32(0)?;
+          rt.define_data_property(pair, key0, name_value, true)?;
+          let key1 = rt.property_key_from_u32(1)?;
+          rt.define_data_property(pair, key1, value_value, true)?;
+          rt.heap_mut().remove_root(pair_root);
+
+          let key = rt.property_key_from_u32(idx_u32)?;
+          rt.define_data_property(arr, key, pair, true)?;
+        }
+        let iter = array_to_iterator(rt, arr, pairs.len());
+        rt.heap_mut().remove_root(arr_root);
+        iter
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(entries)?);
+
+    let keys = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        let pairs = params.pairs().map_err(|e| type_error(rt, &e.to_string()))?;
+
+        let arr = rt.alloc_array()?;
+        let arr_root = rt.heap_mut().add_root(arr)?;
+        for (idx, (name, _)) in pairs.iter().enumerate() {
+          let idx_u32: u32 = idx
+            .try_into()
+            .map_err(|_| type_error(rt, "URLSearchParams.keys: index exceeds u32"))?;
+          let name_value = rt.alloc_string_value(name)?;
+          let key = rt.property_key_from_u32(idx_u32)?;
+          rt.define_data_property(arr, key, name_value, true)?;
+        }
+        let iter = array_to_iterator(rt, arr, pairs.len());
+        rt.heap_mut().remove_root(arr_root);
+        iter
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(keys)?);
+
+    let values = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, _args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        let pairs = params.pairs().map_err(|e| type_error(rt, &e.to_string()))?;
+
+        let arr = rt.alloc_array()?;
+        let arr_root = rt.heap_mut().add_root(arr)?;
+        for (idx, (_, value)) in pairs.iter().enumerate() {
+          let idx_u32: u32 = idx
+            .try_into()
+            .map_err(|_| type_error(rt, "URLSearchParams.values: index exceeds u32"))?;
+          let value_value = rt.alloc_string_value(value)?;
+          let key = rt.property_key_from_u32(idx_u32)?;
+          rt.define_data_property(arr, key, value_value, true)?;
+        }
+        let iter = array_to_iterator(rt, arr, pairs.len());
+        rt.heap_mut().remove_root(arr_root);
+        iter
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(values)?);
+
+    let for_each = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, this, args| {
+        let obj = expect_object(rt, this, "URLSearchParams")?;
+        let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+        if !rt.is_callable(callback) {
+          return Err(type_error(rt, "URLSearchParams.forEach callback is not a function"));
+        }
+        let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+
+        let params = state
+          .borrow()
+          .search_params
+          .get(&obj)
+          .ok_or_else(|| type_error(rt, "URLSearchParams: illegal invocation"))?
+          .clone();
+        let pairs = params.pairs().map_err(|e| type_error(rt, &e.to_string()))?;
+
+        for (name, value) in pairs {
+          let value_value = rt.alloc_string_value(&value)?;
+          let name_value = rt.alloc_string_value(&name)?;
+          rt.call_function(callback, this_arg, &[value_value, name_value, Value::Object(obj)])?;
+        }
+        Ok(Value::Undefined)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(for_each)?);
+
     define_method(rt, obj, "append", append)?;
     define_method(rt, obj, "delete", delete)?;
     define_method(rt, obj, "get", get)?;
     define_method(rt, obj, "getAll", get_all)?;
     define_method(rt, obj, "has", has)?;
     define_method(rt, obj, "set", set)?;
+    define_accessor(rt, obj, "size", size_get, Value::Undefined)?;
+    define_method(rt, obj, "sort", sort)?;
     define_method(rt, obj, "toString", to_string)?;
+    define_method(rt, obj, "entries", entries)?;
+    define_method(rt, obj, "keys", keys)?;
+    define_method(rt, obj, "values", values)?;
+    define_method(rt, obj, "forEach", for_each)?;
+
+    let iter_key = rt.symbol_iterator()?;
+    rt.define_data_property(obj, iter_key, entries, false)?;
 
     Ok(())
   })();
@@ -640,6 +895,50 @@ pub fn install_url_bindings(
     })?;
     roots.push(rt.heap_mut().add_root(url_ctor)?);
 
+    let url_parse = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, _this, args| {
+        let input = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let base_value = args.get(1).copied();
+        let base = match base_value {
+          None | Some(Value::Undefined) => None,
+          Some(v) => Some(to_rust_string(rt, v)?),
+        };
+
+        let limits = { state.borrow().limits.clone() };
+        let url = match Url::parse_without_diagnostics(&input, base.as_deref(), &limits) {
+          Ok(url) => url,
+          Err(_) => return Ok(Value::Null),
+        };
+
+        let obj = rt.alloc_object_value()?;
+        let Value::Object(obj_handle) = obj else {
+          return Err(type_error(rt, "URL: expected object"));
+        };
+
+        state.borrow_mut().urls.insert(obj_handle, UrlInstance { url });
+        init_url_instance(rt, state.clone(), obj)?;
+        Ok(obj)
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(url_parse)?);
+
+    let url_can_parse = rt.alloc_function_value({
+      let state = state.clone();
+      move |rt, _this, args| {
+        let input = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+        let base_value = args.get(1).copied();
+        let base = match base_value {
+          None | Some(Value::Undefined) => None,
+          Some(v) => Some(to_rust_string(rt, v)?),
+        };
+
+        let limits = { state.borrow().limits.clone() };
+        Ok(Value::Bool(Url::can_parse(&input, base.as_deref(), &limits)))
+      }
+    })?;
+    roots.push(rt.heap_mut().add_root(url_can_parse)?);
+
     let url_search_params_ctor = rt.alloc_function_value({
       let state = state.clone();
       move |rt, _this, args| {
@@ -659,6 +958,9 @@ pub fn install_url_bindings(
       }
     })?;
     roots.push(rt.heap_mut().add_root(url_search_params_ctor)?);
+
+    define_method(rt, url_ctor, "parse", url_parse)?;
+    define_method(rt, url_ctor, "canParse", url_can_parse)?;
 
     let url_key = to_property_key(rt, "URL")?;
     rt.define_data_property(global, url_key, url_ctor, false)?;

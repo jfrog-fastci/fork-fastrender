@@ -1,6 +1,6 @@
 use fastrender::js::{
   install_url_bindings,
-  webidl::{JsRuntime as _, VmJsRuntime},
+  webidl::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _},
 };
 use vm_js::{HeapLimits, PropertyKey, Value};
 use webidl_js_runtime::runtime::JsPropertyKind;
@@ -57,6 +57,39 @@ fn new_url(rt: &mut VmJsRuntime, global: Value, input: &str, base: Option<&str>)
     args.push(str_val(rt, base));
   }
   call(rt, url_ctor, Value::Undefined, &args)
+}
+
+fn new_url_search_params(rt: &mut VmJsRuntime, global: Value, init: Option<&str>) -> Value {
+  let ctor = get(rt, global, "URLSearchParams");
+  let args = init.map(|s| vec![str_val(rt, s)]).unwrap_or_default();
+  call(rt, ctor, Value::Undefined, &args)
+}
+
+#[test]
+fn url_parse_and_can_parse() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let url_ctor = get(&mut rt, global, "URL");
+  let foo = str_val(&mut rt, "foo");
+  let base = str_val(&mut rt, "https://example.com/base");
+  let parsed = call_method(&mut rt, url_ctor, "parse", &[foo, base]);
+  let href = get(&mut rt, parsed, "href");
+  assert_eq!(as_rust_string(&rt, href), "https://example.com/foo");
+
+  let not_a_url = str_val(&mut rt, "not a url");
+  let invalid = call_method(&mut rt, url_ctor, "parse", &[not_a_url]);
+  assert_eq!(invalid, Value::Null);
+
+  let foo = str_val(&mut rt, "foo");
+  let base = str_val(&mut rt, "https://example.com/base");
+  let can_parse = call_method(&mut rt, url_ctor, "canParse", &[foo, base]);
+  assert_eq!(can_parse, Value::Bool(true));
+
+  let not_a_url = str_val(&mut rt, "not a url");
+  let can_parse = call_method(&mut rt, url_ctor, "canParse", &[not_a_url]);
+  assert_eq!(can_parse, Value::Bool(false));
 }
 
 #[test]
@@ -182,6 +215,41 @@ fn searchparams_get_all_returns_array_with_length_semantics() {
 }
 
 #[test]
+fn urlsearchparams_size_sort_and_iteration() {
+  let mut rt = VmJsRuntime::new();
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  let params = new_url_search_params(&mut rt, global, Some("b=2&a=1&a=0"));
+  let size = get(&mut rt, params, "size");
+  assert_eq!(size, Value::Number(3.0));
+
+  // Symbol.iterator should alias `entries`.
+  let iter_key = rt.symbol_iterator().unwrap();
+  let iter_method = rt.get(params, iter_key).unwrap();
+  let entries = get(&mut rt, params, "entries");
+  assert_eq!(iter_method, entries);
+
+  // Iterate via the WebIDL iterator hooks (equivalent to `for...of`).
+  let mut record = rt.get_iterator_from_method(params, iter_method).unwrap();
+  let mut out: Vec<String> = Vec::new();
+  while let Some(pair) = rt.iterator_step_value(&mut record).unwrap() {
+    let key = get(&mut rt, pair, "0");
+    let value = get(&mut rt, pair, "1");
+    out.push(format!(
+      "{}={}",
+      as_rust_string(&rt, key),
+      as_rust_string(&rt, value)
+    ));
+  }
+  assert_eq!(out.join("&"), "b=2&a=1&a=0");
+
+  call_method(&mut rt, params, "sort", &[]);
+  let sorted = call_method(&mut rt, params, "toString", &[]);
+  assert_eq!(as_rust_string(&rt, sorted), "a=1&a=0&b=2");
+}
+
+#[test]
 fn url_instance_initialization_survives_gc_pressure() {
   // Force a GC cycle before essentially every heap allocation to ensure that instance
   // initialization doesn't rely on Rust locals being traced.
@@ -224,4 +292,3 @@ fn url_instance_initialization_survives_gc_pressure() {
   rt.heap_mut().remove_root(url_root);
   rt.heap_mut().remove_root(global_root);
 }
-
