@@ -4,10 +4,12 @@
 //! wrappers that hold/own these Rust types and expose WebIDL behavior.
 
 mod body;
+mod adapter;
 mod headers;
 mod request;
 mod response;
 
+pub use adapter::{execute_web_fetch, WebFetchExecutionContext};
 pub use body::Body;
 pub use headers::{Headers, HeadersGuard};
 pub use request::{ReferrerPolicy, Request, RequestCredentials, RequestMode, RequestRedirect};
