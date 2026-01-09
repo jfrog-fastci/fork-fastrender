@@ -7,7 +7,7 @@
 AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
 
 **MANDATORY (no exceptions):**
-- Use `scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
 - Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
@@ -58,7 +58,7 @@ Note: keep UI dependencies behind a feature gate so the core renderer stays lean
 Run it with:
 
 ```bash
-cargo run --features browser_ui --bin browser
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 ```
 
 ### 2) UI framework choice

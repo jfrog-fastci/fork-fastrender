@@ -15,7 +15,7 @@ In practice this shows up as:
 Both of these entrypoints apply the same workaround:
 
 - `scripts/chrome_baseline.sh` (pageset baseline screenshots)
-- `cargo xtask chrome-baseline-fixtures` / `scripts/chrome_fixture_baseline.sh` (offline fixtures)
+- `bash scripts/cargo_agent.sh xtask chrome-baseline-fixtures` / `scripts/chrome_fixture_baseline.sh` (offline fixtures)
 
 The workaround is:
 

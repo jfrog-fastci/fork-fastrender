@@ -26,17 +26,17 @@ git -C engines/ecma-rs submodule update --init test262-semantic/data
 From the FastRender repo root:
 
 ```bash
-cargo xtask js test262
+bash scripts/cargo_agent.sh xtask js test262
 ```
 
-`cargo xtask js test262` is a thin wrapper over the **ecma-rs**
+`bash scripts/cargo_agent.sh xtask js test262` is a thin wrapper over the **ecma-rs**
 [`test262-semantic`](../engines/ecma-rs/test262-semantic/README.md) runner. It forwards the actual
 test execution/reporting to the submodule and pins the corpus directory via:
 `--test262-dir engines/ecma-rs/test262-semantic/data`.
 
-Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child `cargo run -p
-test262-semantic ...` invocation is intentionally **not** run with `--locked` (even if you run the
-top-level xtask with `--locked`).
+Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child invocation inside
+the submodule is intentionally **not** run with `--locked` (even if you run the top-level xtask with
+`--locked`).
 
 By default, the runner writes a JSON report to:
 
@@ -44,7 +44,7 @@ By default, the runner writes a JSON report to:
 target/js/test262.json
 ```
 
-Run `cargo xtask js test262 --help` for the full, authoritative CLI (this doc only calls out the
+Run `bash scripts/cargo_agent.sh xtask js test262 --help` for the full, authoritative CLI (this doc only calls out the
 flags we use the most).
 
 ## Key flags

@@ -586,7 +586,10 @@ impl Evaluator<'_> {
         self
           .env
           .set(scope.heap_mut(), name, value)
-          .map_err(vm_error_to_runtime)?;
+          .map_err(|err| ScriptError::Runtime {
+            message: err.to_string(),
+            stack_trace: self.stack_trace_at_loc(node.loc),
+          })?;
         Ok(value)
       }
       _ => Err(ScriptError::Runtime {

@@ -8,7 +8,7 @@ project lint that scans the Rust sources and fails CI if *new* panic sites are i
 ## Running
 
 ```bash
-cargo xtask lint-no-panics
+bash scripts/cargo_agent.sh xtask lint-no-panics
 ```
 
 This scans `src/` and reports any new occurrences of:
@@ -31,12 +31,12 @@ The repository currently contains some legacy panic sites. These are tracked in:
 
 - `tools/no_panics_baseline.json`
 
-`cargo xtask lint-no-panics` fails only when **new** violations appear beyond that baseline.
+`bash scripts/cargo_agent.sh xtask lint-no-panics` fails only when **new** violations appear beyond that baseline.
 
 After you remove existing violations, regenerate the baseline and commit the updated file:
 
 ```bash
-cargo xtask lint-no-panics --update-baseline
+bash scripts/cargo_agent.sh xtask lint-no-panics --update-baseline
 ```
 
 ## Audited exceptions (use sparingly)

@@ -14,10 +14,10 @@ enabled by default.
 
 ```bash
 # Debug build:
-cargo run --features browser_ui --bin browser
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser
 
 # Release build:
-cargo run --release --features browser_ui --bin browser
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
 If you try to build/run it without the feature, Cargo will refuse because the target has
@@ -27,7 +27,7 @@ When running the browser UI against arbitrary real-world pages, consider using t
 limit wrapper (especially on multi-agent hosts):
 
 ```bash
-scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --bin browser
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --features browser_ui --bin browser
 ```
 
 The `browser` binary also supports an in-process, best-effort address-space cap via

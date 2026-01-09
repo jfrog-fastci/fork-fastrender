@@ -24,31 +24,32 @@ Use the repo helper which prefers `prlimit` and falls back to `ulimit`:
 
 ```bash
 scripts/run_limited.sh --as 64G -- \
-  cargo bench --bench selector_bloom_bench
+  bash scripts/cargo_agent.sh bench --bench selector_bloom_bench
 ```
 
 If your checkout lost executable bits, invoke the wrapper explicitly with bash:
 
 ```bash
-bash scripts/run_limited.sh --as 64G -- cargo --version
+bash scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh --version
 ```
 
 If `cargo` itself fails early with an `out of memory` message, bump `--as` (the Rust toolchain can
 reserve a surprisingly large amount of virtual address space even when RSS is low).
 
-If `cargo test` OOMs during the final link step under a tight `--as` cap, try disabling debug info
+If `bash scripts/cargo_agent.sh test` OOMs during the final link step under a tight `--as` cap, try disabling debug info
 for the test profile (debug symbols can make large test binaries significantly more expensive to
 link):
 
 ```bash
 CARGO_PROFILE_TEST_DEBUG=0 scripts/run_limited.sh --as 12G --cpu 60 -- \
-  cargo test -j 1 --quiet --lib
+  bash scripts/cargo_agent.sh test -j 1 --quiet --lib
 ```
 
 You can also set defaults via environment variables:
 
 ```bash
-LIMIT_AS=64G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
+LIMIT_AS=64G scripts/run_limited.sh -- \
+  bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 ### A. `prlimit`
@@ -58,13 +59,13 @@ If `prlimit` is available (usually via `util-linux`), it can cap address-space:
 ```bash
 # Note: `prlimit` expects raw byte counts; size suffixes (e.g. 64G) are not universally supported.
 prlimit --as=$((64 * 1024 * 1024 * 1024)) --rss=$((64 * 1024 * 1024 * 1024)) -- \
-  cargo run --release --bin pageset_progress -- run --timeout 5
+  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 Notes:
 - `--as` (virtual address space) is the most reliable “hard memory ceiling”.
 - `--rss` is not reliably enforced on all kernels; treat it as advisory.
-- Cap `cargo` itself if you are running “cargo run”; `cargo` spawns child processes and inherits limits.
+- Cap `cargo` itself if you are running “scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run”; `cargo` spawns child processes and inherits limits.
   - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=64G`). Prefer raw byte
     counts or use `scripts/run_limited.sh`, which converts suffixes to bytes automatically.
 
@@ -85,7 +86,7 @@ If systemd is available:
 
 ```bash
 systemd-run --user -p MemoryMax=64G -- \
-  cargo run --release --bin pageset_progress -- run --timeout 5
+  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 This is the most robust approach for multi-agent environments.
@@ -114,7 +115,7 @@ Examples:
 
 ```bash
 # 64 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 8 GiB RSS
-cargo run --release --bin pageset_progress -- run \
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run \
   --mem-limit-mb 65536 \
   --stage-mem-budget-mb 8192
 ```
@@ -144,22 +145,22 @@ When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics b
 ### Cargo builds/tests (avoid stampedes)
 
 Too many agents running `cargo` concurrently can spawn thousands of `rustc`/`rust-lld` processes and blow up RAM.
-Use the repo wrapper `scripts/cargo_agent.sh`, which:
+Use the repo wrapper `bash scripts/cargo_agent.sh`, which:
 - throttles concurrent cargo invocations with lock “slots”
 - enforces an address-space cap by default (`--as 64G`), without CPU limiting
 
 Example:
 
 ```bash
-scripts/cargo_agent.sh build --release
-scripts/cargo_agent.sh test --lib
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test --lib
 ```
 
 (`bash scripts/cargo_agent.sh ...` also works if the executable bit isn't set.)
 
 ## Bench safety
 
-Agents occasionally run `cargo bench`. A single pathological benchmark can OOM the host.
+Agents occasionally run `bash scripts/cargo_agent.sh bench`. A single pathological benchmark can OOM the host.
 Benchmarks must be **safe-by-default**: bounded memory/CPU even when inputs (env vars, fixture
 files) are hostile.
 
@@ -193,5 +194,5 @@ an OS-enforced ceiling. Prefer:
 
 ```bash
 FASTR_BENCH_VERBOSE=1 scripts/run_limited.sh --as 64G -- \
-  cargo bench --bench selector_bloom_bench -- --noplot
+  bash scripts/cargo_agent.sh bench --bench selector_bloom_bench -- --noplot
 ```

@@ -15,11 +15,11 @@ Warm caches (HTML + disk cache) for the chosen pages:
 
 ```bash
 # `fetch_pages` only caches HTML; it does not require the `disk_cache` feature.
-cargo build --release --bin fetch_pages
-target/release/fetch_pages --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
+bash scripts/cargo_agent.sh build --release --bin fetch_pages
+scripts/run_limited.sh --as 64G -- target/release/fetch_pages --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
 
-cargo build --release --features disk_cache --bin prefetch_assets
-target/release/prefetch_assets --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
+bash scripts/cargo_agent.sh build --release --features disk_cache --bin prefetch_assets
+scripts/run_limited.sh --as 64G -- target/release/prefetch_assets --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
 ```
 
 Build a symbolized `pageset_progress` binary suitable for profiling:
@@ -27,7 +27,7 @@ Build a symbolized `pageset_progress` binary suitable for profiling:
 ```bash
 CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none \
   RUSTFLAGS='-C force-frame-pointers=yes' \
-  cargo build --release --features disk_cache --bin pageset_progress
+  bash scripts/cargo_agent.sh build --release --features disk_cache --bin pageset_progress
 ```
 
 Record profiles (writes `target/pageset/profiles/<stem>-<timestamp>.profile.json.gz`):
@@ -51,7 +51,7 @@ python3 scripts/samply_summary.py <profile.json.gz> --top 25 \
 
 `scripts/profile_samply.sh` attempts to save a sibling `<profile-stem>.pageset_progress` binary
 (hardlink by default) alongside the `.profile.json.gz` so you can re-run summaries later even if
-`cargo build` overwrites `target/release/pageset_progress`. Set `PROFILE_SAVE_BINARY=0` to disable.
+`bash scripts/cargo_agent.sh build` overwrites `target/release/pageset_progress`. Set `PROFILE_SAVE_BINARY=0` to disable.
 
 To map individual addresses to symbols / file+line by hand, use `llvm-addr2line` (include `-i` to
 show inlined frames):

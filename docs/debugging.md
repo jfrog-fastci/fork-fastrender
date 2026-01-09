@@ -34,7 +34,7 @@ Example (pageset loop, targeted):
 
 ```bash
 FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 FASTR_HTTP_LOG_RETRIES=1 \
-  cargo xtask pageset --pages tesco.com,washingtonpost.com
+  bash scripts/cargo_agent.sh xtask pageset --pages tesco.com,washingtonpost.com
 ```
 
 ## inspect_frag overlays and dumps
@@ -48,7 +48,7 @@ When iterating on a single offline fixture under `tests/pages/fixtures/<stem>/in
 one-command driver:
 
 ```bash
-cargo xtask page-loop --fixture bbc.co.uk --overlay --write-snapshot --chrome
+bash scripts/cargo_agent.sh xtask page-loop --fixture bbc.co.uk --overlay --write-snapshot --chrome
 ```
 
 Artifacts are written under `target/page_loop/<stem>/`:
@@ -86,14 +86,14 @@ Use `--viewport`, `--dpr`, and `--media screen|print` to align FastRender, overl
 Dump the first 400 paint commands:
 
 ```bash
-FASTR_DUMP_COMMANDS=400 cargo run --release --bin render_pages -- --pages news.ycombinator.com
+FASTR_DUMP_COMMANDS=400 scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages -- --pages news.ycombinator.com
 ```
 
 Log timings + fragment bounds for a single render:
 
 ```bash
 FASTR_RENDER_TIMINGS=1 FASTR_LOG_FRAG_BOUNDS=1 \
-  cargo run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
+  scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png --timeout 20
 ```
 
 ## Chrome/Perfetto traces from `pageset_progress`
@@ -113,10 +113,10 @@ To turn the committed `progress/pages/*.json` scoreboard (timings/hotspots/accur
 
 ```bash
 # Optional: generate/update the fixture diff report first.
-cargo xtask fixture-chrome-diff --from-progress progress/pages --only-failures --top-worst-accuracy 20
+bash scripts/cargo_agent.sh xtask fixture-chrome-diff --from-progress progress/pages --only-failures --top-worst-accuracy 20
 
 # Generate the triage markdown (no rendering; pure file processing).
-cargo xtask pageset-triage \
+bash scripts/cargo_agent.sh xtask pageset-triage \
   --progress-dir progress/pages \
   --report target/fixture_chrome_diff/report.json
 

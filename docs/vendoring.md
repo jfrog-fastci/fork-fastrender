@@ -30,4 +30,4 @@ If you update `vendor/taffy/`, re-audit and re-apply local changes:
 
 1. Replace `vendor/taffy/` with the new upstream version
 2. Search for `// MODIFIED:` markers in the old copy and port them forward (or drop if upstream fixed them)
-3. Run: `cargo test --quiet`
+3. Run: `bash scripts/cargo_agent.sh test --quiet`

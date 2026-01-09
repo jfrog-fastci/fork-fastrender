@@ -7,7 +7,7 @@ This doc is about **getting actionable profiles quickly** for FastRender’s Rus
 - **Update pageset scoreboard** (safe timeouts/panic containment):
 
 ```bash
-cargo run --release --bin pageset_progress -- run --timeout 5
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5
 ```
 
 - Convenience wrappers (see `scripts/`):
@@ -24,11 +24,11 @@ cargo run --release --bin pageset_progress -- run --timeout 5
 # Build a symbolized binary (release-like but profiled)
 CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none \
   RUSTFLAGS="-C force-frame-pointers=yes" \
-  cargo build --release --bin pageset_progress
+  bash scripts/cargo_agent.sh build --release --bin pageset_progress
 
 # Terminal-only friendly: save to file, don't auto-open a browser.
 samply record --save-only --no-open -o target/pageset/profiles/example.profile.json.gz -- \
-  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 
 # View later (on a machine with a browser):
 samply load target/pageset/profiles/example.profile.json.gz
@@ -58,13 +58,13 @@ If you can’t change system settings, you can still use some tools, but call st
 Use env overrides while profiling:
 
 ```bash
-CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none cargo build --release
+CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none bash scripts/cargo_agent.sh build --release
 ```
 
 For better stacks with `perf --call-graph fp`, also force frame pointers:
 
 ```bash
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release
+RUSTFLAGS="-C force-frame-pointers=yes" bash scripts/cargo_agent.sh build --release
 ```
 
 ## 1. CPU profiling
@@ -74,14 +74,14 @@ RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release
 Install:
 
 ```bash
-cargo install --locked samply
+bash scripts/cargo_agent.sh install --locked samply
 ```
 
 Record a profile:
 
 ```bash
 samply record --save-only --no-open -o target/pageset/profiles/example.profile.json.gz -- \
-  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 Open it later (on a machine with a browser):
@@ -118,14 +118,14 @@ Samply uses the Firefox Profiler UI. Use it to find:
 Quick counters:
 
 ```bash
-perf stat -d -d -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+perf stat -d -d -- scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 Sampled CPU profile (DWARF call stacks):
 
 ```bash
 perf record -F 99 --call-graph dwarf -- \
-  target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+  scripts/run_limited.sh --as 64G -- target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 perf report
 ```
 
@@ -138,14 +138,14 @@ Notes:
 Install:
 
 ```bash
-cargo install cargo-flamegraph
+bash scripts/cargo_agent.sh install cargo-flamegraph
 ```
 
 Run (builds + records + generates a flamegraph):
 
 ```bash
 CARGO_PROFILE_RELEASE_DEBUG=1 CARGO_PROFILE_RELEASE_STRIP=none \
-  cargo flamegraph --bin pageset_progress -- run --jobs 1 --pages example.com --timeout 5
+  bash scripts/cargo_agent.sh flamegraph --bin pageset_progress -- run --jobs 1 --pages example.com --timeout 5
 ```
 
 ## 2. Trace-style profiling (pipeline spans)
@@ -155,7 +155,7 @@ FastRender can emit Chrome-trace JSON. This is great when you need **stage attri
 - **One-off trace**: run a trace rerender via `pageset_progress`:
 
 ```bash
-cargo run --release --bin pageset_progress -- run --timeout 5 --trace-failures
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin pageset_progress -- run --timeout 5 --trace-failures
 ```
 
 - **Inspect**: open the trace in either:
@@ -174,7 +174,7 @@ When performance issues look like “lots of allocations / big peak RSS”, use:
 Example with heaptrack:
 
 ```bash
-heaptrack target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
+scripts/run_limited.sh --as 64G -- heaptrack target/release/pageset_progress run --jobs 1 --pages example.com --timeout 5
 ```
 
 ## 4. What to do with profiles (workflow)

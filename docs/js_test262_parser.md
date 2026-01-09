@@ -24,7 +24,7 @@ git -C engines/ecma-rs submodule update --init test262/data
 From the FastRender repo root:
 
 ```bash
-cargo xtask js test262-parser
+bash scripts/cargo_agent.sh xtask js test262-parser
 ```
 
 By default, the runner writes a JSON report to:
@@ -33,7 +33,7 @@ By default, the runner writes a JSON report to:
 target/js/test262-parser.json
 ```
 
-Run `cargo xtask js test262-parser --help` for the full, authoritative CLI (this doc only calls out
+Run `bash scripts/cargo_agent.sh xtask js test262-parser --help` for the full, authoritative CLI (this doc only calls out
 the flags we use the most).
 
 ## Key flags
@@ -49,4 +49,3 @@ the flags we use the most).
     - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
     - `all`: fail on any mismatch (including expected/xfail/flaky).
     - `none`: always exit 0 (useful for generating reports while iterating).
-

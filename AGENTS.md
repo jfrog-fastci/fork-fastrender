@@ -43,7 +43,7 @@ FastRender runs on hostile inputs. Any run can go pathological. **Always enforce
 For anything that executes the renderer (pages, fixtures, benches, fuzz, etc.), run under OS caps:
 
 ```bash
-scripts/run_limited.sh --as 64G -- cargo run --release --bin fetch_and_render -- <args...>
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
 Prefer in-process guardrails when a CLI supports them (e.g. `--mem-limit-mb`, stage budgets), but **OS caps are still required**.
@@ -62,15 +62,15 @@ See: `docs/resource-limits.md`
 - ANY command that compiles all 100+ targets
 
 **MANDATORY:**
-- **Always use `scripts/cargo_agent.sh`** for all cargo commands
+- **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
 - **Always scope test runs**: `-p <crate>`, `--test <name>`, `--lib`, or `--bin <name>`
 
 ```bash
 # CORRECT:
-scripts/cargo_agent.sh build --release
-scripts/cargo_agent.sh test --quiet --lib
-scripts/cargo_agent.sh test --test layout_tests
-scripts/cargo_agent.sh check -p fastrender
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test --quiet --lib
+bash scripts/cargo_agent.sh test --test layout_tests
+bash scripts/cargo_agent.sh check -p fastrender
 
 # WRONG — WILL DESTROY HOST:
 cargo test
@@ -92,8 +92,8 @@ if [[ -d target ]]; then
   size_kib="$(du -sk target 2>/dev/null | cut -f1 || echo 0)"
   size_bytes=$((size_kib * 1024))
   if [[ "${size_bytes}" -ge "${TARGET_MAX_BYTES}" ]]; then
-    echo "target/ exceeds ${TARGET_MAX_GB}GB budget; running cargo clean..." >&2
-    cargo clean
+    echo "target/ exceeds ${TARGET_MAX_GB}GB budget; running cargo clean (via scripts/cargo_agent.sh)..." >&2
+    bash scripts/cargo_agent.sh clean
     du -xsh target 2>/dev/null || true
   fi
 fi

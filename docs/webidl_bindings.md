@@ -21,11 +21,11 @@ how to update it.
   - Resolution: merges `partial interface`/`partial dictionary` and applies `includes`, with stable
     ordering rules.
 - **Codegen driver**: `xtask/src/webidl_codegen.rs`
-  - Wired up as `cargo xtask webidl` (alias for `cargo xtask web-idl-codegen`).
+  - Wired up as `bash scripts/cargo_agent.sh xtask webidl` (alias for `bash scripts/cargo_agent.sh xtask web-idl-codegen`).
 
 ## The pipeline (extract → resolve → generate)
 
-The `cargo xtask webidl` command runs the full pipeline end-to-end:
+The `bash scripts/cargo_agent.sh xtask webidl` command runs the full pipeline end-to-end:
 
 1. **Load + extract** IDL blocks from vendored sources:
    - Prelude/overrides:
@@ -58,7 +58,7 @@ git submodule update --init \
 Then run:
 
 ```bash
-cargo xtask webidl
+bash scripts/cargo_agent.sh xtask webidl
 ```
 
 This overwrites `src/webidl/generated/mod.rs`. Commit the result.
@@ -68,7 +68,7 @@ This overwrites `src/webidl/generated/mod.rs`. Commit the result.
 To verify the generated snapshot is up to date without writing anything:
 
 ```bash
-cargo xtask webidl --check
+bash scripts/cargo_agent.sh xtask webidl --check
 ```
 
 Notes:
@@ -82,7 +82,7 @@ Notes:
 The command supports explicit paths (mostly useful for debugging):
 
 ```bash
-cargo xtask webidl \
+bash scripts/cargo_agent.sh xtask webidl \
   --dom-source specs/whatwg-dom/dom.bs \
   --html-source specs/whatwg-html/source \
   --url-source specs/whatwg-url/url.bs \
@@ -123,7 +123,7 @@ To pull in additional WebIDL sources (WebSockets/etc.), you will need to:
 2. Extend `xtask/src/webidl_codegen.rs` to include the source in the call to
    `xtask::webidl::load::load_combined_webidl` (and update the header comment in
    `xtask/src/webidl/generate.rs`).
-3. Re-run `cargo xtask webidl` and commit the updated `src/webidl/generated/mod.rs`.
+3. Re-run `bash scripts/cargo_agent.sh xtask webidl` and commit the updated `src/webidl/generated/mod.rs`.
 
 Downstream binding generation (Rust glue / JS-visible APIs) should treat the snapshot as the source
 of truth for *shape* (members, overload sets, extended attributes) and implement behavior in Rust.

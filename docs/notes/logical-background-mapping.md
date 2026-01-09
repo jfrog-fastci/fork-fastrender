@@ -16,4 +16,4 @@ Logical `background-position-*` and `background-size-*` longhands map to physica
 
 ## Verification
 
-- `cargo test --quiet --test style_tests -- background_position_logical`
+- `bash scripts/cargo_agent.sh test --quiet --test style_tests -- background_position_logical`

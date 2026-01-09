@@ -141,7 +141,6 @@ impl VmJsRuntime {
         }
         return Err(VmError::InvalidHandle);
       }
-
       match self.heap.add_root(v) {
         Ok(id) => root_ids.push(id),
         Err(e) => {

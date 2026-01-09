@@ -2,24 +2,24 @@
 
 This page describes how to build, test, and run the renderer using the repo as it exists today.
 
-## Quick workflows (xtask)
+## Quick workflows (`bash scripts/cargo_agent.sh xtask`)
 
 Use the `xtask` wrapper for common local loops:
 
-- Test: `scripts/cargo_agent.sh run -p xtask -- test [core|style|fixtures|wpt|all]` (default: `core`)
-- Refresh goldens: `scripts/cargo_agent.sh run -p xtask -- update-goldens [all|fixtures|reference|wpt]`
-- Update pageset scoreboard: `scripts/cargo_agent.sh run -p xtask -- pageset` (add `--capture-missing-failure-fixtures` to auto-import offline fixtures for failing pages from warmed caches)
-- Render a page: `scripts/cargo_agent.sh run -p xtask -- render-page --url https://example.com --output out.png`
-- Diff renders: `scripts/cargo_agent.sh run -p xtask -- diff-renders --before fetches/renders/baseline --after fetches/renders/new`
-- Deterministic fixture-vs-Chrome evidence report (offline): `scripts/cargo_agent.sh run -p xtask -- fixture-chrome-diff` (writes `target/fixture_chrome_diff/report.html`; pass `--no-build` to reuse an existing `target/release/diff_renders` binary)
-- Recapture offline page fixtures from a manifest (pageset guardrails by default): `scripts/cargo_agent.sh run -p xtask -- recapture-page-fixtures`
-- Validate that offline page fixtures do not reference network resources: `scripts/cargo_agent.sh run -p xtask -- validate-page-fixtures`
+- Test: `bash scripts/cargo_agent.sh xtask test [core|style|fixtures|wpt|all]` (default: `core`)
+- Refresh goldens: `bash scripts/cargo_agent.sh xtask update-goldens [all|fixtures|reference|wpt]`
+- Update pageset scoreboard: `bash scripts/cargo_agent.sh xtask pageset` (add `--capture-missing-failure-fixtures` to auto-import offline fixtures for failing pages from warmed caches)
+- Render a page: `bash scripts/cargo_agent.sh xtask render-page --url https://example.com --output out.png`
+- Diff renders: `bash scripts/cargo_agent.sh xtask diff-renders --before fetches/renders/baseline --after fetches/renders/new`
+- Deterministic fixture-vs-Chrome evidence report (offline): `bash scripts/cargo_agent.sh xtask fixture-chrome-diff` (writes `target/fixture_chrome_diff/report.html`; pass `--no-build` to reuse an existing `target/release/diff_renders` binary)
+- Recapture offline page fixtures from a manifest (pageset guardrails by default): `bash scripts/cargo_agent.sh xtask recapture-page-fixtures`
+- Validate that offline page fixtures do not reference network resources: `bash scripts/cargo_agent.sh xtask validate-page-fixtures`
 - Cached-pages Chrome-vs-FastRender evidence report (best-effort): `scripts/chrome_vs_fastrender.sh --pages example.com` (writes `target/chrome_vs_fastrender/report.html` by default)
 
-Safety note: helper scripts in `scripts/` already run Cargo via `scripts/cargo_agent.sh` (which enforces
+Safety note: helper scripts in `scripts/` already run Cargo via `bash scripts/cargo_agent.sh` (which enforces
 resource limits via `scripts/run_limited.sh`).
 
-`scripts/cargo_agent.sh run -p xtask -- --help` and per-subcommand help describe available flags and defaults.
+`bash scripts/cargo_agent.sh xtask --help` and per-subcommand help describe available flags and defaults.
 
 Note on offline vs network:
 - `pageset` wrappers and `fetch_pages` use the network by default. Pass `--no-fetch` to the wrappers to reuse cached HTML; `fetch_pages` itself skips URLs already cached under `fetches/html/` unless you pass `--refresh`.
@@ -42,16 +42,16 @@ scripts/pageset.sh
 
 ## Build & test
 
-- Build: `scripts/cargo_agent.sh build`
-- Tests (scoped): `scripts/cargo_agent.sh test -p fastrender --quiet --lib`
-- Style regression harness: `scripts/cargo_agent.sh test -p fastrender --quiet --test style_tests`
+- Build: `bash scripts/cargo_agent.sh build`
+- Tests (scoped): `bash scripts/cargo_agent.sh test -p fastrender --quiet --lib`
+- Style regression harness: `bash scripts/cargo_agent.sh test -p fastrender --quiet --test style_tests`
 
 ## Render real pages (batch)
 
 FastRender’s real-page loop is:
 
-1. Fetch pages (network): `scripts/cargo_agent.sh run --release --bin fetch_pages`
-2. Render cached pages (HTML from cache; subresources fetched/cached as needed): `scripts/cargo_agent.sh run --release --bin render_pages`
+1. Fetch pages (network): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_pages`
+2. Render cached pages (HTML from cache; subresources fetched/cached as needed): `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin render_pages`
 3. Inspect outputs under `fetches/renders/` (PNGs + per-page logs + `_summary.log`)
 
 For large runs, both `fetch_pages` and `render_pages` accept `--shard <index>/<total>` to process a deterministic slice of the page list (0-based shard indices).
@@ -63,20 +63,20 @@ Cache layout:
 
 ## Render a single page
 
-- `scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png`
+- `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- https://example.com out.png`
 
 `fetch_and_render` supports `file://…` inputs for local repros. Run with `--help` for the full flag list.
 
 ## Capture and replay a self-contained bundle
 
 - Fetch and bundle (captures HTML + subresources + metadata):  
-  `scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir`
+  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir`
 - When full rendering crashes or times out, you can still capture a best-effort offline bundle by
   crawling HTML + CSS for subresources (no layout/paint):  
-  `scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
+  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- fetch <url> --out capture_dir --no-render`
   - Optional: bound per-request fetch time with `--fetch-timeout-secs <secs>`.
 - Render strictly from the bundle without touching the network:  
-  `scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
+  `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundle_page -- render capture_dir --out output.png`
 
 Bundles are deterministic directories or `.tar` archives containing:
 - Raw document bytes with content-type and final URL
@@ -101,6 +101,6 @@ with the visual viewport used for `device-*` media features.
 
 The `inspect_frag` binary is the main “what happened?” tool:
 
-- `scripts/cargo_agent.sh run --release --bin inspect_frag -- file:///abs/path/to/file.html`
+- `scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin inspect_frag -- file:///abs/path/to/file.html`
 
 It is designed for inspecting fragments and style/layout decisions on a single input.

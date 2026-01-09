@@ -22,13 +22,13 @@ To make bundled-font subset decisions data-driven, use the offline coverage audi
 
 ```bash
 # Scan all cached pageset HTML under fetches/html/ using bundled fonts only.
-cargo run --release --bin bundled_font_coverage -- --pageset
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset
 
 # Machine-readable JSON (useful for diffs across commits).
-cargo run --release --bin bundled_font_coverage -- --pageset --json > coverage.json
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset --json > coverage.json
 
 # Include inline CSS pseudo-element strings (`content: "..."`).
-cargo run --release --bin bundled_font_coverage -- --pageset --include-css-content
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset --include-css-content
 ```
 
 The report lists every unique Unicode codepoint found in visible DOM text nodes that does not have
@@ -44,9 +44,9 @@ on bundled glyph coverage, keep the JSON output in an untracked local directory:
 
 ```bash
 mkdir -p tmp
-cargo run --release --bin bundled_font_coverage -- --pageset --json \
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset --json \
   > tmp/bundled_font_coverage.json
-cargo run --release --bin bundled_font_coverage -- --pageset --include-css-content --json \
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin bundled_font_coverage -- --pageset --include-css-content --json \
   > tmp/bundled_font_coverage_with_css.json
 ```
 

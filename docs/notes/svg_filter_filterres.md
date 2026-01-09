@@ -85,7 +85,7 @@ There is an integration golden test:
 - `tests/paint/svg_filter_filterres_offset_clip_golden.rs`
 - Golden image: `tests/fixtures/golden/svg_filter_filterres_offset_clip.png`
 - Update with:
-  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 cargo test -q svg_filter_filterres_offset_clip_matches_golden --test paint_tests`
+  `UPDATE_SVG_FILTER_FILTERRES_OFFSET_CLIP_GOLDEN=1 bash scripts/cargo_agent.sh test -q svg_filter_filterres_offset_clip_matches_golden --test paint_tests`
 
 ## Chromium note (baseline)
 

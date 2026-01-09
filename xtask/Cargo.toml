@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+# `cargo test -p xtask` is used for lightweight repo hygiene checks (doc lints, etc.). Building the
+# full `xtask` binary as a test harness pulls in the entire renderer dependency graph, which is slow
+# and may fail independently of the test-only checks. Disable unit-test harnesses for the binary and
+# rely on integration tests under `xtask/tests/`.
+test = false
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }

@@ -7,7 +7,7 @@
 AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
 
 **MANDATORY (no exceptions):**
-- Use `scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
 - Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
@@ -85,12 +85,12 @@ git commit -m "chore(js): bump ecma-rs"
 ## Running `ecma-rs` commands safely (resource limits)
 
 JS conformance workloads can be pathological. Use OS caps from the FastRender repo when running
-`cargo` inside the submodule.
+Cargo commands inside the submodule.
 
 Example pattern:
 
 ```bash
-scripts/run_limited.sh --as 64G -- bash -lc 'cd engines/ecma-rs && cargo test -p parse-js'
+scripts/run_limited.sh --as 64G -- bash -lc 'cd engines/ecma-rs && bash ../../scripts/cargo_agent.sh test -p parse-js'
 ```
 
 For builds/tests, avoid multi-agent cargo stampedes (same principle as FastRender):

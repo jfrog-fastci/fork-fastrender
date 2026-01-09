@@ -7,7 +7,7 @@
 AGENTS.md is the law. These rules are not suggestions. Violating them destroys host machines, wastes hours of compute, and blocks other agents. Non-compliance is unacceptable.
 
 **MANDATORY (no exceptions):**
-- Use `scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
+- Use `bash scripts/cargo_agent.sh` for ALL cargo commands (build, test, check, clippy)
 - Use `scripts/run_limited.sh --as 64G` when executing ANY renderer binary
 - Scope ALL test runs (`-p <crate>`, `--test <name>`, `--lib`) — NEVER run unscoped tests
 
@@ -185,7 +185,7 @@ To keep velocity high and avoid hand-written glue, plan to add:
     - parses Web IDL from `specs/whatwg-*/`,
     - generates deterministic Rust glue (traits + dispatch tables),
     - keeps generated output stable for easy diffs.
-- **Curated JS conformance runners** (prefer `cargo xtask …` subcommands):
+- **Curated JS conformance runners** (prefer `bash scripts/cargo_agent.sh xtask …` subcommands):
   - `xtask js test262 …` to run a curated subset (fast, offline),
   - `xtask js wpt-dom …` to run a curated set of WPT `testharness.js` DOM tests
     (once we have a minimal harness).
@@ -225,7 +225,7 @@ git submodule update --init engines/ecma-rs
 git -C engines/ecma-rs submodule update --init test262-semantic/data
 
 # Use the mandatory cargo wrapper (AGENTS.md):
-scripts/cargo_agent.sh xtask js test262
+bash scripts/cargo_agent.sh xtask js test262
 ```
 
 The point of tests is to prevent regressions, not to build heavy harness infrastructure.

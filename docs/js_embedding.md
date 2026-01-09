@@ -16,27 +16,27 @@ If you are looking for the spec-mapped `<script>` processing design, start with:
 
 FastRender runs on hostile inputs. Follow the repo-wide rules in [`AGENTS.md`](../AGENTS.md).
 
-- **All cargo commands:** use `scripts/cargo_agent.sh`
+- **All cargo commands:** use `bash scripts/cargo_agent.sh`
 - **Any renderer binary execution:** run under OS limits (`scripts/run_limited.sh --as 64G`)
 
 Examples:
 
 ```bash
 # Build (scoped) under a RAM cap:
-scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh build --release
 
 # Run a renderer binary under OS caps:
-scripts/run_limited.sh --as 64G -- cargo run --release --bin fetch_and_render -- <args...>
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
 Scoped test examples (don’t run unscoped `cargo test`):
 
 ```bash
 # Run only the library tests in the main crate, filtered to JS-related tests:
-scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
+bash scripts/cargo_agent.sh test -p fastrender --lib js::event_loop
 
 # Run an xtask integration test (one test binary):
-scripts/cargo_agent.sh test -p xtask --test js_test262_smoke
+bash scripts/cargo_agent.sh test -p xtask --test js_test262_smoke
 ```
 
 ---
@@ -211,7 +211,7 @@ Details and spec anchors: [`docs/html_script_processing.md`](html_script_process
 Use OS address-space caps when running renderer binaries:
 
 ```bash
-scripts/run_limited.sh --as 64G -- cargo run --release --bin fetch_and_render -- <args...>
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- <args...>
 ```
 
 This is complementary to any in-process limits; it prevents catastrophic OOM behavior.
@@ -250,7 +250,7 @@ budgeting story (alongside renderer stage budgets and OS caps).
 
 ## Running JS conformance suites
 
-### `cargo xtask js test262` (language semantics)
+### `bash scripts/cargo_agent.sh xtask js test262` (language semantics)
 
 1) Initialize submodules:
 
@@ -262,16 +262,16 @@ git -C engines/ecma-rs submodule update --init test262-semantic/data
 2) Run the curated suite (recommended wrapper):
 
 ```bash
-scripts/cargo_agent.sh xtask js test262
+bash scripts/cargo_agent.sh xtask js test262
 ```
 
 Notes:
 
-- `cargo xtask ...` is a Cargo alias for `cargo run -p xtask -- ...` (see `.cargo/config.toml`).
+- This repo defines a Cargo alias `xtask = "run -p xtask --"` in `.cargo/config.toml`.
 - The suite runner lives in the `engines/ecma-rs` submodule; `xtask` just drives it.
 - See [`docs/js_test262.md`](js_test262.md) for flags and interpreting results.
 
-### `cargo xtask js wpt-dom` (Web API behavior)
+### `bash scripts/cargo_agent.sh xtask js wpt-dom` (Web API behavior)
 
 FastRender includes a minimal offline WPT (`testharness.js`) runner:
 
@@ -280,7 +280,7 @@ FastRender includes a minimal offline WPT (`testharness.js`) runner:
 Run the full curated corpus under `tests/wpt_dom/tests`:
 
 ```bash
-scripts/cargo_agent.sh xtask js wpt-dom
+bash scripts/cargo_agent.sh xtask js wpt-dom
 ```
 
 Run only the smoke subset:
@@ -297,7 +297,7 @@ Once JS execution is integrated into the renderer, the intended CLI shape is:
 
 ```bash
 # planned:
-scripts/run_limited.sh --as 64G -- cargo run --release --bin fetch_and_render -- --js <url> out.png
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --release --bin fetch_and_render -- --js <url> out.png
 ```
 
 Until that lands, use `fetch_and_render` for HTML/CSS rendering only and use `xtask js test262` for

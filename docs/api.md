@@ -315,5 +315,5 @@ Each snapshot includes:
 The `inspect_frag` CLI also supports this workflow:
 
 ```
-cargo run --bin inspect_frag -- file.html --query "#main .item:nth-child(2)"
+scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --bin inspect_frag -- file.html --query "#main .item:nth-child(2)"
 ```

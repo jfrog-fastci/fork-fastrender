@@ -9,7 +9,7 @@ FastRender has many internal debug/profiling toggles controlled via environment 
 - `fetch_and_render`
 - `inspect_frag`
 
-Pageset wrappers (`cargo xtask pageset`, `scripts/pageset.sh`, and the profiling scripts) enable the `disk_cache` cargo feature by default to reuse cached assets; set `DISK_CACHE=0` when invoking the scripts to opt out and force fresh fetches.
+Pageset wrappers (`bash scripts/cargo_agent.sh xtask pageset`, `scripts/pageset.sh`, and the profiling scripts) enable the `disk_cache` cargo feature by default to reuse cached assets; set `DISK_CACHE=0` when invoking the scripts to opt out and force fresh fetches.
 
 The rendering pipeline parses the environment once into a typed [`RuntimeToggles`](../src/debug/runtime.rs) structure. Library callers can override these values without mutating the process environment by constructing a `RuntimeToggles` instance and supplying it via `FastRender::builder().runtime_toggles(...)` or `RenderOptions::with_runtime_toggles(...)`.
 
@@ -52,7 +52,7 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 
 ## Browser UI (`browser` binary)
 
-These are consumed by the experimental desktop browser UI (`cargo run --features browser_ui --bin browser`).
+These are consumed by the experimental desktop browser UI (`browser` binary; see [browser_ui.md](browser_ui.md)).
 
 - `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the `browser` process.
   - Set to `0`, empty, or unset to disable.
@@ -113,7 +113,7 @@ Hard-site starting point (Akamai/CDN bot gating, empty bodies, HTTP/2 errors):
 
 ```bash
 FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 FASTR_HTTP_LOG_RETRIES=1 \
-  cargo xtask pageset --pages tesco.com,washingtonpost.com
+  bash scripts/cargo_agent.sh xtask pageset --pages tesco.com,washingtonpost.com
 ```
 
 When comparing backends/header profiles, make sure you are actually exercising the network path:
@@ -210,7 +210,7 @@ High eviction counts typically imply cache pressure (raise `FASTR_TEXT_FALLBACK_
 
 - `RAYON_NUM_THREADS=<N>` – cap Rayon’s global thread pool. This is not a FastRender-specific env var,
   but the pageset runners and wrappers rely on it to avoid CPU oversubscription when many worker
-  processes run in parallel. When unset, `scripts/pageset.sh` / `cargo xtask pageset` and the
+  processes run in parallel. When unset, `scripts/pageset.sh` / `bash scripts/cargo_agent.sh xtask pageset` and the
   `pageset_progress`/`render_pages` worker orchestration default to a per-worker budget derived from
   `available_parallelism()/jobs` (min 1, additionally clamped by a detected cgroup CPU quota on Linux). Set it explicitly to override the default.
 - `FASTR_DISPLAY_LIST_PARALLEL=0|1` – enable/disable Rayon fan-out while building display lists (default enabled).

@@ -161,8 +161,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         Function::new(ctx.clone(), {
           let state = state.clone();
           move |ctx: Ctx<'js>, handle: u32, value: String| -> rquickjs::Result<Object<'js>> {
-            let mut state = state.borrow_mut();
-            let Some(url) = state.urls.get_mut(&handle) else {
+            let state = state.borrow();
+            let Some(url) = state.urls.get(&handle) else {
               return make_err(ctx, "TypeError", "Invalid URL handle");
             };
             match url.$method(&value) {
@@ -390,8 +390,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(url) = state.urls.get_mut(&url_handle) else {
+        let state = state.borrow();
+        let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
@@ -409,8 +409,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: Option<String>| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(url) = state.urls.get_mut(&url_handle) else {
+        let state = state.borrow();
+        let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
@@ -471,8 +471,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32, name: String, value: String| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(url) = state.urls.get_mut(&url_handle) else {
+        let state = state.borrow();
+        let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
 
@@ -490,8 +490,8 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
     Function::new(ctx.clone(), {
       let state = state.clone();
       move |ctx: Ctx<'js>, url_handle: u32| -> rquickjs::Result<Object<'js>> {
-        let mut state = state.borrow_mut();
-        let Some(url) = state.urls.get_mut(&url_handle) else {
+        let state = state.borrow();
+        let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
         let params = url.search_params();

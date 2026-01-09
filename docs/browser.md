@@ -74,3 +74,28 @@ When running against arbitrary real-world pages, consider using the repo’s res
 
 For implementation details (code layout, message protocol, cancellation, platform prerequisites),
 see [browser_ui.md](browser_ui.md).
+
+## Debugging tips
+
+### Renderer debugging knobs
+
+Most renderer debug knobs are environment variables; the canonical list is
+[env-vars.md](env-vars.md). A few commonly useful ones while developing the browser UI:
+
+- `FASTR_RENDER_TIMINGS=1` – log per-stage timings to stderr.
+- `FASTR_TRACE_OUT=/tmp/trace.json` – write Chrome trace events for a render.
+- `FASTR_PAINT_BACKEND=display_list|legacy` – switch paint backend.
+
+### Where to look for logs
+
+The `browser` binary currently logs to stdout/stderr only (run it from a terminal). If the window
+opens but nothing renders, check for:
+
+- `wgpu` surface errors printed by [`src/bin/browser.rs`](../src/bin/browser.rs)
+- renderer debug output enabled via `FASTR_*` env vars
+
+For panics, use:
+
+```bash
+RUST_BACKTRACE=1 scripts/run_limited.sh --as 64G -- bash scripts/cargo_agent.sh run --features browser_ui --bin browser
+```
