@@ -170,11 +170,79 @@ mod tests {
 
   #[test]
   fn generated_world_includes_whatwg_fetch_interfaces() {
-    for iface in ["Headers", "Request", "Response"] {
-      WORLD
-        .interface(iface)
-        .unwrap_or_else(|| panic!("generated world should include {iface} interface"));
+    assert!(
+      WORLD.typedef_("HeadersInit").is_some(),
+      "expected WebIDL world to include Fetch typedef HeadersInit"
+    );
+    assert!(
+      WORLD.typedef_("BodyInit").is_some(),
+      "expected WebIDL world to include Fetch typedef BodyInit"
+    );
+
+    let headers = WORLD
+      .interface("Headers")
+      .expect("generated world should include Headers interface (WHATWG Fetch)");
+    let headers_member_names = headers
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    for member in ["append", "get"] {
+      assert!(
+        headers_member_names.contains(&member),
+        "expected Headers to contain {member}: {headers_member_names:?}"
+      );
     }
+    assert!(
+      headers.members.iter().any(|m| m.raw.starts_with("iterable")),
+      "expected Headers to contain iterable member; found: {:?}",
+      headers
+        .members
+        .iter()
+        .map(|m| m.raw)
+        .collect::<Vec<_>>()
+    );
+
+    let request = WORLD
+      .interface("Request")
+      .expect("generated world should include Request interface (WHATWG Fetch)");
+    let request_member_names = request
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    for member in ["headers", "clone"] {
+      assert!(
+        request_member_names.contains(&member),
+        "expected Request to contain {member}: {request_member_names:?}"
+      );
+    }
+
+    let response = WORLD
+      .interface("Response")
+      .expect("generated world should include Response interface (WHATWG Fetch)");
+    let response_member_names = response
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    assert!(
+      response_member_names.contains(&"headers"),
+      "expected Response to contain headers: {response_member_names:?}"
+    );
+    assert!(
+      response
+        .members
+        .iter()
+        .any(|m| m.name == Some("json") && m.raw.starts_with("static")),
+      "expected Response to contain static json(); found: {:?}",
+      response
+        .members
+        .iter()
+        .filter(|m| m.name == Some("json"))
+        .map(|m| m.raw)
+        .collect::<Vec<_>>()
+    );
 
     let global = WORLD
       .interface_mixin("WindowOrWorkerGlobalScope")
