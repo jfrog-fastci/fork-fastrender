@@ -8109,32 +8109,38 @@ impl FastRender {
     let previous_sink = self.diagnostics.take();
     self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
     let document = (|| -> Result<PreparedDocument> {
-      let resource = match self.fetcher.fetch_with_request(FetchRequest::document(url)) {
-        Ok(res) => res,
-        Err(e) => {
-          if let Ok(mut guard) = diagnostics.lock() {
-            guard.record_error(ResourceKind::Document, url, &e);
-            guard.document_error = Some(e.to_string());
+      // Install a root deadline before document fetch so:
+      // - `RenderOptions::timeout` bounds the fetch phase too (not just parse/layout/paint).
+      // - cooperative cancellations can interrupt caching fetcher in-flight waits.
+      let resource = {
+        let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+        let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+        let resource = match self.fetcher.fetch_with_request(FetchRequest::document(url)) {
+          Ok(res) => res,
+          Err(e) => {
+            if let Ok(mut guard) = diagnostics.lock() {
+              guard.record_error(ResourceKind::Document, url, &e);
+              guard.document_error = Some(e.to_string());
+            }
+            if options.allow_partial {
+              self.set_document_url(url);
+              self.set_base_url(url);
+              let html = format!(
+                "<!doctype html><html><body style=\"margin:0;background:#ffebee;color:#c62828;display:flex;align-items:center;justify-content:center;font:16px sans-serif;\">Failed to fetch document</body></html>"
+              );
+              return self.prepare_html_internal(&html, options, ReferrerPolicy::default(), None);
+            }
+            let reason = e.to_string();
+            let source = Arc::new(e);
+            return Err(Error::Navigation(NavigationError::FetchFailed {
+              url: url.to_string(),
+              reason,
+              source: Some(source),
+            }));
           }
-          if options.allow_partial {
-            self.set_document_url(url);
-            self.set_base_url(url);
-            let html = format!(
-              "<!doctype html><html><body style=\"margin:0;background:#ffebee;color:#c62828;display:flex;align-items:center;justify-content:center;font:16px sans-serif;\">Failed to fetch document</body></html>"
-            );
-            return self.prepare_html_internal(&html, options, ReferrerPolicy::default(), None);
-          }
-          let reason = e.to_string();
-          let source = Arc::new(e);
-          return Err(Error::Navigation(NavigationError::FetchFailed {
-            url: url.to_string(),
-            reason,
-            source: Some(source),
-          }));
-        }
+        };
+        self.follow_client_redirects_for_url_render(resource, url, &options, None, &diagnostics)
       };
-      let resource =
-        self.follow_client_redirects_for_url_render(resource, url, &options, None, &diagnostics);
       let hint = resource.final_url.as_deref().unwrap_or(url);
       let hint = merge_fragment_from_url(hint, url);
       self.set_document_url(hint.clone());
@@ -8229,55 +8235,61 @@ impl FastRender {
       self.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
       let result = (|| -> Result<RenderReport> {
         let resource = {
-          let _span = trace_handle.span("html_fetch", "network");
-          match self.fetcher.fetch_with_request(FetchRequest::document(url)) {
-            Ok(res) => res,
-            Err(e) => {
-              if let Ok(mut guard) = diagnostics.lock() {
-                guard.record_error(ResourceKind::Document, url, &e);
-                guard.document_error = Some(e.to_string());
-                if let Some(recorder) = stats_recorder.take() {
-                  let mut stats = recorder.finish();
-                  merge_dom_parse_diagnostics(&mut stats);
-                  merge_text_diagnostics(&mut stats);
-                  merge_inline_reshape_cache_diagnostics(&mut stats);
-                  merge_image_cache_diagnostics(&mut stats);
-                  merge_resource_cache_diagnostics(&mut stats);
-                  let _ = crate::paint::painter::take_paint_diagnostics();
-                  guard.stats = Some(stats);
+          // Install a root deadline before document fetch so timeouts and cancellation callbacks
+          // can bound the fetch phase (especially important for caching fetcher in-flight waits).
+          let fetch_deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+          let _fetch_deadline_guard = DeadlineGuard::install(Some(&fetch_deadline));
+          let resource = {
+            let _span = trace_handle.span("html_fetch", "network");
+            match self.fetcher.fetch_with_request(FetchRequest::document(url)) {
+              Ok(res) => res,
+              Err(e) => {
+                if let Ok(mut guard) = diagnostics.lock() {
+                  guard.record_error(ResourceKind::Document, url, &e);
+                  guard.document_error = Some(e.to_string());
+                  if let Some(recorder) = stats_recorder.take() {
+                    let mut stats = recorder.finish();
+                    merge_dom_parse_diagnostics(&mut stats);
+                    merge_text_diagnostics(&mut stats);
+                    merge_inline_reshape_cache_diagnostics(&mut stats);
+                    merge_image_cache_diagnostics(&mut stats);
+                    merge_resource_cache_diagnostics(&mut stats);
+                    let _ = crate::paint::painter::take_paint_diagnostics();
+                    guard.stats = Some(stats);
+                  }
                 }
+                if options.allow_partial {
+                  let pixmap = self.render_error_overlay(width, height)?;
+                  let diagnostics = diagnostics
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                  return Ok(RenderReport {
+                    pixmap,
+                    accessibility: None,
+                    diagnostics,
+                    artifacts: RenderArtifacts::new(artifacts),
+                  });
+                }
+                let reason = e.to_string();
+                let source = Arc::new(e);
+                return Err(Error::Navigation(NavigationError::FetchFailed {
+                  url: url.to_string(),
+                  reason,
+                  source: Some(source),
+                }));
               }
-              if options.allow_partial {
-                let pixmap = self.render_error_overlay(width, height)?;
-                let diagnostics = diagnostics
-                  .lock()
-                  .unwrap_or_else(|poisoned| poisoned.into_inner())
-                  .clone();
-                return Ok(RenderReport {
-                  pixmap,
-                  accessibility: None,
-                  diagnostics,
-                  artifacts: RenderArtifacts::new(artifacts),
-                });
-              }
-              let reason = e.to_string();
-              let source = Arc::new(e);
-              return Err(Error::Navigation(NavigationError::FetchFailed {
-                url: url.to_string(),
-                reason,
-                source: Some(source),
-              }));
             }
-          }
-        };
+          };
 
-        let resource = self.follow_client_redirects_for_url_render(
-          resource,
-          url,
-          &options,
-          stats_recorder.as_mut(),
-          &diagnostics,
-        );
+          self.follow_client_redirects_for_url_render(
+            resource,
+            url,
+            &options,
+            stats_recorder.as_mut(),
+            &diagnostics,
+          )
+        };
         let hint = resource.final_url.as_deref().unwrap_or(url);
         self.set_document_url(merge_fragment_from_url(hint, url));
         let mut report = self.render_fetched_html_with_options_report_internal(
