@@ -602,14 +602,13 @@ impl AnonymousBoxCreator {
       }
 
       let style = inline_style.get_or_insert_with(|| {
-        // Anonymous inline boxes inherit inheritable properties from their parent, but must not
-        // copy non-inherited box properties like padding/borders/positioning. Cloning the full
-        // computed style here can significantly inflate inline content sizes (e.g. text nodes
-        // inside `display: inline-flex` buttons inheriting the button padding).
+        // CSS 2.1 §9.2.2.1 anonymous inline boxes: they inherit inheritable properties from the
+        // parent element, but otherwise use initial values.
         //
-        // CSS 2.1 §9.2.2.1:
-        // "Any text that is directly contained inside a block container element (not inside an
-        // inline element) must be treated as an anonymous inline element."
+        // Non-inherited box properties like padding/border/positioning must *not* be copied onto
+        // the anonymous wrapper. Doing so effectively applies those properties twice when a
+        // blockified inline element (e.g. an inline flex item) lays out its inline children,
+        // inflating line boxes and the element's used height (notably for inline-flex buttons).
         let mut style = inherited_style(parent_style.as_ref());
         style.display = Display::Inline;
         Arc::new(style)
@@ -1569,5 +1568,36 @@ mod tests {
     );
     assert_eq!(wrapper.children.len(), 1);
     assert!(matches!(&wrapper.children[0].box_type, BoxType::Text(_)));
+  }
+
+  #[test]
+  fn inline_text_wrappers_do_not_copy_padding_or_borders_from_parent_inline() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Inline;
+    parent_style.position = Position::Absolute;
+    parent_style.padding_top = crate::style::values::Length::px(10.0);
+    parent_style.padding_bottom = crate::style::values::Length::px(8.0);
+    parent_style.border_bottom_width = crate::style::values::Length::px(4.0);
+    parent_style.color = Rgba::BLUE;
+    let parent_style = Arc::new(parent_style);
+
+    let text = BoxNode::new_text(parent_style.clone(), "Hello".to_string());
+    let inline = BoxNode::new_inline(parent_style, vec![text]);
+    let fixed = fixup_tree(inline);
+
+    assert_eq!(fixed.children.len(), 1);
+    let wrapper = &fixed.children[0];
+    assert!(wrapper.is_anonymous());
+    assert_eq!(wrapper.style.display, Display::Inline);
+    // Anonymous inline wrappers must not inherit non-inherited properties from the parent inline.
+    assert_eq!(wrapper.style.padding_top, crate::style::values::Length::px(0.0));
+    assert_eq!(
+      wrapper.style.border_bottom_width,
+      crate::style::values::Length::px(0.0)
+    );
+    // But inherited properties like `color` should propagate.
+    assert_eq!(wrapper.style.color, Rgba::BLUE);
+    // Position is non-inherited; wrapper should be static even if parent is positioned.
+    assert_eq!(wrapper.style.position, Position::Static);
   }
 }

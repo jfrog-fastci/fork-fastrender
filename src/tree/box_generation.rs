@@ -5295,6 +5295,22 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       required,
       invalid,
     })
+  } else if tag.eq_ignore_ascii_case("button") {
+    Some(FormControl {
+      control: FormControlKind::Button {
+        label: button_label(styled),
+      },
+      appearance,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled,
+      focused,
+      focus_visible,
+      required,
+      invalid,
+    })
   } else {
     None
   }
@@ -7634,6 +7650,35 @@ mod tests {
             && *optimum == Some(50.0)
       )),
       "meter attributes should clamp and maintain low/high ordering"
+    );
+  }
+
+  #[test]
+  fn button_elements_with_element_children_do_not_generate_replaced_form_controls() {
+    let html = "<html><body><button><span>Icon</span></button></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn contains_form_control(node: &BoxNode) -> bool {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if matches!(repl.replaced_type, ReplacedType::FormControl(_)) {
+          return true;
+        }
+      }
+      node.children.iter().any(contains_form_control)
+    }
+
+    assert!(
+      !contains_form_control(&box_tree.root),
+      "expected <button> with element children to generate normal boxes, not a replaced form control"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t == "Icon"),
+      "expected <button> contents to be preserved in the box tree (texts={texts:?})"
     );
   }
 

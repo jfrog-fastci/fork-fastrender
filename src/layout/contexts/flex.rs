@@ -7445,14 +7445,29 @@ impl FlexFormattingContext {
       Size::new(layout.size.width, layout.size.height),
     );
     if taffy_node == root_id {
+      let rect_eps = 0.01;
+      // Flex formatting contexts can be invoked with two different constraint signals:
+      // - `available_width`: the containing block’s available inline size (for percentage bases).
+      // - `used_border_box_width`: a definite used border-box size resolved by the parent
+      //   formatting context (e.g. block width:auto resolution, including negative margins).
+      //
+      // When the used border-box size is known, it must win over the available width. Otherwise we
+      // can incorrectly clamp legitimate negative-margin "gutter" patterns (common in grid-like
+      // layouts) down to the containing block width, causing child placement to overflow.
+      let resolved_definite_width = || {
+        constraints
+          .used_border_box_width
+          .filter(|w| w.is_finite() && *w > rect_eps)
+          .or_else(|| {
+            constraints
+              .width()
+              .filter(|w| w.is_finite() && *w > rect_eps)
+          })
+      };
       // When Taffy collapses the flex container to ~0px (often after a bad intrinsic probe),
       // fall back to the definite available width so children aren't clamped to a 0–1px line.
-      let rect_eps = 0.01;
       if !rect.width().is_finite() || rect.width() <= rect_eps {
-        if let Some(def_w) = constraints
-          .width()
-          .filter(|w| w.is_finite() && *w > rect_eps)
-        {
+        if let Some(def_w) = resolved_definite_width() {
           rect.size.width = def_w;
         } else if let Some(base) = constraints.inline_percentage_base.filter(|w| *w > rect_eps) {
           rect.size.width = base;
@@ -7462,10 +7477,7 @@ impl FlexFormattingContext {
       }
       // Clamp overly wide layouts back to the definite available inline size so children
       // are reflowed within the container instead of inheriting a runaway max-content span.
-      if let Some(def_w) = constraints
-        .width()
-        .filter(|w| w.is_finite() && *w > rect_eps)
-      {
+      if let Some(def_w) = resolved_definite_width() {
         if rect.size.width > def_w + rect_eps {
           rect.size.width = def_w;
         }

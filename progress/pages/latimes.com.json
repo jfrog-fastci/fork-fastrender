@@ -14,15 +14,15 @@
     "layout": 310.982243871334,
     "paint": 57.99668856764428
   },
-  "notes": "",
+  "notes": "Major structure now matches Chrome after fixes to flex used-border-box sizing and avoiding replaced-form-control sizing for icon <button> elements (with element children). Remaining diffs are mostly text rasterization/antialiasing (subpixel AA/hinting) plus occasional 1px hairline/border rounding differences.",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 213176,
-    "diff_percent": 22.2058,
-    "perceptual": 0.4567,
+    "diff_pixels": 83867,
+    "diff_percent": 8.7361,
+    "perceptual": 0.0394,
     "tolerance": 0,
     "max_diff_percent": 0.0,
-    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+    "computed_at_commit": "5ee44a0c8de83711fa0761886ffca200944f9a1a"
   },
   "hotspot": "cascade",
   "failure_stage": null,

@@ -6071,11 +6071,12 @@ impl FormattingContext for BlockFormattingContext {
       }
     }
 
-    // When a parent layout mode (flex/grid) has already resolved a *used border-box* size for this
-    // block formatting context root, honor it during block layout even if the authored inline-size
-    // is non-auto. Otherwise percentage inline sizes can be applied twice (e.g. `width: 50%`
-    // resolved against the flex item's used width instead of the flex container), producing
-    // children laid out in a smaller coordinate space than the final fragment bounds.
+    // The parent formatting context may have already resolved a definite used border-box inline
+    // size for this box (e.g. flex/grid items after Taffy sizing). In that case the final used
+    // size must be treated as authoritative, even when the box has an authored inline-size
+    // (notably percentages): the used size can differ after flexing, and re-resolving percentage
+    // widths against the item’s own used size can cause descendants to be laid out at the wrong
+    // width.
     let used_border_box_inline = if inline_is_horizontal {
       constraints.used_border_box_width
     } else {
