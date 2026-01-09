@@ -556,11 +556,11 @@ fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
     _ => panic!("expected Script boundary"),
   };
 
-  let dom = (*parser
+  let dom = parser
     .sink()
     .expect("expected parser sink to be available while parsing")
-    .document())
-  .clone();
+    .document()
+    .to_owned();
   assert_eq!(script_text(&dom, script_id), "1");
   assert!(
     dom.is_connected_for_scripting(script_id),
