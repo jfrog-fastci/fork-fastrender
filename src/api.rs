@@ -129,6 +129,7 @@ use crate::layout::profile::layout_profile_snapshot;
 use crate::layout::profile::log_layout_profile;
 use crate::layout::profile::reset_layout_profile;
 use crate::layout::profile::LayoutProfileSnapshot;
+#[cfg(test)]
 use crate::layout::utils::resolve_font_relative_length;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
@@ -164,6 +165,7 @@ use crate::style::page::PageSide;
 use crate::style::style_set::StyleSet;
 use crate::style::types::{ContainerType, WritingMode};
 use crate::style::values::Length;
+#[cfg(test)]
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontConfig;
@@ -184,7 +186,9 @@ use crate::tree::box_tree::ReplacedType;
 #[cfg(test)]
 use crate::tree::box_tree::SrcsetCandidate;
 use crate::tree::box_tree::SrcsetDescriptor;
-use crate::tree::box_tree::{FormControlKind, SelectItem, TextControlKind};
+use crate::tree::box_tree::FormControlKind;
+#[cfg(test)]
+use crate::tree::box_tree::{SelectItem, TextControlKind};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentInstrumentationGuard;
 use crate::tree::fragment_tree::FragmentNode;
@@ -13023,89 +13027,17 @@ impl FastRender {
         }
         explicit_no_ratio = true;
         if replaced_box.intrinsic_size.is_none() {
-          // Match HTML's "character width" sizing semantics by using the font's `ch` unit
-          // (advance of the `0` glyph). This keeps default text inputs close to modern browser
-          // sizing (~20ch at 16px ~= 160px) and avoids wildly undersized controls when using
-          // x-height as a proxy.
           let metrics_scaled = self.resolve_scaled_metrics(style);
-          let char_width = resolve_font_relative_length(
-            Length::new(1.0, LengthUnit::Ch),
-            style,
-            &self.font_context,
-          );
-          let line_height = compute_line_height_with_metrics_viewport(
-            style,
-            metrics_scaled.as_ref(),
-            Some(viewport),
-          );
-
-          let size = match &control.control {
-            FormControlKind::Text {
-              size_attr, kind, ..
-            } => {
-              let default_cols = match kind {
-                TextControlKind::Date | TextControlKind::Number => 20,
-                _ => 20,
-              } as f32;
-              let cols = size_attr.unwrap_or(default_cols as u32) as f32;
-              Size::new(char_width * cols.max(1.0), line_height)
-            }
-            FormControlKind::TextArea { rows, cols, .. } => {
-              let row_count = rows.unwrap_or(2) as f32;
-              let col_count = cols.unwrap_or(20) as f32;
-              Size::new(
-                char_width * col_count.max(1.0),
-                line_height * row_count.max(1.0),
-              )
-            }
-            FormControlKind::Button { label } => {
-              let text_len = label.chars().count().max(1) as f32;
-              Size::new(char_width * text_len + char_width * 2.0, line_height)
-            }
-            FormControlKind::Select(select) => {
-              let is_listbox = select.multiple || select.size > 1;
-              let max_label_len = select
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                  SelectItem::OptGroupLabel { label, .. } if is_listbox => {
-                    Some(label.chars().count())
-                  }
-                  SelectItem::Option { label, .. } => Some(label.chars().count()),
-                  _ => None,
-                })
-                .max()
-                .unwrap_or(4) as f32;
-              let scrollbar = if is_listbox && select.items.len() as u32 > select.size.max(1) {
-                crate::layout::utils::resolve_scrollbar_width(style)
-              } else {
-                0.0
-              };
-              let width_gutter = if is_listbox { char_width * 2.0 } else { 20.0 };
-              let height = if is_listbox {
-                line_height * select.size.max(1) as f32
-              } else {
-                line_height
-              };
-              Size::new(
-                char_width * max_label_len.max(4.0) + width_gutter + scrollbar,
-                height,
-              )
-            }
-            FormControlKind::Checkbox { .. } => {
-              let edge = (style.font_size * 1.1).clamp(12.0, 20.0);
-              Size::new(edge, edge)
-            }
-            FormControlKind::Range { .. } => Size::new(char_width * 12.0, line_height.max(12.0)),
-            FormControlKind::Color { .. } => Size::new(
-              (line_height * 2.0).max(char_width * 6.0),
-              line_height.max(16.0_f32.min(line_height * 1.2)),
+          replaced_box.intrinsic_size = Some(
+            crate::tree::form_control_intrinsic::intrinsic_content_size_for_form_control(
+              control,
+              style,
+              viewport,
+              metrics_scaled.as_ref(),
+              &self.font_context,
+              Some(&self.shaping_pipeline),
             ),
-            FormControlKind::File { .. } => Size::new(char_width * 24.0, line_height.max(16.0)),
-            FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
-          };
-
-          replaced_box.intrinsic_size = Some(size);
+          );
         }
       }
       ReplacedType::Image {
@@ -24116,6 +24048,189 @@ mod tests {
     assert!(
       (intrinsic.width - expected_width).abs() < 0.25,
       "expected intrinsic width ~= 20ch (expected {:.2}, got {:.2})",
+      expected_width,
+      intrinsic.width
+    );
+  }
+
+  #[test]
+  fn range_intrinsic_height_respects_thumb_pseudo_height() {
+    // Keep the assertion deterministic across machines by using only bundled fallback fonts.
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("init renderer");
+    let mut style = ComputedStyle::default();
+    style.font_size = 6.0;
+    let style = Arc::new(style);
+
+    let mut thumb_style = ComputedStyle::default();
+    thumb_style.width = Some(Length::px(16.0));
+    thumb_style.height = Some(Length::px(16.0));
+    let mut track_style = ComputedStyle::default();
+    track_style.height = Some(Length::px(4.0));
+
+    let control = crate::tree::box_tree::FormControl {
+      control: FormControlKind::Range {
+        value: 50.0,
+        min: 0.0,
+        max: 100.0,
+      },
+      appearance: crate::style::types::Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: Some(Arc::new(thumb_style)),
+      slider_track_style: Some(Arc::new(track_style)),
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    };
+    let mut node = BoxNode::new_replaced(
+      Arc::clone(&style),
+      ReplacedType::FormControl(control),
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+    let intrinsic = replaced.intrinsic_size.expect("intrinsic size");
+    assert!(
+      intrinsic.height >= 16.0 - 0.01,
+      "expected range intrinsic height to be at least the thumb height (expected >= 16px, got {:.2})",
+      intrinsic.height
+    );
+  }
+
+  #[test]
+  fn select_intrinsic_width_omits_arrow_when_appearance_none() {
+    // Keep the assertion deterministic across machines by using only bundled fallback fonts.
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let items = Arc::new(vec![
+      SelectItem::Option {
+        label: "option-label".to_string(),
+        value: "value".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+      },
+      SelectItem::Option {
+        label: "wider-option-label".to_string(),
+        value: "value2".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+      },
+    ]);
+    let select = crate::tree::box_tree::SelectControl {
+      multiple: false,
+      size: 1,
+      items,
+      selected: vec![0],
+    };
+
+    let make_node = |appearance: crate::style::types::Appearance| {
+      let control = crate::tree::box_tree::FormControl {
+        control: FormControlKind::Select(select.clone()),
+        appearance,
+        placeholder_style: None,
+        slider_thumb_style: None,
+        slider_track_style: None,
+        file_selector_button_style: None,
+        disabled: false,
+        focused: false,
+        focus_visible: false,
+        required: false,
+        invalid: false,
+      };
+      BoxNode::new_replaced(
+        Arc::clone(&style),
+        ReplacedType::FormControl(control),
+        None,
+        None,
+      )
+    };
+
+    let mut auto_node = make_node(crate::style::types::Appearance::Auto);
+    let mut none_node = make_node(crate::style::types::Appearance::None);
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut auto_node, Size::new(800.0, 600.0));
+    renderer.resolve_replaced_intrinsic_sizes(&mut none_node, Size::new(800.0, 600.0));
+
+    let auto_intrinsic = match auto_node.box_type {
+      BoxType::Replaced(ref r) => r.intrinsic_size.expect("intrinsic size"),
+      _ => panic!("not replaced"),
+    };
+    let none_intrinsic = match none_node.box_type {
+      BoxType::Replaced(ref r) => r.intrinsic_size.expect("intrinsic size"),
+      _ => panic!("not replaced"),
+    };
+
+    let delta = auto_intrinsic.width - none_intrinsic.width;
+    assert!(
+      (delta - 14.0).abs() < 0.25,
+      "expected dropdown arrow space to be omitted with appearance:none (expected delta ~= 14px, got {:.2})",
+      delta
+    );
+  }
+
+  #[test]
+  fn input_button_intrinsic_width_matches_label_width() {
+    // Keep the assertion deterministic across machines by using only bundled fallback fonts.
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let label = "0000";
+
+    let control = crate::tree::box_tree::FormControl {
+      control: FormControlKind::Button {
+        label: label.to_string(),
+      },
+      appearance: crate::style::types::Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    };
+    let mut node = BoxNode::new_replaced(
+      Arc::clone(&style),
+      ReplacedType::FormControl(control),
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+    let intrinsic = replaced.intrinsic_size.expect("intrinsic size");
+
+    let char_width = resolve_font_relative_length(
+      Length::new(1.0, LengthUnit::Ch),
+      style.as_ref(),
+      &renderer.font_context,
+    );
+    let expected_width = char_width * label.chars().count() as f32;
+    assert!(
+      (intrinsic.width - expected_width).abs() < 0.25,
+      "expected intrinsic width ~= label width (expected {:.2}, got {:.2})",
       expected_width,
       intrinsic.width
     );

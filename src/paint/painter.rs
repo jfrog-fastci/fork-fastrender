@@ -1098,83 +1098,16 @@ impl Painter {
       ReplacedType::FormControl(control) => {
         if replaced_box.intrinsic_size.is_none() {
           let metrics = self.resolve_scaled_metrics(style);
-          // Use the font's `ch` unit for intrinsic sizing so default controls line up with
-          // the UA expectation of ~20 "characters" wide.
-          let char_width =
-            resolve_font_relative_length(Length::new(1.0, LengthUnit::Ch), style, &self.font_ctx);
-          let line_height =
-            compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport));
-          let size = match &control.control {
-            FormControlKind::Text {
-              size_attr, kind, ..
-            } => {
-              let default_cols = match kind {
-                TextControlKind::Date | TextControlKind::Number => 20,
-                _ => 20,
-              } as f32;
-              let cols = size_attr.unwrap_or(default_cols as u32) as f32;
-              Size::new(char_width * cols.max(1.0), line_height)
-            }
-            FormControlKind::TextArea { rows, cols, .. } => {
-              let row_count = rows.unwrap_or(2) as f32;
-              let col_count = cols.unwrap_or(20) as f32;
-              Size::new(
-                char_width * col_count.max(1.0),
-                line_height * row_count.max(1.0),
-              )
-            }
-            FormControlKind::Button { label } => {
-              let text_len = label.chars().count().max(1) as f32;
-              Size::new(char_width * text_len + char_width * 2.0, line_height)
-            }
-            FormControlKind::Select(select) => {
-              let is_listbox = select.multiple || select.size > 1;
-              let max_label_len = select
-                .items
-                .iter()
-                .map(|item| match item {
-                  SelectItem::OptGroupLabel { label, .. } => label.chars().count(),
-                  SelectItem::Option { label, .. } => label.chars().count(),
-                })
-                .max()
-                .unwrap_or(4) as f32;
-              let scrollbar = if is_listbox && select.items.len() as u32 > select.size.max(1) {
-                crate::layout::utils::resolve_scrollbar_width(style)
-              } else {
-                0.0
-              };
-              let width_gutter = if is_listbox { char_width * 2.0 } else { 20.0 };
-              let height = if is_listbox {
-                line_height * select.size.max(1) as f32
-              } else {
-                line_height
-              };
-              Size::new(
-                char_width * max_label_len.max(4.0) + width_gutter + scrollbar,
-                height,
-              )
-            }
-            FormControlKind::Checkbox { .. } => {
-              let edge = (style.font_size * 1.1).clamp(12.0, 20.0);
-              Size::new(edge, edge)
-            }
-            FormControlKind::Range { .. } => Size::new(char_width * 12.0, line_height.max(12.0)),
-            FormControlKind::Color { .. } => Size::new(
-              (line_height * 2.0).max(char_width * 6.0),
-              line_height.max(16.0_f32.min(line_height * 1.2)),
+          replaced_box.intrinsic_size = Some(
+            crate::tree::form_control_intrinsic::intrinsic_content_size_for_form_control(
+              &control,
+              style,
+              viewport,
+              metrics.as_ref(),
+              &self.font_ctx,
+              Some(&self.shaper),
             ),
-            FormControlKind::File { .. } => Size::new(char_width * 24.0, line_height.max(16.0)),
-            FormControlKind::Unknown { .. } => Size::new(char_width * 12.0, line_height),
-          };
-          replaced_box.intrinsic_size = Some(size);
-        }
-
-        if replaced_box.aspect_ratio.is_none() {
-          if let Some(size) = replaced_box.intrinsic_size {
-            if size.height > 0.0 {
-              replaced_box.aspect_ratio = Some(size.width / size.height);
-            }
-          }
+          );
         }
       }
       ReplacedType::Image {

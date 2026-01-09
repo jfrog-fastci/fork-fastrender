@@ -26,5 +26,6 @@ pub mod box_generation;
 pub mod box_generation_demo;
 pub mod box_tree;
 pub mod debug;
+pub(crate) mod form_control_intrinsic;
 pub mod fragment_tree;
 pub mod table_fixup;
