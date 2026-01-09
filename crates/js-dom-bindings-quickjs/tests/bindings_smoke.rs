@@ -12,6 +12,81 @@ fn make_dom(html: &str) -> Rc<RefCell<Document>> {
 }
 
 #[test]
+fn inner_html_round_trip_and_escaping() {
+  let dom = make_dom(r#"<!doctype html><html><body><div id="x"></div></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          const el = document.getElementById("x");
+          if (!el) return "missing";
+
+          el.innerHTML = "<span>hi</span>";
+          if (el.innerHTML !== "<span>hi</span>") return "bad_round_trip:" + String(el.innerHTML);
+
+          el.innerHTML = "a & b";
+          if (el.innerHTML !== "a &amp; b") return "bad_escape:" + String(el.innerHTML);
+
+          el.innerHTML = "<!--ignored--><span>ok</span>";
+          if (el.innerHTML !== "<span>ok</span>") return "bad_comment:" + String(el.innerHTML);
+
+          el.innerHTML = "<template><span>in</span></template>";
+          const tmpl = el.querySelector("template");
+          if (!tmpl) return "missing_template";
+          if (tmpl.innerHTML !== "<span>in</span>") return "bad_template_inner:" + String(tmpl.innerHTML);
+
+          return "ok";
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok");
+  });
+}
+
+#[test]
+fn outer_html_getter_and_setter_replace_node() {
+  let dom = make_dom(
+    r#"<!doctype html><html><body><div id="root"><span id="child">hi</span></div></body></html>"#,
+  );
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          const root = document.getElementById("root");
+          const child = document.getElementById("child");
+          if (!root || !child) return "missing";
+
+          if (root.outerHTML !== '<div id="root"><span id="child">hi</span></div>') {
+            return "bad_outer_get:" + String(root.outerHTML);
+          }
+
+          child.outerHTML = "<p>one</p><p>two</p>";
+          if (root.innerHTML !== "<p>one</p><p>two</p>") return "bad_outer_set:" + String(root.innerHTML);
+          if (child.parentNode !== null) return "bad_detach";
+
+          return "ok";
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok");
+  });
+}
+
+#[test]
 fn identity_and_selectors() {
   let dom = make_dom(
     r#"<!doctype html><html><body><div id="x" class="a b">hi</div><div class="b"></div></body></html>"#,

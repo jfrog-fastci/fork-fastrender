@@ -12,7 +12,7 @@ use fastrender::dom2::{DomError, Document, NodeId, NodeKind};
 use fastrender::web::dom::DomException;
 use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::{Args, Constructor, Rest};
-use rquickjs::{Ctx, Function, JsLifetime, Object, Result as JsResult, Value};
+use rquickjs::{Ctx, FromJs, Function, JsLifetime, Object, Result as JsResult, Value};
 
 const NODE_CACHE_GLOBAL: &str = "__fastrender_dom_node_cache";
 const NODE_CACHE_FINALIZER_REGISTER_GLOBAL: &str = "__fastrender_dom_node_cache_register_finalizer";
@@ -699,7 +699,10 @@ impl Node {
   }
 
   #[qjs(set, rename = "textContent")]
-  fn text_content_set<'js>(&self, ctx: Ctx<'js>, value: String) -> JsResult<()> {
+  fn text_content_set<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> JsResult<()> {
+    // `Node.textContent` uses the `[LegacyNullToEmptyString]` conversion in the DOM spec.
+    let value = legacy_null_to_empty_string(&ctx, value)?;
+
     let mut dom = self.state.dom.borrow_mut();
     ensure_node_exists(&ctx, &dom, self.node_id)?;
 
@@ -998,6 +1001,67 @@ impl Node {
     Ok(inst.into_inner())
   }
 
+  // ===========================================================================
+  // innerHTML / outerHTML (Element-only)
+  // ===========================================================================
+
+  #[qjs(get, rename = "innerHTML")]
+  fn inner_html_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
+    self.ensure_element(ctx.clone())?;
+    let dom = self.state.dom.borrow();
+    dom
+      .get_inner_html(self.node_id)
+      .map_err(|e| dom_exception_to_js(&ctx, e))
+  }
+
+  #[qjs(set, rename = "innerHTML")]
+  fn inner_html_set<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> JsResult<()> {
+    self.ensure_element(ctx.clone())?;
+    let html = legacy_null_to_empty_string(&ctx, value)?;
+
+    self
+      .state
+      .dom
+      .borrow_mut()
+      .set_inner_html(self.node_id, &html)
+      .map_err(|e| dom_exception_to_js(&ctx, e))?;
+
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx, self.node_id)?;
+    Ok(())
+  }
+
+  #[qjs(get, rename = "outerHTML")]
+  fn outer_html_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
+    self.ensure_element(ctx.clone())?;
+    let dom = self.state.dom.borrow();
+    dom
+      .get_outer_html(self.node_id)
+      .map_err(|e| dom_exception_to_js(&ctx, e))
+  }
+
+  #[qjs(set, rename = "outerHTML")]
+  fn outer_html_set<'js>(&self, ctx: Ctx<'js>, value: Value<'js>) -> JsResult<()> {
+    self.ensure_element(ctx.clone())?;
+    let html = legacy_null_to_empty_string(&ctx, value)?;
+
+    let parent = self.state.dom.borrow().parent_node(self.node_id);
+    self
+      .state
+      .dom
+      .borrow_mut()
+      .set_outer_html(self.node_id, &html)
+      .map_err(|e| dom_exception_to_js(&ctx, e))?;
+
+    if let Some(parent) = parent {
+      self
+        .state
+        .maybe_sync_cached_child_nodes(ctx, parent)?;
+    }
+    Ok(())
+  }
+
   #[qjs(rename = "matches")]
   fn matches_selectors<'js>(&self, ctx: Ctx<'js>, selectors: String) -> JsResult<bool> {
     self.ensure_element(ctx.clone())?;
@@ -1246,6 +1310,9 @@ fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
 fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Error {
   match err {
     DomException::SyntaxError { message } => throw_syntax_dom_exception(ctx, &message),
+    DomException::NoModificationAllowedError { message } => {
+      throw_dom_exception(ctx, "NoModificationAllowedError", &message)
+    }
   }
 }
 
@@ -1267,6 +1334,14 @@ fn ensure_node_exists<'js>(ctx: &Ctx<'js>, dom: &Document, node_id: NodeId) -> J
     return Err(dom_error_to_js(ctx, DomError::NotFoundError));
   }
   Ok(())
+}
+
+fn legacy_null_to_empty_string<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> JsResult<String> {
+  if value.is_null() {
+    return Ok(String::new());
+  }
+  // Use the standard JS `ToString` conversion (so e.g. `undefined` => "undefined" and Symbols throw).
+  <String as FromJs<'js>>::from_js(ctx, value)
 }
 
 fn direct_child_nodes(dom: &Document, parent: NodeId) -> Result<Vec<NodeId>, DomError> {
