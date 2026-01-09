@@ -222,9 +222,11 @@ mod tests {
   use super::*;
   use crate::js::event_loop::{QueueLimits, RunUntilIdleOutcome, TaskSource};
   use crate::js::RunLimits;
-  use std::sync::atomic::{AtomicBool, Ordering};
+  use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
+
+  static JOB_CALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
   fn noop(
     _vm: &mut vm_js::Vm,
@@ -233,6 +235,17 @@ mod tests {
     _this: vm_js::Value,
     _args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
+    Ok(vm_js::Value::Undefined)
+  }
+
+  fn record_callback_call(
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _callee: vm_js::GcObject,
+    _this: vm_js::Value,
+    _args: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    JOB_CALLBACK_CALLS.fetch_add(1, Ordering::SeqCst);
     Ok(vm_js::Value::Undefined)
   }
 
@@ -543,6 +556,89 @@ mod tests {
       "Job::run should remove persistent roots after execution"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn vm_js_host_call_job_callback_invokes_the_callback() -> crate::Result<()> {
+    let call_count_before = JOB_CALLBACK_CALLS.load(Ordering::SeqCst);
+
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+      let callback_func = {
+        let (vm, heap) = host.vm_js_vm_and_heap_mut();
+        let mut scope = heap.scope();
+        let call_id = vm
+          .register_native_call(record_callback_call)
+          .map_err(|err| Error::Other(format!("register callback failed: {err}")))?;
+        let name = scope
+          .alloc_string("testCallback")
+          .map_err(|err| Error::Other(format!("alloc callback name failed: {err}")))?;
+        scope
+          .push_root(vm_js::Value::String(name))
+          .map_err(|err| Error::Other(format!("push root callback name failed: {err}")))?;
+        let func = scope
+          .alloc_native_function(call_id, None, name, 0)
+          .map_err(|err| Error::Other(format!("alloc callback func failed: {err}")))?;
+        scope
+          .push_root(vm_js::Value::Object(func))
+          .map_err(|err| Error::Other(format!("push root callback func failed: {err}")))?;
+        func
+      };
+
+      let job_callback = vm_js::JobCallback::new(callback_func);
+
+      let mut job = vm_js::Job::new(vm_js::JobKind::Promise, move |ctx, hooks| {
+        hooks.host_call_job_callback(ctx, &job_callback, vm_js::Value::Undefined, &[])?;
+        Ok(())
+      });
+
+      // Root the callback function so the captured handle remains valid until the job runs.
+      {
+        let mut ctx = VmJsJobContext { host, realm: None };
+        job
+          .add_root(&mut ctx, vm_js::Value::Object(callback_func))
+          .map_err(|err| Error::Other(format!("add root failed: {err}")))?;
+      }
+
+      let mut hooks = VmJsHostHooks::new(event_loop);
+      hooks.host_enqueue_promise_job(job, None);
+      if let Some(err) = hooks.finish(host) {
+        return Err(err);
+      }
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(
+      JOB_CALLBACK_CALLS.load(Ordering::SeqCst),
+      call_count_before + 1,
+      "host_call_job_callback should invoke the callback"
+    );
     Ok(())
   }
 }
