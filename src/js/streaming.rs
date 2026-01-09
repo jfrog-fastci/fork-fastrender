@@ -55,33 +55,13 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   script: dom2::NodeId,
   base_url_tracker: &html::base_url_tracker::BaseUrlTracker,
 ) -> ScriptElementSpec {
-  let base_url = base_url_tracker.current_base_url();
-
-  let async_attr = doc.has_attribute(script, "async");
-  let defer_attr = doc.has_attribute(script, "defer");
-
-  let src = doc
-    .get_attribute(script, "src")
-    .and_then(|raw_src| base_url_tracker.resolve_script_src(raw_src));
-
-  let mut inline_text = String::new();
-  for &child in &doc.node(script).children {
-    if let dom2::NodeKind::Text { content } = &doc.node(child).kind {
-      inline_text.push_str(content);
-    }
-  }
-
-  let script_type = super::determine_script_type_dom2(doc, script);
-
-  ScriptElementSpec {
-    base_url,
-    src,
-    inline_text,
-    async_attr,
-    defer_attr,
-    parser_inserted: true,
-    script_type,
-  }
+  // Keep the dom2-specific logic in `streaming_dom2` so namespace checks and script-type semantics
+  // stay in sync (and avoid duplicating attribute lookup rules).
+  super::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+    doc,
+    script,
+    base_url_tracker,
+  )
 }
 
 #[cfg(test)]
