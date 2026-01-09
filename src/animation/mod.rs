@@ -6916,7 +6916,38 @@ fn transition_value_for_property(
   time_ms: f32,
   ctx: &AnimationResolveContext,
 ) -> Option<(AnimatedValue, f32, f32, f32)> {
-  let duration = pick(durations, idx, *durations.last().unwrap_or(&0.0));
+  transition_value_for_property_with_duration_override(
+    name,
+    idx,
+    allow_discrete,
+    style,
+    start_style,
+    durations,
+    delays,
+    timings,
+    time_ms,
+    ctx,
+    None,
+  )
+}
+
+fn transition_value_for_property_with_duration_override(
+  name: &str,
+  idx: usize,
+  allow_discrete: bool,
+  style: &ComputedStyle,
+  start_style: &ComputedStyle,
+  durations: &[f32],
+  delays: &[f32],
+  timings: &[TransitionTimingFunction],
+  time_ms: f32,
+  ctx: &AnimationResolveContext,
+  duration_override_ms: Option<f32>,
+) -> Option<(AnimatedValue, f32, f32, f32)> {
+  let mut duration = pick(durations, idx, *durations.last().unwrap_or(&0.0));
+  if let Some(override_ms) = duration_override_ms {
+    duration = override_ms;
+  }
   if duration <= 0.0 {
     return None;
   }
@@ -7020,7 +7051,38 @@ fn transition_value_for_custom_property(
   time_ms: f32,
   ctx: &AnimationResolveContext,
 ) -> Option<(CustomPropertyValue, f32, f32, f32)> {
-  let duration = pick(durations, idx, *durations.last().unwrap_or(&0.0));
+  transition_value_for_custom_property_with_duration_override(
+    name,
+    idx,
+    allow_discrete,
+    style,
+    start_style,
+    durations,
+    delays,
+    timings,
+    time_ms,
+    ctx,
+    None,
+  )
+}
+
+fn transition_value_for_custom_property_with_duration_override(
+  name: &str,
+  idx: usize,
+  allow_discrete: bool,
+  style: &ComputedStyle,
+  start_style: &ComputedStyle,
+  durations: &[f32],
+  delays: &[f32],
+  timings: &[TransitionTimingFunction],
+  time_ms: f32,
+  ctx: &AnimationResolveContext,
+  duration_override_ms: Option<f32>,
+) -> Option<(CustomPropertyValue, f32, f32, f32)> {
+  let mut duration = pick(durations, idx, *durations.last().unwrap_or(&0.0));
+  if let Some(override_ms) = duration_override_ms {
+    duration = override_ms;
+  }
   if duration <= 0.0 {
     return None;
   }
@@ -7192,10 +7254,12 @@ fn apply_transitions_to_fragment(
 
   let mut start_arc = fragment.starting_style.clone();
   let mut start_time_ms = 0.0;
+  let mut duration_overrides_ms: Option<&HashMap<String, f32>> = None;
   if let (Some(state), Some(box_id)) = (transition_state, fragment.box_id()) {
     if let Some(entry) = state.entries.get(&box_id) {
       start_arc = Some(Arc::clone(&entry.start_style));
       start_time_ms = entry.start_time_ms;
+      duration_overrides_ms = Some(&entry.duration_overrides_ms);
     }
   }
 
@@ -7217,8 +7281,11 @@ fn apply_transitions_to_fragment(
           TransitionBehavior::Normal,
         );
         let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
+        let duration_override_ms =
+          duration_overrides_ms.and_then(|map| map.get(name_str)).copied();
+
         if name_str.starts_with("--") {
-          let value = transition_value_for_custom_property(
+          let value = transition_value_for_custom_property_with_duration_override(
             name_str,
             idx,
             allow_discrete,
@@ -7229,6 +7296,7 @@ fn apply_transitions_to_fragment(
             &style_arc.transition_timing_functions,
             time_ms,
             &ctx,
+            duration_override_ms,
           );
           if let Some((sampled, progress, delay, duration)) = value {
             custom_updates.push((Arc::from(name_str), sampled));
@@ -7246,7 +7314,7 @@ fn apply_transitions_to_fragment(
           continue;
         }
 
-        let value = transition_value_for_property(
+        let value = transition_value_for_property_with_duration_override(
           name_str,
           idx,
           allow_discrete,
@@ -7257,6 +7325,7 @@ fn apply_transitions_to_fragment(
           &style_arc.transition_timing_functions,
           time_ms,
           &ctx,
+          duration_override_ms,
         );
         if let Some((animated, progress, delay, duration)) = value {
           updates.push((name_str.to_string(), animated));
@@ -7388,6 +7457,7 @@ struct TransitionEntry {
   stable_key: TransitionStableKey,
   start_time_ms: f32,
   start_style: Arc<ComputedStyle>,
+  duration_overrides_ms: HashMap<String, f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -7499,8 +7569,10 @@ impl TransitionState {
     for (name, idx) in pairs {
       let behavior = pick(&end_style.transition_behaviors, idx, TransitionBehavior::Normal);
       let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
+      let duration_override_ms = prev_entry.duration_overrides_ms.get(name).copied();
       if name.starts_with("--") {
-        if let Some((sampled, _progress, _delay, _duration)) = transition_value_for_custom_property(
+        if let Some((sampled, _progress, _delay, _duration)) =
+          transition_value_for_custom_property_with_duration_override(
           name,
           idx,
           allow_discrete,
@@ -7511,13 +7583,15 @@ impl TransitionState {
           &end_style.transition_timing_functions,
           elapsed,
           &ctx,
+          duration_override_ms,
         ) {
           custom_updates.push((Arc::from(name), sampled));
         }
         continue;
       }
 
-      if let Some((animated, _progress, _delay, _duration)) = transition_value_for_property(
+      if let Some((animated, _progress, _delay, _duration)) =
+        transition_value_for_property_with_duration_override(
         name,
         idx,
         allow_discrete,
@@ -7528,6 +7602,7 @@ impl TransitionState {
         &end_style.transition_timing_functions,
         elapsed,
         &ctx,
+        duration_override_ms,
       ) {
         updates.push((name.to_string(), animated));
       }
@@ -7603,15 +7678,51 @@ impl TransitionState {
               stable_key,
               start_time_ms: prev_entry.start_time_ms,
               start_style: Arc::clone(&prev_entry.start_style),
+              duration_overrides_ms: prev_entry.duration_overrides_ms.clone(),
             },
           );
         }
         continue;
       }
 
+      let mut duration_overrides_ms = HashMap::new();
       let start_style = if let (Some(prev_state), Some((prev_entry_box_id, prev_entry))) =
         (prev_state, prev_entries_by_key.get(&stable_key).copied())
       {
+        if new_style.as_ref() == prev_entry.start_style.as_ref() {
+          if let Some(pairs) = transition_pairs(
+            &prev_style.transition_properties,
+            prev_entry.start_style.as_ref(),
+            prev_style.as_ref(),
+          ) {
+            for (name, idx) in pairs {
+              let mut duration = pick(&prev_style.transition_durations, idx, 0.0);
+              if let Some(override_ms) = prev_entry.duration_overrides_ms.get(name).copied() {
+                duration = override_ms;
+              }
+              if duration <= 0.0 {
+                continue;
+              }
+              let delay = pick(&prev_style.transition_delays, idx, 0.0);
+              let elapsed = now_ms - prev_entry.start_time_ms - delay;
+              let raw_progress = if elapsed <= 0.0 {
+                0.0
+              } else {
+                (elapsed / duration).clamp(0.0, 1.0)
+              };
+              let timing = pick(
+                &prev_style.transition_timing_functions,
+                idx,
+                TransitionTimingFunction::Ease,
+              );
+              let progress = timing.value_at(raw_progress);
+              let shortened = duration * progress;
+              if shortened > 0.0 && shortened < duration {
+                duration_overrides_ms.insert(name.to_string(), shortened);
+              }
+            }
+          }
+        }
         Self::sample_style_for_interruption(
           prev_state,
           prev_entry_box_id,
@@ -7629,6 +7740,7 @@ impl TransitionState {
           stable_key,
           start_time_ms: now_ms,
           start_style,
+          duration_overrides_ms,
         },
       );
     }

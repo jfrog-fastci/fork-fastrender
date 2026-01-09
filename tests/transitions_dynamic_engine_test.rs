@@ -208,7 +208,6 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
         width: 100px;
         height: 100px;
         border-top-width: 10px;
-        border-top-style: solid;
         transition: border-top-style 1000ms linear;
       }
       .a { border-top-style: solid; }
@@ -245,7 +244,6 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
         width: 100px;
         height: 100px;
         border-top-width: 10px;
-        border-top-style: solid;
         transition: border-top-style 1000ms linear allow-discrete;
       }
       .a { border-top-style: solid; }
