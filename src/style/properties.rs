@@ -293,24 +293,21 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
 }
 
 fn split_layers(tokens: &[PropertyValue]) -> Vec<Vec<PropertyValue>> {
+  // CSS layer lists (e.g. `background-image`, `background-repeat`, etc.) are comma-separated
+  // lists where *empty* items are invalid. For example: `url(a),` must not be treated as
+  // `url(a)`; instead the entire declaration is invalid (CSS Syntax).
+  //
+  // Preserve empty layers here so higher-level parsers reject them by returning `None`.
   let mut layers = Vec::new();
   let mut current = Vec::new();
   for token in tokens {
     if matches!(token, PropertyValue::Keyword(k) if k == ",") {
-      if !current.is_empty() {
-        layers.push(current.clone());
-        current.clear();
-      }
+      layers.push(std::mem::take(&mut current));
     } else {
       current.push(token.clone());
     }
   }
-  if !current.is_empty() {
-    layers.push(current);
-  }
-  if layers.is_empty() {
-    layers.push(Vec::new());
-  }
+  layers.push(current);
   layers
 }
 
