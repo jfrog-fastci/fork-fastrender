@@ -10473,6 +10473,7 @@ impl FastRender {
     if needs_large_stack && !LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.get()) {
       let deadline_stack = crate::render_control::deadline_stack_snapshot();
       let stage = crate::render_control::active_stage();
+      let stage_listener_stack = crate::render_control::stage_listener_stack_snapshot();
       return std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
           .name("fastr-layout".to_string())
@@ -10481,6 +10482,8 @@ impl FastRender {
             let _deadline_stack_guard =
               crate::render_control::DeadlineStackGuard::install(deadline_stack);
             let _stage_guard = StageGuard::install(stage);
+            let _stage_listener_stack_guard =
+              crate::render_control::StageListenerStackGuard::install(stage_listener_stack);
             let _stack_guard = LayoutStackThreadGuard::install();
             self.layout_document_for_media_with_artifacts_inner(
               dom,

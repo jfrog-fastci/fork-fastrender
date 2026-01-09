@@ -435,9 +435,27 @@ pub(crate) fn deadline_stack_snapshot() -> Vec<Option<RenderDeadline>> {
   DEADLINE_STACK.with(|stack| stack.borrow().clone())
 }
 
+pub(crate) fn stage_listener_stack_snapshot() -> Vec<Option<StageListener>> {
+  STAGE_LISTENER_STACK.with(|stack| stack.borrow().clone())
+}
+
 impl DeadlineStackGuard {
   pub(crate) fn install(next: Vec<Option<RenderDeadline>>) -> Self {
     let previous = DEADLINE_STACK.with(|stack| {
+      let mut stack = stack.borrow_mut();
+      std::mem::replace(&mut *stack, next)
+    });
+    Self { previous }
+  }
+}
+
+pub(crate) struct StageListenerStackGuard {
+  previous: Vec<Option<StageListener>>,
+}
+
+impl StageListenerStackGuard {
+  pub(crate) fn install(next: Vec<Option<StageListener>>) -> Self {
+    let previous = STAGE_LISTENER_STACK.with(|stack| {
       let mut stack = stack.borrow_mut();
       std::mem::replace(&mut *stack, next)
     });
@@ -479,6 +497,15 @@ impl Drop for DeadlineStackGuard {
   fn drop(&mut self) {
     let previous = std::mem::take(&mut self.previous);
     DEADLINE_STACK.with(|stack| {
+      *stack.borrow_mut() = previous;
+    });
+  }
+}
+
+impl Drop for StageListenerStackGuard {
+  fn drop(&mut self) {
+    let previous = std::mem::take(&mut self.previous);
+    STAGE_LISTENER_STACK.with(|stack| {
       *stack.borrow_mut() = previous;
     });
   }
