@@ -37,6 +37,7 @@ pub mod url;
 pub mod window_timers;
 pub mod streaming;
 pub mod streaming_dom2;
+pub mod streaming_pipeline;
 pub mod webidl;
 pub mod window_realm;
 
