@@ -95,6 +95,15 @@ impl ScriptOrchestrator {
     Host: CurrentScriptHost,
     Exec: ScriptBlockExecutor<Host>,
   {
+    // HTML: "prepare a script" early-outs when the script element is not connected.
+    //
+    // In `dom2`, `<template>` contents are represented as inert subtrees (the nodes remain in the
+    // tree for snapshotting/traversal, but should not be treated as connected for scripting).
+    // Scripts that have been detached from the document must also be skipped.
+    if !dom.is_connected_for_scripting(script) {
+      return Ok(());
+    }
+
     let new_current_script = match script_type {
       ScriptType::Classic => (!node_root_is_shadow_root(dom, script)).then_some(script),
       // `Document.currentScript` is null for module scripts.
@@ -335,5 +344,55 @@ mod tests {
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(host.current_script(), Some(outer_current));
     assert_eq!(host.script_state.stack_depth(), 0);
+  }
+
+  #[test]
+  fn skips_execution_for_scripts_not_connected_for_scripting() -> Result<()> {
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><body><template><script id=inert></script></template><script id=live></script>",
+    )
+    .unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 2);
+
+    let mut inert_script: Option<NodeId> = None;
+    let mut live_script: Option<NodeId> = None;
+    for &script in &scripts {
+      if dom.is_connected_for_scripting(script) {
+        live_script = Some(script);
+      } else {
+        inert_script = Some(script);
+      }
+    }
+    let inert_script = inert_script.expect("expected a script inside <template>");
+    let live_script = live_script.expect("expected a live script");
+
+    let mut host = Host::default();
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = RecordingExecutor::default();
+
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      inert_script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    assert_eq!(host.current_script(), None);
+    assert_eq!(executor.observed, Vec::<Option<NodeId>>::new());
+
+    orchestrator.execute_script_element(
+      &mut host,
+      &dom,
+      live_script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    assert_eq!(host.current_script(), None);
+    assert_eq!(executor.observed, vec![Some(live_script)]);
+    assert_eq!(host.script_state.stack_depth(), 0);
+    Ok(())
   }
 }
