@@ -635,6 +635,7 @@ impl App {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.loading = false;
           tab.error = Some(error);
+          tab.stage = None;
           tab.pending_nav_url = None;
         }
       }

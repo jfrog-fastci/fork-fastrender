@@ -133,8 +133,8 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       if loading {
         let stage = stage.filter(|s| *s != crate::render_control::StageHeartbeat::Done);
         match stage {
-          Some(stage) => ui.label(format!("Loading… {}", stage.as_str())),
-          None => ui.label("Loading…"),
+          Some(stage) => ui.label(egui::RichText::new(format!("Stage: {stage:?}")).small()),
+          None => ui.label(egui::RichText::new("Loading…").small()),
         };
       }
     });

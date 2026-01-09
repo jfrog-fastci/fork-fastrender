@@ -148,6 +148,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
+  - When available, the windowed UI shows the latest stage heartbeat for the active tab in the
+    top chrome while loading.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed UI’s
