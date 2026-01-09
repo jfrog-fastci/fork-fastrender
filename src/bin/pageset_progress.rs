@@ -5347,7 +5347,7 @@ fn print_note_block(label: &str, note: &str, indent: &str) {
   }
 }
 
-fn print_accuracy_block(acc: &ProgressAccuracy, indent: &str) {
+fn format_accuracy_line(acc: &ProgressAccuracy, indent: &str) -> String {
   let mut line = format!(
     "{indent}accuracy: baseline={} diff_pixels={} diff_percent={:.4}% perceptual={:.4} tolerance={} max_diff_percent={}",
     acc.baseline,
@@ -5358,12 +5358,19 @@ fn print_accuracy_block(acc: &ProgressAccuracy, indent: &str) {
     acc.max_diff_percent
   );
   if let Some(mismatch) = acc.first_mismatch.as_ref() {
-    line.push_str(&format!(" first_mismatch=({}, {})", mismatch.x, mismatch.y));
+    line.push_str(&format!(
+      " first_mismatch=({}, {}) baseline_rgba={:?} rendered_rgba={:?}",
+      mismatch.x, mismatch.y, mismatch.baseline_rgba, mismatch.rendered_rgba
+    ));
   }
   if !acc.computed_at_commit.trim().is_empty() {
     line.push_str(&format!(" computed_at_commit={}", acc.computed_at_commit));
   }
-  println!("{line}");
+  line
+}
+
+fn print_accuracy_block(acc: &ProgressAccuracy, indent: &str) {
+  println!("{}", format_accuracy_line(acc, indent));
 }
 
 const REPORT_OFFENDING_STEMS_LIMIT: usize = 25;
@@ -12260,6 +12267,31 @@ mod tests {
     assert_eq!(acc.tolerance, 0);
     assert_eq!(acc.max_diff_percent, 0.0);
     assert_eq!(acc.computed_at_commit, "deadbeef");
+  }
+
+  #[test]
+  fn format_accuracy_line_includes_first_mismatch_rgba_samples() {
+    let acc = ProgressAccuracy {
+      baseline: "chrome".to_string(),
+      diff_pixels: 123,
+      diff_percent: 1.5,
+      perceptual: 0.0,
+      first_mismatch: Some(ProgressAccuracyFirstMismatch {
+        x: 1,
+        y: 2,
+        baseline_rgba: [1, 2, 3, 4],
+        rendered_rgba: [5, 6, 7, 8],
+      }),
+      tolerance: 0,
+      max_diff_percent: 0.0,
+      computed_at_commit: String::new(),
+    };
+
+    let line = format_accuracy_line(&acc, "  ");
+    assert_eq!(
+      line,
+      "  accuracy: baseline=chrome diff_pixels=123 diff_percent=1.5000% perceptual=0.0000 tolerance=0 max_diff_percent=0 first_mismatch=(1, 2) baseline_rgba=[1, 2, 3, 4] rendered_rgba=[5, 6, 7, 8]"
+    );
   }
 
   #[test]
