@@ -438,3 +438,222 @@ fn animation_composition_add_adds_transforms() {
     .expect("paint settled");
   assert_eq!(pixel(&pixmap_settled, 32, 2), (255, 0, 0, 255));
 }
+
+#[test]
+fn animation_delay_and_fill_mode_backwards_apply_start_state_before_delay() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(30, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .box {
+        position: absolute;
+        top: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: fade;
+        animation-duration: 1000ms;
+        animation-delay: 500ms;
+        animation-timing-function: linear;
+      }
+      #none { left: 0; animation-fill-mode: none; }
+      #backwards { left: 10px; animation-fill-mode: backwards; }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="none" class="box"></div>
+    <div id="backwards" class="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // At 250ms (before the 500ms delay elapses), `fill-mode: backwards` should apply the start
+  // keyframe, while `fill-mode: none` should leave the element at its underlying style (opacity: 1).
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(250.0),
+    )
+    .expect("paint");
+
+  assert_eq!(pixel(&pixmap, 5, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 5), (0, 0, 0, 255));
+}
+
+#[test]
+fn animation_fill_mode_forwards_settles_but_backwards_is_ignored_in_settled_mode() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(30, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .box {
+        position: absolute;
+        top: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 1;
+        animation: fadeout 1000ms linear;
+      }
+      #forwards { left: 0; animation-fill-mode: forwards; }
+      #backwards { left: 10px; animation-fill-mode: backwards; }
+      @keyframes fadeout { from { opacity: 1; } to { opacity: 0; } }
+    </style>
+    <div id="forwards" class="box"></div>
+    <div id="backwards" class="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // Deterministic no-time mode should settle only fill-forwards animations to their end state; other
+  // fill modes have no deterministic settled state and should fall back to the underlying style.
+  let pixmap = prepared
+    .paint_with_options(PreparedPaintOptions::new().with_background(bg))
+    .expect("paint settled");
+
+  assert_eq!(pixel(&pixmap, 5, 5), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 15, 5), (255, 0, 0, 255));
+}
+
+#[test]
+fn negative_animation_delay_advances_progress_at_time_zero() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 1;
+        animation: fadeout 1000ms linear -500ms forwards;
+      }
+      @keyframes fadeout { from { opacity: 1; } to { opacity: 0; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // With a -500ms delay, at t=0ms the animation is already half-way through.
+  let pixmap_0 = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(0.0),
+    )
+    .expect("paint at 0ms");
+  let (r, g, b, a) = pixel(&pixmap_0, 5, 5);
+  assert!(
+    (120..=135).contains(&r),
+    "expected ~50% faded red at 0ms with -500ms delay, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+
+  // At t=500ms the animation should have completed and (with forwards fill) remain at opacity 0.
+  let pixmap_500 = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint at 500ms");
+  assert_eq!(pixel(&pixmap_500, 5, 5), (0, 0, 0, 255));
+}
+
+#[test]
+fn infinite_iteration_time_based_animation_is_ignored_in_settled_mode() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation: fade 1000ms linear infinite;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  let pixmap_time_0 = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(0.0),
+    )
+    .expect("paint at 0ms");
+  assert_eq!(pixel(&pixmap_time_0, 5, 5), (0, 0, 0, 255));
+
+  // Without an explicit time, infinite animations cannot be deterministically settled and should be
+  // ignored (falling back to the underlying style, which here is opaque red).
+  let pixmap_settled = prepared
+    .paint_with_options(PreparedPaintOptions::new().with_background(bg))
+    .expect("paint settled");
+  assert_eq!(pixel(&pixmap_settled, 5, 5), (255, 0, 0, 255));
+}
+
+#[test]
+fn animations_override_transitions_when_both_apply() {
+  ensure_test_env();
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(20, 20);
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+
+      @starting-style { #box { opacity: 0; } }
+
+      #box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        opacity: 1;
+        transition: opacity 1000ms linear;
+        animation: anim 1000ms linear both;
+      }
+
+      @keyframes anim {
+        from { opacity: 0; }
+        to { opacity: 0.25; }
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let bg = Rgba::new(0, 0, 0, 1.0);
+
+  // At 500ms:
+  // - transition alone would yield 0.5 opacity
+  // - animation yields 0.125 opacity and should win because animations are applied after transitions.
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(500.0),
+    )
+    .expect("paint");
+  let (r, g, b, a) = pixel(&pixmap, 5, 5);
+  assert!(
+    (28..=36).contains(&r),
+    "expected animation to override transition at 500ms, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!((g, b, a), (0, 0, 255));
+}
