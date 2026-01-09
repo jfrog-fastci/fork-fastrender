@@ -2799,9 +2799,7 @@ impl DisplayListBuilder {
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
         Some(RootBackground {
           paint_rect: target_rect,
-          // Treat the propagated background as if it were painted on the canvas itself so
-          // generated images like gradients resolve against the viewport-sized paint rect.
-          origin_rect: target_rect,
+          origin_rect: source_rect,
           style,
         })
       })
@@ -6190,8 +6188,12 @@ impl DisplayListBuilder {
 
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
-        let box_id = Self::get_box_id(html)?;
-        return Some((style, box_id, Rect::new(html_origin, html.bounds.size)));
+        let suppress_box_id = Self::get_box_id(html).unwrap_or(usize::MAX);
+        return Some((
+          style,
+          suppress_box_id,
+          Rect::new(html_origin, html.bounds.size),
+        ));
       }
     }
 
@@ -6221,11 +6223,9 @@ impl DisplayListBuilder {
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
-          let Some(box_id) = Self::get_box_id(child) else {
-            continue;
-          };
+          let suppress_box_id = Self::get_box_id(child).unwrap_or(usize::MAX);
           let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
-          return Some((style, box_id, rect));
+          return Some((style, suppress_box_id, rect));
         }
       }
     }
