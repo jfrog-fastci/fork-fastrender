@@ -733,6 +733,11 @@ fn navigate_tab(
     url: url.clone(),
   });
 
+  // Forward `StageHeartbeat` updates while we perform the render pipeline work for this navigation.
+  // This is intentionally scoped to the synchronous "navigation" job so we don't leak a
+  // process-global stage listener across unrelated renders (including those from other tabs).
+  let _stage_guard = forward_stage_heartbeats(tab_id, tx.clone());
+
   let push_history = matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick);
   if push_history {
     tab.history.push(url.clone());
