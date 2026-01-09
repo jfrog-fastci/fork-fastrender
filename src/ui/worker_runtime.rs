@@ -283,16 +283,20 @@ impl BrowserWorkerRuntime {
     }
 
     // Reset per-document state.
+    //
+    // We intentionally preserve the *viewport* scroll offset across reload/back/forward navigations
+    // (matching the behaviour of the full browser worker and headless `UiWorker`). We restore the
+    // scroll state from `TabHistory` so we don't carry element scroll offsets keyed by box ids
+    // across document reloads.
     tab.interaction = InteractionEngine::new();
-    tab.scroll = ScrollState::default();
-
-    // Restore scroll offsets for history navigations.
-    if matches!(reason, NavigationReason::BackForward) {
-      if let Some(entry) = tab.history.current() {
-        tab.scroll.viewport.x = entry.scroll_x;
-        tab.scroll.viewport.y = entry.scroll_y;
-      }
-    }
+    tab.scroll = match reason {
+      NavigationReason::TypedUrl | NavigationReason::LinkClick => ScrollState::default(),
+      NavigationReason::BackForward | NavigationReason::Reload => tab
+        .history
+        .current()
+        .map(|entry| ScrollState::with_viewport(Point::new(entry.scroll_x, entry.scroll_y)))
+        .unwrap_or_default(),
+    };
 
     if tab.renderer.is_none() {
       match FastRender::new() {

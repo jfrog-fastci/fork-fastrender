@@ -328,6 +328,60 @@ fn history_back_forward_emits_committed_urls() {
 }
 
 #[test]
+fn reload_preserves_scroll_offset() {
+  let dir = tempdir().expect("temp dir");
+  let path = dir.path().join("scroll.html");
+  std::fs::write(
+    &path,
+    r#"<!doctype html>
+      <style>
+        html, body { margin: 0; padding: 0; }
+        #spacer { height: 2000px; }
+      </style>
+      <div id="spacer"></div>
+    "#,
+  )
+  .unwrap();
+  let url = file_url(&path);
+
+  let h = WorkerHarness::spawn();
+  let tab_id = create_tab(&h, (100, 100));
+
+  let (_, events) = h.send_and_wait_for_frame(
+    tab_id,
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
+  );
+  let _ = drain_after_frame(&h, events);
+
+  let (_frame, scroll_events) = h.send_and_wait_for_frame(
+    tab_id,
+    scroll_msg(tab_id, (0.0, 120.0), None),
+  );
+  let scroll_events = drain_after_frame(&h, scroll_events);
+  let scrolled_y = scroll_events.iter().find_map(|ev| match ev {
+    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
+    _ => None,
+  });
+  let scrolled_y = scrolled_y.expect("ScrollStateUpdated after scroll");
+  assert!(
+    (scrolled_y - 120.0).abs() < 1.0,
+    "expected scroll to move to ~120, got {scrolled_y}"
+  );
+
+  let (_frame, reload_events) = h.send_and_wait_for_frame(tab_id, UiToWorker::Reload { tab_id });
+  let reload_events = drain_after_frame(&h, reload_events);
+  let reloaded_y = reload_events.iter().find_map(|ev| match ev {
+    WorkerToUiEvent::ScrollStateUpdated { scroll, .. } => Some(scroll.viewport.y),
+    _ => None,
+  });
+  let reloaded_y = reloaded_y.expect("ScrollStateUpdated after reload");
+  assert!(
+    (reloaded_y - scrolled_y).abs() < 1.0,
+    "expected reload to preserve scroll (before={scrolled_y}, after={reloaded_y})"
+  );
+}
+
+#[test]
 fn scroll_emits_scroll_state_updated_and_frame_snap_and_clamp() {
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("scroll.html");
