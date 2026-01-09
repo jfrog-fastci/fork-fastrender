@@ -20,15 +20,43 @@ cargo run --release --features browser_ui --bin browser
 If you try to build/run it without the feature, Cargo will refuse because the target has
 `required-features = ["browser_ui"]` in [`Cargo.toml`](../Cargo.toml).
 
+When running the browser UI against arbitrary real-world pages, consider using the repo’s resource
+limit wrapper (especially on multi-agent hosts):
+
+```bash
+scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --bin browser
+```
+
+The `browser` binary also supports an in-process, best-effort address-space cap via
+`FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
+
+## Current UI capabilities (MVP)
+
+The browser UI is still experimental, but it is intended to be a **real interactive surface** over
+the renderer:
+
+- **Navigation**
+  - address bar URL entry (including `about:*` pages and `file://` URLs / filesystem paths)
+  - back/forward/reload with per-tab history
+- **Tabs**: create/close/switch tabs (each tab has its own navigation state)
+- **Scrolling**: mouse wheel/trackpad updates the viewport scroll offset and repaints
+- **Pointer + basic forms** (non-JS):
+  - link clicking (hit-test fragments → navigate)
+  - basic focus + text input for `<input>` / `<textarea>`
+  - checkbox/radio toggling
+
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
-- Browser-UI scaffolding (tab/history model, cancellation helpers, worker wrapper):
+- Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
   [`src/ui/`](../src/ui/)
+  - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
+  - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
   - Render worker wrapper + large-stack thread spawn:
     [`src/ui/worker.rs`](../src/ui/worker.rs)
+  - Synchronous “navigate + render a frame” helper used by the worker: [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
     - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
@@ -47,13 +75,12 @@ The desktop UI is deliberately split into:
 - **Render worker**: runs the “heavy” pipeline (fetch → parse → style → layout → paint) and produces
   a `tiny_skia::Pixmap` for the current viewport.
 
-Even though the current `browser` binary is still mostly a **scaffold** (it draws a dummy pixmap and
-does not yet perform real navigation), the worker boundary is kept so we can:
+The worker boundary is kept so we can:
 
 - keep the UI responsive under slow network/layout,
 - cancel work on rapid navigation/scroll,
 - drop stale renders, and
-- support multiple tabs later.
+- route results to the correct tab via `tab_id`.
 
 ### UI thread vs render worker thread
 
@@ -68,10 +95,22 @@ The browser UI should run rendering on a dedicated large-stack thread:
 The intended communication model is message-based (std channels) rather than direct calls, so the UI
 can remain responsive and explicitly ignore late results.
 
-Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs). Today this is minimal:
+Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 
-- `WorkerToUi::Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
-  (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs)).
+**UI → worker** (`UiToWorker`) includes requests like:
+
+- `Navigate { tab_id, url, reason }`
+- `ViewportChanged { tab_id, viewport_css, dpr }`
+- `Scroll { tab_id, delta_css, pointer_css }`
+- pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
+
+**Worker → UI** (`WorkerToUi`) includes:
+
+- `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata
+- `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
+- `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
+  (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
+- `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
@@ -106,14 +145,10 @@ stale work early.
 ## Known limitations (as of now)
 
 - **No author JavaScript**: `<script>` does not execute.
-- The `browser` UI is still an MVP scaffold:
-  - back/forward/reload buttons are currently no-op
-  - the address bar does not yet trigger navigation
-  - the content area currently displays a dummy checkerboard pixmap
-- No real hit-testing/input routing yet; form controls are not wired up in the UI.
-  Renderer-side DOM mutation helpers exist (e.g. checkbox toggle/text input) in
-  [`src/interaction/dom_mutation.rs`](../src/interaction/dom_mutation.rs), but the UI does not drive
-  them yet.
+- **Limited form support** (non-JS):
+  - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
+  - many controls are not yet supported (`<select>`, `contenteditable`, file inputs, etc.)
+- No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
 ## MSRV + GUI version pinning
 

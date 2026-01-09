@@ -50,6 +50,16 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
 
+## Browser UI (`browser` binary)
+
+These are consumed by the experimental desktop browser UI (`cargo run --features browser_ui --bin browser`).
+
+- `FASTR_BROWSER_MEM_LIMIT_MB=<MiB>` – best-effort address-space (virtual memory) limit for the `browser` process.
+  - Set to `0`, empty, or unset to disable.
+  - Accepts `_` separators (e.g. `1_024`).
+  - On Linux this attempts to apply an `RLIMIT_AS` cap at process start; on other platforms it is currently unsupported.
+- `FASTR_TEST_BROWSER_EXIT_IMMEDIATELY=1` – **test-only** hook: make the `browser` binary exit successfully immediately after parsing/applying its startup env vars (so tests can exercise `FASTR_BROWSER_MEM_LIMIT_MB` handling without opening a window).
+
 ## Compatibility toggles
 
 - `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `svg`, `iframe`, `embed`, `object`).
