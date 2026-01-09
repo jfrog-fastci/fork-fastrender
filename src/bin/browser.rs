@@ -484,6 +484,7 @@ struct App {
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
 
   page_rect_points: Option<egui::Rect>,
+  page_viewport_css: Option<(u32, u32)>,
   page_input_tab: Option<fastrender::ui::TabId>,
   page_input_mapping: Option<fastrender::ui::InputMapping>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
@@ -586,6 +587,7 @@ impl App {
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
       page_rect_points: None,
+      page_viewport_css: None,
       page_input_tab: None,
       page_input_mapping: None,
       viewport_cache_tab: None,
@@ -1303,6 +1305,9 @@ impl App {
         let Some(rect) = self.page_rect_points else {
           return;
         };
+        let Some(_viewport_css) = self.page_viewport_css else {
+          return;
+        };
         let Some(tab_id) = self.page_input_tab else {
           return;
         };
@@ -1373,6 +1378,9 @@ impl App {
             if !rect.contains(pos_points) {
               return;
             }
+            let Some(_viewport_css) = self.page_viewport_css else {
+              return;
+            };
             let Some(tab_id) = self.page_input_tab else {
               return;
             };
@@ -1401,6 +1409,9 @@ impl App {
             self.captured_button = fastrender::ui::PointerButton::None;
 
             let Some(_rect) = self.page_rect_points else {
+              return;
+            };
+            let Some(_viewport_css) = self.page_viewport_css else {
               return;
             };
             let Some(tab_id) = self.page_input_tab else {
@@ -1439,6 +1450,9 @@ impl App {
         }
 
         let Some(rect) = self.page_rect_points else {
+          return;
+        };
+        let Some(_viewport_css) = self.page_viewport_css else {
           return;
         };
         let Some(tab_id) = self.page_input_tab else {
@@ -1732,6 +1746,7 @@ impl App {
       self.send_viewport_changed_if_needed(viewport_css, dpr);
 
       self.page_rect_points = None;
+      self.page_viewport_css = None;
       self.page_input_tab = None;
       self.page_input_mapping = None;
 
@@ -1741,19 +1756,14 @@ impl App {
       };
 
       if let Some(tex) = self.tab_textures.get(&active_tab) {
-        let viewport_css_for_mapping = self
-          .browser_state
-          .tab(active_tab)
-          .and_then(|tab| tab.latest_frame_meta.as_ref().map(|m| m.viewport_css))
-          .or_else(|| (self.viewport_cache_tab == Some(active_tab)).then_some(self.viewport_cache_css))
-          .unwrap_or(viewport_css);
         let size_points = tex.size_points(self.pixels_per_point);
         let response =
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
+        self.page_viewport_css = Some(viewport_css);
         self.page_input_tab = Some(active_tab);
         self.page_input_mapping =
-          Some(fastrender::ui::InputMapping::new(response.rect, viewport_css_for_mapping));
+          Some(fastrender::ui::InputMapping::new(response.rect, viewport_css));
         if self.page_has_focus {
           response.request_focus();
         }
