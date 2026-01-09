@@ -143,14 +143,13 @@ impl StreamingHtmlParser {
     self.document_url.as_deref()
   }
 }
-
 #[cfg(test)]
-  mod tests {
-    use super::{StreamingHtmlParser, StreamingParserYield};
-    use crate::dom2::{Document, NodeId, NodeKind};
-    use crate::html::base_url_tracker::BaseUrlTracker;
-    use crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
-    use crate::js::ScriptElementSpec;
+mod tests {
+  use super::{StreamingHtmlParser, StreamingParserYield};
+  use crate::dom2::{Document, NodeId, NodeKind};
+  use crate::html::base_url_tracker::BaseUrlTracker;
+  use crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2;
+  use crate::js::ScriptElementSpec;
 
   fn find_first_element(doc: &Document, tag: &str) -> Option<NodeId> {
     let mut stack = vec![doc.root()];
@@ -429,5 +428,32 @@ impl StreamingHtmlParser {
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/doc.html"));
     assert_eq!(specs[0].src.as_deref(), Some("https://ex/a.js"));
+  }
+
+  #[test]
+  fn base_in_declarative_shadow_root_does_not_update_base_url() {
+    // The `<base>` is inside a declarative shadow DOM template attached to `<head>`. While parsing,
+    // the template contents are inert and must not affect base URL selection.
+    //
+    // After parsing completes, FastRender promotes the `<template shadowroot=...>` into a
+    // `ShadowRoot` node. Base URL recomputation must not treat `<base>` inside that shadow root as
+    // a `<head>` base candidate.
+    let html = r#"<!doctype html><html><head>
+      <template shadowroot=open><base href="https://bad.example/"></template>
+    </head></html>"#;
+
+    let mut parser = StreamingHtmlParser::new(Some("https://example.com/dir/page.html"));
+    parser.push_str(html);
+    parser.set_eof();
+
+    match parser.pump() {
+      StreamingParserYield::Finished { .. } => {}
+      other => panic!("expected Finished, got {other:?}"),
+    }
+
+    assert_eq!(
+      parser.current_base_url().as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
   }
 }
