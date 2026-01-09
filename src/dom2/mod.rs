@@ -555,6 +555,7 @@ impl Document {
           // defensively to a plain document node to avoid panics if an invalid tree is constructed.
           DomNodeType::Document {
             quirks_mode: QuirksMode::NoQuirks,
+            scripting_enabled: true,
           }
         }
         NodeKind::ShadowRoot {
