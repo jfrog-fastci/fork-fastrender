@@ -353,3 +353,75 @@ fn absolute_child_in_subgrid_inherits_named_grid_lines_for_static_position() {
     abs_fragment.bounds.x()
   );
 }
+
+#[test]
+fn absolute_child_in_nested_subgrid_inherits_named_grid_lines_for_static_position() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.position = Position::Relative;
+  parent_style.width = Some(Length::px(100.0));
+  parent_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(60.0)),
+  ];
+  parent_style.grid_column_line_names = vec![
+    vec!["one".to_string()],
+    vec!["two".to_string()],
+    vec!["three".to_string()],
+  ];
+
+  let mut outer_subgrid_style = ComputedStyle::default();
+  outer_subgrid_style.display = Display::Grid;
+  outer_subgrid_style.grid_column_subgrid = true;
+  outer_subgrid_style.grid_column_start = 1;
+  outer_subgrid_style.grid_column_end = 3;
+
+  let mut inner_subgrid_style = ComputedStyle::default();
+  inner_subgrid_style.display = Display::Grid;
+  inner_subgrid_style.grid_column_subgrid = true;
+  inner_subgrid_style.grid_column_start = 1;
+  inner_subgrid_style.grid_column_end = 3;
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.width = Some(Length::px(10.0));
+  abs_style.height = Some(Length::px(10.0));
+  abs_style.grid_column_raw = Some("two / three".to_string());
+
+  let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+  let inner_subgrid = BoxNode::new_block(
+    Arc::new(inner_subgrid_style),
+    FormattingContextType::Grid,
+    vec![abs_child],
+  );
+  let outer_subgrid = BoxNode::new_block(
+    Arc::new(outer_subgrid_style),
+    FormattingContextType::Grid,
+    vec![inner_subgrid],
+  );
+  let container = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![outer_subgrid],
+  );
+
+  let constraints = LayoutConstraints::definite(100.0, 100.0);
+  let fc = GridFormattingContext::new();
+  let fragment = fc.layout(&container, &constraints).expect("grid layout");
+
+  let abs_fragment = fragment
+    .iter_fragments()
+    .find(|node| {
+      matches!(
+        node.style.as_ref().map(|s| s.position),
+        Some(Position::Absolute)
+      )
+    })
+    .expect("absolute fragment present");
+
+  assert!(
+    (abs_fragment.bounds.x() - 40.0).abs() < 0.1,
+    "static position should align with second inherited grid column start through nested subgrids (got x = {})",
+    abs_fragment.bounds.x()
+  );
+}
