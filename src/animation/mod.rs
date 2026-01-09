@@ -798,17 +798,53 @@ fn interpolate_radii(
   out
 }
 
-fn resolve_shape_radius(
+fn resolve_circle_radius(
   radius: &ShapeRadius,
-  axis: f32,
+  center_x: f32,
+  center_y: f32,
+  width: f32,
+  height: f32,
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<f32> {
-  match radius {
-    ShapeRadius::Length(l) => Some(resolve_length_px(l, Some(axis), style, ctx)),
-    // Keywords require reference box distances; fall back to discrete handling for now.
-    ShapeRadius::ClosestSide | ShapeRadius::FarthestSide => None,
-  }
+  let resolved = match radius {
+    ShapeRadius::Length(l) => resolve_length_px(l, Some(width.min(height)), style, ctx),
+    ShapeRadius::ClosestSide => {
+      let dx = center_x.abs().min((width - center_x).abs());
+      let dy = center_y.abs().min((height - center_y).abs());
+      dx.min(dy)
+    }
+    ShapeRadius::FarthestSide => {
+      let dx = center_x.abs().max((width - center_x).abs());
+      let dy = center_y.abs().max((height - center_y).abs());
+      dx.max(dy)
+    }
+  };
+  resolved.is_finite().then_some(resolved)
+}
+
+fn resolve_ellipse_radius(
+  radius: &ShapeRadius,
+  horizontal: bool,
+  center_x: f32,
+  center_y: f32,
+  width: f32,
+  height: f32,
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<f32> {
+  let base = if horizontal { width } else { height };
+  let (center, axis_size) = if horizontal {
+    (center_x, width)
+  } else {
+    (center_y, height)
+  };
+  let resolved = match radius {
+    ShapeRadius::Length(l) => resolve_length_px(l, Some(base), style, ctx),
+    ShapeRadius::ClosestSide => center.abs().min((axis_size - center).abs()),
+    ShapeRadius::FarthestSide => center.abs().max((axis_size - center).abs()),
+  };
+  resolved.is_finite().then_some(resolved)
 }
 
 fn resolve_clip_path(
@@ -876,8 +912,15 @@ fn resolve_clip_path(
       BasicShape::Circle { radius, position } => {
         let width = ctx.element_size.width;
         let height = ctx.element_size.height;
-        let radius_px = resolve_shape_radius(radius, width.min(height), style, ctx)?;
-        let resolved_pos = resolve_background_positions(&[*position], style, ctx).pop()?;
+        let resolved_pos = resolve_background_positions(&[*position], style, ctx)
+          .into_iter()
+          .next()?;
+        let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
+        let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
+        if !(cx.is_finite() && cy.is_finite()) {
+          return None;
+        }
+        let radius_px = resolve_circle_radius(radius, cx, cy, width, height, style, ctx)?;
         Some(ResolvedClipPath::Circle {
           radius: radius_px,
           position: resolved_pos,
@@ -891,9 +934,16 @@ fn resolve_clip_path(
       } => {
         let width = ctx.element_size.width;
         let height = ctx.element_size.height;
-        let rx = resolve_shape_radius(radius_x, width, style, ctx)?;
-        let ry = resolve_shape_radius(radius_y, height, style, ctx)?;
-        let resolved_pos = resolve_background_positions(&[*position], style, ctx).pop()?;
+        let resolved_pos = resolve_background_positions(&[*position], style, ctx)
+          .into_iter()
+          .next()?;
+        let cx = resolved_pos.x.alignment * width + resolved_pos.x.offset;
+        let cy = resolved_pos.y.alignment * height + resolved_pos.y.offset;
+        if !(cx.is_finite() && cy.is_finite()) {
+          return None;
+        }
+        let rx = resolve_ellipse_radius(radius_x, true, cx, cy, width, height, style, ctx)?;
+        let ry = resolve_ellipse_radius(radius_y, false, cx, cy, width, height, style, ctx)?;
         Some(ResolvedClipPath::Ellipse {
           radius_x: rx,
           radius_y: ry,
@@ -1403,7 +1453,7 @@ fn interpolate_clip_paths(
         radii: rbra,
         reference: refb,
       },
-    ) if refa == refb => {
+    ) if refa.unwrap_or(ReferenceBox::BorderBox) == refb.unwrap_or(ReferenceBox::BorderBox) => {
       let radii = match (raadii, rbra) {
         (Some(a), Some(b)) => Some(interpolate_radii(*a, *b, t)),
         (None, None) => None,
@@ -1429,7 +1479,7 @@ fn interpolate_clip_paths(
         position: pb,
         reference: refb,
       },
-    ) if refa == refb => {
+    ) if refa.unwrap_or(ReferenceBox::BorderBox) == refb.unwrap_or(ReferenceBox::BorderBox) => {
       let pos = interpolate_background_positions(&[pa.clone()], &[pb.clone()], t)?;
       Some(ResolvedClipPath::Circle {
         radius: lerp(*ra, *rb, t),
@@ -1450,7 +1500,7 @@ fn interpolate_clip_paths(
         position: pb,
         reference: refb,
       },
-    ) if refa == refb => {
+    ) if refa.unwrap_or(ReferenceBox::BorderBox) == refb.unwrap_or(ReferenceBox::BorderBox) => {
       let pos = interpolate_background_positions(&[pa.clone()], &[pb.clone()], t)?;
       Some(ResolvedClipPath::Ellipse {
         radius_x: lerp(*rxa, *rxb, t),
@@ -1470,7 +1520,10 @@ fn interpolate_clip_paths(
         points: pb,
         reference: refb,
       },
-    ) if fa == fb && refa == refb && pa.len() == pb.len() => {
+    ) if fa == fb
+      && refa.unwrap_or(ReferenceBox::BorderBox) == refb.unwrap_or(ReferenceBox::BorderBox)
+      && pa.len() == pb.len() =>
+    {
       let mut points = Vec::with_capacity(pa.len());
       for ((ax, ay), (bx, by)) in pa.iter().zip(pb.iter()) {
         points.push((lerp(*ax, *bx, t), lerp(*ay, *by, t)));
