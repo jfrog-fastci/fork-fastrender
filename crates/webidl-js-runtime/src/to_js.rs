@@ -347,6 +347,10 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   let mut schema_names = std::collections::HashSet::<&str>::new();
   for member in &schema {
     schema_names.insert(member.name.as_str());
+    if member.required && !members.contains_key(&member.name) {
+      let message = format!("dictionary `{name}` missing required member `{}`", member.name);
+      return Err(rt.throw_type_error(&message));
+    }
   }
   for key in members.keys() {
     if key.len() > limits.max_string_bytes {
@@ -613,6 +617,47 @@ mod tests {
       "expected RangeError, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn dictionary_missing_required_member_throws_type_error() -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    ctx.add_dictionary(DictionarySchema {
+      name: "RequiredDict".to_string(),
+      inherits: None,
+      members: vec![DictionaryMemberSchema {
+        name: "must".to_string(),
+        required: true,
+        ty: parse_idl_type_complete("long")?,
+        default: None,
+      }],
+    });
+
+    let ty = parse_idl_type_complete("RequiredDict")?;
+    let value = WebIdlValue::Dictionary {
+      name: "RequiredDict".to_string(),
+      members: std::collections::BTreeMap::new(),
+    };
+
+    let mut rt = VmJsRuntime::new();
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(
+      msg.starts_with("TypeError:"),
+      "expected TypeError, got {msg:?}"
+    );
+    assert!(
+      msg.contains("missing required member"),
+      "expected required-member message, got {msg:?}"
+    );
     Ok(())
   }
 
