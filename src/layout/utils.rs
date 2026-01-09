@@ -351,7 +351,10 @@ pub fn scrollbar_reservation_for_style(style: &ComputedStyle) -> ScrollbarReserv
 
   let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
     || (style.scrollbar_gutter.stable
-      && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+      && matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_vertical_gutter {
     if style.scrollbar_gutter.both_edges {
       reservation.left += gutter;
@@ -361,7 +364,10 @@ pub fn scrollbar_reservation_for_style(style: &ComputedStyle) -> ScrollbarReserv
 
   let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
     || (style.scrollbar_gutter.stable
-      && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+      && matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_horizontal_gutter {
     if style.scrollbar_gutter.both_edges {
       reservation.top += gutter;
