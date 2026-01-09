@@ -177,12 +177,22 @@ mod tests {
 
   #[test]
   fn generated_world_preserves_callback_interface_flag() {
+    for name in ["EventListener", "NodeFilter", "XPathNSResolver"] {
+      assert!(
+        WORLD
+          .interface(name)
+          .unwrap_or_else(|| panic!("generated world should include {name} interface"))
+          .callback,
+        "expected {name} to be marked as a callback interface"
+      );
+    }
+
     assert!(
-      WORLD
-        .interface("EventListener")
-        .expect("generated world should include EventListener interface")
+      !WORLD
+        .interface("EventTarget")
+        .expect("generated world should include EventTarget interface")
         .callback,
-      "expected EventListener to be marked as a callback interface"
+      "expected EventTarget to NOT be marked as a callback interface"
     );
   }
 
