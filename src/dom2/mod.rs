@@ -1417,6 +1417,16 @@ impl Document {
   }
 }
 
+pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
+  doc.get_element_by_id(id)
+}
+
+pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
+  doc
+    .set_attribute(node, name, value)
+    .unwrap_or_else(|err| panic!("dom2::set_attribute failed: {err}"))
+}
+
 #[cfg(test)]
 mod attrs_tests;
 #[cfg(test)]
