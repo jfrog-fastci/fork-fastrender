@@ -108,8 +108,14 @@ pub fn parse_dictionary_member_schema(
 ) -> Result<DictionaryMemberSchema> {
   // `ResolvedDictionaryMember.raw` already has leading extended attributes stripped into
   // `ResolvedDictionaryMember.ext_attrs`.
-  let mut s = member.raw.trim();
-  let required = consume_keyword(&mut s, "required");
+  let mut s = super::strip_leading_ws_and_comments(&member.raw).trim_start();
+  let required = if let Some(after) = super::consume_keyword(s, "required") {
+    s = after;
+    true
+  } else {
+    false
+  };
+  s = super::strip_leading_ws_and_comments(s).trim_start();
 
   let (ty, rest) = parse_idl_type(s)
     .map_err(|e| anyhow::anyhow!("{e}"))
@@ -117,32 +123,28 @@ pub fn parse_dictionary_member_schema(
   let mut ty = merge_extra_annotations(ty, &member.ext_attrs);
   resolve_named_type_kinds_in_place(&mut ty, world);
 
-  let rest = rest.trim_start();
-  let (name, rest) = parse_identifier_prefix(rest)
-    .with_context(|| format!("parse dictionary member name in `{}`", member.raw))?;
+  let (name, rest) = super::parse_identifier_prefix(rest)
+    .ok_or_else(|| anyhow::anyhow!("expected dictionary member name after type"))?;
 
-  let mut rest = rest.trim_start();
+  let mut rest = super::strip_leading_ws_and_comments(rest).trim_start();
   let default = if rest.starts_with('=') {
     rest = &rest[1..];
-    let dv_text = rest.trim_start();
-    if dv_text.is_empty() {
+    rest = super::strip_leading_ws_and_comments(rest).trim_start();
+    if rest.is_empty() {
       bail!("dictionary member has `=` but no default value: `{}`", member.raw);
     }
-    let dv = parse_default_value(dv_text)
+    let dv = parse_default_value(rest)
       .map_err(|e| anyhow::anyhow!("{e}"))
-      .with_context(|| format!("parse default value `{}`", dv_text))?;
+      .with_context(|| format!("parse default value `{}`", rest))?;
     Some(dv)
-  } else {
+  } else if rest.trim().is_empty() {
     None
-  };
-
-  // Fail fast on unexpected trailing tokens when no default is present.
-  if default.is_none() && !rest.trim().is_empty() {
+  } else {
     bail!(
       "unexpected trailing tokens after dictionary member name: `{}`",
       rest.trim()
     );
-  }
+  };
 
   Ok(DictionaryMemberSchema {
     name: name.to_string(),
@@ -241,45 +243,6 @@ fn ext_attr_to_type_annotation(attr: &ExtendedAttribute) -> TypeAnnotation {
   }
 }
 
-fn consume_keyword<'a>(s: &mut &'a str, kw: &str) -> bool {
-  let rest = s.trim_start();
-  if !rest.starts_with(kw) {
-    return false;
-  }
-  let after = &rest[kw.len()..];
-  if after
-    .chars()
-    .next()
-    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-  {
-    return false;
-  }
-  *s = after;
-  true
-}
-
-fn parse_identifier_prefix(s: &str) -> Result<(&str, &str)> {
-  let s = s.trim_start();
-  let bytes = s.as_bytes();
-  let mut i = 0usize;
-  while i < bytes.len() {
-    let b = bytes[i];
-    let ok = if i == 0 {
-      b.is_ascii_alphabetic() || b == b'_'
-    } else {
-      b.is_ascii_alphanumeric() || b == b'_'
-    };
-    if !ok {
-      break;
-    }
-    i += 1;
-  }
-  if i == 0 {
-    bail!("expected identifier");
-  }
-  Ok((&s[..i], &s[i..]))
-}
-
 pub fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlType> {
   #[derive(Default)]
   struct Ctx {
@@ -375,8 +338,8 @@ mod tests {
       callback interface CI {};
 
       dictionary Base {
-        required DOMString base;
-        [Clamp] unsigned long x = 1;
+        required /* required can be followed by comments in spec sources */ DOMString base;
+        [Clamp] unsigned long x /* ditto between name and default */ = 1;
       };
 
       dictionary Derived : Base {
