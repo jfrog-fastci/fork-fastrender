@@ -1,21 +1,57 @@
+//! DOM Events foundations (WHATWG DOM).
+//!
+//! FastRender previously had two event dispatch foundations:
+//! - `dom2::events` (integrated with the mutable `dom2::Document`)
+//! - `web::events` (a standalone registry + dispatch algorithm used only by its own tests)
+//!
+//! `dom2::events` is the canonical implementation going forward so JS bindings can target a single
+//! spec-shaped foundation and share listener dispatch semantics with the mutable DOM.
+
 use std::collections::HashMap;
 
 use crate::Result;
 
 use super::{Document, NodeId};
 
+/// Event phase values match the Web IDL `EventPhase` enum.
+///
+/// In particular, the discriminant values are stable for JS bindings:
+/// - `0` = NONE
+/// - `1` = CAPTURING_PHASE
+/// - `2` = AT_TARGET
+/// - `3` = BUBBLING_PHASE
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventPhase {
-  CapturingPhase,
-  AtTarget,
-  BubblingPhase,
+  None = 0,
+  CapturingPhase = 1,
+  AtTarget = 2,
+  BubblingPhase = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventTargetId {
+  Window,
   Document,
   Node(NodeId),
-  // Future: Window, ShadowRoot, etc.
+  // Future: ShadowRoot, etc.
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventInit {
+  pub bubbles: bool,
+  pub cancelable: bool,
+  pub composed: bool,
+}
+
+impl Default for EventInit {
+  fn default() -> Self {
+    Self {
+      bubbles: false,
+      cancelable: false,
+      composed: false,
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -43,6 +79,7 @@ pub struct Event {
   pub type_: String,
   pub bubbles: bool,
   pub cancelable: bool,
+  pub composed: bool,
   pub default_prevented: bool,
   pub event_phase: EventPhase,
   pub target: Option<EventTargetId>,
@@ -55,15 +92,14 @@ pub struct Event {
 }
 
 impl Event {
-  pub fn new(type_: impl Into<String>) -> Self {
+  pub fn new(type_: impl Into<String>, init: EventInit) -> Self {
     Self {
       type_: type_.into(),
-      // Mirror DOM defaults.
-      bubbles: false,
-      cancelable: false,
+      bubbles: init.bubbles,
+      cancelable: init.cancelable,
+      composed: init.composed,
       default_prevented: false,
-      // Spec has an explicit NONE phase, but we only model the phases used during dispatch.
-      event_phase: EventPhase::AtTarget,
+      event_phase: EventPhase::None,
       target: None,
       current_target: None,
       stop_propagation: false,
@@ -94,7 +130,26 @@ impl Event {
 }
 
 pub trait EventListenerInvoker {
-  fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<()>;
+  fn invoke(
+    &mut self,
+    listener_id: ListenerId,
+    event: &mut Event,
+    ctx: &mut dyn EventListenerContext,
+  ) -> Result<()>;
+}
+
+/// Minimal host context exposed to event listeners.
+///
+/// This allows callbacks to remove listeners during dispatch without needing to re-borrow the whole
+/// [`Document`].
+pub trait EventListenerContext {
+  fn remove_event_listener(
+    &mut self,
+    target: EventTargetId,
+    type_: &str,
+    listener_id: ListenerId,
+    capture: bool,
+  ) -> bool;
 }
 
 /// DOM-like dispatch return value:
@@ -105,12 +160,14 @@ pub type DispatchResult = Result<bool>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegisteredListener {
+  record_id: u64,
   id: ListenerId,
   options: EventListenerOptions,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct EventListenerRegistry {
+  next_record_id: u64,
   // target -> type -> listeners (in insertion order)
   listeners: HashMap<EventTargetId, HashMap<String, Vec<RegisteredListener>>>,
 }
@@ -133,7 +190,10 @@ impl EventListenerRegistry {
       return false;
     }
 
+    let record_id = self.next_record_id;
+    self.next_record_id = self.next_record_id.wrapping_add(1);
     listeners.push(RegisteredListener {
+      record_id,
       id: listener_id,
       options,
     });
@@ -162,6 +222,12 @@ impl EventListenerRegistry {
     };
 
     listeners.remove(idx);
+    if listeners.is_empty() {
+      by_type.remove(type_);
+      if by_type.is_empty() {
+        self.listeners.remove(&target);
+      }
+    }
     true
   }
 
@@ -174,30 +240,40 @@ impl EventListenerRegistry {
       .unwrap_or_default()
   }
 
-  fn listener_registered(
+  fn listener_record_registered(
     &self,
     target: EventTargetId,
     type_: &str,
-    listener_id: ListenerId,
-    capture: bool,
+    record_id: u64,
   ) -> bool {
     self
       .listeners
       .get(&target)
       .and_then(|by_type| by_type.get(type_))
       .is_some_and(|listeners| {
-        listeners
-          .iter()
-          .any(|l| l.id == listener_id && l.options.capture == capture)
+        listeners.iter().any(|l| l.record_id == record_id)
       })
   }
 }
 
+impl EventListenerContext for EventListenerRegistry {
+  fn remove_event_listener(
+    &mut self,
+    target: EventTargetId,
+    type_: &str,
+    listener_id: ListenerId,
+    capture: bool,
+  ) -> bool {
+    EventListenerRegistry::remove_event_listener(self, target.normalize(), type_, listener_id, capture)
+  }
+}
+
 impl EventTargetId {
-  fn to_node_id(self) -> NodeId {
-    match self {
-      EventTargetId::Document => NodeId(0),
-      EventTargetId::Node(id) => id,
+  fn to_node_id(self) -> Option<NodeId> {
+    match self.normalize() {
+      EventTargetId::Window => None,
+      EventTargetId::Document => Some(NodeId(0)),
+      EventTargetId::Node(id) => Some(id),
     }
   }
 
@@ -246,6 +322,7 @@ impl Document {
     // Reset dispatch-time state.
     event.target = Some(target.normalize());
     event.current_target = None;
+    event.event_phase = EventPhase::None;
     event.stop_propagation = false;
     event.stop_immediate_propagation = false;
     event.in_passive_listener = false;
@@ -267,6 +344,7 @@ impl Document {
     // If propagation was stopped during capture, the event never reaches the target.
     if event.stop_propagation {
       event.current_target = None;
+      event.event_phase = EventPhase::None;
       return Ok(!event.default_prevented);
     }
 
@@ -276,10 +354,9 @@ impl Document {
     event.current_target = Some(target_id);
     self.invoke_listeners(target_id, event, invoker, /* capture */ true)?;
 
-    // If stopPropagation is set by a capturing listener on the target, we must not invoke the
-    // target's bubbling listeners: the bubble-phase invocation is a separate "invoke" step, which
-    // is skipped when the stop propagation flag is already set.
-    if !event.stop_propagation && !event.stop_immediate_propagation {
+    // `stopPropagation()` does not stop listeners on the current target; only
+    // `stopImmediatePropagation()` does.
+    if !event.stop_immediate_propagation {
       self.invoke_listeners(target_id, event, invoker, /* capture */ false)?;
     }
 
@@ -296,20 +373,32 @@ impl Document {
     }
 
     event.current_target = None;
+    event.event_phase = EventPhase::None;
     Ok(!event.default_prevented)
   }
 
   fn event_path(&self, target: EventTargetId) -> Vec<EventTargetId> {
     // MVP: composed path == ancestor chain (no Shadow DOM retargeting).
-    let mut path = Vec::new();
-
+    //
     // Path is from target up to root.
+    let target = target.normalize();
+    if target == EventTargetId::Window {
+      return vec![EventTargetId::Window];
+    }
+
+    let mut path = Vec::new();
     let mut current = target;
     loop {
       let normalized = current.normalize();
       path.push(normalized);
 
-      let node_id = normalized.to_node_id();
+      if normalized == EventTargetId::Document {
+        break;
+      }
+
+      let Some(node_id) = normalized.to_node_id() else {
+        break;
+      };
       let parent = self.node(node_id).parent;
       let Some(parent_id) = parent else {
         break;
@@ -322,6 +411,8 @@ impl Document {
       };
     }
 
+    // DOM's event path is rooted at Window.
+    path.push(EventTargetId::Window);
     path
   }
 
@@ -343,12 +434,10 @@ impl Document {
 
       // Honor removals that occur during dispatch (DOM clones the listener list, but retains shared
       // "removed" state).
-      if !self.events.listener_registered(
-        target,
-        &event.type_,
-        listener.id,
-        listener.options.capture,
-      ) {
+      if !self
+        .events
+        .listener_record_registered(target, &event.type_, listener.record_id)
+      {
         continue;
       }
 
@@ -363,7 +452,7 @@ impl Document {
 
       let prev_passive = event.in_passive_listener;
       event.in_passive_listener = listener.options.passive;
-      let res = invoker.invoke(listener.id, event);
+      let res = invoker.invoke(listener.id, event, &mut self.events);
       event.in_passive_listener = prev_passive;
       res?;
     }
@@ -390,6 +479,33 @@ mod tests {
   struct Behavior {
     label: &'static str,
     action: Action,
+    expected_phase: Option<EventPhase>,
+    expected_target: Option<EventTargetId>,
+    expected_current_target: Option<EventTargetId>,
+  }
+
+  impl Behavior {
+    fn new(label: &'static str, action: Action) -> Self {
+      Self {
+        label,
+        action,
+        expected_phase: None,
+        expected_target: None,
+        expected_current_target: None,
+      }
+    }
+
+    fn with_expectations(
+      mut self,
+      expected_phase: EventPhase,
+      expected_target: EventTargetId,
+      expected_current_target: EventTargetId,
+    ) -> Self {
+      self.expected_phase = Some(expected_phase);
+      self.expected_target = Some(expected_target);
+      self.expected_current_target = Some(expected_current_target);
+      self
+    }
   }
 
   struct RecordingInvoker {
@@ -407,11 +523,25 @@ mod tests {
   }
 
   impl EventListenerInvoker for RecordingInvoker {
-    fn invoke(&mut self, listener_id: ListenerId, event: &mut Event) -> Result<()> {
+    fn invoke(
+      &mut self,
+      listener_id: ListenerId,
+      event: &mut Event,
+      _ctx: &mut dyn EventListenerContext,
+    ) -> Result<()> {
       let behavior = *self
         .behaviors
         .get(&listener_id)
         .unwrap_or_else(|| panic!("unknown listener_id: {listener_id:?}"));
+      if let Some(expected) = behavior.expected_phase {
+        assert_eq!(event.event_phase, expected);
+      }
+      if let Some(expected) = behavior.expected_target {
+        assert_eq!(event.target, Some(expected));
+      }
+      if let Some(expected) = behavior.expected_current_target {
+        assert_eq!(event.current_target, Some(expected));
+      }
       self.calls.push(behavior.label);
       match behavior.action {
         Action::None => {}
@@ -423,7 +553,13 @@ mod tests {
     }
   }
 
-  fn make_three_level_doc() -> (Document, EventTargetId, EventTargetId, EventTargetId) {
+  fn make_three_level_doc() -> (
+    Document,
+    EventTargetId,
+    EventTargetId,
+    EventTargetId,
+    EventTargetId,
+  ) {
     let mut doc = Document::new(QuirksMode::NoQuirks);
     let root = doc.root();
     let parent = doc.push_node(
@@ -447,6 +583,7 @@ mod tests {
 
     (
       doc,
+      EventTargetId::Window,
       EventTargetId::Document,
       EventTargetId::Node(parent),
       EventTargetId::Node(target),
@@ -455,56 +592,72 @@ mod tests {
 
   #[test]
   fn capture_order_vs_bubble_order_on_three_level_tree() {
-    let (mut doc, doc_id, parent_id, target_id) = make_three_level_doc();
+    let (mut doc, window_id, doc_id, parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([
       (
         ListenerId(1),
-        Behavior {
-          label: "doc-capture",
-          action: Action::None,
-        },
+        Behavior::new("window-capture", Action::None).with_expectations(
+          EventPhase::CapturingPhase,
+          target_id,
+          window_id,
+        ),
       ),
       (
         ListenerId(2),
-        Behavior {
-          label: "parent-capture",
-          action: Action::None,
-        },
+        Behavior::new("doc-capture", Action::None).with_expectations(
+          EventPhase::CapturingPhase,
+          target_id,
+          doc_id,
+        ),
       ),
       (
         ListenerId(3),
-        Behavior {
-          label: "target-capture",
-          action: Action::None,
-        },
+        Behavior::new("parent-capture", Action::None).with_expectations(
+          EventPhase::CapturingPhase,
+          target_id,
+          parent_id,
+        ),
       ),
       (
         ListenerId(4),
-        Behavior {
-          label: "target-bubble",
-          action: Action::None,
-        },
+        Behavior::new("target-capture", Action::None)
+          .with_expectations(EventPhase::AtTarget, target_id, target_id),
       ),
       (
         ListenerId(5),
-        Behavior {
-          label: "parent-bubble",
-          action: Action::None,
-        },
+        Behavior::new("target-bubble", Action::None)
+          .with_expectations(EventPhase::AtTarget, target_id, target_id),
       ),
       (
         ListenerId(6),
-        Behavior {
-          label: "doc-bubble",
-          action: Action::None,
-        },
+        Behavior::new("parent-bubble", Action::None).with_expectations(
+          EventPhase::BubblingPhase,
+          target_id,
+          parent_id,
+        ),
+      ),
+      (
+        ListenerId(7),
+        Behavior::new("doc-bubble", Action::None).with_expectations(
+          EventPhase::BubblingPhase,
+          target_id,
+          doc_id,
+        ),
+      ),
+      (
+        ListenerId(8),
+        Behavior::new("window-bubble", Action::None).with_expectations(
+          EventPhase::BubblingPhase,
+          target_id,
+          window_id,
+        ),
       ),
     ]);
 
     let type_ = "test";
     assert!(doc.add_event_listener(
-      doc_id,
+      window_id,
       type_,
       ListenerId(1),
       EventListenerOptions {
@@ -513,7 +666,7 @@ mod tests {
       }
     ));
     assert!(doc.add_event_listener(
-      parent_id,
+      doc_id,
       type_,
       ListenerId(2),
       EventListenerOptions {
@@ -522,9 +675,18 @@ mod tests {
       }
     ));
     assert!(doc.add_event_listener(
-      target_id,
+      parent_id,
       type_,
       ListenerId(3),
+      EventListenerOptions {
+        capture: true,
+        ..Default::default()
+      }
+    ));
+    assert!(doc.add_event_listener(
+      target_id,
+      type_,
+      ListenerId(4),
       EventListenerOptions {
         capture: true,
         ..Default::default()
@@ -534,67 +696,73 @@ mod tests {
     assert!(doc.add_event_listener(
       target_id,
       type_,
-      ListenerId(4),
+      ListenerId(5),
       EventListenerOptions::default()
     ));
     assert!(doc.add_event_listener(
       parent_id,
       type_,
-      ListenerId(5),
+      ListenerId(6),
       EventListenerOptions::default()
     ));
     assert!(doc.add_event_listener(
       doc_id,
       type_,
-      ListenerId(6),
+      ListenerId(7),
+      EventListenerOptions::default()
+    ));
+    assert!(doc.add_event_listener(
+      window_id,
+      type_,
+      ListenerId(8),
       EventListenerOptions::default()
     ));
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
 
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
       .unwrap();
+    assert_eq!(event.event_phase, EventPhase::None);
+    assert_eq!(event.current_target, None);
 
     assert_eq!(
       invoker.calls,
       vec![
+        "window-capture",
         "doc-capture",
         "parent-capture",
         "target-capture",
         "target-bubble",
         "parent-bubble",
-        "doc-bubble"
+        "doc-bubble",
+        "window-bubble"
       ]
     );
   }
 
   #[test]
   fn stop_propagation_stops_moving_to_next_target() {
-    let (mut doc, doc_id, parent_id, target_id) = make_three_level_doc();
+    let (mut doc, _window_id, doc_id, parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([
       (
         ListenerId(1),
-        Behavior {
-          label: "target-stop",
-          action: Action::StopPropagation,
-        },
+        Behavior::new("target-stop", Action::StopPropagation),
       ),
       (
         ListenerId(2),
-        Behavior {
-          label: "parent-bubble",
-          action: Action::None,
-        },
+        Behavior::new("parent-bubble", Action::None),
       ),
       (
         ListenerId(3),
-        Behavior {
-          label: "doc-bubble",
-          action: Action::None,
-        },
+        Behavior::new("doc-bubble", Action::None),
       ),
     ]);
 
@@ -618,8 +786,13 @@ mod tests {
       EventListenerOptions::default(),
     );
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
 
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
@@ -629,30 +802,21 @@ mod tests {
   }
 
   #[test]
-  fn stop_propagation_in_target_capture_skips_target_bubble_listeners() {
-    let (mut doc, _doc_id, _parent_id, target_id) = make_three_level_doc();
+  fn stop_propagation_in_target_capture_stops_ancestors_but_not_target_listeners() {
+    let (mut doc, _window_id, _doc_id, _parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([
       (
         ListenerId(1),
-        Behavior {
-          label: "target-capture-stop",
-          action: Action::StopPropagation,
-        },
+        Behavior::new("target-capture-stop", Action::StopPropagation),
       ),
       (
         ListenerId(2),
-        Behavior {
-          label: "target-capture-2",
-          action: Action::None,
-        },
+        Behavior::new("target-capture-2", Action::None),
       ),
       (
         ListenerId(3),
-        Behavior {
-          label: "target-bubble",
-          action: Action::None,
-        },
+        Behavior::new("target-bubble", Action::None),
       ),
     ]);
 
@@ -682,41 +846,40 @@ mod tests {
       EventListenerOptions::default(),
     );
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
 
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
       .unwrap();
 
-    assert_eq!(invoker.calls, vec!["target-capture-stop", "target-capture-2"]);
+    assert_eq!(
+      invoker.calls,
+      vec!["target-capture-stop", "target-capture-2", "target-bubble"]
+    );
   }
 
   #[test]
   fn stop_immediate_propagation_stops_later_listeners_on_same_target() {
-    let (mut doc, _doc_id, parent_id, target_id) = make_three_level_doc();
+    let (mut doc, _window_id, _doc_id, parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([
       (
         ListenerId(1),
-        Behavior {
-          label: "target-1",
-          action: Action::StopImmediatePropagation,
-        },
+        Behavior::new("target-1", Action::StopImmediatePropagation),
       ),
       (
         ListenerId(2),
-        Behavior {
-          label: "target-2",
-          action: Action::None,
-        },
+        Behavior::new("target-2", Action::None),
       ),
       (
         ListenerId(3),
-        Behavior {
-          label: "parent-bubble",
-          action: Action::None,
-        },
+        Behavior::new("parent-bubble", Action::None),
       ),
     ]);
 
@@ -740,8 +903,13 @@ mod tests {
       EventListenerOptions::default(),
     );
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
 
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
@@ -752,14 +920,11 @@ mod tests {
 
   #[test]
   fn once_listeners_removed_after_first_dispatch() {
-    let (mut doc, _doc_id, _parent_id, target_id) = make_three_level_doc();
+    let (mut doc, _window_id, _doc_id, _parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([(
       ListenerId(1),
-      Behavior {
-        label: "once",
-        action: Action::None,
-      },
+      Behavior::new("once", Action::None),
     )]);
 
     let type_ = "test";
@@ -773,14 +938,24 @@ mod tests {
       },
     );
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
       .unwrap();
 
-    let mut event2 = Event::new(type_);
-    event2.bubbles = true;
+    let mut event2 = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
     doc
       .dispatch_event(target_id, &mut event2, &mut invoker)
       .unwrap();
@@ -790,14 +965,11 @@ mod tests {
 
   #[test]
   fn remove_event_listener_prevents_invocation() {
-    let (mut doc, _doc_id, _parent_id, target_id) = make_three_level_doc();
+    let (mut doc, _window_id, _doc_id, _parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([(
       ListenerId(1),
-      Behavior {
-        label: "should-not-run",
-        action: Action::None,
-      },
+      Behavior::new("should-not-run", Action::None),
     )]);
 
     let type_ = "test";
@@ -809,8 +981,13 @@ mod tests {
     );
     assert!(doc.remove_event_listener(target_id, type_, ListenerId(1), false));
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
     doc
       .dispatch_event(target_id, &mut event, &mut invoker)
       .unwrap();
@@ -820,14 +997,11 @@ mod tests {
 
   #[test]
   fn passive_listeners_cannot_set_default_prevented() {
-    let (mut doc, _doc_id, _parent_id, target_id) = make_three_level_doc();
+    let (mut doc, _window_id, _doc_id, _parent_id, target_id) = make_three_level_doc();
 
     let mut invoker = RecordingInvoker::new([(
       ListenerId(1),
-      Behavior {
-        label: "passive",
-        action: Action::PreventDefault,
-      },
+      Behavior::new("passive", Action::PreventDefault),
     )]);
 
     let type_ = "test";
@@ -841,9 +1015,14 @@ mod tests {
       },
     );
 
-    let mut event = Event::new(type_);
-    event.bubbles = true;
-    event.cancelable = true;
+    let mut event = Event::new(
+      type_,
+      EventInit {
+        bubbles: true,
+        cancelable: true,
+        ..Default::default()
+      },
+    );
     let res = doc
       .dispatch_event(target_id, &mut event, &mut invoker)
       .unwrap();
@@ -852,5 +1031,88 @@ mod tests {
       !event.default_prevented,
       "passive listeners must not set defaultPrevented"
     );
+  }
+
+  #[test]
+  fn event_phase_discriminants_match_dom() {
+    assert_eq!(EventPhase::None as u8, 0);
+    assert_eq!(EventPhase::CapturingPhase as u8, 1);
+    assert_eq!(EventPhase::AtTarget as u8, 2);
+    assert_eq!(EventPhase::BubblingPhase as u8, 3);
+  }
+
+  #[test]
+  fn remove_event_listener_during_dispatch_prevents_future_invocation() {
+    let (mut doc, _window_id, _doc_id, _parent_id, target_id) = make_three_level_doc();
+
+    struct RemovingInvoker {
+      calls: Vec<&'static str>,
+      remove_id: ListenerId,
+      target: EventTargetId,
+      removal_attempts: usize,
+    }
+
+    impl EventListenerInvoker for RemovingInvoker {
+      fn invoke(
+        &mut self,
+        listener_id: ListenerId,
+        _event: &mut Event,
+        ctx: &mut dyn EventListenerContext,
+      ) -> Result<()> {
+        if listener_id == ListenerId(1) {
+          self.calls.push("l1");
+          let removed = ctx.remove_event_listener(self.target, "test", self.remove_id, false);
+          if self.removal_attempts == 0 {
+            assert!(removed, "expected first removal to succeed");
+          } else {
+            assert!(!removed, "expected subsequent removals to be no-ops");
+          }
+          self.removal_attempts += 1;
+        } else if listener_id == self.remove_id {
+          self.calls.push("l2");
+        } else {
+          panic!("unexpected listener: {listener_id:?}");
+        }
+        Ok(())
+      }
+    }
+
+    doc.add_event_listener(
+      target_id,
+      "test",
+      ListenerId(1),
+      EventListenerOptions::default(),
+    );
+    doc.add_event_listener(
+      target_id,
+      "test",
+      ListenerId(2),
+      EventListenerOptions::default(),
+    );
+
+    let mut invoker = RemovingInvoker {
+      calls: Vec::new(),
+      remove_id: ListenerId(2),
+      target: target_id,
+      removal_attempts: 0,
+    };
+
+    let mut event = Event::new(
+      "test",
+      EventInit {
+        bubbles: true,
+        ..Default::default()
+      },
+    );
+    doc
+      .dispatch_event(target_id, &mut event, &mut invoker)
+      .unwrap();
+
+    let mut event2 = Event::new("test", EventInit::default());
+    doc
+      .dispatch_event(target_id, &mut event2, &mut invoker)
+      .unwrap();
+
+    assert_eq!(invoker.calls, vec!["l1", "l1"]);
   }
 }

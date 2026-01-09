@@ -6,6 +6,7 @@ use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
 
 pub mod import;
+pub mod events;
 mod traversal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,6 +59,7 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
+  events: events::EventListenerRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +102,7 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
+      events: events::EventListenerRegistry::default(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
