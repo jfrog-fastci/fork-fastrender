@@ -634,9 +634,23 @@ impl<Host: 'static> EventLoop<Host> {
     let mut drained: u64 = 0;
 
     let result = (|| -> RunStepResult<()> {
+      let mut first_err: Option<Error> = None;
       while !self.microtask_queue.is_empty() {
-        run_state.check_deadline()?;
-        run_state.before_microtask()?;
+        // Continue draining even if a microtask fails, but still respect run limits/deadlines.
+        // If an error has already occurred, prefer surfacing that error over a stop reason, since
+        // the caller is already in an exceptional state.
+        if let Err(err) = run_state.check_deadline() {
+          return match first_err {
+            Some(err) => Err(RunStepError::Error(err)),
+            None => Err(err),
+          };
+        }
+        if let Err(err) = run_state.before_microtask() {
+          return match first_err {
+            Some(err) => Err(RunStepError::Error(err)),
+            None => Err(err),
+          };
+        }
 
         let Some(task) = self.microtask_queue.pop_front() else {
           break;
@@ -645,8 +659,15 @@ impl<Host: 'static> EventLoop<Host> {
           source: task.source,
           is_microtask: true,
         });
-        task.run(host, self).map_err(RunStepError::Error)?;
+        if let Err(err) = task.run(host, self) {
+          if first_err.is_none() {
+            first_err = Some(err);
+          }
+        }
         drained = drained.saturating_add(1);
+      }
+      if let Some(err) = first_err {
+        return Err(RunStepError::Error(err));
       }
       Ok(())
     })();
@@ -1264,6 +1285,32 @@ mod tests {
 
     let err = event_loop
       .perform_microtask_checkpoint(&mut host)
+      .expect_err("expected microtask error to be surfaced");
+    assert!(matches!(err, Error::Other(msg) if msg == "boom"));
+    assert_eq!(host.log, vec!["microtask1", "microtask2"]);
+    assert_eq!(event_loop.pending_microtask_count(), 0);
+  }
+
+  #[test]
+  fn run_until_idle_drains_remaining_microtasks_after_error() {
+    let mut host = TestHost::default();
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+    event_loop
+      .queue_microtask(|host, _| {
+        host.log.push("microtask1");
+        Err(Error::Other("boom".to_string()))
+      })
+      .unwrap();
+    event_loop
+      .queue_microtask(|host, _| {
+        host.log.push("microtask2");
+        Ok(())
+      })
+      .unwrap();
+
+    let err = event_loop
+      .run_until_idle(&mut host, RunLimits::unbounded())
       .expect_err("expected microtask error to be surfaced");
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(host.log, vec!["microtask1", "microtask2"]);
