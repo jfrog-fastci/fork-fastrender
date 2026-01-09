@@ -53,6 +53,10 @@ pub struct Test262Args {
   )]
   pub report: PathBuf,
 
+  /// Glob or regex to filter tests by id (after suite selection).
+  #[arg(long, value_name = "FILTER")]
+  pub filter: Option<String>,
+
   /// Path to a local checkout of the tc39/test262 repository.
   #[arg(long, value_name = "DIR", default_value = DEFAULT_TEST262_DIR)]
   pub test262_dir: PathBuf,
@@ -136,6 +140,9 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
     cmd.arg("--shard").arg(shard);
   }
 
+  if let Some(filter) = args.filter.as_ref() {
+    cmd.arg("--filter").arg(filter);
+  }
   if !args.extra.is_empty() {
     cmd.args(&args.extra);
   }

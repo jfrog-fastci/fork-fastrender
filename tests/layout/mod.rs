@@ -46,6 +46,7 @@ mod flex_fragmentation;
 mod flex_intrinsic_gap;
 mod flex_intrinsic_sizing_keywords;
 mod flex_item_used_border_box_override;
+mod flex_item_blockification_inline_replaced;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
 mod flex_forced_breaks;

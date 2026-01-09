@@ -136,10 +136,22 @@ struct Cli {
   #[arg(long)]
   reset_paint_scratch: bool,
 
-  /// Force a light color scheme + white page background (matches the default chrome baseline fixture harness).
+  /// Patch fixture HTML before rendering to align with the Chrome baseline harness.
+  ///
+  /// This injects the same tags used by `xtask chrome-baseline-fixtures`:
+  /// - force `color-scheme: light` + white background on `html, body` (for determinism),
+  /// - inject a strict Content-Security-Policy (offline invariant),
+  /// - disable CSS animations/transitions.
+  ///
+  /// This flag is primarily intended for `xtask fixture-chrome-diff` (FastRender vs Chrome fixture
+  /// diffs). Most other uses of `render_fixtures` should render the raw fixture HTML.
+  #[arg(long)]
+  patch_html_for_chrome_baseline: bool,
+
+  /// Force a light color scheme + white page background.
   ///
   /// This is useful when diffing against Chrome screenshots captured via `xtask chrome-baseline-fixtures`,
-  /// which injects `html, body { background: white !important; color-scheme: light !important; ... }`.
+  /// which forces a white background + light color scheme by default (unless `--allow-dark-mode` is set).
   #[arg(long)]
   force_light_mode: bool,
 }
@@ -159,6 +171,7 @@ struct RenderShared {
   media: MediaTypeArg,
   font_config: FontConfig,
   write_snapshot: bool,
+  patch_html_for_chrome_baseline: bool,
   out_dir: PathBuf,
   force_light_mode: bool,
 }
@@ -237,6 +250,7 @@ struct RenderMetadataFile {
   dpr: f32,
   media: MediaMetadata,
   fit_canvas_to_content: bool,
+  patch_html_for_chrome_baseline: bool,
   timeout_secs: u64,
   /// SHA-256 hash of `<fixture>/index.html` bytes (computed before any renderer work).
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -451,6 +465,7 @@ fn run(cli: Cli) -> io::Result<()> {
     media: cli.media,
     font_config,
     write_snapshot: cli.write_snapshot,
+    patch_html_for_chrome_baseline: cli.patch_html_for_chrome_baseline,
     out_dir: cli.out_dir.clone(),
     force_light_mode: cli.force_light_mode,
   };
@@ -1287,7 +1302,7 @@ fn render_fixture(
     let _ = writeln!(log, "Base URL: {base_url}");
   }
 
-  let html_bytes = match fs::read(&entry.index_path) {
+  let mut html_bytes = match fs::read(&entry.index_path) {
     Ok(html) => html,
     Err(err) => {
       let status = Status::Error(format!("read: {err}"));
@@ -1380,6 +1395,22 @@ fn render_fixture(
     if let Some(hash) = fixture_dir_sha256.as_deref() {
       let _ = writeln!(log, "Fixture dir SHA-256: {hash}");
     }
+  }
+
+  if shared.patch_html_for_chrome_baseline {
+    if !log.is_empty() {
+      let _ = writeln!(log, "HTML patch: chrome_baseline");
+    }
+    // Match `xtask chrome-baseline-fixtures`: enforce a deterministic light color scheme and
+    // offline CSP in the input HTML so FastRender/Chrome diffs don't get dominated by theme
+    // variance (e.g. non-white root backgrounds on some sites).
+    html_bytes = common::fixture_html_patch::patch_html_bytes(
+      &html_bytes,
+      Some(&base_url),
+      true,  // disable JS
+      true,  // disable animations
+      false, // force light mode
+    );
   }
 
   let html = match String::from_utf8(html_bytes) {
@@ -1714,6 +1745,7 @@ fn write_render_metadata_file(
     dpr,
     media: MediaMetadata::from_arg(shared.media),
     fit_canvas_to_content,
+    patch_html_for_chrome_baseline: shared.patch_html_for_chrome_baseline,
     timeout_secs: shared.timeout_secs,
     input_sha256: input_sha256.map(|value| value.to_string()),
     fixture_dir_sha256: fixture_dir_sha256.map(|value| value.to_string()),

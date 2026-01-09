@@ -1712,6 +1712,7 @@ fn no_fastrender_fails_fast_on_stale_renders_unless_overridden() {
     "dpr": 1.0,
     "media": "screen",
     "fit_canvas_to_content": false,
+    "patch_html_for_chrome_baseline": true,
     "timeout_secs": 15,
     "bundled_fonts": true,
     "font_dirs": [],

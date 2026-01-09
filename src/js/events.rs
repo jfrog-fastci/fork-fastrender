@@ -422,7 +422,6 @@ impl JsDomEvents {
       return Ok(None);
     };
     let capture = options.capture;
-
     if self.registry.add_event_listener(target, type_, id, options) {
       if let Err(err) = self.ensure_listener_entry(id, callback) {
         // Roll back the registry insertion so we don't leave an uncallable listener behind when

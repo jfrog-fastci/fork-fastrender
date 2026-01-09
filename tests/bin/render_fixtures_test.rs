@@ -663,6 +663,92 @@ fn render_fixtures_resolves_relative_stylesheets_from_base_url() {
 }
 
 #[test]
+fn render_fixtures_patch_html_for_chrome_baseline_forces_white_root_background() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "bg",
+    r#"<!doctype html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; background: rgb(255, 0, 0); }
+    </style>
+  </head>
+  <body></body>
+</html>"#,
+  );
+
+  let out_raw = temp.path().join("out_raw");
+  let out_patched = temp.path().join("out_patched");
+
+  let common_args = [
+    "--fixtures-dir",
+    fixtures_dir.to_str().unwrap(),
+    "--fixtures",
+    "bg",
+    "--viewport",
+    "16x16",
+    "--jobs",
+    "1",
+    "--timeout",
+    "2",
+  ];
+
+  let status_raw = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args(["--out-dir", out_raw.to_str().unwrap()])
+    .args(common_args)
+    .status()
+    .expect("run render_fixtures (raw)");
+  assert!(
+    status_raw.success(),
+    "expected raw render_fixtures run to succeed"
+  );
+
+  let raw_png = fs::read(out_raw.join("bg.png")).expect("read raw png");
+  let raw_image = image::load_from_memory(&raw_png)
+    .expect("decode raw png")
+    .to_rgba8();
+  let raw = raw_image.get_pixel(0, 0).0;
+  assert!(
+    raw[0] > 200 && raw[1] < 50 && raw[2] < 50,
+    "expected raw render to preserve red root background (got {:?})",
+    raw
+  );
+
+  let status_patched = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args(["--out-dir", out_patched.to_str().unwrap()])
+    .args(common_args)
+    .arg("--patch-html-for-chrome-baseline")
+    .status()
+    .expect("run render_fixtures (patched)");
+  assert!(
+    status_patched.success(),
+    "expected patched render_fixtures run to succeed"
+  );
+
+  let patched_png = fs::read(out_patched.join("bg.png")).expect("read patched png");
+  let patched_image = image::load_from_memory(&patched_png)
+    .expect("decode patched png")
+    .to_rgba8();
+  let patched = patched_image.get_pixel(0, 0).0;
+  assert!(
+    patched[0] > 240 && patched[1] > 240 && patched[2] > 240,
+    "expected patched render to force white root background (got {:?})",
+    patched
+  );
+}
+
+#[test]
 fn render_fixtures_writes_snapshot_outputs() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");

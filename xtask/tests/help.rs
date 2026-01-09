@@ -82,7 +82,7 @@ fn js_test262_help_mentions_flags() {
       && stdout.contains("--timeout-secs")
       && stdout.contains("--fail-on")
       && stdout.contains("--report")
-      && stdout.contains("--test262-dir"),
+      && stdout.contains("--filter"),
     "help output should mention key flags; got:\n{stdout}"
   );
 }

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
 use walkdir::WalkDir;
+use fastrender::cli_utils::fixture_html_patch;
 
 /// Minimum `RLIMIT_AS` (virtual address space) required for Chrome to start reliably in our CI-like
 /// environments.
@@ -427,7 +428,7 @@ fn render_fixture(
   let patched_dir = temp_root.join("html");
   fs::create_dir_all(&patched_dir).context("create patched HTML directory")?;
   let patched_html = patched_dir.join(format!("{}.html", fixture.stem));
-  let patched = patch_html_bytes(
+  let patched = fixture_html_patch::patch_html_bytes(
     &index_bytes,
     Some(&base_url),
     matches!(args.js, JsMode::Off),
@@ -1414,137 +1415,6 @@ fn file_url(path: &Path) -> Result<String> {
     .map_err(|_| anyhow!("could not convert {} to a file:// URL", absolute.display()))
 }
 
-fn patch_html_bytes(
-  data: &[u8],
-  base_url: Option<&str>,
-  disable_js: bool,
-  disable_animations: bool,
-  allow_dark_mode: bool,
-) -> Vec<u8> {
-  const DISABLE_ANIMATIONS_STYLE: &str =
-    "<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n";
-  const FORCE_LIGHT_META: &str = "<meta name=\"color-scheme\" content=\"light\">\n";
-  const FORCE_LIGHT_STYLE: &str = "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n";
-
-  let mut inserts = Vec::new();
-  if let Some(base_url) = base_url {
-    inserts.extend_from_slice(format!("<base href=\"{base_url}\">\n").as_bytes());
-  }
-  if !allow_dark_mode {
-    inserts.extend_from_slice(FORCE_LIGHT_META.as_bytes());
-    inserts.extend_from_slice(FORCE_LIGHT_STYLE.as_bytes());
-  }
-  // Enforce a deterministic/offline page load: allow only file/data subresources.
-  // If JS is enabled, allow inline/file scripts for experimentation; otherwise block scripts.
-  let csp = if disable_js {
-    "default-src file: data:; style-src file: data: 'unsafe-inline'; script-src 'none';"
-  } else {
-    "default-src file: data:; style-src file: data: 'unsafe-inline'; script-src file: data: 'unsafe-inline' 'unsafe-eval';"
-  };
-  inserts.extend_from_slice(
-    format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n").as_bytes(),
-  );
-  if disable_animations {
-    inserts.extend_from_slice(DISABLE_ANIMATIONS_STYLE.as_bytes());
-  }
-
-  if inserts.is_empty() {
-    return data.to_vec();
-  }
-
-  let lower = data
-    .iter()
-    .map(|b| b.to_ascii_lowercase())
-    .collect::<Vec<_>>();
-
-  if let Some(out) = insert_after_open_tag(data, &lower, b"<head", &inserts) {
-    return out;
-  }
-
-  let wrapped = [
-    b"<head>\n".as_slice(),
-    inserts.as_slice(),
-    b"</head>\n".as_slice(),
-  ]
-  .concat();
-  if let Some(out) = insert_after_open_tag(data, &lower, b"<html", &wrapped) {
-    return out;
-  }
-
-  // Some fixtures omit `<html>`/`<head>` but still include a `<!doctype html>` declaration. Do not
-  // inject anything before the doctype because that would flip the document into quirks mode in
-  // Chrome and make the baseline useless. Instead, inject our tags immediately after the doctype.
-  if let Some(out) = insert_after_doctype(data, &lower, &inserts) {
-    return out;
-  }
-
-  // Fall back to prefixing the tags; the HTML parser will usually move them into an implicit head
-  // element.
-  [inserts, data.to_vec()].concat()
-}
-
-fn insert_after_open_tag(
-  data: &[u8],
-  lower: &[u8],
-  tag: &[u8],
-  insertion: &[u8],
-) -> Option<Vec<u8>> {
-  let mut search_start = 0usize;
-  while let Some(pos) = lower[search_start..]
-    .windows(tag.len())
-    .position(|window| window == tag)
-    .map(|rel| rel + search_start)
-  {
-    let after = lower.get(pos + tag.len());
-    let boundary_ok = matches!(
-      after,
-      Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t') | Some(b'/')
-    );
-    if !boundary_ok {
-      search_start = pos + tag.len();
-      continue;
-    }
-
-    let end = lower[pos..].iter().position(|&b| b == b'>')? + pos + 1;
-    let mut out = Vec::with_capacity(data.len() + insertion.len() + 1);
-    out.extend_from_slice(&data[..end]);
-    out.extend_from_slice(b"\n");
-    out.extend_from_slice(insertion);
-    out.extend_from_slice(&data[end..]);
-    return Some(out);
-  }
-  None
-}
-
-fn insert_after_doctype(data: &[u8], lower: &[u8], insertion: &[u8]) -> Option<Vec<u8>> {
-  const DOCTYPE: &[u8] = b"<!doctype";
-  let mut search_start = 0usize;
-  while let Some(pos) = lower[search_start..]
-    .windows(DOCTYPE.len())
-    .position(|window| window == DOCTYPE)
-    .map(|rel| rel + search_start)
-  {
-    let after = lower.get(pos + DOCTYPE.len());
-    let boundary_ok = matches!(
-      after,
-      Some(b'>') | Some(b' ') | Some(b'\n') | Some(b'\r') | Some(b'\t')
-    );
-    if !boundary_ok {
-      search_start = pos + DOCTYPE.len();
-      continue;
-    }
-
-    let end = lower[pos..].iter().position(|&b| b == b'>')? + pos + 1;
-    let mut out = Vec::with_capacity(data.len() + insertion.len() + 1);
-    out.extend_from_slice(&data[..end]);
-    out.extend_from_slice(b"\n");
-    out.extend_from_slice(insertion);
-    out.extend_from_slice(&data[end..]);
-    return Some(out);
-  }
-  None
-}
-
 fn absolutize_path(repo_root: &Path, path: &Path) -> PathBuf {
   if path.is_absolute() {
     path.to_path_buf()
@@ -1555,60 +1425,11 @@ fn absolutize_path(repo_root: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-  use super::{
-    build_fixture_metadata, is_snap_chromium, patch_html_bytes, ChromeBaselineFixturesArgs,
-  };
+  use super::{build_fixture_metadata, is_snap_chromium, ChromeBaselineFixturesArgs};
   use sha2::{Digest, Sha256};
   use std::fs;
   use std::path::{Path, PathBuf};
   use tempfile::tempdir;
-
-  #[test]
-  fn patch_html_keeps_doctype_first_when_head_missing() {
-    let input = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>Hello</body>\n";
-    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, true, false);
-    assert!(
-      output.starts_with(b"<!doctype html>"),
-      "doctype must remain the first token to avoid quirks mode"
-    );
-
-    let output_str = String::from_utf8_lossy(&output);
-    assert!(
-      output_str.contains("<meta name=\"color-scheme\" content=\"light\">"),
-      "patched HTML should force a deterministic light color scheme"
-    );
-    assert!(
-      output_str.contains("background: white !important"),
-      "patched HTML should force a white background"
-    );
-    assert!(
-      output_str.contains("Content-Security-Policy"),
-      "patched HTML should include CSP injection"
-    );
-    assert!(
-      output_str.contains("<base href=\"file:///tmp/fixture/\">"),
-      "patched HTML should include base href injection"
-    );
-    assert!(
-      output_str.contains("animation: none !important"),
-      "patched HTML should disable animations for deterministic baselines"
-    );
-  }
-
-  #[test]
-  fn patch_html_can_opt_out_of_animation_disabling() {
-    let input = b"<!doctype html><html><head></head><body>Hello</body></html>";
-    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, false, false);
-    let output_str = String::from_utf8_lossy(&output);
-    assert!(
-      !output_str.contains("animation: none !important"),
-      "opt-out should omit the animation-disabling CSS"
-    );
-    assert!(
-      !output_str.contains("transition: none !important"),
-      "opt-out should omit the transition-disabling CSS"
-    );
-  }
 
   #[test]
   fn snap_detection_matches_direct_path() {

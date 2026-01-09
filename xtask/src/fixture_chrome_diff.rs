@@ -1204,6 +1204,8 @@ struct FastRenderFixtureMetadata {
   dpr: f32,
   media: String,
   fit_canvas_to_content: Option<bool>,
+  #[serde(default)]
+  patch_html_for_chrome_baseline: bool,
   timeout_secs: u64,
   #[serde(default)]
   input_sha256: Option<String>,
@@ -1284,6 +1286,7 @@ fn validate_fastrender_output_metadata(
     let wanted_font_dirs_summary = "[]";
     let wanted_bundled_fonts = true;
     let wanted_fit_canvas_to_content = args.fit_canvas_to_content;
+    let wanted_patch_html_for_chrome_baseline = true;
     let mut missing_fields = Vec::<&'static str>::new();
     if metadata.fit_canvas_to_content.is_none() {
       missing_fields.push("fit_canvas_to_content");
@@ -1313,6 +1316,7 @@ fn validate_fastrender_output_metadata(
     mismatch |= !metadata.dpr.is_finite() || (metadata.dpr - args.dpr).abs() > 1e-6;
     mismatch |= metadata.media != wanted_media;
     mismatch |= metadata.timeout_secs != args.timeout;
+    mismatch |= metadata.patch_html_for_chrome_baseline != wanted_patch_html_for_chrome_baseline;
     if let Some(fit_canvas_to_content) = metadata.fit_canvas_to_content {
       mismatch |= fit_canvas_to_content != wanted_fit_canvas_to_content;
     }
@@ -1347,8 +1351,8 @@ fn validate_fastrender_output_metadata(
       bail!(
         "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
          Metadata: {}\n\
-        Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
-        Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+        Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+        Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, patch_html_for_chrome_baseline {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
          Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
         metadata_path.display(),
         args.viewport.0,
@@ -1356,6 +1360,7 @@ fn validate_fastrender_output_metadata(
         args.dpr,
         wanted_media,
         wanted_fit_canvas_to_content,
+        wanted_patch_html_for_chrome_baseline,
         args.timeout,
         wanted_bundled_fonts,
         wanted_font_dirs_summary,
@@ -1364,6 +1369,7 @@ fn validate_fastrender_output_metadata(
         metadata.dpr,
         metadata.media,
         fit_canvas_to_content_value,
+        metadata.patch_html_for_chrome_baseline,
         metadata.timeout_secs,
         bundled_fonts_value,
         font_dirs_summary,
@@ -1519,9 +1525,9 @@ fn build_render_fixtures_command(
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
   cmd.arg("--timeout").arg(args.timeout.to_string());
-  // Match the chrome baseline harness which forces a white background + light color-scheme by
-  // default (unless `xtask chrome-baseline-fixtures --allow-dark-mode` is used).
-  cmd.arg("--force-light-mode");
+  // Match `chrome-baseline-fixtures` defaults (force light mode + CSP + disable animations) so the
+  // diff reflects renderer differences rather than harness/theme variance.
+  cmd.arg("--patch-html-for-chrome-baseline");
   if args.fit_canvas_to_content {
     cmd.arg("--fit-canvas-to-content");
   }

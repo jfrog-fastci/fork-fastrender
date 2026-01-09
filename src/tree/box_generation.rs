@@ -2862,6 +2862,64 @@ fn generate_boxes_for_styled_into(
 
   let site_compat = options.site_compat_hacks_enabled();
   let mut quote_depth = 0usize;
+
+  fn nearest_non_contents_container_display<'a>(stack: &[Frame<'a>]) -> Option<Display> {
+    for frame in stack.iter().rev() {
+      let display = frame.styled.styles.display;
+      if display != Display::Contents {
+        return Some(display);
+      }
+    }
+    None
+  }
+
+  fn blockify_flex_or_grid_item_display(display: Display) -> Display {
+    // CSS Display Level 3: When a box is a flex/grid item, its outer display type is blockified.
+    //
+    // https://www.w3.org/TR/css-display-3/#transformations
+    match display {
+      Display::Inline => Display::Block,
+      Display::InlineBlock => Display::FlowRoot,
+      Display::InlineFlex => Display::Flex,
+      Display::InlineGrid => Display::Grid,
+      Display::InlineTable => Display::Table,
+      // FastRender models ruby as inline-level flow boxes; blockify to a plain block.
+      Display::Ruby
+      | Display::RubyBase
+      | Display::RubyText
+      | Display::RubyBaseContainer
+      | Display::RubyTextContainer => Display::Block,
+      _ => display,
+    }
+  }
+
+  fn blockify_style_for_flex_or_grid_item_if_needed<'a>(
+    style: &Arc<ComputedStyle>,
+    stack: &[Frame<'a>],
+  ) -> Arc<ComputedStyle> {
+    // Absolutely positioned children of flex/grid containers are out-of-flow and do not become
+    // flex/grid items, so blockification does not apply.
+    if matches!(style.position, Position::Absolute | Position::Fixed) {
+      return Arc::clone(style);
+    }
+
+    let container_display = nearest_non_contents_container_display(stack);
+    if !matches!(
+      container_display,
+      Some(Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+    ) {
+      return Arc::clone(style);
+    }
+
+    let blockified = blockify_flex_or_grid_item_display(style.display);
+    if blockified == style.display {
+      return Arc::clone(style);
+    }
+
+    let mut owned = (**style).clone();
+    owned.display = blockified;
+    Arc::new(owned)
+  }
   let mut stack: Vec<Frame<'_>> = Vec::new();
   stack.push(Frame::new(styled, false));
 
@@ -3014,8 +3072,9 @@ fn generate_boxes_for_styled_into(
               .unwrap_or_else(|| crate::math::MathNode::Row(Vec::new()));
             stack.pop().expect("frame exists");
             counters.leave_scope();
+            let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
             let box_node = BoxNode::new_replaced(
-              Arc::clone(&styled.styles),
+              style,
               ReplacedType::Math(MathReplaced {
                 root: math_root,
                 layout: None,
@@ -3043,8 +3102,9 @@ fn generate_boxes_for_styled_into(
           if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
             stack.pop().expect("frame exists");
             counters.leave_scope();
+            let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
             let box_node = BoxNode::new_replaced(
-              Arc::clone(&styled.styles),
+              style,
               ReplacedType::FormControl(form_control),
               None,
               None,
@@ -3073,25 +3133,30 @@ fn generate_boxes_for_styled_into(
             continue;
           }
 
-          if is_replaced_element(tag) && styled.styles.display != Display::Contents {
-            let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
-              picture_sources.take(styled.node_id)
-            } else {
-              Vec::new()
-            };
-            if let Some(box_node) = create_replaced_box_from_styled(
-              styled,
-              Arc::clone(&styled.styles),
-              document_css,
-              svg_document_css_style_element,
-              picture_sources_for_img,
-              site_compat,
-            ) {
-              stack.pop().expect("frame exists");
-              counters.leave_scope();
-              let mut box_node = box_node;
-              box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
-              let box_node = attach_debug_info(box_node, styled);
+            if is_replaced_element(tag) && styled.styles.display != Display::Contents {
+              let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
+                picture_sources.take(styled.node_id)
+              } else {
+                Vec::new()
+              };
+              let ancestor_len = stack.len().saturating_sub(1);
+              let style = blockify_style_for_flex_or_grid_item_if_needed(
+                &styled.styles,
+                &stack[..ancestor_len],
+              );
+              if let Some(box_node) = create_replaced_box_from_styled(
+                styled,
+                style,
+                document_css,
+                svg_document_css_style_element,
+                picture_sources_for_img,
+                site_compat,
+              ) {
+                stack.pop().expect("frame exists");
+                counters.leave_scope();
+                let mut box_node = box_node;
+                box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
+                let box_node = attach_debug_info(box_node, styled);
               if let Some(parent) = stack.last_mut() {
                 parent.children.push(box_node);
               } else {
@@ -3296,20 +3361,21 @@ fn generate_boxes_for_styled_into(
           continue;
         }
 
-        let style = if force_position_relative && styled.styles.position == Position::Static {
+        let base_style = if force_position_relative && styled.styles.position == Position::Static {
           let mut patched = styled.styles.as_ref().clone();
           patched.position = Position::Relative;
           Arc::new(patched)
         } else {
           Arc::clone(&styled.styles)
         };
-        let fc_type = styled
-          .styles
-          .display
+
+        let style = blockify_style_for_flex_or_grid_item_if_needed(&base_style, &stack);
+        let display = style.display;
+        let fc_type = display
           .formatting_context_type()
           .unwrap_or(FormattingContextType::Block);
 
-        let mut box_node = match styled.styles.display {
+        let mut box_node = match display {
           Display::Block | Display::FlowRoot | Display::ListItem => {
             BoxNode::new_block(style, fc_type, children)
           }
@@ -3362,17 +3428,17 @@ fn generate_boxes_for_styled_into(
 
           if let Some(marker_styles) = &styled.footnote_marker_styles {
             let marker_start = clone_starting_style(&styled.starting_styles.footnote_marker);
-          if let Some(marker_box) = create_pseudo_element_box(
-            styled,
-            marker_styles,
-            marker_start,
-            "footnote-marker",
-            counters,
-            &mut quote_depth,
-          ) {
-            let mut combined = Vec::with_capacity(body_box.children.len() + 1);
-            combined.push(marker_box);
-            combined.append(&mut body_box.children);
+            if let Some(marker_box) = create_pseudo_element_box(
+              styled,
+              marker_styles,
+              marker_start,
+              "footnote-marker",
+              counters,
+              &mut quote_depth,
+            ) {
+              let mut combined = Vec::with_capacity(body_box.children.len() + 1);
+              combined.push(marker_box);
+              combined.append(&mut body_box.children);
               body_box.children = combined;
             }
           }
