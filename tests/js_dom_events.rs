@@ -1,12 +1,12 @@
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::events_bindings::DomEventsRealm;
-use fastrender::js::webidl::JsRuntime as _;
 use fastrender::js::webidl::VmJsRuntime;
 use selectors::context::QuirksMode;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vm_js::{PropertyKey, Value};
+use webidl_js_runtime::JsRuntime as _;
 
 fn element(tag_name: &str, children: Vec<DomNode>) -> DomNode {
   DomNode {
