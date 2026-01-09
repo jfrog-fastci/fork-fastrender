@@ -2635,6 +2635,80 @@ fn tall_float_fragments_across_pages_and_clears_following_text() {
 }
 
 #[test]
+fn fixed_height_float_with_children_keeps_empty_continuation_fragments() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .float {
+            float: left;
+            width: 200px;
+            height: 350px;
+            background: rgb(255, 0, 0);
+          }
+          .child { height: 50px; }
+          p { clear: both; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="float"><div class="child">Child</div></div>
+        <p>After float paragraph</p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected fixed-height float to require at least two pages"
+  );
+
+  assert!(
+    find_text(page_roots[0], "Child").is_some(),
+    "float child should be on the first page"
+  );
+
+  fn collect_float_bottoms(node: &FragmentNode, origin: (f32, f32), out: &mut Vec<f32>) {
+    let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+    if node
+      .style
+      .as_ref()
+      .is_some_and(|style| style.float.is_floating())
+    {
+      out.push(current.1 + node.bounds.height());
+    }
+    for child in node.children.iter() {
+      collect_float_bottoms(child, current, out);
+    }
+  }
+
+  let mut second_page_floats = Vec::new();
+  collect_float_bottoms(page_roots[1], (0.0, 0.0), &mut second_page_floats);
+  assert!(
+    !second_page_floats.is_empty(),
+    "float continuation fragment should exist on the second page even when its children are only on the first page"
+  );
+  let float_bottom = second_page_floats
+    .into_iter()
+    .fold(0.0f32, f32::max);
+
+  let after_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
+    .expect("paragraph should appear on the second page");
+  assert!(
+    after_pos.1 >= float_bottom - 0.1,
+    "clearing paragraph should appear below the float fragment"
+  );
+}
+
+#[test]
 fn forced_break_inside_tall_float_does_not_block_main_flow() {
   let html = r#"
     <html>

@@ -1966,10 +1966,23 @@ pub(crate) fn clip_node(
   }
 
   // Forced breaks inside floats are modeled by shifting descendants so continuation content lands on
-  // later pages (see `apply_float_parallel_flow_forced_break_shifts`). When those shifts introduce
-  // blank space, the float fragment should *not* keep occupying the remainder of the fragmentainer:
-  // the blank space must remain available for the main flow (e.g. cleared blocks).
-  if style.float.is_floating() && axis.block_positive && !node.children.is_empty() {
+  // later pages (see `apply_float_parallel_flow_forced_break_shifts`). That makes the float's
+  // logical bounding box extend beyond its own border box so descendants can be clipped onto later
+  // pages/columns.
+  //
+  // However, the blank space introduced by those shifts is part of the float's *parallel flow* and
+  // should not block the main flow within the current fragmentainer (e.g. `clear: both` content).
+  //
+  // Only apply trimming when the float was effectively "inflated" beyond its border box by
+  // descendant overflow. This avoids shrinking fixed-size floats (or floats with padding/borders)
+  // that legitimately occupy space even when their children do not.
+  let float_inflated_by_overflow =
+    node_bbox_flow_end > node_flow_end + BREAK_EPSILON || node_bbox_flow_start + BREAK_EPSILON < node_flow_start;
+  if style.float.is_floating()
+    && axis.block_positive
+    && !node.children.is_empty()
+    && float_inflated_by_overflow
+  {
     // Use the children that survived clipping to find the actual block-axis extent of this float
     // fragment. `cloned.bounds` is based on the intersection of the float's (potentially expanded)
     // logical bounding box with the fragmentainer window, which can include trailing blank space.
