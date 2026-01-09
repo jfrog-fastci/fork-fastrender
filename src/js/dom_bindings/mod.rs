@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use vm_js::{GcObject, PropertyDescriptorPatch, PropertyKey, RootId, Value, VmError};
+use vm_js::{PropertyDescriptorPatch, PropertyKey, RootId, Value, VmError, WeakGcObject};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 const CHILD_NODES_CACHE_PROP: &str = "__fastrender_childNodes";
@@ -59,8 +59,8 @@ pub struct DomJsRealm {
   dom: Rc<RefCell<dom2::Document>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
 
-  platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-  node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+  node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
 
   event_listeners: Rc<events::EventListenerRegistry>,
   listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
@@ -78,9 +78,9 @@ impl DomJsRealm {
     let document_node_id = dom.borrow().root();
 
     let current_script_state = Rc::new(RefCell::new(CurrentScriptState::default()));
-    let platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>> =
+    let platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>> =
       Rc::new(RefCell::new(FxHashMap::default()));
-    let node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>> =
+    let node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>> =
       Rc::new(RefCell::new(FxHashMap::default()));
 
     let event_listeners = Rc::new(events::EventListenerRegistry::new());
@@ -152,16 +152,16 @@ impl DomJsRealm {
     // Platform-object bookkeeping (brand checks + identity).
     platform_objects
       .borrow_mut()
-      .insert(window_obj, PlatformObjectKind::Window);
+      .insert(WeakGcObject::from(window_obj), PlatformObjectKind::Window);
     platform_objects.borrow_mut().insert(
-      document_obj,
+      WeakGcObject::from(document_obj),
       PlatformObjectKind::Document {
         node_id: document_node_id,
       },
     );
     node_wrapper_cache
       .borrow_mut()
-      .insert(document_node_id, document_obj);
+      .insert(document_node_id, WeakGcObject::from(document_obj));
 
     // Attach `document` on the global object.
     define_data_property_str(&mut rt, window, "document", document, /* enumerable */ false)?;
@@ -344,14 +344,17 @@ fn direct_element_children(
 fn maybe_refresh_cached_child_nodes(
   rt: &mut VmJsRuntime,
   dom: &Rc<RefCell<dom2::Document>>,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   document_node_id: NodeId,
   document: Value,
   prototypes: Prototypes,
   node_id: NodeId,
 ) -> Result<(), VmError> {
   let Some(wrapper_obj) = node_wrapper_cache.borrow().get(&node_id).copied() else {
+    return Ok(());
+  };
+  let Some(wrapper_obj) = wrapper_obj.upgrade(rt.heap()) else {
     return Ok(());
   };
   let wrapper = Value::Object(wrapper_obj);
@@ -582,14 +585,15 @@ fn validate_event_listener_callback(rt: &mut VmJsRuntime, callback: Value) -> Re
 
 fn extract_event_target_id(
   rt: &mut VmJsRuntime,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   this: Value,
 ) -> Result<events::EventTargetId, VmError> {
   let Value::Object(obj) = this else {
     return Err(rt.throw_type_error("Illegal invocation"));
   };
+  let key = WeakGcObject::from(obj);
   let map = platform_objects.borrow();
-  match map.get(&obj) {
+  match map.get(&key) {
     Some(PlatformObjectKind::Window) => Ok(events::EventTargetId::Window),
     Some(PlatformObjectKind::Document { .. }) => Ok(events::EventTargetId::Document),
     Some(PlatformObjectKind::Node { node_id }) => Ok(events::EventTargetId::Node(*node_id)),
@@ -599,14 +603,15 @@ fn extract_event_target_id(
 
 fn extract_node_id(
   rt: &mut VmJsRuntime,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   this: Value,
 ) -> Result<NodeId, VmError> {
   let Value::Object(obj) = this else {
     return Err(rt.throw_type_error("Illegal invocation"));
   };
+  let key = WeakGcObject::from(obj);
   let map = platform_objects.borrow();
-  match map.get(&obj) {
+  match map.get(&key) {
     Some(PlatformObjectKind::Document { node_id }) => Ok(*node_id),
     Some(PlatformObjectKind::Node { node_id }) => Ok(*node_id),
     _ => Err(rt.throw_type_error("Illegal invocation")),
@@ -615,14 +620,15 @@ fn extract_node_id(
 
 fn extract_document_id(
   rt: &mut VmJsRuntime,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   this: Value,
 ) -> Result<NodeId, VmError> {
   let Value::Object(obj) = this else {
     return Err(rt.throw_type_error("Illegal invocation"));
   };
+  let key = WeakGcObject::from(obj);
   let map = platform_objects.borrow();
-  match map.get(&obj) {
+  match map.get(&key) {
     Some(PlatformObjectKind::Document { node_id }) => Ok(*node_id),
     _ => Err(rt.throw_type_error("Illegal invocation")),
   }
@@ -630,14 +636,15 @@ fn extract_document_id(
 
 fn extract_event_id(
   rt: &mut VmJsRuntime,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   this: Value,
 ) -> Result<u64, VmError> {
   let Value::Object(obj) = this else {
     return Err(rt.throw_type_error("Illegal invocation"));
   };
+  let key = WeakGcObject::from(obj);
   let map = platform_objects.borrow();
-  match map.get(&obj) {
+  match map.get(&key) {
     Some(PlatformObjectKind::Event { event_id }) => Ok(*event_id),
     _ => Err(rt.throw_type_error("Illegal invocation")),
   }
@@ -668,8 +675,8 @@ fn with_event<R>(
 fn wrap_event_target(
   rt: &mut VmJsRuntime,
   dom: &Rc<RefCell<dom2::Document>>,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   document_node_id: NodeId,
   window: Value,
   document: Value,
@@ -695,8 +702,8 @@ fn wrap_event_target(
 fn wrap_node(
   rt: &mut VmJsRuntime,
   dom: &Rc<RefCell<dom2::Document>>,
-  platform_objects: &Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  platform_objects: &Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+  node_wrapper_cache: &Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   document_node_id: NodeId,
   document: Value,
   prototypes: Prototypes,
@@ -710,8 +717,13 @@ fn wrap_node(
     return Err(rt.throw_type_error("NotFoundError"));
   }
 
-  if let Some(existing) = node_wrapper_cache.borrow().get(&node_id).copied() {
-    return Ok(Value::Object(existing));
+  let existing = { node_wrapper_cache.borrow().get(&node_id).copied() };
+  if let Some(existing) = existing {
+    if let Some(obj) = existing.upgrade(rt.heap()) {
+      return Ok(Value::Object(obj));
+    }
+    // Stale wrapper: keep brand-check tables from growing without bound across GC cycles.
+    platform_objects.borrow_mut().remove(&existing);
   }
 
   let proto = {
@@ -723,8 +735,6 @@ fn wrap_node(
   };
 
   let obj = rt.alloc_object_value()?;
-  // Node wrappers are cached for stable identity and must remain valid across GC cycles.
-  let _ = rt.heap_mut().add_root(obj)?;
   rt.set_prototype(obj, Some(proto))?;
   let Value::Object(obj_handle) = obj else {
     return Err(VmError::InvariantViolation(
@@ -732,9 +742,11 @@ fn wrap_node(
     ));
   };
 
-  node_wrapper_cache.borrow_mut().insert(node_id, obj_handle);
+  node_wrapper_cache
+    .borrow_mut()
+    .insert(node_id, WeakGcObject::from(obj_handle));
   platform_objects.borrow_mut().insert(
-    obj_handle,
+    WeakGcObject::from(obj_handle),
     PlatformObjectKind::Node { node_id },
   );
 
@@ -745,14 +757,14 @@ fn install_constructors(
   rt: &mut VmJsRuntime,
   global: Value,
   prototypes: Prototypes,
-  platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+  platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   event_listeners: Rc<events::EventListenerRegistry>,
   listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
   next_event_id: Rc<Cell<u64>>,
   events_map: Rc<RefCell<FxHashMap<u64, events::Event>>>,
   active_events: ActiveEventMap,
   dom: Rc<RefCell<dom2::Document>>,
-  node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+  node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
 ) -> Result<(), VmError> {
   fn illegal_constructor(rt: &mut VmJsRuntime, name: &'static str) -> Result<Value, VmError> {
@@ -850,7 +862,7 @@ fn install_constructors(
       };
       platform_objects
         .borrow_mut()
-        .insert(obj_handle, PlatformObjectKind::Event { event_id });
+        .insert(WeakGcObject::from(obj_handle), PlatformObjectKind::Event { event_id });
       Ok(obj)
     })?
   };
@@ -949,8 +961,8 @@ fn install_constructors(
         rt: *mut VmJsRuntime,
         listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
         dom: Rc<RefCell<dom2::Document>>,
-        platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-        node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+        platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+        node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
         document_node_id: NodeId,
         window: Value,
         document: Value,
@@ -1853,7 +1865,8 @@ fn install_constructors(
       let Value::Object(obj) = this else {
         return Err(rt.throw_type_error("Illegal invocation"));
       };
-      match platform_objects_for_owner.borrow().get(&obj) {
+      let key = WeakGcObject::from(obj);
+      match platform_objects_for_owner.borrow().get(&key) {
         Some(PlatformObjectKind::Document { .. }) => Ok(Value::Null),
         Some(PlatformObjectKind::Node { .. }) => Ok(document),
         _ => Err(rt.throw_type_error("Illegal invocation")),
@@ -2767,6 +2780,46 @@ mod tests {
     let a = realm.wrap_node(node_id).unwrap();
     let b = realm.wrap_node(node_id).unwrap();
     assert_eq!(a, b);
+  }
+
+  #[test]
+  fn node_wrapper_cache_is_weak_and_allows_gc_recycling() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let node_id = realm.dom.borrow_mut().create_element("div", "");
+
+    let a = realm.wrap_node(node_id).unwrap();
+    let Value::Object(obj_a) = a else {
+      panic!("expected object wrapper, got {a:?}");
+    };
+
+    // Keep the wrapper live by attaching it to a rooted global (Window).
+    let tmp_key = pk(&mut realm.rt, "tmp");
+    realm
+      .rt
+      .define_data_property(realm.window(), tmp_key, a, true)
+      .unwrap();
+
+    // Drop the last JS-visible reference and force a GC cycle.
+    realm
+      .rt
+      .define_data_property(realm.window(), tmp_key, Value::Null, true)
+      .unwrap();
+    realm.rt.heap_mut().collect_garbage();
+
+    assert!(
+      !realm.rt.heap().is_valid_object(obj_a),
+      "expected wrapper to be collectable after dropping JS refs",
+    );
+
+    // Looking up the node again should create a fresh wrapper.
+    let b = realm.wrap_node(node_id).unwrap();
+    let Value::Object(obj_b) = b else {
+      panic!("expected object wrapper, got {b:?}");
+    };
+    assert!(realm.rt.heap().is_valid_object(obj_b));
+    assert_ne!(obj_a, obj_b);
   }
 
   #[test]

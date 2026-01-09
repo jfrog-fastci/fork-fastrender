@@ -6,7 +6,7 @@ use crate::web::events::{
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vm_js::{GcObject, PropertyKey, RootId, Value, VmError};
+use vm_js::{GcObject, PropertyKey, RootId, Value, VmError, WeakGcObject};
 use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 #[derive(Debug, Clone, Copy)]
@@ -27,9 +27,13 @@ pub struct DomEventsRealm {
 impl DomEventsRealm {
   pub fn new(rt: &mut VmJsRuntime, dom: dom2::Document) -> Result<Self, VmError> {
     let event_target_prototype = rt.alloc_object_value()?;
+    rt.heap_mut().add_root(event_target_prototype)?;
     let event_prototype = rt.alloc_object_value()?;
+    rt.heap_mut().add_root(event_prototype)?;
     let ctx = Rc::new(DomEventsContext {
       dom,
+      event_target_prototype,
+      node_wrappers: RefCell::new(FxHashMap::default()),
       listeners: RefCell::new(FxHashMap::default()),
       events: RefCell::new(FxHashMap::default()),
       event_target_by_obj: RefCell::new(FxHashMap::default()),
@@ -41,10 +45,12 @@ impl DomEventsRealm {
 
     // Create window/document EventTargets (MVP).
     let window = rt.alloc_object_value()?;
+    rt.heap_mut().add_root(window)?;
     rt.set_prototype(window, Some(event_target_prototype))?;
     ctx.register_event_target(EventTargetId::Window, window)?;
 
     let document = rt.alloc_object_value()?;
+    rt.heap_mut().add_root(document)?;
     rt.set_prototype(document, Some(event_target_prototype))?;
     ctx.register_event_target(EventTargetId::Document, document)?;
 
@@ -67,12 +73,7 @@ impl DomEventsRealm {
     rt: &mut VmJsRuntime,
     node_id: dom2::NodeId,
   ) -> Result<Value, VmError> {
-    let obj = rt.alloc_object_value()?;
-    rt.set_prototype(obj, Some(self.event_target_prototype))?;
-    self
-      .ctx
-      .register_event_target(EventTargetId::Node(node_id), obj)?;
-    Ok(obj)
+    self.ctx.get_or_create_node_wrapper(rt, node_id)
   }
 
   pub fn ctx(&self) -> &DomEventsContext {
@@ -82,10 +83,12 @@ impl DomEventsRealm {
 
 pub struct DomEventsContext {
   dom: dom2::Document,
+  event_target_prototype: Value,
+  node_wrappers: RefCell<FxHashMap<dom2::NodeId, WeakGcObject>>,
   listeners: RefCell<FxHashMap<ListenerId, ListenerEntry>>,
   events: RefCell<FxHashMap<GcObject, Box<Event>>>,
-  event_target_by_obj: RefCell<FxHashMap<GcObject, EventTargetId>>,
-  obj_by_event_target: RefCell<FxHashMap<EventTargetId, Value>>,
+  event_target_by_obj: RefCell<FxHashMap<WeakGcObject, EventTargetId>>,
+  obj_by_event_target: RefCell<FxHashMap<EventTargetId, WeakGcObject>>,
 }
 
 impl DomEventsContext {
@@ -95,8 +98,9 @@ impl DomEventsContext {
         "register_event_target: value is not an object",
       ));
     };
-    self.event_target_by_obj.borrow_mut().insert(handle, target);
-    self.obj_by_event_target.borrow_mut().insert(target, obj);
+    let weak = WeakGcObject::from(handle);
+    self.event_target_by_obj.borrow_mut().insert(weak, target);
+    self.obj_by_event_target.borrow_mut().insert(target, weak);
     Ok(())
   }
 
@@ -104,13 +108,58 @@ impl DomEventsContext {
     let Value::Object(obj) = value else {
       return None;
     };
-    self.event_target_by_obj.borrow().get(&obj).copied()
+    self
+      .event_target_by_obj
+      .borrow()
+      .get(&WeakGcObject::from(obj))
+      .copied()
   }
 
-  fn object_for_event_target(&self, target: Option<EventTargetId>) -> Value {
+  fn get_or_create_node_wrapper(
+    &self,
+    rt: &mut VmJsRuntime,
+    node_id: dom2::NodeId,
+  ) -> Result<Value, VmError> {
+    let existing = { self.node_wrappers.borrow().get(&node_id).copied() };
+    if let Some(existing) = existing {
+      if let Some(obj) = existing.upgrade(rt.heap()) {
+        return Ok(Value::Object(obj));
+      }
+      // Stale wrapper: keep `event_target_by_obj` bounded across GC cycles.
+      self.event_target_by_obj.borrow_mut().remove(&existing);
+    }
+
+    let obj = rt.alloc_object_value()?;
+    rt.set_prototype(obj, Some(self.event_target_prototype))?;
+    self.register_event_target(EventTargetId::Node(node_id), obj)?;
+
+    let Value::Object(handle) = obj else {
+      unreachable!("alloc_object_value must return an object");
+    };
+    self
+      .node_wrappers
+      .borrow_mut()
+      .insert(node_id, WeakGcObject::from(handle));
+    Ok(obj)
+  }
+
+  fn object_for_event_target(
+    &self,
+    rt: &mut VmJsRuntime,
+    target: Option<EventTargetId>,
+  ) -> Result<Value, VmError> {
     match target {
-      None => Value::Null,
-      Some(id) => self.obj_by_event_target.borrow().get(&id).copied().unwrap_or(Value::Null),
+      None => Ok(Value::Null),
+      Some(EventTargetId::Node(node_id)) => self.get_or_create_node_wrapper(rt, node_id),
+      Some(id) => {
+        let Some(weak) = self.obj_by_event_target.borrow().get(&id).copied() else {
+          return Ok(Value::Null);
+        };
+        Ok(match weak.upgrade(rt.heap()) {
+          Some(obj) => Value::Object(obj),
+          None => Value::Null,
+        })
+      }
     }
   }
 
@@ -180,13 +229,13 @@ fn with_event_ref<R>(
   ctx: &DomEventsContext,
   this: Value,
   err: &str,
-  f: impl FnOnce(&Event) -> Result<R, VmError>,
+  f: impl FnOnce(&mut VmJsRuntime, &Event) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let Some(ptr) = ctx.event_ptr_for_value(this) else {
     return Err(rt.throw_type_error(err));
   };
   // Safety: events are owned by `DomEventsContext.events` for the lifetime of the realm.
-  unsafe { f(&*ptr) }
+  unsafe { f(rt, &*ptr) }
 }
 
 fn with_event_mut<R>(
@@ -194,7 +243,7 @@ fn with_event_mut<R>(
   ctx: &DomEventsContext,
   this: Value,
   err: &str,
-  f: impl FnOnce(&mut Event) -> Result<R, VmError>,
+  f: impl FnOnce(&mut VmJsRuntime, &mut Event) -> Result<R, VmError>,
 ) -> Result<R, VmError> {
   let Some(ptr) = ctx.event_ptr_for_value(this) else {
     return Err(rt.throw_type_error(err));
@@ -205,7 +254,7 @@ fn with_event_mut<R>(
   //   JS listener invoker. JS can then call methods like `preventDefault()` which re-borrow the same
   //   event mutably via this raw pointer. This matches the approach used by `JsDomEvents` and relies
   //   on the dispatch algorithm not accessing the event concurrently while user code runs.
-  unsafe { f(&mut *ptr) }
+  unsafe { f(rt, &mut *ptr) }
 }
 
 fn install_event_target_prototype(
@@ -329,7 +378,10 @@ fn install_event_target_prototype(
             .get(&listener_id)
             .copied()
             .ok_or_else(|| DomError::new(format!("missing JS callback for listener {listener_id:?}")))?;
-          let this_arg = self.ctx.object_for_event_target(event.current_target);
+          let this_arg = self
+            .ctx
+            .object_for_event_target(self.rt, event.current_target)
+            .map_err(|e| DomError::new(e.to_string()))?;
           let result = self
             .rt
             .call_function(entry.callback, this_arg, &[self.event_obj])
@@ -383,7 +435,7 @@ fn install_event_prototype(
         &ctx,
         this,
         "Event.stopPropagation: receiver is not an Event",
-        |event| {
+        |_rt, event| {
           event.stop_propagation();
           Ok(Value::Undefined)
         },
@@ -399,7 +451,7 @@ fn install_event_prototype(
         &ctx,
         this,
         "Event.stopImmediatePropagation: receiver is not an Event",
-        |event| {
+        |_rt, event| {
           event.stop_immediate_propagation();
           Ok(Value::Undefined)
         },
@@ -415,7 +467,7 @@ fn install_event_prototype(
         &ctx,
         this,
         "Event.preventDefault: receiver is not an Event",
-        |event| {
+        |_rt, event| {
           event.prevent_default();
           Ok(Value::Undefined)
         },
@@ -426,7 +478,7 @@ fn install_event_prototype(
   let get_type = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      let ty = with_event_ref(rt, &ctx, this, "Event.type: receiver is not an Event", |event| {
+      let ty = with_event_ref(rt, &ctx, this, "Event.type: receiver is not an Event", |_rt, event| {
         Ok(event.type_.clone())
       })?;
       rt.alloc_string_value(&ty)
@@ -436,7 +488,7 @@ fn install_event_prototype(
   let get_bubbles = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.bubbles: receiver is not an Event", |event| {
+      with_event_ref(rt, &ctx, this, "Event.bubbles: receiver is not an Event", |_rt, event| {
         Ok(Value::Bool(event.bubbles))
       })
     })?
@@ -445,7 +497,7 @@ fn install_event_prototype(
   let get_cancelable = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.cancelable: receiver is not an Event", |event| {
+      with_event_ref(rt, &ctx, this, "Event.cancelable: receiver is not an Event", |_rt, event| {
         Ok(Value::Bool(event.cancelable))
       })
     })?
@@ -459,7 +511,7 @@ fn install_event_prototype(
         &ctx,
         this,
         "Event.defaultPrevented: receiver is not an Event",
-        |event| Ok(Value::Bool(event.default_prevented)),
+        |_rt, event| Ok(Value::Bool(event.default_prevented)),
       )
     })?
   };
@@ -467,7 +519,7 @@ fn install_event_prototype(
   let get_event_phase = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.eventPhase: receiver is not an Event", |event| {
+      with_event_ref(rt, &ctx, this, "Event.eventPhase: receiver is not an Event", |_rt, event| {
         let phase = match event.event_phase {
           EventPhase::None => 0,
           EventPhase::Capturing => 1,
@@ -482,8 +534,8 @@ fn install_event_prototype(
   let get_target = {
     let ctx = ctx.clone();
     rt.alloc_function_value(move |rt, this, _args| {
-      with_event_ref(rt, &ctx, this, "Event.target: receiver is not an Event", |event| {
-        Ok(ctx.object_for_event_target(event.target))
+      with_event_ref(rt, &ctx, this, "Event.target: receiver is not an Event", |rt, event| {
+        ctx.object_for_event_target(rt, event.target)
       })
     })?
   };
@@ -496,7 +548,7 @@ fn install_event_prototype(
         &ctx,
         this,
         "Event.currentTarget: receiver is not an Event",
-        |event| Ok(ctx.object_for_event_target(event.current_target)),
+        |rt, event| ctx.object_for_event_target(rt, event.current_target),
       )
     })?
   };

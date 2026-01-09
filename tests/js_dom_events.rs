@@ -51,6 +51,22 @@ fn bool_value(v: Value) -> bool {
 }
 
 #[test]
+fn node_wrapper_identity_is_stable_for_same_node() {
+  let (dom, body_id, _target_id) = make_doc_body_target();
+  let mut rt = VmJsRuntime::new();
+  let realm = DomEventsRealm::new(&mut rt, dom).expect("install realm");
+
+  let a = realm
+    .create_node_wrapper(&mut rt, body_id)
+    .expect("body wrapper");
+  let b = realm
+    .create_node_wrapper(&mut rt, body_id)
+    .expect("body wrapper (second time)");
+
+  assert_eq!(a, b, "wrapper identity should be stable for the same NodeId");
+}
+
+#[test]
 fn capture_and_bubble_listener_order_document_body_target() {
   let (dom, body_id, target_id) = make_doc_body_target();
   let mut rt = VmJsRuntime::new();
