@@ -56,14 +56,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<fastrender::ui::UiToWorker>();
-  let (raw_tx, raw_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
-  let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
-
-  spawn_default_render_worker(ui_to_worker_rx, raw_tx);
+  let worker = fastrender::ui::spawn_browser_worker()?;
+  let ui_to_worker_tx = worker.tx.clone();
+  let raw_rx = worker.rx;
+  let _worker_join = worker.join;
 
   let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx))?;
   app.startup();
+
+  let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
   // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
   // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
@@ -401,9 +402,6 @@ struct App {
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
 
-  checkerboard_texture: Option<fastrender::ui::WgpuPixmapTexture>,
-  checkerboard_size_px: (u32, u32),
-
   page_rect_points: Option<egui::Rect>,
   viewport_cache_tab: Option<fastrender::ui::TabId>,
   viewport_cache_css: (u32, u32),
@@ -495,8 +493,6 @@ impl App {
       ui_to_worker_tx,
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
-      checkerboard_texture: None,
-      checkerboard_size_px: (0, 0),
       page_rect_points: None,
       viewport_cache_tab: None,
       viewport_cache_css: (0, 0),
@@ -545,6 +541,9 @@ impl App {
   fn set_pixels_per_point(&mut self, ppp: f32) {
     self.pixels_per_point = ppp;
     self.egui_ctx.set_pixels_per_point(ppp);
+    // Force a `ViewportChanged` message on the next frame: changing the DPI scale factor affects
+    // the effective device pixel ratio used for rendering.
+    self.viewport_cache_tab = None;
   }
 
   fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -560,63 +559,6 @@ impl App {
   fn destroy_all_textures(&mut self) {
     for (_, tex) in std::mem::take(&mut self.tab_textures) {
       tex.destroy(&mut self.egui_renderer);
-    }
-    if let Some(tex) = self.checkerboard_texture.take() {
-      tex.destroy(&mut self.egui_renderer);
-    }
-    self.checkerboard_size_px = (0, 0);
-  }
-
-  fn ensure_checkerboard_texture(&mut self, logical_size_points: egui::Vec2) {
-    let width_px =
-      ((logical_size_points.x.max(0.0) * self.pixels_per_point).floor() as u32).max(1);
-    let height_px =
-      ((logical_size_points.y.max(0.0) * self.pixels_per_point).floor() as u32).max(1);
-
-    if self.checkerboard_size_px == (width_px, height_px) && self.checkerboard_texture.is_some() {
-      return;
-    }
-
-    let Some(mut pixmap) = tiny_skia::Pixmap::new(width_px, height_px) else {
-      eprintln!("failed to allocate pixmap of size {width_px}x{height_px}");
-      if let Some(tex) = self.checkerboard_texture.take() {
-        tex.destroy(&mut self.egui_renderer);
-      }
-      self.checkerboard_size_px = (0, 0);
-      return;
-    };
-
-    const CELL: u32 = 16;
-    let data = pixmap.data_mut();
-    for y in 0..height_px {
-      for x in 0..width_px {
-        let idx = ((y * width_px + x) * 4) as usize;
-        let is_light = ((x / CELL) + (y / CELL)) % 2 == 0;
-        let (r, g, b) = if is_light {
-          (0xDD, 0xDD, 0xDD)
-        } else {
-          (0x99, 0x99, 0x99)
-        };
-        data[idx] = r;
-        data[idx + 1] = g;
-        data[idx + 2] = b;
-        data[idx + 3] = 0xFF;
-      }
-    }
-
-    self.checkerboard_size_px = (width_px, height_px);
-
-    match self.checkerboard_texture.as_mut() {
-      Some(tex) => tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap),
-      None => {
-        let mut tex = fastrender::ui::WgpuPixmapTexture::new(
-          &self.device,
-          &mut self.egui_renderer,
-          &pixmap,
-        );
-        tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-        self.checkerboard_texture = Some(tex);
-      }
     }
   }
 
@@ -1159,16 +1101,16 @@ impl App {
           ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
         self.page_rect_points = Some(response.rect);
       } else {
-        // Fallback until the worker produces the first real frame.
-        self.ensure_checkerboard_texture(logical_viewport_points);
-        if let Some(tex) = self.checkerboard_texture.as_ref() {
-          let size_points = tex.size_points(self.pixels_per_point);
-          let response =
-            ui.add(egui::Image::new((tex.id(), size_points)).sense(egui::Sense::click()));
-          self.page_rect_points = Some(response.rect);
+        let loading = self
+          .browser_state
+          .tab(active_tab)
+          .map(|t| t.loading)
+          .unwrap_or(false);
+        ui.label(if loading {
+          "Loading…"
         } else {
-          ui.label("Waiting for first frame…");
-        }
+          "Waiting for first frame…"
+        });
       }
     });
 
@@ -1272,284 +1214,4 @@ fn map_mouse_button(button: winit::event::MouseButton) -> fastrender::ui::Pointe
       _ => fastrender::ui::PointerButton::Other(v),
     },
   }
-}
-
-#[cfg(feature = "browser_ui")]
-fn spawn_default_render_worker(
-  ui_to_worker_rx: std::sync::mpsc::Receiver<fastrender::ui::UiToWorker>,
-  worker_to_ui_tx: std::sync::mpsc::Sender<fastrender::ui::WorkerToUi>,
-) {
-  use fastrender::ui::RenderedFrame;
-  use fastrender::ui::UiToWorker;
-  use fastrender::ui::WorkerToUi;
-  use fastrender::PreparedPaintOptions;
-  use fastrender::RenderOptions;
-  use std::collections::HashMap;
-
-  struct WorkerTab {
-    url: String,
-    viewport_css: (u32, u32),
-    dpr: f32,
-    scroll: fastrender::scroll::ScrollState,
-    doc: Option<fastrender::PreparedDocumentReport>,
-  }
-
-  fn repaint_tab(
-    tab_id: fastrender::ui::TabId,
-    tabs: &mut HashMap<fastrender::ui::TabId, WorkerTab>,
-    tx: &std::sync::mpsc::Sender<WorkerToUi>,
-  ) {
-    let Some(tab) = tabs.get_mut(&tab_id) else {
-      return;
-    };
-    let viewport_css = tab.viewport_css;
-
-    let (painted, dpr) = {
-      let Some(report) = tab.doc.as_ref() else {
-        return;
-      };
-      let painted = match report.document.paint_with_options_frame(PreparedPaintOptions {
-        scroll: Some(tab.scroll.clone()),
-        viewport: Some(viewport_css),
-        background: None,
-        animation_time: None,
-      }) {
-        Ok(frame) => frame,
-        Err(err) => {
-          let _ = tx.send(WorkerToUi::DebugLog {
-            tab_id,
-            line: format!("paint failed: {err}"),
-          });
-          return;
-        }
-      };
-      (painted, report.document.device_pixel_ratio())
-    };
-
-    tab.scroll = painted.scroll_state.clone();
-    let _ = tx.send(WorkerToUi::ScrollStateUpdated {
-      tab_id,
-      scroll: painted.scroll_state.clone(),
-    });
-    let _ = tx.send(WorkerToUi::FrameReady {
-      tab_id,
-      frame: RenderedFrame {
-        pixmap: painted.pixmap,
-        viewport_css,
-        dpr,
-        scroll_state: painted.scroll_state,
-      },
-    });
-  }
-
-  let _ = std::thread::Builder::new()
-    .name("browser_render_worker".to_string())
-    .stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)
-    .spawn(move || {
-      let renderer = match fastrender::FastRender::new() {
-        Ok(r) => r,
-        Err(err) => {
-          let _ = worker_to_ui_tx.send(WorkerToUi::DebugLog {
-            tab_id: fastrender::ui::TabId(0),
-            line: format!("failed to init renderer: {err}"),
-          });
-          return;
-        }
-      };
-      let mut renderer = renderer;
-
-      let mut tabs: HashMap<fastrender::ui::TabId, WorkerTab> = HashMap::new();
-      let mut active: Option<fastrender::ui::TabId> = None;
-
-        while let Ok(msg) = ui_to_worker_rx.recv() {
-          match msg {
-            UiToWorker::CreateTab {
-              tab_id,
-              initial_url,
-              ..
-            } => {
-              let url = initial_url.unwrap_or_else(|| "about:newtab".to_string());
-              tabs.insert(
-                tab_id,
-              WorkerTab {
-                url: url.clone(),
-                viewport_css: (800, 600),
-                dpr: 1.0,
-                scroll: fastrender::scroll::ScrollState::default(),
-                doc: None,
-              },
-            );
-            active = Some(tab_id);
-
-            let _ = worker_to_ui_tx.send(WorkerToUi::NavigationStarted {
-              tab_id,
-              url: url.clone(),
-            });
-
-              let options = RenderOptions::default()
-                .with_viewport(800, 600)
-                .with_device_pixel_ratio(1.0);
-              match renderer.prepare_url(&url, options) {
-                Ok(report) => {
-                  if let Some(tab) = tabs.get_mut(&tab_id) {
-                    tab.doc = Some(report);
-                  } else {
-                    // Best-effort: should be impossible because we just inserted the tab.
-                    let _ = worker_to_ui_tx.send(WorkerToUi::DebugLog {
-                      tab_id,
-                      line: "worker invariant violated: missing newly created tab".to_string(),
-                    });
-                  }
-                  let _ = worker_to_ui_tx.send(WorkerToUi::NavigationCommitted {
-                    tab_id,
-                    url: url.clone(),
-                    title: None,
-                    can_go_back: false,
-                  can_go_forward: false,
-                });
-                repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-              }
-              Err(err) => {
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationFailed {
-                  tab_id,
-                  url: url.clone(),
-                  error: err.to_string(),
-                });
-              }
-            }
-          }
-          UiToWorker::CloseTab { tab_id } => {
-            tabs.remove(&tab_id);
-            if active == Some(tab_id) {
-              active = None;
-            }
-          }
-          UiToWorker::SetActiveTab { tab_id } => {
-            if tabs.contains_key(&tab_id) {
-              active = Some(tab_id);
-            }
-          }
-          UiToWorker::ViewportChanged {
-            tab_id,
-            viewport_css,
-            dpr,
-          } => {
-            let Some((url, scroll_x, scroll_y)) = tabs.get_mut(&tab_id).map(|tab| {
-              tab.viewport_css = viewport_css;
-              tab.dpr = dpr;
-              (
-                tab.url.clone(),
-                tab.scroll.viewport.x,
-                tab.scroll.viewport.y,
-              )
-            }) else {
-              continue;
-            };
-
-            // Re-prepare with the new viewport so media queries and responsive layout update.
-            let _ = worker_to_ui_tx.send(WorkerToUi::NavigationStarted {
-              tab_id,
-              url: url.clone(),
-            });
-            let options = RenderOptions::default()
-              .with_viewport(viewport_css.0, viewport_css.1)
-              .with_device_pixel_ratio(dpr)
-              .with_scroll(scroll_x, scroll_y);
-            match renderer.prepare_url(&url, options) {
-              Ok(report) => {
-                if let Some(tab) = tabs.get_mut(&tab_id) {
-                  tab.doc = Some(report);
-                }
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationCommitted {
-                  tab_id,
-                  url: url.clone(),
-                  title: None,
-                  can_go_back: false,
-                  can_go_forward: false,
-                });
-                repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-              }
-              Err(err) => {
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationFailed {
-                  tab_id,
-                  url: url.clone(),
-                  error: err.to_string(),
-                });
-              }
-            }
-          }
-          UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: _,
-          } => {
-            let Some((viewport_css, dpr)) = tabs.get_mut(&tab_id).map(|tab| {
-              tab.url = url.clone();
-              tab.scroll = fastrender::scroll::ScrollState::default();
-              (tab.viewport_css, tab.dpr)
-            }) else {
-              continue;
-            };
-
-            let _ = worker_to_ui_tx.send(WorkerToUi::NavigationStarted {
-              tab_id,
-              url: url.clone(),
-            });
-
-            let options = RenderOptions::default()
-              .with_viewport(viewport_css.0, viewport_css.1)
-              .with_device_pixel_ratio(dpr);
-            match renderer.prepare_url(&url, options) {
-              Ok(report) => {
-                if let Some(tab) = tabs.get_mut(&tab_id) {
-                  tab.doc = Some(report);
-                }
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationCommitted {
-                  tab_id,
-                  url: url.clone(),
-                  title: None,
-                  can_go_back: false,
-                  can_go_forward: false,
-                });
-                repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-              }
-              Err(err) => {
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationFailed {
-                  tab_id,
-                  url: url.clone(),
-                  error: err.to_string(),
-                });
-              }
-            }
-          }
-          UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-            // History navigation is not wired up in this legacy in-binary worker implementation yet.
-          }
-          UiToWorker::Scroll {
-            tab_id,
-            delta_css,
-            ..
-          } => {
-            if let Some(tab) = tabs.get_mut(&tab_id) {
-              tab.scroll.viewport.x += delta_css.0;
-              tab.scroll.viewport.y += delta_css.1;
-            }
-            repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-          }
-          UiToWorker::RequestRepaint { tab_id, .. } => {
-            repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-          }
-          UiToWorker::PointerMove { .. }
-          | UiToWorker::PointerDown { .. }
-          | UiToWorker::PointerUp { .. }
-          | UiToWorker::TextInput { .. }
-          | UiToWorker::KeyAction { .. } => {
-            if let Some(tab_id) = active {
-              // For now we don't apply DOM interaction, but keep the UI responsive by repainting.
-              repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
-            }
-          }
-        }
-      }
-    });
 }
