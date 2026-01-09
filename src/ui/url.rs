@@ -1,6 +1,22 @@
 use std::path::{Path, PathBuf};
 use url::Url;
 
+/// Validate that a normalized, user-supplied URL uses a supported scheme.
+///
+/// This is intended for URLs originating from the address bar / command-line `browser [<url>]`
+/// argument. It rejects opaque schemes like `javascript:` even though `url::Url` can parse them.
+///
+/// For programmatic navigations (e.g. link clicks) the worker still validates schemes independently.
+pub fn validate_user_navigation_url_scheme(url: &str) -> Result<(), String> {
+  let parsed = Url::parse(url).map_err(|err| err.to_string())?;
+  let scheme = parsed.scheme().to_ascii_lowercase();
+  match scheme.as_str() {
+    "http" | "https" | "file" | "about" => Ok(()),
+    "javascript" => Err("navigation to javascript: URLs is not supported".to_string()),
+    _ => Err(format!("unsupported URL scheme: {scheme}")),
+  }
+}
+
 /// Normalize a user-provided address bar input into a canonical URL string.
 ///
 /// This function intentionally performs *minimal* normalization; see
@@ -11,7 +27,8 @@ use url::Url;
 ///
 /// Note: `url::Url` accepts opaque/non-hierarchical schemes like `javascript:`.
 /// We currently treat those as valid URLs and return them successfully; callers
-/// should apply a scheme allowlist before attempting navigation/fetch.
+/// should apply a scheme allowlist (e.g. [`validate_user_navigation_url_scheme`]) before attempting
+/// navigation/fetch.
 pub fn normalize_user_url(input: &str) -> Result<String, String> {
   let input = trim_ascii_whitespace(input);
   if input.is_empty() {
@@ -155,7 +172,7 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-  use super::normalize_user_url;
+  use super::{normalize_user_url, validate_user_navigation_url_scheme};
 
   #[test]
   fn bare_domain_defaults_to_https() {
@@ -192,6 +209,22 @@ mod tests {
   #[test]
   fn about_urls_are_preserved() {
     assert_eq!(normalize_user_url("about:blank").unwrap(), "about:blank");
+  }
+
+  #[test]
+  fn user_navigation_scheme_validation_rejects_javascript() {
+    assert!(validate_user_navigation_url_scheme("javascript:alert(1)").is_err());
+  }
+
+  #[test]
+  fn user_navigation_scheme_validation_rejects_unknown_scheme() {
+    assert!(validate_user_navigation_url_scheme("foo:bar").is_err());
+  }
+
+  #[test]
+  fn user_navigation_scheme_validation_allows_about_and_https() {
+    assert!(validate_user_navigation_url_scheme("about:newtab").is_ok());
+    assert!(validate_user_navigation_url_scheme("https://example.com/").is_ok());
   }
 
   #[test]

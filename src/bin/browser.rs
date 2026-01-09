@@ -62,7 +62,10 @@ fn parse_cli_args() -> CliAction {
 
   let default_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
   let raw_url = raw_url.unwrap_or(default_url);
-  let initial_url = match fastrender::ui::normalize_user_url(&raw_url) {
+  let initial_url = match fastrender::ui::normalize_user_url(&raw_url).and_then(|url| {
+    fastrender::ui::validate_user_navigation_url_scheme(&url)?;
+    Ok(url)
+  }) {
     Ok(url) => url,
     Err(err) => {
       eprintln!(

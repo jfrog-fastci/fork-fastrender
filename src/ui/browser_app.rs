@@ -3,7 +3,7 @@ use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::cancel::CancelGens;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
-use crate::ui::normalize_user_url;
+use crate::ui::{normalize_user_url, validate_user_navigation_url_scheme};
 use std::collections::VecDeque;
 use url::Url;
 
@@ -143,7 +143,7 @@ impl BrowserTabState {
     } else {
       normalize_user_url(raw_trimmed)?
     };
-    validate_typed_url_scheme(&normalized)?;
+    validate_user_navigation_url_scheme(&normalized)?;
 
     self.current_url = Some(normalized.clone());
     self.loading = true;
@@ -167,16 +167,6 @@ impl BrowserTabState {
       self.debug_log.pop_front();
     }
     self.debug_log.push_back(line);
-  }
-}
-
-fn validate_typed_url_scheme(url: &str) -> Result<(), String> {
-  let parsed = Url::parse(url).map_err(|err| err.to_string())?;
-  let scheme = parsed.scheme().to_ascii_lowercase();
-  match scheme.as_str() {
-    "http" | "https" | "file" | "about" => Ok(()),
-    "javascript" => Err("typed navigation to javascript: URLs is not supported".to_string()),
-    _ => Err(format!("unsupported URL scheme for typed navigation: {scheme}")),
   }
 }
 
@@ -455,7 +445,7 @@ impl BrowserAppState {
       .ok_or_else(|| "no active tab".to_string())?;
 
     let normalized = normalize_user_url(&self.chrome.address_bar_text)?;
-    validate_typed_url_scheme(&normalized)?;
+    validate_user_navigation_url_scheme(&normalized)?;
 
     self.chrome.address_bar_editing = false;
     self.chrome.address_bar_has_focus = false;
