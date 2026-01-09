@@ -7866,6 +7866,43 @@ impl DisplayListBuilder {
             let Some(svg) = cached.svg_content.as_deref() else {
               break 'paint_url;
             };
+            fn contains_foreign_object_tag(svg: &str) -> bool {
+              const NEEDLE: &[u8] = b"foreignobject";
+              let bytes = svg.as_bytes();
+              bytes
+                .windows(NEEDLE.len())
+                .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+            }
+
+            let svg_markup = svg;
+            let resolved_svg = if contains_foreign_object_tag(svg_markup) {
+              let base_dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+                self.device_pixel_ratio
+              } else {
+                1.0
+              };
+              let foreign_object_dpr =
+                crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+                  svg_markup,
+                  base_dpr,
+                  tile_w,
+                  tile_h,
+                  img_w,
+                  img_h,
+                );
+              crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+                svg_markup,
+                "",
+                &self.font_ctx,
+                image_cache,
+                foreign_object_dpr,
+                self.max_iframe_depth,
+              )
+            } else {
+              None
+            };
+            let svg = resolved_svg.as_deref().unwrap_or(svg_markup);
+
             let render_w = (tile_w * self.device_pixel_ratio).ceil().max(1.0) as u32;
             let render_h = (tile_h * self.device_pixel_ratio).ceil().max(1.0) as u32;
 
