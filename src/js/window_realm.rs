@@ -256,8 +256,8 @@ fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> 
   Ok(PropertyKey::from_string(s))
 }
 
-static NEXT_WINDOW_REALM_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CONSOLE_SINK_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_WINDOW_REALM_ID: AtomicU64 = AtomicU64::new(1);
 static CONSOLE_SINKS: OnceLock<Mutex<HashMap<u64, ConsoleSink>>> = OnceLock::new();
 
 fn console_sinks() -> &'static Mutex<HashMap<u64, ConsoleSink>> {

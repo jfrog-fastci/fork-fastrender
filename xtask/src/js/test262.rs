@@ -22,11 +22,38 @@ pub enum Test262Suite {
   Smoke,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum HarnessMode {
+  /// Prepend the standard test262 harness (`assert.js`, `sta.js`) plus frontmatter `includes`.
+  Test262,
+  /// Prepend only frontmatter `includes` (no implicit `assert.js`/`sta.js`).
+  Includes,
+  /// Prepend no harness files at all.
+  None,
+}
+
+impl HarnessMode {
+  fn as_cli_value(self) -> &'static str {
+    match self {
+      Self::Test262 => "test262",
+      Self::Includes => "includes",
+      Self::None => "none",
+    }
+  }
+}
 #[derive(Args, Debug)]
 pub struct Test262Args {
   /// Select which preset suite to run.
   #[arg(long, value_enum, default_value_t = Test262Suite::Curated)]
   pub suite: Test262Suite,
+
+  /// Control how the runner assembles test sources with harness files.
+  ///
+  /// FastRender defaults to `none` while the `vm-js` executor can't execute the upstream harness
+  /// scripts (`assert.js`/`sta.js`) yet.
+  #[arg(long, value_enum, default_value_t = HarnessMode::None)]
+  pub harness: HarnessMode,
 
   /// Override the expectations manifest (skip/xfail/flaky) used to classify known gaps.
   #[arg(long, value_name = "PATH", default_value = DEFAULT_MANIFEST_PATH)]
@@ -83,7 +110,7 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
   }
 
   let test262_dir = resolve_repo_path(&repo_root, &args.test262_dir);
-  ensure_test262_dir(&repo_root, &test262_dir)?;
+  ensure_test262_dir(&repo_root, &test262_dir, args.harness)?;
 
   let manifest_path = resolve_repo_path(&repo_root, &args.manifest);
   if !manifest_path.is_file() {
@@ -123,6 +150,8 @@ pub fn run_test262(args: Test262Args) -> Result<()> {
     .arg("--")
     .arg("--test262-dir")
     .arg(&test262_dir)
+    .arg("--harness")
+    .arg(args.harness.as_cli_value())
     .arg("--suite-path")
     .arg(&suite_path)
     .arg("--manifest")
@@ -160,10 +189,15 @@ fn resolve_repo_path(repo_root: &Path, path: &Path) -> PathBuf {
   }
 }
 
-fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path) -> Result<()> {
+fn ensure_test262_dir(
+  repo_root: &Path,
+  test262_dir: &Path,
+  harness_mode: HarnessMode,
+) -> Result<()> {
   let test_dir = test262_dir.join("test");
   let harness_dir = test262_dir.join("harness");
-  if test_dir.is_dir() && harness_dir.is_dir() {
+  let harness_required = harness_mode != HarnessMode::None;
+  if test_dir.is_dir() && (!harness_required || harness_dir.is_dir()) {
     return Ok(());
   }
 
@@ -179,9 +213,17 @@ fn ensure_test262_dir(repo_root: &Path, test262_dir: &Path) -> Result<()> {
     );
   }
 
+  if harness_required {
+    bail!(
+      "test262 checkout directory {} is missing required folders (expected {}/test and {}/harness)",
+      test262_dir.display(),
+      test262_dir.display(),
+      test262_dir.display()
+    );
+  }
+
   bail!(
-    "test262 checkout directory {} is missing required folders (expected {}/test and {}/harness)",
-    test262_dir.display(),
+    "test262 checkout directory {} is missing required folder (expected {}/test)",
     test262_dir.display(),
     test262_dir.display()
   );

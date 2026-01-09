@@ -34,9 +34,15 @@ bash scripts/cargo_agent.sh xtask js test262
 test execution/reporting to the submodule and pins the corpus directory via:
 `--test262-dir engines/ecma-rs/test262-semantic/data`.
 
-Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child invocation inside
-the submodule is intentionally **not** run with `--locked` (even if you run the top-level xtask with
-`--locked`).
+FastRender currently invokes the runner with `--harness none` by default. The `vm-js` executor is
+still early and cannot execute the upstream test262 harness scripts (`assert.js`/`sta.js`) yet; if
+we inlined them, every test would fail before reaching its body. Running with `--harness none`
+allows the runner to execute test bodies directly (some tests will still fail due to missing harness
+globals, which is expected during bring-up).
+
+Note: the `engines/ecma-rs` submodule does not commit a `Cargo.lock`, so the child `cargo run -p
+test262-semantic ...` invocation is intentionally **not** run with `--locked` (even if you run the
+top-level xtask with `--locked`).
 
 By default, the runner writes a JSON report to:
 
@@ -64,6 +70,11 @@ flags we use the most).
     - `new` (default): fail only on **unexpected** mismatches (not covered by the manifest).
     - `all`: fail on any mismatch (including expected/xfail/flaky).
     - `none`: always exit 0 (useful for generating reports while iterating).
+- `--harness <test262|includes|none>`
+  - Controls which harness scripts are prepended before each test body:
+    - `test262`: prepend `assert.js` + `sta.js` + frontmatter `includes` (closest to upstream).
+    - `includes`: prepend only frontmatter `includes`.
+    - `none` (xtask default): prepend nothing (useful while the VM can't run the upstream harness).
 
 ## Interpreting the output (expected vs unexpected)
 
