@@ -19,7 +19,7 @@ use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 #[cfg(feature = "browser_ui")]
@@ -93,6 +93,9 @@ struct TabState {
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
+  /// True when the next paint was triggered by a scroll message and we should coalesce any
+  /// immediately-following scroll events before rendering.
+  scroll_coalesce: bool,
   document: Option<BrowserDocument>,
   interaction: InteractionEngine,
   cancel: CancelGens,
@@ -113,6 +116,7 @@ impl TabState {
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
+      scroll_coalesce: false,
       document: None,
       interaction: InteractionEngine::new(),
       cancel,
@@ -372,6 +376,9 @@ struct BrowserRuntime {
   factory: FastRenderFactory,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
+  /// Messages deferred during scroll coalescing that should be handled before blocking for the next
+  /// message.
+  deferred_msgs: VecDeque<UiToWorker>,
 }
 
 impl BrowserRuntime {
@@ -382,14 +389,29 @@ impl BrowserRuntime {
       factory,
       tabs: HashMap::new(),
       active_tab: None,
+      deferred_msgs: VecDeque::new(),
     }
+  }
+
+  fn recv_message_blocking(&mut self) -> Option<UiToWorker> {
+    if let Some(msg) = self.deferred_msgs.pop_front() {
+      return Some(msg);
+    }
+    self.ui_rx.recv().ok()
+  }
+
+  fn try_recv_message(&mut self) -> Option<UiToWorker> {
+    if let Some(msg) = self.deferred_msgs.pop_front() {
+      return Some(msg);
+    }
+    self.ui_rx.try_recv().ok()
   }
 
   fn run(&mut self) {
     loop {
       // If there is no pending work, block for the next message.
       if !self.has_pending_jobs() {
-        let Ok(msg) = self.ui_rx.recv() else {
+        let Some(msg) = self.recv_message_blocking() else {
           break;
         };
         self.handle_message(msg);
@@ -406,6 +428,21 @@ impl BrowserRuntime {
         .any(|tab| tab.pending_navigation.is_some())
       {
         self.drain_messages();
+      }
+
+      // Scroll events can arrive in rapid bursts. If we are about to repaint due to scrolling,
+      // briefly coalesce immediately-following scroll messages so only the latest scroll position
+      // produces a frame (see `worker_runtime::cancellation_rapid_scroll_coalesces_to_last_frame`).
+      //
+      // Avoid doing this while a navigation is pending: navigation already drains queued messages
+      // before preparing, and we don't want scroll coalescing to add latency to navigations.
+      if !self
+        .tabs
+        .values()
+        .any(|tab| tab.pending_navigation.is_some())
+        && self.tabs.values().any(|tab| tab.scroll_coalesce)
+      {
+        self.drain_scroll_burst();
       }
 
       let Some(job) = self.next_job() else {
@@ -447,7 +484,7 @@ impl BrowserRuntime {
     // back-to-back moves avoids redundant DOM hit-testing work.
     let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton)> = HashMap::new();
 
-    while let Ok(msg) = self.ui_rx.try_recv() {
+    while let Some(msg) = self.try_recv_message() {
       match msg {
         UiToWorker::PointerMove {
           tab_id,
@@ -465,6 +502,83 @@ impl BrowserRuntime {
             });
           }
           self.handle_message(other);
+        }
+      }
+    }
+
+    for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+      self.handle_message(UiToWorker::PointerMove {
+        tab_id,
+        pos_css,
+        button,
+      });
+    }
+  }
+
+  fn drain_scroll_burst(&mut self) {
+    use std::time::{Duration, Instant};
+
+    // Keep this short: we only want to capture back-to-back scroll wheel events that happen within
+    // the same UI input burst.
+    const COALESCE_WINDOW: Duration = Duration::from_millis(1);
+
+    let deadline = Instant::now() + COALESCE_WINDOW;
+
+    // Reuse the existing pointer-move coalescing logic during scroll bursts so we don't do
+    // redundant hit-testing work while the user is scrolling.
+    let mut pending_pointer_moves: HashMap<TabId, ((f32, f32), PointerButton)> = HashMap::new();
+
+    loop {
+      let msg = match self.try_recv_message() {
+        Some(msg) => Some(msg),
+        None => {
+          let remaining = deadline.saturating_duration_since(Instant::now());
+          if remaining.is_zero() {
+            None
+          } else {
+            match self.ui_rx.recv_timeout(remaining) {
+              Ok(msg) => Some(msg),
+              Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+              Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+            }
+          }
+        }
+      };
+
+      let Some(msg) = msg else {
+        break;
+      };
+
+      match msg {
+        UiToWorker::PointerMove {
+          tab_id,
+          pos_css,
+          button,
+        } => {
+          pending_pointer_moves.insert(tab_id, (pos_css, button));
+        }
+        UiToWorker::Scroll { .. } => {
+          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+            self.handle_message(UiToWorker::PointerMove {
+              tab_id,
+              pos_css,
+              button,
+            });
+          }
+          self.handle_message(msg);
+        }
+        other => {
+          for (tab_id, (pos_css, button)) in pending_pointer_moves.drain() {
+            self.handle_message(UiToWorker::PointerMove {
+              tab_id,
+              pos_css,
+              button,
+            });
+          }
+          // Defer non-coalescible messages (clicks, navigations, etc) until after we render the
+          // coalesced scroll frame.
+          self.deferred_msgs.push_front(other);
+          break;
         }
       }
     }
@@ -623,7 +737,6 @@ impl BrowserRuntime {
         pointer_css,
       } => {
         let mut hover_update_pos_css: Option<(f32, f32)> = None;
-
         {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
@@ -648,6 +761,7 @@ impl BrowserRuntime {
               tab.scroll_state = next;
               tab.cancel.bump_paint();
               tab.needs_repaint = true;
+              tab.scroll_coalesce = true;
             }
             return;
           };
@@ -715,6 +829,7 @@ impl BrowserRuntime {
           if changed {
             tab.cancel.bump_paint();
             tab.needs_repaint = true;
+            tab.scroll_coalesce = true;
             hover_update_pos_css = pointer_pos_css;
           }
         }
@@ -1332,6 +1447,7 @@ impl BrowserRuntime {
         if let Some(tab) = self.tabs.get_mut(&active) {
           let force = std::mem::take(&mut tab.force_repaint);
           tab.needs_repaint = false;
+          tab.scroll_coalesce = false;
           return Some(Job::Paint {
             tab_id: active,
             force,
@@ -1349,6 +1465,7 @@ impl BrowserRuntime {
       if let Some(tab) = self.tabs.get_mut(&tab_id) {
         let force = std::mem::take(&mut tab.force_repaint);
         tab.needs_repaint = false;
+        tab.scroll_coalesce = false;
         return Some(Job::Paint { tab_id, force });
       }
     }
