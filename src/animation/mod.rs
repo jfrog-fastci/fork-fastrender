@@ -10524,4 +10524,38 @@ mod tests {
       assert_eq!(idx, 1, "{name} should use the all list index");
     }
   }
+
+  #[test]
+  fn transition_pairs_shorthand_overlap_last_entry_wins_per_longhand() {
+    let start_style = ComputedStyle::default();
+
+    // `border-top` overlaps with `border` for the top side longhands only. Ensure the last entry
+    // wins per expanded longhand name.
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::Name("border".to_string()),
+      TransitionProperty::Name("border-top".to_string()),
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    let top_width_idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-top-width")
+      .expect("border-top-width present")
+      .1;
+    let right_width_idx = pairs
+      .iter()
+      .find(|(name, _)| *name == "border-right-width")
+      .expect("border-right-width present")
+      .1;
+
+    assert_eq!(top_width_idx, 1, "border-top-width should be owned by border-top");
+    assert_eq!(
+      right_width_idx, 0,
+      "border-right-width should still be owned by border"
+    );
+  }
 }
