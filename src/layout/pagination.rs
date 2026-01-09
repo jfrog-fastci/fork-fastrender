@@ -1873,16 +1873,18 @@ fn build_margin_box_fragments(
     ) {
       continue;
     }
-    if matches!(box_style.display, Display::None) {
-      continue;
-    }
 
     if let Some(bounds) = margin_box_bounds(area, style) {
       if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         continue;
       }
 
-      let style_arc = Arc::new(box_style.clone());
+      // CSS Page 3: `display` does not apply to page-margin boxes, so treat them as block
+      // containers for layout purposes (even if the computed style says otherwise).
+      let mut owned_style = box_style.clone();
+      owned_style.display = Display::Block;
+      let style_arc = Arc::new(owned_style);
+      let box_style = style_arc.as_ref();
       if let ContentValue::Items(items) = &box_style.content_value {
         let mut element_snapshots = Vec::new();
         for item in items {

@@ -7,6 +7,7 @@ use crate::css::types::{CollectedPageRule, PageMarginArea, PagePseudoClass, Page
 use crate::geometry::{Point, Size};
 use crate::style::cascade::inherit_styles;
 use crate::style::display::Display;
+use crate::style::position::Position;
 use crate::style::properties::{
   apply_content_visibility_implied_containment, apply_declaration_with_base,
   resolve_pending_logical_properties,
@@ -108,6 +109,7 @@ pub fn resolve_page_style(
   let mut props = PageProperties::default();
   let mut margin_styles: BTreeMap<PageMarginArea, ComputedStyle> = BTreeMap::new();
   let mut page_style = default_page_style(root_font_size);
+  let mut page_context_style = default_page_context_style(base_style, root_font_size);
 
   let mut matching: Vec<(&CollectedPageRule<'_>, PageSelectorSpecificity)> = Vec::new();
   for rule in rules {
@@ -150,7 +152,7 @@ pub fn resolve_page_style(
       .then(a.0.order.cmp(&b.0.order))
   });
 
-  let mut apply_matching_rule = |rule: &CollectedPageRule<'_>, important: bool| {
+  let mut apply_page_rule_declarations = |rule: &CollectedPageRule<'_>, important: bool| {
     for decl in &rule.rule.declarations {
       if decl.important != important {
         continue;
@@ -158,6 +160,17 @@ pub fn resolve_page_style(
       if apply_page_declaration(&mut props, decl) {
         continue;
       }
+      apply_declaration_with_base(
+        &mut page_context_style,
+        decl,
+        inherited_base,
+        &defaults,
+        None,
+        parent_font_size,
+        root_font_size,
+        fallback_size,
+        false,
+      );
       apply_page_box_declaration(
         &mut page_style,
         decl,
@@ -166,10 +179,19 @@ pub fn resolve_page_style(
         fallback_size,
       );
     }
+  };
 
+  for (rule, _) in &normal_matching {
+    apply_page_rule_declarations(rule, false);
+  }
+  for (rule, _) in &important_matching {
+    apply_page_rule_declarations(rule, true);
+  }
+
+  let mut apply_margin_rule_declarations = |rule: &CollectedPageRule<'_>, important: bool| {
     for margin_rule in &rule.rule.margin_rules {
       let style = margin_styles.entry(margin_rule.area).or_insert_with(|| {
-        let mut style = default_margin_style(base_style, root_font_size);
+        let mut style = default_margin_style(&page_context_style);
         style.text_align = default_margin_text_align(margin_rule.area);
         style
       });
@@ -177,13 +199,16 @@ pub fn resolve_page_style(
         if decl.important != important {
           continue;
         }
+        if !margin_box_property_allowed(decl.property.as_str()) {
+          continue;
+        }
         apply_declaration_with_base(
           style,
           decl,
-          inherited_base,
+          &page_context_style,
           &defaults,
           None,
-          parent_font_size,
+          page_context_style.font_size,
           root_font_size,
           fallback_size,
           false,
@@ -193,18 +218,18 @@ pub fn resolve_page_style(
   };
 
   for (rule, _) in &normal_matching {
-    apply_matching_rule(rule, false);
+    apply_margin_rule_declarations(rule, false);
   }
   for (rule, _) in &important_matching {
-    apply_matching_rule(rule, true);
+    apply_margin_rule_declarations(rule, true);
   }
 
   for style in margin_styles.values_mut() {
     resolve_pending_logical_properties(style);
     apply_content_visibility_implied_containment(style);
-    if matches!(style.display, Display::Inline) {
-      style.display = Display::Block;
-    }
+    // CSS Page 3: `display` and `position` do not apply to page-margin boxes.
+    style.display = Display::Block;
+    style.position = Position::Static;
   }
   resolve_pending_logical_properties(&mut page_style);
   apply_content_visibility_implied_containment(&mut page_style);
@@ -596,16 +621,31 @@ fn resolve_length_on_axis(
   )
 }
 
-fn default_margin_style(base_style: Option<&ComputedStyle>, root_font_size: f32) -> ComputedStyle {
+fn default_page_context_style(
+  base_style: Option<&ComputedStyle>,
+  root_font_size: f32,
+) -> ComputedStyle {
   let mut style = ComputedStyle::default();
   if let Some(base) = base_style {
     inherit_styles(&mut style, base);
     style.root_font_size = base.root_font_size;
   } else {
     style.root_font_size = root_font_size;
+    style.font_size = root_font_size;
   }
+  style
+}
+
+fn default_margin_style(page_context_style: &ComputedStyle) -> ComputedStyle {
+  let mut style = ComputedStyle::default();
+  inherit_styles(&mut style, page_context_style);
   style.display = Display::Block;
   style
+}
+
+fn margin_box_property_allowed(property: &str) -> bool {
+  // CSS Page 3: `display` and `position` do not apply to page-margin boxes.
+  !matches!(property, "display" | "position")
 }
 
 fn default_margin_text_align(area: PageMarginArea) -> TextAlign {

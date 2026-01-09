@@ -1813,6 +1813,92 @@ fn margin_box_inherits_body_color_and_font_size() {
 }
 
 #[test]
+fn margin_box_inherits_page_context_font_size() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { font-size: 10px; }
+          @page {
+            font-size: 30px;
+            size: 200px 120px;
+            margin: 10px;
+            @top-center { content: "X"; }
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let page = *pages(&tree).first().expect("at least one page");
+  let header = find_text(page, "X").expect("margin box text");
+  let style = header.get_style().expect("margin text style");
+
+  assert!((style.font_size - 30.0).abs() < 0.1);
+}
+
+#[test]
+fn margin_box_inherits_page_context_color() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { color: rgb(255, 0, 0); }
+          @page {
+            color: rgb(0, 255, 0);
+            size: 200px 120px;
+            margin: 10px;
+            @top-center { content: "X"; }
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let page = *pages(&tree).first().expect("at least one page");
+  let header = find_text(page, "X").expect("margin box text");
+  let style = header.get_style().expect("margin text style");
+
+  assert_eq!(style.color, Rgba::rgb(0, 255, 0));
+}
+
+#[test]
+fn margin_box_display_none_does_not_suppress_generation() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 120px;
+            margin: 10px;
+            @top-center { content: "X"; display: none; }
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 300, 200, MediaType::Print).unwrap();
+  let page = *pages(&tree).first().expect("at least one page");
+
+  assert!(
+    find_text(page, "X").is_some(),
+    "margin box should still be generated despite display:none"
+  );
+}
+
+#[test]
 fn margin_box_text_is_shaped() {
   let html = r#"
     <html>
