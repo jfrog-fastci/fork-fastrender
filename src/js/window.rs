@@ -335,7 +335,7 @@ mod tests {
   }
 
   #[test]
-  fn exec_script_routes_promise_jobs_into_event_loop_microtasks() -> Result<()> {
+  fn exec_script_drains_promise_jobs_at_microtask_checkpoint() -> Result<()> {
     let dom = dom2::Document::new(QuirksMode::NoQuirks);
     let mut host = WindowHost::new(dom, "https://example.invalid/")?;
 
