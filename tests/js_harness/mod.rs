@@ -125,13 +125,18 @@ const JS_BOOTSTRAP: &str = r##"
   g.document = document;
 
   // Timer shims backed by the Rust event loop.
-  var callbacks = new Map(); // id -> { cb, interval, microtask }
+  var callbacks = new Map(); // id -> { cb, interval, microtask, args }
 
   g.__fastrender_fire_timer = function (id) {
     var entry = callbacks.get(id);
     if (!entry) return;
     if (!entry.interval || entry.microtask) callbacks.delete(id);
-    entry.cb();
+    var args = entry.args || [];
+    if (entry.microtask) {
+      entry.cb.apply(undefined, args);
+    } else {
+      entry.cb.apply(g, args);
+    }
   };
 
   function normalizeDelay(ms) {
@@ -141,10 +146,12 @@ const JS_BOOTSTRAP: &str = r##"
     return n;
   }
 
-  g.setTimeout = function (cb, ms) {
+  g.setTimeout = function (cb, ms /*, ...args */) {
     if (typeof cb !== "function") throw new TypeError("setTimeout callback is not callable");
+    var args = [];
+    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
     var id = g.__fastrender_host_set_timeout(normalizeDelay(ms));
-    callbacks.set(id, { cb: cb, interval: false });
+    callbacks.set(id, { cb: cb, interval: false, args: args });
     return id;
   };
   g.clearTimeout = function (id) {
@@ -153,10 +160,12 @@ const JS_BOOTSTRAP: &str = r##"
     callbacks.delete(id);
   };
 
-  g.setInterval = function (cb, ms) {
+  g.setInterval = function (cb, ms /*, ...args */) {
     if (typeof cb !== "function") throw new TypeError("setInterval callback is not callable");
+    var args = [];
+    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
     var id = g.__fastrender_host_set_interval(normalizeDelay(ms));
-    callbacks.set(id, { cb: cb, interval: true });
+    callbacks.set(id, { cb: cb, interval: true, args: args });
     return id;
   };
   g.clearInterval = function (id) {
@@ -168,7 +177,7 @@ const JS_BOOTSTRAP: &str = r##"
   g.queueMicrotask = function (cb) {
     if (typeof cb !== "function") throw new TypeError("queueMicrotask callback is not callable");
     var id = g.__fastrender_host_queue_microtask();
-    callbacks.set(id, { cb: cb, microtask: true });
+    callbacks.set(id, { cb: cb, microtask: true, args: [] });
   };
 })();
 "##;

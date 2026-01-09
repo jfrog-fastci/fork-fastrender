@@ -8,6 +8,7 @@ fn external_spec(url: &str, async_attr: bool, defer_attr: bool) -> ScriptElement
   ScriptElementSpec {
     base_url: Some("https://example.com/".to_string()),
     src: Some(url.to_string()),
+    src_attr_present: true,
     inline_text: String::new(),
     async_attr,
     defer_attr,
