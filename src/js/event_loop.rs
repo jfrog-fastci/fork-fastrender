@@ -558,10 +558,20 @@ impl<Host: 'static> EventLoop<Host> {
     let task_result = task.run(host, self);
     // Always clear running-task state so errors don't leave the event loop in a "running" state.
     self.currently_running_task = None;
-    let task_result = task_result.and_then(|()| self.perform_microtask_checkpoint(host));
+    // HTML performs a microtask checkpoint at the end of every task. Even if the task threw an
+    // exception, queued microtasks must still be drained.
+    let microtask_result = self.perform_microtask_checkpoint(host);
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
-    task_result?;
+    // Prefer surfacing the task error if both the task and the microtask checkpoint failed: the
+    // task error occurred first and is usually the most relevant failure mode.
+    match task_result {
+      Ok(()) => microtask_result?,
+      Err(err) => {
+        let _ = microtask_result;
+        return Err(err);
+      }
+    }
     Ok(true)
   }
 
@@ -761,12 +771,21 @@ impl<Host: 'static> EventLoop<Host> {
     });
     let task_result = task.run(host, self);
     self.currently_running_task = None;
-    let task_result = task_result
-      .map_err(RunStepError::Error)
-      .and_then(|()| self.perform_microtask_checkpoint_limited(host, run_state));
+    // HTML performs a microtask checkpoint at the end of every task. Even if the task threw an
+    // exception, queued microtasks must still be drained.
+    let microtask_result = self.perform_microtask_checkpoint_limited(host, run_state);
     self.timer_nesting_level = previous_timer_nesting_level;
     self.currently_running_task = previous_running_task;
-    task_result?;
+    // Prefer surfacing the task error if the task failed, even if the microtask checkpoint also hit
+    // a stop condition/error: the caller is already in an exceptional state, and losing the task
+    // error would be surprising.
+    match task_result {
+      Ok(()) => microtask_result?,
+      Err(err) => {
+        let _ = microtask_result;
+        return Err(RunStepError::Error(err));
+      }
+    }
     Ok(true)
   }
 
@@ -1838,6 +1857,37 @@ mod tests {
       .expect_err("task should fail");
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(event_loop.currently_running_task(), None);
+  }
+
+  #[test]
+  fn microtasks_run_after_task_error() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+      host.log.push("task");
+      event_loop.queue_microtask(|host, _event_loop| {
+        host.log.push("microtask");
+        Ok(())
+      })?;
+      Err(Error::Other("boom".to_string()))
+    })?;
+
+    let mut host = Host::default();
+    let err = event_loop
+      .run_next_task(&mut host)
+      .expect_err("task should fail");
+    assert!(matches!(err, Error::Other(msg) if msg == "boom"));
+
+    // Even though the task failed, the post-task microtask checkpoint should still drain the
+    // microtask queue (HTML event loop semantics).
+    assert_eq!(host.log, vec!["task", "microtask"]);
+    assert_eq!(event_loop.pending_microtask_count(), 0);
+    Ok(())
   }
 
   #[test]
