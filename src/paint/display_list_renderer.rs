@@ -1479,12 +1479,7 @@ where
       dst_quad[i] = (local_x, local_y);
 
       let (tx, ty, _tz, tw) = projective.transform.transform_point(*x, *y, 0.0);
-      if !tw.is_finite()
-        || tw.abs() < 1e-6
-        || tw < 0.0
-        || !tx.is_finite()
-        || !ty.is_finite()
-      {
+      if !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0 || !tx.is_finite() || !ty.is_finite() {
         valid = false;
         break;
       }
@@ -2078,8 +2073,16 @@ fn with_preserve_3d_clip_mask_scratch<R>(f: impl FnOnce(&mut Preserve3dClipMaskS
     // populated the TLS scratch while this call was executing.
     {
       let mut borrowed = scratch_cell.borrow_mut();
-      let scratch_combined_len = scratch.combined.as_ref().map(|m| m.data().len()).unwrap_or(0);
-      let borrowed_combined_len = borrowed.combined.as_ref().map(|m| m.data().len()).unwrap_or(0);
+      let scratch_combined_len = scratch
+        .combined
+        .as_ref()
+        .map(|m| m.data().len())
+        .unwrap_or(0);
+      let borrowed_combined_len = borrowed
+        .combined
+        .as_ref()
+        .map(|m| m.data().len())
+        .unwrap_or(0);
       if scratch_combined_len > borrowed_combined_len {
         borrowed.combined = scratch.combined;
       }
@@ -2180,6 +2183,121 @@ fn multiply_masks_in_place(into: &mut Mask, other: &Mask) -> RenderResult<()> {
   }
 
   Ok(())
+}
+
+fn copy_pixmap_alpha_into_mask(
+  dest: &mut Mask,
+  src: &Pixmap,
+  offset: (i32, i32),
+) -> RenderResult<()> {
+  check_active(RenderStage::Paint)?;
+  if dest.width() == 0 || dest.height() == 0 || src.width() == 0 || src.height() == 0 {
+    return Ok(());
+  }
+
+  let dest_w = dest.width() as i32;
+  let dest_h = dest.height() as i32;
+  let src_w = src.width() as i32;
+  let src_h = src.height() as i32;
+  let (off_x, off_y) = offset;
+
+  let start_x = off_x.max(0);
+  let start_y = off_y.max(0);
+  let end_x = (off_x + src_w).min(dest_w);
+  let end_y = (off_y + src_h).min(dest_h);
+  if start_x >= end_x || start_y >= end_y {
+    return Ok(());
+  }
+
+  let copy_w = (end_x - start_x) as usize;
+  let copy_h = (end_y - start_y) as usize;
+  let src_start_x = (start_x - off_x) as usize;
+  let src_start_y = (start_y - off_y) as usize;
+
+  let dest_stride = dest.width() as usize;
+  let src_stride_bytes = src.width() as usize * 4;
+  let dest_data = dest.data_mut();
+  let src_data = src.data();
+
+  let mut deadline_counter = 0usize;
+  for row in 0..copy_h {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+    let dst_y = start_y as usize + row;
+    let src_y = src_start_y + row;
+    let dst_row = dst_y * dest_stride + start_x as usize;
+    let src_row = src_y * src_stride_bytes + src_start_x * 4;
+    for col in 0..copy_w {
+      dest_data[dst_row + col] = src_data[src_row + col * 4 + 3];
+    }
+  }
+
+  Ok(())
+}
+
+fn build_clip_path_shape_path(
+  clip: &crate::paint::clip_path::ResolvedClipPath,
+) -> Option<(tiny_skia::Path, tiny_skia::FillRule)> {
+  use crate::paint::clip_path::ResolvedClipPath;
+
+  match clip {
+    ResolvedClipPath::Inset { rect, radii } => {
+      if rect.width() <= 0.0
+        || rect.height() <= 0.0
+        || !rect.x().is_finite()
+        || !rect.y().is_finite()
+        || !rect.width().is_finite()
+        || !rect.height().is_finite()
+      {
+        return None;
+      }
+      let radii = radii.clamped(rect.width(), rect.height());
+      crate::paint::rasterize::build_rounded_rect_path(
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        &radii,
+      )
+      .map(|path| (path, tiny_skia::FillRule::Winding))
+    }
+    ResolvedClipPath::Circle { center, radius } => {
+      if *radius <= 0.0 {
+        return None;
+      }
+      let r = *radius;
+      let rect = tiny_skia::Rect::from_xywh(center.x - r, center.y - r, r * 2.0, r * 2.0)?;
+      PathBuilder::from_oval(rect).map(|path| (path, tiny_skia::FillRule::Winding))
+    }
+    ResolvedClipPath::Ellipse {
+      center,
+      radius_x,
+      radius_y,
+    } => {
+      if *radius_x <= 0.0 || *radius_y <= 0.0 {
+        return None;
+      }
+      let rect = tiny_skia::Rect::from_xywh(
+        center.x - radius_x,
+        center.y - radius_y,
+        radius_x * 2.0,
+        radius_y * 2.0,
+      )?;
+      PathBuilder::from_oval(rect).map(|path| (path, tiny_skia::FillRule::Winding))
+    }
+    ResolvedClipPath::Polygon { points, fill_rule } => {
+      if points.len() < 3 {
+        return None;
+      }
+      let mut builder = PathBuilder::new();
+      builder.move_to(points[0].x, points[0].y);
+      for p in &points[1..] {
+        builder.line_to(p.x, p.y);
+      }
+      builder.close();
+      builder.finish().map(|path| (path, *fill_rule))
+    }
+    ResolvedClipPath::Path { path, fill_rule } => Some((path.clone(), *fill_rule)),
+  }
 }
 
 fn apply_mask_rect_rgba(
@@ -4986,7 +5104,14 @@ impl DisplayListRenderer {
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+      pixmap.draw_pixmap(
+        dest_x,
+        dest_y,
+        pix.as_ref().as_ref(),
+        &paint,
+        transform,
+        clip.as_ref(),
+      );
     });
     self.record_background_paint(background_timer);
     Ok(())
@@ -5138,11 +5263,9 @@ impl DisplayListRenderer {
           self.record_background_paint(background_timer);
           return Ok(());
         };
-        self
-          .canvas
-          .with_mirrored_pixmap_mut(|pixmap| {
-            pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
-          });
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+        });
         self.record_background_paint(background_timer);
         return Ok(());
       };
@@ -5171,7 +5294,8 @@ impl DisplayListRenderer {
 
       let mut xs: Vec<u32> = Vec::new();
       let mut ys: Vec<u32> = Vec::new();
-      if xs.try_reserve_exact(tmp_w as usize).is_ok() && ys.try_reserve_exact(tmp_h as usize).is_ok()
+      if xs.try_reserve_exact(tmp_w as usize).is_ok()
+        && ys.try_reserve_exact(tmp_h as usize).is_ok()
       {
         for x in 0..tmp_w {
           let dx = (x0_u32 + x) as f64 + 0.5;
@@ -5511,7 +5635,14 @@ impl DisplayListRenderer {
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+      pixmap.draw_pixmap(
+        dest_x,
+        dest_y,
+        pix.as_ref().as_ref(),
+        &paint,
+        transform,
+        clip.as_ref(),
+      );
     });
 
     self.record_background_paint(background_timer);
@@ -5769,11 +5900,9 @@ impl DisplayListRenderer {
     ) else {
       return Ok(());
     };
-    self
-      .canvas
-      .with_mirrored_pixmap_mut(|pixmap| {
-        pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
-      });
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -5843,7 +5972,14 @@ impl DisplayListRenderer {
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(dest_x, dest_y, pix.as_ref().as_ref(), &paint, transform, clip.as_ref());
+      pixmap.draw_pixmap(
+        dest_x,
+        dest_y,
+        pix.as_ref().as_ref(),
+        &paint,
+        transform,
+        clip.as_ref(),
+      );
     });
     self.record_background_paint(background_timer);
     Ok(())
@@ -6676,7 +6812,8 @@ impl DisplayListRenderer {
         if tile_w <= 0.0 {
           return;
         }
-        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -6722,7 +6859,8 @@ impl DisplayListRenderer {
         if tile_w <= 0.0 {
           return;
         }
-        let count = (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_x.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -6747,7 +6885,8 @@ impl DisplayListRenderer {
         if tile_h <= 0.0 {
           return;
         }
-        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -6793,7 +6932,8 @@ impl DisplayListRenderer {
         if tile_h <= 0.0 {
           return;
         }
-        let count = (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
+        let count =
+          (tiles_y.ceil().max(1.0) as usize).min(MAX_BORDER_IMAGE_TILES_PER_AXIS as usize);
         let mut pos = Vec::new();
         if pos.try_reserve_exact(count).is_err() {
           paint_repeated_patch(self);
@@ -6839,11 +6979,9 @@ impl DisplayListRenderer {
         );
         paint.anti_alias = false;
         paint.blend_mode = self.canvas.blend_mode();
-        self
-          .canvas
-          .with_mirrored_pixmap_mut(|pixmap| {
-            pixmap.fill_rect(src_rect, &paint, transform, clip);
-          });
+        self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+          pixmap.fill_rect(src_rect, &paint, transform, clip);
+        });
       }
     }
   }
@@ -7549,7 +7687,14 @@ impl DisplayListRenderer {
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
     let clip = self.canvas.clip_mask().cloned();
     self.canvas.with_mirrored_pixmap_mut(|pixmap| {
-      pixmap.draw_pixmap(dest_x, dest_y, temp.as_ref(), &paint, transform, clip.as_ref());
+      pixmap.draw_pixmap(
+        dest_x,
+        dest_y,
+        temp.as_ref(),
+        &paint,
+        transform,
+        clip.as_ref(),
+      );
     });
     Ok(())
   }
@@ -8017,11 +8162,7 @@ impl DisplayListRenderer {
             src_quad[i] = Point::new(src_x - layer_origin.0 as f32, src_y - layer_origin.1 as f32);
 
             let (tx, ty, _tz, tw) = projective_transform.transform_point(*x, *y, 0.0);
-            if !tw.is_finite()
-              || tw.abs() < 1e-6
-              || tw < 0.0
-              || !tx.is_finite()
-              || !ty.is_finite()
+            if !tw.is_finite() || tw.abs() < 1e-6 || tw < 0.0 || !tx.is_finite() || !ty.is_finite()
             {
               valid = false;
               break;
@@ -8238,15 +8379,15 @@ impl DisplayListRenderer {
             }
           }
 
-           if has_kernel_backdrop {
-             let Some(sample_rect) = sample_rect else {
-               *fallback_reason = Some("backdrop-filter halo rect missing".to_string());
-               return Ok(true);
-             };
-             if backdrop_root_stack
-               .last()
-               .is_some_and(|scope| scope.iter().any(|prior| prior.intersects(sample_rect)))
-             {
+          if has_kernel_backdrop {
+            let Some(sample_rect) = sample_rect else {
+              *fallback_reason = Some("backdrop-filter halo rect missing".to_string());
+              return Ok(true);
+            };
+            if backdrop_root_stack
+              .last()
+              .is_some_and(|scope| scope.iter().any(|prior| prior.intersects(sample_rect)))
+            {
               *fallback_reason = Some(
                 "backdrop-filter depends on previously filtered backdrop; requires serial painting"
                   .to_string(),
@@ -10010,19 +10151,19 @@ impl DisplayListRenderer {
         let SceneEffect::Clip { clip, transform } = effect else {
           continue;
         };
-        let Some(path) =
-          self.projected_preserve_3d_clip_path(clip, transform, parent_transform, warp_enabled)
-        else {
-          return Ok(None);
-        };
-
         temp.data_mut().fill(0);
-        temp.fill_path(
-          &path,
-          tiny_skia::FillRule::Winding,
-          true,
-          Transform::identity(),
-        );
+        let filled = self
+          .fill_projected_preserve_3d_clip_mask(
+            temp,
+            clip,
+            transform,
+            parent_transform,
+            warp_enabled,
+          )
+          .map_err(Error::Render)?;
+        if !filled {
+          return Ok(None);
+        }
         multiply_masks_in_place(combined, temp).map_err(Error::Render)?;
       }
 
@@ -10051,7 +10192,173 @@ impl DisplayListRenderer {
     result
   }
 
-  fn projected_preserve_3d_clip_path(
+  fn fill_projected_preserve_3d_clip_mask(
+    &self,
+    dest: &mut Mask,
+    clip: &ClipItem,
+    transform: &Transform3D,
+    parent_transform: Transform,
+    warp_enabled: bool,
+  ) -> RenderResult<bool> {
+    match &clip.shape {
+      ClipShape::Rect { .. } => {
+        let Some(path) = self.projected_preserve_3d_clip_rect_path(
+          clip,
+          transform,
+          parent_transform,
+          warp_enabled,
+        ) else {
+          return Ok(false);
+        };
+        dest.fill_path(
+          &path,
+          tiny_skia::FillRule::Winding,
+          true,
+          Transform::identity(),
+        );
+        Ok(true)
+      }
+      ClipShape::Path { path } => {
+        let homography = Homography::from_transform3d_z0(transform);
+        if warp_enabled && !homography.is_affine() {
+          self.fill_projective_preserve_3d_clip_path_mask(dest, path, transform, parent_transform)
+        } else {
+          let Some((shape_path, fill_rule)) = build_clip_path_shape_path(path) else {
+            return Ok(false);
+          };
+          let (t, _valid) = self.to_skia_transform_checked(transform);
+          let transform = concat_transforms(
+            parent_transform,
+            concat_transforms(t, Transform::from_scale(self.scale, self.scale)),
+          );
+          dest.fill_path(&shape_path, fill_rule, true, transform);
+          Ok(true)
+        }
+      }
+      ClipShape::Text { .. } => Ok(false),
+    }
+  }
+
+  fn fill_projective_preserve_3d_clip_path_mask(
+    &self,
+    dest: &mut Mask,
+    clip: &crate::paint::clip_path::ResolvedClipPath,
+    transform: &Transform3D,
+    parent_transform: Transform,
+  ) -> RenderResult<bool> {
+    // Keep clip-path rasterization away from the source pixmap boundaries to avoid unstable edge
+    // coverage when the clip is later warped/clipped (similar to `Canvas::set_clip_path`).
+    const CLIP_PATH_MASK_PADDING_PX: u32 = 32;
+
+    let bounds = clip.bounds();
+    if bounds.width() <= 0.0
+      || bounds.height() <= 0.0
+      || !bounds.x().is_finite()
+      || !bounds.y().is_finite()
+      || !bounds.width().is_finite()
+      || !bounds.height().is_finite()
+    {
+      return Ok(false);
+    }
+    if !self.scale.is_finite() || self.scale <= 0.0 {
+      return Ok(false);
+    }
+
+    // Compute an integer device-space raster region for the clip shape.
+    let pad = CLIP_PATH_MASK_PADDING_PX as i32;
+    let min_x = (bounds.min_x() * self.scale).floor();
+    let min_y = (bounds.min_y() * self.scale).floor();
+    let max_x = (bounds.max_x() * self.scale).ceil();
+    let max_y = (bounds.max_y() * self.scale).ceil();
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+      return Ok(false);
+    }
+    let origin_x = (min_x as i32).saturating_sub(pad);
+    let origin_y = (min_y as i32).saturating_sub(pad);
+    let end_x = (max_x as i32).saturating_add(pad);
+    let end_y = (max_y as i32).saturating_add(pad);
+    let width = end_x.saturating_sub(origin_x) as u32;
+    let height = end_y.saturating_sub(origin_y) as u32;
+    if width == 0 || height == 0 {
+      return Ok(false);
+    }
+
+    let Some((shape_path, fill_rule)) = build_clip_path_shape_path(clip) else {
+      return Ok(false);
+    };
+
+    let Some(mut src) = new_pixmap(width, height) else {
+      return Ok(false);
+    };
+    src.data_mut().fill(0);
+
+    let mut paint = tiny_skia::Paint::default();
+    paint.anti_alias = true;
+    paint.set_color(tiny_skia::Color::from_rgba8(255, 255, 255, 255));
+
+    let local_transform = concat_transforms(
+      Transform::from_translate(-(origin_x as f32), -(origin_y as f32)),
+      Transform::from_scale(self.scale, self.scale),
+    );
+    src.fill_path(&shape_path, &paint, fill_rule, local_transform, None);
+
+    // Build the destination quad by projecting the source-region corners through the clip's
+    // Transform3D.
+    let scale = self.scale;
+    let left_css = origin_x as f32 / scale;
+    let top_css = origin_y as f32 / scale;
+    let right_css = (origin_x as f32 + width as f32) / scale;
+    let bottom_css = (origin_y as f32 + height as f32) / scale;
+    if !left_css.is_finite()
+      || !top_css.is_finite()
+      || !right_css.is_finite()
+      || !bottom_css.is_finite()
+    {
+      return Ok(false);
+    }
+    let corners_css = [
+      (left_css, top_css),
+      (right_css, top_css),
+      (right_css, bottom_css),
+      (left_css, bottom_css),
+    ];
+    let mut dst_quad = [(0.0f32, 0.0f32); 4];
+    let mut dst_points = [Point::ZERO; 4];
+    for (i, (x, y)) in corners_css.iter().enumerate() {
+      let (px, py) =
+        match self.project_preserve_3d_clip_point(transform, *x, *y, parent_transform, true) {
+          Some(pt) => pt,
+          None => return Ok(false),
+        };
+      dst_quad[i] = (px, py);
+      dst_points[i] = Point::new(px, py);
+    }
+
+    let src_quad = [
+      Point::new(0.0, 0.0),
+      Point::new(width as f32, 0.0),
+      Point::new(width as f32, height as f32),
+      Point::new(0.0, height as f32),
+    ];
+    let Some(homography) = Homography::from_quad_to_quad(src_quad, dst_points) else {
+      return Ok(false);
+    };
+    let warped = crate::paint::projective_warp::warp_pixmap(
+      &src,
+      &homography,
+      &dst_quad,
+      (dest.width(), dest.height()),
+      None,
+    )?;
+    let Some(warped) = warped else {
+      return Ok(false);
+    };
+
+    copy_pixmap_alpha_into_mask(dest, &warped.pixmap, warped.offset)?;
+    Ok(true)
+  }
+
+  fn projected_preserve_3d_clip_rect_path(
     &self,
     clip: &ClipItem,
     transform: &Transform3D,
@@ -10408,11 +10715,9 @@ impl DisplayListRenderer {
       let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
       let (t, _valid) = self.to_skia_transform_checked(transform);
       let skia_transform = concat_transforms(parent_transform, t);
-      self
-        .canvas
-        .with_mirrored_pixmap_mut(|dest| {
-          dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
-        });
+      self.canvas.with_mirrored_pixmap_mut(|dest| {
+        dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+      });
       return Ok(());
     }
 
@@ -10488,11 +10793,9 @@ impl DisplayListRenderer {
     let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
     let (t, _valid) = self.to_skia_transform_checked(transform);
     let skia_transform = concat_transforms(parent_transform, t);
-    self
-      .canvas
-      .with_mirrored_pixmap_mut(|dest| {
-        dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
-      });
+    self.canvas.with_mirrored_pixmap_mut(|dest| {
+      dest.draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
+    });
     Ok(())
   }
 
@@ -12811,11 +13114,9 @@ impl DisplayListRenderer {
             let mut stroke = tiny_skia::Stroke::default();
             stroke.width = (emphasis.size * 0.2).max(0.6);
             stroke.line_cap = tiny_skia::LineCap::Round;
-            self
-              .canvas
-              .with_mirrored_pixmap_mut(|pixmap| {
-                pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
-              });
+            self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+              pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+            });
           }
         }
       }
@@ -12879,7 +13180,14 @@ impl DisplayListRenderer {
     let clip_mask = self.canvas.clip_mask().cloned();
     let pixmap_ref = pixmap.as_ref();
     self.canvas.with_mirrored_pixmap_mut(|dest| {
-      dest.draw_pixmap(0, 0, pixmap_ref.as_ref(), &paint, transform, clip_mask.as_ref());
+      dest.draw_pixmap(
+        0,
+        0,
+        pixmap_ref.as_ref(),
+        &paint,
+        transform,
+        clip_mask.as_ref(),
+      );
     });
 
     self.record_background_paint(background_timer);
@@ -13027,7 +13335,8 @@ impl DisplayListRenderer {
 
       let mut xs: Vec<AxisSample> = Vec::new();
       let mut ys: Vec<AxisSample> = Vec::new();
-      if xs.try_reserve_exact(tmp_w as usize).is_ok() && ys.try_reserve_exact(tmp_h as usize).is_ok()
+      if xs.try_reserve_exact(tmp_w as usize).is_ok()
+        && ys.try_reserve_exact(tmp_h as usize).is_ok()
       {
         match item.filter_quality {
           ImageFilterQuality::Nearest => {
@@ -13196,11 +13505,9 @@ impl DisplayListRenderer {
     ) else {
       return Ok(());
     };
-    self
-      .canvas
-      .with_mirrored_pixmap_mut(|pixmap| {
-        pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
-      });
+    self.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+    });
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -13640,10 +13947,7 @@ fn image_data_to_scaled_pixmap_inner(
   let max_y = src_h as f32 - 1.0;
 
   let mut xs = Vec::new();
-  if xs
-    .try_reserve_exact(target_width as usize)
-    .is_err()
-  {
+  if xs.try_reserve_exact(target_width as usize).is_err() {
     return Ok(None);
   }
   for x in 0..target_width {
@@ -13662,10 +13966,7 @@ fn image_data_to_scaled_pixmap_inner(
   }
 
   let mut ys = Vec::new();
-  if ys
-    .try_reserve_exact(target_height as usize)
-    .is_err()
-  {
+  if ys.try_reserve_exact(target_height as usize).is_err() {
     return Ok(None);
   }
   for y in 0..target_height {
@@ -18581,11 +18882,9 @@ mod tests {
     };
     let clip = renderer.canvas.clip_mask().cloned();
     let transform = renderer.canvas.transform();
-    renderer
-      .canvas
-      .with_mirrored_pixmap_mut(|pixmap| {
-        pixmap.draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_ref());
-      });
+    renderer.canvas.with_mirrored_pixmap_mut(|pixmap| {
+      pixmap.draw_pixmap(0, 0, temp.as_ref(), &paint, transform, clip.as_ref());
+    });
     Ok(())
   }
 

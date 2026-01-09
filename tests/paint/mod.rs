@@ -89,6 +89,7 @@ mod preserve_3d_blend_isolation;
 mod preserve_3d_backdrop_root_scope;
 mod preserve_3d_clip_scope;
 mod preserve_3d_clipping;
+mod preserve_3d_clip_path_projected;
 mod preserve_3d_clip_reentrancy;
 mod preserve_3d_depth_sort;
 mod preserve_3d_nested_affine;
