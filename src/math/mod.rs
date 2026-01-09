@@ -3784,6 +3784,66 @@ impl MathLayoutContext {
     let mut line_fragments: Vec<MathFragment> = Vec::new();
     let stroke = Self::rule_thickness(style);
 
+    fn emit_table_rule(fragments: &mut Vec<MathFragment>, rect: Rect, style: TableLineStyle) {
+      if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+      }
+      if !rect.x().is_finite()
+        || !rect.y().is_finite()
+        || !rect.width().is_finite()
+        || !rect.height().is_finite()
+      {
+        return;
+      }
+
+      match style {
+        TableLineStyle::None => {}
+        TableLineStyle::Solid => fragments.push(MathFragment::Rule(rect)),
+        TableLineStyle::Dashed | TableLineStyle::Dotted => {
+          let thickness = rect.width().min(rect.height());
+          if thickness <= 0.0 || !thickness.is_finite() {
+            return;
+          }
+
+          let (dash, gap) = match style {
+            TableLineStyle::Dashed => (3.0 * thickness, thickness),
+            TableLineStyle::Dotted => (thickness, thickness),
+            _ => unreachable!(),
+          };
+
+          if rect.width() >= rect.height() {
+            // Horizontal rule: dash along x axis.
+            let mut x = rect.x();
+            let end = rect.x() + rect.width();
+            while x < end {
+              let seg_w = (end - x).min(dash);
+              fragments.push(MathFragment::Rule(Rect::from_xywh(
+                x,
+                rect.y(),
+                seg_w,
+                rect.height(),
+              )));
+              x += dash + gap;
+            }
+          } else {
+            // Vertical rule: dash along y axis.
+            let mut y = rect.y();
+            let end = rect.y() + rect.height();
+            while y < end {
+              let seg_h = (end - y).min(dash);
+              fragments.push(MathFragment::Rule(Rect::from_xywh(
+                rect.x(),
+                y,
+                rect.width(),
+                seg_h,
+              )));
+              y += dash + gap;
+            }
+          }
+        }
+      }
+    }
+
     if let Some(lines) = table.column_lines.as_deref() {
       let mut x_cursor = 0.0;
       for (gap_idx, col_width) in col_widths.iter().copied().enumerate() {
@@ -3793,12 +3853,11 @@ impl MathLayoutContext {
           if !matches!(line_style, TableLineStyle::None) {
             let gap = col_gaps[gap_idx];
             let x = x_cursor + gap * 0.5 - stroke * 0.5;
-            line_fragments.push(MathFragment::Rule(Rect::from_xywh(
-              x,
-              0.0,
-              stroke,
-              height,
-            )));
+            emit_table_rule(
+              &mut line_fragments,
+              Rect::from_xywh(x, 0.0, stroke, height),
+              line_style,
+            );
           }
           x_cursor += col_gaps[gap_idx];
         }
@@ -3814,12 +3873,11 @@ impl MathLayoutContext {
           if !matches!(line_style, TableLineStyle::None) {
             let gap = row_gaps[gap_idx];
             let y = y_cursor + gap * 0.5 - stroke * 0.5;
-            line_fragments.push(MathFragment::Rule(Rect::from_xywh(
-              0.0,
-              y,
-              width,
-              stroke,
-            )));
+            emit_table_rule(
+              &mut line_fragments,
+              Rect::from_xywh(0.0, y, width, stroke),
+              line_style,
+            );
           }
           y_cursor += row_gaps[gap_idx];
         }
@@ -3851,11 +3909,39 @@ impl MathLayoutContext {
         out_baseline = out_baseline + offset.y;
 
         let outer_rect = Rect::from_xywh(0.0, 0.0, out_width.max(0.0), out_height.max(0.0));
-        fragments.push(MathFragment::StrokeRect {
-          rect: outer_rect,
-          radius: 0.0,
-          width: stroke,
-        });
+        match frame {
+          TableLineStyle::Solid => {
+            fragments.push(MathFragment::StrokeRect {
+              rect: outer_rect,
+              radius: 0.0,
+              width: stroke,
+            });
+          }
+          TableLineStyle::Dashed | TableLineStyle::Dotted => {
+            let half = stroke * 0.5;
+            emit_table_rule(
+              &mut fragments,
+              Rect::from_xywh(0.0, -half, outer_rect.width(), stroke),
+              frame,
+            );
+            emit_table_rule(
+              &mut fragments,
+              Rect::from_xywh(0.0, outer_rect.height() - half, outer_rect.width(), stroke),
+              frame,
+            );
+            emit_table_rule(
+              &mut fragments,
+              Rect::from_xywh(-half, 0.0, stroke, outer_rect.height()),
+              frame,
+            );
+            emit_table_rule(
+              &mut fragments,
+              Rect::from_xywh(outer_rect.width() - half, 0.0, stroke, outer_rect.height()),
+              frame,
+            );
+          }
+          TableLineStyle::None => {}
+        }
       }
     }
 
@@ -4868,6 +4954,49 @@ mod tests {
   }
 
   #[test]
+  fn table_dashed_and_dotted_lines_emit_multiple_rule_fragments() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let node = parse_math_from_html(
+      "<math><mtable columnlines=\"dashed\" rowlines=\"dotted\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+    let rules: Vec<&Rect> = layout
+      .fragments
+      .iter()
+      .filter_map(|f| match f {
+        MathFragment::Rule(r) => Some(r),
+        _ => None,
+      })
+      .collect();
+    assert!(
+      rules.len() > 2,
+      "expected dashed/dotted table lines to produce multiple rule fragments, got {} ({rules:?})",
+      rules.len()
+    );
+
+    let mut min_x = f32::INFINITY;
+    let mut max_x = -f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_y = -f32::INFINITY;
+    for rect in &rules {
+      min_x = min_x.min(rect.x());
+      max_x = max_x.max(rect.x());
+      min_y = min_y.min(rect.y());
+      max_y = max_y.max(rect.y());
+    }
+
+    assert!(
+      (max_x - min_x).abs() > 0.5,
+      "expected rule fragments to span multiple x positions (column + row rules), got min_x={min_x} max_x={max_x} ({rules:?})"
+    );
+    assert!(
+      (max_y - min_y).abs() > 0.5,
+      "expected rule fragments to span multiple y positions (column + row rules), got min_y={min_y} max_y={max_y} ({rules:?})"
+    );
+  }
+
+  #[test]
   fn table_frame_emits_stroke_rect_fragment() {
     let style = ComputedStyle::default();
     let ctx = FontContext::with_config(FontConfig::bundled_only());
@@ -4895,6 +5024,46 @@ mod tests {
     assert!(
       layout_with.height > layout_without.height,
       "expected frame to increase table height ({} -> {})",
+      layout_without.height,
+      layout_with.height
+    );
+  }
+
+  #[test]
+  fn table_dashed_frame_emits_rule_fragments() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let without_frame = parse_math_from_html(
+      "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+    );
+    let with_frame = parse_math_from_html(
+      "<math><mtable frame=\"dashed\" framespacing=\"0 0\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+    );
+    let layout_without = layout_mathml(&without_frame, &style, &ctx);
+    let layout_with = layout_mathml(&with_frame, &style, &ctx);
+    assert!(
+      !layout_with
+        .fragments
+        .iter()
+        .any(|f| matches!(f, MathFragment::StrokeRect { .. })),
+      "expected dashed frame to emit rule fragments rather than StrokeRect"
+    );
+    assert!(
+      layout_with
+        .fragments
+        .iter()
+        .any(|f| matches!(f, MathFragment::Rule(_))),
+      "expected dashed frame to emit Rule fragments"
+    );
+    assert!(
+      layout_with.width > layout_without.width,
+      "expected dashed frame to increase table width ({} -> {})",
+      layout_without.width,
+      layout_with.width
+    );
+    assert!(
+      layout_with.height > layout_without.height,
+      "expected dashed frame to increase table height ({} -> {})",
       layout_without.height,
       layout_with.height
     );
