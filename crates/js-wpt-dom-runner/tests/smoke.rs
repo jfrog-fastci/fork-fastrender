@@ -63,6 +63,11 @@ fn runs_any_js_in_window_realm() {
 }
 
 #[test]
+fn runs_setinterval_and_clearinterval() {
+  assert_wpt_pass("smoke/interval_cancel.window.js");
+}
+
+#[test]
 fn meta_timeout_long_overrides_runner_default_timeout() {
   for (backend, result) in run_test_id_all_backends(
       "smoke/timeout_long.window.js",

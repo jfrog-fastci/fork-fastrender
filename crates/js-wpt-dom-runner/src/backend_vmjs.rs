@@ -433,10 +433,18 @@ impl Env {
 }
 
 struct TimerState {
+  kind: TimerKind,
+  interval: Option<Duration>,
   callback: Value,
   this: Value,
   args: Vec<Value>,
   schedule_seq: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimerKind {
+  Timeout,
+  Interval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -490,6 +498,35 @@ impl EventLoop {
   }
 
   fn set_timeout(&mut self, callback: Value, this: Value, delay: Duration, args: Vec<Value>) -> i32 {
+    self.add_timer(TimerKind::Timeout, callback, this, delay, None, args)
+  }
+
+  fn set_interval(
+    &mut self,
+    callback: Value,
+    this: Value,
+    interval: Duration,
+    args: Vec<Value>,
+  ) -> i32 {
+    self.add_timer(
+      TimerKind::Interval,
+      callback,
+      this,
+      interval,
+      Some(interval),
+      args,
+    )
+  }
+
+  fn add_timer(
+    &mut self,
+    kind: TimerKind,
+    callback: Value,
+    this: Value,
+    delay: Duration,
+    interval: Option<Duration>,
+    args: Vec<Value>,
+  ) -> i32 {
     let id = self.next_timer_id;
     self.next_timer_id = self.next_timer_id.wrapping_add(1);
     let due = Instant::now() + delay;
@@ -499,6 +536,8 @@ impl EventLoop {
     self.timers.insert(
       id,
       TimerState {
+        kind,
+        interval,
         callback,
         this,
         args,
@@ -541,8 +580,32 @@ impl EventLoop {
       }
 
       self.task_queue.push_back((timer.callback, timer.this, timer.args.clone()));
-      // One-shot timers.
-      self.timers.remove(&id);
+
+      match timer.kind {
+        TimerKind::Timeout => {
+          self.timers.remove(&id);
+        }
+        TimerKind::Interval => {
+          // Avoid an infinite loop when the interval is 0: rescheduling a timer with the same
+          // `due` timestamp would cause `enqueue_due_timers` to repeatedly dequeue/re-enqueue the
+          // same interval in a single pass. A 1ms minimum keeps the runner cooperative while still
+          // allowing "as fast as possible" intervals for tests.
+          let interval = timer.interval.unwrap_or(Duration::from_millis(0));
+          let interval = if interval.is_zero() {
+            Duration::from_millis(1)
+          } else {
+            interval
+          };
+          let next_due = now + interval;
+          let next_seq = self.next_timer_seq;
+          self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
+
+          if let Some(timer) = self.timers.get_mut(&id) {
+            timer.schedule_seq = next_seq;
+          }
+          self.timer_queue.push(Reverse((next_due, next_seq, id)));
+        }
+      }
     }
   }
 }
@@ -621,6 +684,12 @@ impl JsWptRuntime {
     rt.env.set("setTimeout", Value::Object(set_timeout));
     let clear_timeout = rt.alloc_native_function(native_clear_timeout).expect("alloc clearTimeout");
     rt.env.set("clearTimeout", Value::Object(clear_timeout));
+    let set_interval = rt.alloc_native_function(native_set_interval).expect("alloc setInterval");
+    rt.env.set("setInterval", Value::Object(set_interval));
+    let clear_interval = rt
+      .alloc_native_function(native_clear_interval)
+      .expect("alloc clearInterval");
+    rt.env.set("clearInterval", Value::Object(clear_interval));
     let queue_microtask = rt
       .alloc_native_function(native_queue_microtask)
       .expect("alloc queueMicrotask");
@@ -1599,6 +1668,34 @@ fn native_set_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Re
   Ok(Value::Number(id as f64))
 }
 
+fn native_set_interval(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let callback = args.get(0).copied().unwrap_or(Value::Undefined);
+  let interval_ms = match args.get(1).copied().unwrap_or(Value::Number(0.0)) {
+    Value::Number(n) => n.max(0.0) as u64,
+    _ => 0,
+  };
+
+  let Value::Object(obj) = callback else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: setInterval callback is not callable",
+    )?)));
+  };
+  if !rt.callables.contains_key(&obj) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: setInterval callback is not callable",
+    )?)));
+  }
+
+  let extra_args = args.get(2..).unwrap_or(&[]).to_vec();
+  let id = rt.event_loop.set_interval(
+    callback,
+    Value::Object(rt.global_object),
+    Duration::from_millis(interval_ms),
+    extra_args,
+  );
+  Ok(Value::Number(id as f64))
+}
+
 fn native_clear_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
   let id = match args.get(0).copied().unwrap_or(Value::Number(0.0)) {
     Value::Number(n) => n as i32,
@@ -1606,6 +1703,11 @@ fn native_clear_timeout(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> 
   };
   rt.event_loop.clear_timeout(id);
   Ok(Value::Undefined)
+}
+
+fn native_clear_interval(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  // In HTML, `clearInterval` and `clearTimeout` share the same timer ID space.
+  native_clear_timeout(rt, this, args)
 }
 
 fn native_queue_microtask(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
