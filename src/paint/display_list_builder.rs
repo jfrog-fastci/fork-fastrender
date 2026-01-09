@@ -758,6 +758,7 @@ impl DisplayListBuilder {
       ClipShape::Rect { rect, .. } => Some(*rect),
       ClipShape::Path { path } => Some(path.bounds()),
       ClipShape::Text { runs } => Some(crate::paint::display_list::text_runs_bounds(runs.as_ref())),
+      ClipShape::AlphaMask { rect, .. } => Some(*rect),
     }
   }
 
@@ -2963,6 +2964,10 @@ impl DisplayListBuilder {
       },
       None => None,
     };
+    let clip_path_mask = root_style.and_then(|style| match &style.clip_path {
+      crate::style::types::ClipPath::Url(src) => self.decode_clip_path_url(src, style, root_border_bounds),
+      _ => None,
+    });
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
     }
@@ -3022,6 +3027,11 @@ impl DisplayListBuilder {
     let mut child_visibility = context_visibility;
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
+    } else if clip_path_mask.is_some() {
+      // Rasterized fragment-only `clip-path: url(#id)` masks always cover at most the target
+      // reference box (we render a rect and apply the clip-path), so the border bounds are a safe
+      // hard-clip rectangle for culling purposes.
+      child_visibility = child_visibility.intersect(Some(root_border_bounds), true);
     }
     if let Some(bounds) = clip_rect.as_ref().and_then(|clip| Self::clip_bounds(clip)) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
@@ -3197,7 +3207,8 @@ impl DisplayListBuilder {
       || !backdrop_filters.is_empty()
       || has_opacity
       || mask.is_some()
-      || clip_path.is_some();
+      || clip_path.is_some()
+      || clip_path_mask.is_some();
 
     let stacking_push_index = self.list.len();
     self
@@ -3231,6 +3242,14 @@ impl DisplayListBuilder {
     if let Some(path) = clip_path {
       self.list.push(DisplayItem::PushClip(ClipItem {
         shape: ClipShape::Path { path },
+      }));
+      pushed_clips += 1;
+    } else if let Some(image) = clip_path_mask {
+      self.list.push(DisplayItem::PushClip(ClipItem {
+        shape: ClipShape::AlphaMask {
+          image,
+          rect: root_border_bounds,
+        },
       }));
       pushed_clips += 1;
     }
@@ -3972,6 +3991,13 @@ impl DisplayListBuilder {
     crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, mask_id, width, height)
   }
 
+  fn inline_svg_for_svg_clip_path(&self, clip_id: &str, bounds: Rect) -> Option<String> {
+    let defs = self.svg_id_defs.as_ref()?;
+    let width = bounds.width().ceil().max(1.0) as u32;
+    let height = bounds.height().ceil().max(1.0) as u32;
+    crate::paint::svg_mask_image::inline_svg_for_clip_path_id(defs, clip_id, width, height)
+  }
+
   fn decode_mask_image_url(
     &self,
     src: &str,
@@ -4003,6 +4029,34 @@ impl DisplayListBuilder {
       None,
       false,
     )
+  }
+
+  fn decode_clip_path_url(
+    &self,
+    src: &str,
+    style: &ComputedStyle,
+    bounds: Rect,
+  ) -> Option<Arc<ImageData>> {
+    let trimmed = trim_ascii_whitespace(src);
+    if let Some(id) = trimmed.strip_prefix('#') {
+      if let Some(svg) = self.inline_svg_for_svg_clip_path(id, bounds) {
+        return self.decode_image(
+          &svg,
+          Some(style),
+          true,
+          CrossOriginAttribute::None,
+          None,
+          false,
+        );
+      }
+      // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
+      // the id via `svg_id_defs`, treat the clip-path as missing instead of attempting an
+      // external fetch.
+      return None;
+    }
+    // External clip-path URLs require fetching and parsing external SVG documents, which is not
+    // supported by the paint pipeline yet.
+    None
   }
 
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
@@ -12225,6 +12279,30 @@ mod tests {
   }
 
   #[test]
+  fn clip_path_fragment_only_urls_do_not_trim_non_ascii_whitespace() {
+    let nbsp = "\u{00A0}";
+    let defs = HashMap::from([(
+      "clip".to_string(),
+      r#"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><rect width="100%" height="100%"/></clipPath>"#
+        .to_string(),
+    )]);
+    let builder = DisplayListBuilder::new().with_svg_id_defs(Some(Arc::new(defs)));
+    let style = ComputedStyle::default();
+    let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+
+    assert!(
+      builder.decode_clip_path_url("#clip", &style, bounds).is_some(),
+      "expected fragment-only URL to resolve with SVG id defs"
+    );
+    assert!(
+      builder
+        .decode_clip_path_url(&format!("#clip{nbsp}"), &style, bounds)
+        .is_none(),
+      "expected NBSP-suffixed fragment to not match existing SVG ids"
+    );
+  }
+
+  #[test]
   fn non_ascii_whitespace_emit_text_with_style_does_not_trim_nbsp() {
     let mut builder = DisplayListBuilder::new();
     let style = ComputedStyle::default();
@@ -14209,6 +14287,38 @@ mod tests {
       has_paint_between(items, push_clip, pop_clip),
       "expected paint between clip operations inside stacking context"
     );
+  }
+
+  #[test]
+  fn clip_path_url_clip_emits_alpha_mask_clip() {
+    let defs = HashMap::from([(
+      "clip".to_string(),
+      r#"<clipPath xmlns="http://www.w3.org/2000/svg" id="clip"><rect x="0" y="0" width="10" height="20"/></clipPath>"#
+        .to_string(),
+    )]);
+
+    let mut style = ComputedStyle::default();
+    style.clip_path = ClipPath::Url("#clip".to_string());
+    style.background_color = Rgba::RED;
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let list = DisplayListBuilder::new()
+      .with_svg_id_defs(Some(Arc::new(defs)))
+      .build_with_stacking_tree(&fragment);
+    let items = list.items();
+    let (_push_sc, push_clip, _pop_clip, _pop_sc) = stacking_clip_order(items);
+
+    let DisplayItem::PushClip(clip) = &items[push_clip] else {
+      panic!("expected push clip display item");
+    };
+    match &clip.shape {
+      ClipShape::AlphaMask { rect, .. } => assert_eq!(*rect, fragment.bounds),
+      other => panic!("expected alpha mask clip, got {other:?}"),
+    }
   }
 
   #[test]

@@ -247,6 +247,7 @@ impl DisplayItem {
         ClipShape::Rect { rect, .. } => *rect,
         ClipShape::Path { path } => path.bounds(),
         ClipShape::Text { runs } => text_runs_bounds(runs.as_ref()),
+        ClipShape::AlphaMask { rect, .. } => *rect,
       }),
       DisplayItem::TextDecoration(item) => Some(item.bounds),
       // Stack operations don't have bounds
@@ -1803,6 +1804,18 @@ pub enum ClipShape {
   Text {
     /// Text runs defining the clip region (unioned together).
     runs: Arc<[TextItem]>,
+  },
+  /// Clip to an alpha mask image, positioned in the display list coordinate space.
+  ///
+  /// This is primarily used to support fragment-only `clip-path: url(#id)` by rasterizing the
+  /// referenced SVG `<clipPath>` into an alpha mask and intersecting it with the current clip
+  /// stack.
+  AlphaMask {
+    /// Decoded alpha mask image (RGBA; alpha channel is used).
+    image: Arc<ImageData>,
+    /// The target rectangle in CSS px where the mask image is mapped before applying any active
+    /// canvas transform.
+    rect: Rect,
   },
 }
 

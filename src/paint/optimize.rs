@@ -513,6 +513,7 @@ impl DisplayListOptimizer {
             crate::paint::display_list::ClipShape::Text { runs } => {
               crate::paint::display_list::text_runs_bounds(runs.as_ref())
             }
+            crate::paint::display_list::ClipShape::AlphaMask { rect, .. } => *rect,
           };
           let can_cull = if let Some(mut world_bounds) =
             Self::transform_rect_3d_z0(&transform_state.current_3d, local_bounds)
@@ -1028,6 +1029,7 @@ impl DisplayListOptimizer {
       crate::paint::display_list::ClipShape::Text { runs } => {
         crate::paint::display_list::text_runs_bounds(runs.as_ref())
       }
+      crate::paint::display_list::ClipShape::AlphaMask { rect, .. } => *rect,
     }
   }
 

@@ -1393,6 +1393,139 @@ impl Canvas {
     Ok(())
   }
 
+  /// Sets a clip mask from the alpha channel of an image.
+  ///
+  /// The provided `image` is mapped to `rect` in the canvas coordinate space before applying the
+  /// current transform (matching how images are positioned in the display list). The resulting
+  /// alpha coverage is intersected with any existing clip mask.
+  pub fn set_clip_image_mask(&mut self, image: &Pixmap, rect: Rect, quality: FilterQuality) -> Result<()> {
+    let pixmap_w = self.pixmap.width();
+    let pixmap_h = self.pixmap.height();
+    if pixmap_w == 0 || pixmap_h == 0 {
+      self.current_state.clip_rect = Some(Rect::ZERO);
+      self.current_state.clip_mask = None;
+      return Ok(());
+    }
+    if rect.width() <= 0.0
+      || rect.height() <= 0.0
+      || !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return Ok(());
+    }
+    if image.width() == 0 || image.height() == 0 {
+      return Ok(());
+    }
+
+    let transform = self.current_state.transform;
+    let clip_bounds = if transform == Transform::identity() {
+      rect
+    } else {
+      Self::transform_rect_aabb(rect, transform)
+    };
+    let base_clip = match self.current_state.clip_rect {
+      Some(existing) => existing.intersection(clip_bounds).unwrap_or(Rect::ZERO),
+      None => clip_bounds,
+    };
+    self.current_state.clip_rect = Some(base_clip);
+
+    // Render the transformed image mask into a temporary RGBA surface covering the transformed
+    // clip bounds, then extract its alpha into a full-size mask for intersection with existing
+    // clips.
+    let new_mask = (|| -> RenderResult<Option<Mask>> {
+      let Some(mut mask) = Mask::new(pixmap_w, pixmap_h) else {
+        return Ok(None);
+      };
+      mask.data_mut().fill(0);
+
+      if base_clip.width() <= 0.0 || base_clip.height() <= 0.0 {
+        return Ok(Some(mask));
+      }
+
+      let pad = match quality {
+        FilterQuality::Nearest => 0,
+        _ => 1,
+      };
+      let mut x0 = (clip_bounds.min_x().floor() as i32).saturating_sub(pad);
+      let mut y0 = (clip_bounds.min_y().floor() as i32).saturating_sub(pad);
+      let mut x1 = (clip_bounds.max_x().ceil() as i32).saturating_add(pad);
+      let mut y1 = (clip_bounds.max_y().ceil() as i32).saturating_add(pad);
+      let w_i32 = pixmap_w as i32;
+      let h_i32 = pixmap_h as i32;
+      x0 = x0.clamp(0, w_i32);
+      y0 = y0.clamp(0, h_i32);
+      x1 = x1.clamp(0, w_i32);
+      y1 = y1.clamp(0, h_i32);
+      if x1 <= x0 || y1 <= y0 {
+        return Ok(Some(mask));
+      }
+      let region_w = (x1 - x0) as u32;
+      let region_h = (y1 - y0) as u32;
+      if region_w == 0 || region_h == 0 {
+        return Ok(Some(mask));
+      }
+
+      let Some(mut tmp) = new_pixmap(region_w, region_h) else {
+        return Ok(Some(mask));
+      };
+      tmp.data_mut().fill(0);
+
+      let scale_x = rect.width() / image.width() as f32;
+      let scale_y = rect.height() / image.height() as f32;
+      if !scale_x.is_finite() || !scale_y.is_finite() {
+        return Ok(Some(mask));
+      }
+
+      // Map source image pixel coordinates into the canvas's pre-transform coordinate space, then
+      // apply the current canvas transform to land in pixmap space.
+      let dest_map = Transform::from_row(scale_x, 0.0, 0.0, scale_y, rect.x(), rect.y());
+      let full_transform = concat_transforms(transform, dest_map);
+      // Translate so the temporary pixmap's origin aligns with (x0, y0) in the full pixmap.
+      let tmp_transform = concat_transforms(
+        Transform::from_translate(-(x0 as f32), -(y0 as f32)),
+        full_transform,
+      );
+
+      let paint = PixmapPaint {
+        opacity: 1.0,
+        blend_mode: SkiaBlendMode::SourceOver,
+        quality,
+      };
+      tmp.draw_pixmap(0, 0, image.as_ref(), &paint, tmp_transform, None);
+      let region_mask = Mask::from_pixmap(tmp.as_ref(), MaskType::Alpha);
+
+      check_active(RenderStage::Paint)?;
+      let src = region_mask.data();
+      let dst = mask.data_mut();
+      let src_stride = region_w as usize;
+      let dst_stride = pixmap_w as usize;
+      let dst_x = x0 as usize;
+      let dst_y = y0 as usize;
+      let mut deadline_counter = 0usize;
+      for row in 0..region_h as usize {
+        check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+        let src_off = row * src_stride;
+        let dst_off = (dst_y + row) * dst_stride + dst_x;
+        dst[dst_off..dst_off + src_stride].copy_from_slice(&src[src_off..src_off + src_stride]);
+      }
+
+      Ok(Some(mask))
+    })()?;
+
+    self.current_state.clip_mask = match (new_mask, self.current_state.clip_mask.take()) {
+      (Some(mut next), Some(existing)) => {
+        combine_masks(&mut next, existing.as_ref())?;
+        Some(Rc::new(next))
+      }
+      (Some(mask), None) => Some(Rc::new(mask)),
+      (None, existing) => existing,
+    };
+
+    Ok(())
+  }
+
   /// Sets a clip mask that is the union of the provided text runs.
   ///
   /// This is used for `background-clip: text` / `-webkit-background-clip: text` by rasterizing
@@ -3968,6 +4101,36 @@ mod tests {
 
     assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
     assert_eq!(pixel(&pixmap, 0, 0), (255, 255, 255, 255));
+  }
+
+  #[test]
+  fn clip_image_mask_uses_alpha_channel() {
+    let mut canvas = Canvas::new(8, 4, Rgba::WHITE).unwrap();
+    let mut mask = Pixmap::new(4, 4).unwrap();
+    mask.data_mut().fill(0);
+    for y in 0..4u32 {
+      for x in 0..2u32 {
+        let idx = ((y * 4 + x) * 4) as usize;
+        mask.data_mut()[idx + 3] = 255;
+      }
+    }
+
+    canvas
+      .set_clip_image_mask(&mask, Rect::from_xywh(2.0, 0.0, 4.0, 4.0), FilterQuality::Nearest)
+      .unwrap();
+    canvas.draw_rect(Rect::from_xywh(0.0, 0.0, 8.0, 4.0), Rgba::RED);
+    let pixmap = canvas.into_pixmap();
+
+    assert_eq!(
+      pixel(&pixmap, 2, 1),
+      (255, 0, 0, 255),
+      "expected left half of masked rect to draw"
+    );
+    assert_eq!(
+      pixel(&pixmap, 5, 1),
+      (255, 255, 255, 255),
+      "expected right half of masked rect to be clipped out"
+    );
   }
 
   #[test]

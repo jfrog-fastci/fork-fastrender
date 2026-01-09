@@ -143,6 +143,7 @@ use std::thread::ThreadId;
 use std::time::Duration;
 use std::time::Instant;
 use tiny_skia::BlendMode as SkiaBlendMode;
+use tiny_skia::FilterQuality;
 use tiny_skia::GradientStop as SkiaGradientStop;
 use tiny_skia::IntSize;
 use tiny_skia::Mask;
@@ -10921,6 +10922,7 @@ impl DisplayListRenderer {
         parent_transform,
         warp_enabled,
       ),
+      ClipShape::AlphaMask { .. } => Ok(false),
     }
   }
 
@@ -14535,9 +14537,10 @@ impl DisplayListRenderer {
   }
 
   fn push_clip(&mut self, clip: &ClipItem) -> Result<()> {
-    let diag = self.clip_mask_diagnostics.as_ref();
-    let timer = diag.map(|_| Instant::now());
+    let diag = self.clip_mask_diagnostics.clone();
+    let timer = diag.as_ref().map(|_| Instant::now());
     let pixels = diag
+      .as_ref()
       .map(|_| u64::from(self.canvas.width()).saturating_mul(u64::from(self.canvas.height())))
       .unwrap_or(0);
 
@@ -14556,9 +14559,18 @@ impl DisplayListRenderer {
         let scaled: Vec<TextItem> = runs.iter().map(|run| self.scale_text_item(run)).collect();
         self.canvas.set_clip_text(&scaled)?;
       }
+      ClipShape::AlphaMask { image, rect } => {
+        if let Some(pixmap) = self.image_data_to_pixmap(image.as_ref())? {
+          self.canvas.set_clip_image_mask(
+            pixmap.as_ref(),
+            self.ds_rect(*rect),
+            FilterQuality::Bilinear,
+          )?;
+        }
+      }
     }
 
-    if let (Some(diag), Some(start)) = (diag, timer) {
+    if let (Some(diag), Some(start)) = (diag.as_ref(), timer) {
       diag.record(pixels, start.elapsed());
     }
     Ok(())

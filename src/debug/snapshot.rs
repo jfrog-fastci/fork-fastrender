@@ -1352,6 +1352,14 @@ fn snapshot_clip(clip: &crate::paint::display_list::ClipItem) -> serde_json::Val
       "bounds": snapshot_rect(crate::paint::display_list::text_runs_bounds(runs.as_ref())),
       "runs": runs.len(),
     }),
+    ClipShape::AlphaMask { rect, image } => serde_json::json!({
+      "shape": "alpha_mask",
+      "rect": snapshot_rect(*rect),
+      "image": {
+        "width": image.width,
+        "height": image.height,
+      }
+    }),
   }
 }
 

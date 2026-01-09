@@ -1036,6 +1036,10 @@ fn display_item_value(item: &DisplayItem) -> Value {
           crate::paint::display_list::ClipShape::Rect { rect, .. } => rect_value(*rect, None),
           crate::paint::display_list::ClipShape::Path { .. } => Value::String("path".into()),
           crate::paint::display_list::ClipShape::Text { .. } => Value::String("text".into()),
+          crate::paint::display_list::ClipShape::AlphaMask { rect, .. } => map_from_pairs(vec![
+            ("type", Value::String("alpha_mask".into())),
+            ("rect", rect_value(*rect, None)),
+          ]),
         },
       ),
     ]),
