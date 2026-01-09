@@ -184,9 +184,7 @@ impl BrowserWorkerRuntime {
         pos_css,
         button: _,
       } => {
-        // Hover state is currently ignored by the UI runtime; keep the handler in place so tests
-        // can exercise it once UI wiring lands.
-        let _ = (tab_id, pos_css);
+        self.pointer_move(tab_id, pos_css);
       }
       UiToWorker::PointerDown {
         tab_id,
@@ -515,6 +513,27 @@ impl BrowserWorkerRuntime {
     );
     if changed {
       tab.dirty = true;
+    }
+  }
+
+  fn pointer_move(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let (Some(dom), Some(prepared)) = (tab.dom.as_mut(), tab.prepared.as_ref()) else {
+      return;
+    };
+    let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let changed = tab.interaction.pointer_move(
+      dom,
+      prepared.box_tree(),
+      prepared.fragment_tree(),
+      &tab.scroll,
+      viewport_point,
+    );
+    if changed {
+      tab.dirty = true;
+      self.render_current(tab_id, RepaintReason::Input);
     }
   }
 

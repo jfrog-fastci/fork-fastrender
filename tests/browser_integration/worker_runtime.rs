@@ -27,6 +27,67 @@ fn drain_after_frame(h: &WorkerHarness, mut events: Vec<WorkerToUiEvent>) -> Vec
 }
 
 #[test]
+fn pointer_move_sets_hover_and_repaints() {
+  let dir = tempdir().expect("temp dir");
+  let path = dir.path().join("hover.html");
+  std::fs::write(
+    &path,
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #box { width:64px; height:64px; background: rgb(255, 0, 0); }
+            #box[data-fastr-hover="true"] { background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="box"></div>
+        </body>
+      </html>
+    "#,
+  )
+  .unwrap();
+  let url = file_url(&path);
+
+  let h = WorkerHarness::spawn();
+  let tab_id = create_tab(&h, (256, 256));
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+  assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [255, 0, 0, 255]);
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::PointerMove {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::None,
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+  assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [0, 255, 0, 255]);
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::PointerMove {
+      tab_id,
+      pos_css: (200.0, 200.0),
+      button: PointerButton::None,
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+  assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [255, 0, 0, 255]);
+}
+
+#[test]
 fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
   let dir = tempdir().expect("temp dir");
   let path = dir.path().join("select.html");
