@@ -65,17 +65,36 @@ impl Default for PaginateOptions {
 const EPSILON: f32 = 0.01;
 
 fn html_and_body_box_ids(node: &FragmentNode) -> (Option<usize>, Option<usize>) {
-  // Synthetic fragment trees (mostly unit tests) sometimes wrap the true root element in a
-  // single-child viewport fragment without a `box_id`. In renderer-produced trees, the root
-  // fragment is the root element itself.
-  let html = if node.box_id().is_none() && node.children.len() == 1 {
-    node.children.first().unwrap_or(node)
-  } else {
-    node
-  };
-  let html_id = html.box_id();
-  let body_id = html_id.and_then(|id| id.checked_add(1));
-  (html_id, body_id)
+  // Renderer-produced fragment trees use the root element (`<html>`) as the tree root, but
+  // pagination can introduce synthetic wrappers (e.g. the per-page document wrapper). Those
+  // wrappers may contain multiple children (page content + repeated `position: fixed` fragments),
+  // so we can't rely on a single-child unwrap.
+  //
+  // Instead, find the first non-fixed DOM-backed fragment in tree order and treat it as the HTML
+  // box.
+  if let Some(html_id) = node.box_id() {
+    return (Some(html_id), html_id.checked_add(1));
+  }
+
+  let mut stack: Vec<&FragmentNode> = Vec::new();
+  stack.push(node);
+  while let Some(current) = stack.pop() {
+    if current
+      .style
+      .as_deref()
+      .is_some_and(|style| matches!(style.position, Position::Fixed))
+    {
+      continue;
+    }
+    if let Some(html_id) = current.box_id() {
+      return (Some(html_id), html_id.checked_add(1));
+    }
+    for child in current.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  (None, None)
 }
 
 fn subtree_has_in_flow_content(

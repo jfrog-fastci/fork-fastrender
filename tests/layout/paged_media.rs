@@ -1024,6 +1024,35 @@ fn multicol_pagination_uses_physical_height() {
 }
 
 #[test]
+fn trailing_pages_with_only_fixed_content_are_suppressed() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0 0 500px 0; }
+          .header { position: fixed; top: 0; left: 0; height: 20px; }
+          .content { height: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">FixedHeader</div>
+        <div class="content">Content</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(page_roots.len(), 1, "trailing margin should not force an empty extra page");
+}
+
+#[test]
 fn margin_box_content_is_positioned_in_margins() {
   let html = r#"
     <html>
