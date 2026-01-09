@@ -4505,7 +4505,7 @@ impl InlineFormattingContext {
         }
         let run_len = end - idx;
         let min_len = match style.text_combine_upright {
-          TextCombineUpright::Digits(_) => 2,
+          TextCombineUpright::Digits(_) => 1,
           TextCombineUpright::All => 1,
           TextCombineUpright::None => usize::MAX,
         };

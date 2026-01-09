@@ -1,4 +1,5 @@
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use fastrender::style::types::TextOrientation;
 use fastrender::{FastRender, FontConfig};
 
 fn collect_text(node: &FragmentNode, out: &mut String) {
@@ -123,6 +124,55 @@ fn text_combine_upright_is_measured_as_1em_square_with_centered_baseline() {
 }
 
 #[test]
+fn text_combine_upright_digits_combines_single_digit() {
+  let html = r#"
+    <html>
+      <body style="margin:0">
+        <div style="writing-mode: vertical-rl; font-family: 'DejaVu Sans', sans-serif; font-size: 20px; line-height: 2; width: 200px; height: 200px">
+          A<span style="text-combine-upright: digits 2">2</span>B
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("build renderer");
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 400, 400)
+    .expect("layout document");
+
+  let frag = find_first_text_fragment(&fragments.root, "2").expect("combined digit fragment");
+  let style = frag.style.as_ref().expect("fragment style");
+  assert_eq!(style.text_orientation, TextOrientation::Upright);
+
+  let (baseline_offset, bounds) = match &frag.content {
+    FragmentContent::Text { baseline_offset, .. } => (*baseline_offset, frag.bounds),
+    other => panic!("expected FragmentContent::Text, got {other:?}"),
+  };
+
+  // In vertical writing mode, `Text` fragment bounds are (block_size, inline_advance).
+  let expected = 20.0;
+  assert!(
+    (bounds.width() - expected).abs() < 0.2,
+    "expected combined fragment to be 1em wide: got {:.3} (bounds={bounds:?})",
+    bounds.width()
+  );
+  assert!(
+    (bounds.height() - expected).abs() < 0.2,
+    "expected combined fragment to advance 1em: got {:.3} (bounds={bounds:?})",
+    bounds.height()
+  );
+  assert!(
+    (baseline_offset - bounds.width() * 0.5).abs() < 0.6,
+    "expected baseline centered: baseline_offset={baseline_offset:.3} width={:.3}",
+    bounds.width()
+  );
+}
+
+#[test]
 fn text_combine_upright_counts_as_a_single_unit_for_line_breaking() {
   // Constrain the inline size (physical height in vertical writing mode) to 2em.
   // With tate-chu-yoko, "A12" should fit in the first line box and "B" should wrap.
@@ -145,4 +195,3 @@ fn text_combine_upright_counts_as_a_single_unit_for_line_breaking() {
 
   assert_eq!(lines, ["A12", "B"]);
 }
-
