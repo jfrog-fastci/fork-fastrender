@@ -136,7 +136,20 @@ fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
       };
       to_js_record(rt, ctx, key_ty, value_ty, entries, limits, typedef_stack)
     }
-    IdlType::Promise(_) => Err(rt.throw_type_error("promise return values are not supported yet")),
+    IdlType::Promise(_inner) => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let v = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_object(v) {
+          return Err(rt.throw_type_error("platform object is not an object"));
+        }
+        Ok(v)
+      }
+      _ => Err(rt.throw_type_error(
+        "promise return values require a platform object handle",
+      )),
+    },
   }
 }
 
@@ -927,6 +940,19 @@ mod tests {
       msg.contains("platform object is not an object"),
       "expected objectness error message, got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn promise_return_allows_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("Promise<DOMString>")?;
+    let promise_obj = rt.alloc_object_value()?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(promise_obj));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert_eq!(out, promise_obj);
     Ok(())
   }
 
