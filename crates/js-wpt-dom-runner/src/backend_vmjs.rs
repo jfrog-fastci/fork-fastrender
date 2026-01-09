@@ -934,7 +934,7 @@ impl JsWptRuntime {
     // Reuse the Node prototype for DOM elements created by the runner.
     self.dom_element_proto = Some(node_proto);
 
-    // `document` object: Node + createElement + URL + body.
+    // `document` object: Node + createElement + URL.
     let document = self.alloc_object()?;
     self.heap.object_set_prototype(document, Some(node_proto))?;
     self.event_targets.insert(
@@ -952,16 +952,54 @@ impl JsWptRuntime {
     };
     self.define_data_prop(document, create_element_key, Value::Object(create_element))?;
 
+    // Minimal document structure: <html><head></head><body></body></html>.
+    //
+    // Only a handful of WPT smoke tests rely on `document.head`/`document.body`/`document.documentElement`;
+    // the rest of the vm-js runner uses `document.body` as the root for DOM mutation/selector tests.
+    let document_element = self.alloc_dom_element("html")?;
+    let head = self.alloc_dom_element("head")?;
     let body = self.alloc_dom_element("body")?;
     self.document_body = Some(body);
-    // For event dispatch, treat `document` as the parent of the body element.
-    if let Some(state) = self.event_targets.get_mut(&body) {
+
+    // Wire DOM tree parent/children pointers for selector APIs / `childNodes`.
+    if let Some(state) = self.dom_nodes.get_mut(&document_element) {
+      state.children.push(head);
+      state.children.push(body);
+    }
+    if let Some(state) = self.dom_nodes.get_mut(&head) {
+      state.parent = Some(document_element);
+    }
+    if let Some(state) = self.dom_nodes.get_mut(&body) {
+      state.parent = Some(document_element);
+    }
+    self.update_dom_child_nodes(document_element)?;
+
+    // Wire EventTarget parent pointers so event dispatch can traverse:
+    // window -> document -> html -> (head/body) -> descendants.
+    if let Some(state) = self.event_targets.get_mut(&document_element) {
       state.parent = Some(document);
     }
+    if let Some(state) = self.event_targets.get_mut(&head) {
+      state.parent = Some(document_element);
+    }
+    if let Some(state) = self.event_targets.get_mut(&body) {
+      state.parent = Some(document_element);
+    }
+
+    let document_element_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("documentElement")?)
+    };
+    let head_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("head")?)
+    };
     let body_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("body")?)
     };
+    self.define_data_prop(document, document_element_key, Value::Object(document_element))?;
+    self.define_data_prop(document, head_key, Value::Object(head))?;
     self.define_data_prop(document, body_key, Value::Object(body))?;
 
     self.env.set("document", Value::Object(document));
@@ -1163,7 +1201,8 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("tagName")?)
     };
-    let tag_value = self.alloc_string_value(tag_name)?;
+    // HTML `tagName` is ASCII uppercased in browsers.
+    let tag_value = self.alloc_string_value(&tag_name.to_ascii_uppercase())?;
     self.define_data_prop(obj, tag_key, tag_value)?;
 
     // Treat DOM elements as `EventTarget`s so they can participate in event dispatch paths.
@@ -3065,6 +3104,7 @@ fn dom_matches_selector(
   element: GcObject,
   selector: &DomSelector,
   scope: GcObject,
+  allow_self_without_scope: bool,
 ) -> Result<bool, JsError> {
   if selector.compounds.is_empty() {
     return Ok(false);
@@ -3073,6 +3113,9 @@ fn dom_matches_selector(
   let mut current = element;
   let right = selector.compounds.last().expect("non-empty compounds");
   if !dom_compound_matches(rt, current, right, scope)? {
+    return Ok(false);
+  }
+  if !allow_self_without_scope && element == scope && !right.is_scope {
     return Ok(false);
   }
 
@@ -3118,9 +3161,10 @@ fn dom_matches_any_selector(
   element: GcObject,
   selectors: &[DomSelector],
   scope: GcObject,
+  allow_self_without_scope: bool,
 ) -> Result<bool, JsError> {
   for sel in selectors {
-    if dom_matches_selector(rt, element, sel, scope)? {
+    if dom_matches_selector(rt, element, sel, scope, allow_self_without_scope)? {
       return Ok(true);
     }
   }
@@ -3184,7 +3228,7 @@ fn native_dom_element_matches(rt: &mut JsWptRuntime, this: Value, args: &[Value]
       return dom_throw_syntax_error(rt, &message);
     }
   };
-  let ok = dom_matches_any_selector(rt, element, &selectors, element)?;
+  let ok = dom_matches_any_selector(rt, element, &selectors, element, /* allow_self_without_scope */ true)?;
   Ok(Value::Bool(ok))
 }
 
@@ -3201,7 +3245,7 @@ fn native_dom_element_closest(rt: &mut JsWptRuntime, this: Value, args: &[Value]
 
   let mut current = Some(element);
   while let Some(node) = current {
-    if dom_matches_any_selector(rt, node, &selectors, element)? {
+    if dom_matches_any_selector(rt, node, &selectors, element, /* allow_self_without_scope */ true)? {
       return Ok(Value::Object(node));
     }
     current = rt.dom_nodes.get(&node).and_then(|s| s.parent);
@@ -3226,7 +3270,7 @@ fn native_dom_element_query_selector(
 
   let nodes = dom_subtree_preorder(rt, scope);
   for node in nodes {
-    if dom_matches_any_selector(rt, node, &selectors, scope)? {
+    if dom_matches_any_selector(rt, node, &selectors, scope, /* allow_self_without_scope */ false)? {
       return Ok(Value::Object(node));
     }
   }
@@ -3251,7 +3295,7 @@ fn native_dom_element_query_selector_all(
   let nodes = dom_subtree_preorder(rt, scope);
   let mut matches = Vec::new();
   for node in nodes {
-    if dom_matches_any_selector(rt, node, &selectors, scope)? {
+    if dom_matches_any_selector(rt, node, &selectors, scope, /* allow_self_without_scope */ false)? {
       matches.push(node);
     }
   }

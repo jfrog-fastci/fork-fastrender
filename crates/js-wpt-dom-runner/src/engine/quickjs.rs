@@ -121,6 +121,9 @@ impl Backend for QuickJsBackend {
       let globals = ctx.globals();
 
       install_window_shims(ctx.clone(), &globals, &init.test_url)?;
+      // The QuickJS backend largely relies on JS shims for browser-ish globals. Provide a tiny DOM
+      // surface so `.window.js` smoke tests can interact with `document.head`/`document.body`.
+      eval_script(ctx.clone(), DOM_SHIM).map_err(RunError::Js)?;
       eval_script(ctx.clone(), TIMER_SHIM).map_err(RunError::Js)?;
       eval_script(ctx.clone(), FASTR_REPORT_HOOK).map_err(RunError::Js)?;
 
@@ -401,6 +404,41 @@ const TIMER_SHIM: &str = r#"
 
     return due_ids.length;
   };
+})();
+"#;
+
+// Minimal DOM shims for the QuickJS backend.
+//
+// Unlike the vm-js backend (which wires DOM-ish objects through Rust host bindings), QuickJS uses
+// JavaScript shims. The smoke corpus needs `document.createElement`, `document.head`, and
+// `document.body` with a basic `appendChild`/`childNodes` API.
+const DOM_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  if (!g.document) return;
+  if (g.document.body && g.document.head && typeof g.document.createElement === "function") return;
+
+  function makeNode(tag) {
+    var node = {};
+    node.tagName = String(tag).toUpperCase();
+    node.childNodes = [];
+    node.appendChild = function (child) {
+      node.childNodes.push(child);
+      return child;
+    };
+    node.removeChild = function (child) {
+      var idx = node.childNodes.indexOf(child);
+      if (idx >= 0) node.childNodes.splice(idx, 1);
+      return child;
+    };
+    return node;
+  }
+
+  g.document.createElement = function (tag) {
+    return makeNode(tag);
+  };
+  g.document.head = makeNode("head");
+  g.document.body = makeNode("body");
 })();
 "#;
 

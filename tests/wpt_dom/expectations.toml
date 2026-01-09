@@ -31,8 +31,3 @@ reason = "HTML testharness helpers are not supported by the vm-js runner yet."
 id = "smoke/promise-pass.html"
 status = "skip"
 reason = "HTML testharness helpers are not supported by the vm-js runner yet."
-
-[[expectations]]
-id = "smoke/document_head_body.window.js"
-status = "skip"
-reason = "DOM shims are not supported by the vm-js runner yet."
