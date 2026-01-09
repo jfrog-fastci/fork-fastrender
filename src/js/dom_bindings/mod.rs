@@ -1311,12 +1311,14 @@ fn install_constructors(
         .copied()
         .ok_or_else(|| rt.throw_type_error("appendChild: missing child"))?;
       let child_id = extract_node_id(rt, &platform_objects_for_append, child)?;
-      let is_fragment = dom_for_append
-        .borrow()
-        .nodes()
-        .get(child_id.index())
-        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
-      let old_parent = dom_for_append.borrow().parent_node(child_id);
+      let (old_parent, is_fragment) = {
+        let dom_ref = dom_for_append.borrow();
+        let is_fragment = dom_ref
+          .nodes()
+          .get(child_id.index())
+          .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+        (dom_ref.parent_node(child_id), is_fragment)
+      };
       dom_for_append
         .borrow_mut()
         .append_child(parent_id, child_id)
@@ -1373,23 +1375,23 @@ fn install_constructors(
         .copied()
         .ok_or_else(|| rt.throw_type_error("insertBefore: missing newChild"))?;
       let child_id = extract_node_id(rt, &platform_objects_for_insert, child)?;
-      let old_parent = dom_for_insert.borrow().parent_node(child_id);
       let reference = args.get(1).copied().unwrap_or(Value::Null);
       let reference_id = match reference {
         Value::Undefined | Value::Null => None,
         other => Some(extract_node_id(rt, &platform_objects_for_insert, other)?),
       };
-
-      let is_fragment = dom_for_insert
-        .borrow()
-        .nodes()
-        .get(child_id.index())
-        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+      let (old_parent, is_fragment) = {
+        let dom_ref = dom_for_insert.borrow();
+        let is_fragment = dom_ref
+          .nodes()
+          .get(child_id.index())
+          .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+        (dom_ref.parent_node(child_id), is_fragment)
+      };
       dom_for_insert
         .borrow_mut()
         .insert_before(parent_id, child_id, reference_id)
         .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
-
       maybe_refresh_cached_child_nodes(
         rt,
         &dom_for_insert,
@@ -1504,18 +1506,18 @@ fn install_constructors(
         .ok_or_else(|| rt.throw_type_error("replaceChild: missing oldChild"))?;
       let new_child_id = extract_node_id(rt, &platform_objects_for_replace, new_child)?;
       let old_child_id = extract_node_id(rt, &platform_objects_for_replace, old_child)?;
-      let old_parent = dom_for_replace.borrow().parent_node(new_child_id);
-
-      let is_fragment = dom_for_replace
-        .borrow()
-        .nodes()
-        .get(new_child_id.index())
-        .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+      let (old_parent, is_fragment) = {
+        let dom_ref = dom_for_replace.borrow();
+        let is_fragment = dom_ref
+          .nodes()
+          .get(new_child_id.index())
+          .is_some_and(|node| matches!(node.kind, NodeKind::DocumentFragment));
+        (dom_ref.parent_node(new_child_id), is_fragment)
+      };
       dom_for_replace
         .borrow_mut()
         .replace_child(parent_id, new_child_id, old_child_id)
         .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
-
       maybe_refresh_cached_child_nodes(
         rt,
         &dom_for_replace,
@@ -3866,6 +3868,134 @@ mod tests {
     let remove = realm.rt.get(replacement, remove_key).unwrap();
     realm.rt.call_function(remove, replacement, &[]).unwrap();
     assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(0.0));
+  }
+
+  #[test]
+  fn document_fragments_move_children_and_update_cached_child_nodes() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let document = realm.document();
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+
+    let parent = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let a = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let b = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(parent, append_child_key).unwrap();
+    realm.rt.call_function(append_child, parent, &[a]).unwrap();
+    realm.rt.call_function(append_child, parent, &[b]).unwrap();
+
+    // childNodes should be cached and updated after insertBefore/replaceChild.
+    let child_nodes_key = pk(&mut realm.rt, "childNodes");
+    let nodes = realm.rt.get(parent, child_nodes_key).unwrap();
+    let nodes2 = realm.rt.get(parent, child_nodes_key).unwrap();
+    assert_eq!(nodes, nodes2);
+
+    let length_key = pk(&mut realm.rt, "length");
+    let idx0 = pk(&mut realm.rt, "0");
+    let idx1 = pk(&mut realm.rt, "1");
+    let idx2 = pk(&mut realm.rt, "2");
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(2.0));
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(nodes, idx1).unwrap(), b);
+
+    let insert_before_key = pk(&mut realm.rt, "insertBefore");
+    let insert_before = realm.rt.get(parent, insert_before_key).unwrap();
+    let c = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    realm
+      .rt
+      .call_function(insert_before, parent, &[c, b])
+      .unwrap();
+
+    // [a, c, b]
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(3.0));
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(nodes, idx1).unwrap(), c);
+    assert_eq!(realm.rt.get(nodes, idx2).unwrap(), b);
+
+    let replace_child_key = pk(&mut realm.rt, "replaceChild");
+    let replace_child = realm.rt.get(parent, replace_child_key).unwrap();
+    let d = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let replaced = realm
+      .rt
+      .call_function(replace_child, parent, &[d, c])
+      .unwrap();
+    assert_eq!(replaced, c);
+
+    // [a, d, b]
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(3.0));
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(nodes, idx1).unwrap(), d);
+    assert_eq!(realm.rt.get(nodes, idx2).unwrap(), b);
+
+    // DocumentFragment insertion should move its children and empty the fragment, updating cached
+    // childNodes arrays for both the parent and the fragment.
+    let frag = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
+    let x = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let y = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let append_child_frag = realm.rt.get(frag, append_child_key).unwrap();
+    realm.rt.call_function(append_child_frag, frag, &[x]).unwrap();
+    realm.rt.call_function(append_child_frag, frag, &[y]).unwrap();
+
+    let frag_nodes = realm.rt.get(frag, child_nodes_key).unwrap();
+    assert_eq!(
+      realm.rt.get(frag_nodes, length_key).unwrap(),
+      Value::Number(2.0)
+    );
+
+    realm
+      .rt
+      .call_function(insert_before, parent, &[frag, b])
+      .unwrap();
+
+    // [a, d, x, y, b]
+    let idx3 = pk(&mut realm.rt, "3");
+    let idx4 = pk(&mut realm.rt, "4");
+    assert_eq!(realm.rt.get(nodes, length_key).unwrap(), Value::Number(5.0));
+    assert_eq!(realm.rt.get(nodes, idx0).unwrap(), a);
+    assert_eq!(realm.rt.get(nodes, idx1).unwrap(), d);
+    assert_eq!(realm.rt.get(nodes, idx2).unwrap(), x);
+    assert_eq!(realm.rt.get(nodes, idx3).unwrap(), y);
+    assert_eq!(realm.rt.get(nodes, idx4).unwrap(), b);
+
+    let frag_nodes2 = realm.rt.get(frag, child_nodes_key).unwrap();
+    assert_eq!(frag_nodes, frag_nodes2);
+    assert_eq!(
+      realm.rt.get(frag_nodes, length_key).unwrap(),
+      Value::Number(0.0)
+    );
   }
 
   #[test]

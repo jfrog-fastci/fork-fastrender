@@ -335,6 +335,64 @@ fn element_creation_append_and_text_content() {
 }
 
 #[test]
+fn document_fragment_creation_and_insertion_moves_children() {
+  let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const body = document.body;
+            if (!body) return "missing_body";
+
+            const parent = document.createElement("div");
+            body.appendChild(parent);
+
+            const frag = document.createDocumentFragment();
+            if (!frag) return "missing_frag";
+            if (frag.nodeType !== 11) return "bad_nodeType:" + String(frag.nodeType);
+            if (frag.nodeName !== "#document-fragment") return "bad_nodeName:" + String(frag.nodeName);
+
+            const a = document.createElement("a");
+            const b = document.createElement("b");
+            frag.appendChild(a);
+            frag.appendChild(b);
+
+            const fragList = frag.childNodes;
+            if (!Array.isArray(fragList) || fragList.length !== 2) return "bad_frag_list";
+            if (fragList[0] !== a || fragList[1] !== b) return "bad_frag_identity";
+
+            const parentList = parent.childNodes;
+            if (!Array.isArray(parentList) || parentList.length !== 0) return "bad_parent_list";
+
+            parent.appendChild(frag);
+
+            if (parent.childNodes !== parentList) return "bad_parent_live";
+            if (parentList.length !== 2 || parentList[0] !== a || parentList[1] !== b) return "bad_parent_after";
+
+            if (frag.childNodes !== fragList) return "bad_frag_live";
+            if (fragList.length !== 0) return "bad_frag_empty:" + String(fragList.length);
+
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "document fragment JS threw: {outcome}");
+  });
+}
+
+#[test]
 fn comment_nodes_support_text_content() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 
