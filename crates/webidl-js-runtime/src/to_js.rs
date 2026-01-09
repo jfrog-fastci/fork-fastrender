@@ -319,16 +319,30 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
     return Err(rt.throw_type_error("unknown dictionary type"));
   };
 
-  let obj = rt.alloc_object()?;
-  for (key, v) in members {
+  // Validate provided member names before allocating the output object.
+  // This matches WebIDL's dictionary model: only schema-declared members are allowed.
+  let mut schema_names = std::collections::HashSet::<&str>::new();
+  for member in &schema {
+    schema_names.insert(member.name.as_str());
+  }
+  for key in members.keys() {
     if key.len() > limits.max_string_bytes {
       return Err(rt.throw_range_error("dictionary key exceeds maximum length"));
     }
-    let member_ty = dictionary_member_type(&schema, key).ok_or_else(|| {
-      rt.throw_type_error("dictionary member name does not exist in the schema")
-    })?;
-    let js_value = to_js_with_limits(rt, ctx, member_ty, v, limits)?;
-    let prop_key = rt.property_key_from_str(key)?;
+    if !schema_names.contains(key.as_str()) {
+      return Err(rt.throw_type_error("dictionary member name does not exist in the schema"));
+    }
+  }
+
+  let obj = rt.alloc_object()?;
+  // Define properties in schema declaration order (including inherited members), which gives the
+  // most spec-shaped and deterministic property insertion order.
+  for member in &schema {
+    let Some(v) = members.get(&member.name) else {
+      continue;
+    };
+    let js_value = to_js_with_limits(rt, ctx, &member.ty, v, limits)?;
+    let prop_key = rt.property_key_from_str(&member.name)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
 
@@ -356,15 +370,6 @@ fn to_js_record<R: WebIdlJsRuntime>(
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
   Ok(obj)
-}
-
-fn dictionary_member_type<'a>(schema: &'a [DictionaryMemberSchema], name: &str) -> Option<&'a IdlType> {
-  for DictionaryMemberSchema { name: member_name, ty, .. } in schema {
-    if member_name == name {
-      return Some(ty);
-    }
-  }
-  None
 }
 
 #[cfg(test)]
