@@ -241,6 +241,8 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
 
   let deadline = Instant::now() + TIMEOUT;
   let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
+  let mut last_frame_meta: Option<(u32, u32, (u32, u32), f32)> = None;
+  let mut frames_seen: u32 = 0;
 
   while Instant::now() < deadline {
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -250,8 +252,12 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
         frame,
       }) if msg_tab == tab_id => {
         let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
-        smoke_summary = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
-        break;
+        frames_seen += 1;
+        last_frame_meta = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+        if frame.viewport_css == VIEWPORT_CSS && pixmap_px == VIEWPORT_CSS {
+          smoke_summary = last_frame_meta;
+          break;
+        }
       }
       Ok(_) => {}
       Err(mpsc::RecvTimeoutError::Timeout) => break,
@@ -262,7 +268,16 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
-    return Err(format!("timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady").into());
+    let hint = match last_frame_meta {
+      Some((w, h, viewport, dpr)) => format!(
+        " (saw {frames_seen} FrameReady; last was viewport_css={viewport:?} dpr={dpr} pixmap_px={w}x{h})"
+      ),
+      None => " (saw no FrameReady messages)".to_string(),
+    };
+    return Err(format!(
+      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady matching viewport_css={VIEWPORT_CSS:?}{hint}"
+    )
+    .into());
   };
 
   if viewport_css != VIEWPORT_CSS {

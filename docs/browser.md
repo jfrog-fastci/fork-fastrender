@@ -43,8 +43,12 @@ end-to-end:
   - per-tab history with back/forward/reload
   - loading + error status in the chrome
 - **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
-- **Page input routing**: pointer + keyboard events over the page area are forwarded to the render
-  worker.
+- **Pointer/keyboard routing**:
+  - link clicking (`<a href=...>`) navigates
+  - click to focus and type into basic text inputs / textareas
+  - pointer toggles for checkboxes / radios
+
+Note: the window currently starts by navigating to `about:newtab`.
 
 ### DOM interaction (non-JS)
 
@@ -59,8 +63,13 @@ These interactions are exercised by the headless UI worker integration tests; th
 app uses the same message-driven worker loop ([`src/ui/worker.rs`](../src/ui/worker.rs)), so link
 clicking and basic form interactions work in the GUI as well.
 
-See [browser_ui.md](browser_ui.md) for implementation details and current status.
+### Still incomplete (non-exhaustive)
 
+- select dropdown UI is basic (no typeahead/multi-select yet)
+- richer text editing + selection/caret movement
+- full focus traversal + keyboard activation parity
+
+See [browser_ui.md](browser_ui.md) for implementation details and current status.
 ## Environment variables / resource limits
 
 Browser-related environment variables live in [env-vars.md](env-vars.md) (see “Browser UI (`browser`

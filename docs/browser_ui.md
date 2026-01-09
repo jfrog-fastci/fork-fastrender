@@ -41,6 +41,8 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
+Note: the windowed `browser` app currently starts by navigating to `about:newtab`.
+
 ## Keyboard / mouse shortcuts
 
 | Shortcut | Action |
@@ -68,7 +70,7 @@ See [env-vars.md](env-vars.md) for details.
   [`src/ui/`](../src/ui/)
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
   - Chrome action types + a reusable egui chrome UI helper: [`src/ui/chrome.rs`](../src/ui/chrome.rs)
-    - The windowed `browser` app currently renders its chrome widgets inline in
+  - The windowed `browser` app currently renders its chrome widgets inline in
       [`src/bin/browser.rs`](../src/bin/browser.rs) (see `App::render_chrome_ui`), but reuses the
       `ChromeAction` type.
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
@@ -84,7 +86,7 @@ See [env-vars.md](env-vars.md) for details.
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
       `tests/browser_integration/ui_worker_navigation_messages.rs`, etc.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
-    - Used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode.
+    - Mostly used by unit tests and small helpers.
   - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
     wheel scrolling) and most interaction/navigation protocol tests:
     [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
@@ -162,14 +164,15 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
   - Can be surfaced by chrome UIs while loading (e.g. [`src/ui/chrome.rs`](../src/ui/chrome.rs)).
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
-Note: not all worker implementations emit every message variant. For example, the windowed UI’s
-worker loop emits `FrameReady`, `OpenSelectDropdown`, and navigation events. Stage heartbeats are
-only sent when a stage listener is installed by the worker.
+Note: not all worker implementations emit every message variant. For example, the windowed `browser`
+app uses `spawn_browser_worker` and emits `FrameReady`, `OpenSelectDropdown`, and
+navigation/scroll/loading events. Stage heartbeats are only sent when a stage listener is installed
+by the worker.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
-The UI wrapper in [`src/ui/worker.rs`](../src/ui/worker.rs) assumes the worker runs **at most one**
-render job at a time; concurrent renders would need per-job routing.
+All current browser worker implementations assume the renderer runs **at most one** render job at a
+time; concurrent renders would need per-job routing.
 
 ### Cancellation model (generations + cooperative cancel callbacks)
 
@@ -181,9 +184,9 @@ The browser UI includes generation-counter cancellation helpers in [`src/ui/canc
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
 
-The browser worker thread uses these helpers to cancel/ignore stale work (rapid navigations,
-scroll/resize repaint storms). Some of the older headless/synchronous helpers are still more
-synchronous and may not take advantage of generation cancellation yet.
+Note: both the browser worker thread (`spawn_browser_worker`) and the render-thread worker
+(`spawn_browser_render_thread`) use these helpers. Some older headless worker loops are mostly
+synchronous and may not use them.
 
 The typical pattern is:
 
@@ -203,9 +206,9 @@ CPU by stopping stale work early.
 ## Known limitations (as of now)
 
 - **No author JavaScript**: `<script>` does not execute.
-- **DOM interaction is still incremental**: the windowed `browser` app forwards pointer/keyboard
-  events to the browser worker thread and supports basic hit-testing + form interactions (non-JS),
-  but the interaction layer is intentionally minimal and will grow over time.
+- **Interaction gaps** (non-JS): the windowed UI forwards pointer/keyboard input to the browser
+  worker, which applies basic hit-testing + form interactions. Some interactions are still
+  incomplete (e.g. select dropdown UI, rich text editing, complex focus traversal).
 - **Limited form support** (non-JS):
   - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
   - `<select>` support is basic (listbox clicks + dropdown popup selection; no typeahead/multi-select yet)
