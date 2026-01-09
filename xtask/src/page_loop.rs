@@ -9,6 +9,8 @@ const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 const DEFAULT_OUT_BASE: &str = "target/page_loop";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
+const DEFAULT_TIMEOUT_SECS: u64 = 60;
+const DEFAULT_JOBS: usize = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -45,6 +47,17 @@ pub struct PageLoopArgs {
   /// Device pixel ratio for media queries/srcset (forwarded to renderers).
   #[arg(long, default_value_t = DEFAULT_DPR)]
   pub dpr: f32,
+
+  /// Number of parallel fixture renders for the FastRender step (forwarded to `render_fixtures --jobs/-j`).
+  ///
+  /// Since `page-loop` renders a single fixture, the default is 1 to avoid initializing an
+  /// oversized renderer pool.
+  #[arg(long, short, default_value_t = DEFAULT_JOBS, value_name = "N")]
+  pub jobs: usize,
+
+  /// Per-fixture hard timeout in seconds (forwarded to both FastRender and Chrome steps).
+  #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS, value_name = "SECS")]
+  pub timeout: u64,
 
   /// Media type for evaluating media queries.
   #[arg(long, value_enum, default_value_t = MediaMode::Screen)]
@@ -189,6 +202,8 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
     println!("  out_dir: {}", layout.root.display());
     println!("  fastrender_png: {}", layout.fastrender_png.display());
     println!("  fastrender_metadata: {}", layout.fastrender_metadata.display());
+    println!("  jobs: {}", args.jobs);
+    println!("  timeout: {}s", args.timeout);
     if args.write_snapshot {
       println!("  fastrender_snapshot: {}", layout.fastrender_snapshot.display());
     }
@@ -274,6 +289,12 @@ fn validate_args(args: &PageLoopArgs, fixture_stem: &str) -> Result<()> {
   }
   if args.dpr <= 0.0 || !args.dpr.is_finite() {
     bail!("--dpr must be a positive, finite number");
+  }
+  if args.jobs == 0 {
+    bail!("--jobs must be > 0");
+  }
+  if args.timeout == 0 {
+    bail!("--timeout must be > 0");
   }
   Ok(())
 }
@@ -379,11 +400,13 @@ fn build_render_fixtures_command(
   cmd.arg("--fixtures-dir").arg(&layout.fixtures_dir);
   cmd.arg("--out-dir").arg(&layout.fastrender_dir);
   cmd.arg("--fixtures").arg(&layout.fixture_stem);
+  cmd.arg("--jobs").arg(args.jobs.to_string());
   cmd
     .arg("--viewport")
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
+  cmd.arg("--timeout").arg(args.timeout.to_string());
   if patch_for_chrome {
     // `chrome-baseline-fixtures` always renders a patched HTML variant (forces light-mode, disables
     // JS/animations via CSP + style injection). When diffing against Chrome, render the same patch
@@ -416,6 +439,7 @@ fn build_inspect_frag_overlay_command(
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
+  cmd.arg("--timeout").arg(args.timeout.to_string());
   Ok(cmd)
 }
 
@@ -434,6 +458,8 @@ fn build_chrome_baseline_command(repo_root: &Path, layout: &Layout, args: &PageL
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1))
     .arg("--dpr")
     .arg(args.dpr.to_string())
+    .arg("--timeout")
+    .arg(args.timeout.to_string())
     .arg("--media")
     .arg(args.media.as_cli_value());
   cmd.current_dir(repo_root);
