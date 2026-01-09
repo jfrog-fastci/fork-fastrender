@@ -15,6 +15,7 @@ mod support;
 mod tab;
 mod ui_input_routing;
 mod ui_render_thread;
+mod ui_browser_worker_live_tab;
 mod ui_fragment_navigation;
 mod ui_render_worker_thread_builder_test;
 mod ui_select_listbox_click;

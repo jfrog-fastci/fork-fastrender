@@ -333,6 +333,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         };
         navigate_tab(tab_id, tab, url, NavigationReason::Reload, None, &tx);
       }
+      UiToWorker::Tick { .. } => {
+        // Headless worker loop does not run a JS event loop; ticks are a no-op.
+      }
       UiToWorker::ViewportChanged {
         tab_id,
         viewport_css,

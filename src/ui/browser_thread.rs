@@ -298,6 +298,11 @@ impl BrowserRuntime {
           self.begin_navigation(tab_id, url, NavigationReason::Reload, false);
         }
       }
+      UiToWorker::Tick { .. } => {
+        // This worker implementation currently renders on-demand (input/navigation/explicit
+        // repaint). Ticks are used by newer worker models to drive JS timers/microtasks; ignore
+        // them here to avoid forcing unnecessary paints.
+      }
       UiToWorker::ViewportChanged {
         tab_id,
         viewport_css,

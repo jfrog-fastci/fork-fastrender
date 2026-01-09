@@ -153,6 +153,10 @@ impl BrowserWorkerRuntime {
       } => {
         self.navigate(tab_id, url, reason);
       }
+      UiToWorker::Tick { .. } => {
+        // Headless runtime has no JS event loop to drive; repaints are triggered immediately by
+        // navigation/input messages.
+      }
       UiToWorker::ViewportChanged {
         tab_id,
         viewport_css,

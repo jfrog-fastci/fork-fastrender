@@ -567,12 +567,20 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         };
         navigate_tab(tab_id, tab, &ui_tx, &cancel_gens, url, reason);
       }
+      UiToWorker::Tick { tab_id } => {
+        // The legacy worker loop has no JS event loop, but still supports coalesced multi-frame
+        // updates via `BrowserDocument`'s dirty flags.
+        if let Some(tab) = tabs.get_mut(&tab_id) {
+          repaint_if_needed(tab_id, tab, &ui_tx);
+        }
+      }
       UiToWorker::GoBack { tab_id } | UiToWorker::GoForward { tab_id } => {
         // This legacy worker loop intentionally does not implement per-tab navigation history.
         // Back/forward/reload semantics are covered by the history-aware `ui::worker` loop.
         let _ = ui_tx.send(WorkerToUi::DebugLog {
           tab_id,
-          line: "navigation history is not tracked by this worker loop; ignoring back/forward".to_string(),
+          line: "navigation history is not tracked by this worker loop; ignoring back/forward"
+            .to_string(),
         });
       }
       UiToWorker::Reload { tab_id } => {

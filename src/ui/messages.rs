@@ -127,6 +127,13 @@ pub enum UiToWorker {
   Reload {
     tab_id: TabId,
   },
+  /// Periodic "tick" from the UI thread used to drive the tab's event loop and repaint pipeline.
+  ///
+  /// The render worker should execute a bounded slice of JS/event-loop work (timers, microtasks)
+  /// and, if the tab becomes dirty, render a new frame.
+  Tick {
+    tab_id: TabId,
+  },
   ViewportChanged {
     tab_id: TabId,
     viewport_css: (u32, u32),

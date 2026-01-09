@@ -49,6 +49,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   use winit::event_loop::ControlFlow;
   use winit::event_loop::EventLoopBuilder;
   use winit::window::WindowBuilder;
+  use std::time::{Duration, Instant};
 
   let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
   let event_loop_proxy = event_loop.create_proxy();
@@ -93,8 +94,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut app = Some(app);
   let mut bridge_join = Some(bridge_join);
 
+  // Drive JS/event-loop work at a modest cadence so pages with timers/microtasks can repaint even
+  // without user input.
+  let tick_interval = Duration::from_millis(16);
+  let mut next_tick = Instant::now() + tick_interval;
+
   event_loop.run(move |event, _, control_flow| {
-    *control_flow = ControlFlow::Wait;
+    *control_flow = ControlFlow::WaitUntil(next_tick);
 
     // `EventLoop::run` never returns, so do shutdown hygiene (dropping channels and joining
     // threads) explicitly when the loop is torn down.
@@ -171,6 +177,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       Event::RedrawRequested(window_id) if window_id == app.window.id() => {
         app.render_frame(control_flow);
       }
+      Event::MainEventsCleared => {
+        let now = Instant::now();
+        if now >= next_tick {
+          app.send_tick();
+          next_tick = now + tick_interval;
+        }
+        *control_flow = ControlFlow::WaitUntil(next_tick);
+      }
       Event::NewEvents(StartCause::Init) => {
         // Ensure we draw at least one frame on startup.
         app.window.request_redraw();
@@ -218,9 +232,8 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     .name("fastr-browser-headless-smoke-worker".to_string())
     .stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || -> Result<(), String> {
-      let renderer = fastrender::FastRender::new().map_err(|e| e.to_string())?;
-      let mut worker =
-        fastrender::ui::browser_worker::BrowserWorker::new(renderer, worker_to_ui_tx);
+      let factory = fastrender::api::FastRenderFactory::new().map_err(|e| e.to_string())?;
+      let mut worker = fastrender::ui::browser_worker::BrowserWorker::new(factory, worker_to_ui_tx);
       let mut tabs: HashMap<TabId, TabState> = HashMap::new();
 
       for msg in ui_to_worker_rx {
@@ -267,6 +280,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
                 state.dpr = dpr;
               })
               .or_insert(TabState { viewport_css, dpr });
+            worker.viewport_changed(tab_id, viewport_css, dpr);
           }
           UiToWorker::Navigate { tab_id, url, .. } => {
             let state = tabs.get(&tab_id).copied().unwrap_or(TabState {
@@ -283,6 +297,9 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
           }
           UiToWorker::CloseTab { tab_id } => {
             tabs.remove(&tab_id);
+          }
+          UiToWorker::Tick { tab_id } => {
+            let _ = worker.tick(tab_id);
           }
           UiToWorker::SetActiveTab { .. }
           | UiToWorker::GoBack { .. }
@@ -622,6 +639,15 @@ impl App {
       self.window.set_title(&title);
       self.window_title_cache = title;
     }
+  }
+
+  fn send_tick(&mut self) {
+    let Some(tab_id) = self.browser_state.active_tab_id() else {
+      return;
+    };
+    let _ = self
+      .ui_to_worker_tx
+      .send(fastrender::ui::UiToWorker::Tick { tab_id });
   }
 
   fn set_pixels_per_point(&mut self, ppp: f32) {

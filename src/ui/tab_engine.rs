@@ -338,6 +338,9 @@ impl TabEngine {
           }
         }
       }
+      UiToWorker::Tick { .. } => {
+        // `TabEngine` is a legacy prepared-document worker without a JS event loop.
+      }
       UiToWorker::PointerMove { .. }
       | UiToWorker::PointerDown { .. }
       | UiToWorker::PointerUp { .. }

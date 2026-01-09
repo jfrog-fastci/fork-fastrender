@@ -124,6 +124,9 @@ impl BrowserRenderThread {
       } => {
         self.navigate(tab_id, url, reason);
       }
+      UiToWorker::Tick { .. } => {
+        // This worker currently does not embed a JS/event loop; ticks are a no-op.
+      }
       UiToWorker::GoBack { tab_id } => {
         let url = {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {

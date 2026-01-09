@@ -1,15 +1,17 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::scroll::ScrollState;
+use fastrender::tree::box_tree::SelectControl;
 use fastrender::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_runtime::spawn_browser_worker_runtime_thread;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-// The worker runtime performs real parsing/layout/paint work and these integration tests run in
-// parallel by default, so allow extra slack to avoid flakes under CPU contention.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+// Worker startup + first render can take a few seconds under parallel load (CI), and the worker
+// runtime performs real parsing/layout/paint work. Use a generous timeout to avoid flakes under CPU
+// contention.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkerToUiEvent {
@@ -20,7 +22,11 @@ pub enum WorkerToUiEvent {
     dpr: f32,
     scroll_state: ScrollState,
   },
-  OpenSelectDropdown { tab_id: TabId, select_node_id: usize },
+  OpenSelectDropdown {
+    tab_id: TabId,
+    select_node_id: usize,
+    control: SelectControl,
+  },
   NavigationStarted { tab_id: TabId, url: String },
   NavigationCommitted {
     tab_id: TabId,
@@ -78,11 +84,12 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
     WorkerToUi::OpenSelectDropdown {
       tab_id,
       select_node_id,
-      ..
+      control,
     } => (
       WorkerToUiEvent::OpenSelectDropdown {
         tab_id,
         select_node_id,
+        control,
       },
       None,
     ),

@@ -108,6 +108,9 @@ impl UiWorker {
       } => {
         let _ = self.navigate(tab_id, url, reason);
       }
+      UiToWorker::Tick { .. } => {
+        // The test-oriented UI worker has no JS/event loop; ticks are a no-op.
+      }
       UiToWorker::GoBack { tab_id } => {
         let Some(tab) = self.tabs.get_mut(&tab_id) else {
           return;
