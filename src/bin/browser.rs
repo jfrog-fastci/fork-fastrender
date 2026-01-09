@@ -11,6 +11,7 @@ Run:\n\
 fn main() {
   if let Err(err) = run() {
     eprintln!("browser exited with error: {err}");
+    std::process::exit(1);
   }
 }
 
@@ -22,6 +23,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // parsing) without opening a window or initialising wgpu.
   if std::env::var_os("FASTR_TEST_BROWSER_EXIT_IMMEDIATELY").is_some() {
     return Ok(());
+  }
+
+  // Test/CI hook: run a minimal end-to-end wiring smoke test without creating a window or
+  // initialising winit/wgpu.
+  //
+  // This exists so CI environments without an X11 display / GPU can still exercise the real
+  // `src/bin/browser.rs` entrypoint and UI↔worker messaging.
+  //
+  // Usage:
+  //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 cargo run --features browser_ui --bin browser
+  if std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
+    return run_headless_smoke_mode();
   }
 
   use winit::event::Event;
@@ -83,6 +96,196 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
       _ => {}
     }
   });
+}
+
+#[cfg(feature = "browser_ui")]
+fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
+  use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+  use std::collections::HashMap;
+  use std::sync::mpsc;
+  use std::time::{Duration, Instant};
+
+  // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
+  // global pool it may attempt to spawn one worker per detected CPU (which can be very large on
+  // CI hosts). Explicitly pin the pool to a single thread unless the caller has overridden it.
+  //
+  // Note: this also avoids a rare `rayon-core` panic when multiple subsystems race to initialize
+  // the global pool with different settings.
+  const RAYON_NUM_THREADS_ENV: &str = "RAYON_NUM_THREADS";
+  if !std::env::var_os(RAYON_NUM_THREADS_ENV).is_some_and(|value| !value.is_empty()) {
+    std::env::set_var(RAYON_NUM_THREADS_ENV, "1");
+  }
+
+  const URL: &str = "about:newtab";
+  const VIEWPORT_CSS: (u32, u32) = (200, 120);
+  const DPR: f32 = 1.0;
+  const TIMEOUT: Duration = Duration::from_secs(20);
+
+  #[derive(Debug, Clone, Copy)]
+  struct TabState {
+    viewport_css: (u32, u32),
+    dpr: f32,
+  }
+
+  let (ui_to_worker_tx, ui_to_worker_rx) = mpsc::channel::<UiToWorker>();
+  let (worker_to_ui_tx, worker_to_ui_rx) = mpsc::channel::<WorkerToUi>();
+
+  // Run the render pipeline on a dedicated thread, mirroring the real UI architecture.
+  let handle = std::thread::Builder::new()
+    .name("fastr-browser-headless-smoke-worker".to_string())
+    .stack_size(fastrender::system::DEFAULT_RENDER_STACK_SIZE)
+    .spawn(move || -> Result<(), String> {
+      let renderer = fastrender::FastRender::new().map_err(|e| e.to_string())?;
+      let mut worker = fastrender::ui::browser_worker::BrowserWorker::new(renderer, worker_to_ui_tx);
+      let mut tabs: HashMap<TabId, TabState> = HashMap::new();
+
+      for msg in ui_to_worker_rx {
+        match msg {
+          UiToWorker::CreateTab { tab_id, initial_url } => {
+            tabs.insert(
+              tab_id,
+              TabState {
+                viewport_css: VIEWPORT_CSS,
+                dpr: DPR,
+              },
+            );
+            if let Some(url) = initial_url {
+              let state = tabs.get(&tab_id).copied().unwrap_or(TabState {
+                viewport_css: VIEWPORT_CSS,
+                dpr: DPR,
+              });
+              let options = fastrender::RenderOptions::new()
+                .with_viewport(state.viewport_css.0, state.viewport_css.1)
+                .with_device_pixel_ratio(state.dpr)
+                .with_fit_canvas_to_content(false);
+              worker.navigate(tab_id, &url, options).map_err(|e| e.to_string())?;
+            }
+          }
+          UiToWorker::ViewportChanged {
+            tab_id,
+            viewport_css,
+            dpr,
+          } => {
+            tabs
+              .entry(tab_id)
+              .and_modify(|state| {
+                state.viewport_css = viewport_css;
+                state.dpr = dpr;
+              })
+              .or_insert(TabState { viewport_css, dpr });
+          }
+          UiToWorker::Navigate { tab_id, url, .. } => {
+            let state = tabs.get(&tab_id).copied().unwrap_or(TabState {
+              viewport_css: VIEWPORT_CSS,
+              dpr: DPR,
+            });
+            let options = fastrender::RenderOptions::new()
+              .with_viewport(state.viewport_css.0, state.viewport_css.1)
+              .with_device_pixel_ratio(state.dpr)
+              .with_fit_canvas_to_content(false);
+            worker.navigate(tab_id, &url, options).map_err(|e| e.to_string())?;
+          }
+          UiToWorker::CloseTab { tab_id } => {
+            tabs.remove(&tab_id);
+          }
+          UiToWorker::SetActiveTab { .. }
+          | UiToWorker::Scroll { .. }
+          | UiToWorker::PointerMove { .. }
+          | UiToWorker::PointerDown { .. }
+          | UiToWorker::PointerUp { .. }
+          | UiToWorker::TextInput { .. }
+          | UiToWorker::KeyAction { .. }
+          | UiToWorker::RequestRepaint { .. } => {
+            // Not needed for the smoke test.
+          }
+        }
+      }
+
+      Ok(())
+    })?;
+
+  let tab_id = TabId::new();
+  ui_to_worker_tx.send(UiToWorker::CreateTab {
+    tab_id,
+    initial_url: None,
+  })?;
+  ui_to_worker_tx.send(UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css: VIEWPORT_CSS,
+    dpr: DPR,
+  })?;
+  ui_to_worker_tx.send(UiToWorker::Navigate {
+    tab_id,
+    url: URL.to_string(),
+    reason: NavigationReason::TypedUrl,
+  })?;
+
+  // Close the channel so the worker thread exits after completing the above messages.
+  drop(ui_to_worker_tx);
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut smoke_summary: Option<(u32, u32, (u32, u32), f32)> = None;
+
+  while Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match worker_to_ui_rx.recv_timeout(remaining) {
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => {
+        let pixmap_px = (frame.pixmap.width(), frame.pixmap.height());
+        smoke_summary = Some((pixmap_px.0, pixmap_px.1, frame.viewport_css, frame.dpr));
+        break;
+      }
+      Ok(_) => {}
+      Err(mpsc::RecvTimeoutError::Timeout) => break,
+      Err(mpsc::RecvTimeoutError::Disconnected) => {
+        return Err("headless smoke worker disconnected before FrameReady".into());
+      }
+    }
+  }
+
+  let Some((pixmap_w, pixmap_h, viewport_css, dpr)) = smoke_summary else {
+    return Err(format!(
+      "timed out after {TIMEOUT:?} waiting for WorkerToUi::FrameReady"
+    )
+    .into());
+  };
+
+  if viewport_css != VIEWPORT_CSS {
+    return Err(format!(
+      "unexpected viewport_css from FrameReady: got {:?}, expected {:?}",
+      viewport_css, VIEWPORT_CSS
+    )
+    .into());
+  }
+  if pixmap_w != VIEWPORT_CSS.0 || pixmap_h != VIEWPORT_CSS.1 {
+    return Err(format!(
+      "unexpected pixmap size from FrameReady: got {}x{}, expected {}x{}",
+      pixmap_w, pixmap_h, VIEWPORT_CSS.0, VIEWPORT_CSS.1
+    )
+    .into());
+  }
+  if (dpr - DPR).abs() > 0.01 {
+    return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
+  }
+
+  match handle.join() {
+    Ok(Ok(())) => {}
+    Ok(Err(err)) => {
+      return Err(format!("headless smoke worker failed: {err}").into());
+    }
+    Err(_) => {
+      return Err("headless smoke worker panicked".into());
+    }
+  }
+
+  println!(
+    "HEADLESS_SMOKE_OK url={URL} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
+    viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
+  );
+
+  Ok(())
 }
 
 #[cfg(feature = "browser_ui")]

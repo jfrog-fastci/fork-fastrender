@@ -2,6 +2,7 @@
 
 mod document;
 mod document2;
+mod browser_binary_headless_smoke;
 mod browser_mem_limit_env;
 mod support;
 mod ui_render_worker_thread_builder_test;
