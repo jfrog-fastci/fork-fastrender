@@ -1432,6 +1432,59 @@ mod tests {
   }
 
   #[test]
+  fn nested_timeouts_are_clamped_to_minimum_delay_after_five() -> Result<()> {
+    fn schedule(event_loop: &mut EventLoop<TestHost>) -> Result<()> {
+      event_loop.set_timeout(Duration::from_millis(0), |host, event_loop| {
+        host.count += 1;
+        if host.count < 7 {
+          schedule(event_loop)?;
+        }
+        Ok(())
+      })?;
+      Ok(())
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+    let mut host = TestHost::default();
+
+    schedule(&mut event_loop)?;
+
+    // The first six timers should run immediately, but once the timer nesting level exceeds 5 the
+    // next scheduled delay should be clamped to at least 4ms (HTML spec).
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 6);
+    assert_eq!(event_loop.timers.len(), 1);
+    let due = event_loop
+      .timers
+      .values()
+      .next()
+      .expect("expected a pending clamped timer")
+      .due;
+    assert_eq!(due, Duration::from_millis(4));
+
+    // Without advancing the clock, the clamped timer should not run.
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 6);
+
+    clock.advance(Duration::from_millis(4));
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(host.count, 7);
+    assert_eq!(event_loop.timers.len(), 0);
+    Ok(())
+  }
+
+  #[test]
   fn clearing_timers_does_not_leak_timer_queue_entries() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
