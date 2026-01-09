@@ -109,3 +109,42 @@ fn supports_legacy_ms_grid_properties_remain_unsupported() {
   let css = r"@supports (-ms-grid-row: 1) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
 }
+
+#[test]
+fn supports_font_format_woff2_matches() {
+  let css = r"@supports font-format(woff2) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_font_tech_color_colrv1_matches() {
+  let css = r"@supports font-tech(color-COLRv1) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_font_tech_list_requires_all_techs() {
+  let css = r"@supports font-tech(variations, unknown-tech) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}
+
+#[test]
+fn supports_font_format_list_matches_if_any_format_supported() {
+  let css = r"@supports font-format(zebra, woff2) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_font_queries_combine_with_declarations_and_selectors() {
+  let css = r"@supports (display: grid) and font-format(woff2) and selector(:has(*)) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_unknown_font_keywords_are_false() {
+  let css = r"@supports font-format(zebra) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+
+  let css = r"@supports font-tech(color-zebra) { div { display: inline; } }";
+  assert_eq!(render_div_display(css), "block");
+}

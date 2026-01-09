@@ -30,6 +30,7 @@ use super::types::FontPaletteBase;
 use super::types::FontPaletteOverride;
 use super::types::FontPaletteValuesRule;
 use super::types::FontSourceFormat;
+use super::types::FontTechKeyword;
 use super::types::ImportLayer;
 use super::types::ImportRule;
 use super::types::Keyframe;
@@ -2041,6 +2042,14 @@ fn parse_supports_condition_in_parens<'i, 't>(
     return Ok(selector);
   }
 
+  if let Ok(cond) = parser.try_parse(|p| parse_supports_font_tech_function(p)) {
+    return Ok(cond);
+  }
+
+  if let Ok(cond) = parser.try_parse(|p| parse_supports_font_format_function(p)) {
+    return Ok(cond);
+  }
+
   parser
     .try_parse(|p| parse_supports_parenthesized_condition(p))
     .map_err(|_| parser.new_custom_error(()))
@@ -2067,6 +2076,114 @@ fn parse_supports_selector_function<'i, 't>(
       _ => Err(p.new_custom_error(())),
     }
   })
+}
+
+fn parse_supports_font_tech_function<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  if let Ok(cond) = parser.try_parse(|p| {
+    p.expect_function_matching("font-tech")?;
+    parse_supports_font_tech_arguments(p)
+  }) {
+    return Ok(cond);
+  }
+
+  parser.try_parse(|p| {
+    let ident = p.expect_ident()?;
+    if !ident.as_ref().eq_ignore_ascii_case("font-tech") {
+      return Err(p.new_custom_error(()));
+    }
+    p.skip_whitespace();
+    match p.next_including_whitespace()? {
+      Token::ParenthesisBlock => parse_supports_font_tech_arguments(p),
+      _ => Err(p.new_custom_error(())),
+    }
+  })
+}
+
+fn parse_supports_font_tech_arguments<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  let techs = parser.parse_nested_block(|nested| {
+    let mut techs = Vec::new();
+    while !nested.is_exhausted() {
+      if !css_deadline_allows_progress() {
+        break;
+      }
+      nested.skip_whitespace();
+      match nested.next_including_whitespace() {
+        Ok(Token::Ident(kw)) | Ok(Token::QuotedString(kw)) => {
+          techs.push(FontTechKeyword::from_ident(kw.as_ref()));
+          let _ = nested.try_parse(|p| p.expect_comma());
+        }
+        Ok(Token::Comma) => {}
+        Ok(_) => return Err(nested.new_custom_error(())),
+        Err(_) => break,
+      }
+    }
+
+    Ok::<_, ParseError<'i, ()>>(techs)
+  })?;
+
+  if techs.is_empty() {
+    return Err(parser.new_custom_error(()));
+  }
+
+  Ok(SupportsCondition::FontTech(techs))
+}
+
+fn parse_supports_font_format_function<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  if let Ok(cond) = parser.try_parse(|p| {
+    p.expect_function_matching("font-format")?;
+    parse_supports_font_format_arguments(p)
+  }) {
+    return Ok(cond);
+  }
+
+  parser.try_parse(|p| {
+    let ident = p.expect_ident()?;
+    if !ident.as_ref().eq_ignore_ascii_case("font-format") {
+      return Err(p.new_custom_error(()));
+    }
+    p.skip_whitespace();
+    match p.next_including_whitespace()? {
+      Token::ParenthesisBlock => parse_supports_font_format_arguments(p),
+      _ => Err(p.new_custom_error(())),
+    }
+  })
+}
+
+fn parse_supports_font_format_arguments<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<SupportsCondition, ParseError<'i, ()>> {
+  let formats = parser.parse_nested_block(|nested| {
+    let mut formats = Vec::new();
+    while !nested.is_exhausted() {
+      if !css_deadline_allows_progress() {
+        break;
+      }
+      nested.skip_whitespace();
+      match nested.next_including_whitespace() {
+        Ok(Token::Ident(kw)) | Ok(Token::QuotedString(kw)) => {
+          formats.push(FontSourceFormat::from_hint(kw.as_ref()));
+          let _ = nested.try_parse(|p| p.expect_comma());
+        }
+        Ok(Token::Comma) => {}
+        Ok(_) => return Err(nested.new_custom_error(())),
+        Err(_) => break,
+      }
+    }
+
+    Ok::<_, ParseError<'i, ()>>(formats)
+  })?;
+
+  if formats.is_empty() {
+    return Err(parser.new_custom_error(()));
+  }
+
+  Ok(SupportsCondition::FontFormat(formats))
 }
 
 fn parse_supports_selector_arguments<'i, 't>(
@@ -2237,6 +2354,14 @@ fn parse_supports_bare_term<'i, 't>(
 
   if let Ok(selector) = parser.try_parse(|p| parse_supports_selector_function(p)) {
     return Ok(selector);
+  }
+
+  if let Ok(cond) = parser.try_parse(|p| parse_supports_font_tech_function(p)) {
+    return Ok(cond);
+  }
+
+  if let Ok(cond) = parser.try_parse(|p| parse_supports_font_format_function(p)) {
+    return Ok(cond);
   }
 
   parse_supports_bare_declaration(parser).ok_or_else(|| parser.new_custom_error(()))

@@ -2173,12 +2173,65 @@ impl SupportsCondition {
         supports::supports_declaration(property, value)
       }
       SupportsCondition::Selector(selector_list) => supports_selector_is_valid(selector_list),
+      SupportsCondition::FontTech(techs) => {
+        !techs.is_empty() && techs.iter().all(supports_font_tech_keyword)
+      }
+      SupportsCondition::FontFormat(formats) => {
+        !formats.is_empty() && formats.iter().any(supports_font_format_keyword)
+      }
       SupportsCondition::Not(cond) => !cond.matches(),
       SupportsCondition::And(conds) => conds.iter().all(|c| c.matches()),
       SupportsCondition::Or(conds) => conds.iter().any(|c| c.matches()),
       SupportsCondition::True => true,
       SupportsCondition::False => false,
     }
+  }
+}
+
+/// Mapping between CSS Fonts keywords and FastRender font support.
+///
+/// Keep these helpers in sync with the actual font pipeline:
+/// - Format support is implemented by `src/text/font_loader.rs` (WOFF/WOFF2 decoding via `wuff`,
+///   OpenType/TrueType parsing via `ttf-parser`).
+/// - Tech support reflects shaping (`rustybuzz`) and color font rasterization in
+///   `src/text/color_fonts/*`.
+fn supports_font_format_keyword(format: &FontSourceFormat) -> bool {
+  match format {
+    FontSourceFormat::Woff2
+    | FontSourceFormat::Woff
+    | FontSourceFormat::Opentype
+    | FontSourceFormat::Truetype
+    | FontSourceFormat::Collection => true,
+    FontSourceFormat::EmbeddedOpenType | FontSourceFormat::Svg | FontSourceFormat::Unknown(_) => {
+      false
+    }
+  }
+}
+
+fn supports_font_tech_keyword(tech: &FontTechKeyword) -> bool {
+  match tech {
+    // OpenType variations are supported via `rustybuzz` shaping + variation plumbing in
+    // `src/text/variations.rs`.
+    FontTechKeyword::Variations => true,
+
+    // FastRender implements CPAL palette selection (`font-palette` and @font-palette-values).
+    FontTechKeyword::Palettes => true,
+
+    // FastRender does not implement incremental font transfer (IFT).
+    FontTechKeyword::Incremental => false,
+
+    // Shaping is implemented via `rustybuzz`, which supports OpenType GSUB/GPOS features.
+    FontTechKeyword::FeaturesOpentype => true,
+    FontTechKeyword::FeaturesAat | FontTechKeyword::FeaturesGraphite => false,
+
+    // Color font rasterization is implemented in `src/text/color_fonts/*`.
+    FontTechKeyword::ColorColrV0
+    | FontTechKeyword::ColorColrV1
+    | FontTechKeyword::ColorSvg
+    | FontTechKeyword::ColorSbix
+    | FontTechKeyword::ColorCbdt => true,
+
+    FontTechKeyword::Unknown(_) => false,
   }
 }
 
@@ -3345,6 +3398,14 @@ pub enum SupportsCondition {
   Declaration { property: String, value: String },
   /// `selector(<selector-list>)` feature query
   Selector(String),
+  /// `font-tech(<font-tech>#)` feature query (CSS Conditional 5 / CSS Fonts 4).
+  ///
+  /// When a comma-separated list is provided, all listed technologies must be supported.
+  FontTech(Vec<FontTechKeyword>),
+  /// `font-format(<font-format>#)` feature query (CSS Conditional 5 / CSS Fonts 4).
+  ///
+  /// When a comma-separated list is provided, any supported format makes the query true.
+  FontFormat(Vec<FontSourceFormat>),
   /// Logical negation
   Not(Box<SupportsCondition>),
   /// Logical conjunction
@@ -3594,6 +3655,42 @@ impl FontSourceFormat {
       "embedded-opentype" | "eot" => FontSourceFormat::EmbeddedOpenType,
       "svg" | "svgz" => FontSourceFormat::Svg,
       other => FontSourceFormat::Unknown(other.to_string()),
+    }
+  }
+}
+
+/// Supported `font-tech()` keyword values used by `@supports font-tech(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontTechKeyword {
+  Variations,
+  Palettes,
+  Incremental,
+  FeaturesOpentype,
+  FeaturesAat,
+  FeaturesGraphite,
+  ColorColrV0,
+  ColorColrV1,
+  ColorSvg,
+  ColorSbix,
+  ColorCbdt,
+  Unknown(String),
+}
+
+impl FontTechKeyword {
+  pub fn from_ident(ident: &str) -> Self {
+    match trim_ascii_whitespace_css(ident).to_ascii_lowercase().as_str() {
+      "variations" => Self::Variations,
+      "palettes" => Self::Palettes,
+      "incremental" => Self::Incremental,
+      "features-opentype" => Self::FeaturesOpentype,
+      "features-aat" => Self::FeaturesAat,
+      "features-graphite" => Self::FeaturesGraphite,
+      "color-colrv0" => Self::ColorColrV0,
+      "color-colrv1" => Self::ColorColrV1,
+      "color-svg" => Self::ColorSvg,
+      "color-sbix" => Self::ColorSbix,
+      "color-cbdt" => Self::ColorCbdt,
+      other => Self::Unknown(other.to_string()),
     }
   }
 }
