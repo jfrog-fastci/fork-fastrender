@@ -97,6 +97,22 @@ elif [[ "${1:-}" == "-p" || "${1:-}" == "--package" ]]; then
   set -- "${subcmd}" -p "${pkg}" "$@"
 fi
 
+# Compatibility: older docs/tests refer to the layout integration test target as `layout`, but the
+# aggregator binary is named `layout_tests` (see tests/layout_tests.rs).
+#
+# Accept `--test layout` and rewrite it to the actual target name so guidance like:
+#   scripts/cargo_agent.sh test -p fastrender --test layout <filter>
+# keeps working.
+argv=("$@")
+for ((i = 0; i < ${#argv[@]}; i++)); do
+  if [[ "${argv[$i]}" == "--test" && "${argv[$((i + 1))]:-}" == "layout" ]]; then
+    argv[$((i + 1))]="layout_tests"
+  elif [[ "${argv[$i]}" == "--test=layout" ]]; then
+    argv[$i]="--test=layout_tests"
+  fi
+done
+set -- "${argv[@]}"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Some CI/agent environments configure `build.rustc-wrapper = "sccache"` in a global Cargo config.
