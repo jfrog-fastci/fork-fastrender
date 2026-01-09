@@ -750,7 +750,7 @@ mod tests {
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
     _host: &mut dyn VmHost,
-    host: &mut dyn VmHostHooks,
+    hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -771,7 +771,7 @@ mod tests {
       let _ = ctx.call(hooks, Value::Object(job_cb), Value::Object(global), &[])?;
       Ok(())
     });
-    host.host_enqueue_promise_job(job, None);
+    hooks.host_enqueue_promise_job(job, None);
 
     Ok(Value::Undefined)
   }

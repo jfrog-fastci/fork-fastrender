@@ -1,6 +1,6 @@
 use vm_js::{
   GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
-  Vm, VmError, VmHostHooks, VmOptions,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 // Lightweight integration-smoke test for vm-js' Function.prototype.call intrinsic.
@@ -32,7 +32,8 @@ impl Drop for TestRealm {
 fn reflect_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -95,7 +96,7 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
   let Value::Object(call) = call else {
     panic!("expected Function.prototype.call to be callable");
   };
-  let result = rt.vm.call(
+  let result = rt.vm.call_without_host(
     &mut scope,
     Value::Object(call),
     Value::Object(reflect_fn),
@@ -118,7 +119,7 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
       scope.push_root(Value::Object(args_arr))?;
       define_enumerable_data_property(&mut scope, args_arr, "0", Value::Number(7.0))?;
 
-      let result = rt.vm.call(
+      let result = rt.vm.call_without_host(
         &mut scope,
         Value::Object(apply),
         Value::Object(reflect_fn),
@@ -138,7 +139,7 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
     Value::Undefined => {}
     Value::Object(bind) => {
       // Bind only `thisArg`.
-      let bound_this = rt.vm.call(
+      let bound_this = rt.vm.call_without_host(
         &mut scope,
         Value::Object(bind),
         Value::Object(reflect_fn),
@@ -151,11 +152,11 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
 
       let result = rt
         .vm
-        .call(&mut scope, Value::Object(bound_this), Value::Undefined, &[])?;
+        .call_without_host(&mut scope, Value::Object(bound_this), Value::Undefined, &[])?;
       assert_eq!(result, Value::Object(this_obj));
 
       // Bind `thisArg` + a leading argument.
-      let bound = rt.vm.call(
+      let bound = rt.vm.call_without_host(
         &mut scope,
         Value::Object(bind),
         Value::Object(reflect_fn),
@@ -167,7 +168,7 @@ fn function_call_apply_bind_smoke() -> Result<(), VmError> {
       scope.push_root(Value::Object(bound_fn))?;
 
       // Bound function prepends bound args.
-      let result = rt.vm.call(
+      let result = rt.vm.call_without_host(
         &mut scope,
         Value::Object(bound_fn),
         Value::Undefined,

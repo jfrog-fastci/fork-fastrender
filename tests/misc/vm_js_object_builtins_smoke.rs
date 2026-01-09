@@ -1,6 +1,6 @@
 use vm_js::{
   GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
-  Vm, VmError, VmHostHooks, VmOptions,
+  Vm, VmError, VmHost, VmHostHooks, VmOptions,
 };
 
 // Lightweight integration-smoke test for vm-js' Object intrinsics/builtins.
@@ -17,7 +17,8 @@ struct TestRealm {
 fn return_two_native(
   _vm: &mut Vm,
   _scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],

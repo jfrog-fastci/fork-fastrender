@@ -1112,7 +1112,7 @@ mod tests {
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
     _host: &mut dyn VmHost,
-    host: &mut dyn VmHostHooks,
+    hooks: &mut dyn VmHostHooks,
     _callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1121,7 +1121,7 @@ mod tests {
     record_promise_job_log(heap_ptr, "timeout");
 
     let heap_ptr_for_job = heap_ptr;
-    host.host_enqueue_promise_job(
+    hooks.host_enqueue_promise_job(
       vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
         record_promise_job_log(heap_ptr_for_job, "job");
         Ok(())
@@ -1222,7 +1222,7 @@ mod tests {
     vm: &mut Vm,
     scope: &mut Scope<'_>,
     _host: &mut dyn VmHost,
-    host: &mut dyn VmHostHooks,
+    hooks: &mut dyn VmHostHooks,
     callee: vm_js::GcObject,
     _this: Value,
     _args: &[Value],
@@ -1250,7 +1250,7 @@ mod tests {
         _ => Value::Number(0.0),
       };
       let clear_interval = get_prop(scope, global, "clearInterval");
-      let _ = vm.call_with_host(scope, host, clear_interval, Value::Undefined, &[id])?;
+      let _ = vm.call_with_host(scope, hooks, clear_interval, Value::Undefined, &[id])?;
     }
 
     Ok(Value::Undefined)
@@ -1703,7 +1703,7 @@ mod tests {
         let clear_timeout = get_prop(&mut scope, global, "clearTimeout");
         let timeout_cb = make_callback(vm, &mut scope, global, "timeout_cb", cb_push_t);
         let id = vm
-          .call(
+          .call_without_host(
             &mut scope,
             set_timeout,
             Value::Undefined,
@@ -1711,7 +1711,7 @@ mod tests {
           )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         let _ = vm
-          .call(&mut scope, clear_timeout, Value::Undefined, &[id])
+          .call_without_host(&mut scope, clear_timeout, Value::Undefined, &[id])
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
       })
@@ -1754,7 +1754,7 @@ mod tests {
         let set_interval = get_prop(&mut scope, global, "setInterval");
         let interval_cb = make_callback(vm, &mut scope, global, "interval_cb", cb_interval_tick);
         let id = vm
-          .call(
+          .call_without_host(
             &mut scope,
             set_interval,
             Value::Undefined,
