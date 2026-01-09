@@ -2,9 +2,11 @@
 
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::absolute_bounds_for_box_id;
-use fastrender::ui::messages::{PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{
+  NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
+};
 use fastrender::ui::BrowserTabController;
-use fastrender::{BoxNode, BoxTree, Point, Result};
+use fastrender::{BoxNode, BoxTree, Point, Result, Rgba};
 
 use super::support::{self, pointer_down, pointer_up, request_repaint, scroll_msg, text_input};
 
@@ -470,6 +472,51 @@ fn browser_tab_controller_select_dropdown_popup_opens_and_selects() -> Result<()
   assert!(
     opt2.get_attribute_ref("selected").is_some(),
     "expected o2 to gain selected attribute after choosing it"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn browser_tab_controller_navigation_reuses_renderer_instance() -> Result<()> {
+  let _lock = super::stage_listener_test_lock();
+  let tab_id = TabId(1);
+  let viewport_css = (64, 64);
+
+  let mut renderer = support::deterministic_renderer();
+  renderer.set_background_color(Rgba::rgb(17, 34, 51));
+
+  let html = "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>";
+  let mut controller = BrowserTabController::from_html_with_renderer(
+    renderer,
+    tab_id,
+    html,
+    "about:blank",
+    viewport_css,
+    1.0,
+  )?;
+
+  let frame0 = extract_frame(controller.handle_message(request_repaint(
+    tab_id,
+    RepaintReason::Explicit,
+  ))?)
+  .expect("expected initial FrameReady");
+  assert_eq!(
+    support::rgba_at(&frame0.pixmap, 0, 0),
+    [17, 34, 51, 255],
+    "expected renderer background color to be applied"
+  );
+
+  let frame1 = extract_frame(controller.handle_message(UiToWorker::Navigate {
+    tab_id,
+    url: "about:newtab".to_string(),
+    reason: NavigationReason::TypedUrl,
+  })?)
+  .expect("expected FrameReady after navigation");
+  assert_eq!(
+    support::rgba_at(&frame1.pixmap, 0, 0),
+    [17, 34, 51, 255],
+    "expected navigation to reuse the existing renderer background color"
   );
 
   Ok(())

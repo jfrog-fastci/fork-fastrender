@@ -38,7 +38,8 @@ impl BrowserTabController {
     viewport_css: (u32, u32),
     dpr: f32,
   ) -> Result<Self> {
-    Self::from_html_with_renderer(FastRender::new()?, tab_id, html, document_url, viewport_css, dpr)
+    let renderer = FastRender::new()?;
+    Self::from_html_with_renderer(renderer, tab_id, html, document_url, viewport_css, dpr)
   }
 
   /// Like [`BrowserTabController::from_html`], but allows the caller to provide a pre-built
@@ -565,18 +566,19 @@ impl BrowserTabController {
       .with_viewport(self.viewport_css.0, self.viewport_css.1)
       .with_device_pixel_ratio(self.dpr);
 
-    let mut renderer = FastRender::new()?;
-
-    let report = if about_pages::is_about_url(url) {
+    let (committed_url, base_url) = if about_pages::is_about_url(url) {
       let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
         about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
       });
-      renderer.set_base_url(about_pages::ABOUT_BASE_URL);
-      let dom = renderer.parse_html(&html)?;
-      renderer.prepare_dom_with_options(dom, Some(url), options.clone())?
+      self.document.navigate_html_with_options(
+        url,
+        &html,
+        Some(about_pages::ABOUT_BASE_URL),
+        options.clone(),
+      )?
     } else {
-      match renderer.prepare_url(url, options.clone()) {
-        Ok(report) => report,
+      match self.document.navigate_url_with_options(url, options.clone()) {
+        Ok((committed_url, base_url)) => (committed_url, base_url),
         Err(err) => {
           out.push(WorkerToUi::NavigationFailed {
             tab_id: self.tab_id,
@@ -586,22 +588,18 @@ impl BrowserTabController {
             can_go_forward: false,
           });
           let html = about_pages::error_page_html("Navigation failed", &err.to_string());
-          renderer.set_base_url(about_pages::ABOUT_BASE_URL);
-          let dom = renderer.parse_html(&html)?;
-          renderer.prepare_dom_with_options(dom, Some(about_pages::ABOUT_ERROR), options.clone())?
+          self.document.navigate_html_with_options(
+            about_pages::ABOUT_ERROR,
+            &html,
+            Some(about_pages::ABOUT_BASE_URL),
+            options.clone(),
+          )?
         }
       }
     };
 
-    let final_url = report.final_url.clone().unwrap_or_else(|| url.to_string());
-    self.current_url = final_url.clone();
-    self.base_url = strip_fragment(report.base_url.as_deref().unwrap_or(&final_url));
-
-    // Replace document + interaction state.
-    self.document = BrowserDocument::from_prepared(renderer, report.document, options)?;
-    self
-      .document
-      .set_navigation_urls(Some(final_url.clone()), Some(self.base_url.clone()));
+    self.current_url = committed_url.clone();
+    self.base_url = strip_fragment(&base_url);
     self.interaction = InteractionEngine::new();
     self.scroll_state = ScrollState::default();
     self.document.set_scroll_state(self.scroll_state.clone());
