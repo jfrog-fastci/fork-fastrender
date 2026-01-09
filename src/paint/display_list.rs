@@ -723,42 +723,55 @@ impl BorderRadii {
     let left_sum = self.top_left.y + self.bottom_left.y;
     let right_sum = self.top_right.y + self.bottom_right.y;
 
-    let mut scale_x: f32 = 1.0;
+    // https://drafts.csswg.org/css-backgrounds-3/#corner-overlap
+    //
+    // The spec defines a *single* scale factor `f` applied to both axes of all corners:
+    //
+    //   f = min(
+    //     width  / (rx_tl + rx_tr),
+    //     width  / (rx_bl + rx_br),
+    //     height / (ry_tl + ry_bl),
+    //     height / (ry_tr + ry_br),
+    //     1.0
+    //   )
+    //
+    // This matters for "pill" radii like `border-radius: 9999px` on a wide-but-short box: the
+    // correct result is a capsule with radius `min(width, height) / 2`, not an ellipse whose
+    // horizontal radius is `width / 2`.
+    let mut scale: f32 = 1.0;
     if top_sum > 0.0 {
-      scale_x = scale_x.min(width / top_sum);
+      scale = scale.min(width / top_sum);
     }
     if bottom_sum > 0.0 {
-      scale_x = scale_x.min(width / bottom_sum);
+      scale = scale.min(width / bottom_sum);
     }
-
-    let mut scale_y: f32 = 1.0;
     if left_sum > 0.0 {
-      scale_y = scale_y.min(height / left_sum);
+      scale = scale.min(height / left_sum);
     }
     if right_sum > 0.0 {
-      scale_y = scale_y.min(height / right_sum);
+      scale = scale.min(height / right_sum);
     }
 
-    if scale_x >= 1.0 && scale_y >= 1.0 {
+    if scale >= 1.0 {
       return self;
     }
 
     Self {
       top_left: BorderRadius {
-        x: self.top_left.x * scale_x,
-        y: self.top_left.y * scale_y,
+        x: self.top_left.x * scale,
+        y: self.top_left.y * scale,
       },
       top_right: BorderRadius {
-        x: self.top_right.x * scale_x,
-        y: self.top_right.y * scale_y,
+        x: self.top_right.x * scale,
+        y: self.top_right.y * scale,
       },
       bottom_right: BorderRadius {
-        x: self.bottom_right.x * scale_x,
-        y: self.bottom_right.y * scale_y,
+        x: self.bottom_right.x * scale,
+        y: self.bottom_right.y * scale,
       },
       bottom_left: BorderRadius {
-        x: self.bottom_left.x * scale_x,
-        y: self.bottom_left.y * scale_y,
+        x: self.bottom_left.x * scale,
+        y: self.bottom_left.y * scale,
       },
     }
   }
@@ -2913,17 +2926,18 @@ mod tests {
   }
 
   #[test]
-  fn clamped_radii_scale_axes_independently() {
+  fn clamped_radii_scales_both_axes_with_single_factor() {
     let radii = BorderRadii::new(
-      BorderRadius { x: 60.0, y: 10.0 },
-      BorderRadius { x: 60.0, y: 10.0 },
-      BorderRadius { x: 60.0, y: 10.0 },
-      BorderRadius { x: 60.0, y: 10.0 },
+      BorderRadius { x: 100.0, y: 20.0 },
+      BorderRadius { x: 100.0, y: 20.0 },
+      BorderRadius { x: 100.0, y: 20.0 },
+      BorderRadius { x: 100.0, y: 20.0 },
     );
-    // Width forces horizontal radii to shrink; height is ample so vertical radii remain.
+    // Width forces a scale factor of 0.5, which must also be applied to the y radii (CSS
+    // Backgrounds & Borders: corner overlap).
     let clamped = radii.clamped(100.0, 200.0);
-    assert!(clamped.top_left.x < 60.0);
-    assert!((clamped.top_left.y - 10.0).abs() < 1e-6);
+    assert_eq!(clamped.top_left.x, 50.0);
+    assert_eq!(clamped.top_left.y, 10.0);
   }
 
   // ========================================================================

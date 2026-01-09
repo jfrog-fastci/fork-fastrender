@@ -124,6 +124,22 @@ mod border_radii {
   }
 
   #[test]
+  fn test_clamped_radii_uses_single_uniform_scale_factor() {
+    // For non-square boxes, the spec applies a *single* scaling factor to both axes (not separate
+    // x/y scales). This is required for pill/capsule shapes such as `border-radius: 9999px` on a
+    // wide-but-short box.
+    //
+    // If we incorrectly scale x/y independently, we'd get rx=100 (no clamp) and ry=25 (clamped),
+    // producing an ellipse instead of a capsule.
+    let radii = BorderRadii::uniform(100.0);
+    let clamped = radii.clamped(200.0, 50.0);
+    assert_eq!(clamped.top_left.x, 25.0);
+    assert_eq!(clamped.top_left.y, 25.0);
+    assert_eq!(clamped.top_right.x, 25.0);
+    assert_eq!(clamped.bottom_left.y, 25.0);
+  }
+
+  #[test]
   fn test_clamped_radii_zero_dimensions() {
     let radii = BorderRadii::uniform(10.0);
     let clamped = radii.clamped(0.0, 100.0);
