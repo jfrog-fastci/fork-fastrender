@@ -2161,3 +2161,37 @@ fn tab_focuses_first_focusable_element_when_nothing_focused() {
     Some("true")
   );
 }
+
+#[test]
+fn tab_focuses_area_href_elements() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("div", vec![("id", "plain")], vec![]),
+        el("area", vec![("id", "area"), ("href", "/a")], vec![]),
+        el("input", vec![("id", "inp")], vec![]),
+      ],
+    )],
+  )]);
+
+  let mut engine = InteractionEngine::new();
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "area", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "area", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+}

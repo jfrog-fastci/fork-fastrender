@@ -233,7 +233,7 @@ fn is_anchor_with_href(node: &DomNode) -> bool {
 fn is_focusable_anchor(node: &DomNode) -> bool {
   if !node
     .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("a"))
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("a") || tag.eq_ignore_ascii_case("area"))
   {
     return false;
   }
