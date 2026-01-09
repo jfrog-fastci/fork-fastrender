@@ -113,7 +113,7 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
     let mut host = TestHost {
       call_result: Ok(Value::Undefined),
     };
-    let (created, _) = create_promise_resolve_thenable_job(
+    let created = create_promise_resolve_thenable_job(
       &mut host,
       scope.heap_mut(),
       Value::Object(thenable),
@@ -174,7 +174,7 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
     resolve = scope.alloc_object()?;
     reject = scope.alloc_object()?;
 
-    let (created, _) = create_promise_resolve_thenable_job(
+    let created = create_promise_resolve_thenable_job(
       &mut host,
       scope.heap_mut(),
       Value::Object(thenable),
@@ -239,9 +239,7 @@ fn promise_reaction_job_discard_releases_roots() -> Result<(), VmError> {
       reaction_type: PromiseReactionType::Fulfill,
       handler: Some(host.host_make_job_callback(callback)),
     };
-    let (created, _) =
-      new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument), None)?;
-    job = created;
+    job = new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument))?;
   }
 
   let weak_callback = WeakGcObject::from(callback);
@@ -285,9 +283,7 @@ fn promise_reaction_job_error_still_releases_roots() -> Result<(), VmError> {
       reaction_type: PromiseReactionType::Fulfill,
       handler: Some(host.host_make_job_callback(callback)),
     };
-    let (created, _) =
-      new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument), None)?;
-    job = created;
+    job = new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument))?;
   }
 
   let weak_callback = WeakGcObject::from(callback);
