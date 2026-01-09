@@ -2964,6 +2964,70 @@ fn range_click_focuses_input() {
 }
 
 #[test]
+fn tabindex_zero_element_click_focuses_without_focus_visible() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("div", vec![("id", "t"), ("tabindex", "0")], vec![])],
+    )],
+  )]);
+
+  let dom_id = node_id(&dom, "t");
+  let mut node = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  node.styled_node_id = Some(dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![node],
+  ));
+  let box_id = find_box_id_for_styled_node(&box_tree, dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(10.0, 10.0),
+  );
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(10.0, 10.0),
+    "https://x/",
+    "https://x/",
+  );
+  assert!(changed);
+  match action {
+    InteractionAction::FocusChanged { node_id } => assert_eq!(node_id, Some(dom_id)),
+    InteractionAction::None => {}
+    other => panic!("unexpected pointer_up action: {other:?}"),
+  }
+  assert_eq!(
+    attr_value(&dom, "t", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert!(
+    !has_attr(&dom, "t", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+}
+
+#[test]
 fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_tabindex_negative() {
   let mut dom = doc(vec![el(
     "html",

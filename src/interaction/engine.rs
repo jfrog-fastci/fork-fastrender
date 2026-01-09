@@ -378,23 +378,9 @@ fn is_disabled_or_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
   false
 }
 
-fn has_tabindex_minus_one(node: &DomNode) -> bool {
-  let Some(tabindex) = node.get_attribute_ref("tabindex") else {
-    return false;
-  };
-  let trimmed = trim_ascii_whitespace(tabindex);
-  if trimmed.is_empty() {
-    return false;
-  }
-  trimmed
-    .parse::<i32>()
-    .ok()
-    .is_some_and(|value| value == -1)
-}
-
 /// MVP focusable predicate for pointer focus / blur decisions.
 ///
-/// This intentionally only covers native interactive elements we currently support.
+/// This covers native interactive elements we currently support, plus `tabindex>=0` focusability.
 fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool {
   let Some(node) = index.node(node_id) else {
     return false;
@@ -404,10 +390,17 @@ fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool
     return false;
   }
 
-  // If tabindex=-1 is used to remove an element from focus traversal, also skip focusing it via
-  // pointer interaction for MVP consistency.
-  if has_tabindex_minus_one(node) {
-    return false;
+  // MVP tabindex support: treat `tabindex < 0` as not focusable via pointer, and `tabindex >= 0`
+  // as focusable (even for non-interactive elements).
+  if let Some(tabindex) = parse_tabindex(node) {
+    if tabindex < 0 {
+      return false;
+    }
+    // `input type=hidden` is never focusable, even if tabindex is set.
+    if is_input(node) && input_type(node).eq_ignore_ascii_case("hidden") {
+      return false;
+    }
+    return true;
   }
 
   if is_anchor_with_href(node) {
@@ -925,6 +918,66 @@ fn apply_select_listbox_click(
         return false;
       }
       dom_mutation::activate_select_option(dom, select_id, *node_id, control.multiple)
+    }
+  }
+}
+
+fn apply_select_listbox_click_dom_fallback(
+  dom: &mut DomNode,
+  index: &DomIndexMut,
+  fragment_tree: &FragmentTree,
+  page_point: Point,
+  select_id: usize,
+  hit_box_id: usize,
+  scroll_state: &ScrollState,
+) -> bool {
+  let Some(select_node) = index.node(select_id) else {
+    return false;
+  };
+
+  let multiple = select_node.get_attribute_ref("multiple").is_some();
+  let size = crate::dom::select_effective_size(select_node);
+  let is_listbox = multiple || size > 1;
+  if !is_listbox {
+    return false;
+  }
+
+  let Some(select_rect) = fragment_rect_for_box_id_at_point(fragment_tree, page_point, hit_box_id) else {
+    return false;
+  };
+
+  let rows = collect_select_rows(index, select_id);
+  if rows.is_empty() {
+    return false;
+  }
+
+  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
+  if !scroll_y.is_finite() {
+    scroll_y = 0.0;
+  }
+
+  let row_height = select_rect.height() / size.max(1) as f32;
+  if row_height <= 0.0 || !row_height.is_finite() {
+    return false;
+  }
+
+  let viewport_height = select_rect.height().max(0.0);
+  let content_height = row_height * rows.len() as f32;
+  let max_scroll_y = (content_height - viewport_height).max(0.0);
+  scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+
+  let local_y = page_point.y - select_rect.y();
+  let content_y = local_y + scroll_y;
+  let mut row_idx = (content_y / row_height).floor() as isize;
+  row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
+
+  match rows.get(row_idx as usize) {
+    Some(SelectRow::OptGroupLabel { .. }) | None => false,
+    Some(SelectRow::Option { node_id, disabled }) => {
+      if *disabled {
+        return false;
+      }
+      dom_mutation::activate_select_option(dom, select_id, *node_id, multiple)
     }
   }
 }
@@ -1454,6 +1507,18 @@ impl InteractionEngine {
                   page_point,
                   target_id,
                   control,
+                  hit.box_id,
+                  scroll,
+                );
+              } else {
+                // Unit tests can build simplified box trees without a `FormControl` snapshot. Fall
+                // back to a DOM-derived row model so listbox clicks still update `<option>` state.
+                dom_changed |= apply_select_listbox_click_dom_fallback(
+                  dom,
+                  &index,
+                  fragment_tree,
+                  page_point,
+                  target_id,
                   hit.box_id,
                   scroll,
                 );
