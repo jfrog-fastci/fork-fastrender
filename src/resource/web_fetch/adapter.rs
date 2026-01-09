@@ -34,10 +34,33 @@ impl<'a> Default for WebFetchExecutionContext<'a> {
   }
 }
 
-pub fn execute_web_fetch(
+fn effective_referrer_url<'a>(
+  request: &'a Request,
+  ctx: WebFetchExecutionContext<'a>,
+) -> Option<&'a str> {
+  if request.referrer.trim().is_empty() {
+    return ctx.referrer_url;
+  }
+  // `Request.referrer` is a URL string in the spec, but it can also carry the sentinel value
+  // `"no-referrer"` to explicitly omit the referrer. FastRender uses that sentinel verbatim.
+  if request.referrer == "no-referrer" {
+    return None;
+  }
+  Some(request.referrer.as_str())
+}
+
+fn effective_referrer_policy(request: &Request, ctx: WebFetchExecutionContext<'_>) -> ReferrerPolicy {
+  if request.referrer_policy != ReferrerPolicy::EmptyString {
+    request.referrer_policy
+  } else {
+    ctx.referrer_policy
+  }
+}
+
+pub fn execute_web_fetch<'a>(
   fetcher: &dyn ResourceFetcher,
-  request: &Request,
-  ctx: WebFetchExecutionContext<'_>,
+  request: &'a Request,
+  ctx: WebFetchExecutionContext<'a>,
 ) -> Result<Response> {
   let method = request.method.as_str();
   let method_is_get = method.eq_ignore_ascii_case("GET");
@@ -84,16 +107,8 @@ pub fn execute_web_fetch(
     }
   }
 
-  let referrer_url = if request.referrer.trim().is_empty() {
-    ctx.referrer_url
-  } else {
-    Some(request.referrer.as_str())
-  };
-  let referrer_policy = if request.referrer_policy != ReferrerPolicy::EmptyString {
-    request.referrer_policy
-  } else {
-    ctx.referrer_policy
-  };
+  let referrer_url = effective_referrer_url(request, ctx);
+  let referrer_policy = effective_referrer_policy(request, ctx);
   let credentials_mode = FetchCredentialsMode::from(request.credentials);
 
   let destination = ctx.destination;
@@ -642,6 +657,8 @@ mod tests {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Include;
     let err = execute_web_fetch(&fetcher, &request, ctx).expect_err("expected wildcard CORS fail");
     assert!(err.to_string().contains("Access-Control-Allow-Origin * is not allowed"));
   }
@@ -686,6 +703,104 @@ mod tests {
     assert!(err
       .to_string()
       .contains("missing Access-Control-Allow-Credentials: true"));
+  }
+
+  #[test]
+  fn request_referrer_overrides_execution_context_referrer_url() {
+    struct ReferrerAssertingFetcher {
+      expected_referrer_url: Option<&'static str>,
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for ReferrerAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_with_request")
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.referrer_url, self.expected_referrer_url);
+        Ok(self.resource.clone())
+      }
+    }
+
+    let fetcher = ReferrerAssertingFetcher {
+      expected_referrer_url: Some("https://override.example/referrer"),
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.referrer = "https://override.example/referrer".to_string();
+    let ctx = WebFetchExecutionContext {
+      referrer_url: Some("https://ctx.example/page"),
+      ..WebFetchExecutionContext::default()
+    };
+
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+  }
+
+  #[test]
+  fn request_referrer_policy_overrides_execution_context_referrer_policy() {
+    struct PolicyAssertingFetcher {
+      expected_referrer_policy: crate::resource::ReferrerPolicy,
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for PolicyAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_with_request")
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.referrer_policy, self.expected_referrer_policy);
+        Ok(self.resource.clone())
+      }
+    }
+
+    let fetcher = PolicyAssertingFetcher {
+      expected_referrer_policy: crate::resource::ReferrerPolicy::NoReferrerWhenDowngrade,
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.referrer_policy = crate::resource::ReferrerPolicy::NoReferrerWhenDowngrade;
+    let ctx = WebFetchExecutionContext {
+      referrer_policy: crate::resource::ReferrerPolicy::NoReferrer,
+      ..WebFetchExecutionContext::default()
+    };
+
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+  }
+
+  #[test]
+  fn empty_request_referrer_falls_back_to_execution_context_referrer_url() {
+    struct ReferrerAssertingFetcher {
+      expected_referrer_url: Option<&'static str>,
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for ReferrerAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_with_request")
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.referrer_url, self.expected_referrer_url);
+        Ok(self.resource.clone())
+      }
+    }
+
+    let fetcher = ReferrerAssertingFetcher {
+      expected_referrer_url: Some("https://ctx.example/page"),
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+
+    let request = Request::new("GET", "https://example.com/a");
+    let ctx = WebFetchExecutionContext {
+      referrer_url: Some("https://ctx.example/page"),
+      ..WebFetchExecutionContext::default()
+    };
+
+    execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
   }
 
   #[test]

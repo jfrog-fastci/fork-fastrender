@@ -52,7 +52,17 @@ pub struct Request {
   pub mode: RequestMode,
   pub credentials: RequestCredentials,
   pub redirect: RequestRedirect,
+  /// Referrer for this request.
+  ///
+  /// Semantics used by `web_fetch::execute_web_fetch`:
+  /// - `""` (empty) means "use the execution context's default referrer".
+  /// - `"no-referrer"` is treated as a sentinel meaning "explicitly omit the referrer".
+  /// - Any other value is treated as a URL string (the adapter does not validate it).
   pub referrer: String,
+  /// Referrer policy override for this request.
+  ///
+  /// [`ReferrerPolicy::EmptyString`] represents the empty-string state from the spec and means
+  /// "use the execution context's default referrer policy".
   pub referrer_policy: ReferrerPolicy,
   pub body: Option<Body>,
 }
