@@ -61,6 +61,42 @@ with the parent repo and you should update it:
 git submodule update --init engines/ecma-rs
 ```
 
+### Resolving `git pull --rebase` submodule conflicts
+
+Sometimes `origin/main` advances the `engines/ecma-rs` gitlink while you also have a local commit
+that bumps it. When you `git pull --rebase`, Git may stop with a message like:
+
+```
+Failed to merge submodule engines/ecma-rs (commits don't follow merge-base)
+CONFLICT (submodule): Merge conflict in engines/ecma-rs
+```
+
+To resolve:
+
+1. Inspect the two candidate SHAs:
+
+   ```bash
+   git diff --submodule
+   ```
+
+2. Decide which `ecma-rs` commit should win (or rebase/cherry-pick in the submodule if you need a
+   combined commit), then check it out inside the submodule:
+
+   ```bash
+   git -C engines/ecma-rs checkout <sha>
+   ```
+
+3. Record the resolved gitlink in FastRender and continue the rebase:
+
+   ```bash
+   git add engines/ecma-rs
+   git rebase --continue
+   ```
+
+Tip: FastRender sometimes pins to `ecma-rs` commits that live on non-`master` branches (hotfix
+branches/tags). That is fine as long as the SHA is reachable from the `ecma-rs` remote (otherwise CI
+will fail with `upload-pack: not our ref <sha>`).
+
 Note: `ecma-rs` itself contains optional nested submodules (large test corpora). Only initialize
 those when you intend to run those conformance suites:
 
