@@ -359,6 +359,7 @@ fn expand_typedefs_in_type(ctx: &TypeContext, ty: &IdlType) -> Result<IdlType> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::webidl::overload_ir;
 
   fn test_world() -> ResolvedWebIdlWorld {
     let idl = r#"
@@ -454,7 +455,7 @@ mod tests {
   }
 
   #[test]
-  fn map_parsed_types_into_overload_types() {
+  fn map_parsed_types_into_overload_ir_types() {
     let world = test_world();
     let ctx = build_type_context(&world).expect("build type context");
 
@@ -462,7 +463,8 @@ mod tests {
     let ty = parse_type_with_world_and_typedefs(&world, &ctx, "Bar", &[], true).unwrap();
     assert_eq!(ty, IdlType::String(webidl_ir::StringType::DomString));
 
-    // Callback function + annotation.
+    // Callback function + annotation (legacy treat non-object as null affects distinguishability
+    // vs dictionary types in WebIDL's table).
     let cb_ty = parse_type_with_world(&world, "[LegacyTreatNonObjectAsNull] Cb", &[]).unwrap();
     assert_eq!(
       cb_ty,
@@ -473,6 +475,27 @@ mod tests {
           kind: NamedTypeKind::CallbackFunction,
         })),
       }
+    );
+
+    // Feed resolved types into overload validation.
+    let overloads = vec![
+      overload_ir::Overload {
+        name: "f".to_string(),
+        arguments: vec![overload_ir::OverloadArgument::required(ty.clone())],
+        origin: None,
+      },
+      overload_ir::Overload {
+        name: "f".to_string(),
+        arguments: vec![overload_ir::OverloadArgument::required(IdlType::Boolean)],
+        origin: None,
+      },
+    ];
+    overload_ir::validate_overload_set(&overloads, &world).expect("valid overload set");
+
+    let dict_ty = parse_type_with_world(&world, "Derived", &[]).unwrap();
+    assert!(
+      !overload_ir::are_distinguishable(&cb_ty, &dict_ty, &world),
+      "callback function with LegacyTreatNonObjectAsNull must not be distinguishable from a dictionary"
     );
   }
 }
