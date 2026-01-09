@@ -13,6 +13,7 @@ pub use state_store::AnimationStateStore;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use smallvec::SmallVec;
 use crate::css::types::{
   BoxShadow, Keyframe, KeyframeSelector, KeyframesRule, PropertyValue, RotateValue, ScaleValue,
   TextShadow, TranslateValue,
@@ -7850,9 +7851,9 @@ fn transition_longhand_names() -> &'static [&'static str] {
 /// Expands a `transition-property` entry into the corresponding longhand names.
 ///
 /// This is a minimal subset aligned to the properties supported by the animation system.
-fn expand_transition_property_name<'a>(name: &'a str) -> Vec<&'a str> {
+fn expand_transition_property_name<'a>(name: &'a str) -> SmallVec<[&'a str; 12]> {
   match name {
-    "border" => vec![
+    "border" => smallvec::smallvec![
       "border-top-width",
       "border-right-width",
       "border-bottom-width",
@@ -7866,44 +7867,44 @@ fn expand_transition_property_name<'a>(name: &'a str) -> Vec<&'a str> {
       "border-bottom-style",
       "border-left-style",
     ],
-    "border-top" => vec!["border-top-width", "border-top-color", "border-top-style"],
-    "border-right" => vec![
+    "border-top" => smallvec::smallvec!["border-top-width", "border-top-color", "border-top-style"],
+    "border-right" => smallvec::smallvec![
       "border-right-width",
       "border-right-color",
       "border-right-style",
     ],
-    "border-bottom" => vec![
+    "border-bottom" => smallvec::smallvec![
       "border-bottom-width",
       "border-bottom-color",
       "border-bottom-style",
     ],
-    "border-left" => vec!["border-left-width", "border-left-color", "border-left-style"],
-    "border-color" => vec![
+    "border-left" => smallvec::smallvec!["border-left-width", "border-left-color", "border-left-style"],
+    "border-color" => smallvec::smallvec![
       "border-top-color",
       "border-right-color",
       "border-bottom-color",
       "border-left-color",
     ],
-    "border-width" => vec![
+    "border-width" => smallvec::smallvec![
       "border-top-width",
       "border-right-width",
       "border-bottom-width",
       "border-left-width",
     ],
-    "border-style" => vec![
+    "border-style" => smallvec::smallvec![
       "border-top-style",
       "border-right-style",
       "border-bottom-style",
       "border-left-style",
     ],
-    "border-radius" => vec![
+    "border-radius" => smallvec::smallvec![
       "border-top-left-radius",
       "border-top-right-radius",
       "border-bottom-right-radius",
       "border-bottom-left-radius",
     ],
-    "outline" => vec!["outline-color", "outline-style", "outline-width"],
-    _ => vec![name],
+    "outline" => smallvec::smallvec!["outline-color", "outline-style", "outline-width"],
+    _ => smallvec::smallvec![name],
   }
 }
 
@@ -10101,8 +10102,8 @@ mod tests {
   #[test]
   fn expand_transition_property_name_expands_supported_shorthands() {
     assert_eq!(
-      expand_transition_property_name("border"),
-      vec![
+      expand_transition_property_name("border").as_slice(),
+      &[
         "border-top-width",
         "border-right-width",
         "border-bottom-width",
@@ -10118,32 +10119,32 @@ mod tests {
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-top"),
-      vec!["border-top-width", "border-top-color", "border-top-style"]
+      expand_transition_property_name("border-top").as_slice(),
+      &["border-top-width", "border-top-color", "border-top-style"]
     );
     assert_eq!(
-      expand_transition_property_name("border-right"),
-      vec![
+      expand_transition_property_name("border-right").as_slice(),
+      &[
         "border-right-width",
         "border-right-color",
         "border-right-style",
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-bottom"),
-      vec![
+      expand_transition_property_name("border-bottom").as_slice(),
+      &[
         "border-bottom-width",
         "border-bottom-color",
         "border-bottom-style",
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-left"),
-      vec!["border-left-width", "border-left-color", "border-left-style"]
+      expand_transition_property_name("border-left").as_slice(),
+      &["border-left-width", "border-left-color", "border-left-style"]
     );
     assert_eq!(
-      expand_transition_property_name("border-color"),
-      vec![
+      expand_transition_property_name("border-color").as_slice(),
+      &[
         "border-top-color",
         "border-right-color",
         "border-bottom-color",
@@ -10151,8 +10152,8 @@ mod tests {
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-width"),
-      vec![
+      expand_transition_property_name("border-width").as_slice(),
+      &[
         "border-top-width",
         "border-right-width",
         "border-bottom-width",
@@ -10160,8 +10161,8 @@ mod tests {
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-style"),
-      vec![
+      expand_transition_property_name("border-style").as_slice(),
+      &[
         "border-top-style",
         "border-right-style",
         "border-bottom-style",
@@ -10169,8 +10170,8 @@ mod tests {
       ]
     );
     assert_eq!(
-      expand_transition_property_name("border-radius"),
-      vec![
+      expand_transition_property_name("border-radius").as_slice(),
+      &[
         "border-top-left-radius",
         "border-top-right-radius",
         "border-bottom-right-radius",
@@ -10178,13 +10179,13 @@ mod tests {
       ]
     );
     assert_eq!(
-      expand_transition_property_name("outline"),
-      vec!["outline-color", "outline-style", "outline-width"]
+      expand_transition_property_name("outline").as_slice(),
+      &["outline-color", "outline-style", "outline-width"]
     );
-    assert_eq!(expand_transition_property_name("opacity"), vec!["opacity"]);
+    assert_eq!(expand_transition_property_name("opacity").as_slice(), &["opacity"]);
     assert_eq!(
-      expand_transition_property_name("not-a-real-prop"),
-      vec!["not-a-real-prop"]
+      expand_transition_property_name("not-a-real-prop").as_slice(),
+      &["not-a-real-prop"]
     );
   }
 
