@@ -172,18 +172,34 @@ fn child_nodes_is_an_array_and_updates_after_mutations() {
             const b = document.getElementById("b");
             if (!x || !a || !b) return "missing";
 
-            if (!Array.isArray(x.childNodes)) return "not_array";
-            if (x.childNodes.length !== 2) return "bad_len:" + String(x.childNodes.length);
-            if (x.childNodes[0] !== a || x.childNodes[1] !== b) return "bad_identity";
+            const list1 = x.childNodes;
+            const list2 = x.childNodes;
+            if (!Array.isArray(list1)) return "not_array";
+            if (list1 !== list2) return "not_live_object";
+            if (list1.length !== 2) return "bad_len:" + String(list1.length);
+            if (list1[0] !== a || list1[1] !== b) return "bad_identity";
+
+            // Element traversal APIs should align with real DOM behavior.
+            if (a.parentElement !== x) return "bad_parentElement";
+            if (a.nextElementSibling !== b) return "bad_nextElementSibling";
+            if (b.previousElementSibling !== a) return "bad_previousElementSibling";
+            if (x.firstElementChild !== a) return "bad_firstElementChild";
+            if (x.lastElementChild !== b) return "bad_lastElementChild";
+            if (x.childElementCount !== 2) return "bad_childElementCount:" + String(x.childElementCount);
+            if (!Array.isArray(x.children) || x.children.length !== 2) return "bad_children";
+            if (x.children[0] !== a || x.children[1] !== b) return "bad_children_identity";
 
             x.removeChild(a);
             if (a.parentNode !== null) return "bad_parent";
+            if (a.parentElement !== null) return "bad_parentElement_after_remove";
+            if (list1.length !== 1 || list1[0] !== b) return "bad_live_after_remove";
             if (x.childNodes.length !== 1 || x.childNodes[0] !== b) return "bad_after_remove";
 
             while (x.childNodes.length) {
               x.removeChild(x.childNodes[0]);
             }
             if (x.childNodes.length !== 0) return "bad_clear";
+            if (list1.length !== 0) return "bad_live_clear";
             return "ok";
           } catch (e) {
             if (!e) return "unknown";

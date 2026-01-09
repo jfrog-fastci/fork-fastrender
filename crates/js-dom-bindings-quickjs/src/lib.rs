@@ -17,6 +17,7 @@ use rquickjs::{Ctx, Function, JsLifetime, Object, Result as JsResult, Value};
 const NODE_CACHE_GLOBAL: &str = "__fastrender_dom_node_cache";
 const NODE_CACHE_FINALIZER_REGISTER_GLOBAL: &str = "__fastrender_dom_node_cache_register_finalizer";
 const DOM_EXCEPTION_GLOBAL: &str = "__fastrender_throw_dom_exception";
+const CHILD_NODES_CACHE_PROP: &str = "__fastrender_childNodes";
 
 // Minimal DOMException polyfill used for spec-shaped error reporting (e.g. HierarchyRequestError).
 //
@@ -72,6 +73,29 @@ const DOM_NULLABLE_SHIM: &str = r#"
   g.__fastrender_patch_node_nullables = function (obj) {
     try {
       if (!obj) return;
+      function shadowCachedChildNodes() {
+        var getter = findProtoGetter(obj, "childNodes");
+        if (!getter) return;
+        Object.defineProperty(obj, "childNodes", {
+          get: function () {
+            if (this.__fastrender_childNodes !== undefined) return this.__fastrender_childNodes;
+            var v = getter.call(this);
+            try {
+              Object.defineProperty(this, "__fastrender_childNodes", {
+                value: v,
+                writable: true,
+                enumerable: false,
+                configurable: true,
+              });
+            } catch (_e) {
+              this.__fastrender_childNodes = v;
+            }
+            return v;
+          },
+          enumerable: true,
+          configurable: true,
+        });
+      }
       function shadowGetter(name) {
         var getter = findProtoGetter(obj, name);
         if (!getter) return;
@@ -82,12 +106,21 @@ const DOM_NULLABLE_SHIM: &str = r#"
         });
       }
 
+      // Live-ish NodeList facade: cache the first `childNodes` array we create so stored references
+      // observe updates when DOM mutation methods run.
+      shadowCachedChildNodes();
+
       // Node traversal.
       shadowGetter("parentNode");
+      shadowGetter("parentElement");
       shadowGetter("firstChild");
       shadowGetter("lastChild");
+      shadowGetter("firstElementChild");
+      shadowGetter("lastElementChild");
       shadowGetter("previousSibling");
       shadowGetter("nextSibling");
+      shadowGetter("previousElementSibling");
+      shadowGetter("nextElementSibling");
 
       // Document getters.
       shadowGetter("documentElement");
@@ -242,6 +275,55 @@ impl DomState {
     register_cache_finalizer(&ctx, key.as_str(), &obj)?;
     Ok(obj)
   }
+
+  fn cached_node_wrapper<'js>(
+    self: &Rc<Self>,
+    ctx: Ctx<'js>,
+    node_id: NodeId,
+  ) -> JsResult<Option<Object<'js>>> {
+    let cache: Option<Object<'js>> = ctx.globals().get(NODE_CACHE_GLOBAL)?;
+    let Some(cache) = cache else {
+      return Ok(None);
+    };
+    let key = node_id.index().to_string();
+    let cached: Option<Object<'js>> = cache.get(key.as_str())?;
+    let Some(weakref_obj) = cached else {
+      return Ok(None);
+    };
+    weakref_deref(&ctx, weakref_obj)
+  }
+
+  fn maybe_sync_cached_child_nodes<'js>(
+    self: &Rc<Self>,
+    ctx: Ctx<'js>,
+    node_id: NodeId,
+  ) -> JsResult<()> {
+    let Some(wrapper) = self.cached_node_wrapper(ctx.clone(), node_id)? else {
+      return Ok(());
+    };
+
+    let cached_val: Value<'js> = wrapper.get(CHILD_NODES_CACHE_PROP)?;
+    let Some(array) = cached_val.into_object() else {
+      return Ok(());
+    };
+
+    let child_ids = {
+      let dom = self.dom.borrow();
+      if node_id.index() >= dom.nodes_len() {
+        return Ok(());
+      }
+      direct_child_nodes(&dom, node_id).map_err(|e| dom_error_to_js(&ctx, e))?
+    };
+
+    // Update the cached array in place so stored JS references behave like a live NodeList.
+    array.set("length", 0u32)?;
+    for (idx, child_id) in child_ids.into_iter().enumerate() {
+      let child_obj = self.wrap_node(ctx.clone(), child_id)?;
+      let key = idx.to_string();
+      array.set(key.as_str(), child_obj)?;
+    }
+    Ok(())
+  }
 }
 
 #[derive(Clone)]
@@ -314,10 +396,8 @@ impl Node {
   fn child_nodes<'js>(&self, ctx: Ctx<'js>) -> JsResult<Vec<Object<'js>>> {
     let dom = self.state.dom.borrow();
     ensure_node_exists(&ctx, &dom, self.node_id)?;
-    let children: Vec<NodeId> = dom
-      .children(self.node_id)
-      .map_err(|e| dom_error_to_js(&ctx, e))?
-      .to_vec();
+    let children: Vec<NodeId> =
+      direct_child_nodes(&dom, self.node_id).map_err(|e| dom_error_to_js(&ctx, e))?;
     drop(dom);
 
     children
@@ -326,18 +406,184 @@ impl Node {
       .collect()
   }
 
+  #[qjs(get, rename = "parentElement")]
+  fn parent_element<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let parent = dom.parent_node(self.node_id).filter(|&parent_id| {
+      matches!(
+        dom.node(parent_id).kind,
+        NodeKind::Element { .. } | NodeKind::Slot { .. }
+      )
+    });
+    drop(dom);
+    parent
+      .map(|id| self.state.wrap_node(ctx, id))
+      .transpose()
+  }
+
+  #[qjs(get, rename = "children")]
+  fn element_children<'js>(&self, ctx: Ctx<'js>) -> JsResult<Vec<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let child_ids: Vec<NodeId> = direct_child_nodes(&dom, self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
+      .into_iter()
+      .filter(|&id| {
+        matches!(
+          dom.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      })
+      .collect();
+    drop(dom);
+    child_ids
+      .into_iter()
+      .map(|id| self.state.wrap_node(ctx.clone(), id))
+      .collect()
+  }
+
+  #[qjs(get, rename = "childElementCount")]
+  fn child_element_count<'js>(&self, ctx: Ctx<'js>) -> JsResult<i32> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let count = direct_child_nodes(&dom, self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
+      .into_iter()
+      .filter(|&id| {
+        matches!(
+          dom.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      })
+      .count();
+    Ok(count as i32)
+  }
+
+  #[qjs(get, rename = "firstElementChild")]
+  fn first_element_child<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let found = direct_child_nodes(&dom, self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
+      .into_iter()
+      .find(|&id| {
+        matches!(
+          dom.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      });
+    drop(dom);
+    found
+      .map(|id| self.state.wrap_node(ctx, id))
+      .transpose()
+  }
+
+  #[qjs(get, rename = "lastElementChild")]
+  fn last_element_child<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let found = direct_child_nodes(&dom, self.node_id)
+      .map_err(|e| dom_error_to_js(&ctx, e))?
+      .into_iter()
+      .rev()
+      .find(|&id| {
+        matches!(
+          dom.node(id).kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+      });
+    drop(dom);
+    found
+      .map(|id| self.state.wrap_node(ctx, id))
+      .transpose()
+  }
+
+  #[qjs(get, rename = "previousElementSibling")]
+  fn previous_element_sibling<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let Some(parent) = dom.parent_node(self.node_id) else {
+      return Ok(None);
+    };
+    let siblings = dom.children(parent).map_err(|e| dom_error_to_js(&ctx, e))?;
+    let Some(pos) = siblings.iter().position(|&c| c == self.node_id) else {
+      return Ok(None);
+    };
+    let mut found: Option<NodeId> = None;
+    for &sib in siblings.iter().take(pos).rev() {
+      if sib.index() >= dom.nodes_len() {
+        continue;
+      }
+      let node = dom.node(sib);
+      if node.parent != Some(parent) {
+        continue;
+      }
+      if matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+        found = Some(sib);
+        break;
+      }
+    }
+    drop(dom);
+    found
+      .map(|id| self.state.wrap_node(ctx, id))
+      .transpose()
+  }
+
+  #[qjs(get, rename = "nextElementSibling")]
+  fn next_element_sibling<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
+    let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
+    let Some(parent) = dom.parent_node(self.node_id) else {
+      return Ok(None);
+    };
+    let siblings = dom.children(parent).map_err(|e| dom_error_to_js(&ctx, e))?;
+    let Some(pos) = siblings.iter().position(|&c| c == self.node_id) else {
+      return Ok(None);
+    };
+    let mut found: Option<NodeId> = None;
+    for &sib in siblings.iter().skip(pos + 1) {
+      if sib.index() >= dom.nodes_len() {
+        continue;
+      }
+      let node = dom.node(sib);
+      if node.parent != Some(parent) {
+        continue;
+      }
+      if matches!(node.kind, NodeKind::Element { .. } | NodeKind::Slot { .. }) {
+        found = Some(sib);
+        break;
+      }
+    }
+    drop(dom);
+    found
+      .map(|id| self.state.wrap_node(ctx, id))
+      .transpose()
+  }
+
   // ===========================================================================
   // Node mutation
   // ===========================================================================
 
   #[qjs(rename = "appendChild")]
   fn append_child<'js>(&self, ctx: Ctx<'js>, child: Node) -> JsResult<Object<'js>> {
+    let old_parent = self.state.dom.borrow().parent_node(child.node_id);
     self
       .state
       .dom
       .borrow_mut()
       .append_child(self.node_id, child.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), self.node_id)?;
+    if let Some(old_parent) = old_parent {
+      if old_parent != self.node_id {
+        self
+          .state
+          .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
+      }
+    }
     self.state.wrap_node(ctx, child.node_id)
   }
 
@@ -348,6 +594,7 @@ impl Node {
     new_child: Node,
     reference_child: Option<Node>,
   ) -> JsResult<Object<'js>> {
+    let old_parent = self.state.dom.borrow().parent_node(new_child.node_id);
     self
       .state
       .dom
@@ -358,6 +605,16 @@ impl Node {
         reference_child.map(|n| n.node_id),
       )
       .map_err(|e| dom_error_to_js(&ctx, e))?;
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), self.node_id)?;
+    if let Some(old_parent) = old_parent {
+      if old_parent != self.node_id {
+        self
+          .state
+          .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
+      }
+    }
     self.state.wrap_node(ctx, new_child.node_id)
   }
 
@@ -369,6 +626,9 @@ impl Node {
       .borrow_mut()
       .remove_child(self.node_id, child.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), self.node_id)?;
     self.state.wrap_node(ctx, child.node_id)
   }
 
@@ -381,6 +641,10 @@ impl Node {
     dom
       .remove_child(parent, self.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
+    drop(dom);
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx, parent)?;
     Ok(())
   }
 
@@ -391,12 +655,23 @@ impl Node {
     new_child: Node,
     old_child: Node,
   ) -> JsResult<Object<'js>> {
+    let old_parent = self.state.dom.borrow().parent_node(new_child.node_id);
     self
       .state
       .dom
       .borrow_mut()
       .replace_child(self.node_id, new_child.node_id, old_child.node_id)
       .map_err(|e| dom_error_to_js(&ctx, e))?;
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), self.node_id)?;
+    if let Some(old_parent) = old_parent {
+      if old_parent != self.node_id {
+        self
+          .state
+          .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
+      }
+    }
     self.state.wrap_node(ctx, old_child.node_id)
   }
 
@@ -456,6 +731,10 @@ impl Node {
         .map_err(|e| dom_error_to_js(&ctx, e))?;
     }
 
+    drop(dom);
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx, self.node_id)?;
     Ok(())
   }
 
@@ -966,6 +1245,17 @@ fn ensure_node_exists<'js>(ctx: &Ctx<'js>, dom: &Document, node_id: NodeId) -> J
     return Err(dom_error_to_js(ctx, DomError::NotFoundError));
   }
   Ok(())
+}
+
+fn direct_child_nodes(dom: &Document, parent: NodeId) -> Result<Vec<NodeId>, DomError> {
+  let children = dom.children(parent)?;
+  Ok(
+    children
+      .iter()
+      .copied()
+      .filter(|&child| child.index() < dom.nodes_len() && dom.node(child).parent == Some(parent))
+      .collect(),
+  )
 }
 
 fn node_type(dom: &Document, node_id: NodeId) -> i32 {
