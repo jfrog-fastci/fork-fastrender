@@ -2449,9 +2449,15 @@ fn compute_used_outer_sizes(
     fixed.max(0.0)
   } else {
     // Resolve B's auto size using the imaginary AC box.
-    let ac = if a.outer.is_none() && c.outer.is_none() {
-      // When both side boxes are auto, AC is also auto; its intrinsic sizes are derived from the
-      // larger of A/C so B remains centered.
+    let ac = if a.outer.is_some() && c.outer.is_some() {
+      // When both side boxes have definite sizes, AC is also definite.
+      let fixed_a = a.outer.unwrap_or(0.0);
+      let fixed_c = c.outer.unwrap_or(0.0);
+      VariableMarginBox::not_generated().fixed_outer(2.0 * fixed_a.max(fixed_c))
+    } else {
+      // Otherwise, AC is treated like an auto-sized box whose intrinsic sizes are derived from the
+      // larger of A/C (including fixed sizes). This matches CSS Page 3's imaginary AC box used to
+      // resolve B while preserving centering.
       let outer_min = 2.0 * a.outer_min.max(c.outer_min);
       let outer_max = 2.0 * a.outer_max.max(c.outer_max);
       VariableMarginBox {
@@ -2464,11 +2470,6 @@ fn compute_used_outer_sizes(
         margin_start: 0.0,
         margin_end: 0.0,
       }
-    } else {
-      // Otherwise, AC has a definite size based on the larger non-auto side.
-      let fixed_a = a.outer.unwrap_or(0.0);
-      let fixed_c = c.outer.unwrap_or(0.0);
-      VariableMarginBox::not_generated().fixed_outer(2.0 * fixed_a.max(fixed_c))
     };
     let (used_b, _used_ac) = distribute_two_boxes(b, &ac, available);
     used_b

@@ -2254,6 +2254,58 @@ fn margin_box_explicit_widths_override_auto_distribution() {
 }
 
 #[test]
+fn margin_box_imaginary_ac_considers_auto_side_intrinsic_sizes() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 10px;
+            @top-left { background: rgb(255, 0, 0); width: 20px; content: ""; }
+            @top-center { background: rgb(0, 255, 0); padding-left: 10px; content: ""; }
+            @top-right { background: rgb(0, 0, 255); padding-left: 80px; content: ""; }
+          }
+        </style>
+      </head>
+      <body></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page = *pages(&tree).first().expect("at least one page");
+
+  let left = find_fragment_by_background(page, Rgba::rgb(255, 0, 0)).expect("top-left box");
+  let center = find_fragment_by_background(page, Rgba::rgb(0, 255, 0)).expect("top-center box");
+  let right = find_fragment_by_background(page, Rgba::rgb(0, 0, 255)).expect("top-right box");
+
+  // The containing block for the top margin boxes is the available width between left and right
+  // margins.
+  let cb_x = 10.0;
+  let cb_w = 180.0;
+
+  // CSS Page 3: resolve B (top-center) using imaginary AC, whose dimensions are double the maximum
+  // of A/C. With A fixed at 20px and C auto with an intrinsic (padding) width of 80px, AC is auto
+  // with max-content width 160px. Flex-fit distributes the remaining 10px between B (10px) and AC
+  // (160px) proportionally.
+  let max_b = 10.0;
+  let max_ac = 160.0;
+  let flex_space = cb_w - (max_b + max_ac);
+  let used_b = max_b + flex_space * max_b / (max_b + max_ac);
+  let used_c = (cb_w - used_b) / 2.0;
+  let b_x = cb_x + (cb_w - used_b) / 2.0;
+  let c_x = cb_x + cb_w - used_c;
+
+  assert_bounds_close(&left.bounds, (10.0, 0.0, 20.0, 10.0));
+  assert_bounds_close(&center.bounds, (b_x, 0.0, used_b, 10.0));
+  assert_bounds_close(&right.bounds, (c_x, 0.0, used_c, 10.0));
+}
+
+#[test]
 fn margin_box_page_counters_page_and_pages() {
   let html = r#"
     <html>
