@@ -11024,9 +11024,16 @@ impl FastRender {
     Ok(pixmap)
   }
 
-  /// Extract the fragment identifier (without '#') from the configured base URL, if any.
+  /// Extract the fragment identifier (without '#') for `:target` / `:target-within` matching.
+  ///
+  /// This must come from the *document* URL (navigation URL) rather than the effective base URL
+  /// because `<base href>` is allowed to change relative URL resolution without affecting the
+  /// document fragment identifier.
   fn current_target_fragment(&self) -> Option<String> {
-    self.base_url.as_ref().and_then(|url| extract_fragment(url))
+    if let Some(url) = self.document_url.as_deref() {
+      return extract_fragment(url);
+    }
+    self.base_url.as_deref().and_then(extract_fragment)
   }
 
   /// Fetch linked stylesheets and inject them into the document so they participate in cascade.

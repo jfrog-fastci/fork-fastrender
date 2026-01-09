@@ -1,9 +1,13 @@
-use fastrender::{BrowserDocument, BrowserDocument2, Error, FastRender, FastRenderConfig, RenderOptions, Result};
+use fastrender::{
+  BrowserDocument, BrowserDocument2, Error, FastRender, FastRenderConfig, RenderOptions, Result,
+  Rgba,
+};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{RenderError, RenderStage};
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+use fastrender::style::cascade::StyledNode;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -62,6 +66,22 @@ impl ResourceFetcher for RecordingRequestFetcher {
       });
     self.fetch(req.url)
   }
+}
+
+fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+  if node
+    .node
+    .get_attribute_ref("id")
+    .is_some_and(|value| value.eq_ignore_ascii_case(id))
+  {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_by_id(child, id) {
+      return Some(found);
+    }
+  }
+  None
 }
 
 #[test]
@@ -206,6 +226,36 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
   assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  Ok(())
+}
+
+#[test]
+fn browser_document_target_pseudo_uses_document_url_fragment_when_base_href_overrides_base_url() -> Result<()> {
+  let html = r#"<!doctype html><html><head>
+    <base href="https://cdn.example/">
+    <style>#t:target { background-color: rgb(1,2,3); }</style>
+  </head><body><div id="t"></div></body></html>"#;
+
+  let url_with_fragment = "https://page.example/index.html#t";
+  let mut doc = BrowserDocument::from_html(html, RenderOptions::new().with_viewport(64, 64))?;
+  doc.set_document_url(Some(url_with_fragment.to_string()));
+  doc.set_navigation_urls(
+    Some(url_with_fragment.to_string()),
+    Some(url_with_fragment.to_string()),
+  );
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared document");
+  let target_node = find_by_id(prepared.styled_tree(), "t").expect("expected #t element");
+  assert_eq!(
+    target_node.styles.background_color,
+    Rgba {
+      r: 1,
+      g: 2,
+      b: 3,
+      a: 1.0,
+    }
+  );
   Ok(())
 }
 
