@@ -126,6 +126,20 @@ If `git submodule update` fails with `not our ref`, the recorded SHA is not fetc
 submodule remote. Fix by pushing the `ecma-rs` commit (or tagging/branching it) and then bumping the
 pointer again.
 
+## Common integration gotcha: `vm-js` host ABI changes
+
+`vm-js` occasionally changes the embedding surface in ways that ripple into FastRender:
+
+- `Vm::call` / `Vm::construct` may gain an explicit embedder host parameter (in addition to
+  `VmHostHooks`), and `NativeCall` / `NativeConstruct` signatures change accordingly.
+- `webidl-vm-js` sometimes calls `Vm::call` internally (e.g. iterator helpers). When the embedder
+  host becomes required, those internal calls must switch to the corresponding helper
+  (typically `Vm::call_without_host`) or be threaded with a real host object.
+
+If a submodule bump breaks compilation with errors around `Vm::call` arity or native call handler
+signatures, update both FastRender's native handlers and any engine-internal callers like
+`webidl-vm-js`.
+
 ## Running `ecma-rs` commands safely (resource limits)
 
 JS conformance workloads can be pathological. Use OS caps from the FastRender repo when running
