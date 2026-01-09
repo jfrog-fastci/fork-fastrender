@@ -7086,7 +7086,7 @@ fn transition_longhand_names() -> &'static [&'static str] {
 /// Expands a `transition-property` entry into the corresponding longhand names.
 ///
 /// This is a minimal subset aligned to the properties supported by the animation system.
-fn expand_transition_property_name(name: &str) -> Vec<&'static str> {
+fn expand_transition_property_name<'a>(name: &'a str) -> Vec<&'a str> {
   match name {
     "border" => vec![
       "border-top-width",
@@ -7139,9 +7139,7 @@ fn expand_transition_property_name(name: &str) -> Vec<&'static str> {
       "border-bottom-left-radius",
     ],
     "outline" => vec!["outline-color", "outline-style", "outline-width"],
-    _ => interpolator_for(name)
-      .map(|interpolator| vec![interpolator.name])
-      .unwrap_or_default(),
+    _ => vec![name],
   }
 }
 
@@ -9490,6 +9488,10 @@ mod tests {
       vec!["outline-color", "outline-style", "outline-width"]
     );
     assert_eq!(expand_transition_property_name("opacity"), vec!["opacity"]);
+    assert_eq!(
+      expand_transition_property_name("not-a-real-prop"),
+      vec!["not-a-real-prop"]
+    );
   }
 
   #[test]
