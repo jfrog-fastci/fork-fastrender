@@ -1541,10 +1541,29 @@ impl JsWptRuntime {
   fn value_to_property_key(&mut self, value: Value) -> Result<PropertyKey, JsError> {
     Ok(match value {
       Value::String(s) => PropertyKey::String(s),
+      Value::Symbol(sym) => PropertyKey::Symbol(sym),
       Value::Number(n) => {
         let s = n.trunc() as i64;
         let mut scope = self.heap.scope();
         PropertyKey::from_string(scope.alloc_string(&s.to_string())?)
+      }
+      Value::BigInt(b) => {
+        let s = b.to_decimal_string();
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(&s)?)
+      }
+      Value::Bool(b) => {
+        let mut scope = self.heap.scope();
+        let s = if b { "true" } else { "false" };
+        PropertyKey::from_string(scope.alloc_string(s)?)
+      }
+      Value::Null => {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("null")?)
+      }
+      Value::Undefined => {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("undefined")?)
       }
       _ => {
         return Err(JsError::Vm(VmError::Unimplemented(
@@ -1889,4 +1908,26 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
   rt.report = Some(report);
 
   Ok(Value::Undefined)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::time::{Duration, Instant};
+
+  #[test]
+  fn value_to_property_key_supports_bigint() {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut rt = JsWptRuntime::new("https://example.com/", deadline);
+
+    let key = rt
+      .value_to_property_key(Value::BigInt(vm_js::JsBigInt::from_u128(42)))
+      .expect("ToPropertyKey(BigInt) should succeed");
+
+    let PropertyKey::String(s) = key else {
+      panic!("expected string property key");
+    };
+    let rendered = rt.heap.get_string(s).expect("property key string");
+    assert_eq!(rendered.to_utf8_lossy(), "42");
+  }
 }
