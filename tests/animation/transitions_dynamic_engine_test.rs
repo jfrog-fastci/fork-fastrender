@@ -106,12 +106,6 @@ fn fragment_color(tree: &FragmentTree, box_id: usize) -> Rgba {
     .expect("style present")
 }
 
-fn fragment_border_top_style(tree: &FragmentTree, box_id: usize) -> BorderStyle {
-  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
-  let style = frag.style.as_ref().expect("style present");
-  style.border_top_style
-}
-
 fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> Rgba {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   frag
@@ -128,6 +122,12 @@ fn fragment_background_color(tree: &FragmentTree, box_id: usize) -> Rgba {
     .as_ref()
     .map(|s| s.background_color)
     .expect("style present")
+}
+
+fn fragment_border_top_style(tree: &FragmentTree, box_id: usize) -> BorderStyle {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.border_top_style
 }
 
 fn box_id_by_element_id(prepared: &PreparedDocument, element_id: &str) -> usize {
@@ -1181,7 +1181,6 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
       .with_animation_time(0.0),
   )?;
   doc.render_frame()?;
-
   assert!(set_class(&mut doc, "box", "b"));
   // Keep time at t=0 so this frame records the transition start time.
   doc.render_frame()?;
@@ -1353,6 +1352,56 @@ fn currentcolor_color_mix_background_tracks_color_transition() -> Result<()> {
     fragment_background_color(&sampled, box_id),
     expected_bg,
     "background-color: color-mix(... currentColor ...) should track animated color"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn current_color_dependent_properties_track_color_transition() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box {
+        color: rgb(255,0,0);
+        border-top-width: 10px;
+        border-top-style: solid;
+        border-top-color: currentColor;
+        transition: color 1000ms linear;
+      }
+      #box.b { color: rgb(0,0,255); }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  // First frame initializes the pipeline and establishes the baseline style.
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let expected = Rgba::new(128, 0, 128, 1.0);
+  assert_eq!(fragment_color(&sampled, box_id), expected, "animated color");
+  assert_eq!(
+    fragment_border_top_color(&sampled, box_id),
+    expected,
+    "border-top-color should track currentColor during transition"
   );
 
   Ok(())
