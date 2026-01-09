@@ -739,3 +739,270 @@ fn top_caption_appears_only_in_first_column_fragment() {
     "rows should flow into the second column"
   );
 }
+
+#[test]
+fn table_footers_repeat_across_pages() {
+  let body_rows: String = (1..=12)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          td {{ padding: 2px; height: 30px; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <tbody>{body_rows}</tbody>
+          <tfoot><tr><td>Footer</td></tr></tfoot>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut seen_rows = Vec::new();
+  for (idx, page) in page_roots.iter().enumerate() {
+    let mut texts = Vec::new();
+    collect_text_fragments(page, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.text.contains("Footer")),
+      "footer should repeat on every page (missing on page {idx}; texts={:?})",
+      texts.iter().map(|t| t.text.clone()).collect::<Vec<_>>()
+    );
+    seen_rows.extend(collect_numbers(&texts));
+  }
+  seen_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=12).collect();
+  assert_eq!(seen_rows, expected);
+}
+
+#[test]
+fn only_first_table_footer_group_repeats_across_pages() {
+  let body_rows: String = (1..=12)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 120px; margin: 0; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          td {{ padding: 2px; height: 30px; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <tbody>{body_rows}</tbody>
+          <tfoot><tr><td>FooterA</td></tr></tfoot>
+          <tbody style="display: table-footer-group"><tr><td>FooterB</td></tr></tbody>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut seen_rows = Vec::new();
+  let mut footer_b_pages = 0usize;
+  for page in page_roots {
+    let mut texts = Vec::new();
+    collect_text_fragments(page, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.text.contains("FooterA")),
+      "first footer group should appear on every page"
+    );
+    if texts.iter().any(|t| t.text.contains("FooterB")) {
+      footer_b_pages += 1;
+    }
+    seen_rows.extend(collect_numbers(&texts));
+  }
+
+  assert_eq!(
+    footer_b_pages, 1,
+    "subsequent footer groups should not repeat across pages"
+  );
+  seen_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=12).collect();
+  assert_eq!(seen_rows, expected);
+}
+
+#[test]
+fn table_footers_repeat_in_multicol() {
+  let body_rows: String = (1..=8)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          div.columns {{
+            column-count: 2;
+            column-gap: 20px;
+            width: 260px;
+          }}
+          table {{ width: 100%; border-collapse: collapse; }}
+          td {{ height: 32px; padding: 2px; }}
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <tbody>{body_rows}</tbody>
+            <tfoot><tr><td>Footer</td></tr></tfoot>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
+
+  let mut texts = Vec::new();
+  collect_text_fragments(&tree.root, &mut texts);
+
+  let footer_fragments: Vec<&TextFragment> =
+    texts.iter().filter(|t| t.text.contains("Footer")).collect();
+  let footer_positions: Vec<f32> = footer_fragments.iter().map(|t| t.x).collect();
+  assert!(
+    footer_positions.len() >= 2,
+    "footer should repeat for each column fragment"
+  );
+  let min_x = footer_positions
+    .iter()
+    .copied()
+    .fold(f32::INFINITY, f32::min);
+  let max_x = footer_positions
+    .iter()
+    .copied()
+    .fold(f32::NEG_INFINITY, f32::max);
+  assert!(
+    (max_x - min_x) > 10.0,
+    "footers should appear in distinct columns"
+  );
+
+  let midpoint = (min_x + max_x) / 2.0;
+  let mut first_col_rows = Vec::new();
+  let mut second_col_rows = Vec::new();
+  for number in collect_numbers_with_positions(&texts, |t| t.x) {
+    if number.pos < midpoint {
+      first_col_rows.push(number.value);
+    } else {
+      second_col_rows.push(number.value);
+    }
+  }
+
+  first_col_rows.extend(second_col_rows.iter().copied());
+  first_col_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=8).collect();
+  assert_eq!(first_col_rows, expected);
+  assert!(
+    !second_col_rows.is_empty(),
+    "rows should flow into the second column"
+  );
+}
+
+#[test]
+fn table_footers_repeat_in_multicol_vertical_writing() {
+  let body_rows: String = (1..=8)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          div.columns {{
+            column-count: 2;
+            column-gap: 20px;
+            width: 260px;
+          }}
+          table {{ width: 100%; border-collapse: collapse; }}
+          td {{ height: 32px; padding: 2px; writing-mode: vertical-rl; }}
+        </style>
+      </head>
+      <body>
+        <div class="columns">
+          <table>
+            <tbody>{body_rows}</tbody>
+            <tfoot><tr><td>Footer</td></tr></tfoot>
+          </table>
+        </div>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document(&dom, 320, 400).unwrap();
+
+  let mut texts = Vec::new();
+  collect_text_fragments(&tree.root, &mut texts);
+
+  let footer_fragments: Vec<&TextFragment> =
+    texts.iter().filter(|t| t.text.contains("Footer")).collect();
+  let footer_positions: Vec<f32> = footer_fragments.iter().map(|t| t.x).collect();
+  assert!(
+    footer_positions.len() >= 2,
+    "footer should repeat for each column fragment"
+  );
+  let min_inline = footer_positions
+    .iter()
+    .copied()
+    .fold(f32::INFINITY, f32::min);
+  let max_inline = footer_positions
+    .iter()
+    .copied()
+    .fold(f32::NEG_INFINITY, f32::max);
+  assert!(
+    (max_inline - min_inline) > 10.0,
+    "footers should appear in distinct columns"
+  );
+
+  let midpoint = (min_inline + max_inline) / 2.0;
+  let mut first_col_rows = Vec::new();
+  let mut second_col_rows = Vec::new();
+  for number in collect_numbers_with_positions(&texts, |t| t.x) {
+    if number.pos < midpoint {
+      first_col_rows.push(number.value);
+    } else {
+      second_col_rows.push(number.value);
+    }
+  }
+
+  first_col_rows.extend(second_col_rows.iter().copied());
+  first_col_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=8).collect();
+  assert_eq!(first_col_rows, expected);
+  assert!(
+    !second_col_rows.is_empty(),
+    "rows should flow into the second column"
+  );
+}
