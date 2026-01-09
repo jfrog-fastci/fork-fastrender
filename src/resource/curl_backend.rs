@@ -141,6 +141,8 @@ pub(super) fn build_curl_args(
   args.push("--show-error".to_string());
   args.push("--dump-header".to_string());
   args.push("-".to_string());
+  args.push("--output".to_string());
+  args.push("-".to_string());
   if force_http1 {
     args.push("--http1.1".to_string());
   }
@@ -1158,5 +1160,44 @@ mod tests {
     let body = read_curl_body(&mut reader, 0, true).expect("discard body");
     assert!(body.is_empty());
     assert_eq!(reader.position() as usize, expected_len);
+  }
+
+  #[test]
+  fn build_args_are_accepted_by_system_curl() {
+    if !curl_available() {
+      eprintln!("skipping: curl is not available on PATH");
+      return;
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("curl_backend_test.txt");
+    let contents = b"curl backend args test";
+    std::fs::write(&path, contents).expect("write temp file");
+
+    let file_url = Url::from_file_path(&path)
+      .expect("create file:// URL")
+      .to_string();
+
+    let args = build_curl_args(&file_url, Some(Duration::from_secs(5)), &[], false);
+    let output = Command::new("curl")
+      .args(&args)
+      .output()
+      .expect("run curl");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+      output.status.success(),
+      "curl failed (status={:?}) with stderr:\n{stderr}\nargs={args:?}",
+      output.status.code()
+    );
+    assert!(
+      !stderr.contains("option -: is unknown"),
+      "curl rejected arguments (args={args:?}) with stderr:\n{stderr}"
+    );
+    assert!(
+      output.stdout.ends_with(contents),
+      "curl stdout did not end with expected body bytes; stdout={:?}",
+      output.stdout
+    );
   }
 }
