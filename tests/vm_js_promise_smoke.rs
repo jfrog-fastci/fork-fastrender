@@ -24,7 +24,7 @@ fn promise_result_is_traced_by_gc_and_brand_check_works() -> Result<(), VmError>
       .heap_mut()
       .promise_fulfill(promise, Value::Object(referenced))?;
 
-    scope.push_root(Value::Object(promise));
+    scope.push_root(Value::Object(promise))?;
     scope.heap_mut().collect_garbage();
 
     assert!(
@@ -60,7 +60,7 @@ fn promise_reaction_lists_are_cleared_on_settlement() -> Result<(), VmError> {
       },
     )?;
 
-    scope.push_root(Value::Object(promise));
+    scope.push_root(Value::Object(promise))?;
 
     // While the promise is pending, its reaction lists keep handlers alive.
     scope.heap_mut().collect_garbage();
