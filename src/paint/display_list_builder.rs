@@ -5329,7 +5329,10 @@ impl DisplayListBuilder {
         let style_opt = fragment.style.as_deref();
         let current = style_opt.map(|s| s.color).unwrap_or(Rgba::BLACK);
         let color = style_opt
-          .map(|s| s.webkit_text_fill_color.to_rgba(current))
+          .map(|s| {
+            s.webkit_text_fill_color
+              .to_rgba_with_scheme(current, s.used_dark_color_scheme)
+          })
           .unwrap_or(current);
         let shadows = Self::text_shadows_from_style(style_opt, self.viewport);
         let inline_vertical = style_opt.is_some_and(|s| {
@@ -5679,7 +5682,9 @@ impl DisplayListBuilder {
               .map(|l| l.as_ref().clone())
               .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
             let current = style_ref.color;
-            let color = style_ref.webkit_text_fill_color.to_rgba(current);
+            let color = style_ref
+              .webkit_text_fill_color
+              .to_rgba_with_scheme(current, style_ref.used_dark_color_scheme);
             let shadows = Self::text_shadows_from_style(Some(style_ref), self.viewport);
             let layout_w = layout_owned.width.max(0.01);
             let layout_h = layout_owned.height.max(0.01);

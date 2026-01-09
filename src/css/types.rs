@@ -4818,8 +4818,8 @@ pub enum PropertyValue {
   Url(String),
   Multiple(Vec<PropertyValue>),
   FontFamily(Vec<String>),
-  BoxShadow(Vec<BoxShadow>),
-  TextShadow(Vec<TextShadow>),
+  BoxShadow(Vec<BoxShadowValue>),
+  TextShadow(Vec<TextShadowValue>),
   /// CSS Transforms Level 2: individual translate property.
   Translate(TranslateValue),
   /// CSS Transforms Level 2: individual rotate property.
@@ -4864,6 +4864,34 @@ pub enum PropertyValue {
 // ============================================================================
 // Shadow and gradient types
 // ============================================================================
+
+/// A single box-shadow item as authored in CSS.
+///
+/// This preserves the `<color>` value so `currentColor`, `light-dark()` and system color keywords
+/// can be resolved at computed-value time using the element's used color scheme.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoxShadowValue {
+  pub offset_x: Length,
+  pub offset_y: Length,
+  pub blur_radius: Length,
+  pub spread_radius: Length,
+  /// None represents the default `currentColor`.
+  pub color: Option<Color>,
+  pub inset: bool,
+}
+
+/// A single text-shadow item as authored in CSS.
+///
+/// This preserves the `<color>` value so `currentColor`, `light-dark()` and system color keywords
+/// can be resolved at computed-value time using the element's used color scheme.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextShadowValue {
+  pub offset_x: Length,
+  pub offset_y: Length,
+  pub blur_radius: Length,
+  /// None represents the default `currentColor`.
+  pub color: Option<Color>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoxShadow {

@@ -42,6 +42,44 @@ fn render_gradient_with_prefers_color_scheme(pref: &str) -> tiny_skia::Pixmap {
   renderer.render_html(html, 32, 32).expect("render html")
 }
 
+fn render_box_shadow_with_prefers_color_scheme(pref: &str) -> tiny_skia::Pixmap {
+  let toggles = RuntimeToggles::from_map(HashMap::from([
+    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    ("FASTR_PREFERS_COLOR_SCHEME".to_string(), pref.to_string()),
+  ]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let html = "<!doctype html>\
+    <style>\
+      html { color-scheme: light dark; }\
+      html,body{margin:0;background:#f00;}\
+      #box{width:10px;height:10px;color:#0f0;box-shadow:20px 0 0 0, 40px 0 0 0 CanvasText;}\
+    </style>\
+    <div id=box></div>";
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  renderer.render_html(html, 64, 24).expect("render html")
+}
+
+fn render_filter_drop_shadow_with_prefers_color_scheme(pref: &str) -> tiny_skia::Pixmap {
+  let toggles = RuntimeToggles::from_map(HashMap::from([
+    ("FASTR_PAINT_BACKEND".to_string(), "display_list".to_string()),
+    ("FASTR_PREFERS_COLOR_SCHEME".to_string(), pref.to_string()),
+  ]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let html = "<!doctype html>\
+    <style>\
+      html { color-scheme: light dark; }\
+      html,body{margin:0;background:#f00;}\
+      #box{width:10px;height:10px;background:#00f;filter:drop-shadow(20px 0 0 CanvasText);}\
+    </style>\
+    <div id=box></div>";
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  renderer.render_html(html, 48, 24).expect("render html")
+}
+
 #[test]
 fn system_color_keywords_paint_using_palette() {
   let light = render_with_prefers_color_scheme("light");
@@ -126,6 +164,90 @@ fn system_color_keywords_resolve_inside_gradients() {
       dark_right.green(),
       dark_right.blue(),
       dark_right.alpha()
+    ),
+    (232, 232, 232, 255),
+    "expected CanvasText in dark scheme"
+  );
+}
+
+#[test]
+fn system_color_keywords_resolve_inside_box_shadow() {
+  let light = render_box_shadow_with_prefers_color_scheme("light");
+  let dark = render_box_shadow_with_prefers_color_scheme("dark");
+
+  let light_current = light.pixel(25, 5).expect("light currentColor shadow pixel");
+  assert_eq!(
+    (
+      light_current.red(),
+      light_current.green(),
+      light_current.blue(),
+      light_current.alpha()
+    ),
+    (0, 255, 0, 255),
+    "expected first box-shadow to default to currentColor"
+  );
+
+  let light_system = light.pixel(45, 5).expect("light system shadow pixel");
+  assert_eq!(
+    (
+      light_system.red(),
+      light_system.green(),
+      light_system.blue(),
+      light_system.alpha()
+    ),
+    (0, 0, 0, 255),
+    "expected CanvasText in light scheme"
+  );
+
+  let dark_current = dark.pixel(25, 5).expect("dark currentColor shadow pixel");
+  assert_eq!(
+    (
+      dark_current.red(),
+      dark_current.green(),
+      dark_current.blue(),
+      dark_current.alpha()
+    ),
+    (0, 255, 0, 255),
+    "expected first box-shadow to default to currentColor"
+  );
+
+  let dark_system = dark.pixel(45, 5).expect("dark system shadow pixel");
+  assert_eq!(
+    (
+      dark_system.red(),
+      dark_system.green(),
+      dark_system.blue(),
+      dark_system.alpha()
+    ),
+    (232, 232, 232, 255),
+    "expected CanvasText in dark scheme"
+  );
+}
+
+#[test]
+fn system_color_keywords_resolve_inside_filter_drop_shadow() {
+  let light = render_filter_drop_shadow_with_prefers_color_scheme("light");
+  let dark = render_filter_drop_shadow_with_prefers_color_scheme("dark");
+
+  let light_shadow = light.pixel(25, 5).expect("light shadow pixel");
+  assert_eq!(
+    (
+      light_shadow.red(),
+      light_shadow.green(),
+      light_shadow.blue(),
+      light_shadow.alpha()
+    ),
+    (0, 0, 0, 255),
+    "expected CanvasText in light scheme"
+  );
+
+  let dark_shadow = dark.pixel(25, 5).expect("dark shadow pixel");
+  assert_eq!(
+    (
+      dark_shadow.red(),
+      dark_shadow.green(),
+      dark_shadow.blue(),
+      dark_shadow.alpha()
     ),
     (232, 232, 232, 255),
     "expected CanvasText in dark scheme"

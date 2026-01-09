@@ -2,7 +2,7 @@
 //!
 //! Parses individual CSS property values.
 
-use super::types::BoxShadow;
+use super::types::BoxShadowValue;
 use super::types::GradientPosition;
 use super::types::GradientPositionComponent;
 use super::types::PropertyValue;
@@ -10,12 +10,11 @@ use super::types::RadialGradientShape;
 use super::types::RadialGradientSize;
 use super::types::RotateValue;
 use super::types::ScaleValue;
-use super::types::TextShadow;
+use super::types::TextShadowValue;
 use super::types::Transform;
 use super::types::TranslateValue;
 use super::value_cache;
 use crate::style::color::Color;
-use crate::style::color::Rgba;
 use crate::style::display::Display;
 use crate::style::float::Clear;
 use crate::style::float::Float;
@@ -1402,7 +1401,7 @@ pub(crate) fn property_allowed_in_context(context: DeclarationContext, property:
   }
 }
 
-fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
+fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadowValue>> {
   if trim_css_whitespace(value_str).eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
@@ -1420,13 +1419,13 @@ fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
   let mut shadows = Vec::new();
   let mut lengths = [Length::px(0.0); 3];
   let mut length_count = 0usize;
-  let mut color: Option<Rgba> = None;
+  let mut color: Option<Color> = None;
   let mut has_tokens = false;
 
-  let finish_layer = |shadows: &mut Vec<TextShadow>,
+  let finish_layer = |shadows: &mut Vec<TextShadowValue>,
                       lengths: &[Length; 3],
                       length_count: &mut usize,
-                      color: &mut Option<Rgba>,
+                      color: &mut Option<Color>,
                       has_tokens: &mut bool|
    -> Option<()> {
     if !*has_tokens {
@@ -1440,14 +1439,13 @@ fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
     } else {
       Length::px(0.0)
     };
-    shadows.push(TextShadow {
+    shadows.push(TextShadowValue {
       offset_x: lengths[0],
       offset_y: lengths[1],
       blur_radius: blur,
-      color: *color,
+      color: color.take(),
     });
     *length_count = 0;
-    *color = None;
     *has_tokens = false;
     Some(())
   };
@@ -1466,7 +1464,7 @@ fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
 
     has_tokens = true;
     if let Ok(parsed_color) = Color::parse(token) {
-      color = Some(parsed_color.to_rgba(Rgba::BLACK));
+      color = Some(parsed_color);
       continue;
     }
     if let Some(len) = parse_length(token) {
@@ -1490,7 +1488,7 @@ fn parse_text_shadow_list(value_str: &str) -> Option<Vec<TextShadow>> {
   Some(shadows)
 }
 
-fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
+fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadowValue>> {
   if trim_css_whitespace(value_str).eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
@@ -1508,14 +1506,14 @@ fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
   let mut shadows = Vec::new();
   let mut lengths = [Length::px(0.0); 4];
   let mut length_count = 0usize;
-  let mut color: Option<Rgba> = None;
+  let mut color: Option<Color> = None;
   let mut inset = false;
   let mut has_tokens = false;
 
-  let finish_layer = |shadows: &mut Vec<BoxShadow>,
+  let finish_layer = |shadows: &mut Vec<BoxShadowValue>,
                       lengths: &[Length; 4],
                       length_count: &mut usize,
-                      color: &mut Option<Rgba>,
+                      color: &mut Option<Color>,
                       inset: &mut bool,
                       has_tokens: &mut bool|
    -> Option<()> {
@@ -1535,16 +1533,15 @@ fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
     } else {
       Length::px(0.0)
     };
-    shadows.push(BoxShadow {
+    shadows.push(BoxShadowValue {
       offset_x: lengths[0],
       offset_y: lengths[1],
       blur_radius: blur,
       spread_radius: spread,
-      color: color.unwrap_or(Rgba::BLACK),
+      color: color.take(),
       inset: *inset,
     });
     *length_count = 0;
-    *color = None;
     *inset = false;
     *has_tokens = false;
     Some(())
@@ -1570,7 +1567,7 @@ fn parse_box_shadow_list(value_str: &str) -> Option<Vec<BoxShadow>> {
     }
     if color.is_none() {
       if let Ok(parsed_color) = Color::parse(token) {
-        color = Some(parsed_color.to_rgba(Rgba::BLACK));
+        color = Some(parsed_color);
         continue;
       }
     }
@@ -4338,6 +4335,7 @@ mod tests {
   use crate::css::types::CssRule;
   use crate::css::value_cache;
   use crate::style::color::Color;
+  use crate::style::color::Rgba;
   use crate::style::properties::supported_properties;
   use crate::style::values::Length;
   use std::collections::BTreeSet;
