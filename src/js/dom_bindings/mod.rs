@@ -1080,6 +1080,7 @@ fn install_constructors(
     // insertBefore
     let dom_for_insert = dom.clone();
     let platform_objects_for_insert = platform_objects.clone();
+    let node_wrapper_cache_for_insert = node_wrapper_cache.clone();
     let insert_before = rt.alloc_function_value(move |rt, this, args| {
       let parent_id = extract_node_id(rt, &platform_objects_for_insert, this)?;
       let child = args
@@ -1087,6 +1088,7 @@ fn install_constructors(
         .copied()
         .ok_or_else(|| rt.throw_type_error("insertBefore: missing newChild"))?;
       let child_id = extract_node_id(rt, &platform_objects_for_insert, child)?;
+      let old_parent = dom_for_insert.borrow().parent_node(child_id);
       let reference = args.get(1).copied().unwrap_or(Value::Null);
       let reference_id = match reference {
         Value::Undefined | Value::Null => None,
@@ -1096,6 +1098,31 @@ fn install_constructors(
         .borrow_mut()
         .insert_before(parent_id, child_id, reference_id)
         .map_err(|e| rt.throw_type_error(&format!("insertBefore: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_insert,
+        &platform_objects_for_insert,
+        &node_wrapper_cache_for_insert,
+        document_node_id,
+        document,
+        prototypes,
+        parent_id,
+      )?;
+      if let Some(old_parent) = old_parent {
+        if old_parent != parent_id {
+          maybe_refresh_cached_child_nodes(
+            rt,
+            &dom_for_insert,
+            &platform_objects_for_insert,
+            &node_wrapper_cache_for_insert,
+            document_node_id,
+            document,
+            prototypes,
+            old_parent,
+          )?;
+        }
+      }
       Ok(child)
     })?;
     define_method(rt, prototypes.node, "insertBefore", insert_before)?;
@@ -1130,9 +1157,38 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.node, "removeChild", remove_child)?;
 
+    // remove
+    let dom_for_remove_self = dom.clone();
+    let platform_objects_for_remove_self = platform_objects.clone();
+    let node_wrapper_cache_for_remove_self = node_wrapper_cache.clone();
+    let remove = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_remove_self, this)?;
+      let Some(parent_id) = dom_for_remove_self.borrow().parent_node(node_id) else {
+        return Ok(Value::Undefined);
+      };
+      dom_for_remove_self
+        .borrow_mut()
+        .remove_child(parent_id, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("remove: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_remove_self,
+        &platform_objects_for_remove_self,
+        &node_wrapper_cache_for_remove_self,
+        document_node_id,
+        document,
+        prototypes,
+        parent_id,
+      )?;
+      Ok(Value::Undefined)
+    })?;
+    define_method(rt, prototypes.node, "remove", remove)?;
+
     // replaceChild
     let dom_for_replace = dom.clone();
     let platform_objects_for_replace = platform_objects.clone();
+    let node_wrapper_cache_for_replace = node_wrapper_cache.clone();
     let replace_child = rt.alloc_function_value(move |rt, this, args| {
       let parent_id = extract_node_id(rt, &platform_objects_for_replace, this)?;
       let new_child = args
@@ -1145,10 +1201,36 @@ fn install_constructors(
         .ok_or_else(|| rt.throw_type_error("replaceChild: missing oldChild"))?;
       let new_child_id = extract_node_id(rt, &platform_objects_for_replace, new_child)?;
       let old_child_id = extract_node_id(rt, &platform_objects_for_replace, old_child)?;
+      let old_parent = dom_for_replace.borrow().parent_node(new_child_id);
       dom_for_replace
         .borrow_mut()
         .replace_child(parent_id, new_child_id, old_child_id)
         .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?;
+
+      maybe_refresh_cached_child_nodes(
+        rt,
+        &dom_for_replace,
+        &platform_objects_for_replace,
+        &node_wrapper_cache_for_replace,
+        document_node_id,
+        document,
+        prototypes,
+        parent_id,
+      )?;
+      if let Some(old_parent) = old_parent {
+        if old_parent != parent_id {
+          maybe_refresh_cached_child_nodes(
+            rt,
+            &dom_for_replace,
+            &platform_objects_for_replace,
+            &node_wrapper_cache_for_replace,
+            document_node_id,
+            document,
+            prototypes,
+            old_parent,
+          )?;
+        }
+      }
       Ok(old_child)
     })?;
     define_method(rt, prototypes.node, "replaceChild", replace_child)?;
@@ -2993,6 +3075,97 @@ mod tests {
       Value::Null
     );
     assert_eq!(realm.rt.get(b, next_element_sibling_key).unwrap(), Value::Null);
+  }
+
+  #[test]
+  fn child_nodes_update_on_insert_before_replace_child_and_remove() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+
+    let parent_a = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let parent_b = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let child = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_a = realm.rt.get(parent_a, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_a, parent_a, &[child])
+      .unwrap();
+
+    // Cache childNodes for both parents so we can verify in-place updates.
+    let child_nodes_key = pk(&mut realm.rt, "childNodes");
+    let nodes_a = realm.rt.get(parent_a, child_nodes_key).unwrap();
+    let nodes_b = realm.rt.get(parent_b, child_nodes_key).unwrap();
+    assert_eq!(realm.rt.get(parent_a, child_nodes_key).unwrap(), nodes_a);
+    assert_eq!(realm.rt.get(parent_b, child_nodes_key).unwrap(), nodes_b);
+
+    let length_key = pk(&mut realm.rt, "length");
+    let idx0 = pk(&mut realm.rt, "0");
+    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(nodes_a, idx0).unwrap(), child);
+    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(0.0));
+
+    // Move `child` from parent_a to parent_b via insertBefore(child, null).
+    let insert_before_key = pk(&mut realm.rt, "insertBefore");
+    let insert_before = realm.rt.get(parent_b, insert_before_key).unwrap();
+    let inserted = realm
+      .rt
+      .call_function(insert_before, parent_b, &[child, Value::Null])
+      .unwrap();
+    assert_eq!(inserted, child);
+
+    // Both cached NodeLists should update in place.
+    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(0.0));
+    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(nodes_b, idx0).unwrap(), child);
+
+    // Create a new node under parent_a and then move it into parent_b via replaceChild.
+    let replacement = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let append_a = realm.rt.get(parent_a, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_a, parent_a, &[replacement])
+      .unwrap();
+    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(nodes_a, idx0).unwrap(), replacement);
+
+    let replace_child_key = pk(&mut realm.rt, "replaceChild");
+    let replace_child = realm.rt.get(parent_b, replace_child_key).unwrap();
+    let replaced = realm
+      .rt
+      .call_function(replace_child, parent_b, &[replacement, child])
+      .unwrap();
+    assert_eq!(replaced, child);
+
+    assert_eq!(realm.rt.get(nodes_a, length_key).unwrap(), Value::Number(0.0));
+    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(1.0));
+    assert_eq!(realm.rt.get(nodes_b, idx0).unwrap(), replacement);
+
+    // remove() should update the parent's cached NodeList as well.
+    let remove_key = pk(&mut realm.rt, "remove");
+    let remove = realm.rt.get(replacement, remove_key).unwrap();
+    realm.rt.call_function(remove, replacement, &[]).unwrap();
+    assert_eq!(realm.rt.get(nodes_b, length_key).unwrap(), Value::Number(0.0));
   }
 
   #[test]
