@@ -3135,30 +3135,36 @@ fn generate_boxes_for_styled_into(
             continue;
           }
 
-            if is_replaced_element(tag) && styled.styles.display != Display::Contents {
-              let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
-                picture_sources.take(styled.node_id)
-              } else {
-                Vec::new()
-              };
-              let ancestor_len = stack.len().saturating_sub(1);
-              let style = blockify_style_for_flex_or_grid_item_if_needed(
-                &styled.styles,
-                &stack[..ancestor_len],
-              );
-              if let Some(box_node) = create_replaced_box_from_styled(
-                styled,
-                style,
-                document_css,
-                svg_document_css_style_element,
-                picture_sources_for_img,
-                site_compat,
-              ) {
-                stack.pop().expect("frame exists");
-                counters.leave_scope();
-                let mut box_node = box_node;
-                box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
-                let box_node = attach_debug_info(box_node, styled);
+          let is_input_image = tag.eq_ignore_ascii_case("input")
+            && styled
+              .node
+              .get_attribute_ref("type")
+              .is_some_and(|input_type| input_type.eq_ignore_ascii_case("image"));
+
+          if (is_replaced_element(tag) || is_input_image) && styled.styles.display != Display::Contents {
+            let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
+              picture_sources.take(styled.node_id)
+            } else {
+              Vec::new()
+            };
+            let ancestor_len = stack.len().saturating_sub(1);
+            let style = blockify_style_for_flex_or_grid_item_if_needed(
+              &styled.styles,
+              &stack[..ancestor_len],
+            );
+            if let Some(box_node) = create_replaced_box_from_styled(
+              styled,
+              style,
+              document_css,
+              svg_document_css_style_element,
+              picture_sources_for_img,
+              site_compat,
+            ) {
+              stack.pop().expect("frame exists");
+              counters.leave_scope();
+              let mut box_node = box_node;
+              box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
+              let box_node = attach_debug_info(box_node, styled);
               if let Some(parent) = stack.last_mut() {
                 parent.children.push(box_node);
               } else {
@@ -4991,6 +4997,11 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     if input_type.eq_ignore_ascii_case("hidden") {
       return None;
     }
+    // `<input type="image">` is a graphical submit button and is rendered as an image replaced
+    // element (like `<img>`), not as a native form control.
+    if input_type.eq_ignore_ascii_case("image") {
+      return None;
+    }
 
     let control = if input_type.eq_ignore_ascii_case("checkbox") {
       FormControlKind::Checkbox {
@@ -6570,6 +6581,42 @@ mod tests {
         Some(SelectItem::Option { label, .. }) if label == "One"
       ))
     )));
+  }
+
+  #[test]
+  fn input_image_generates_image_replaced_box() {
+    let html =
+      "<html><body><input type=\"image\" src=\"https://example.com/a.png\" alt=\"Logo\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn collect_replaced(node: &BoxNode, out: &mut Vec<ReplacedType>) {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        out.push(repl.replaced_type.clone());
+      }
+      for child in node.children.iter() {
+        collect_replaced(child, out);
+      }
+    }
+
+    let mut replaced = Vec::new();
+    collect_replaced(&box_tree.root, &mut replaced);
+
+    assert!(
+      replaced.iter().any(|kind| matches!(
+        kind,
+        ReplacedType::Image { src, alt, .. }
+          if src == "https://example.com/a.png" && alt.as_deref() == Some("Logo")
+      )),
+      "expected `<input type=image>` to generate an Image replaced box"
+    );
+    assert!(
+      !replaced
+        .iter()
+        .any(|kind| matches!(kind, ReplacedType::FormControl(_))),
+      "expected `<input type=image>` to not generate a FormControl replaced box"
+    );
   }
 
   #[test]

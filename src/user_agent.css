@@ -484,6 +484,12 @@ input[type="range"] {
     min-height: 16px;
 }
 
+input[type="image"] {
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
 input[type="range"]::-webkit-slider-runnable-track,
 input[type="range"]::-moz-range-track {
     height: 4px;
