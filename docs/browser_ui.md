@@ -41,6 +41,20 @@ hooks to exercise startup and UI↔worker wiring without creating a window:
 
 See [env-vars.md](env-vars.md) for details.
 
+## Keyboard / mouse shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+L | Focus address bar (select all) |
+| Ctrl+T | New tab |
+| Ctrl+W | Close active tab (no-op if only one tab) |
+| Ctrl+Tab | Next tab |
+| Ctrl+Shift+Tab | Previous tab |
+| Alt+Left | Back |
+| Alt+Right | Forward |
+| Ctrl+R / F5 | Reload |
+| Mouse Back / Mouse Forward (buttons 8/9) | Back / Forward |
+
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)

@@ -411,6 +411,9 @@ struct App {
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
   last_cursor_pos_points: Option<egui::Pos2>,
+
+  address_bar_id: Option<egui::Id>,
+  address_bar_select_all_pending: bool,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -501,6 +504,8 @@ impl App {
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
       last_cursor_pos_points: None,
+      address_bar_id: None,
+      address_bar_select_all_pending: false,
     })
   }
 
@@ -695,6 +700,122 @@ impl App {
       });
   }
 
+  fn render_chrome_ui(&mut self, ctx: &egui::Context) -> Vec<fastrender::ui::ChromeAction> {
+    use fastrender::ui::ChromeAction;
+
+    let mut actions = Vec::new();
+
+    egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
+      // Tabs row.
+      ui.horizontal_wrapped(|ui| {
+        for tab in &self.browser_state.tabs {
+          let is_active = self.browser_state.active_tab_id() == Some(tab.id);
+          let title = tab.display_title();
+
+          if ui.selectable_label(is_active, title).clicked() {
+            actions.push(ChromeAction::ActivateTab(tab.id));
+          }
+
+          if ui.button("×").clicked() {
+            actions.push(ChromeAction::CloseTab(tab.id));
+          }
+
+          ui.separator();
+        }
+
+        if ui.button("+").clicked() {
+          actions.push(ChromeAction::NewTab);
+        }
+      });
+
+      ui.separator();
+
+      // Navigation + address bar row.
+      ui.horizontal(|ui| {
+        let active = self.browser_state.active_tab();
+        let (can_back, can_forward, loading) = active
+          .map(|t| (t.can_go_back, t.can_go_forward, t.loading))
+          .unwrap_or((false, false, false));
+
+        if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
+          actions.push(ChromeAction::Back);
+        }
+        if ui
+          .add_enabled(can_forward, egui::Button::new("→"))
+          .clicked()
+        {
+          actions.push(ChromeAction::Forward);
+        }
+        if ui.button("⟳").clicked() {
+          actions.push(ChromeAction::Reload);
+        }
+
+        if self.address_bar_select_all_pending {
+          // Ctrl/Cmd+L should select all text in the address bar. egui does not expose a stable
+          // "select all" API on `TextEditState` in 0.23, so we inject a synthetic Ctrl/Cmd+A key
+          // event for the focused text edit.
+          //
+          // We only do this once we have seen a valid `address_bar_id` from a previous frame.
+          if let Some(address_bar_id) = self.address_bar_id {
+            ctx.memory_mut(|mem| mem.request_focus(address_bar_id));
+            ctx.input_mut(|i| {
+              let mut modifiers = egui::Modifiers::default();
+              modifiers.command = true;
+              i.events.push(egui::Event::Key {
+                key: egui::Key::A,
+                pressed: true,
+                modifiers,
+                repeat: false,
+              });
+            });
+            self.address_bar_select_all_pending = false;
+          }
+        }
+
+        let response = ui.add(
+          egui::TextEdit::singleline(&mut self.browser_state.chrome.address_bar_text)
+            .desired_width(f32::INFINITY)
+            .hint_text("Enter URL…"),
+        );
+
+        self.address_bar_id = Some(response.id);
+
+        let has_focus = response.has_focus();
+        if has_focus != self.browser_state.chrome.address_bar_has_focus {
+          self.browser_state.chrome.address_bar_has_focus = has_focus;
+          actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
+        }
+
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+          actions.push(ChromeAction::NavigateTo(
+            self.browser_state.chrome.address_bar_text.clone(),
+          ));
+        }
+
+        if loading {
+          ui.label("Loading…");
+        }
+      });
+
+      if let Some(active) = self.browser_state.active_tab() {
+        if let Some(err) = active.error.as_ref().filter(|s| !s.trim().is_empty()) {
+          ui.separator();
+          ui.colored_label(egui::Color32::LIGHT_RED, err);
+        }
+      }
+    });
+
+    actions
+  }
+
+  fn focus_address_bar_select_all(&mut self) {
+    self.page_has_focus = false;
+    self.address_bar_select_all_pending = true;
+    if let Some(address_bar_id) = self.address_bar_id {
+      self.egui_ctx.memory_mut(|mem| mem.request_focus(address_bar_id));
+    }
+  }
+
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
     use winit::event::MouseScrollDelta;
@@ -736,6 +857,24 @@ impl App {
         }
       }
       WindowEvent::MouseInput { state, button, .. } => {
+        let mapped_button = map_mouse_button(*button);
+        if matches!(
+          mapped_button,
+          fastrender::ui::PointerButton::Back | fastrender::ui::PointerButton::Forward
+        ) {
+          // Treat mouse back/forward buttons as browser chrome actions rather than page input.
+          if matches!(state, ElementState::Pressed) {
+            let action = match mapped_button {
+              fastrender::ui::PointerButton::Back => fastrender::ui::ChromeAction::Back,
+              fastrender::ui::PointerButton::Forward => fastrender::ui::ChromeAction::Forward,
+              _ => return,
+            };
+            self.handle_chrome_actions(vec![action]);
+            self.window.request_redraw();
+          }
+          return;
+        }
+
         let Some(pos_points) = self.last_cursor_pos_points else {
           return;
         };
@@ -744,7 +883,6 @@ impl App {
         };
 
         let in_page = rect.contains(pos_points);
-        let mapped_button = map_mouse_button(*button);
 
         match state {
           ElementState::Pressed => {
@@ -827,24 +965,91 @@ impl App {
         });
       }
       WindowEvent::KeyboardInput { input, .. } => {
-        if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
+        if input.state != ElementState::Pressed {
+          return;
+        }
+        let Some(key) = input.virtual_keycode else {
+          return;
+        };
+
+        let mods = input.modifiers;
+        let primary = mods.ctrl() || mods.logo();
+
+        // Ctrl/Cmd+L: focus address bar and select all text (always allowed).
+        if primary && matches!(key, VirtualKeyCode::L) {
+          self.focus_address_bar_select_all();
+          self.window.request_redraw();
+          return;
+        }
+
+        // If egui is actively editing text (e.g. the address bar), don't handle browser-level
+        // shortcuts other than Ctrl+L (above).
+        if self.egui_ctx.wants_keyboard_input() {
+          return;
+        }
+
+        // Browser-level shortcuts (match Chrome behaviour).
+        if primary && matches!(key, VirtualKeyCode::T) {
+          self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::NewTab]);
+          self.window.request_redraw();
+          return;
+        }
+
+        if primary && matches!(key, VirtualKeyCode::W) {
+          // Only close if more than one tab exists; closing the last tab is a no-op.
+          if self.browser_state.tabs.len() > 1 {
+            if let Some(tab_id) = self.browser_state.active_tab_id() {
+              self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::CloseTab(tab_id)]);
+              self.window.request_redraw();
+            }
+          }
+          return;
+        }
+
+        if primary && matches!(key, VirtualKeyCode::Tab) {
+          let tab_count = self.browser_state.tabs.len();
+          if tab_count > 1 {
+            if let Some(active) = self.browser_state.active_tab_id() {
+              if let Some(active_idx) = self.browser_state.tabs.iter().position(|t| t.id == active) {
+                let next_idx = if mods.shift() {
+                  (active_idx + tab_count - 1) % tab_count
+                } else {
+                  (active_idx + 1) % tab_count
+                };
+                if let Some(next_id) = self.browser_state.tabs.get(next_idx).map(|t| t.id) {
+                  self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::ActivateTab(next_id)]);
+                  self.window.request_redraw();
+                }
+              }
+            }
+          }
+          return;
+        }
+
+        if mods.alt() && !primary && matches!(key, VirtualKeyCode::Left) {
+          self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::Back]);
+          self.window.request_redraw();
+          return;
+        }
+        if mods.alt() && !primary && matches!(key, VirtualKeyCode::Right) {
+          self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::Forward]);
+          self.window.request_redraw();
+          return;
+        }
+
+        if matches!(key, VirtualKeyCode::F5) || (primary && matches!(key, VirtualKeyCode::R)) {
+          self.handle_chrome_actions(vec![fastrender::ui::ChromeAction::Reload]);
+          self.window.request_redraw();
+          return;
+        }
+
+        if !self.page_has_focus {
           return;
         }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
-        if input.state != ElementState::Pressed {
-          return;
-        }
 
-        let Some(key) = input.virtual_keycode else {
-          return;
-        };
-        // Prevent ctrl/cmd+tab from being forwarded to the page (we use it for tab switching at
-        // the chrome level).
-        if key == VirtualKeyCode::Tab && self.egui_ctx.input(|i| i.modifiers.command) {
-          return;
-        }
         let key_action = match key {
           VirtualKeyCode::Back => Some(fastrender::interaction::KeyAction::Backspace),
           VirtualKeyCode::Return => Some(fastrender::interaction::KeyAction::Enter),
@@ -1080,7 +1285,7 @@ impl App {
 
     let ctx = self.egui_ctx.clone();
 
-    let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state);
+    let chrome_actions = self.render_chrome_ui(&ctx);
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
 
