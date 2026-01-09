@@ -17,6 +17,7 @@ use crate::error::Result;
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 
+use super::DomHost;
 use super::orchestrator::{CurrentScriptHost, ScriptBlockExecutor, ScriptOrchestrator};
 use super::script_scheduler::{ScriptId, ScriptScheduler, ScriptSchedulerAction};
 use super::{determine_script_type, ScriptElementSpec, ScriptType};
@@ -30,7 +31,7 @@ use std::rc::Rc;
 ///
 /// This is an MVP bridge between the scheduler state machine and an eventual real networking + JS
 /// runtime integration.
-pub trait ClassicScriptPipelineHost: CurrentScriptHost + Sized + 'static {
+pub trait ClassicScriptPipelineHost: CurrentScriptHost + DomHost + Sized + 'static {
   /// Begin fetching an external script resource.
   ///
   /// Tests typically record the request and call [`ClassicScriptPipeline::on_fetch_completed`]
@@ -332,10 +333,20 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
       event_loop: &mut self.event_loop,
     };
     if let Some(doc) = self.document.as_ref() {
-      orchestrator.execute_script_element(host, doc, script_node_id, script_type, &mut exec)?;
+      let document = doc.clone();
+      host.mutate_dom(|dom| {
+        *dom = document;
+        ((), true)
+      });
+      orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
     } else {
       let dom = self.parser.document();
-      orchestrator.execute_script_element(host, &dom, script_node_id, script_type, &mut exec)?;
+      let document = Document::clone(&dom);
+      host.mutate_dom(|dom| {
+        *dom = document;
+        ((), true)
+      });
+      orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
     }
 
     if self.blocked_parser_on == Some(script_id) {
@@ -362,12 +373,16 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     };
     let orchestrator = Rc::clone(&self.orchestrator);
     self.event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
+      host.mutate_dom(|dom| {
+        *dom = document.clone();
+        ((), true)
+      });
       let mut orchestrator = orchestrator.borrow_mut();
       let mut exec = HostExecutor {
         source_text: &source_text,
         event_loop,
       };
-      orchestrator.execute_script_element(host, &document, script_node_id, script_type, &mut exec)
+      orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)
     })?;
     Ok(())
   }
@@ -383,7 +398,6 @@ impl<Host: ClassicScriptPipelineHost> ScriptBlockExecutor<Host> for HostExecutor
     &mut self,
     host: &mut Host,
     _orchestrator: &mut ScriptOrchestrator,
-    _dom: &Document,
     script: NodeId,
     script_type: ScriptType,
   ) -> Result<()> {
@@ -398,11 +412,39 @@ mod tests {
   use crate::js::{CurrentScriptStateHandle, EventLoop, RunLimits};
   use selectors::context::QuirksMode;
 
-  #[derive(Default)]
   struct Host {
+    dom: Document,
     current_script: CurrentScriptStateHandle,
     started_fetches: Vec<(ScriptId, String)>,
     log: Vec<String>,
+  }
+
+  impl Default for Host {
+    fn default() -> Self {
+      Self {
+        dom: Document::new(QuirksMode::NoQuirks),
+        current_script: CurrentScriptStateHandle::default(),
+        started_fetches: Vec::new(),
+        log: Vec::new(),
+      }
+    }
+  }
+
+  impl DomHost for Host {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
   }
 
   impl CurrentScriptHost for Host {

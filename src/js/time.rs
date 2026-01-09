@@ -138,14 +138,14 @@ pub fn install_time_bindings(
       .object_set_prototype(date_now, Some(realm.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(date_now))?;
 
-    let date_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
-    scope.define_property(
-      date,
-      date_now_key,
-      global_data_desc(Value::Object(date_now)),
-    )?;
+    let date_now_key_s = scope.alloc_string("now")?;
+    scope.push_root(Value::String(date_now_key_s))?;
+    let date_now_key = PropertyKey::from_string(date_now_key_s);
+    scope.define_property(date, date_now_key, global_data_desc(Value::Object(date_now)))?;
 
-    let date_key = PropertyKey::from_string(scope.alloc_string("Date")?);
+    let date_key_s = scope.alloc_string("Date")?;
+    scope.push_root(Value::String(date_key_s))?;
+    let date_key = PropertyKey::from_string(date_key_s);
     scope.define_property(global, date_key, global_data_desc(Value::Object(date)))?;
 
     // --- performance.now() ---
@@ -160,7 +160,9 @@ pub fn install_time_bindings(
       .object_set_prototype(perf_now, Some(realm.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(perf_now))?;
 
-    let perf_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
+    let perf_now_key_s = scope.alloc_string("now")?;
+    scope.push_root(Value::String(perf_now_key_s))?;
+    let perf_now_key = PropertyKey::from_string(perf_now_key_s);
     scope.define_property(
       performance,
       perf_now_key,
@@ -169,7 +171,9 @@ pub fn install_time_bindings(
 
     // `Performance.timeOrigin` is the epoch timestamp (ms) that corresponds to `performance.now() == 0`.
     // This is derived from the deterministic `WebTime` configuration so tests can control it.
-    let time_origin_key = PropertyKey::from_string(scope.alloc_string("timeOrigin")?);
+    let time_origin_key_s = scope.alloc_string("timeOrigin")?;
+    scope.push_root(Value::String(time_origin_key_s))?;
+    let time_origin_key = PropertyKey::from_string(time_origin_key_s);
     scope.define_property(
       performance,
       time_origin_key,
@@ -183,7 +187,9 @@ pub fn install_time_bindings(
       },
     )?;
 
-    let perf_key = PropertyKey::from_string(scope.alloc_string("performance")?);
+    let perf_key_s = scope.alloc_string("performance")?;
+    scope.push_root(Value::String(perf_key_s))?;
+    let perf_key = PropertyKey::from_string(perf_key_s);
     scope.define_property(
       global,
       perf_key,

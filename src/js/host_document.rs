@@ -64,6 +64,23 @@ impl crate::js::CurrentScriptHost for DocumentHostState {
   }
 }
 
+impl crate::js::DomHost for DocumentHostState {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&dom2::Document) -> R,
+  {
+    f(&self.dom)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut dom2::Document) -> (R, bool),
+  {
+    let (result, _changed) = f(&mut self.dom);
+    result
+  }
+}
+
 /// Map a `dom2` node id into a stable `EventTargetId`.
 ///
 /// The document root is normalized to `EventTargetId::Document` so that host code doesn't end up
@@ -119,7 +136,6 @@ mod tests {
       &mut self,
       host: &mut DocumentHostState,
       _orchestrator: &mut ScriptOrchestrator,
-      _dom: &Document,
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
@@ -135,14 +151,13 @@ mod tests {
   fn current_script_is_set_and_restored_via_document_host_state() -> Result<()> {
     let renderer_dom = crate::dom::parse_html("<!doctype html><script></script>").unwrap();
     let mut host = DocumentHostState::from_renderer_dom(&renderer_dom);
-    let dom = host.dom().clone();
 
-    let scripts = find_script_elements(&dom);
+    let scripts = find_script_elements(host.dom());
     assert_eq!(scripts.len(), 1);
     let script = scripts[0];
 
     // Simulate an outer (already executing) script.
-    let outer_current = dom.root();
+    let outer_current = host.dom().root();
     host
       .current_script_state()
       .borrow_mut()
@@ -152,7 +167,6 @@ mod tests {
     let mut executor = RecordingExecutor::new();
     orchestrator.execute_script_element(
       &mut host,
-      &dom,
       script,
       ScriptType::Classic,
       &mut executor,
@@ -167,13 +181,12 @@ mod tests {
   fn current_script_is_restored_on_error_via_document_host_state() {
     let renderer_dom = crate::dom::parse_html("<!doctype html><script></script>").unwrap();
     let mut host = DocumentHostState::from_renderer_dom(&renderer_dom);
-    let dom = host.dom().clone();
 
-    let scripts = find_script_elements(&dom);
+    let scripts = find_script_elements(host.dom());
     assert_eq!(scripts.len(), 1);
     let script = scripts[0];
 
-    let outer_current = dom.root();
+    let outer_current = host.dom().root();
     host
       .current_script_state()
       .borrow_mut()
@@ -182,7 +195,7 @@ mod tests {
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = RecordingExecutor::failing();
     let err = orchestrator
-      .execute_script_element(&mut host, &dom, script, ScriptType::Classic, &mut executor)
+      .execute_script_element(&mut host, script, ScriptType::Classic, &mut executor)
       .expect_err("expected script execution to fail");
 
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));

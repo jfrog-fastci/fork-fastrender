@@ -4,7 +4,7 @@ use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, RunUntilIdleOutcome,
+  CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome,
   ScriptBlockExecutor, ScriptElementSpec, ScriptId, ScriptOrchestrator, ScriptScheduler,
   ScriptSchedulerAction, ScriptType, TaskSource,
 };
@@ -325,7 +325,6 @@ impl BrowserTabHost {
         &mut self,
         host: &mut BrowserTabHost,
         _orchestrator: &mut ScriptOrchestrator,
-        _dom: &Document,
         _script: NodeId,
         script_type: ScriptType,
       ) -> Result<()> {
@@ -362,10 +361,8 @@ impl BrowserTabHost {
     };
 
     // Avoid double-borrowing `self` by temporarily moving the orchestrator out.
-    let dom_snapshot = self.document.dom().clone();
     let mut orchestrator = std::mem::take(&mut self.orchestrator);
-    let result =
-      orchestrator.execute_script_element(self, &dom_snapshot, node_id, script_type, &mut adapter);
+    let result = orchestrator.execute_script_element(self, node_id, script_type, &mut adapter);
     self.orchestrator = orchestrator;
     result
   }
@@ -421,6 +418,22 @@ impl BrowserTabHost {
 impl CurrentScriptHost for BrowserTabHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script
+  }
+}
+
+impl DomHost for BrowserTabHost {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&Document) -> R,
+  {
+    <BrowserDocumentDom2 as DomHost>::with_dom(&self.document, f)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Document) -> (R, bool),
+  {
+    <BrowserDocumentDom2 as DomHost>::mutate_dom(&mut self.document, f)
   }
 }
 

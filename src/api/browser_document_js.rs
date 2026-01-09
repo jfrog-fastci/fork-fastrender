@@ -104,7 +104,6 @@ impl BrowserDocumentJs {
   /// `runtime.script_orchestrator_mut().execute_script_element(&mut runtime, ..)`.
   pub fn execute_script_element<Exec>(
     &mut self,
-    dom: &crate::dom2::Document,
     script: crate::dom2::NodeId,
     script_type: crate::js::ScriptType,
     executor: &mut Exec,
@@ -113,7 +112,7 @@ impl BrowserDocumentJs {
     Exec: crate::js::ScriptBlockExecutor<Self>,
   {
     let mut orchestrator = std::mem::take(&mut self.script_orchestrator);
-    let result = orchestrator.execute_script_element(self, dom, script, script_type, executor);
+    let result = orchestrator.execute_script_element(self, script, script_type, executor);
     self.script_orchestrator = orchestrator;
     result
   }
@@ -215,6 +214,22 @@ impl CurrentScriptHost for BrowserDocumentJs {
 
   fn script_execution_log_mut(&mut self) -> Option<&mut ScriptExecutionLog> {
     self.script_execution_log.as_mut()
+  }
+}
+
+impl crate::js::DomHost for BrowserDocumentJs {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&crate::dom2::Document) -> R,
+  {
+    <BrowserDocumentDom2 as crate::js::DomHost>::with_dom(&self.document, f)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
+  {
+    <BrowserDocumentDom2 as crate::js::DomHost>::mutate_dom(&mut self.document, f)
   }
 }
 
@@ -383,7 +398,6 @@ mod tests {
       &mut self,
       host: &mut BrowserDocumentJs,
       _orchestrator: &mut ScriptOrchestrator,
-      _dom: &Dom2Document,
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
@@ -400,28 +414,21 @@ mod tests {
     let renderer = renderer_for_tests();
     let mut runtime = BrowserDocumentJs::new(BrowserDocumentDom2::new(
       renderer,
-      "<!doctype html><html><body>host</body></html>",
+      "<!doctype html><html><body><script src=\"https://example.com/a.js\"></script><script></script></body></html>",
       super::super::RenderOptions::new().with_viewport(32, 32),
     )?);
     runtime.enable_script_execution_log(16);
 
-    let renderer_dom = crate::dom::parse_html(
-      "<!doctype html><script src=\"https://example.com/a.js\"></script><script></script>",
-    )
-    .unwrap();
-    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
-    let scripts = find_script_elements(&dom);
+    let scripts = find_script_elements(runtime.document().dom());
     assert_eq!(scripts.len(), 2);
 
     let mut executor = LoggingExecutor::default();
     runtime.execute_script_element(
-      &dom,
       scripts[0],
       ScriptType::Classic,
       &mut executor,
     )?;
     runtime.execute_script_element(
-      &dom,
       scripts[1],
       ScriptType::Classic,
       &mut executor,

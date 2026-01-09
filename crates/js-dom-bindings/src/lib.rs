@@ -1031,9 +1031,26 @@ const DOM_BINDINGS_SHIM: &str = r##"
   use std::cell::RefCell;
   use std::rc::Rc;
 
-  #[derive(Default)]
   struct Host {
+    dom: Dom2Document,
     script_state: CurrentScriptStateHandle,
+  }
+
+  impl fastrender::js::DomHost for Host {
+    fn with_dom<R, F>(&self, f: F) -> R
+    where
+      F: FnOnce(&Dom2Document) -> R,
+    {
+      f(&self.dom)
+    }
+
+    fn mutate_dom<R, F>(&mut self, f: F) -> R
+    where
+      F: FnOnce(&mut Dom2Document) -> (R, bool),
+    {
+      let (result, _changed) = f(&mut self.dom);
+      result
+    }
   }
 
   impl CurrentScriptHost for Host {
@@ -1110,7 +1127,6 @@ const DOM_BINDINGS_SHIM: &str = r##"
       &mut self,
       _host: &mut Host,
       _orchestrator: &mut ScriptOrchestrator,
-      _dom: &Dom2Document,
       _script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
@@ -1135,31 +1151,29 @@ const DOM_BINDINGS_SHIM: &str = r##"
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(RefCell::new(TestDomHost {
-      dom: Dom2Document::from_renderer_dom(&renderer_dom),
-    }));
-    let script_a = find_script_by_id(&dom.borrow().dom, "a");
-    let script_b = find_script_by_id(&dom.borrow().dom, "b");
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
+    let script_a = find_script_by_id(&dom, "a");
+    let script_b = find_script_by_id(&dom, "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
+      dom,
       script_state: script_state.clone(),
     };
 
-    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom_for_bindings), script_state);
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = JsObservingExecutor { ctx };
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow().dom,
       script_a,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow().dom,
       script_b,
       ScriptType::Classic,
       &mut executor,
@@ -1205,7 +1219,6 @@ const DOM_BINDINGS_SHIM: &str = r##"
       &mut self,
       host: &mut Host,
       orchestrator: &mut ScriptOrchestrator,
-      dom: &Dom2Document,
       script: NodeId,
       _script_type: ScriptType,
     ) -> Result<()> {
@@ -1216,7 +1229,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
           "nested executor should run nested script only once"
         );
         self.did_nested = true;
-        orchestrator.execute_script_element(host, dom, self.script_b, ScriptType::Classic, self)?;
+        orchestrator.execute_script_element(host, self.script_b, ScriptType::Classic, self)?;
         self.observe()?;
       }
       Ok(())
@@ -1228,24 +1241,23 @@ const DOM_BINDINGS_SHIM: &str = r##"
     let renderer_dom = fastrender::dom::parse_html(
       "<!doctype html><script id=a></script><script id=b></script>",
     )?;
-    let dom = Rc::new(RefCell::new(TestDomHost {
-      dom: Dom2Document::from_renderer_dom(&renderer_dom),
-    }));
-    let script_a = find_script_by_id(&dom.borrow().dom, "a");
-    let script_b = find_script_by_id(&dom.borrow().dom, "b");
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
+    let script_a = find_script_by_id(&dom, "a");
+    let script_b = find_script_by_id(&dom, "b");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
+      dom,
       script_state: script_state.clone(),
     };
 
-    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom_for_bindings), script_state);
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = NestedJsExecutor::new(ctx, script_a, script_b);
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow().dom,
       script_a,
       ScriptType::Classic,
       &mut executor,
@@ -1269,32 +1281,30 @@ const DOM_BINDINGS_SHIM: &str = r##"
       "<div id=host><template shadowroot=open><script id=shadow></script></template></div>",
       "<script id=module type=module></script>",
     ))?;
-    let dom = Rc::new(RefCell::new(TestDomHost {
-      dom: Dom2Document::from_renderer_dom(&renderer_dom),
-    }));
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let dom_for_bindings = Rc::new(RefCell::new(TestDomHost { dom: dom.clone() }));
 
-    let shadow_script = find_script_by_id(&dom.borrow().dom, "shadow");
-    let module_script = find_script_by_id(&dom.borrow().dom, "module");
+    let shadow_script = find_script_by_id(&dom, "shadow");
+    let module_script = find_script_by_id(&dom, "module");
 
     let script_state = CurrentScriptStateHandle::default();
     let mut host = Host {
+      dom,
       script_state: script_state.clone(),
     };
 
-    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom_for_bindings), script_state);
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = JsObservingExecutor { ctx };
 
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow().dom,
       shadow_script,
       ScriptType::Classic,
       &mut executor,
     )?;
     orchestrator.execute_script_element(
       &mut host,
-      &dom.borrow().dom,
       module_script,
       ScriptType::Module,
       &mut executor,

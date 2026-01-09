@@ -151,16 +151,9 @@ impl JsHost {
   }
 
   fn run_script_element(&mut self, node_id: NodeId, script_type: ScriptType) -> Result<()> {
-    // `ScriptOrchestrator::execute_script_element` takes both `&mut Host` and `&Document`. We keep a
-    // clone of the DOM for the duration of the call so we don't hold an immutable borrow of a
-    // `self` field while also mutably borrowing `self`.
-    //
-    // This is test-only infrastructure; DOM mutation during script execution is out-of-scope here.
-    let dom = self.dom.clone();
     let mut exec = JsExecutor::default();
     let mut orchestrator = std::mem::take(&mut self.orchestrator);
-    let result =
-      orchestrator.execute_script_element(self, &dom, node_id, script_type, &mut exec);
+    let result = orchestrator.execute_script_element(self, node_id, script_type, &mut exec);
     self.orchestrator = orchestrator;
     result
   }
@@ -169,6 +162,23 @@ impl JsHost {
 impl CurrentScriptHost for JsHost {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.script_state
+  }
+}
+
+impl fastrender::js::DomHost for JsHost {
+  fn with_dom<R, F>(&self, f: F) -> R
+  where
+    F: FnOnce(&Document) -> R,
+  {
+    f(&self.dom)
+  }
+
+  fn mutate_dom<R, F>(&mut self, f: F) -> R
+  where
+    F: FnOnce(&mut Document) -> (R, bool),
+  {
+    let (result, _changed) = f(&mut self.dom);
+    result
   }
 }
 
@@ -206,7 +216,6 @@ impl ScriptBlockExecutor<JsHost> for JsExecutor {
     &mut self,
     host: &mut JsHost,
     orchestrator: &mut ScriptOrchestrator,
-    dom: &Document,
     script: NodeId,
     _script_type: ScriptType,
   ) -> Result<()> {
@@ -238,7 +247,7 @@ impl ScriptBlockExecutor<JsHost> for JsExecutor {
         if idx == 0 {
           if let Some(inner) = nested_inner {
             self.did_nested = true;
-            orchestrator.execute_script_element(host, dom, inner, ScriptType::Classic, self)?;
+            orchestrator.execute_script_element(host, inner, ScriptType::Classic, self)?;
           }
         }
       }
