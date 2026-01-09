@@ -108,10 +108,32 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
   if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
     let (back, forward) = ctx.input(|i| {
-      (
-        i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft),
-        i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
-      )
+      // Like the Ctrl/Cmd shortcuts above, use the key event's modifier snapshot instead of
+      // `i.modifiers` so this stays robust in unit tests.
+      let mut back = false;
+      let mut forward = false;
+      for event in &i.events {
+        let egui::Event::Key {
+          key,
+          pressed: true,
+          repeat: false,
+          modifiers,
+        } = event
+        else {
+          continue;
+        };
+        // Guard against AltGr (often encoded as Ctrl+Alt).
+        let alt_only = modifiers.alt && !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd);
+        if !alt_only {
+          continue;
+        }
+        match key {
+          egui::Key::ArrowLeft => back = true,
+          egui::Key::ArrowRight => forward = true,
+          _ => {}
+        }
+      }
+      (back, forward)
     });
     if back {
       actions.push(ChromeAction::Back);
@@ -388,6 +410,65 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
       "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn alt_left_emits_back_action_when_not_editing() {
+    let mut app = BrowserAppState::new();
+    let ctx = new_context_with_key(
+      egui::Key::ArrowLeft,
+      egui::Modifiers {
+        alt: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::Back)),
+      "expected ChromeAction::Back, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn alt_right_emits_forward_action_when_not_editing() {
+    let mut app = BrowserAppState::new();
+    let ctx = new_context_with_key(
+      egui::Key::ArrowRight,
+      egui::Modifiers {
+        alt: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::Forward)),
+      "expected ChromeAction::Forward, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn alt_left_is_suppressed_while_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+    let ctx = new_context_with_key(
+      egui::Key::ArrowLeft,
+      egui::Modifiers {
+        alt: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      !actions.iter().any(|action| matches!(action, ChromeAction::Back)),
+      "expected ChromeAction::Back to be suppressed, got {actions:?}"
     );
   }
 }
