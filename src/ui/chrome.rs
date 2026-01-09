@@ -60,13 +60,14 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
       // Guard against AltGr (often encoded as Ctrl+Alt).
       let cmd_or_ctrl = (modifiers.command || modifiers.ctrl) && !modifiers.alt;
 
-      match key {
-        egui::Key::L if cmd_or_ctrl => focus_address_bar = true,
-        egui::Key::T if cmd_or_ctrl => new_tab = true,
-        egui::Key::W if cmd_or_ctrl => close_tab = true,
-        egui::Key::R if cmd_or_ctrl => reload = true,
-        egui::Key::Tab if cmd_or_ctrl => {
-          tab_delta = Some(if modifiers.shift { -1isize } else { 1isize })
+       match key {
+         // Many browsers support both Ctrl/Cmd+L and Ctrl/Cmd+K for focusing the address bar.
+         egui::Key::L | egui::Key::K if cmd_or_ctrl => focus_address_bar = true,
+         egui::Key::T if cmd_or_ctrl => new_tab = true,
+         egui::Key::W if cmd_or_ctrl => close_tab = true,
+         egui::Key::R if cmd_or_ctrl => reload = true,
+         egui::Key::Tab if cmd_or_ctrl => {
+           tab_delta = Some(if modifiers.shift { -1isize } else { 1isize })
         }
         // F5 is a common reload shortcut. Ignore modified F5 (Ctrl/Cmd+F5 / Alt+F5).
         egui::Key::F5 if !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd) && !modifiers.alt => {
@@ -288,6 +289,25 @@ mod tests {
       ..Default::default()
     };
     let ctx = new_context_with_key(egui::Key::L, modifiers);
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
+      "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_k_emits_focus_address_bar_action() {
+    let mut app = BrowserAppState::new();
+    let modifiers = egui::Modifiers {
+      command: true,
+      ..Default::default()
+    };
+    let ctx = new_context_with_key(egui::Key::K, modifiers);
     let actions = chrome_ui(&ctx, &mut app);
     let _ = ctx.end_frame();
 

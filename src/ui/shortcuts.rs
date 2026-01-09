@@ -32,6 +32,7 @@ impl Modifiers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
   L,
+  K,
   T,
   W,
   Tab,
@@ -50,6 +51,7 @@ pub enum Key {
 pub fn map_shortcut(key: Key, modifiers: Modifiers) -> Option<ShortcutAction> {
   match (key, modifiers) {
     (Key::L, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::FocusAddressBar),
+    (Key::K, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::FocusAddressBar),
     (Key::T, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::NewTab),
     (Key::W, Modifiers { ctrl: true, alt: false, .. }) => Some(ShortcutAction::CloseTab),
     (Key::Tab, Modifiers { ctrl: true, shift: false, alt: false }) => {
@@ -75,6 +77,14 @@ mod tests {
   fn ctrl_l_focuses_address_bar() {
     assert_eq!(
       map_shortcut(Key::L, Modifiers::new(true, false, false)),
+      Some(ShortcutAction::FocusAddressBar)
+    );
+  }
+
+  #[test]
+  fn ctrl_k_focuses_address_bar() {
+    assert_eq!(
+      map_shortcut(Key::K, Modifiers::new(true, false, false)),
       Some(ShortcutAction::FocusAddressBar)
     );
   }
@@ -140,4 +150,3 @@ mod tests {
     );
   }
 }
-
