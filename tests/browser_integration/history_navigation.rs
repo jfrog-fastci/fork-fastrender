@@ -1,10 +1,11 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
+use fastrender::api::{FastRenderFactory, FastRenderPoolConfig};
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
-use fastrender::ui::browser_worker::spawn_browser_ui_worker_thread;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-use fastrender::{Error, FastRender, FastRenderConfig, Result};
+use fastrender::ui::spawn_ui_worker_with_factory;
+use fastrender::{Error, Result};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -109,12 +110,11 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
         "<!doctype html><title>B</title><body>B</body>",
       ),
   );
-  let renderer = FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher))?;
-
-  let (ui_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let (worker_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let handle =
-    spawn_browser_ui_worker_thread("fastr-browser-history-test", renderer, ui_rx, ui_tx)?;
+  let factory = FastRenderFactory::with_config(
+    FastRenderPoolConfig::default().with_fetcher(fetcher),
+  )?;
+  let handle = spawn_ui_worker_with_factory("fastr-browser-history-test", factory)?;
+  let (worker_tx, worker_rx, join) = handle.split();
 
   let tab_id = TabId(1);
   worker_tx
@@ -161,7 +161,7 @@ fn per_tab_back_forward_state_machine() -> Result<()> {
   assert!(!can_forward);
 
   drop(worker_tx);
-  handle.join().expect("worker thread join");
+  join.join().expect("worker thread join");
   Ok(())
 }
 
@@ -184,16 +184,11 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
         "<!doctype html><title>Final</title><body>final</body>",
       ),
   );
-  let renderer = FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher))?;
-
-  let (ui_tx, worker_rx) = std::sync::mpsc::channel::<WorkerToUi>();
-  let (worker_tx, ui_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let handle = spawn_browser_ui_worker_thread(
-    "fastr-browser-redirect-history-test",
-    renderer,
-    ui_rx,
-    ui_tx,
+  let factory = FastRenderFactory::with_config(
+    FastRenderPoolConfig::default().with_fetcher(fetcher),
   )?;
+  let handle = spawn_ui_worker_with_factory("fastr-browser-redirect-history-test", factory)?;
+  let (worker_tx, worker_rx, join) = handle.split();
 
   let tab_id = TabId(1);
   worker_tx
@@ -237,6 +232,6 @@ fn redirects_commit_final_url_into_history_entry() -> Result<()> {
   );
 
   drop(worker_tx);
-  handle.join().expect("worker thread join");
+  join.join().expect("worker thread join");
   Ok(())
 }

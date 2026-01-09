@@ -2,7 +2,7 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::test_worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ impl Harness {
   fn new(tab_id: TabId) -> Self {
     let worker =
       spawn_ui_worker("fastr-browser-ui-worker-test").expect("spawn ui worker protocol harness");
-    let cancel_gens = worker.cancel_gens();
+    let cancel_gens = CancelGens::new();
     let (tx, rx, join) = worker.split();
     Self {
       tab_id,

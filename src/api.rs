@@ -7469,12 +7469,15 @@ impl FastRender {
     let paint_parallelism = self.resolve_paint_parallelism(&options);
     let layout_parallelism = self.resolve_layout_parallelism(&options);
 
+    let needs_top_layer_state = needs_top_layer_state(&dom)?;
+
     let previous_dpr = self.device_pixel_ratio;
     let artifacts_result = (|| -> Result<LayoutArtifacts> {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
       self.pending_device_size = Some(resolved_viewport.visual_viewport);
-      self.layout_document_for_media_with_artifacts(
-        &dom,
+      self.layout_document_for_media_with_artifacts_owned(
+        dom,
+        needs_top_layer_state,
         layout_width,
         layout_height,
         options.media_type,

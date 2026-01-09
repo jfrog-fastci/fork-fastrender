@@ -2,18 +2,24 @@ pub mod about_pages;
 pub mod app_state;
 pub mod browser_app;
 pub mod browser_tab_controller;
-pub mod browser_thread;
 pub mod browser_worker;
+// UI↔worker messaging lives in `messages.rs`.
+//
+// `render_worker` is the *single* production UI worker implementation. The `browser` binary and
+// browser integration tests are expected to use it.
+//
+// `worker` contains small render-thread utilities (stage heartbeat forwarding, thread builder), but
+// does **not** implement a separate UI worker loop.
+pub mod render_worker;
 pub mod cancel;
 pub mod history;
 pub mod messages;
-pub mod render_thread;
-pub mod tab_engine;
-pub mod ui_worker;
 pub mod shortcuts;
-pub mod worker_runtime;
 pub mod worker;
-/// Headless test-only UI worker loop (supports deterministic cancellation scenarios).
+/// Test-only helpers for spawning a headless UI worker.
+///
+/// This module is intentionally a thin wrapper around [`render_worker`] so tests do not drift onto
+/// a separate worker implementation.
 #[cfg(feature = "browser_ui")]
 pub mod test_worker;
 pub mod url;
@@ -25,10 +31,6 @@ pub mod chrome;
 pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
 };
-pub use render_thread::spawn_browser_render_thread;
-#[cfg(any(test, feature = "browser_ui"))]
-pub use render_thread::spawn_browser_render_thread_for_test;
-pub use ui_worker::UiWorker;
 
 // `input_mapping` depends on the optional egui/winit stack, so keep it behind the
 // `browser_ui` feature gate.
@@ -39,9 +41,12 @@ pub mod input_mapping;
 pub use input_mapping::{InputMapping, WheelDelta, CSS_PX_PER_WHEEL_LINE};
 
 pub use browser_tab_controller::BrowserTabController;
-pub use browser_thread::{spawn_browser_worker, spawn_browser_worker_with_factory, BrowserWorkerHandle};
+pub use render_worker::{
+  spawn_browser_ui_worker, spawn_browser_worker, spawn_browser_worker_with_factory, spawn_ui_worker,
+  spawn_ui_worker_for_test, spawn_ui_worker_with_factory, BrowserWorkerHandle, UiWorkerHandle,
+};
 #[cfg(any(test, feature = "browser_ui"))]
-pub use browser_thread::spawn_browser_worker_for_test;
+pub use render_worker::spawn_browser_worker_for_test;
 
 // `pixmap_texture` depends on the optional egui stack, so keep it behind the
 // `browser_ui` feature gate.
@@ -66,8 +71,5 @@ pub use browser_app::{
 
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};
-pub use tab_engine::TabEngine;
-pub use browser_thread::spawn_browser_ui_worker;
-
 pub use crate::select_dropdown as select_dropdown;
 pub use crate::select_dropdown::{SelectDropdown, SelectDropdownChoice};

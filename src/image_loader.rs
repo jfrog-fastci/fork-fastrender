@@ -10447,7 +10447,10 @@ mod tests {
     );
 
     assert!(
-      fetcher.requests().iter().all(|(url, _, _)| url != cross_url),
+      fetcher
+        .requests()
+        .iter()
+        .all(|(url, _, _)| url != cross_url),
       "hyperlink should not be fetched"
     );
   }

@@ -6,7 +6,7 @@ use super::support::{
   DEFAULT_TIMEOUT,
 };
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

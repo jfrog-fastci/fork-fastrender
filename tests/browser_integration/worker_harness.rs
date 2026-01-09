@@ -1,10 +1,10 @@
 #![cfg(feature = "browser_ui")]
 
+use fastrender::render_control::StageHeartbeat;
 use fastrender::scroll::ScrollState;
 use fastrender::tree::box_tree::SelectControl;
 use fastrender::ui::messages::{RenderedFrame, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_runtime::spawn_browser_worker_runtime_thread;
-use fastrender::render_control::StageHeartbeat;
+use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -110,7 +110,9 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::NavigationStarted { tab_id, url } => (WorkerToUiEvent::NavigationStarted { tab_id, url }, None),
+    WorkerToUi::NavigationStarted { tab_id, url } => {
+      (WorkerToUiEvent::NavigationStarted { tab_id, url }, None)
+    }
     WorkerToUi::NavigationCommitted {
       tab_id,
       url,
@@ -126,19 +128,24 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::NavigationFailed { tab_id, url, error, .. } => (
+    WorkerToUi::NavigationFailed {
+      tab_id,
+      url,
+      error,
+      ..
+    } => (
       WorkerToUiEvent::NavigationFailed { tab_id, url, error },
       None,
     ),
-    WorkerToUi::ScrollStateUpdated { tab_id, scroll } => (
-      WorkerToUiEvent::ScrollStateUpdated { tab_id, scroll },
-      None,
-    ),
-    WorkerToUi::LoadingState { tab_id, loading } => (
-      WorkerToUiEvent::LoadingState { tab_id, loading },
-      None,
-    ),
-    WorkerToUi::DebugLog { tab_id, line } => (WorkerToUiEvent::DebugLog { tab_id, line }, None),
+    WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+      (WorkerToUiEvent::ScrollStateUpdated { tab_id, scroll }, None)
+    }
+    WorkerToUi::LoadingState { tab_id, loading } => {
+      (WorkerToUiEvent::LoadingState { tab_id, loading }, None)
+    }
+    WorkerToUi::DebugLog { tab_id, line } => {
+      (WorkerToUiEvent::DebugLog { tab_id, line }, None)
+    }
     WorkerToUi::SelectDropdownClosed { tab_id } => {
       (WorkerToUiEvent::SelectDropdownClosed { tab_id }, None)
     }
@@ -160,7 +167,10 @@ pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEv
     expected.len(),
     "expected event subsequence {:?} in {:?}",
     expected,
-    events.iter().map(WorkerToUiEvent::kind).collect::<Vec<_>>()
+    events
+      .iter()
+      .map(WorkerToUiEvent::kind)
+      .collect::<Vec<_>>()
   );
 }
 
@@ -177,21 +187,15 @@ pub struct WorkerHarness {
 impl WorkerHarness {
   pub fn spawn() -> Self {
     let stage_lock = super::stage_listener_test_lock();
-    let (ui_tx, worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
-    let (worker_tx, ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
-    let handle = spawn_browser_worker_runtime_thread(
-      "fastr-browser-worker-runtime-test",
-      worker_rx,
-      worker_tx,
-    )
-    .expect("spawn browser worker runtime thread");
+    let worker = spawn_ui_worker("fastr-browser-worker-runtime-test")
+      .expect("spawn ui worker for runtime harness");
 
     Self {
       _stage_lock: stage_lock,
-      ui_tx: Some(ui_tx),
-      ui_rx,
-      handle: Some(handle),
+      ui_tx: Some(worker.ui_tx),
+      ui_rx: worker.ui_rx,
+      handle: Some(worker.join),
     }
   }
 

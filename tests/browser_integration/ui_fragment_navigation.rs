@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, WorkerToUi};
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;

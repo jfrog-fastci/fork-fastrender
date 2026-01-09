@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
 // UI worker startup + first paint can take several seconds under load when browser integration

@@ -149,6 +149,10 @@ fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
     click_pos,
     PointerButton::Primary,
   ));
+  // PointerDown can repaint (e.g. active/focus state). Drain that frame so the subsequent
+  // PointerUp wait observes the post-click selection update.
+  let (_frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
+  let _ = drain_after_frame(&h, events);
 
   // PointerDown may repaint (active/focus styling), so `send_and_wait_for_frame` after PointerUp
   // could observe the earlier PointerDown frame. Keep waiting until the click-driven selection

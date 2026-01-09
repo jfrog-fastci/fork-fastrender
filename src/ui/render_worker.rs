@@ -15,10 +15,31 @@ use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use crate::ui::worker::spawn_render_worker_thread;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+
+/// Handle to a spawned UI render worker thread.
+///
+/// The UI thread sends [`UiToWorker`] messages over `ui_tx`, and receives [`WorkerToUi`] updates on
+/// `ui_rx`.
+pub struct UiWorkerHandle {
+  pub ui_tx: Sender<UiToWorker>,
+  pub ui_rx: Receiver<WorkerToUi>,
+  pub join: std::thread::JoinHandle<()>,
+}
+
+impl UiWorkerHandle {
+  pub fn split(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+    (self.ui_tx, self.ui_rx, self.join)
+  }
+
+  pub fn join(self) -> std::thread::Result<()> {
+    // Ensure the worker loop can observe channel closure before we block on joining.
+    drop(self.ui_tx);
+    self.join.join()
+  }
+}
 
 /// Handle to the browser worker thread.
 ///
@@ -50,6 +71,7 @@ struct TabState {
 
   pending_navigation: Option<NavigationRequest>,
   needs_repaint: bool,
+  force_repaint: bool,
 }
 
 impl TabState {
@@ -67,6 +89,7 @@ impl TabState {
       last_base_url: None,
       pending_navigation: None,
       needs_repaint: false,
+      force_repaint: false,
     }
   }
 }
@@ -139,6 +162,16 @@ fn same_document_fragment_target(current_url: &str, href: &str) -> Option<url::U
 
 fn url_fragment(url: &str) -> Option<&str> {
   url.split_once('#').map(|(_, fragment)| fragment)
+}
+
+fn apply_original_fragment_to_final_url(original_url: &str, final_url: &str) -> String {
+  let Some(fragment) = url_fragment(original_url) else {
+    return final_url.to_string();
+  };
+  if final_url.contains('#') {
+    return final_url.to_string();
+  }
+  format!("{final_url}#{fragment}")
 }
 
 fn select_anchor_css(
@@ -287,6 +320,7 @@ enum Job {
   },
   Paint {
     tab_id: TabId,
+    force: bool,
   },
 }
 
@@ -332,7 +366,18 @@ impl BrowserRuntime {
         self.handle_message(msg);
       }
 
-      self.drain_messages();
+      // If a navigation is pending, coalesce any queued messages (viewport changes, rapid scroll
+      // events, etc) before we start the expensive prepare step. This preserves expected semantics
+      // for initial navigations (e.g. a `ViewportChanged` sent immediately after `CreateTab` should
+      // affect fragment-scroll clamping), while still allowing input events like PointerDown and
+      // PointerUp to each trigger their own paint + frame.
+      if self
+        .tabs
+        .values()
+        .any(|tab| tab.pending_navigation.is_some())
+      {
+        self.drain_messages();
+      }
 
       let Some(job) = self.next_job() else {
         continue;
@@ -380,16 +425,16 @@ impl BrowserRuntime {
       } => {
         self.tabs.insert(tab_id, TabState::new(cancel));
         self.active_tab.get_or_insert(tab_id);
-
-        let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
-        self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        if let Some(url) = initial_url {
+          self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        }
       }
       UiToWorker::NewTab { tab_id, initial_url } => {
         self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
         self.active_tab.get_or_insert(tab_id);
-
-        let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
-        self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        if let Some(url) = initial_url {
+          self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
+        }
       }
       UiToWorker::CloseTab { tab_id } => {
         self.tabs.remove(&tab_id);
@@ -482,6 +527,7 @@ impl BrowserRuntime {
         tab.needs_repaint = true;
 
         if let Some(doc) = tab.document.as_mut() {
+          tab.force_repaint = true;
           doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
           doc.set_device_pixel_ratio(tab.dpr);
         }
@@ -544,23 +590,24 @@ impl BrowserRuntime {
         if !wheel_handled {
           let mut next = current_scroll.clone();
 
-          if let Some(prepared) = doc.prepared() {
-            let viewport = prepared.fragment_tree().viewport_size();
-            let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
-              .first()
-              .map(|state| state.bounds);
-            let delta = Point::new(delta_x, delta_y);
-            let target = Point::new(next.viewport.x + delta.x, next.viewport.y + delta.y);
-            if let Some(bounds) = bounds {
-              next.viewport = bounds.clamp(target);
-            } else {
-              next.viewport.x = target.x.max(0.0);
-              next.viewport.y = target.y.max(0.0);
+          // Important: do not clamp to content bounds here. Paint-from-cache will clamp/snap the
+          // scroll offset, and we still want to produce a new frame for "overscroll" deltas that
+          // would otherwise appear as a no-op (e.g. scrolling past the end of the page while already
+          // at max scroll).
+          let apply_axis = |current: f32, delta: f32| {
+            if delta == 0.0 || !delta.is_finite() {
+              return current;
             }
-          } else {
-            next.viewport.x = (next.viewport.x + delta_x).max(0.0);
-            next.viewport.y = (next.viewport.y + delta_y).max(0.0);
-          }
+            let value = current + delta;
+            if value.is_finite() { value.max(0.0) } else { current }
+          };
+
+          // Force evaluation of `doc.prepared()` so we keep layout alive and let paint apply
+          // scroll-snap/clamp logic, but do not use it for clamping here.
+          let _ = doc.prepared();
+
+          next.viewport.x = apply_axis(next.viewport.x, delta_x);
+          next.viewport.y = apply_axis(next.viewport.y, delta_y);
 
           if next != current_scroll {
             doc.set_scroll_state(next.clone());
@@ -621,6 +668,7 @@ impl BrowserRuntime {
         };
         tab.cancel.bump_paint();
         tab.needs_repaint = true;
+        tab.force_repaint = true;
       }
     }
   }
@@ -761,10 +809,6 @@ impl BrowserRuntime {
             tab.scroll_state.viewport = offset;
             doc.set_scroll_state(tab.scroll_state.clone());
 
-            let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
-              tab_id,
-              url: url_string.clone(),
-            });
             let title = find_document_title(doc.dom());
             if let Some(title) = title.as_deref() {
               tab.history.set_title(title.to_string());
@@ -804,11 +848,11 @@ impl BrowserRuntime {
       tab.history.push(url.clone());
     }
 
+    let _ = self.ui_tx.send(WorkerToUi::NavigationStarted { tab_id, url });
     let _ = self.ui_tx.send(WorkerToUi::LoadingState {
       tab_id,
       loading: true,
     });
-    let _ = self.ui_tx.send(WorkerToUi::NavigationStarted { tab_id, url });
   }
 
   fn handle_pointer_move(&mut self, tab_id: TabId, pos_css: (f32, f32)) {
@@ -933,13 +977,11 @@ impl BrowserRuntime {
           anchor_css,
         });
         if dom_changed {
-          tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
       }
       _ => {
         if dom_changed {
-          tab.cancel.bump_paint();
           tab.needs_repaint = true;
         }
       }
@@ -1139,8 +1181,12 @@ impl BrowserRuntime {
     if let Some(active) = self.active_tab {
       if self.tabs.get(&active).is_some_and(|t| t.needs_repaint) {
         if let Some(tab) = self.tabs.get_mut(&active) {
+          let force = std::mem::take(&mut tab.force_repaint);
           tab.needs_repaint = false;
-          return Some(Job::Paint { tab_id: active });
+          return Some(Job::Paint {
+            tab_id: active,
+            force,
+          });
         }
       }
     }
@@ -1152,9 +1198,10 @@ impl BrowserRuntime {
       .find_map(|(id, tab)| tab.needs_repaint.then_some(*id))
     {
       if let Some(tab) = self.tabs.get_mut(&tab_id) {
+        let force = std::mem::take(&mut tab.force_repaint);
         tab.needs_repaint = false;
+        return Some(Job::Paint { tab_id, force });
       }
-      return Some(Job::Paint { tab_id });
     }
 
     None
@@ -1173,7 +1220,7 @@ impl BrowserRuntime {
   fn run_job(&mut self, job: Job) -> Option<JobOutput> {
     match job {
       Job::Navigate { tab_id, request } => self.run_navigation(tab_id, request),
-      Job::Paint { tab_id } => self.run_paint(tab_id),
+      Job::Paint { tab_id, force } => self.run_paint(tab_id, force),
     }
   }
 
@@ -1197,10 +1244,9 @@ impl BrowserRuntime {
     // Drop the mutable borrow for the potentially expensive prepare+paint.
     let (prepared, original_url) = {
       let original_url = request.url.clone();
-      let options = RenderOptions::default()
+      let mut options = RenderOptions::default()
         .with_viewport(viewport_css.0, viewport_css.1)
         .with_device_pixel_ratio(dpr);
-      let mut options = options;
       options.cancel_callback = Some(cancel_callback.clone());
 
       match is_allowed_navigation_url(&original_url) {
@@ -1227,8 +1273,31 @@ impl BrowserRuntime {
     let mut msgs = Vec::new();
 
     let (renderer, report) = match prepared {
-      Ok((renderer, report)) => (renderer, report),
+      Ok(r) => r,
       Err(err) => {
+        // Unsupported URL schemes should fail fast without rendering an error page.
+        if err.starts_with("unsupported URL scheme:") {
+          tab.loading = false;
+          return Some(JobOutput {
+            tab_id,
+            snapshot,
+            snapshot_kind: SnapshotKind::Prepare,
+            msgs: vec![
+              WorkerToUi::NavigationFailed {
+                tab_id,
+                url: original_url.clone(),
+                error: err,
+                can_go_back: tab.history.can_go_back(),
+                can_go_forward: tab.history.can_go_forward(),
+              },
+              WorkerToUi::LoadingState {
+                tab_id,
+                loading: false,
+              },
+            ],
+          });
+        }
+
         return self.run_navigation_error(tab_id, &original_url, &err, snapshot);
       }
     };
@@ -1240,9 +1309,13 @@ impl BrowserRuntime {
       diagnostics: _,
     } = report;
 
-    let committed_url = reported_final_url
-      .clone()
-      .unwrap_or_else(|| original_url.clone());
+    // Preserve fragments across redirects so:
+    // - history keeps the original `#fragment`
+    // - `:target` / anchor scrolling still work
+    let committed_url = match reported_final_url.as_deref() {
+      Some(final_url) => apply_original_fragment_to_final_url(&original_url, final_url),
+      None => original_url.clone(),
+    };
 
     // Compute initial scroll state (including fragment navigations like `#target`).
     let mut scroll_state = ScrollState::with_viewport(Point::new(
@@ -1254,6 +1327,7 @@ impl BrowserRuntime {
         let offset = if fragment.is_empty() {
           Some(Point::ZERO)
         } else {
+          // `scroll_offset_for_fragment_target` percent-decodes internally; do not pre-decode.
           scroll_offset_for_fragment_target(
             document.dom(),
             document.box_tree(),
@@ -1292,12 +1366,23 @@ impl BrowserRuntime {
     doc.set_navigation_urls(reported_final_url.clone(), base_url.clone());
     doc.set_scroll_state(scroll_state.clone());
 
+    // Ensure `:target` / `:target-within` selector matching uses the committed URL (including
+    // fragments that may not be present in `final_url`).
+    if url_fragment(&committed_url).is_some() && doc.document_url() != Some(committed_url.as_str()) {
+      doc.set_document_url(Some(committed_url.clone()));
+    }
     let paint_cancel_callback = paint_snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(paint_cancel_callback.clone()));
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      doc.render_if_needed_with_scroll_state()
+      match doc.render_if_needed_with_scroll_state() {
+        Ok(Some(frame)) => Ok(Some(frame)),
+        // Newly-created documents should always require an initial paint, but be defensive: if
+        // `render_if_needed_*` returns `None`, force a paint so the navigation produces a frame.
+        Ok(None) => doc.render_frame_with_scroll_state().map(Some),
+        Err(err) => Err(err),
+      }
     };
 
     let painted = match painted {
@@ -1321,7 +1406,7 @@ impl BrowserRuntime {
 
           let _ = tab
             .history
-            .commit_navigation(&original_url, reported_final_url.as_deref());
+            .commit_navigation(&original_url, Some(committed_url.as_str()));
           let title = tab
             .document
             .as_ref()
@@ -1389,7 +1474,7 @@ impl BrowserRuntime {
 
     let _ = tab
       .history
-      .commit_navigation(&original_url, reported_final_url.as_deref());
+      .commit_navigation(&original_url, Some(committed_url.as_str()));
     let title = tab
       .document
       .as_ref()
@@ -1572,7 +1657,11 @@ impl BrowserRuntime {
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      doc.render_if_needed_with_scroll_state()
+      match doc.render_if_needed_with_scroll_state() {
+        Ok(Some(frame)) => Ok(Some(frame)),
+        Ok(None) => doc.render_frame_with_scroll_state().map(Some),
+        Err(err) => Err(err),
+      }
     };
     let painted = match painted {
       Ok(Some(frame)) => frame,
@@ -1676,7 +1765,7 @@ impl BrowserRuntime {
     })
   }
 
-  fn run_paint(&mut self, tab_id: TabId) -> Option<JobOutput> {
+  fn run_paint(&mut self, tab_id: TabId, force: bool) -> Option<JobOutput> {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return None;
     };
@@ -1688,8 +1777,9 @@ impl BrowserRuntime {
     let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(cancel_callback.clone()));
 
-    let painted = {
-      let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+    let painted = if force {
+      doc.render_frame_with_scroll_state().map(Some)
+    } else {
       doc.render_if_needed_with_scroll_state()
     };
 
@@ -1776,6 +1866,79 @@ impl BrowserRuntime {
   }
 }
 
+fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
+  // The browser UI (and its integration tests) should not depend on system-installed fonts. Prefer
+  // the bundled font set so navigation/scroll renders remain deterministic and avoid expensive
+  // system font database scans under CI.
+  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer_config))
+}
+
+/// Spawn the headless UI render worker loop.
+///
+/// This worker consumes [`UiToWorker`] messages and emits [`WorkerToUi`] updates (frames,
+/// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
+/// usable from tests to exercise end-to-end interaction wiring.
+pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle> {
+  spawn_ui_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)
+}
+
+/// Spawn a UI worker with an optional per-frame artificial delay (test-only).
+pub fn spawn_ui_worker_for_test(
+  name: impl Into<String>,
+  test_render_delay_ms: Option<u64>,
+) -> crate::Result<UiWorkerHandle> {
+  spawn_ui_worker_with_factory_inner(name.into(), test_render_delay_ms, default_ui_worker_factory()?)
+}
+
+/// Spawn a UI worker using a preconfigured [`FastRenderFactory`].
+///
+/// Useful for integration tests that need a custom fetcher.
+pub fn spawn_ui_worker_with_factory(
+  name: impl Into<String>,
+  factory: FastRenderFactory,
+) -> crate::Result<UiWorkerHandle> {
+  spawn_ui_worker_with_factory_inner(name.into(), None, factory)
+}
+
+fn spawn_ui_worker_with_factory_inner(
+  name: String,
+  test_render_delay_ms: Option<u64>,
+  factory: FastRenderFactory,
+) -> crate::Result<UiWorkerHandle> {
+  let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
+  let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
+
+  let join = std::thread::Builder::new()
+    .name(name)
+    .stack_size(crate::system::DEFAULT_RENDER_STACK_SIZE)
+    .spawn(move || {
+      struct TestRenderDelayGuard;
+
+      impl Drop for TestRenderDelayGuard {
+        fn drop(&mut self) {
+          crate::render_control::set_test_render_delay_ms(None);
+        }
+      }
+
+      // `set_test_render_delay_ms` is process-global; ensure it is cleared when the worker exits so
+      // integration tests cannot leak configuration across runs.
+      let _delay_guard = test_render_delay_ms.map(|delay| {
+        crate::render_control::set_test_render_delay_ms(Some(delay));
+        TestRenderDelayGuard
+      });
+
+      let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory);
+      runtime.run();
+    })?;
+
+  Ok(UiWorkerHandle {
+    ui_tx: ui_to_worker_tx,
+    ui_rx: worker_to_ui_rx,
+    join,
+  })
+}
+
 /// Spawn the browser worker thread.
 ///
 /// The returned handle can be used from a headless caller (no winit/egui required).
@@ -1790,71 +1953,34 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 pub fn spawn_browser_worker_with_name(
   name: impl Into<String>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  spawn_browser_worker_inner(name.into(), None)
+  let handle = spawn_ui_worker(name)?;
+  Ok(BrowserWorkerHandle {
+    tx: handle.ui_tx,
+    rx: handle.ui_rx,
+    join: handle.join,
+  })
+}
+
+/// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
+/// factory.
+pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
+  let handle = spawn_ui_worker_with_factory("browser_worker", factory)?;
+  Ok(BrowserWorkerHandle {
+    tx: handle.ui_tx,
+    rx: handle.ui_rx,
+    join: handle.join,
+  })
 }
 
 #[cfg(any(test, feature = "browser_ui"))]
 pub fn spawn_browser_worker_for_test(
   test_render_delay_ms: Option<u64>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  spawn_browser_worker_inner("browser_worker".to_string(), test_render_delay_ms)
-}
-
-fn spawn_browser_worker_inner(
-  name: String,
-  test_render_delay_ms: Option<u64>,
-) -> crate::Result<BrowserWorkerHandle> {
-  // The browser UI integration tests should not depend on system-installed fonts. Prefer the
-  // bundled font set so navigation/scroll renders remain deterministic and don't stall on system
-  // font database scans under CI.
-  let renderer_config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  let factory = FastRenderFactory::with_config(
-    FastRenderPoolConfig::new().with_renderer_config(renderer_config),
-  )?;
-  spawn_browser_worker_with_name_and_factory(name, factory, test_render_delay_ms)
-}
-
-/// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
-/// factory.
-pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
-  spawn_browser_worker_with_name_and_factory("browser_worker".to_string(), factory, None)
-}
-
-fn spawn_browser_worker_with_name_and_factory(
-  name: String,
-  factory: FastRenderFactory,
-  test_render_delay_ms: Option<u64>,
-) -> crate::Result<BrowserWorkerHandle> {
-  // `spawn_render_worker_thread` requires a renderer instance even though this runtime builds its
-  // own per-navigation renderers from the factory. Build one from the same factory to ensure we do
-  // not duplicate global caches.
-  let renderer = factory.build_renderer()?;
-
-  let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
-
-  let factory_for_thread = factory.clone();
-  let worker_to_ui_tx_for_thread = worker_to_ui_tx.clone();
-
-  let join = spawn_render_worker_thread(
-    name,
-    renderer,
-    worker_to_ui_tx,
-    move |_render_worker| {
-      crate::render_control::set_test_render_delay_ms(test_render_delay_ms);
-      let mut runtime = BrowserRuntime::new(
-        ui_to_worker_rx,
-        worker_to_ui_tx_for_thread,
-        factory_for_thread,
-      );
-      runtime.run();
-    },
-  )?;
-
+  let handle = spawn_ui_worker_for_test("browser_worker", test_render_delay_ms)?;
   Ok(BrowserWorkerHandle {
-    tx: ui_to_worker_tx,
-    rx: worker_to_ui_rx,
-    join,
+    tx: handle.ui_tx,
+    rx: handle.ui_rx,
+    join: handle.join,
   })
 }
 

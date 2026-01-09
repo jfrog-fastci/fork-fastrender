@@ -805,7 +805,7 @@ mod browser_app_tests {
     assert_eq!((ready.pixmap.width(), ready.pixmap.height()), (2, 3));
   }
 
-  // Note: scroll restoration is worker-owned (see `ui::worker_loop`), so the windowed UI state
+  // Note: scroll restoration is worker-owned (see `ui::render_worker`), so the windowed UI state
   // model has no pending scroll restore bookkeeping to unit test here.
 }
 

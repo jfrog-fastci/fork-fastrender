@@ -4,8 +4,8 @@ use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
 };
+use fastrender::ui::spawn_ui_worker;
 use fastrender::tree::box_tree::SelectItem;
-use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

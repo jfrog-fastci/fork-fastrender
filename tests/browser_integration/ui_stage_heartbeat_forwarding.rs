@@ -3,9 +3,8 @@
 use fastrender::render_control::{record_stage, StageHeartbeat};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::RenderWorker;
-use fastrender::ui::worker::spawn_ui_worker as spawn_history_ui_worker;
 use fastrender::{PreparedPaintOptions, RenderOptions};
-use fastrender::ui::test_worker::spawn_ui_worker as spawn_ui_worker_loop;
+use fastrender::ui::spawn_ui_worker;
 use tempfile::tempdir;
 
 use super::support::{
@@ -146,7 +145,7 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
   let url = format!("file://{}/index.html", dir.path().display());
 
-  let (ui_tx, ui_rx, join) = spawn_ui_worker_loop("fastr-ui-worker-loop-stage-test")
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-loop-stage-test")
     .expect("spawn ui worker")
     .split();
   let tab_id = TabId::new();
@@ -288,9 +287,9 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   std::fs::write(dir.path().join("index.html"), html).expect("write html");
   let url = format!("file://{}/index.html", dir.path().display());
 
-  let (ui_tx, ui_rx, join) = spawn_history_ui_worker("fastr-ui-worker-stage-test")
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-stage-test")
     .expect("spawn ui worker")
-    .into_parts();
+    .split();
   let tab_id = TabId::new();
 
   ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");

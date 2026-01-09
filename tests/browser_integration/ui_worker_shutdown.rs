@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::ui::messages::{NavigationReason, TabId};
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::time::{Duration, Instant};
 
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
@@ -26,7 +26,7 @@ fn dropping_handle_shuts_down_worker_thread() {
   let handle =
     spawn_ui_worker("fastr-ui-worker-shutdown-drop").expect("spawn ui worker");
 
-  let join = std::thread::spawn(move || handle.shutdown());
+  let join = std::thread::spawn(move || handle.join());
   // Shutting down can involve joining render threads; allow some slack under parallel load.
   join_with_timeout(join, DEFAULT_TIMEOUT).expect("worker thread should not panic");
 }

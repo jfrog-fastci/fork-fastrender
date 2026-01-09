@@ -1,10 +1,9 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::render_control::StageHeartbeat;
-use fastrender::ui::browser_worker::spawn_browser_worker_thread;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-use fastrender::FastRender;
+use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
 struct TestRenderDelayGuard;
@@ -32,17 +31,8 @@ fn cancellation_on_new_navigation() {
   let cancel = CancelGens::new();
   let tab_id = TabId::new();
 
-  let (ui_tx, worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let (worker_tx, ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
-
-  let renderer = FastRender::builder().build().expect("renderer");
-  let handle = spawn_browser_worker_thread(
-    "fastr-browser-worker-cancel-nav-test",
-    renderer,
-    worker_tx,
-    worker_rx,
-  )
-  .expect("spawn worker");
+  let worker = spawn_ui_worker("fastr-browser-worker-cancel-nav-test").expect("spawn worker");
+  let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -129,7 +119,7 @@ fn cancellation_on_new_navigation() {
   );
 
   drop(ui_tx);
-  handle.join().expect("join worker");
+  join.join().expect("join worker");
 }
 
 #[test]
@@ -139,17 +129,8 @@ fn cancellation_on_scroll_drops_stale_frames() {
   let cancel = CancelGens::new();
   let tab_id = TabId::new();
 
-  let (ui_tx, worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
-  let (worker_tx, ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
-
-  let renderer = FastRender::builder().build().expect("renderer");
-  let handle = spawn_browser_worker_thread(
-    "fastr-browser-worker-cancel-scroll-test",
-    renderer,
-    worker_tx,
-    worker_rx,
-  )
-  .expect("spawn worker");
+  let worker = spawn_ui_worker("fastr-browser-worker-cancel-scroll-test").expect("spawn worker");
+  let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
     .send(UiToWorker::CreateTab {
@@ -283,5 +264,5 @@ fn cancellation_on_scroll_drops_stale_frames() {
   );
 
   drop(ui_tx);
-  handle.join().expect("join worker");
+  join.join().expect("join worker");
 }

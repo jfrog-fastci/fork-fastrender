@@ -1,25 +1,19 @@
 #![cfg(feature = "browser_ui")]
 
-use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
 use fastrender::interaction::KeyAction;
 use fastrender::render_control::StageHeartbeat;
-use fastrender::text::font_db::FontConfig;
 use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
-  spawn_browser_render_thread, spawn_browser_render_thread_for_test, NavigationReason, PointerButton,
-  RenderedFrame, TabId, UiToWorker, WorkerToUi,
+  spawn_ui_worker, spawn_ui_worker_for_test, NavigationReason, PointerButton, RenderedFrame, TabId,
+  UiToWorker, WorkerToUi,
 };
+
 use super::support::{
   create_tab_msg_with_cancel, key_action, navigate_msg, pointer_down, pointer_up, scroll_msg,
   text_input, viewport_changed_msg, TempSite, DEFAULT_TIMEOUT,
 };
 use std::time::Duration;
-
-fn factory_for_tests() -> FastRenderFactory {
-  let renderer = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
-  FastRenderFactory::with_config(FastRenderPoolConfig::new().with_renderer_config(renderer)).unwrap()
-}
 
 fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;
@@ -31,8 +25,9 @@ fn rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> [u8; 4] {
 fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
   let _lock = super::stage_listener_test_lock();
 
-  let factory = factory_for_tests();
-  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-about-newtab")
+    .expect("spawn ui worker")
+    .split();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -77,8 +72,9 @@ fn about_newtab_navigation_yields_frame_and_no_fetch_stages() {
 fn scroll_produces_scroll_update_and_frame() {
   let _lock = super::stage_listener_test_lock();
 
-  let factory = factory_for_tests();
-  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-scroll")
+    .expect("spawn ui worker")
+    .split();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -142,10 +138,11 @@ fn scroll_produces_scroll_update_and_frame() {
 fn navigation_cancellation_drops_stale_frame() {
   let _lock = super::stage_listener_test_lock();
 
-  let factory = factory_for_tests();
   // Slow down render stages on this worker thread to make cancellation deterministic without
-  // mutating the process-global render-delay environment variable.
-  let (tx, rx, handle) = spawn_browser_render_thread_for_test(factory, Some(1)).unwrap();
+  // mutating the process-global `FASTR_TEST_RENDER_DELAY_MS` env var.
+  let (tx, rx, handle) = spawn_ui_worker_for_test("fastr-ui-render-thread-cancel", Some(1))
+    .expect("spawn ui worker")
+    .split();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -174,8 +171,12 @@ fn navigation_cancellation_drops_stale_frame() {
       WorkerToUi::Stage { .. } if started_first && !sent_second => {
         // Simulate UI-driven cancellation while the worker is blocked in the first navigation.
         cancel.bump_nav();
-        tx.send(navigate_msg(tab_id, second_url.clone(), NavigationReason::TypedUrl))
-          .unwrap();
+        tx.send(navigate_msg(
+          tab_id,
+          second_url.clone(),
+          NavigationReason::TypedUrl,
+        ))
+        .unwrap();
         sent_second = true;
       }
       WorkerToUi::NavigationCommitted { url, .. } => {
@@ -214,8 +215,9 @@ fn navigation_cancellation_drops_stale_frame() {
 fn enter_submits_focused_text_input_form() {
   let _lock = super::stage_listener_test_lock();
 
-  let factory = factory_for_tests();
-  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-form-submit")
+    .expect("spawn ui worker")
+    .split();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -281,22 +283,23 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
       html, body { margin: 0; padding: 0; }
       #sel { position: absolute; left: 0; top: 0; width: 120px; height: 24px; }
       #box { position: absolute; left: 0; top: 40px; width: 64px; height: 64px; background: rgb(255,0,0); }
-      select:has(option[selected][value="b"]) + #box { background: rgb(0,255,0); }
+      select:has(option[selected][value=\"b\"]) + #box { background: rgb(0,255,0); }
     </style>
   </head>
   <body>
-    <select id="sel">
-      <option value="a" selected>Red</option>
-      <option value="b">Green</option>
+    <select id=\"sel\">
+      <option value=\"a\" selected>Red</option>
+      <option value=\"b\">Green</option>
     </select>
-    <div id="box"></div>
+    <div id=\"box\"></div>
   </body>
 </html>
 "#,
   );
 
-  let factory = factory_for_tests();
-  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+  let (tx, rx, handle) = spawn_ui_worker("fastr-ui-render-thread-select-dropdown-choose")
+    .expect("spawn ui worker")
+    .split();
 
   let tab_id = TabId(1);
   let cancel = CancelGens::new();
@@ -350,9 +353,7 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     .items
     .iter()
     .find_map(|item| match item {
-      SelectItem::Option {
-        node_id, value, ..
-      } if value == "b" => Some(*node_id),
+      SelectItem::Option { node_id, value, .. } if value == "b" => Some(*node_id),
       _ => None,
     })
     .expect("expected option value=b in select control");

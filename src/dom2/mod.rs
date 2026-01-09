@@ -561,16 +561,16 @@ impl Document {
           quirks_mode: *quirks_mode,
           scripting_enabled,
         },
-        NodeKind::DocumentFragment => {
-          // The renderer DOM snapshot format does not have a first-class DocumentFragment node
-          // type. Fragments should never be connected (insertion moves their children and leaves the
-          // fragment detached), but map them defensively to a plain document node to avoid panics if
-          // an invalid tree is constructed.
-          DomNodeType::Document {
-            quirks_mode: QuirksMode::NoQuirks,
-            scripting_enabled,
-          }
-        }
+         NodeKind::DocumentFragment => {
+           // The renderer DOM snapshot format does not have a first-class DocumentFragment node
+           // type. Fragments should never be connected (insertion moves their children and leaves the
+           // fragment detached), but map them defensively to a plain document node to avoid panics if
+           // an invalid tree is constructed.
+           DomNodeType::Document {
+             quirks_mode: QuirksMode::NoQuirks,
+             scripting_enabled,
+           }
+         }
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,

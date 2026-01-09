@@ -192,27 +192,24 @@ impl Env {
       return Ok(());
     }
 
-    match self.globals.get(name).copied() {
-      Some(root) => {
-        heap.set_root(root, value);
-        Ok(())
-      }
-      None => {
-        // Avoid aborting on OOM: pre-allocate the key string + HashMap capacity before rooting.
-        let mut owned = String::new();
-        owned
-          .try_reserve(name.len())
-          .map_err(|_| VmError::OutOfMemory)?;
-        owned.push_str(name);
-        self
-          .globals
-          .try_reserve(1)
-          .map_err(|_| VmError::OutOfMemory)?;
-        let root = heap.add_root(value)?;
-        self.globals.insert(owned, root);
-        Ok(())
-      }
+    if let Some(root) = self.globals.get(name).copied() {
+      heap.set_root(root, value);
+      return Ok(());
     }
+
+    // Avoid aborting on OOM: pre-allocate the key string + HashMap capacity before rooting.
+    let mut owned = String::new();
+    owned
+      .try_reserve(name.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    owned.push_str(name);
+    self
+      .globals
+      .try_reserve(1)
+      .map_err(|_| VmError::OutOfMemory)?;
+    let root = heap.add_root(value)?;
+    self.globals.insert(owned, root);
+    Ok(())
   }
 }
 
