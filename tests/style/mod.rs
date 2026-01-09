@@ -54,6 +54,7 @@ mod media_invalid_type;
 mod media_test;
 mod namespace_pruning_order_test;
 mod namespace_rule_test;
+mod namespace_selectors_test;
 mod noscript_display_rule_ignored_when_scripting_enabled_test;
 mod nth_child_cache_test;
 mod nth_child_of_selector_index_test;

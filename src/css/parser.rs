@@ -20,6 +20,7 @@ use super::types::ContainerRule;
 use super::types::ContainerSizeQuery;
 use super::types::CssParseError;
 use super::types::CssParseResult;
+use super::types::CssNamespaces;
 use super::types::CssRule;
 use super::types::CssString;
 use super::types::Declaration;
@@ -313,7 +314,13 @@ fn parse_stylesheet_internal(
     return Err(Error::Render(err));
   }
 
-  Ok((StyleSheet { rules }, errors))
+  Ok((
+    StyleSheet {
+      namespaces: namespace_state.namespaces,
+      rules,
+    },
+    errors,
+  ))
 }
 
 /// Parse a CSS stylesheet
@@ -483,15 +490,17 @@ pub fn parse_stylesheet_with_media_cached_by_url_arc(
   parse_stylesheet_with_media_cached_by_url_shared(css, stylesheet_url, media_ctx, cache)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct NamespaceParseState {
   namespaces_allowed: bool,
+  namespaces: CssNamespaces,
 }
 
 impl Default for NamespaceParseState {
   fn default() -> Self {
     Self {
       namespaces_allowed: true,
+      namespaces: CssNamespaces::default(),
     }
   }
 }
@@ -900,9 +909,14 @@ fn parse_namespace_rule<'i, 't>(
     let prefix = trim_ascii_whitespace(&prefix);
     if !prefix.is_empty() {
       super::selectors::namespace_context_set_prefix(prefix, CssString::from(url));
+      namespace_state
+        .namespaces
+        .prefixes
+        .insert(CssString::from(prefix.to_ascii_lowercase()), CssString::from(url));
     }
   } else {
     super::selectors::namespace_context_set_default(CssString::from(url));
+    namespace_state.namespaces.default = Some(CssString::from(url));
   }
 
   Ok(None)

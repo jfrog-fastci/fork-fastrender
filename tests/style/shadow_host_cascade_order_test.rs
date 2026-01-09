@@ -20,7 +20,10 @@ fn stylesheet_from_sources(sources: &[StylesheetSource]) -> StyleSheet {
       combined.extend(sheet.rules);
     }
   }
-  StyleSheet { rules: combined }
+  StyleSheet {
+    namespaces: Default::default(),
+    rules: combined,
+  }
 }
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {

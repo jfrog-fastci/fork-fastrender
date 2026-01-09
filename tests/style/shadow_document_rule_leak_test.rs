@@ -39,7 +39,7 @@ fn document_rules_do_not_leak_into_shadow_trees_without_stylesheets() {
 
   // Compare against a baseline cascade with an empty document stylesheet to avoid depending on a
   // specific UA default color.
-  let baseline_sheet = StyleSheet { rules: Vec::new() };
+  let baseline_sheet = StyleSheet::new();
   let styled_baseline = apply_styles_with_media(&dom, &baseline_sheet, &media);
   let baseline_color = find_by_id(&styled_baseline, "shadow")
     .expect("shadow span baseline")

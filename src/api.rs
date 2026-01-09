@@ -9329,6 +9329,7 @@ impl FastRender {
         }
 
         Ok(StyleSheet {
+          namespaces: Default::default(),
           rules: combined_rules,
         })
       };
@@ -9609,6 +9610,7 @@ impl FastRender {
     }
 
     Ok(StyleSheet {
+      namespaces: Default::default(),
       rules: combined_rules,
     })
   }

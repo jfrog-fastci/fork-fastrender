@@ -3778,8 +3778,13 @@ fn node_is_inert(node: &DomNode, ancestors: &[&DomNode]) -> bool {
 fn namespace_matches(node: &DomNode, namespace: &str) -> bool {
   match node.namespace() {
     Some(ns) => {
+      // The selectors crate represents the explicit "no namespace" selector form (`|E`) using an
+      // empty namespace URL. FastRender stores HTML elements with an empty namespace string to
+      // save memory (treating it as the HTML namespace). Avoid conflating those: an empty selector
+      // namespace only matches elements in *no* namespace (which FastRender does not currently
+      // represent), not HTML elements.
       if namespace.is_empty() {
-        true
+        false
       } else if ns == namespace {
         true
       } else {

@@ -272,6 +272,25 @@ impl precomputed_hash::PrecomputedHash for CssString {
 // Stylesheet structures
 // ============================================================================
 
+/// Namespace declarations collected from `@namespace` rules.
+///
+/// The selector parser consults these declarations when resolving namespace prefixes like
+/// `svg|rect`. Parsed selectors store fully-resolved namespace URLs, so the cascade does not
+/// need to consult this map, but it is retained on the stylesheet for debugging/tools.
+#[derive(Debug, Default, Clone)]
+pub struct CssNamespaces {
+  /// The default namespace (e.g. from `@namespace url("...");`).
+  pub default: Option<CssString>,
+  /// Prefix-to-namespace-url mappings (e.g. from `@namespace svg url("...");`).
+  pub prefixes: FxHashMap<CssString, CssString>,
+}
+
+impl CssNamespaces {
+  pub fn is_empty(&self) -> bool {
+    self.default.is_none() && self.prefixes.is_empty()
+  }
+}
+
 /// Flattened style rule with its cascade layer ordering.
 #[derive(Debug, Clone)]
 pub struct CollectedRule<'a> {
@@ -346,6 +365,8 @@ fn empty_layer_path() -> Arc<[u32]> {
 /// Stylesheet containing CSS rules
 #[derive(Debug, Clone)]
 pub struct StyleSheet {
+  /// `@namespace` declarations that affect selector parsing.
+  pub namespaces: CssNamespaces,
   /// All CSS rules in the stylesheet (style rules and @-rules)
   pub rules: Vec<CssRule>,
 }
@@ -483,7 +504,10 @@ pub trait CssImportLoader {
 impl StyleSheet {
   /// Creates an empty stylesheet
   pub fn new() -> Self {
-    Self { rules: Vec::new() }
+    Self {
+      namespaces: CssNamespaces::default(),
+      rules: Vec::new(),
+    }
   }
 
   /// Annotate `@font-face` rules in this stylesheet with the stylesheet base URL.
@@ -868,7 +892,10 @@ impl StyleSheet {
       &mut resolved,
       &mut deadline_counter,
     )?;
-    Ok(StyleSheet { rules: resolved })
+    Ok(StyleSheet {
+      namespaces: self.namespaces,
+      rules: resolved,
+    })
   }
 
   /// Returns true if the stylesheet (or any nested blocks) contains @container rules.

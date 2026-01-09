@@ -204,6 +204,7 @@ fn collect_document_style_set_matches_resolved_stylesheet_rules() {
   expected_rules.extend(resolved_inline.rules);
   expected_rules.extend(resolved_external.rules);
   let expected = StyleSheet {
+    namespaces: Default::default(),
     rules: expected_rules,
   };
 

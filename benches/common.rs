@@ -158,7 +158,10 @@ pub fn stylesheet_for_dom(dom: &DomNode, media_ctx: &MediaContext) -> StyleSheet
     }
   }
 
-  StyleSheet { rules }
+  StyleSheet {
+    namespaces: Default::default(),
+    rules,
+  }
 }
 
 pub fn cascade(dom: &DomNode, stylesheet: &StyleSheet, media_ctx: &MediaContext) -> StyledNode {

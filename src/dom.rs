@@ -6447,8 +6447,12 @@ impl<'a> Element for ElementRef<'a> {
   fn has_namespace(&self, ns: &str) -> bool {
     match &self.node.node_type {
       DomNodeType::Element { namespace, .. } | DomNodeType::Slot { namespace, .. } => {
+        // The selectors crate uses an empty namespace URL to represent the explicit "no namespace"
+        // selector form (`|E`). FastRender stores HTML elements with an empty string namespace to
+        // save memory, so treat an empty selector namespace as "no namespace" (which never matches
+        // HTML).
         if ns.is_empty() {
-          return true;
+          return false;
         }
         if namespace == ns {
           return true;
