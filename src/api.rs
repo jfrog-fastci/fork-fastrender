@@ -10712,6 +10712,8 @@ impl FastRender {
       needs_top_layer_state,
       candidate_width,
       candidate_height,
+      base_width,
+      base_height,
       media_type,
       options,
       viewport_scroll,
