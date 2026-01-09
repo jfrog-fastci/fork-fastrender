@@ -10,7 +10,6 @@ use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
-use std::rc::Rc;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -48,24 +47,32 @@ struct SinkState {
 /// Notes:
 /// - Comments / processing instructions / doctypes are ignored (not inserted into the tree).
 /// - HTML namespace elements store `namespace=""` for compatibility with existing selector logic.
-/// - The sink performs parse-time `<base href>` tracking via a shared [`BaseUrlTracker`].
+/// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
-  base_url: Rc<RefCell<BaseUrlTracker>>,
+  base_url_tracker: RefCell<BaseUrlTracker>,
   state: RefCell<SinkState>,
 }
 
 impl Dom2TreeSink {
-  pub fn new(base_url: Rc<RefCell<BaseUrlTracker>>) -> Self {
+  pub fn new(document_url: Option<&str>) -> Self {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
-      base_url,
+      base_url_tracker: RefCell::new(BaseUrlTracker::new(document_url)),
       state: RefCell::new(SinkState::default()),
     }
   }
 
   pub fn document(&self) -> Ref<'_, Document> {
     self.document.borrow()
+  }
+
+  pub fn base_url_tracker(&self) -> Ref<'_, BaseUrlTracker> {
+    self.base_url_tracker.borrow()
+  }
+
+  pub fn current_base_url(&self) -> Option<String> {
+    self.base_url_tracker.borrow().current_base_url()
   }
 
   fn map_quirks_mode(mode: HtmlQuirksMode) -> SelectorQuirksMode {
@@ -102,15 +109,16 @@ impl Dom2TreeSink {
       }
       remaining -= 1;
 
+      if doc.node(id).inert_subtree {
+        in_template = true;
+      }
+
       match &doc.node(id).kind {
         NodeKind::Element {
           tag_name,
           namespace,
           ..
         } => {
-          if tag_name.eq_ignore_ascii_case("template") {
-            in_template = true;
-          }
           if tag_name.eq_ignore_ascii_case("head") && Self::is_html_namespace(namespace) {
             in_head = true;
           }
@@ -317,7 +325,10 @@ impl Dom2TreeSink {
       return;
     };
     let (in_head, in_foreign_namespace, in_template) = Self::compute_insertion_flags(doc, parent);
-    self.base_url.borrow_mut().on_element_inserted(
+    self
+      .base_url_tracker
+      .borrow_mut()
+      .on_element_inserted(
       tag_name,
       namespace,
       attrs,
@@ -460,8 +471,7 @@ impl TreeSink for Dom2TreeSink {
 
         let mut doc = self.document.borrow_mut();
         let mut state = self.state.borrow_mut();
-        let was_unparented = doc.node(node).parent.is_none();
-        if Self::insert_node_before(&mut state, &mut doc, *parent, None, node) && was_unparented {
+        if Self::insert_node_before(&mut state, &mut doc, *parent, None, node) {
           self.note_element_inserted(&doc, *parent, node);
         }
       }
@@ -495,10 +505,7 @@ impl TreeSink for Dom2TreeSink {
 
         let mut doc = self.document.borrow_mut();
         let mut state = self.state.borrow_mut();
-        let was_unparented = doc.node(node).parent.is_none();
-        if Self::insert_node_before(&mut state, &mut doc, parent, Some(*sibling), node)
-          && was_unparented
-        {
+        if Self::insert_node_before(&mut state, &mut doc, parent, Some(*sibling), node) {
           self.note_element_inserted(&doc, parent, node);
         }
       }
@@ -541,21 +548,32 @@ impl TreeSink for Dom2TreeSink {
       return;
     }
 
-    let mut doc = self.document.borrow_mut();
-    let mut state = self.state.borrow_mut();
-    let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
+    let moved_children = {
+      let mut doc = self.document.borrow_mut();
+      let mut state = self.state.borrow_mut();
+      let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
 
-    if !moved_children.is_empty() && state.merge_barrier_at_end.remove(new_parent) {
-      state.merge_barrier_before.insert(moved_children[0]);
-    }
+      if !moved_children.is_empty() && state.merge_barrier_at_end.remove(new_parent) {
+        state.merge_barrier_before.insert(moved_children[0]);
+      }
 
-    for child in moved_children.iter().copied() {
-      doc.node_mut(child).parent = Some(*new_parent);
-    }
-    doc.node_mut(*new_parent).children.extend(moved_children.iter().copied());
+      for child in moved_children.iter().copied() {
+        doc.node_mut(child).parent = Some(*new_parent);
+      }
+      doc.node_mut(*new_parent).children.extend(moved_children.iter().copied());
 
-    if state.merge_barrier_at_end.remove(node) {
-      state.merge_barrier_at_end.insert(*new_parent);
+      if state.merge_barrier_at_end.remove(node) {
+        state.merge_barrier_at_end.insert(*new_parent);
+      }
+
+      moved_children
+    };
+
+    // Reparenting is another insertion point (e.g. foster parenting). Notify the base URL tracker
+    // for any `<base>` moved into/out of `<head>` during parsing.
+    let doc = self.document.borrow();
+    for child in moved_children {
+      self.note_element_inserted(&doc, *new_parent, child);
     }
   }
 
@@ -622,16 +640,12 @@ mod tests {
   use super::Dom2TreeSink;
   use crate::debug::snapshot::snapshot_dom;
   use crate::dom2::{NodeId, NodeKind};
-  use crate::html::base_url_tracker::BaseUrlTracker;
   use html5ever::tendril::TendrilSink;
   use html5ever::ParseOpts;
   use selectors::context::QuirksMode;
-  use std::cell::RefCell;
-  use std::rc::Rc;
 
   fn parse_with_sink(html: &str) -> crate::dom2::Document {
-    let base_url = Rc::new(RefCell::new(BaseUrlTracker::new(None)));
-    let sink = Dom2TreeSink::new(base_url);
+    let sink = Dom2TreeSink::new(None);
     html5ever::parse_document(sink, ParseOpts::default()).one(html)
   }
 
@@ -709,8 +723,7 @@ mod tests {
 
   #[test]
   fn merges_adjacent_text_insertions() {
-    let base_url = Rc::new(RefCell::new(BaseUrlTracker::new(None)));
-    let sink = Dom2TreeSink::new(base_url);
+    let sink = Dom2TreeSink::new(None);
     let mut parser = html5ever::parse_document(sink, ParseOpts::default());
     parser.process("<p>".into());
     parser.process("a".into());
@@ -768,26 +781,225 @@ mod tests {
       .collect();
     assert_eq!(text_nodes, vec!["a".to_string(), "b".to_string()]);
   }
+}
+
+#[cfg(test)]
+mod base_url_tests {
+  use super::Dom2TreeSink;
+  use crate::dom2::{Document, NodeId, NodeKind};
+
+  use html5ever::tendril::StrTendril;
+  use html5ever::tokenizer::{BufferQueue, Tokenizer};
+  use html5ever::tree_builder::{TreeBuilder, TreeBuilderOpts};
+  use html5ever::ParseOpts;
+  use html5ever::TokenizerResult;
+
+  fn parse_with_base_url(html: &str) -> (Option<String>, Document) {
+    let sink = Dom2TreeSink::new(Some("https://example.com/dir/page.html"));
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: false,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+
+    let tb = TreeBuilder::new(sink, opts.tree_builder);
+    let mut tokenizer = Tokenizer::new(tb, opts.tokenizer);
+    let mut input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+
+    loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Done => break,
+        TokenizerResult::Script(_) => panic!("unexpected script pause with scripting disabled"),
+      }
+    }
+    tokenizer.end();
+
+    let doc = tokenizer.sink.sink.document.borrow().clone();
+    let base_url = tokenizer.sink.sink.current_base_url();
+    (base_url, doc)
+  }
+
+  fn parse_and_capture_base_url(html: &str) -> Option<String> {
+    let (base_url, _doc) = parse_with_base_url(html);
+    base_url
+  }
 
   #[test]
-  fn base_url_tracker_ignores_template_base_and_applies_head_base() {
+  fn base_href_freezes_after_first_valid_base_in_head() {
+    let html =
+      "<!doctype html><html><head><base href=\"https://a/\"><base href=\"https://b/\"></head></html>";
+    assert_eq!(parse_and_capture_base_url(html).as_deref(), Some("https://a/"));
+  }
+
+  #[test]
+  fn base_in_template_in_head_is_ignored_and_does_not_freeze() {
     let html = concat!(
-      "<!doctype html>",
-      "<html><head>",
-      "<template><base href=\"https://bad-template.example/\"></template>",
-      "<base href=\"https://good.example/base/\">",
-      "</head><body>",
-      "<base href=\"https://bad-body.example/\">",
+      "<!doctype html><html><head>",
+      "<template><base href=\"https://bad/\"></template>",
+      "<base href=\"https://good/\">",
+      "</head></html>"
+    );
+    let (base_url, doc) = parse_with_base_url(html);
+    assert_eq!(base_url.as_deref(), Some("https://good/"));
+
+    let base_nodes: Vec<NodeId> = (0..doc.nodes_len())
+      .filter_map(|idx| {
+        let id = NodeId(idx);
+        match &doc.node(id).kind {
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("base") => Some(id),
+          _ => None,
+        }
+      })
+      .collect();
+    assert_eq!(base_nodes.len(), 2);
+
+    let mut saw_template_base = false;
+    for base_id in base_nodes {
+      let parent = doc.node(base_id).parent.expect("base should have parent");
+      let (in_head, in_foreign_namespace, in_template) =
+        Dom2TreeSink::compute_insertion_flags(&doc, parent);
+      assert!(in_head, "<base> in <head> should be detected as in_head");
+      assert!(
+        !in_foreign_namespace,
+        "<base> in <head> template subtree should not be in a foreign namespace"
+      );
+      if in_template {
+        saw_template_base = true;
+      }
+    }
+    assert!(saw_template_base, "expected one <base> to be inside a template subtree");
+  }
+
+  #[test]
+  fn base_in_foreign_namespace_is_ignored_and_does_not_freeze() {
+    // The `<base>` is inside an SVG `foreignObject` integration point so it's an HTML namespace
+    // element with a foreign namespace ancestor. Even though the `<base>` itself is HTML, we must
+    // still treat it as "in a foreign namespace" for base-href selection.
+    let html = concat!(
+      "<!doctype html><html><head></head><body>",
+      "<svg><foreignObject><base href=\"https://bad/\"></foreignObject></svg>",
       "</body></html>",
     );
 
-    let base_url = Rc::new(RefCell::new(BaseUrlTracker::new(None)));
-    let sink = Dom2TreeSink::new(Rc::clone(&base_url));
-    let _doc = html5ever::parse_document(sink, ParseOpts::default()).one(html);
+    let sink = Dom2TreeSink::new(Some("https://example.com/dir/page.html"));
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: false,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+
+    let tb = TreeBuilder::new(sink, opts.tree_builder);
+    let mut tokenizer = Tokenizer::new(tb, opts.tokenizer);
+    let mut input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+
+    loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Done => break,
+        TokenizerResult::Script(_) => panic!("unexpected script pause with scripting disabled"),
+      }
+    }
+    tokenizer.end();
+
+    let base_url = tokenizer.sink.sink.current_base_url();
+
+    // No `<base>` in `<head>` means the base URL should remain the document URL.
+    assert_eq!(base_url.as_deref(), Some("https://example.com/dir/page.html"));
+
+    let doc = tokenizer.sink.sink.document.borrow().clone();
+
+    // Ensure the `<base>` inside SVG foreign content is an HTML namespace element, but its context
+    // is still flagged as "in a foreign namespace" due to a foreign ancestor.
+    let base_id = (0..doc.nodes_len())
+      .find_map(|idx| {
+        let id = NodeId(idx);
+        match &doc.node(id).kind {
+          NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("base") => Some(id),
+          _ => None,
+        }
+      })
+      .expect("expected a <base> element inside foreignObject");
+
+    let NodeKind::Element { namespace, .. } = &doc.node(base_id).kind else {
+      panic!("expected <base> element node kind");
+    };
+    assert_eq!(
+      namespace,
+      "",
+      "expected integration point <base> to be in the HTML namespace"
+    );
+
+    let parent = doc.node(base_id).parent.expect("base should have parent");
+    let (in_head, in_foreign_namespace, in_template) =
+      Dom2TreeSink::compute_insertion_flags(&doc, parent);
+    assert!(!in_head, "base should not be inside <head> in this markup");
+    assert!(in_foreign_namespace);
+    assert!(!in_template);
+
+    // Regression check: encountering a `<base>` inside foreign content must not freeze base-href
+    // selection. A later valid `<base href>` in `<head>` should still apply.
+    tokenizer.sink.sink.base_url_tracker.borrow_mut().on_element_inserted(
+      "base",
+      "",
+      &[("href".to_string(), "https://good/".to_string())],
+      true,
+      false,
+      false,
+    );
+    assert_eq!(
+      tokenizer.sink.sink.current_base_url().as_deref(),
+      Some("https://good/")
+    );
+  }
+
+  #[test]
+  fn base_href_does_not_apply_to_script_prepared_before_base_element_is_inserted() {
+    let sink = Dom2TreeSink::new(Some("https://example.com/dir/page.html"));
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+    let tb = TreeBuilder::new(sink, opts.tree_builder);
+    let mut tokenizer = Tokenizer::new(tb, opts.tokenizer);
+    let mut input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(
+      "<!doctype html><html><head><script src=\"a.js\"></script><base href=\"https://ex/base/\"></head></html>",
+    ));
+
+    let script_handle = loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Script(handle) => break handle,
+        TokenizerResult::Done => panic!("expected script pause"),
+      }
+    };
+
+    // At the script boundary, the following `<base>` hasn't been parsed/inserted yet.
+    assert_eq!(
+      tokenizer.sink.sink.current_base_url().as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+
+    // Resume and finish parsing; the base should apply after it is inserted.
+    let _ = script_handle;
+    loop {
+      match tokenizer.feed(&mut input) {
+        TokenizerResult::Done => break,
+        TokenizerResult::Script(_) => panic!("unexpected extra script pause"),
+      }
+    }
+    tokenizer.end();
 
     assert_eq!(
-      base_url.borrow().current_base_url().as_deref(),
-      Some("https://good.example/base/")
+      tokenizer.sink.sink.current_base_url().as_deref(),
+      Some("https://ex/base/")
     );
   }
 }

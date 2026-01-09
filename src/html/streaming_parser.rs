@@ -8,13 +8,11 @@
 //! - and maintains the parse-time document base URL (`<base href>`).
 
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
-use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
-use std::cell::{Ref, RefCell};
-use std::rc::Rc;
+use std::cell::Ref;
 
 /// Output of a [`StreamingHtmlParser::pump`] call.
 ///
@@ -44,7 +42,6 @@ pub enum StreamingParserYield {
 /// script, then resume parsing by calling `pump` again.
 pub struct StreamingHtmlParser {
   parser: PausableHtml5everParser<Dom2TreeSink>,
-  base_url: Rc<RefCell<BaseUrlTracker>>,
   document_url: Option<String>,
 }
 
@@ -54,8 +51,7 @@ impl StreamingHtmlParser {
   /// `document_url` is an optional URL hint used as the initial parse-time base URL (and as the
   /// resolution base for a later `<base href>`).
   pub fn new(document_url: Option<&str>) -> Self {
-    let base_url = Rc::new(RefCell::new(BaseUrlTracker::new(document_url)));
-    let sink = Dom2TreeSink::new(Rc::clone(&base_url));
+    let sink = Dom2TreeSink::new(document_url);
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
         scripting_enabled: true,
@@ -66,7 +62,6 @@ impl StreamingHtmlParser {
 
     Self {
       parser: PausableHtml5everParser::new_document(sink, opts),
-      base_url,
       document_url: document_url.map(|s| s.to_string()),
     }
   }
@@ -111,7 +106,7 @@ impl StreamingHtmlParser {
 
   /// Returns the current parse-time base URL.
   pub fn current_base_url(&self) -> Option<String> {
-    self.base_url.borrow().current_base_url()
+    self.parser.sink().current_base_url()
   }
 
   /// Returns the `document_url` hint used to initialize this parser.
