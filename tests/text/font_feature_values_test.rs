@@ -158,6 +158,73 @@ fn font_variant_alternates_named_values_resolve_via_font_feature_values() {
 }
 
 #[test]
+fn font_feature_values_merges_repeated_blocks() {
+  let css = r#"
+    @font-feature-values Foo {
+      @styleset { a: 1; }
+      @styleset { b: 2; }
+    }
+  "#;
+  let sheet = parse_stylesheet(css).expect("stylesheet should parse");
+  assert_eq!(sheet.rules.len(), 1);
+
+  let rule = match &sheet.rules[0] {
+    CssRule::FontFeatureValues(rule) => rule,
+    other => panic!("unexpected rule parsed: {other:?}"),
+  };
+
+  let styleset = rule
+    .groups
+    .get(&FontFeatureValueType::Styleset)
+    .expect("expected @styleset group");
+  assert_eq!(styleset.get("a"), Some(&vec![1u32]));
+  assert_eq!(styleset.get("b"), Some(&vec![2u32]));
+}
+
+#[test]
+fn font_feature_values_keeps_mixed_integer_values() {
+  let (font_context, family) = load_fixture_font_context();
+
+  let dom = dom::parse_html(r#"<div id="t">A</div>"#).expect("parse html");
+  let css = format!(
+    r#"
+      @font-feature-values "{family}" {{ @styleset {{ mixed: 1 125; }} }}
+      #t {{
+        font-family: "{family}";
+        font-size: 16px;
+        font-variant-alternates: styleset(mixed);
+      }}
+    "#
+  );
+  let stylesheet = parse_stylesheet(&css).expect("stylesheet");
+  let styled = apply_styles(&dom, &stylesheet);
+  let node = find_by_id(&styled, "t").expect("expected node");
+
+  let text = "A";
+  let run = ItemizedRun {
+    text: text.to_string(),
+    start: 0,
+    end: text.len(),
+    script: Script::Latin,
+    direction: Direction::LeftToRight,
+    level: 0,
+  };
+  let font_runs = assign_fonts(&[run], &node.styles, &font_context).expect("assign fonts");
+  assert_eq!(font_runs.len(), 1, "expected a single font run");
+
+  let mut seen: HashMap<[u8; 4], u32> = HashMap::new();
+  for f in font_runs[0].features.iter() {
+    seen.insert(f.tag.to_bytes(), f.value);
+  }
+
+  assert_eq!(
+    seen.get(b"ss01"),
+    Some(&1),
+    "styleset(mixed) should enable ss01 even when additional indices are ignored"
+  );
+}
+
+#[test]
 fn font_variant_alternates_character_variant_two_integer_mapping_uses_second_as_value() {
   let (font_context, family) = load_fixture_font_context();
 
@@ -286,5 +353,18 @@ fn font_variant_alternates_character_variant_invalid_three_integer_mapping_is_ig
   assert!(
     seen.get(b"cv05").is_none(),
     "invalid @character-variant definitions with 3+ integers must be ignored"
+  );
+}
+
+#[test]
+fn font_feature_values_rejects_generic_family_names() {
+  let css = r#"@font-feature-values serif { @styleset { a: 1; } }"#;
+  let sheet = parse_stylesheet(css).expect("stylesheet should parse");
+  assert!(
+    sheet
+      .rules
+      .iter()
+      .all(|rule| !matches!(rule, CssRule::FontFeatureValues(_))),
+    "generic family names should invalidate the entire @font-feature-values rule"
   );
 }

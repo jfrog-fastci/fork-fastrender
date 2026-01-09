@@ -3306,12 +3306,41 @@ fn parse_font_feature_values_rule<'i, 't>(
   parser: &mut Parser<'i, 't>,
   _css_source: &str,
 ) -> std::result::Result<Option<CssRule>, ParseError<'i, SelectorParseErrorKind<'i>>> {
+  fn is_disallowed_font_feature_values_family(name: &str) -> bool {
+    // CSS Fonts 4 disallows generic/system family names in the `@font-feature-values` prelude.
+    // Match case-insensitively (ASCII).
+    match name.to_ascii_lowercase().as_str() {
+      "serif"
+      | "sans-serif"
+      | "monospace"
+      | "cursive"
+      | "fantasy"
+      | "system-ui"
+      | "ui-serif"
+      | "ui-sans-serif"
+      | "ui-monospace"
+      | "ui-rounded"
+      | "emoji"
+      | "math"
+      | "fangsong" => true,
+      _ => false,
+    }
+  }
+
   parser.skip_whitespace();
 
   let font_families =
     match parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |p| {
+      enum FamilyName {
+        Ident(Vec<String>),
+        String(String),
+      }
+
       let mut families: Vec<String> = Vec::new();
-      let mut ident_parts: Vec<String> = Vec::new();
+      let mut current: Option<FamilyName> = None;
+      // True at start and after every comma, so a comma when this is true indicates an empty item
+      // (leading/trailing comma or `,,`), which is a syntax error.
+      let mut expecting_family = true;
 
       while !p.is_exhausted() {
         if !css_deadline_allows_progress() {
@@ -3324,20 +3353,49 @@ fn parse_font_feature_values_rule<'i, 't>(
 
         match p.next()? {
           Token::Comma => {
-            if !ident_parts.is_empty() {
-              families.push(ident_parts.join(" "));
-              ident_parts.clear();
+            if expecting_family {
+              // Empty family entry: leading comma, trailing comma, or `,,`.
+              return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+                "invalid @font-feature-values prelude".into(),
+              )));
             }
+            let Some(family) = current.take() else {
+              return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+                "invalid @font-feature-values prelude".into(),
+              )));
+            };
+            families.push(match family {
+              FamilyName::Ident(parts) => parts.join(" "),
+              FamilyName::String(s) => s,
+            });
+            expecting_family = true;
           }
           Token::Ident(id) => {
-            ident_parts.push(id.to_string());
+            if expecting_family {
+              current = Some(FamilyName::Ident(vec![id.to_string()]));
+              expecting_family = false;
+            } else {
+              match current.as_mut() {
+                Some(FamilyName::Ident(parts)) => parts.push(id.to_string()),
+                // A quoted family name must be separated from the next name by a comma.
+                Some(FamilyName::String(_)) | None => {
+                  return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+                    "invalid @font-feature-values prelude".into(),
+                  )));
+                }
+              }
+            }
           }
           Token::QuotedString(s) => {
-            if !ident_parts.is_empty() {
-              families.push(ident_parts.join(" "));
-              ident_parts.clear();
+            if expecting_family {
+              current = Some(FamilyName::String(s.to_string()));
+              expecting_family = false;
+            } else {
+              // An identifier-based family name must be separated from the next name by a comma.
+              return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+                "invalid @font-feature-values prelude".into(),
+              )));
             }
-            families.push(s.to_string());
           }
           _ => {
             // Invalid prelude; abort parsing this rule.
@@ -3348,8 +3406,18 @@ fn parse_font_feature_values_rule<'i, 't>(
         }
       }
 
-      if !ident_parts.is_empty() {
-        families.push(ident_parts.join(" "));
+      if expecting_family {
+        // Ended after a comma, producing an empty trailing family entry.
+        if !families.is_empty() {
+          return Err(p.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(
+            "invalid @font-feature-values prelude".into(),
+          )));
+        }
+      } else if let Some(family) = current.take() {
+        families.push(match family {
+          FamilyName::Ident(parts) => parts.join(" "),
+          FamilyName::String(s) => s,
+        });
       }
 
       Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(families)
@@ -3368,6 +3436,14 @@ fn parse_font_feature_values_rule<'i, 't>(
     .collect();
 
   if font_families.is_empty() {
+    skip_at_rule(parser);
+    return Ok(None);
+  }
+
+  if font_families
+    .iter()
+    .any(|family| is_disallowed_font_feature_values_family(family))
+  {
     skip_at_rule(parser);
     return Ok(None);
   }
@@ -3441,13 +3517,17 @@ fn parse_font_feature_values_rule<'i, 't>(
                   Ok(Token::Number {
                     int_value: Some(v), ..
                   }) => {
-                    if (1..=99).contains(v) {
-                      values.push(*v as u32);
-                    } else {
+                    if *v < 0 {
                       valid = false;
                       skip_to_semicolon(group_parser);
                       break;
                     }
+                    values.push(*v as u32);
+                  }
+                  Ok(Token::Number { int_value: None, .. }) => {
+                    valid = false;
+                    skip_to_semicolon(group_parser);
+                    break;
                   }
                   Ok(Token::WhiteSpace(_)) => continue,
                   Ok(Token::ParenthesisBlock)
@@ -3477,7 +3557,16 @@ fn parse_font_feature_values_rule<'i, 't>(
 
           if let Ok(map) = parsed_group {
             if !map.is_empty() {
-              rule.groups.insert(group, map);
+              match rule.groups.get_mut(&group) {
+                Some(existing) => {
+                  for (name, values) in map {
+                    existing.insert(name, values);
+                  }
+                }
+                None => {
+                  rule.groups.insert(group, map);
+                }
+              }
             }
           }
         }
