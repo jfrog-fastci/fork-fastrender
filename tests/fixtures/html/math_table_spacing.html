@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<style>
+  body {
+    margin: 0;
+    font-size: 22px;
+    color: rgb(15, 15, 15);
+  }
+  .label {
+    margin: 10px 12px 0;
+    font-size: 14px;
+    font-family: sans-serif;
+  }
+  math {
+    display: block;
+    margin: 6px 12px;
+    font-family: "STIX Two Math", "STIXTwoMath", "DejaVu Serif", serif;
+  }
+</style>
+<body>
+  <div class="label">default spacing</div>
+  <math display="block">
+    <mrow>
+      <mo stretchy="true">(</mo>
+      <mtable>
+        <mtr>
+          <mtd><mi>a</mi></mtd>
+          <mtd><mi>b</mi></mtd>
+        </mtr>
+        <mtr>
+          <mtd><mi>c</mi></mtd>
+          <mtd><mi>d</mi></mtd>
+        </mtr>
+      </mtable>
+      <mo stretchy="true">)</mo>
+    </mrow>
+  </math>
+
+  <div class="label">columnspacing="0" rowspacing="0"</div>
+  <math display="block">
+    <mrow>
+      <mo stretchy="true">(</mo>
+      <mtable columnspacing="0" rowspacing="0">
+        <mtr>
+          <mtd><mi>a</mi></mtd>
+          <mtd><mi>b</mi></mtd>
+        </mtr>
+        <mtr>
+          <mtd><mi>c</mi></mtd>
+          <mtd><mi>d</mi></mtd>
+        </mtr>
+      </mtable>
+      <mo stretchy="true">)</mo>
+    </mrow>
+  </math>
+</body>
+</html>
+

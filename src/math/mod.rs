@@ -175,6 +175,8 @@ pub struct MathTable {
   pub rows: Vec<MathTableRow>,
   pub column_aligns: Vec<ColumnAlign>,
   pub row_aligns: Vec<RowAlign>,
+  pub column_spacings: Option<Vec<MathLengthOrKeyword>>,
+  pub row_spacings: Option<Vec<MathLengthOrKeyword>>,
 }
 
 /// Parsed MathML node
@@ -612,6 +614,22 @@ fn parse_math_space(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
     "thickmathspace" | "thick" => Some(MathLengthOrKeyword::Thick),
     "0" => Some(MathLengthOrKeyword::Zero),
     other => parse_math_length(Some(other)).map(MathLengthOrKeyword::Length),
+  }
+}
+
+const DEFAULT_TABLE_COLUMN_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.8));
+const DEFAULT_TABLE_ROW_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.2));
+
+fn parse_math_space_list(value: Option<&str>, default: MathLengthOrKeyword) -> Option<Vec<MathLengthOrKeyword>> {
+  let raw = value?;
+  let parsed: Vec<MathLengthOrKeyword> = raw
+    .split(|c| c == ' ' || c == ',')
+    .filter_map(|item| parse_math_space(Some(item)))
+    .collect();
+  if parsed.is_empty() {
+    Some(vec![default])
+  } else {
+    Some(parsed)
   }
 }
 
@@ -1109,6 +1127,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         "mtable" => {
           let table_row_aligns = parse_row_align_list(node.get_attribute_ref("rowalign"));
           let table_col_aligns = parse_column_align_list(node.get_attribute_ref("columnalign"));
+          let column_spacings =
+            parse_math_space_list(node.get_attribute_ref("columnspacing"), DEFAULT_TABLE_COLUMN_SPACING);
+          let row_spacings =
+            parse_math_space_list(node.get_attribute_ref("rowspacing"), DEFAULT_TABLE_ROW_SPACING);
           let mut rows = Vec::new();
           for child in node.children.iter() {
             let Some(tag) = child.tag_name() else {
@@ -1156,6 +1178,8 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             rows,
             column_aligns: table_col_aligns,
             row_aligns: table_row_aligns,
+            column_spacings,
+            row_spacings,
           }))
         }
         _ => Some(MathNode::Row(parse_children(node))),
@@ -3203,7 +3227,6 @@ impl MathLayoutContext {
     if table.rows.is_empty() {
       return self.layout_glyphs("", base_style, style, MathVariant::Normal);
     }
-    let (col_spacing, row_spacing) = Self::table_spacing(style);
     let metrics = self.base_font_metrics(base_style, style.font_size);
     let mut cell_layouts: Vec<Vec<MathLayout>> = Vec::new();
     let mut col_widths: Vec<f32> = Vec::new();
@@ -3238,8 +3261,31 @@ impl MathLayoutContext {
       cell_layouts.push(layouts);
     }
 
-    let width: f32 = col_widths.iter().copied().sum::<f32>()
-      + col_spacing * (col_widths.len().saturating_sub(1)) as f32;
+    let col_gap_count = col_widths.len().saturating_sub(1);
+    let row_gap_count = table.rows.len().saturating_sub(1);
+    let (heuristic_col_spacing, heuristic_row_spacing) = Self::table_spacing(style);
+    let col_gaps: Vec<f32> = if let Some(values) = table.column_spacings.as_deref() {
+      (0..col_gap_count)
+        .map(|idx| {
+          let value = repeating_value(values, idx).unwrap_or(DEFAULT_TABLE_COLUMN_SPACING);
+          self.resolve_math_space(value, style, &metrics)
+        })
+        .collect()
+    } else {
+      vec![heuristic_col_spacing; col_gap_count]
+    };
+    let row_gaps: Vec<f32> = if let Some(values) = table.row_spacings.as_deref() {
+      (0..row_gap_count)
+        .map(|idx| {
+          let value = repeating_value(values, idx).unwrap_or(DEFAULT_TABLE_ROW_SPACING);
+          self.resolve_math_space(value, style, &metrics)
+        })
+        .collect()
+    } else {
+      vec![heuristic_row_spacing; row_gap_count]
+    };
+
+    let width: f32 = col_widths.iter().copied().sum::<f32>() + col_gaps.iter().copied().sum::<f32>();
     let mut y = 0.0;
     let mut fragments = Vec::new();
     let mut table_baseline = 0.0;
@@ -3280,18 +3326,24 @@ impl MathLayoutContext {
             ColumnAlign::Center => (width_available - layout.width) / 2.0,
             ColumnAlign::Right => (width_available - layout.width).max(0.0),
           };
-        for frag in layout.fragments {
-          fragments.push(frag.translate(Point::new(offset_x, offset_y)));
+         for frag in layout.fragments {
+           fragments.push(frag.translate(Point::new(offset_x, offset_y)));
+         }
+        x += width_available;
+        if col_idx + 1 < row.cells.len() {
+          x += col_gaps.get(col_idx).copied().unwrap_or(0.0);
         }
-        x += width_available + col_spacing;
         trailing_annotations = trailing_annotations.merge_trailing(&layout.annotations);
       }
-      y += row_height + row_spacing;
+      y += row_height;
+      if row_idx + 1 < table.rows.len() {
+        y += row_gaps.get(row_idx).copied().unwrap_or(0.0);
+      }
     }
 
     MathLayout {
       width,
-      height: y - row_spacing,
+      height: y,
       baseline: table_baseline,
       fragments,
       annotations: trailing_annotations,
@@ -3909,6 +3961,8 @@ mod tests {
       ],
       column_aligns: Vec::new(),
       row_aligns: Vec::new(),
+      column_spacings: None,
+      row_spacings: None,
     });
     let layout = layout_mathml(&node, &style, &FontContext::empty());
     assert!(layout.width > 0.0);
@@ -3968,6 +4022,8 @@ mod tests {
       ],
       column_aligns: Vec::new(),
       row_aligns: Vec::new(),
+      column_spacings: None,
+      row_spacings: None,
     });
     let ctx = FontContext::new();
     let layout = layout_mathml(&node, &style, &ctx);
@@ -4012,6 +4068,58 @@ mod tests {
     assert!(
       c_size < a_size && c_size <= a_size * 0.8,
       "expected c to be script-sized relative to a (a_size={a_size}, c_size={c_size})"
+    );
+  }
+
+  #[test]
+  fn table_spacing_attributes_shrink_layout() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let default_node = parse_math_from_html(
+      "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
+    );
+    let zero_node = parse_math_from_html(
+      "<math><mtable columnspacing=\"0\" rowspacing=\"0\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
+    );
+    let default_layout = layout_mathml(&default_node, &style, &ctx);
+    let zero_layout = layout_mathml(&zero_node, &style, &ctx);
+    assert!(
+      default_layout.width > zero_layout.width + 0.1,
+      "expected columnspacing=0 to reduce table width ({} vs {})",
+      default_layout.width,
+      zero_layout.width
+    );
+    assert!(
+      default_layout.height > zero_layout.height + 0.1,
+      "expected rowspacing=0 to reduce table height ({} vs {})",
+      default_layout.height,
+      zero_layout.height
+    );
+  }
+
+  #[test]
+  fn table_spacing_lists_repeat_last_value() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let short = parse_math_from_html(
+      "<math><mtable columnspacing=\"0.2em 0.4em\" rowspacing=\"0.1em\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr><mtr><mtd><mi>e</mi></mtd><mtd><mi>f</mi></mtd><mtd><mi>g</mi></mtd><mtd><mi>h</mi></mtd></mtr><mtr><mtd><mi>i</mi></mtd><mtd><mi>j</mi></mtd><mtd><mi>k</mi></mtd><mtd><mi>l</mi></mtd></mtr></mtable></math>",
+    );
+    let explicit = parse_math_from_html(
+      "<math><mtable columnspacing=\"0.2em 0.4em 0.4em\" rowspacing=\"0.1em 0.1em\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr><mtr><mtd><mi>e</mi></mtd><mtd><mi>f</mi></mtd><mtd><mi>g</mi></mtd><mtd><mi>h</mi></mtd></mtr><mtr><mtd><mi>i</mi></mtd><mtd><mi>j</mi></mtd><mtd><mi>k</mi></mtd><mtd><mi>l</mi></mtd></mtr></mtable></math>",
+    );
+    let layout_short = layout_mathml(&short, &style, &ctx);
+    let layout_explicit = layout_mathml(&explicit, &style, &ctx);
+    assert!(
+      (layout_short.width - layout_explicit.width).abs() < 0.01,
+      "expected repeated columnspacing to match explicit list ({} vs {})",
+      layout_short.width,
+      layout_explicit.width
+    );
+    assert!(
+      (layout_short.height - layout_explicit.height).abs() < 0.01,
+      "expected repeated rowspacing to match explicit list ({} vs {})",
+      layout_short.height,
+      layout_explicit.height
     );
   }
 

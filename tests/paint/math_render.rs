@@ -251,6 +251,19 @@ fn math_table_alignment_matches_golden() {
 }
 
 #[test]
+fn math_table_spacing_matches_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html =
+      std::fs::read_to_string(fixture_path("math_table_spacing")).expect("load math_table_spacing");
+    let png = renderer
+      .render_to_png(&html, 360, 220)
+      .expect("render math table spacing");
+    compare_golden("math_table_spacing", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn inline_math_baseline_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
