@@ -180,7 +180,7 @@ struct RegisteredListener {
   options: AddEventListenerOptions,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct EventListenerRegistry {
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
 }

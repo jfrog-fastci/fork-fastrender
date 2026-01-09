@@ -490,32 +490,32 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
     data_desc(Value::Object(registry)),
   )?;
 
-  let set_timeout_id = vm.register_native_call(set_timeout_native::<Host>);
+  let set_timeout_id = vm.register_native_call(set_timeout_native::<Host>)?;
   let set_timeout_name = scope.alloc_string("setTimeout")?;
   scope.push_root(Value::String(set_timeout_name));
   let set_timeout = scope.alloc_native_function(set_timeout_id, None, set_timeout_name, 1)?;
   scope.push_root(Value::Object(set_timeout));
 
-  let clear_timeout_id = vm.register_native_call(clear_timeout_native::<Host>);
+  let clear_timeout_id = vm.register_native_call(clear_timeout_native::<Host>)?;
   let clear_timeout_name = scope.alloc_string("clearTimeout")?;
   scope.push_root(Value::String(clear_timeout_name));
   let clear_timeout = scope.alloc_native_function(clear_timeout_id, None, clear_timeout_name, 1)?;
   scope.push_root(Value::Object(clear_timeout));
 
-  let set_interval_id = vm.register_native_call(set_interval_native::<Host>);
+  let set_interval_id = vm.register_native_call(set_interval_native::<Host>)?;
   let set_interval_name = scope.alloc_string("setInterval")?;
   scope.push_root(Value::String(set_interval_name));
   let set_interval = scope.alloc_native_function(set_interval_id, None, set_interval_name, 1)?;
   scope.push_root(Value::Object(set_interval));
 
-  let clear_interval_id = vm.register_native_call(clear_interval_native::<Host>);
+  let clear_interval_id = vm.register_native_call(clear_interval_native::<Host>)?;
   let clear_interval_name = scope.alloc_string("clearInterval")?;
   scope.push_root(Value::String(clear_interval_name));
   let clear_interval =
     scope.alloc_native_function(clear_interval_id, None, clear_interval_name, 1)?;
   scope.push_root(Value::Object(clear_interval));
 
-  let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>);
+  let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>)?;
   let queue_microtask_name = scope.alloc_string("queueMicrotask")?;
   scope.push_root(Value::String(queue_microtask_name));
   let queue_microtask =
