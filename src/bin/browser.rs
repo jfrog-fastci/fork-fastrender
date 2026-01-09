@@ -400,6 +400,8 @@ struct App {
   browser_state: fastrender::ui::BrowserAppState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
+  tab_cancel:
+    std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::cancel::CancelGens>,
 
   page_rect_points: Option<egui::Rect>,
   page_viewport_css: Option<(u32, u32)>,
@@ -511,6 +513,7 @@ impl App {
       worker_join: Some(worker_join),
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
+      tab_cancel: std::collections::HashMap::new(),
       page_rect_points: None,
       page_viewport_css: None,
       page_input_tab: None,
@@ -539,12 +542,15 @@ impl App {
     );
     self.browser_state.chrome.address_bar_text = initial_url.clone();
 
+    let cancel = fastrender::ui::cancel::CancelGens::new();
+    self.tab_cancel.insert(tab_id, cancel.clone());
+
     let _ = self
       .ui_to_worker_tx
       .send(fastrender::ui::UiToWorker::CreateTab {
         tab_id,
         initial_url: Some(initial_url),
-        cancel: fastrender::ui::cancel::CancelGens::new(),
+        cancel,
       });
     let _ = self
       .ui_to_worker_tx
@@ -554,6 +560,25 @@ impl App {
 
     // Initial UX: focus the address bar so typing immediately navigates.
     self.focus_address_bar_select_all();
+  }
+
+  fn cancel_for(
+    &self,
+    tab_id: fastrender::ui::TabId,
+  ) -> Option<&fastrender::ui::cancel::CancelGens> {
+    self.tab_cancel.get(&tab_id)
+  }
+
+  fn bump_nav(&self, tab_id: fastrender::ui::TabId) {
+    if let Some(cancel) = self.cancel_for(tab_id) {
+      cancel.bump_nav();
+    }
+  }
+
+  fn bump_paint(&self, tab_id: fastrender::ui::TabId) {
+    if let Some(cancel) = self.cancel_for(tab_id) {
+      cancel.bump_paint();
+    }
   }
 
   fn sync_window_title(&mut self) {
@@ -846,6 +871,7 @@ impl App {
     self.viewport_cache_css = viewport_css;
     self.viewport_cache_dpr = dpr;
 
+    self.bump_paint(tab_id);
     let _ = self
       .ui_to_worker_tx
       .send(fastrender::ui::UiToWorker::ViewportChanged {
@@ -1011,6 +1037,7 @@ impl App {
       }
 
       for key in keys {
+        self.bump_paint(tab_id);
         let _ = self.ui_to_worker_tx.send(UiToWorker::KeyAction { tab_id, key });
       }
     }
@@ -1196,6 +1223,7 @@ impl App {
         } else {
           fastrender::ui::PointerButton::None
         };
+        self.bump_paint(tab_id);
         let _ = self
           .ui_to_worker_tx
           .send(fastrender::ui::UiToWorker::PointerMove {
@@ -1261,6 +1289,7 @@ impl App {
             self.page_has_focus = true;
             self.pointer_captured = true;
             self.captured_button = mapped_button;
+            self.bump_paint(tab_id);
             let _ = self
               .ui_to_worker_tx
               .send(fastrender::ui::UiToWorker::PointerDown {
@@ -1291,6 +1320,7 @@ impl App {
             let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(pos_points) else {
               return;
             };
+            self.bump_paint(tab_id);
             let _ = self
               .ui_to_worker_tx
               .send(fastrender::ui::UiToWorker::PointerUp {
@@ -1347,6 +1377,7 @@ impl App {
           return;
         };
 
+        self.bump_paint(tab_id);
         let _ = self
           .ui_to_worker_tx
           .send(fastrender::ui::UiToWorker::KeyAction {
@@ -1368,6 +1399,7 @@ impl App {
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
+        self.bump_paint(tab_id);
         let _ = self
           .ui_to_worker_tx
           .send(fastrender::ui::UiToWorker::TextInput {
@@ -1406,14 +1438,17 @@ impl App {
           self.page_has_focus = false;
           self.viewport_cache_tab = None;
 
+          let cancel = fastrender::ui::cancel::CancelGens::new();
+          self.tab_cancel.insert(tab_id, cancel.clone());
           let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
             tab_id,
             initial_url: Some(initial_url),
-            cancel: fastrender::ui::cancel::CancelGens::new(),
+            cancel,
           });
           let _ = self
             .ui_to_worker_tx
             .send(UiToWorker::SetActiveTab { tab_id });
+          self.bump_paint(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
             tab_id,
             reason: RepaintReason::Explicit,
@@ -1423,22 +1458,26 @@ impl App {
           if let Some(tex) = self.tab_textures.remove(&tab_id) {
             tex.destroy(&mut self.egui_renderer);
           }
+          self.tab_cancel.remove(&tab_id);
 
           let close_result = self.browser_state.remove_tab(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::CloseTab { tab_id });
 
           if let Some(created_tab) = close_result.created_tab {
             let initial_url = "about:newtab".to_string();
+            let cancel = fastrender::ui::cancel::CancelGens::new();
+            self.tab_cancel.insert(created_tab, cancel.clone());
             let _ = self.ui_to_worker_tx.send(UiToWorker::CreateTab {
               tab_id: created_tab,
               initial_url: Some(initial_url),
-              cancel: fastrender::ui::cancel::CancelGens::new(),
+              cancel,
             });
             let _ = self.ui_to_worker_tx.send(UiToWorker::SetActiveTab {
               tab_id: created_tab,
             });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
+            self.bump_paint(created_tab);
             let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
               tab_id: created_tab,
               reason: RepaintReason::Explicit,
@@ -1449,6 +1488,7 @@ impl App {
               .send(UiToWorker::SetActiveTab { tab_id: new_active });
             self.viewport_cache_tab = None;
             self.page_has_focus = false;
+            self.bump_paint(new_active);
             let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
               tab_id: new_active,
               reason: RepaintReason::Explicit,
@@ -1462,6 +1502,7 @@ impl App {
             let _ = self
               .ui_to_worker_tx
               .send(UiToWorker::SetActiveTab { tab_id });
+            self.bump_paint(tab_id);
             let _ = self.ui_to_worker_tx.send(UiToWorker::RequestRepaint {
               tab_id,
               reason: RepaintReason::Explicit,
@@ -1472,23 +1513,26 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some(tab) = self.browser_state.tab_mut(tab_id) else {
-            continue;
-          };
-          tab.stage = None;
-          tab.clear_scroll_restore();
-          let msg = match tab.navigate_typed(&raw) {
-            Ok(msg) => msg,
-            Err(err) => {
-              tab.error = Some(err);
+          let msg = {
+            let Some(tab) = self.browser_state.tab_mut(tab_id) else {
               continue;
-            }
+            };
+            tab.stage = None;
+            tab.clear_scroll_restore();
+            let msg = match tab.navigate_typed(&raw) {
+              Ok(msg) => msg,
+              Err(err) => {
+                tab.error = Some(err);
+                continue;
+              }
+            };
+            msg
           };
-
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
           self.page_has_focus = false;
+          self.bump_nav(tab_id);
 
           let _ = self.ui_to_worker_tx.send(msg);
         }
@@ -1516,6 +1560,7 @@ impl App {
 
           self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
+          self.bump_nav(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::Reload { tab_id });
         }
         ChromeAction::Back => {
@@ -1543,6 +1588,7 @@ impl App {
 
           self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
+          self.bump_nav(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
@@ -1570,6 +1616,7 @@ impl App {
 
           self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
+          self.bump_nav(tab_id);
           let _ = self.ui_to_worker_tx.send(UiToWorker::GoForward { tab_id });
         }
       }
@@ -1692,6 +1739,7 @@ impl App {
           }
           if delta_css.0 != 0.0 || delta_css.1 != 0.0 {
             if let Some(pos_css) = mapping.pos_points_to_pos_css_clamped(hover_pos) {
+              self.bump_paint(active_tab);
               let _ = ui_to_worker_tx.send(fastrender::ui::UiToWorker::Scroll {
                 tab_id: active_tab,
                 delta_css,
