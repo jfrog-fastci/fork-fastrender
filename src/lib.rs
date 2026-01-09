@@ -218,7 +218,6 @@ pub mod cli_utils;
 #[path = "ui/select_dropdown.rs"]
 pub mod select_dropdown;
 
-#[cfg(feature = "browser_ui")]
 pub mod ui;
 // ============================================================================
 // Public API

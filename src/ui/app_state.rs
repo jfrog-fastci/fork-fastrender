@@ -269,7 +269,7 @@ impl BrowserAppState {
 
           let original = tab
             .pending_navigation_original_url
-            .clone()
+            .take()
             .or_else(|| tab.current_url().map(str::to_owned))
             .unwrap_or_else(|| url.clone());
           tab.history.commit_navigation(&original, Some(&url));
@@ -278,6 +278,7 @@ impl BrowserAppState {
             tab.history.set_title(title);
           }
 
+          tab.loading = false;
           tab.refresh_nav_flags_from_history();
           tab.refresh_title_from_history();
 
@@ -293,7 +294,9 @@ impl BrowserAppState {
           return;
         };
         let is_active = self.active == tab_id;
-        self.tabs[idx].loading = false;
+        let tab = &mut self.tabs[idx];
+        tab.loading = false;
+        tab.pending_navigation_original_url = None;
 
         if is_active {
           self.address_bar_text = url;
@@ -429,5 +432,39 @@ mod tests {
 
     app.set_active_tab(tab_a).unwrap();
     assert_eq!(app.address_bar_text, url_a);
+  }
+
+  #[test]
+  fn navigation_committed_clears_loading_and_sets_title() {
+    let mut app = BrowserAppState::new();
+    let tab_id = app.active;
+
+    let url = match app.navigate_typed(tab_id, "example.com").unwrap() {
+      UiToWorker::Navigate { url, .. } => url,
+      _ => unreachable!(),
+    };
+
+    app.on_worker_msg(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: url.clone(),
+    });
+    assert!(app.tab(tab_id).unwrap().loading);
+
+    app.on_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: url.clone(),
+      title: Some("Example".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    let tab = app.tab(tab_id).unwrap();
+    assert!(!tab.loading);
+    assert_eq!(tab.title.as_deref(), Some("Example"));
+    assert_eq!(
+      tab.history.current().and_then(|entry| entry.title.as_deref()),
+      Some("Example")
+    );
+    assert_eq!(app.address_bar_text, url);
   }
 }
