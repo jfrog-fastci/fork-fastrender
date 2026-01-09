@@ -18,8 +18,9 @@ FastRender has the **core building blocks** for a spec-shaped, streaming, parse-
 scripts, and keep observable document state like `Document.currentScript` correct). Some plumbing is
 still evolving, so treat this section as a “where is the real code?” map.
 
-There is not yet a production author-JS VM executing page scripts end-to-end, but the host-side
-plumbing is laid out in explicit modules so the remaining integration work can stay spec-shaped.
+There is not yet production-ready author-script execution integrated end-to-end with the renderer,
+but the host-side plumbing is laid out in explicit modules so the remaining integration work can
+stay spec-shaped.
 
 What exists today (in-tree):
 
@@ -49,6 +50,8 @@ What exists today (in-tree):
 - **Host-side execution bookkeeping:**
   - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
     script block” (classic scripts).
+  - `crates/js-dom-bindings`: QuickJS-backed DOM bindings that expose host-maintained state like
+    `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
@@ -71,6 +74,10 @@ What exists today (in-tree):
 The relevant unit tests live in the `fastrender` crate’s `--lib` test binary. Run them (scoped) with:
 
 `scripts/cargo_agent.sh test -p fastrender --lib`
+
+Some end-to-end scheduling/currentScript coverage lives in integration tests (example):
+
+`scripts/cargo_agent.sh test -p fastrender --test js_current_script`
 
 ---
 
@@ -126,8 +133,10 @@ we can land a correct classic-script core first:
     `src/js/script_blocking_stylesheets.rs`), but it is not yet fully integrated with the real
     streaming parser + scheduler pipeline.
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
-- End-to-end `Document.currentScript` integration with a real JS VM + WebIDL bindings (host-side
-  bookkeeping exists in `src/js/orchestrator.rs`, but it is not yet wired to a production JS runtime)
+- End-to-end author-script execution with a production JS runtime + complete DOM/WebIDL bindings
+  - Host-side `currentScript` bookkeeping exists (`src/js/orchestrator.rs`) and is exposed in the
+    QuickJS bindings (`crates/js-dom-bindings`), but full page script execution is still in
+    progress.
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
