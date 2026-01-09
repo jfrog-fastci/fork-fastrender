@@ -54,7 +54,7 @@ fn wheel_scroll_chains_inner_to_outer_to_viewport() {
   );
 
   // Give the viewport a larger scrollable area so leftover delta can propagate all the way out.
-  let tail = FragmentNode::new_block(Rect::from_xywh(0.0, 400.0, 100.0, 100.0), vec![]);
+  let tail = FragmentNode::new_block(Rect::from_xywh(0.0, 300.0, 100.0, 100.0), vec![]);
   let root =
     FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![outer, tail]);
   let fragment_tree = FragmentTree::new(root);

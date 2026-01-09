@@ -277,6 +277,7 @@ impl BrowserTabController {
         unsafe { &*fragment_tree_ptr },
         &self.scroll_state,
         viewport_point,
+        &self.current_url,
         &self.base_url,
       );
       action = next_action;

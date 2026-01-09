@@ -545,6 +545,10 @@ impl BrowserWorkerRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+    let document_url = tab
+      .url
+      .as_deref()
+      .unwrap_or(about_pages::ABOUT_BASE_URL);
     let base_url = tab
       .base_url
       .as_deref()
@@ -561,6 +565,7 @@ impl BrowserWorkerRuntime {
       prepared.fragment_tree(),
       &tab.scroll,
       viewport_point,
+      document_url,
       base_url,
     );
     if dom_changed {

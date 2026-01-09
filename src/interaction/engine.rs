@@ -294,7 +294,20 @@ fn is_button(node: &DomNode) -> bool {
 }
 
 fn input_type(node: &DomNode) -> &str {
-  trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or("text"))
+  node
+    .get_attribute_ref("type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    .unwrap_or("text")
+}
+
+fn button_type(node: &DomNode) -> &str {
+  node
+    .get_attribute_ref("type")
+    .map(trim_ascii_whitespace)
+    .filter(|v| !v.is_empty())
+    // HTML default button type is "submit".
+    .unwrap_or("submit")
 }
 
 fn is_checkbox_input(node: &DomNode) -> bool {
@@ -311,11 +324,6 @@ fn is_range_input(node: &DomNode) -> bool {
 
 fn is_submit_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("submit")
-}
-
-fn button_type(node: &DomNode) -> &str {
-  // HTML <button> defaults to submit.
-  node.get_attribute_ref("type").unwrap_or("submit")
 }
 
 fn is_submit_button(node: &DomNode) -> bool {
@@ -1292,6 +1300,7 @@ impl InteractionEngine {
     fragment_tree: &FragmentTree,
     scroll: &ScrollState,
     viewport_point: Point,
+    document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
     let range_drag = self.range_drag.take();
@@ -1413,6 +1422,11 @@ impl InteractionEngine {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
             if !node_is_disabled(&index, target_id) {
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
+              if let Some(url) =
+                super::form_submit::form_submission_get_url(dom, target_id, document_url, base_url)
+              {
+                action = InteractionAction::Navigate { href: url };
+              }
             }
           }
         }

@@ -458,6 +458,7 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         };
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll_state;
+        let document_url = tab.current_url.clone().unwrap_or_default();
         let base_url = tab.effective_base_url().unwrap_or("").to_string();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
@@ -465,7 +466,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         };
 
         let action = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url)
+          engine.pointer_up(
+            dom,
+            box_tree,
+            fragment_tree,
+            scroll,
+            viewport_point,
+            &document_url,
+            &base_url,
+          )
         }) {
           Ok(action) => action,
           Err(_) => continue,

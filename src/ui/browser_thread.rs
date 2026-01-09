@@ -692,6 +692,7 @@ impl BrowserRuntime {
       return;
     };
     let base_url = base_url_for_links(tab).to_string();
+    let document_url = tab.last_committed_url.clone().unwrap_or_default();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let scroll = &tab.scroll_state;
     let engine = &mut tab.interaction;
@@ -700,7 +701,7 @@ impl BrowserRuntime {
     };
     let (dom_changed, action) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
       let (dom_changed, action) =
-        engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url);
+        engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &document_url, &base_url);
       (dom_changed, (dom_changed, action))
     }) {
       Ok(result) => result,

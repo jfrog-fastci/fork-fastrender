@@ -184,14 +184,17 @@ fn radio_click_is_scoped_to_nearest_form() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert!(
     matches!(
       action,
-      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+      InteractionAction::FocusChanged { node_id: Some(_) }
+        | InteractionAction::Navigate { .. }
+        | InteractionAction::None
     ),
-    "pointer_up may emit FocusChanged"
+    "pointer_up may emit FocusChanged or Navigate"
   );
 
   assert!(
@@ -369,6 +372,7 @@ fn active_chain_sets_on_down_and_clears_on_up() {
     &ScrollState::default(),
     Point::new(15.0, 15.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert_eq!(action, InteractionAction::None);
@@ -426,6 +430,7 @@ fn link_click_emits_navigation_with_resolved_url() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(10.0, 10.0),
+    "https://example.com/base/",
     "https://example.com/base/",
   );
   assert!(changed);
@@ -487,6 +492,7 @@ fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/base/",
+    "https://example.com/base/",
   );
 
   let expected = Url::parse("https://example.com/base/")
@@ -547,6 +553,7 @@ fn link_click_with_non_ascii_href_does_not_panic() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(10.0, 10.0),
+    "https://example.com/base/",
     "https://example.com/base/",
   );
 
@@ -612,14 +619,17 @@ fn checkbox_click_toggles_checked_attribute() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert!(
     matches!(
       action,
-      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+      InteractionAction::FocusChanged { node_id: Some(_) }
+        | InteractionAction::Navigate { .. }
+        | InteractionAction::None
     ),
-    "pointer_up may emit FocusChanged"
+    "pointer_up may emit FocusChanged or Navigate"
   );
   assert!(has_attr(&dom, "cb", "checked"));
   assert_eq!(
@@ -687,14 +697,17 @@ fn label_click_activates_associated_checkbox() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert!(
     matches!(
       action,
-      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+      InteractionAction::FocusChanged { node_id: Some(_) }
+        | InteractionAction::Navigate { .. }
+        | InteractionAction::None
     ),
-    "pointer_up may emit FocusChanged"
+    "pointer_up may emit FocusChanged or Navigate"
   );
   assert!(has_attr(&dom, "cb", "checked"));
   assert_eq!(
@@ -749,6 +762,7 @@ fn radio_click_checks_and_focuses() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
   assert!(changed);
@@ -827,6 +841,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert_eq!(
@@ -849,6 +864,7 @@ fn clicking_outside_focusable_blurs_current_focus() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 60.0),
+    "https://x/",
     "https://x/",
   );
   assert!(changed);
@@ -917,6 +933,7 @@ fn typing_updates_focused_input_value_and_sets_focus_visible() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
   assert!(changed);
@@ -1017,14 +1034,17 @@ fn submit_click_marks_form_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert!(
     matches!(
       action,
-      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+      InteractionAction::FocusChanged { node_id: Some(_) }
+        | InteractionAction::Navigate { .. }
+        | InteractionAction::None
     ),
-    "pointer_up may emit FocusChanged"
+    "pointer_up may emit FocusChanged or Navigate"
   );
 
   assert_eq!(
@@ -1138,6 +1158,7 @@ fn select_listbox_click_marks_user_validity() {
     &ScrollState::default(),
     Point::new(5.0, 25.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
 
@@ -1241,6 +1262,7 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(10.0, 10.0),
+    "https://example.com/",
     "https://example.com/",
   );
   assert_eq!(
@@ -1390,6 +1412,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   assert!(changed);
   assert_eq!(
@@ -1460,6 +1483,7 @@ fn inert_link_does_not_navigate() {
     &ScrollState::default(),
     Point::new(10.0, 10.0),
     "https://example.com/",
+    "https://example.com/",
   );
   assert_eq!(action, InteractionAction::None);
   assert!(
@@ -1517,6 +1541,7 @@ fn disabled_checkbox_does_not_toggle_checked() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
   assert_eq!(action, InteractionAction::None);
@@ -1580,6 +1605,7 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
   assert!(
@@ -1671,6 +1697,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &ScrollState::default(),
     Point::new(5.0, 5.0),
     "https://x/",
+    "https://x/",
   );
   engine.text_input(&mut dom, "X");
   engine.key_action(&mut dom, KeyAction::Backspace);
@@ -1690,6 +1717,7 @@ fn disabled_and_readonly_inputs_ignore_typing_and_backspace() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 45.0),
+    "https://x/",
     "https://x/",
   );
   engine.text_input(&mut dom, "X");
@@ -1809,6 +1837,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &ScrollState::default(),
     Point::new(5.0, 15.0),
     "https://x/",
+    "https://x/",
   );
 
   assert_eq!(
@@ -1843,6 +1872,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
     &fragment_tree,
     &ScrollState::default(),
     Point::new(5.0, 25.0),
+    "https://x/",
     "https://x/",
   );
   assert_eq!(action, InteractionAction::None);
@@ -2100,6 +2130,7 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
     &fragment_tree,
     &scroll,
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
 
@@ -2449,6 +2480,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &scroll,
     Point::new(0.0, 10.0),
     "https://x/",
+    "https://x/",
   );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("0"));
 
@@ -2461,6 +2493,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &scroll,
     Point::new(56.0, 10.0),
     "https://x/",
+    "https://x/",
   );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("60"));
 
@@ -2472,6 +2505,7 @@ fn range_click_sets_min_max_and_snaps_to_step() {
     &fragment_tree,
     &scroll,
     Point::new(100.0, 10.0),
+    "https://x/",
     "https://x/",
   );
   assert_eq!(attr_value(&dom, "r", "value").as_deref(), Some("100"));
@@ -2603,6 +2637,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     &scroll,
     Point::new(100.0, 10.0),
     "https://x/",
+    "https://x/",
   );
   assert_eq!(attr_value(&dom, "disabled", "value").as_deref(), Some("0"));
   assert!(
@@ -2619,6 +2654,7 @@ fn disabled_and_readonly_range_inputs_do_not_update_value() {
     &fragment_tree,
     &scroll,
     Point::new(100.0, 50.0),
+    "https://x/",
     "https://x/",
   );
   assert_eq!(attr_value(&dom, "readonly", "value").as_deref(), Some("0"));
@@ -2671,6 +2707,7 @@ fn range_click_focuses_input() {
     &fragment_tree,
     &scroll,
     Point::new(10.0, 10.0),
+    "https://x/",
     "https://x/",
   );
   assert!(
@@ -2745,6 +2782,7 @@ fn tab_traverses_focusable_elements_in_tree_order_and_skips_inert_disabled_and_t
     &fragment_tree,
     &scroll,
     Point::new(5.0, 5.0),
+    "https://x/",
     "https://x/",
   );
   assert!(changed);

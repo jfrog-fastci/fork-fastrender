@@ -573,6 +573,7 @@ impl BrowserRenderThread {
       let box_tree = prepared.box_tree().clone();
 
       let viewport_point = Point::new(pos_css.0, pos_css.1);
+      let document_url = tab.url.as_deref().unwrap_or("");
       let base_url = tab
         .base_url
         .as_deref()
@@ -587,6 +588,7 @@ impl BrowserRenderThread {
           &fragments,
           &scroll_state,
           viewport_point,
+          document_url,
           base_url,
         );
         action = act;

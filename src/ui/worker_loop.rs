@@ -742,13 +742,22 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
+        let document_url = tab.url.clone().unwrap_or_default();
         let base_url = effective_base_url(tab).to_string();
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
         let engine = &mut tab.interaction;
 
         let action = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(dom, box_tree, fragment_tree, scroll, viewport_point, &base_url)
+          engine.pointer_up(
+            dom,
+            box_tree,
+            fragment_tree,
+            scroll,
+            viewport_point,
+            &document_url,
+            &base_url,
+          )
         }) {
           Ok(action) => action,
           Err(_) => continue,
