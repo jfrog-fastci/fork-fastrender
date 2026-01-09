@@ -1,13 +1,46 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
+use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::scroll::ScrollState;
 use fastrender::ui::test_worker::spawn_ui_worker_for_test;
+use fastrender::ui::worker::spawn_ui_worker;
+use std::ffi::OsString;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
+
+struct EnvVarGuard {
+  key: &'static str,
+  previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+  fn set(key: &'static str, value: &str) -> Self {
+    let previous = std::env::var_os(key);
+    std::env::set_var(key, value);
+    Self { key, previous }
+  }
+}
+
+impl Drop for EnvVarGuard {
+  fn drop(&mut self) {
+    match self.previous.take() {
+      Some(value) => std::env::set_var(self.key, value),
+      None => std::env::remove_var(self.key),
+    }
+  }
+}
+
+fn pixmap_is_uniform_rgba(pixmap: &tiny_skia::Pixmap) -> bool {
+  let data = pixmap.data();
+  let Some(first) = data.get(0..4) else {
+    return true;
+  };
+  data.chunks_exact(4).all(|px| px == first)
+}
 
 fn recv_until<F: FnMut(&WorkerToUi) -> bool>(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,
@@ -30,6 +63,96 @@ fn recv_until<F: FnMut(&WorkerToUi) -> bool>(
     }
   }
   out
+}
+
+#[test]
+fn ui_worker_nav_generation_cancels_in_flight_navigation_and_drops_stale_frame() {
+  let _lock = super::stage_listener_test_lock();
+  // Slow down render stages to make cancellation deterministic.
+  let delay_guard = EnvVarGuard::set("FASTR_TEST_RENDER_DELAY_MS", "20");
+
+  let handle = spawn_ui_worker("fastr-ui-worker-cancel-nav-gens").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+
+  let tab_id = TabId::new();
+  let cancel = CancelGens::new();
+
+  ui_tx
+    .send(create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
+    .expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .expect("ViewportChanged");
+
+  cancel.bump_nav();
+  ui_tx
+    .send(navigate_msg(
+      tab_id,
+      "about:newtab".to_string(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("Navigate about:newtab");
+
+  let started = recv_until(&ui_rx, MAX_WAIT, |msg| {
+    matches!(
+      msg,
+      WorkerToUi::NavigationStarted { tab_id: msg_tab, url, .. }
+        if *msg_tab == tab_id && url == "about:newtab"
+    )
+  });
+  assert!(
+    started.iter().any(|msg| matches!(
+      msg,
+      WorkerToUi::NavigationStarted { tab_id: msg_tab, url, .. }
+        if *msg_tab == tab_id && url == "about:newtab"
+    )),
+    "expected NavigationStarted for about:newtab (messages={started:?})"
+  );
+
+  // Bumping nav cancels both prepare and paint for the in-flight navigation.
+  cancel.bump_nav();
+  drop(delay_guard);
+  ui_tx
+    .send(navigate_msg(
+      tab_id,
+      "about:blank".to_string(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("Navigate about:blank");
+
+  // The first frame we receive must correspond to about:blank. about:newtab has non-uniform pixels.
+  let deadline = Instant::now() + MAX_WAIT;
+  let frame = loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match ui_rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, frame }) if msg_tab == tab_id => break frame,
+      Ok(WorkerToUi::NavigationFailed { url, error, .. }) => {
+        panic!("navigation failed for {url}: {error}");
+      }
+      Ok(_) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("worker disconnected"),
+    }
+  };
+
+  assert!(
+    pixmap_is_uniform_rgba(&frame.pixmap),
+    "expected about:blank to render as uniform pixmap; got non-uniform pixels (did cancellation fail?)"
+  );
+
+  // Ensure a stale FrameReady doesn't arrive after the latest navigation frame.
+  let extra_frame = recv_until(&ui_rx, Duration::from_secs(1), |msg| {
+    matches!(msg, WorkerToUi::FrameReady { tab_id: msg_tab, .. } if *msg_tab == tab_id)
+  });
+  assert!(
+    extra_frame
+      .iter()
+      .all(|msg| !matches!(msg, WorkerToUi::FrameReady { .. })),
+    "unexpected additional FrameReady messages after latest navigation frame: {extra_frame:?}"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
 }
 
 #[test]
