@@ -126,7 +126,16 @@ impl VmJsRuntime {
     // removed immediately after `f` returns.
     let mut root_ids = Vec::new();
     for v in roots {
-      root_ids.push(self.heap.add_root(v));
+      let id = match self.heap.add_root(v) {
+        Ok(id) => id,
+        Err(e) => {
+          for id in root_ids {
+            self.heap.remove_root(id);
+          }
+          return Err(e);
+        }
+      };
+      root_ids.push(id);
     }
     let result = f(self);
     for id in root_ids {
@@ -146,7 +155,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("window")?;
     // Keep this handle alive for the lifetime of the runtime.
-    self.heap.add_root(Value::String(handle));
+    let _ = self.heap.add_root(Value::String(handle))?;
     self.interned_window = Some(handle);
     Ok(handle)
   }
@@ -157,7 +166,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("document")?;
     // Keep this handle alive for the lifetime of the runtime.
-    self.heap.add_root(Value::String(handle));
+    let _ = self.heap.add_root(Value::String(handle))?;
     self.interned_document = Some(handle);
     Ok(handle)
   }
@@ -1393,7 +1402,7 @@ mod tests {
     let key = rt.property_key_from_str("x")?;
     rt.define_data_property(obj, key, value, true)?;
 
-    let root = rt.heap_mut().add_root(Value::Object(obj_handle));
+    let root = rt.heap_mut().add_root(Value::Object(obj_handle))?;
     rt.heap_mut().collect_garbage();
 
     assert_eq!(weak.upgrade(rt.heap()), Some(obj_handle));

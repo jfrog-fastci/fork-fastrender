@@ -253,8 +253,23 @@ fn union_member_matches(union_member: &IdlType, selected: &IdlType) -> bool {
   let union_member = union_member.innermost_type();
   let selected = selected.innermost_type();
   match (union_member, selected) {
+    (IdlType::Any, IdlType::Any)
+    | (IdlType::Undefined, IdlType::Undefined)
+    | (IdlType::Boolean, IdlType::Boolean)
+    | (IdlType::BigInt, IdlType::BigInt)
+    | (IdlType::Object, IdlType::Object)
+    | (IdlType::Symbol, IdlType::Symbol) => true,
+    (IdlType::Numeric(a), IdlType::Numeric(b)) => a == b,
+    (IdlType::String(a), IdlType::String(b)) => a == b,
     (IdlType::Named(a), IdlType::Named(b)) => a.name == b.name,
-    _ => union_member == selected,
+    (IdlType::Sequence(a), IdlType::Sequence(b))
+    | (IdlType::FrozenArray(a), IdlType::FrozenArray(b))
+    | (IdlType::AsyncSequence(a), IdlType::AsyncSequence(b))
+    | (IdlType::Promise(a), IdlType::Promise(b)) => union_member_matches(a, b),
+    (IdlType::Record(ak, av), IdlType::Record(bk, bv)) => {
+      union_member_matches(ak, bk) && union_member_matches(av, bv)
+    }
+    _ => false,
   }
 }
 
@@ -892,6 +907,32 @@ mod tests {
       msg.contains("member type is not part of the union"),
       "expected union member error message, got {msg:?}"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn union_member_matches_named_kind_inside_sequence() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("(sequence<Foo> or long)")?;
+    let member_ty = IdlType::Sequence(Box::new(IdlType::Named(NamedType {
+      name: "Foo".to_string(),
+      kind: NamedTypeKind::Dictionary,
+    })));
+    let value = WebIdlValue::Union {
+      member_ty: Box::new(member_ty),
+      value: Box::new(WebIdlValue::Sequence {
+        elem_ty: Box::new(IdlType::Named(NamedType {
+          name: "Foo".to_string(),
+          kind: NamedTypeKind::Dictionary,
+        })),
+        values: Vec::new(),
+      }),
+    };
+
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert!(rt.is_object(out));
     Ok(())
   }
 
