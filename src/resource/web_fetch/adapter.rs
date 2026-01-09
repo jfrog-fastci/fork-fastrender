@@ -109,22 +109,36 @@ fn resolve_request_url<'a>(
   base_url: Option<&str>,
   client_origin: Option<&DocumentOrigin>,
   storage: &'a mut Option<String>,
+  max_url_bytes: usize,
 ) -> Option<&'a str> {
+  if candidate.len() > max_url_bytes {
+    return None;
+  }
   let normalized_candidate = normalize_http_url_for_resolution(candidate);
   if let Ok(url) = Url::parse(candidate) {
     // Fetch uses a parsed URL record; serialize it back to a string so callers observe a canonical
     // URL (e.g. "https://example.com" → "https://example.com/") and so redirect detection doesn't
     // treat pure serialization differences as a redirect.
-    let canonical = url.to_string();
+    let canonical = url.as_str();
+    if canonical.len() > max_url_bytes {
+      return None;
+    }
     if canonical == candidate {
       return Some(candidate);
     }
-    *storage = Some(canonical);
+    *storage = Some(canonical.to_string());
     return storage.as_deref();
   }
   if normalized_candidate.as_ref() != candidate {
+    if normalized_candidate.len() > max_url_bytes {
+      return None;
+    }
     if let Ok(url) = Url::parse(normalized_candidate.as_ref()) {
-      *storage = Some(url.to_string());
+      let canonical = url.as_str();
+      if canonical.len() > max_url_bytes {
+        return None;
+      }
+      *storage = Some(canonical.to_string());
       return storage.as_deref();
     }
   }
@@ -132,19 +146,36 @@ fn resolve_request_url<'a>(
   let normalized_ref = normalize_url_reference_for_resolution(candidate);
 
   if let Some(raw_base) = base_url {
+    if raw_base.len() > max_url_bytes {
+      return None;
+    }
     let normalized_base = normalize_http_url_for_resolution(raw_base);
+    if normalized_base.len() > max_url_bytes {
+      return None;
+    }
     let base = Url::parse(normalized_base.as_ref())
       .or_else(|_| Url::parse(raw_base))
       .ok();
 
     if let Some(base) = base {
       if normalized_ref.as_ref() != candidate {
+        if normalized_ref.len() > max_url_bytes {
+          return None;
+        }
         if let Ok(joined) = base.join(normalized_ref.as_ref()) {
+          let joined = joined.as_str();
+          if joined.len() > max_url_bytes {
+            return None;
+          }
           *storage = Some(joined.to_string());
           return storage.as_deref();
         }
       }
       if let Ok(joined) = base.join(candidate) {
+        let joined = joined.as_str();
+        if joined.len() > max_url_bytes {
+          return None;
+        }
         *storage = Some(joined.to_string());
         return storage.as_deref();
       }
@@ -153,12 +184,23 @@ fn resolve_request_url<'a>(
 
   if let Some(origin) = client_origin.and_then(url_base_for_origin) {
     if normalized_ref.as_ref() != candidate {
+      if normalized_ref.len() > max_url_bytes {
+        return None;
+      }
       if let Ok(joined) = origin.join(normalized_ref.as_ref()) {
+        let joined = joined.as_str();
+        if joined.len() > max_url_bytes {
+          return None;
+        }
         *storage = Some(joined.to_string());
         return storage.as_deref();
       }
     }
     if let Ok(joined) = origin.join(candidate) {
+      let joined = joined.as_str();
+      if joined.len() > max_url_bytes {
+        return None;
+      }
       *storage = Some(joined.to_string());
       return storage.as_deref();
     }
@@ -172,6 +214,14 @@ pub fn execute_web_fetch<'a>(
   request: &'a Request,
   ctx: WebFetchExecutionContext<'a>,
 ) -> Result<Response> {
+  let max_url_bytes = request.headers.limits().max_url_bytes;
+  let url_len = request.url.len();
+  if url_len > max_url_bytes {
+    return Err(Error::Other(format!(
+      "web fetch request URL exceeds max_url_bytes (len={url_len}, limit={max_url_bytes})"
+    )));
+  }
+
   let raw_method = request.method.as_str();
   if Method::from_bytes(raw_method.as_bytes()).is_err() {
     return Err(Error::Other(format!(
@@ -237,7 +287,7 @@ pub fn execute_web_fetch<'a>(
     ));
   }
 
-  let referrer_url = effective_referrer_url(request, ctx);
+  let referrer_url = effective_referrer_url(request, ctx).filter(|u| u.len() <= max_url_bytes);
   let referrer_origin = ctx
     .client_origin
     .is_none()
@@ -251,6 +301,7 @@ pub fn execute_web_fetch<'a>(
     referrer_url,
     client_origin,
     &mut requested_url_storage,
+    max_url_bytes,
   )
   .ok_or_else(|| {
     Error::Other(format!(
@@ -306,10 +357,13 @@ pub fn execute_web_fetch<'a>(
     credentials_mode,
   };
 
-  let mut request_headers = Headers::new_with_guard(match request.mode {
-    RequestMode::NoCors => HeadersGuard::RequestNoCors,
-    _ => HeadersGuard::Request,
-  });
+  let mut request_headers = Headers::new_with_guard_and_limits(
+    match request.mode {
+      RequestMode::NoCors => HeadersGuard::RequestNoCors,
+      _ => HeadersGuard::Request,
+    },
+    request.headers.limits(),
+  );
   // Re-apply the appropriate guard for the current request mode so callers don't have to keep the
   // `Headers` guard in sync when they mutate `Request.mode` directly.
   request_headers
@@ -342,10 +396,22 @@ pub fn execute_web_fetch<'a>(
   // Canonicalize the final URL via URL parsing so later comparisons follow URL-record semantics
   // instead of raw string equality.
   if let Some(final_url) = resource.final_url.as_deref() {
+    let final_url_len = final_url.len();
+    if final_url_len > max_url_bytes {
+      return Err(Error::Other(format!(
+        "web fetch final URL exceeds max_url_bytes (len={final_url_len}, limit={max_url_bytes})"
+      )));
+    }
     if let Ok(url) = Url::parse(final_url) {
-      let canonical = url.to_string();
+      let canonical = url.as_str();
+      let canonical_len = canonical.len();
+      if canonical_len > max_url_bytes {
+        return Err(Error::Other(format!(
+          "web fetch final URL exceeds max_url_bytes (len={canonical_len}, limit={max_url_bytes})"
+        )));
+      }
       if canonical != final_url {
-        resource.final_url = Some(canonical);
+        resource.final_url = Some(canonical.to_string());
       }
     }
   }
@@ -1164,6 +1230,36 @@ mod tests {
       .expect_err("expected error");
     assert!(matches!(err, Error::Other(_)));
     assert!(err.to_string().contains("ResponseBodyBytes"));
+  }
+
+  #[test]
+  fn request_url_over_max_url_bytes_errors_before_fetching() {
+    let fetcher = PanicFetcher;
+    let limits = WebFetchLimits {
+      max_url_bytes: 5,
+      ..WebFetchLimits::default()
+    };
+    let request = Request::new_with_limits("GET", "https://example.com/a", &limits);
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("max_url_bytes"));
+  }
+
+  #[test]
+  fn final_url_over_max_url_bytes_errors() {
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some(format!("https://example.com/{}", "a".repeat(40)));
+    let fetcher = StaticFetcher { resource };
+    let limits = WebFetchLimits {
+      max_url_bytes: 32,
+      ..WebFetchLimits::default()
+    };
+    let request = Request::new_with_limits("GET", "https://example.com/a", &limits);
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("final URL") && err.to_string().contains("max_url_bytes"));
   }
 
   #[test]

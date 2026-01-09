@@ -4,6 +4,11 @@
 /// Fetch primitives cannot allocate unbounded memory.
 #[derive(Debug, Clone)]
 pub struct WebFetchLimits {
+  /// Maximum accepted byte length for URL strings consumed by Fetch.
+  ///
+  /// This applies to request URLs provided by callers as well as intermediate URL strings produced
+  /// while resolving/canonicalizing URLs (e.g. relative resolution against a base URL).
+  pub max_url_bytes: usize,
   /// Maximum number of headers in a `Headers` "header list" (including duplicates).
   pub max_header_count: usize,
   /// Maximum total bytes across all header names and values in a `Headers` "header list".
@@ -22,6 +27,8 @@ pub struct WebFetchLimits {
 impl Default for WebFetchLimits {
   fn default() -> Self {
     Self {
+      // Match `WebUrlLimits::max_input_bytes` so URL parsing/normalization stays bounded.
+      max_url_bytes: 1024 * 1024,
       // Generous enough for real-world requests while preventing unbounded growth from hostile JS.
       max_header_count: 1024,
       // Roughly matches typical HTTP header limits (and the curl backend's block cap).
