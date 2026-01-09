@@ -23,9 +23,9 @@ status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
 
 [[expectations]]
-glob = "events/**"
+id = "events/eventtarget.window.js"
 status = "skip"
-reason = "EventTarget/web event tests are not supported by the vm-js WPT runner yet."
+reason = "Requires DOM `document` + element tree shims (event path through Document/Elements), not supported by the vm-js runner yet."
 
 [[expectations]]
 glob = "dom/**"

@@ -485,6 +485,37 @@ enum TimerKind {
   Interval,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ListenerOptions {
+  capture: bool,
+  once: bool,
+  passive: bool,
+}
+
+#[derive(Debug, Clone)]
+struct EventListener {
+  callback: Value,
+  options: ListenerOptions,
+}
+
+#[derive(Debug, Default)]
+struct EventTargetState {
+  parent: Option<GcObject>,
+  // event type -> listeners (in registration order).
+  listeners: HashMap<String, Vec<EventListener>>,
+}
+
+#[derive(Debug, Clone)]
+struct EventState {
+  typ: String,
+  bubbles: bool,
+  cancelable: bool,
+  default_prevented: bool,
+  propagation_stopped: bool,
+  immediate_stopped: bool,
+  in_passive_listener: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PromiseStatus {
   Pending,
@@ -668,6 +699,8 @@ struct JsWptRuntime {
   heap: Heap,
   env: Env,
   callables: HashMap<GcObject, Rc<Callable>>,
+  event_targets: HashMap<GcObject, EventTargetState>,
+  events: HashMap<GcObject, EventState>,
   promises: HashMap<GcObject, PromiseState>,
   promise_jobs: HashMap<u64, PromiseJob>,
   next_promise_job_id: u64,
@@ -713,6 +746,8 @@ impl JsWptRuntime {
       heap,
       env: Env::new(),
       callables: HashMap::new(),
+      event_targets: HashMap::new(),
+      events: HashMap::new(),
       promises: HashMap::new(),
       promise_jobs: HashMap::new(),
       next_promise_job_id: 1,
@@ -751,6 +786,9 @@ impl JsWptRuntime {
     rt.env.set("queueMicrotask", Value::Object(queue_microtask));
 
     rt.install_promise_shim().expect("install Promise");
+    rt
+      .install_event_target_and_event()
+      .expect("install EventTarget/Event");
 
     // console.log.
     let console = rt.alloc_object().expect("alloc console");
@@ -806,6 +844,85 @@ impl JsWptRuntime {
     let job_runner = self.alloc_native_function(native_run_promise_job)?;
     self.promise_job_runner = Some(job_runner);
     self.promise_prototype = Some(proto);
+    Ok(())
+  }
+
+  fn install_event_target_and_event(&mut self) -> Result<(), JsError> {
+    // Event prototype.
+    let event_proto = self.alloc_object()?;
+    let prevent_default = self.alloc_native_function(native_event_prevent_default)?;
+    let stop_propagation = self.alloc_native_function(native_event_stop_propagation)?;
+    let stop_immediate = self.alloc_native_function(native_event_stop_immediate_propagation)?;
+
+    let prevent_default_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("preventDefault")?)
+    };
+    let stop_propagation_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("stopPropagation")?)
+    };
+    let stop_immediate_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("stopImmediatePropagation")?)
+    };
+    self.define_data_prop(
+      event_proto,
+      prevent_default_key,
+      Value::Object(prevent_default),
+    )?;
+    self.define_data_prop(
+      event_proto,
+      stop_propagation_key,
+      Value::Object(stop_propagation),
+    )?;
+    self.define_data_prop(
+      event_proto,
+      stop_immediate_key,
+      Value::Object(stop_immediate),
+    )?;
+
+    // Event constructor.
+    let event_ctor = self.alloc_native_function(native_event_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(event_ctor, prototype_key, Value::Object(event_proto))?;
+    self.env.set("Event", Value::Object(event_ctor));
+
+    // EventTarget prototype.
+    let et_proto = self.alloc_object()?;
+    let add_listener = self.alloc_native_function(native_eventtarget_add_event_listener)?;
+    let remove_listener = self.alloc_native_function(native_eventtarget_remove_event_listener)?;
+    let dispatch = self.alloc_native_function(native_eventtarget_dispatch_event)?;
+
+    let add_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("addEventListener")?)
+    };
+    let remove_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("removeEventListener")?)
+    };
+    let dispatch_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("dispatchEvent")?)
+    };
+
+    self.define_data_prop(et_proto, add_key, Value::Object(add_listener))?;
+    self.define_data_prop(et_proto, remove_key, Value::Object(remove_listener))?;
+    self.define_data_prop(et_proto, dispatch_key, Value::Object(dispatch))?;
+
+    // EventTarget constructor.
+    let et_ctor = self.alloc_native_function(native_eventtarget_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(et_ctor, prototype_key, Value::Object(et_proto))?;
+    self.env.set("EventTarget", Value::Object(et_ctor));
+
     Ok(())
   }
 
@@ -1500,8 +1617,58 @@ impl JsWptRuntime {
         let arg = self.eval_expr(&expr.argument)?;
         Ok(Value::Bool(!to_boolean(&mut self.heap, arg)?))
       }
+      OperatorName::New => self.eval_new(&expr.argument),
       _ => Err(JsError::Vm(VmError::Unimplemented("unary operator"))),
     }
+  }
+
+  fn eval_new(&mut self, operand: &Node<Expr>) -> Result<Value, JsError> {
+    let (ctor, args) = match &*operand.stx {
+      Expr::Call(call) => {
+        let mut args = Vec::with_capacity(call.stx.arguments.len());
+        for arg in &call.stx.arguments {
+          if arg.stx.spread {
+            return Err(JsError::Vm(VmError::Unimplemented("spread args")));
+          }
+          args.push(self.eval_expr(&arg.stx.value)?);
+        }
+
+        let ctor = self.eval_expr(&call.stx.callee)?;
+        (ctor, args)
+      }
+      _ => (self.eval_expr(operand)?, Vec::new()),
+    };
+
+    self.construct(ctor, &args)
+  }
+
+  fn construct(&mut self, ctor: Value, args: &[Value]) -> Result<Value, JsError> {
+    let Value::Object(ctor_obj) = ctor else {
+      return Err(JsError::Vm(VmError::NotCallable));
+    };
+    if !self.callables.contains_key(&ctor_obj) {
+      return Err(JsError::Vm(VmError::NotCallable));
+    }
+
+    let instance = self.alloc_object()?;
+
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    if let Some(desc) = self.heap.get_property(ctor_obj, &prototype_key)? {
+      if let PropertyKind::Data { value, .. } = desc.kind {
+        if let Value::Object(proto_obj) = value {
+          self.heap.object_set_prototype(instance, Some(proto_obj))?;
+        }
+      }
+    }
+
+    let result = self.call(ctor, Value::Object(instance), args)?;
+    Ok(match result {
+      Value::Object(_) => result,
+      _ => Value::Object(instance),
+    })
   }
 
   fn eval_lit_obj(&mut self, expr: &LitObjExpr) -> Result<Value, JsError> {
@@ -1749,6 +1916,455 @@ fn native_clear_interval(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> 
   native_clear_timeout(rt, this, args)
 }
 
+fn string_from_value(rt: &mut JsWptRuntime, value: Value) -> Result<String, JsError> {
+  match value {
+    Value::String(s) => Ok(rt.heap.get_string(s)?.to_utf8_lossy()),
+    Value::Undefined => Ok("undefined".to_string()),
+    Value::Null => Ok("null".to_string()),
+    Value::Bool(true) => Ok("true".to_string()),
+    Value::Bool(false) => Ok("false".to_string()),
+    Value::Number(n) => Ok(n.to_string()),
+    Value::BigInt(b) => Ok(b.to_decimal_string()),
+    Value::Symbol(_) => Ok("[symbol]".to_string()),
+    Value::Object(_) => Ok("[object]".to_string()),
+  }
+}
+
+fn get_bool_option(rt: &mut JsWptRuntime, obj: GcObject, name: &str) -> Result<bool, JsError> {
+  let key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string(name)?)
+  };
+  let Some(desc) = rt.heap.get_property(obj, &key)? else {
+    return Ok(false);
+  };
+  match desc.kind {
+    PropertyKind::Data { value, .. } => Ok(to_boolean(&mut rt.heap, value)?),
+    PropertyKind::Accessor { .. } => Err(JsError::Vm(VmError::Unimplemented("accessor props"))),
+  }
+}
+
+fn parse_listener_options(rt: &mut JsWptRuntime, value: Value) -> Result<ListenerOptions, JsError> {
+  Ok(match value {
+    Value::Bool(capture) => ListenerOptions {
+      capture,
+      once: false,
+      passive: false,
+    },
+    Value::Object(obj) => ListenerOptions {
+      capture: get_bool_option(rt, obj, "capture")?,
+      once: get_bool_option(rt, obj, "once")?,
+      passive: get_bool_option(rt, obj, "passive")?,
+    },
+    _ => ListenerOptions {
+      capture: false,
+      once: false,
+      passive: false,
+    },
+  })
+}
+
+fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: EventTarget constructor called without a valid this",
+    )?)));
+  };
+
+  let parent = match args.get(0).copied().unwrap_or(Value::Undefined) {
+    Value::Object(parent) if rt.event_targets.contains_key(&parent) => Some(parent),
+    _ => None,
+  };
+
+  rt.event_targets.insert(
+    obj,
+    EventTargetState {
+      parent,
+      listeners: HashMap::new(),
+    },
+  );
+
+  Ok(Value::Undefined)
+}
+
+fn native_eventtarget_add_event_listener(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(target) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: addEventListener called on non-EventTarget",
+    )?)));
+  };
+
+  let typ = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+  if matches!(callback, Value::Undefined | Value::Null) {
+    return Ok(Value::Undefined);
+  }
+  if !rt.is_callable_value(callback) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: addEventListener callback is not callable",
+    )?)));
+  }
+
+  let options = parse_listener_options(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
+
+  let Some(state) = rt.event_targets.get_mut(&target) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: addEventListener called on non-EventTarget",
+    )?)));
+  };
+  let list = state.listeners.entry(typ).or_default();
+  if list.iter().any(|rec| rec.callback == callback && rec.options.capture == options.capture) {
+    return Ok(Value::Undefined);
+  }
+  list.push(EventListener { callback, options });
+  Ok(Value::Undefined)
+}
+
+fn native_eventtarget_remove_event_listener(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(target) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: removeEventListener called on non-EventTarget",
+    )?)));
+  };
+  let typ = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+  if matches!(callback, Value::Undefined | Value::Null) {
+    return Ok(Value::Undefined);
+  }
+
+  let options = parse_listener_options(rt, args.get(2).copied().unwrap_or(Value::Undefined))?;
+
+  let Some(state) = rt.event_targets.get_mut(&target) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: removeEventListener called on non-EventTarget",
+    )?)));
+  };
+  if let Some(list) = state.listeners.get_mut(&typ) {
+    list.retain(|rec| !(rec.callback == callback && rec.options.capture == options.capture));
+    if list.is_empty() {
+      state.listeners.remove(&typ);
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn native_event_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: Event constructor called without a valid this",
+    )?)));
+  };
+
+  let type_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let typ = string_from_value(rt, type_value)?;
+
+  let mut bubbles = false;
+  let mut cancelable = false;
+  if let Some(Value::Object(init)) = args.get(1).copied() {
+    bubbles = get_bool_option(rt, init, "bubbles")?;
+    cancelable = get_bool_option(rt, init, "cancelable")?;
+  }
+
+  rt.events.insert(
+    obj,
+    EventState {
+      typ,
+      bubbles,
+      cancelable,
+      default_prevented: false,
+      propagation_stopped: false,
+      immediate_stopped: false,
+      in_passive_listener: false,
+    },
+  );
+
+  // Initialize common properties.
+  let type_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("type")?)
+  };
+  rt.define_data_prop(obj, type_key, type_value)?;
+
+  let bubbles_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("bubbles")?)
+  };
+  rt.define_data_prop(obj, bubbles_key, Value::Bool(bubbles))?;
+
+  let cancelable_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("cancelable")?)
+  };
+  rt.define_data_prop(obj, cancelable_key, Value::Bool(cancelable))?;
+
+  let default_prevented_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("defaultPrevented")?)
+  };
+  rt.define_data_prop(obj, default_prevented_key, Value::Bool(false))?;
+
+  let target_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("target")?)
+  };
+  rt.define_data_prop(obj, target_key, Value::Null)?;
+
+  let current_target_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("currentTarget")?)
+  };
+  rt.define_data_prop(obj, current_target_key, Value::Null)?;
+
+  Ok(Value::Undefined)
+}
+
+fn native_event_prevent_default(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  let Some(state) = rt.events.get_mut(&obj) else {
+    return Ok(Value::Undefined);
+  };
+  if !state.cancelable || state.in_passive_listener {
+    return Ok(Value::Undefined);
+  }
+
+  state.default_prevented = true;
+  let key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("defaultPrevented")?)
+  };
+  rt.define_data_prop(obj, key, Value::Bool(true))?;
+  Ok(Value::Undefined)
+}
+
+fn native_event_stop_propagation(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  if let Some(state) = rt.events.get_mut(&obj) {
+    state.propagation_stopped = true;
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_event_stop_immediate_propagation(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return Ok(Value::Undefined);
+  };
+  if let Some(state) = rt.events.get_mut(&obj) {
+    state.immediate_stopped = true;
+    state.propagation_stopped = true;
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_eventtarget_dispatch_event(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(target) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: dispatchEvent called on non-EventTarget",
+    )?)));
+  };
+  if !rt.event_targets.contains_key(&target) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: dispatchEvent called on non-EventTarget",
+    )?)));
+  }
+
+  let Value::Object(event_obj) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: dispatchEvent requires an Event object",
+    )?)));
+  };
+
+  // Snapshot event info before dispatch so we can drop borrows while calling back into JS.
+  let (event_type, bubbles) = {
+    let Some(state) = rt.events.get_mut(&event_obj) else {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: dispatchEvent requires an Event created by this runtime",
+      )?)));
+    };
+    state.propagation_stopped = false;
+    state.immediate_stopped = false;
+    state.in_passive_listener = false;
+    (state.typ.clone(), state.bubbles)
+  };
+
+  // Set `event.target = this`.
+  let target_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("target")?)
+  };
+  rt.define_data_prop(event_obj, target_key, Value::Object(target))?;
+
+  // Build propagation path: target -> ... -> root.
+  let mut path: Vec<GcObject> = Vec::new();
+  let mut visited: HashSet<GcObject> = HashSet::new();
+  let mut current = Some(target);
+  while let Some(obj) = current {
+    if !visited.insert(obj) {
+      break;
+    }
+    path.push(obj);
+    current = rt.event_targets.get(&obj).and_then(|state| state.parent);
+  }
+
+  let mut reached_target = false;
+
+  // Capture phase: root -> target.
+  for &current_target in path.iter().rev() {
+    reached_target = reached_target || current_target == target;
+
+    dispatch_listeners(rt, current_target, event_obj, &event_type, true)?;
+
+    let (prop_stop, imm_stop) = match rt.events.get(&event_obj) {
+      Some(state) => (state.propagation_stopped, state.immediate_stopped),
+      None => (false, false),
+    };
+
+    if imm_stop {
+      break;
+    }
+    if prop_stop && current_target != target {
+      reached_target = false;
+      break;
+    }
+  }
+
+  if reached_target {
+    // At-target bubble listeners always run.
+    dispatch_listeners(rt, target, event_obj, &event_type, false)?;
+
+    let (prop_stop, imm_stop) = match rt.events.get(&event_obj) {
+      Some(state) => (state.propagation_stopped, state.immediate_stopped),
+      None => (false, false),
+    };
+
+    if bubbles && !imm_stop && !prop_stop {
+      for &current_target in path.iter().skip(1) {
+        dispatch_listeners(rt, current_target, event_obj, &event_type, false)?;
+        let (prop_stop, imm_stop) = match rt.events.get(&event_obj) {
+          Some(state) => (state.propagation_stopped, state.immediate_stopped),
+          None => (false, false),
+        };
+        if imm_stop || prop_stop {
+          break;
+        }
+      }
+    }
+  }
+
+  // Clear `currentTarget` when dispatch completes.
+  let current_target_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("currentTarget")?)
+  };
+  rt.define_data_prop(event_obj, current_target_key, Value::Null)?;
+
+  let default_prevented = rt
+    .events
+    .get(&event_obj)
+    .map(|s| s.default_prevented)
+    .unwrap_or(false);
+  Ok(Value::Bool(!default_prevented))
+}
+
+fn dispatch_listeners(
+  rt: &mut JsWptRuntime,
+  target: GcObject,
+  event_obj: GcObject,
+  event_type: &str,
+  capture: bool,
+) -> Result<(), JsError> {
+  let snapshot: Vec<EventListener> = rt
+    .event_targets
+    .get(&target)
+    .and_then(|state| state.listeners.get(event_type))
+    .cloned()
+    .unwrap_or_default();
+
+  if snapshot.is_empty() {
+    return Ok(());
+  }
+
+  for listener in snapshot {
+    if listener.options.capture != capture {
+      continue;
+    }
+
+    let imm_stop = rt
+      .events
+      .get(&event_obj)
+      .is_some_and(|state| state.immediate_stopped);
+    if imm_stop {
+      break;
+    }
+
+    // Set `currentTarget`.
+    let current_target_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("currentTarget")?)
+    };
+    rt.define_data_prop(event_obj, current_target_key, Value::Object(target))?;
+
+    if let Some(state) = rt.events.get_mut(&event_obj) {
+      state.in_passive_listener = listener.options.passive;
+    }
+
+    rt.call(listener.callback, Value::Object(target), &[Value::Object(event_obj)])?;
+
+    if let Some(state) = rt.events.get_mut(&event_obj) {
+      state.in_passive_listener = false;
+    }
+
+    if listener.options.once {
+      if let Some(state) = rt.event_targets.get_mut(&target) {
+        if let Some(list) = state.listeners.get_mut(event_type) {
+          list.retain(|rec| !(rec.callback == listener.callback && rec.options.capture == capture));
+          if list.is_empty() {
+            state.listeners.remove(event_type);
+          }
+        }
+      }
+    }
+
+    let imm_stop = rt
+      .events
+      .get(&event_obj)
+      .is_some_and(|state| state.immediate_stopped);
+    if imm_stop {
+      break;
+    }
+  }
+
+  Ok(())
+}
+
 fn native_queue_microtask(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
   let callback = args.get(0).copied().unwrap_or(Value::Undefined);
   let Value::Object(obj) = callback else {
@@ -1933,12 +2549,10 @@ fn native_wpt_report(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Res
 #[cfg(test)]
 mod tests {
   use super::*;
-  use std::time::{Duration, Instant};
 
   #[test]
   fn value_to_property_key_supports_bigint() {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut rt = JsWptRuntime::new("https://example.com/", deadline);
+    let mut rt = JsWptRuntime::new("https://example.com/");
 
     let key = rt
       .value_to_property_key(Value::BigInt(vm_js::JsBigInt::from_u128(42)))
@@ -1953,8 +2567,7 @@ mod tests {
 
   #[test]
   fn value_to_property_key_supports_fractional_numbers() {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut rt = JsWptRuntime::new("https://example.com/", deadline);
+    let mut rt = JsWptRuntime::new("https://example.com/");
 
     let key = rt
       .value_to_property_key(Value::Number(1.5))
@@ -1969,8 +2582,7 @@ mod tests {
 
   #[test]
   fn value_to_string_lossy_formats_numbers_like_ecmascript() {
-    let deadline = Instant::now() + Duration::from_secs(1);
-    let mut rt = JsWptRuntime::new("https://example.com/", deadline);
+    let mut rt = JsWptRuntime::new("https://example.com/");
 
     assert_eq!(rt.value_to_string_lossy(Value::Number(f64::INFINITY)), "Infinity");
     assert_eq!(
