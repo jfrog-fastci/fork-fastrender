@@ -246,8 +246,8 @@ mod tests {
         &self.heap
       }
 
-      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-        &mut self.heap
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
       }
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
@@ -320,8 +320,8 @@ mod tests {
         &self.heap
       }
 
-      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-        &mut self.heap
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
       }
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
@@ -422,8 +422,8 @@ mod tests {
         &self.heap
       }
 
-      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-        &mut self.heap
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
       }
 
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {

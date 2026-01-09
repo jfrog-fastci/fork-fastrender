@@ -1058,7 +1058,54 @@ fn select_listbox_click_marks_user_validity() {
   );
 
   let select_dom_id = node_id(&dom, "sel");
-  let mut select_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  let option_1_dom_id = node_id(&dom, "o1");
+  let option_2_dom_id = node_id(&dom, "o2");
+
+  let control = FormControlKind::Select(SelectControl {
+    multiple: false,
+    size: 2,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        node_id: option_1_dom_id,
+        label: "Option 1".to_string(),
+        value: "o1".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: option_1_dom_id,
+      },
+      SelectItem::Option {
+        node_id: option_2_dom_id,
+        label: "Option 2".to_string(),
+        value: "o2".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: option_2_dom_id,
+      },
+    ]),
+    selected: vec![0],
+  });
+  let form_control = FormControl {
+    control,
+    appearance: Appearance::Auto,
+    disabled: false,
+    focused: false,
+    focus_visible: false,
+    required: false,
+    invalid: false,
+    placeholder_style: None,
+    slider_thumb_style: None,
+    slider_track_style: None,
+    file_selector_button_style: None,
+  };
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(form_control),
+    None,
+    None,
+  );
   select_box.styled_node_id = Some(select_dom_id);
   let box_tree = BoxTree::new(BoxNode::new_block(
     default_style(),
