@@ -10,6 +10,7 @@ use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::FormControlKind;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SelectControl;
+use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use url::form_urlencoded;
@@ -698,8 +699,7 @@ fn has_disabled_optgroup_ancestor(index: &DomIndexMut, mut node_id: usize, root_
 
 fn collect_select_rows(index: &DomIndexMut, select_id: usize) -> Vec<SelectRow> {
   // Like `build_select_control`, `<optgroup>` contributes a label row followed by its descendants.
-  // This function operates directly on the DOM so it can recover DOM node ids for `<option>` rows
-  // and mutate `selected` attributes.
+  // This function operates directly on the DOM so it can recover DOM node ids for `<option>` rows.
   let mut end = select_id;
   for id in (select_id + 1)..index.id_to_node.len() {
     if is_ancestor_or_self(index, select_id, id) {
@@ -860,20 +860,14 @@ fn update_range_value_from_pointer(
 
 fn apply_select_listbox_click(
   dom: &mut DomNode,
-  index: &mut DomIndexMut,
   fragment_tree: &FragmentTree,
   page_point: Point,
   select_id: usize,
+  control: &SelectControl,
   hit_box_id: usize,
   scroll_state: &ScrollState,
 ) -> bool {
-  let Some(select_node) = index.node(select_id) else {
-    return false;
-  };
-
-  let multiple = select_node.get_attribute_ref("multiple").is_some();
-  let size = crate::dom::select_effective_size(select_node) as usize;
-  let is_listbox = multiple || size > 1;
+  let is_listbox = control.multiple || control.size > 1;
   if !is_listbox {
     return false;
   }
@@ -882,42 +876,40 @@ fn apply_select_listbox_click(
     return false;
   };
 
-  let rows = collect_select_rows(index, select_id);
-  if rows.is_empty() {
+  let row_count_total = control.items.len();
+  if row_count_total == 0 {
     return false;
   }
 
-  let row_height = if size == 0 {
-    0.0
-  } else {
-    select_rect.height() / size as f32
-  };
+  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
+  if !scroll_y.is_finite() {
+    scroll_y = 0.0;
+  }
+
+  let row_height = select_rect.height() / control.size.max(1) as f32;
   if row_height <= 0.0 || !row_height.is_finite() {
     return false;
   }
 
   let viewport_height = select_rect.height().max(0.0);
-  let content_height = row_height * rows.len() as f32;
-  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
-  if !scroll_y.is_finite() {
-    scroll_y = 0.0;
-  }
+  let content_height = row_height * row_count_total as f32;
   let max_scroll_y = (content_height - viewport_height).max(0.0);
   scroll_y = scroll_y.clamp(0.0, max_scroll_y);
 
   let local_y = page_point.y - select_rect.y();
   let content_y = local_y + scroll_y;
   let mut row_idx = (content_y / row_height).floor() as isize;
-  row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
-  let row = rows[row_idx as usize];
+  row_idx = row_idx.clamp(0, row_count_total.saturating_sub(1) as isize);
 
-  match row {
-    SelectRow::OptGroupLabel { .. } => false,
-    SelectRow::Option { node_id, disabled } => {
-      if disabled || index.node(node_id).is_none() {
+  match control.items.get(row_idx as usize) {
+    Some(SelectItem::OptGroupLabel { .. }) | None => false,
+    Some(SelectItem::Option {
+      node_id, disabled, ..
+    }) => {
+      if *disabled {
         return false;
       }
-      dom_mutation::activate_select_option(dom, select_id, node_id, multiple)
+      dom_mutation::activate_select_option(dom, select_id, *node_id, control.multiple)
     }
   }
 }
@@ -1366,27 +1358,29 @@ impl InteractionEngine {
 
           let disabled = is_disabled_or_inert(&index, target_id) || computed_disabled;
 
-            if !disabled {
-              if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
+          if !disabled {
+            if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
+              if let Some((control, _)) = snapshot.as_ref() {
                 dom_changed |= apply_select_listbox_click(
                   dom,
-                  &mut index,
                   fragment_tree,
                   page_point,
                   target_id,
-                hit.box_id,
-                scroll,
-              );
+                  control,
+                  hit.box_id,
+                  scroll,
+                );
+              }
             }
           }
 
           if !disabled {
-            if let Some((control, _)) = snapshot {
+            if let Some((control, _)) = snapshot.as_ref() {
               let is_dropdown = !control.multiple && control.size == 1;
               if is_dropdown {
                 action = InteractionAction::OpenSelectDropdown {
                   select_node_id: target_id,
-                  control,
+                  control: control.clone(),
                 };
               }
             }
