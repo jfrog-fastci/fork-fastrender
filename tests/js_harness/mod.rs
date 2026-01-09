@@ -589,3 +589,6 @@ impl Harness {
     self.host.complete_external_script(url)
   }
 }
+
+mod smoke;
+mod timers;

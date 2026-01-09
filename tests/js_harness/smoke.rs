@@ -1,9 +1,7 @@
-mod js_harness;
-
+use super::Harness;
 use fastrender::dom::{DomNode, DomNodeType};
 use fastrender::js::RunLimits;
 use fastrender::Result;
-use js_harness::Harness;
 
 fn find_element_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
   let mut stack = vec![node];
@@ -51,3 +49,4 @@ fn harness_smoke_exec_timer_advance_and_dom_mutation() -> Result<()> {
   assert_eq!(root.get_attribute_ref("data-done"), Some("1"));
   Ok(())
 }
+

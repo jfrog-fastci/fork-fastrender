@@ -1,8 +1,6 @@
-mod js_harness;
-
+use super::Harness;
 use fastrender::js::RunLimits;
 use fastrender::Result;
-use js_harness::Harness;
 
 #[test]
 fn harness_set_timeout_orders_by_due_time_then_registration_order() -> Result<()> {
@@ -30,3 +28,4 @@ fn harness_set_timeout_orders_by_due_time_then_registration_order() -> Result<()
   assert_eq!(h.take_log(), vec!["t10".to_string()]);
   Ok(())
 }
+
