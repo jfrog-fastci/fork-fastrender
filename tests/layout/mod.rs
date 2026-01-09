@@ -106,6 +106,7 @@ mod grid_fragmentation;
 mod grid_fragmentation_writing_mode;
 mod grid_intrinsic_definite_height;
 mod grid_intrinsic_sizing_keywords;
+mod grid_item_margin_collapse;
 mod grid_min_content_calc;
 mod grid_named_span_autoplacement;
 mod grid_auto_min_size_aspect_ratio_transferred;

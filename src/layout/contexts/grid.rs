@@ -34,6 +34,7 @@ use crate::geometry::Size;
 use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::constraints::AvailableSpace as CrateAvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::flex_cache::ShardedFlexCache;
 use crate::layout::engine::LayoutParallelism;
@@ -4164,7 +4165,16 @@ impl GridFormattingContext {
             .unwrap_or(FormattingContextType::Block);
           let child_factory =
             factory.translated_for_child(Point::new(bounds.x(), bounds.y()));
-          let fc = child_factory.get(fc_type);
+          let fc: std::sync::Arc<dyn FormattingContext> =
+            if matches!(fc_type, FormattingContextType::Block) {
+              std::sync::Arc::new(
+                BlockFormattingContext::for_independent_context_root_with_factory(
+                  child_factory.clone(),
+                ),
+              )
+            } else {
+              child_factory.get(fc_type)
+            };
 
           let available_height = continuation_available.unwrap_or(bounds.height());
           let child_constraints = LayoutConstraints::new(
@@ -4608,7 +4618,14 @@ impl GridFormattingContext {
       let child_factory = self
         .factory
         .translated_for_child(Point::new(bounds.x(), bounds.y()));
-      let fc = child_factory.get(fc_type);
+      let fc: std::sync::Arc<dyn FormattingContext> =
+        if matches!(fc_type, FormattingContextType::Block) {
+          std::sync::Arc::new(
+            BlockFormattingContext::for_independent_context_root_with_factory(child_factory.clone()),
+          )
+        } else {
+          child_factory.get(fc_type)
+        };
 
       let available_height = continuation_available.unwrap_or(bounds.height());
       let child_constraints = LayoutConstraints::new(
@@ -6781,7 +6798,14 @@ impl GridFormattingContext {
             cache.insert(key, output);
             return output;
           }
-          let fc = factory.get(fc_type);
+          let fc: std::sync::Arc<dyn FormattingContext> =
+            if matches!(fc_type, FormattingContextType::Block) {
+              std::sync::Arc::new(
+                BlockFormattingContext::for_independent_context_root_with_factory(factory.clone()),
+              )
+            } else {
+              factory.get(fc_type)
+            };
           let inline_is_horizontal =
             crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
           let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
@@ -7129,7 +7153,14 @@ impl GridFormattingContext {
       return output;
     }
 
-    let fc = factory.get(fc_type);
+    let fc: std::sync::Arc<dyn FormattingContext> =
+      if matches!(fc_type, FormattingContextType::Block) {
+        std::sync::Arc::new(
+          BlockFormattingContext::for_independent_context_root_with_factory(factory.clone()),
+        )
+      } else {
+        factory.get(fc_type)
+      };
 
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
     let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
@@ -10694,7 +10725,14 @@ impl FormattingContext for GridFormattingContext {
             cache.insert(key, output);
             return output;
           }
-          let fc = factory.get(fc_type);
+          let fc: std::sync::Arc<dyn FormattingContext> =
+            if matches!(fc_type, FormattingContextType::Block) {
+              std::sync::Arc::new(
+                BlockFormattingContext::for_independent_context_root_with_factory(factory.clone()),
+              )
+            } else {
+              factory.get(fc_type)
+            };
           let inline_is_horizontal =
             crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
           let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {

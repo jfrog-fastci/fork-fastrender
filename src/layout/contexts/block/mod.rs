@@ -242,15 +242,15 @@ pub struct BlockFormattingContext {
   /// equation). This is only meant for the flex-item root; descendants revert to normal block
   /// behavior.
   flex_item_mode: bool,
+  /// When true, treat the root box as establishing an independent formatting context for margin
+  /// collapsing (CSS Display 3), preventing parent/child vertical margin collapsing across the
+  /// box boundary.
+  independent_context_root_mode: bool,
   /// When set, treat the box with this id as establishing an independent formatting context for
   /// margin-collapsing purposes.
   ///
-  /// Flex items establish an independent formatting context (CSS Display 3), which prevents
-  /// parent/child margin collapsing with their in-flow children (CSS2.1 §8.3.1). In FastRender,
-  /// flex items are laid out by calling into the block formatting context with `flex_item_mode`
-  /// enabled. However, we intentionally disable `flex_item_mode` when laying out descendants so
-  /// width resolution follows normal block rules. This field preserves the root's "independent
-  /// formatting context" behavior while still letting descendants use normal block layout.
+  /// This is threaded into descendant block contexts so `layout_flow_children` can tell when it is
+  /// laying out children of an independent formatting context root.
   independent_context_root_id: Option<usize>,
   parallelism: LayoutParallelism,
 }
@@ -313,6 +313,7 @@ impl BlockFormattingContext {
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: false,
+      independent_context_root_mode: false,
       independent_context_root_id: None,
       parallelism,
     }
@@ -349,9 +350,16 @@ impl BlockFormattingContext {
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: true,
+      independent_context_root_mode: true,
       independent_context_root_id: None,
       parallelism,
     }
+  }
+
+  pub fn for_independent_context_root_with_factory(factory: FormattingContextFactory) -> Self {
+    let mut ctx = Self::with_factory(factory);
+    ctx.independent_context_root_mode = true;
+    ctx
   }
 
   pub fn with_parallelism(mut self, parallelism: LayoutParallelism) -> Self {
@@ -6788,7 +6796,9 @@ impl FormattingContext for BlockFormattingContext {
 
     let mut child_ctx = self.clone();
     child_ctx.flex_item_mode = false;
-    child_ctx.independent_context_root_id = self.flex_item_mode.then_some(box_node.id);
+    child_ctx.independent_context_root_mode = false;
+    child_ctx.independent_context_root_id =
+      (self.flex_item_mode || self.independent_context_root_mode).then_some(box_node.id);
     child_ctx.nearest_positioned_cb = nearest_cb;
     child_ctx.nearest_fixed_cb = nearest_fixed_cb;
     if nearest_cb != self.nearest_positioned_cb || nearest_fixed_cb != self.nearest_fixed_cb {
