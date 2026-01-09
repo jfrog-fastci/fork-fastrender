@@ -38,6 +38,8 @@ pub enum WorkerToUiEvent {
   ScrollStateUpdated { tab_id: TabId, scroll: ScrollState },
   LoadingState { tab_id: TabId, loading: bool },
   DebugLog { tab_id: TabId, line: String },
+  SelectDropdownOpened { tab_id: TabId, select_node_id: usize },
+  SelectDropdownClosed { tab_id: TabId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub enum WorkerEventKind {
   ScrollStateUpdated,
   LoadingState(bool),
   DebugLog,
+  SelectDropdownOpened,
+  SelectDropdownClosed,
 }
 
 impl WorkerToUiEvent {
@@ -65,6 +69,8 @@ impl WorkerToUiEvent {
       WorkerToUiEvent::ScrollStateUpdated { .. } => WorkerEventKind::ScrollStateUpdated,
       WorkerToUiEvent::LoadingState { loading, .. } => WorkerEventKind::LoadingState(*loading),
       WorkerToUiEvent::DebugLog { .. } => WorkerEventKind::DebugLog,
+      WorkerToUiEvent::SelectDropdownOpened { .. } => WorkerEventKind::SelectDropdownOpened,
+      WorkerToUiEvent::SelectDropdownClosed { .. } => WorkerEventKind::SelectDropdownClosed,
     }
   }
 }
@@ -135,6 +141,20 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       None,
     ),
     WorkerToUi::DebugLog { tab_id, line } => (WorkerToUiEvent::DebugLog { tab_id, line }, None),
+    WorkerToUi::SelectDropdownOpened {
+      tab_id,
+      select_node_id,
+      ..
+    } => (
+      WorkerToUiEvent::SelectDropdownOpened {
+        tab_id,
+        select_node_id,
+      },
+      None,
+    ),
+    WorkerToUi::SelectDropdownClosed { tab_id } => {
+      (WorkerToUiEvent::SelectDropdownClosed { tab_id }, None)
+    }
   }
 }
 

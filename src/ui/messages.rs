@@ -1,3 +1,4 @@
+use crate::geometry::Rect;
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::SelectControl;
@@ -210,6 +211,11 @@ pub enum UiToWorker {
     tab_id: TabId,
     reason: RepaintReason,
   },
+  SelectDropdownPick {
+    tab_id: TabId,
+    select_node_id: usize,
+    item_index: usize,
+  },
 }
 
 /// Messages sent from the render worker to the UI thread.
@@ -259,15 +265,17 @@ pub enum WorkerToUi {
     tab_id: TabId,
     line: String,
   },
-  /// A dropdown `<select>` was clicked and should open a UI popup.
-  ///
-  /// `anchor_css` is in **viewport-local CSS pixels** so the UI can position the popup relative to
-  /// the rendered frame.
   SelectDropdownOpened {
     tab_id: TabId,
     select_node_id: usize,
-    control: crate::tree::box_tree::SelectControl,
-    anchor_css: crate::geometry::Rect,
+    control: SelectControl,
+    /// Bounding box of the `<select>` control in **viewport CSS coordinates**.
+    ///
+    /// (0,0 is the top-left of the rendered viewport; does not include scroll offset.)
+    anchor_css: Rect,
+  },
+  SelectDropdownClosed {
+    tab_id: TabId,
   },
 }
 

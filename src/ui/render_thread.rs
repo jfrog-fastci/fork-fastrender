@@ -205,6 +205,9 @@ impl BrowserRenderThread {
       } => {
         self.select_dropdown_choose(tab_id, select_node_id, option_node_id);
       }
+      UiToWorker::SelectDropdownPick { .. } => {
+        // Dropdown popup UI is handled by the window UI and the interaction-capable worker.
+      }
       UiToWorker::TextInput { tab_id, text } => {
         self.text_input(tab_id, text);
       }

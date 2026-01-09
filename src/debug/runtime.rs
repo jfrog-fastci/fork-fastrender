@@ -312,12 +312,63 @@ pub fn with_runtime_toggles<T>(toggles: Arc<RuntimeToggles>, f: impl FnOnce() ->
   // Most toggle lookups happen on the same thread that installs the override (render pipeline hot
   // paths). Install a thread-local copy so repeated `runtime_toggles()` calls avoid taking the
   // global RwLock.
-  let guard = set_runtime_toggles(toggles.clone());
-  let thread_guard = set_thread_runtime_toggles(toggles);
-  let result = f();
-  drop(thread_guard);
-  drop(guard);
-  result
+  //
+  // ## Deadlock avoidance
+  //
+  // The render pipeline can spawn helper threads (e.g. the debug large-stack layout worker) while
+  // a higher-level caller is already holding the global override lock. If the helper thread calls
+  // `with_runtime_toggles` again with the *same* toggles, attempting to take the global override
+  // lock would deadlock: the parent thread waits for the helper thread to finish while still
+  // holding the lock.
+  //
+  // Detect that case by probing the override lock. When it is held by another thread *and* the
+  // currently active global toggles already match the requested toggles, we only need a
+  // thread-local override and can skip the global swap entirely.
+  let override_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK.get_or_init(|| ReentrantMutex::new(()));
+  if let Some(lock_guard) = override_lock.try_lock() {
+    // No other thread is holding the override lock; install a full global override so worker
+    // threads without a thread-local override (e.g. Rayon) also see the toggles.
+    let guard = set_runtime_toggles(toggles.clone());
+    // `set_runtime_toggles` re-locks the reentrant mutex; drop our probe guard so the returned
+    // `RuntimeTogglesGuard` owns the lock for the remainder of the scope.
+    drop(lock_guard);
+
+    let thread_guard = set_thread_runtime_toggles(toggles);
+    let result = f();
+    drop(thread_guard);
+    drop(guard);
+    result
+  } else {
+    // Another thread holds the global override lock. If it already installed these exact toggles,
+    // avoid blocking on the lock and only set a thread-local override.
+    let lock = ACTIVE_TOGGLES.get_or_init(|| RwLock::new(default_toggles()));
+    let global = loop {
+      let epoch = ACTIVE_TOGGLES_EPOCH.load(Ordering::Relaxed);
+      let toggles = lock
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+      let epoch_after = ACTIVE_TOGGLES_EPOCH.load(Ordering::Relaxed);
+      if epoch == epoch_after {
+        break toggles;
+      }
+    };
+
+    if Arc::ptr_eq(&global, &toggles) {
+      let thread_guard = set_thread_runtime_toggles(toggles);
+      let result = f();
+      drop(thread_guard);
+      result
+    } else {
+      // Different toggles are active; fall back to the normal serialized global override.
+      let guard = set_runtime_toggles(toggles.clone());
+      let thread_guard = set_thread_runtime_toggles(toggles);
+      let result = f();
+      drop(thread_guard);
+      drop(guard);
+      result
+    }
+  }
 }
 
 /// Guard that restores the previous thread-local runtime toggles when dropped.

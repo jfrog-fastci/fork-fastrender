@@ -279,6 +279,141 @@ fn select_anchor_css(
   )))
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SelectRow {
+  OptGroupLabel { disabled: bool },
+  Option { node_id: usize, disabled: bool },
+}
+
+fn is_ancestor_or_self(
+  index: &crate::interaction::dom_index::DomIndex,
+  ancestor: usize,
+  mut node: usize,
+) -> bool {
+  while node != 0 {
+    if node == ancestor {
+      return true;
+    }
+    node = *index.parent.get(node).unwrap_or(&0);
+  }
+  false
+}
+
+fn has_disabled_optgroup_ancestor(
+  index: &crate::interaction::dom_index::DomIndex,
+  mut node_id: usize,
+  root_id: usize,
+) -> bool {
+  while node_id != 0 && node_id != root_id {
+    let parent = *index.parent.get(node_id).unwrap_or(&0);
+    if parent == 0 || parent == root_id {
+      break;
+    }
+    if index.node(parent).is_some_and(|node| {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
+        && node.get_attribute_ref("disabled").is_some()
+    }) {
+      return true;
+    }
+    node_id = parent;
+  }
+  false
+}
+
+fn collect_select_rows(
+  index: &crate::interaction::dom_index::DomIndex,
+  select_id: usize,
+) -> Vec<SelectRow> {
+  // Mirror `build_select_control`: `<optgroup>` contributes a label row followed by its descendants.
+  let mut end = select_id;
+  for id in (select_id + 1)..=index.len() {
+    if is_ancestor_or_self(index, select_id, id) {
+      end = id;
+    } else {
+      break;
+    }
+  }
+
+  let mut rows = Vec::new();
+  for id in (select_id + 1)..=end {
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    let Some(tag) = node.tag_name() else {
+      continue;
+    };
+
+    if tag.eq_ignore_ascii_case("optgroup") {
+      let disabled = node.get_attribute_ref("disabled").is_some()
+        || has_disabled_optgroup_ancestor(index, id, select_id);
+      rows.push(SelectRow::OptGroupLabel { disabled });
+      continue;
+    }
+
+    if tag.eq_ignore_ascii_case("option") {
+      let disabled = node.get_attribute_ref("disabled").is_some()
+        || has_disabled_optgroup_ancestor(index, id, select_id);
+      rows.push(SelectRow::Option {
+        node_id: id,
+        disabled,
+      });
+    }
+  }
+
+  rows
+}
+
+fn box_id_for_styled_node(
+  box_tree: &crate::tree::box_tree::BoxTree,
+  styled_node_id: usize,
+) -> Option<usize> {
+  let mut stack: Vec<&crate::tree::box_tree::BoxNode> = vec![&box_tree.root];
+  while let Some(node) = stack.pop() {
+    if node.styled_node_id == Some(styled_node_id) {
+      return Some(node.id);
+    }
+    if let Some(body) = node.footnote_body.as_deref() {
+      stack.push(body);
+    }
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
+fn select_anchor_rect_viewport_css(
+  dom: &crate::dom::DomNode,
+  box_tree: &crate::tree::box_tree::BoxTree,
+  fragment_tree: &crate::tree::fragment_tree::FragmentTree,
+  page_point_css: Point,
+  select_node_id: usize,
+  scroll_viewport_css: Point,
+) -> Rect {
+  let box_id = crate::interaction::hit_test_dom(dom, box_tree, fragment_tree, page_point_css)
+    .filter(|hit| hit.dom_node_id == select_node_id)
+    .map(|hit| hit.box_id)
+    .or_else(|| box_id_for_styled_node(box_tree, select_node_id));
+
+  let Some(page_rect) = box_id
+    .and_then(|box_id| crate::interaction::absolute_bounds_for_box_id(fragment_tree, box_id))
+  else {
+    return Rect::ZERO;
+  };
+
+  Rect::from_xywh(
+    page_rect.x() - scroll_viewport_css.x,
+    page_rect.y() - scroll_viewport_css.y,
+    page_rect.width(),
+    page_rect.height(),
+  )
+}
+
 fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
   let mut tabs: HashMap<TabId, TabState> = HashMap::new();
 
@@ -703,6 +838,40 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
             }
           }
         }
+      }
+      UiToWorker::SelectDropdownPick {
+        tab_id,
+        select_node_id,
+        item_index,
+      } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        let Some(doc) = tab.document.as_mut() else {
+          continue;
+        };
+
+        let mut should_close = false;
+        let _ = doc.mutate_dom(|dom| {
+          let index = crate::interaction::dom_index::DomIndex::build(dom);
+          let rows = collect_select_rows(&index, select_node_id);
+          let row = rows.get(item_index).copied();
+          match row {
+            Some(SelectRow::OptGroupLabel { .. }) | None => false,
+            Some(SelectRow::Option { node_id, disabled }) => {
+              if disabled {
+                return false;
+              }
+              should_close = true;
+              crate::interaction::dom_mutation::activate_select_option(dom, select_node_id, node_id, false)
+            }
+          }
+        });
+
+        if should_close {
+          let _ = tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+        }
+        repaint_if_needed(tab_id, tab, &tx);
       }
       UiToWorker::RequestRepaint { tab_id, .. } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {

@@ -187,6 +187,12 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::DebugLog { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::SelectDropdownOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
+  if let WorkerToUi::SelectDropdownClosed { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   None
 }
 
@@ -283,6 +289,24 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
     if let WorkerToUi::DebugLog { tab_id, line } = msg {
       let line = line.trim_end();
       let _ = writeln!(&mut out, "DebugLog(tab={}, line={line})", tab_id.0);
+      continue;
+    }
+    if let WorkerToUi::SelectDropdownOpened {
+      tab_id,
+      select_node_id,
+      control,
+      anchor_css: anchor_rect_css,
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "SelectDropdownOpened(tab={}, select_node_id={}, control={control:?}, anchor_css={anchor_rect_css:?})",
+        tab_id.0, select_node_id
+      );
+      continue;
+    }
+    if let WorkerToUi::SelectDropdownClosed { tab_id } = msg {
+      let _ = writeln!(&mut out, "SelectDropdownClosed(tab={})", tab_id.0);
       continue;
     }
 

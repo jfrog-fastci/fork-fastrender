@@ -408,10 +408,11 @@ fn select_dropdown_click_emits_open_select_dropdown_message() {
   while Instant::now() < deadline {
     match ui_rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => match msg {
-        WorkerToUi::OpenSelectDropdown {
+        WorkerToUi::SelectDropdownOpened {
           tab_id: msg_tab,
           select_node_id,
           control,
+          ..
         } if msg_tab == tab_id => {
           received = Some((select_node_id, control));
           break;
@@ -423,7 +424,7 @@ fn select_dropdown_click_emits_open_select_dropdown_message() {
     }
   }
 
-  let (select_node_id, control) = received.expect("expected OpenSelectDropdown message");
+  let (select_node_id, control) = received.expect("expected SelectDropdownOpened message");
   assert!(select_node_id > 0, "expected non-zero select_node_id");
   assert!(!control.multiple, "expected dropdown select to be single-select");
   assert_eq!(control.size, 1);

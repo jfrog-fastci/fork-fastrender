@@ -650,6 +650,10 @@ impl BrowserAppState {
           anchor_css: Some(anchor_css),
         });
       }
+      WorkerToUi::SelectDropdownClosed { .. } => {
+        // Front-ends that show a `<select>` overlay should dismiss it.
+        update.request_redraw = true;
+      }
       WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.stage = Some(stage);

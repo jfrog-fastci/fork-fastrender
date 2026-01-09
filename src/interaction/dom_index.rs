@@ -75,6 +75,26 @@ impl DomIndex {
     self.id_to_ptr.len().saturating_sub(1)
   }
 
+  pub fn node(&self, id: usize) -> Option<&DomNode> {
+    let ptr = *self.id_to_ptr.get(id)?;
+    if ptr.is_null() {
+      return None;
+    }
+    // SAFETY: `ptr` points into the DOM tree used to build this index. The index is only valid as
+    // long as callers don't structurally edit the DOM (reallocating `children` vectors).
+    Some(unsafe { &*ptr })
+  }
+
+  pub fn node_mut(&mut self, id: usize) -> Option<&mut DomNode> {
+    let ptr = *self.id_to_ptr.get(id)?;
+    if ptr.is_null() {
+      return None;
+    }
+    // SAFETY: `ptr` points into the DOM tree used to build this index. The index is only valid as
+    // long as callers don't structurally edit the DOM (reallocating `children` vectors).
+    Some(unsafe { &mut *ptr })
+  }
+
   pub fn with_node_mut<R>(&mut self, id: usize, f: impl FnOnce(&mut DomNode) -> R) -> Option<R> {
     let ptr = *self.id_to_ptr.get(id)?;
     if ptr.is_null() {

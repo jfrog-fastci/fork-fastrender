@@ -708,6 +708,7 @@ impl BrowserUiWorker {
       | UiToWorker::PointerDown { .. }
       | UiToWorker::PointerUp { .. }
       | UiToWorker::SelectDropdownChoose { .. }
+      | UiToWorker::SelectDropdownPick { .. }
       | UiToWorker::TextInput { .. }
       | UiToWorker::KeyAction { .. } => {}
       UiToWorker::SelectDropdownChoose { .. } => {}

@@ -407,6 +407,37 @@ pub enum SelectItem {
   },
 }
 
+impl SelectItem {
+  pub fn is_optgroup_label(&self) -> bool {
+    matches!(self, SelectItem::OptGroupLabel { .. })
+  }
+
+  pub fn is_option(&self) -> bool {
+    matches!(self, SelectItem::Option { .. })
+  }
+
+  pub fn label(&self) -> &str {
+    match self {
+      SelectItem::OptGroupLabel { label, .. } => label,
+      SelectItem::Option { label, .. } => label,
+    }
+  }
+
+  pub fn disabled(&self) -> bool {
+    match self {
+      SelectItem::OptGroupLabel { disabled, .. } => *disabled,
+      SelectItem::Option { disabled, .. } => *disabled,
+    }
+  }
+
+  pub fn in_optgroup(&self) -> bool {
+    match self {
+      SelectItem::Option { in_optgroup, .. } => *in_optgroup,
+      _ => false,
+    }
+  }
+}
+
 /// A replaced element box
 ///
 /// Replaced elements have intrinsic dimensions provided by external content.

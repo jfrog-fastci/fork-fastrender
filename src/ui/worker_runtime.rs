@@ -229,6 +229,9 @@ impl BrowserWorkerRuntime {
       } => {
         self.select_dropdown_choose(tab_id, select_node_id, option_node_id);
       }
+      UiToWorker::SelectDropdownPick { .. } => {
+        // The headless runtime does not currently expose a select dropdown UI.
+      }
       UiToWorker::RequestRepaint { tab_id, reason } => {
         self.render_current(tab_id, reason);
       }

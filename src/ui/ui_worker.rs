@@ -149,6 +149,7 @@ impl UiWorker {
       | UiToWorker::PointerDown { .. }
       | UiToWorker::PointerUp { .. }
       | UiToWorker::SelectDropdownChoose { .. }
+      | UiToWorker::SelectDropdownPick { .. }
       | UiToWorker::TextInput { .. }
       | UiToWorker::KeyAction { .. }
       | UiToWorker::SelectDropdownChoose { .. }
