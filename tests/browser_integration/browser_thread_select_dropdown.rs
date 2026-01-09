@@ -96,8 +96,8 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
     .filter_map(|item| match item {
       SelectItem::Option { label, .. } => Some(label.clone()),
       _ => None,
-    })
-    .collect();
+  })
+  .collect();
   assert_eq!(labels, vec!["One", "Two", "Three"]);
 
   let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
@@ -123,6 +123,10 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
   };
 
   assert_eq!(msg_tab, tab_id);
+  assert!(
+    anchor_rect_css.width() > 0.0 && anchor_rect_css.height() > 0.0,
+    "expected non-zero anchor_rect_css, got {anchor_rect_css:?}"
+  );
   assert_eq!(
     anchored_select_node_id, select_node_id,
     "expected SelectDropdownOpened select_node_id to match OpenSelectDropdown"

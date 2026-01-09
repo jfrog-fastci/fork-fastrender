@@ -872,6 +872,8 @@ impl BrowserRuntime {
           control: control.clone(),
         });
 
+        // Prefer anchoring the dropdown to the `<select>` control's box, falling back to the cursor
+        // position when we cannot resolve the layout geometry (e.g. missing prepared tree).
         let cursor_anchor_css = Rect::from_xywh(viewport_point.x, viewport_point.y, 1.0, 1.0);
         let anchor_css = anchor_css
           .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
