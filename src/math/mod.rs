@@ -3398,7 +3398,17 @@ impl MathLayoutContext {
       }
       MathNode::Row(children) => self.layout_row(children, style, base_style),
       MathNode::Identifier { text, variant } => {
-        let resolved = self.resolve_variant(*variant, style, MathVariant::Italic);
+        let non_ws_count = text
+          .chars()
+          .filter(|c| !is_ascii_whitespace_mathml(*c))
+          .take(2)
+          .count();
+        let fallback = if non_ws_count <= 1 {
+          MathVariant::Italic
+        } else {
+          MathVariant::Normal
+        };
+        let resolved = self.resolve_variant(*variant, style, fallback);
         self.layout_glyphs(text, base_style, style, resolved)
       }
       MathNode::Number { text, variant } => {
@@ -3910,6 +3920,58 @@ mod tests {
       *width,
       MathLength::Em(0.0),
       "NBSP must not be treated as HTML/MathML whitespace when parsing length attributes"
+    );
+  }
+
+  fn bundled_font_context() -> FontContext {
+    FontContext::with_config(FontConfig::bundled_only())
+  }
+
+  #[test]
+  fn identifier_default_variant_is_upright_for_multiple_characters() {
+    let ctx = bundled_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><mi>sin</mi></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let obliques: Vec<f32> = layout
+      .fragments
+      .iter()
+      .filter_map(|f| match f {
+        MathFragment::Glyph { run, .. } => Some(run.synthetic_oblique),
+        _ => None,
+      })
+      .collect();
+    assert!(!obliques.is_empty(), "expected at least one glyph run");
+    assert!(
+      obliques.iter().all(|v| *v == 0.0),
+      "expected upright run for multi-character identifier: {:?}",
+      obliques
+    );
+  }
+
+  #[test]
+  fn identifier_default_variant_is_italic_for_single_character() {
+    let ctx = bundled_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><mi>x</mi></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+    let obliques: Vec<f32> = layout
+      .fragments
+      .iter()
+      .filter_map(|f| match f {
+        MathFragment::Glyph { run, .. } => Some(run.synthetic_oblique),
+        _ => None,
+      })
+      .collect();
+    assert!(!obliques.is_empty(), "expected at least one glyph run");
+    assert!(
+      obliques.iter().any(|v| *v != 0.0),
+      "expected synthetic oblique for single-character identifier: {:?}",
+      obliques
     );
   }
 }
