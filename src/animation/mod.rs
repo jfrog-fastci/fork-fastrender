@@ -10972,7 +10972,8 @@ mod tests {
     };
 
     let mut style_a = ComputedStyle::default();
-    style_a.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
+    style_a.transition_properties =
+      vec![TransitionProperty::Name("border-radius".to_string())].into();
     style_a.transition_durations = vec![1000.0].into();
     style_a.transition_delays = vec![0.0].into();
     style_a.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();

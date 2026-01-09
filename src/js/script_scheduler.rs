@@ -699,6 +699,65 @@ mod tests {
   }
 
   #[test]
+  fn non_parser_inserted_external_scripts_execute_without_waiting_for_parsing_complete() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    // Dynamically inserted external scripts behave like `async` scripts, regardless of the `defer`
+    // attribute. They should execute as soon as their load completes, even if parsing has not
+    // finished.
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      ScriptElementSpec {
+        base_url: None,
+        src: Some("dyn".to_string()),
+        inline_text: String::new(),
+        async_attr: false,
+        defer_attr: true,
+        parser_inserted: false,
+        script_type: ScriptType::Classic,
+      },
+    )?;
+
+    host.loader.complete_url("dyn", "dyn");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["dyn".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn async_attribute_overrides_defer_for_external_scripts() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      ScriptElementSpec {
+        base_url: None,
+        src: Some("a1".to_string()),
+        inline_text: String::new(),
+        async_attr: true,
+        defer_attr: true,
+        parser_inserted: true,
+        script_type: ScriptType::Classic,
+      },
+    )?;
+
+    host.loader.complete_url("a1", "a1");
+    scheduler.poll(&mut host, &mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["a1".to_string()]);
+    Ok(())
+  }
+
+  #[test]
   fn blocking_inline_scripts_run_immediately() -> Result<()> {
     let mut host = TestHost::new(false);
     let mut event_loop = EventLoop::<TestHost>::new();
