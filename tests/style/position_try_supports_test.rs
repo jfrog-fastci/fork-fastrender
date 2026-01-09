@@ -50,6 +50,22 @@ fn supports_position_try_fallbacks_property() {
 }
 
 #[test]
+fn supports_position_try_fallbacks_builtin_keywords() {
+  let target = styled_target(
+    r#"
+      @supports (position-try-fallbacks: flip-inline) {
+        #t { color: rgb(7, 8, 9); }
+      }
+      @supports not (position-try-fallbacks: flip-inline) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(7, 8, 9));
+}
+
+#[test]
 fn supports_position_try_at_rule() {
   let target = styled_target(
     r#"
@@ -90,4 +106,3 @@ fn position_try_rules_follow_layer_ordering() {
     other => panic!("expected left: <length>, got {other:?}"),
   }
 }
-

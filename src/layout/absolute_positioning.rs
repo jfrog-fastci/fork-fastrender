@@ -2704,6 +2704,22 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
 ) -> Result<(PositionedStyle, AbsoluteLayoutResult), LayoutError> {
   const OVERFLOW_EPSILON: f32 = 0.01;
 
+  #[derive(Clone, Copy)]
+  enum BuiltinTryKeyword {
+    FlipInline,
+    FlipBlock,
+  }
+
+  fn parse_builtin_try(name: &str) -> Option<BuiltinTryKeyword> {
+    if name.eq_ignore_ascii_case("flip-inline") {
+      return Some(BuiltinTryKeyword::FlipInline);
+    }
+    if name.eq_ignore_ascii_case("flip-block") {
+      return Some(BuiltinTryKeyword::FlipBlock);
+    }
+    None
+  }
+
   fn border_box_rect(result: &AbsoluteLayoutResult, style: &PositionedStyle) -> Rect {
     let horizontal = style.padding.left
       + style.padding.right
@@ -2748,6 +2764,110 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     (area - visible_area).max(0.0)
   }
 
+  fn axis_physical_sides(
+    style: &ComputedStyle,
+    axis: crate::style::LogicalAxis,
+  ) -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
+    let axis_sides =
+      |horizontal: bool, positive: bool| -> (crate::style::PhysicalSide, crate::style::PhysicalSide) {
+        match (horizontal, positive) {
+          (true, true) => (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right),
+          (true, false) => (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left),
+          (false, true) => (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom),
+          (false, false) => (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top),
+        }
+      };
+
+    match axis {
+      crate::style::LogicalAxis::Inline => {
+        let horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+        let positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
+        axis_sides(horizontal, positive)
+      }
+      crate::style::LogicalAxis::Block => {
+        let horizontal = crate::style::block_axis_is_horizontal(style.writing_mode);
+        let positive = crate::style::block_axis_positive(style.writing_mode);
+        axis_sides(horizontal, positive)
+      }
+    }
+  }
+
+  fn flip_anchor_side(
+    side: crate::style::types::AnchorSide,
+    axis: crate::style::LogicalAxis,
+    physical_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) -> crate::style::types::AnchorSide {
+    use crate::style::PhysicalSide;
+    use crate::style::types::AnchorSide;
+
+    let side = match axis {
+      crate::style::LogicalAxis::Inline => match side {
+        AnchorSide::InlineStart => AnchorSide::InlineEnd,
+        AnchorSide::InlineEnd => AnchorSide::InlineStart,
+        other => other,
+      },
+      crate::style::LogicalAxis::Block => match side {
+        AnchorSide::BlockStart => AnchorSide::BlockEnd,
+        AnchorSide::BlockEnd => AnchorSide::BlockStart,
+        other => other,
+      },
+    };
+
+    match physical_sides {
+      (PhysicalSide::Left, PhysicalSide::Right) | (PhysicalSide::Right, PhysicalSide::Left) => {
+        match side {
+          AnchorSide::Left => AnchorSide::Right,
+          AnchorSide::Right => AnchorSide::Left,
+          AnchorSide::Percent(pct) => AnchorSide::Percent(100.0 - pct),
+          other => other,
+        }
+      }
+      (PhysicalSide::Top, PhysicalSide::Bottom) | (PhysicalSide::Bottom, PhysicalSide::Top) => {
+        match side {
+          AnchorSide::Top => AnchorSide::Bottom,
+          AnchorSide::Bottom => AnchorSide::Top,
+          AnchorSide::Percent(pct) => AnchorSide::Percent(100.0 - pct),
+          other => other,
+        }
+      }
+      _ => side,
+    }
+  }
+
+  fn flip_inset_value(
+    value: &mut crate::style::types::InsetValue,
+    axis: crate::style::LogicalAxis,
+    physical_sides: (crate::style::PhysicalSide, crate::style::PhysicalSide),
+  ) {
+    if let crate::style::types::InsetValue::Anchor(func) = value {
+      func.side = flip_anchor_side(func.side, axis, physical_sides);
+    }
+  }
+
+  fn apply_builtin_try(style: &mut ComputedStyle, keyword: BuiltinTryKeyword) {
+    let axis = match keyword {
+      BuiltinTryKeyword::FlipInline => crate::style::LogicalAxis::Inline,
+      BuiltinTryKeyword::FlipBlock => crate::style::LogicalAxis::Block,
+    };
+    let physical_sides = axis_physical_sides(style, axis);
+
+    match physical_sides {
+      (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      | (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left) => {
+        std::mem::swap(&mut style.left, &mut style.right);
+        flip_inset_value(&mut style.left, axis, physical_sides);
+        flip_inset_value(&mut style.right, axis, physical_sides);
+      }
+      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      | (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top) => {
+        std::mem::swap(&mut style.top, &mut style.bottom);
+        flip_inset_value(&mut style.top, axis, physical_sides);
+        flip_inset_value(&mut style.bottom, axis, physical_sides);
+      }
+      _ => {}
+    }
+  }
+
   let base_result = abs.layout_absolute(base_input, containing_block)?;
   let base_overflow = overflow_area(
     border_box_rect(&base_result, &base_input.style),
@@ -2763,23 +2883,26 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
   let mut best_overflow = base_overflow;
 
   for name in base_style.position_try_fallbacks.iter() {
-    let Some(decls) = base_style.position_try_registry.get(name.as_str()) else {
-      continue;
-    };
-
     let mut trial_style = base_style.clone();
-    for decl in decls {
-      crate::style::properties::apply_declaration_with_base(
-        &mut trial_style,
-        decl,
-        base_style,
-        base_style,
-        None,
-        base_style.font_size,
-        base_style.root_font_size,
-        viewport,
-        base_style.used_dark_color_scheme,
-      );
+    if let Some(keyword) = parse_builtin_try(name.as_str()) {
+      apply_builtin_try(&mut trial_style, keyword);
+    } else {
+      let Some(decls) = base_style.position_try_registry.get(name.as_str()) else {
+        continue;
+      };
+      for decl in decls {
+        crate::style::properties::apply_declaration_with_base(
+          &mut trial_style,
+          decl,
+          base_style,
+          base_style,
+          None,
+          base_style.font_size,
+          base_style.root_font_size,
+          viewport,
+          base_style.used_dark_color_scheme,
+        );
+      }
     }
     crate::style::properties::resolve_pending_logical_properties(&mut trial_style);
 

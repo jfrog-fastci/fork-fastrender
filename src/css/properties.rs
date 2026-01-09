@@ -2256,7 +2256,9 @@ fn supports_position_try_fallbacks_value(raw_value: &str) -> bool {
     match token {
       Token::Ident(ident) => {
         let name = ident.as_ref();
-        if name.starts_with("--") && name.len() > 2 {
+        if name.eq_ignore_ascii_case("flip-inline") || name.eq_ignore_ascii_case("flip-block") {
+          Ok(())
+        } else if name.starts_with("--") && name.len() > 2 {
           Ok(())
         } else {
           Err(p.new_custom_error::<(), ()>(() ))

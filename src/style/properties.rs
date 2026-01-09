@@ -9403,11 +9403,23 @@ fn apply_declaration_with_base_internal_with_order(
       let mut fallbacks = Vec::new();
       for part in raw.split(',') {
         let name = trim_ascii_whitespace(part);
-        if name.starts_with("--") && name.len() > 2 && split_ascii_whitespace(name).count() == 1 {
-          fallbacks.push(name.to_string());
-        } else {
+        if split_ascii_whitespace(name).count() != 1 {
           return;
         }
+
+        if name.eq_ignore_ascii_case("flip-inline") {
+          fallbacks.push("flip-inline".to_string());
+          continue;
+        }
+        if name.eq_ignore_ascii_case("flip-block") {
+          fallbacks.push("flip-block".to_string());
+          continue;
+        }
+        if name.starts_with("--") && name.len() > 2 {
+          fallbacks.push(name.to_string());
+          continue;
+        }
+        return;
       }
 
       if !fallbacks.is_empty() {
