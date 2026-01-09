@@ -169,6 +169,25 @@ mod tests {
   }
 
   #[test]
+  fn rejects_null_origin_for_http_documents() {
+    let doc_origin = origin_from_url("https://example.com/").expect("origin");
+    let url = "https://cross.example/image.png";
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
+    resource.access_control_allow_origin = Some("null".to_string());
+
+    let err = validate_cors_allow_origin(&doc_origin, &resource, url, CorsMode::Anonymous)
+      .expect_err("expected null ACAO to be rejected for http origins");
+    assert!(
+      err.contains("does not match document origin"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
   fn wildcard_not_allowed_for_credentialed_requests() {
     let doc_origin = origin_from_url("https://example.com/").expect("origin");
     let url = "https://cross.example/image.png";
