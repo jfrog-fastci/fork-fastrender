@@ -144,19 +144,19 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
       "fixture does not exist: {}\n\
        expected fixture HTML at: {}\n\
        hint: fixtures live under {DEFAULT_FIXTURES_DIR}/<stem>/index.html",
-      args.fixture,
-      layout.fixture_html.display()
-    );
+       args.fixture,
+       layout.fixture_html.display()
+     );
   }
 
-  let render_fixtures_cmd = build_render_fixtures_command(&repo_root, &layout, &args)?;
+  let run_chrome = args.chrome && !args.no_chrome;
+  let render_fixtures_cmd = build_render_fixtures_command(&repo_root, &layout, &args, run_chrome)?;
   let overlay_cmd = if args.overlay {
     Some(build_inspect_frag_overlay_command(&repo_root, &layout, &args)?)
   } else {
     None
   };
 
-  let run_chrome = args.chrome && !args.no_chrome;
   let chrome_cmd = if run_chrome {
     Some(build_chrome_baseline_command(&repo_root, &layout, &args)?)
   } else {
@@ -302,7 +302,12 @@ fn resolve_out_root(repo_root: &Path, args: &PageLoopArgs) -> Result<PathBuf> {
   Ok(out_dir)
 }
 
-fn build_render_fixtures_command(repo_root: &Path, layout: &Layout, args: &PageLoopArgs) -> Result<Command> {
+fn build_render_fixtures_command(
+  repo_root: &Path,
+  layout: &Layout,
+  args: &PageLoopArgs,
+  patch_for_chrome: bool,
+) -> Result<Command> {
   let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.current_dir(repo_root);
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
@@ -318,6 +323,13 @@ fn build_render_fixtures_command(repo_root: &Path, layout: &Layout, args: &PageL
     .arg(format!("{}x{}", args.viewport.0, args.viewport.1));
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
+  if patch_for_chrome {
+    // `chrome-baseline-fixtures` always renders a patched HTML variant (forces light-mode, disables
+    // JS/animations via CSP + style injection). When diffing against Chrome, render the same patch
+    // via `render_fixtures` so the resulting report reflects renderer differences rather than the
+    // harness modifications.
+    cmd.arg("--patch-html-for-chrome-baseline");
+  }
   if args.write_snapshot {
     cmd.arg("--write-snapshot");
   }

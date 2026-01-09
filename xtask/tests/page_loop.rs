@@ -42,3 +42,32 @@ fn dry_run_prints_expected_plan() {
   );
 }
 
+#[test]
+fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args(["page-loop", "--fixture", "example.com", "--chrome", "--dry-run"])
+    .output()
+    .expect("run cargo xtask page-loop --chrome --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--patch-html-for-chrome-baseline"),
+    "expected render_fixtures to be patched for chrome baselines; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("chrome-baseline-fixtures"),
+    "expected chrome-baseline-fixtures command in plan; got:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("--bin diff_renders") || stdout.contains("diff_renders"),
+    "expected diff_renders commands in plan; got:\n{stdout}"
+  );
+}
