@@ -34554,7 +34554,7 @@ fn resolve_container_query_lengths(
 
   fn resolve_clip_path(path: &mut ClipPath, resolve_len: &mut impl FnMut(&mut Length)) {
     match path {
-      ClipPath::None | ClipPath::Box(_) => {}
+      ClipPath::None | ClipPath::Url(_) | ClipPath::Box(_) => {}
       ClipPath::BasicShape(shape, _) => resolve_basic_shape(shape, resolve_len),
     }
   }

@@ -19062,6 +19062,13 @@ fn parse_background_position_component_y(
 
 fn parse_clip_path_value(value: &PropertyValue) -> Option<ClipPath> {
   match value {
+    PropertyValue::Url(url) => {
+      if trim_ascii_whitespace(url).is_empty() {
+        None
+      } else {
+        Some(ClipPath::Url(url.clone()))
+      }
+    }
     PropertyValue::Keyword(kw) => parse_clip_path_str(kw),
     PropertyValue::Multiple(parts) => {
       let mut joined = String::new();
@@ -19191,6 +19198,16 @@ fn parse_clip_component(parser: &mut Parser<'_, '_>) -> Option<ClipComponent> {
 fn parse_clip_path_str(input_str: &str) -> Option<ClipPath> {
   let mut input = ParserInput::new(input_str);
   let mut parser = Parser::new(&mut input);
+
+  if let Ok(url) = parser.try_parse(|p| p.expect_url()) {
+    parser.expect_exhausted().ok()?;
+    let url = url.as_ref().to_string();
+    return if trim_ascii_whitespace(&url).is_empty() {
+      None
+    } else {
+      Some(ClipPath::Url(url))
+    };
+  }
 
   if parser
     .try_parse(|p| p.expect_ident_matching("none"))
@@ -24029,6 +24046,20 @@ mod tests {
       },
       other => panic!("unexpected clip-path parsed: {other:?}"),
     }
+  }
+
+  #[test]
+  fn parses_clip_path_url_value() {
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Url("#clip".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(style.clip_path, ClipPath::Url("#clip".into()));
   }
 
   #[test]

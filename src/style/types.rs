@@ -4009,6 +4009,7 @@ pub enum BasicShape {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClipPath {
   None,
+  Url(String),
   Box(ReferenceBox),
   BasicShape(Box<BasicShape>, Option<ReferenceBox>),
 }

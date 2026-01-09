@@ -1350,6 +1350,7 @@ fn resolve_clip_path(
 ) -> Option<ResolvedClipPath> {
   match path {
     ClipPath::None => Some(ResolvedClipPath::None),
+    ClipPath::Url(_) => None,
     ClipPath::Box(b) => Some(ResolvedClipPath::Box(*b)),
     ClipPath::BasicShape(shape, reference_override) => {
       let boxes = clip_path_reference_box_sizes(style, ctx);
@@ -2155,6 +2156,7 @@ fn resolved_clip_to_clip_path(resolved: &ResolvedClipPath) -> ClipPath {
 fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
   match path {
     ClipPath::None => Some(ResolvedClipPath::None),
+    ClipPath::Url(_) => None,
     ClipPath::Box(b) => Some(ResolvedClipPath::Box(*b)),
     ClipPath::BasicShape(shape, reference) => match shape.as_ref() {
       BasicShape::Inset {
