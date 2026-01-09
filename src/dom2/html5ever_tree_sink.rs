@@ -9,6 +9,7 @@ use markup5ever::{LocalName, Namespace, QualName};
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -38,15 +39,19 @@ impl ElemName for Dom2ElemName {
 /// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
-  base_url_tracker: RefCell<BaseUrlTracker>,
+  base_url_tracker: Rc<RefCell<BaseUrlTracker>>,
 }
 
 impl Dom2TreeSink {
   pub fn new(document_url: Option<&str>) -> Self {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
-      base_url_tracker: RefCell::new(BaseUrlTracker::new(document_url)),
+      base_url_tracker: Rc::new(RefCell::new(BaseUrlTracker::new(document_url))),
     }
+  }
+
+  pub fn base_url_tracker_rc(&self) -> Rc<RefCell<BaseUrlTracker>> {
+    Rc::clone(&self.base_url_tracker)
   }
 
   pub fn document(&self) -> Ref<'_, Document> {

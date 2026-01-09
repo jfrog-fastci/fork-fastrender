@@ -7,14 +7,14 @@
 //! - supports `document.write`-style input injection (`push_front_str`),
 //! - and maintains the parse-time document base URL (`<base href>`).
 
-use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{Document, Dom2TreeSink, NodeId, NodeKind};
+use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
-use std::cell::{Ref, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 
 /// Output of a [`StreamingHtmlParser::pump`] call.
 ///
@@ -44,8 +44,8 @@ pub enum StreamingParserYield {
 /// script, then resume parsing by calling `pump` again.
 pub struct StreamingHtmlParser {
   parser: PausableHtml5everParser<Dom2TreeSink>,
+  base_url_tracker: Rc<RefCell<BaseUrlTracker>>,
   document_url: Option<String>,
-  current_base_url: Option<String>,
 }
 
 impl StreamingHtmlParser {
@@ -66,6 +66,7 @@ impl StreamingHtmlParser {
   /// When `false`, parsing treats scripting as disabled (notably affecting `<noscript>` handling).
   pub fn new_with_scripting_enabled(document_url: Option<&str>, scripting_enabled: bool) -> Self {
     let sink = Dom2TreeSink::new(document_url);
+    let base_url_tracker = sink.base_url_tracker_rc();
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
         scripting_enabled,
@@ -76,8 +77,8 @@ impl StreamingHtmlParser {
 
     Self {
       parser: PausableHtml5everParser::new_document(sink, opts),
+      base_url_tracker,
       document_url: document_url.map(|s| s.to_string()),
-      current_base_url: document_url.map(|s| s.to_string()),
     }
   }
 
@@ -99,22 +100,12 @@ impl StreamingHtmlParser {
   /// Run the tokenizer/tree-builder until it either needs a script, needs more input, or finishes.
   pub fn pump(&mut self) -> StreamingParserYield {
     match self.parser.pump() {
-      Html5everPump::Script(script) => {
-        let base_url_at_this_point = self.parser.sink().current_base_url();
-        self.current_base_url = base_url_at_this_point.clone();
-        StreamingParserYield::Script {
-          script,
-          base_url_at_this_point,
-        }
-      }
-      Html5everPump::NeedMoreInput => {
-        self.current_base_url = self.parser.sink().current_base_url();
-        StreamingParserYield::NeedMoreInput
-      }
-      Html5everPump::Finished(document) => {
-        self.current_base_url = compute_final_base_url(&document, self.document_url.as_deref());
-        StreamingParserYield::Finished { document }
-      }
+      Html5everPump::Script(script) => StreamingParserYield::Script {
+        script,
+        base_url_at_this_point: self.current_base_url(),
+      },
+      Html5everPump::NeedMoreInput => StreamingParserYield::NeedMoreInput,
+      Html5everPump::Finished(document) => StreamingParserYield::Finished { document },
     }
   }
 
@@ -142,120 +133,15 @@ impl StreamingHtmlParser {
 
   /// Returns the current parse-time base URL.
   ///
-  /// This is updated at the start of every [`pump`](Self::pump) call and remains available after
-  /// the parser has finished.
+  /// This remains available after the parser has finished.
   pub fn current_base_url(&self) -> Option<String> {
-    self.current_base_url.clone()
+    self.base_url_tracker.borrow().current_base_url()
   }
 
   /// Returns the `document_url` hint used to initialize this parser.
   pub fn document_url(&self) -> Option<&str> {
     self.document_url.as_deref()
   }
-}
-
-fn compute_final_base_url(doc: &Document, document_url: Option<&str>) -> Option<String> {
-  // The `Dom2TreeSink` (and its internal `BaseUrlTracker`) are consumed once html5ever finishes
-  // parsing, but callers still want to query the final base URL (e.g. tests, future DOM APIs).
-  //
-  // Recompute it from the finished DOM by replaying the same `BaseUrlTracker` insertion logic in
-  // final tree order.
-  let mut tracker = BaseUrlTracker::new(document_url);
-
-  #[derive(Clone, Copy)]
-  struct Ctx {
-    in_head: bool,
-    in_foreign_namespace: bool,
-    in_template: bool,
-  }
-
-  fn is_html_namespace(namespace: &str) -> bool {
-    namespace.is_empty() || namespace == HTML_NAMESPACE
-  }
-
-  fn element_fields<'a>(
-    kind: &'a NodeKind,
-  ) -> Option<(&'a str, &'a str, &'a [(String, String)])> {
-    match kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        attributes,
-      } => Some((tag_name, namespace, attributes)),
-      NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
-      } => Some(("slot", namespace, attributes)),
-      _ => None,
-    }
-  }
-
-  let root = doc.root();
-  let root_ctx = Ctx {
-    in_head: false,
-    in_foreign_namespace: false,
-    in_template: false,
-  };
-
-  let mut stack: Vec<(NodeId, Ctx)> = doc
-    .node(root)
-    .children
-    .iter()
-    .rev()
-    .copied()
-    .map(|child| (child, root_ctx))
-    .collect();
-
-  while let Some((id, parent_ctx)) = stack.pop() {
-    if let Some((tag_name, namespace, attrs)) = element_fields(&doc.node(id).kind) {
-      tracker.on_element_inserted(
-        tag_name,
-        namespace,
-        attrs,
-        parent_ctx.in_head,
-        parent_ctx.in_foreign_namespace,
-        parent_ctx.in_template,
-      );
-    }
-
-    let mut child_ctx = parent_ctx;
-    if doc.node(id).inert_subtree {
-      child_ctx.in_template = true;
-    }
-
-    match &doc.node(id).kind {
-      NodeKind::Element {
-        tag_name,
-        namespace,
-        ..
-      } => {
-        if tag_name.eq_ignore_ascii_case("head") && is_html_namespace(namespace) {
-          child_ctx.in_head = true;
-        }
-        if !is_html_namespace(namespace) {
-          child_ctx.in_foreign_namespace = true;
-        }
-      }
-      NodeKind::Slot { namespace, .. } => {
-        if !is_html_namespace(namespace) {
-          child_ctx.in_foreign_namespace = true;
-        }
-      }
-      NodeKind::Document { .. }
-      | NodeKind::ShadowRoot { .. }
-      | NodeKind::Text { .. }
-      | NodeKind::Comment { .. }
-      | NodeKind::ProcessingInstruction { .. }
-      | NodeKind::Doctype { .. } => {}
-    }
-
-    for &child in doc.node(id).children.iter().rev() {
-      stack.push((child, child_ctx));
-    }
-  }
-
-  tracker.current_base_url()
 }
 
 #[cfg(test)]
@@ -501,6 +387,23 @@ fn compute_final_base_url(doc: &Document, document_url: Option<&str>) -> Option<
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/base/"));
     assert_eq!(specs[0].src.as_deref(), Some("https://ex/base/a.js"));
+  }
+
+  #[test]
+  fn base_href_update_between_scripts_affects_later_script_resolution() {
+    let html = r#"<!doctype html><head>
+      <script src="a.js"></script>
+      <base href="https://ex/base/">
+      <script src="b.js"></script>
+    </head>"#;
+    let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
+    assert_eq!(specs.len(), 2);
+
+    assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/doc.html"));
+    assert_eq!(specs[0].src.as_deref(), Some("https://ex/a.js"));
+
+    assert_eq!(specs[1].base_url.as_deref(), Some("https://ex/base/"));
+    assert_eq!(specs[1].src.as_deref(), Some("https://ex/base/b.js"));
   }
 
   #[test]
