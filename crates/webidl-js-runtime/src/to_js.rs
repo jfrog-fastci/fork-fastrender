@@ -86,9 +86,15 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
       _ => Err(rt.throw_type_error("expected a string value")),
     },
     IdlType::Object => match value {
-      WebIdlValue::PlatformObject(obj) => rt
-        .platform_object_to_js_value(obj)
-        .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime")),
+      WebIdlValue::PlatformObject(obj) => {
+        let v = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_object(v) {
+          return Err(rt.throw_type_error("platform object is not an object"));
+        }
+        Ok(v)
+      }
       _ => Err(rt.throw_type_error(
         "`object` return values require a platform object handle",
       )),
@@ -728,6 +734,31 @@ mod tests {
       "expected TypeError, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn object_return_requires_object_platform_value() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("object")?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Number(1.0)));
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("platform object is not an object"),
+      "expected objectness error message, got {msg:?}"
+    );
     Ok(())
   }
 
