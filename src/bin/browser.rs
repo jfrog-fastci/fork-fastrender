@@ -1153,12 +1153,75 @@ impl App {
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
 
+  fn cancel_pointer_capture(&mut self) {
+    if !self.pointer_captured {
+      return;
+    }
+    self.flush_pending_pointer_move();
+    self.pointer_captured = false;
+
+    let button = self.captured_button;
+    self.captured_button = fastrender::ui::PointerButton::None;
+
+    // Best-effort: when we lose pointer capture (e.g. cursor leaves the window), synthesize a
+    // PointerUp so the worker can clear `:active` state and end in-progress drags.
+    if let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) {
+      self.send_worker_msg(fastrender::ui::UiToWorker::PointerUp {
+        tab_id,
+        pos_css: (-1.0, -1.0),
+        button,
+      });
+    }
+  }
+
+  fn clear_page_hover(&mut self) {
+    let Some(tab_id) = self.page_input_tab.or(self.browser_state.active_tab_id()) else {
+      return;
+    };
+    self.pending_pointer_move = Some(fastrender::ui::UiToWorker::PointerMove {
+      tab_id,
+      pos_css: (-1.0, -1.0),
+      button: fastrender::ui::PointerButton::None,
+    });
+    self.flush_pending_pointer_move();
+    self.cursor_in_page = false;
+  }
+
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
     use winit::event::VirtualKeyCode;
     use winit::event::WindowEvent;
 
     match event {
+      WindowEvent::Focused(false) => {
+        // Losing window focus should cancel temporary UI state such as `<select>` popups and active
+        // pointer drags.
+        if self.open_select_dropdown.is_some() {
+          self.cancel_select_dropdown();
+          self.window.request_redraw();
+        }
+        if self.pointer_captured {
+          self.cancel_pointer_capture();
+          self.window.request_redraw();
+        }
+      }
+      WindowEvent::CursorLeft { .. } => {
+        let had_pointer_capture = self.pointer_captured;
+        let had_cursor_in_page = self.cursor_in_page;
+
+        // Winit does not provide cursor coordinates when leaving the window. Clear our cached
+        // position so hover updates are not suppressed by stale dropdown rect checks.
+        self.last_cursor_pos_points = None;
+
+        if had_pointer_capture {
+          self.cancel_pointer_capture();
+        }
+
+        if had_cursor_in_page || had_pointer_capture {
+          self.clear_page_hover();
+          self.window.request_redraw();
+        }
+      }
       WindowEvent::CursorMoved { position, .. } => {
         let pos_points = egui::pos2(
           position.x as f32 / self.pixels_per_point,
