@@ -92,7 +92,8 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
   - Canonical UI render worker runtime (navigation/history + interaction + cancellation):
     [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)
-    - `spawn_browser_worker` is the main worker used by the windowed `browser` app.
+    - `spawn_browser_worker` is the main worker runtime; the windowed `browser` app spawns it via
+      `spawn_browser_ui_worker` (std::io-friendly wrapper).
     - `spawn_ui_worker` / `spawn_ui_worker_with_factory` are headless entrypoints used by browser
       integration tests (same runtime; no parallel worker loop).
   - Render-thread utilities (stage heartbeat forwarding, large-stack thread builder):
@@ -129,8 +130,9 @@ The browser UI should run rendering on a dedicated large-stack thread:
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - The windowed `browser` app spawns its worker via
-  [`spawn_browser_worker`](../src/ui/render_worker.rs), which uses `std::thread::Builder` and
-  [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) to configure the stack size.
+  [`spawn_browser_ui_worker`](../src/ui/render_worker.rs) (wrapper around `spawn_browser_worker`),
+  which uses `std::thread::Builder` and [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) to configure
+  the stack size.
 - Headless UI worker loops used by integration tests (`spawn_ui_worker`, etc) use the same large-stack
   configuration (see [`src/ui/render_worker.rs`](../src/ui/render_worker.rs)).
 

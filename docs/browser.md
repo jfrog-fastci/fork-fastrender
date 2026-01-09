@@ -62,8 +62,8 @@ FastRender also has a small DOM interaction layer intended to support basic “n
 
 These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
 app uses the same `UiToWorker`/`WorkerToUi` message protocol via the browser UI worker thread
-([`spawn_browser_worker`](../src/ui/render_worker.rs)), so link clicking and basic form interactions
-work in the GUI as well.
+([`spawn_browser_ui_worker`](../src/ui/render_worker.rs), a wrapper around
+`spawn_browser_worker`), so link clicking and basic form interactions work in the GUI as well.
 
 ### Still incomplete (non-exhaustive)
 
