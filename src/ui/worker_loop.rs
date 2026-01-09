@@ -30,10 +30,22 @@ impl UiWorkerHandle {
   }
 
   pub fn shutdown(mut self) -> std::thread::Result<()> {
+    // Best-effort cancellation: dropping the sender will eventually terminate the worker loop, but
+    // the thread may currently be busy performing a navigation/paint. Bump the cancellation gens
+    // first so in-flight work can stop cooperatively and shutdown completes promptly.
+    self.cancel_gens.bump_nav();
     let _ = self.ui_tx.take();
     let _ = self.ui_rx.take();
     match self.join.take() {
-      Some(handle) => handle.join(),
+      Some(handle) => {
+        if handle.thread().id() == std::thread::current().id() {
+          // Joining the current thread would deadlock; dropping the handle detaches the thread.
+          drop(handle);
+          Ok(())
+        } else {
+          handle.join()
+        }
+      }
       None => Ok(()),
     }
   }
@@ -54,10 +66,16 @@ impl UiWorkerHandle {
 
 impl Drop for UiWorkerHandle {
   fn drop(&mut self) {
+    if self.join.is_some() {
+      // See `shutdown`: try to cancel in-flight work before joining so we don't hang on drop.
+      self.cancel_gens.bump_nav();
+    }
     let _ = self.ui_tx.take();
     let _ = self.ui_rx.take();
     if let Some(handle) = self.join.take() {
-      let _ = handle.join();
+      if handle.thread().id() != std::thread::current().id() {
+        let _ = handle.join();
+      }
     }
   }
 }
