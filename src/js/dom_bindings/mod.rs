@@ -617,6 +617,29 @@ fn install_constructors(
   define_data_property_str(rt, global, "Element", element_ctor, false)?;
   define_data_property_str(rt, global, "Document", document_ctor, false)?;
 
+  // `Node` nodeType constants (MVP).
+  //
+  // Exposing these makes it possible to write simple scripts/tests that branch on `nodeType` without
+  // hardcoding magic numbers.
+  define_data_property_str(rt, node_ctor, "ELEMENT_NODE", Value::Number(1.0), false)?;
+  define_data_property_str(rt, node_ctor, "ATTRIBUTE_NODE", Value::Number(2.0), false)?;
+  define_data_property_str(rt, node_ctor, "TEXT_NODE", Value::Number(3.0), false)?;
+  define_data_property_str(rt, node_ctor, "CDATA_SECTION_NODE", Value::Number(4.0), false)?;
+  define_data_property_str(rt, node_ctor, "ENTITY_REFERENCE_NODE", Value::Number(5.0), false)?;
+  define_data_property_str(rt, node_ctor, "ENTITY_NODE", Value::Number(6.0), false)?;
+  define_data_property_str(
+    rt,
+    node_ctor,
+    "PROCESSING_INSTRUCTION_NODE",
+    Value::Number(7.0),
+    false,
+  )?;
+  define_data_property_str(rt, node_ctor, "COMMENT_NODE", Value::Number(8.0), false)?;
+  define_data_property_str(rt, node_ctor, "DOCUMENT_NODE", Value::Number(9.0), false)?;
+  define_data_property_str(rt, node_ctor, "DOCUMENT_TYPE_NODE", Value::Number(10.0), false)?;
+  define_data_property_str(rt, node_ctor, "DOCUMENT_FRAGMENT_NODE", Value::Number(11.0), false)?;
+  define_data_property_str(rt, node_ctor, "NOTATION_NODE", Value::Number(12.0), false)?;
+
   // Event constructor: produces a platform-backed Event object.
   let event_proto = prototypes.event;
   let event_ctor = {
@@ -1118,6 +1141,41 @@ fn install_constructors(
     })?;
 
     define_accessor(rt, prototypes.node, "textContent", text_content_get, text_content_set)?;
+
+    // ownerDocument
+    let platform_objects_for_owner = platform_objects.clone();
+    let owner_document_get = rt.alloc_function_value(move |rt, this, _args| {
+      let Value::Object(obj) = this else {
+        return Err(rt.throw_type_error("Illegal invocation"));
+      };
+      match platform_objects_for_owner.borrow().get(&obj) {
+        Some(PlatformObjectKind::Document { .. }) => Ok(Value::Null),
+        Some(PlatformObjectKind::Node { .. }) => Ok(document),
+        _ => Err(rt.throw_type_error("Illegal invocation")),
+      }
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "ownerDocument",
+      owner_document_get,
+      Value::Undefined,
+    )?;
+
+    // isConnected
+    let dom_for_is_connected = dom.clone();
+    let platform_objects_for_is_connected = platform_objects.clone();
+    let is_connected_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_is_connected, this)?;
+      Ok(Value::Bool(dom_for_is_connected.borrow().is_connected(node_id)))
+    })?;
+    define_accessor(
+      rt,
+      prototypes.node,
+      "isConnected",
+      is_connected_get,
+      Value::Undefined,
+    )?;
   }
 
   // Element.prototype
@@ -2233,5 +2291,59 @@ mod tests {
     assert_eq!(realm.rt.get(text, node_type_key).unwrap(), Value::Number(3.0));
     let text_name = realm.rt.get(text, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, text_name), "#text");
+  }
+
+  #[test]
+  fn node_owner_document_and_is_connected_reflect_dom2_tree() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let owner_document_key = pk(&mut realm.rt, "ownerDocument");
+    let is_connected_key = pk(&mut realm.rt, "isConnected");
+
+    // Document.ownerDocument is null, but the document itself is always connected.
+    assert_eq!(realm.rt.get(document, owner_document_key).unwrap(), Value::Null);
+    assert_eq!(realm.rt.get(document, is_connected_key).unwrap(), Value::Bool(true));
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    // Newly-created nodes are detached.
+    assert_eq!(realm.rt.get(div, owner_document_key).unwrap(), document);
+    assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(false));
+
+    // Appending connects the subtree.
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[div])
+      .unwrap();
+    assert_eq!(realm.rt.get(div, is_connected_key).unwrap(), Value::Bool(true));
+  }
+
+  #[test]
+  fn node_constructor_exposes_node_type_constants() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let node_key = pk(&mut realm.rt, "Node");
+    let node_ctor = realm.rt.get(realm.window(), node_key).unwrap();
+    let element_node_key = pk(&mut realm.rt, "ELEMENT_NODE");
+    let document_node_key = pk(&mut realm.rt, "DOCUMENT_NODE");
+    assert_eq!(
+      realm.rt.get(node_ctor, element_node_key).unwrap(),
+      Value::Number(1.0)
+    );
+    assert_eq!(
+      realm.rt.get(node_ctor, document_node_key).unwrap(),
+      Value::Number(9.0)
+    );
   }
 }
