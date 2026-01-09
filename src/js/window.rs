@@ -134,10 +134,7 @@ impl WindowHost {
     let (host, event_loop) = (&mut self.host, &mut self.event_loop);
     with_event_loop(event_loop, || {
       let window = host.window_mut();
-      let result = window
-        .exec_script(source)
-        .map_err(|e| Error::Other(e.to_string()));
-      result
+      window.exec_script(source).map_err(|e| Error::Other(e.to_string()))
     })
   }
 }

@@ -78,19 +78,11 @@ fn suite_smoke_report_classifies_expected_failures() {
     .iter()
     .find(|r| r.id == "smoke/dom_shims.window.js")
     .expect("missing dom_shims.window.js");
-  match backend {
-    BackendSelection::VmJs => assert_eq!(
-      dom_shims.outcome,
-      TestOutcome::Passed,
-      "vm-js suite should run dom_shims.window.js: {dom_shims:#?}"
-    ),
-    BackendSelection::QuickJs => assert_eq!(
-      dom_shims.outcome,
-      TestOutcome::Passed,
-      "QuickJS suite should run dom_shims.window.js: {dom_shims:#?}"
-    ),
-    BackendSelection::Auto => unreachable!("suite_smoke should choose explicit backend"),
-  }
+  assert_eq!(
+    dom_shims.outcome,
+    TestOutcome::Passed,
+    "dom_shims.window.js should pass: {dom_shims:#?}"
+  );
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
   assert_eq!(mismatches.expected, 3, "expected mismatches");
