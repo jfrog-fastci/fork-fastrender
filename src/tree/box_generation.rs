@@ -3012,6 +3012,9 @@ fn generate_boxes_for_styled_into(
           }
         }
 
+        // Native input/textarea/select controls render as replaced elements with intrinsic sizing
+        // and native painting. (HTML <button> is intentionally *not* a replaced box so its
+        // descendants can participate in layout, e.g. inline-flex icon+text buttons.)
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
           if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
@@ -4678,21 +4681,6 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
   }
 }
 
-fn button_label(node: &StyledNode) -> String {
-  let text = collect_text_content(node);
-  let trimmed = trim_ascii_whitespace(&text);
-  if !trimmed.is_empty() {
-    return trimmed.to_string();
-  }
-
-  node
-    .node
-    .get_attribute_ref("value")
-    .filter(|v| !v.is_empty())
-    .map(|v| v.to_string())
-    .unwrap_or_else(|| "Button".to_string())
-}
-
 fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
   let appearance = styled.styles.appearance.clone();
@@ -4700,7 +4688,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   if !tag.eq_ignore_ascii_case("input")
     && !tag.eq_ignore_ascii_case("textarea")
     && !tag.eq_ignore_ascii_case("select")
-    && !tag.eq_ignore_ascii_case("button")
   {
     return None;
   }
@@ -4970,22 +4957,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     let control = select_control.unwrap_or_else(|| build_select_control(styled));
     Some(FormControl {
       control: FormControlKind::Select(control),
-      appearance,
-      placeholder_style: None,
-      slider_thumb_style: None,
-      slider_track_style: None,
-      file_selector_button_style: None,
-      disabled,
-      focused,
-      focus_visible,
-      required,
-      invalid,
-    })
-  } else if tag.eq_ignore_ascii_case("button") {
-    Some(FormControl {
-      control: FormControlKind::Button {
-        label: button_label(styled),
-      },
       appearance,
       placeholder_style: None,
       slider_thumb_style: None,
@@ -6333,7 +6304,18 @@ mod tests {
 
     let mut controls = Vec::new();
     collect_controls(&box_tree.root, &mut controls);
-    assert_eq!(controls.len(), 6, "all form controls should be replaced");
+    assert_eq!(
+      controls.len(),
+      5,
+      "<button> should not generate a replaced form control"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.contains("Go")),
+      "expected <button> descendants to generate text boxes"
+    );
 
     assert!(controls.iter().any(|c| matches!(
       c,

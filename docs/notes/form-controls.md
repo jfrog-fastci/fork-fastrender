@@ -11,7 +11,8 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 
 ## How it works
 
-- `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">` and the usual suppression rules like `display: none`) **unless** the computed `appearance` is `none`.
+- `<input>`, `<select>`, and `<textarea>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">` and the usual suppression rules like `display: none`) **unless** the computed `appearance` is `none`.
+- `<button>` is treated as a normal element (not a replaced form control) so its descendants participate in authored layout (e.g. inline-flex icon + label content).
 - When computed `appearance` is `none` (including vendor aliases like `-webkit-appearance:none` / `-moz-appearance:none`), the element is **not** replaced. Instead it generates a normal element box that respects `display`, DOM children, and `::before`/`::after`.
 - For controls that normally have no DOM children, FastRender synthesizes a small internal structure in `appearance:none` mode so authors can still style content:
   - Text-like `<input>` and `<textarea>`: value/placeholder is emitted as an inline text box. When placeholder text is shown, it uses a generated `::placeholder` box style.
@@ -58,7 +59,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 
 When `appearance:none` is computed, the control stops using the native form-control painters entirely (because it is no longer a replaced element). This enables:
 
-- DOM children + `::before`/`::after` to participate normally (e.g. custom `<button>` content).
+- `::before`/`::after` (and any DOM children where applicable) to participate normally.
 - Custom range/file controls authored through pseudo-element boxes (`::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::file-selector-button`).
 - Placeholder/value text to be styled and laid out using normal CSS text/layout rules.
 

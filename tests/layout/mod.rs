@@ -53,6 +53,7 @@ mod flex_wrap_reverse_cross_alignment;
 mod flex_wrap_writing_mode;
 mod flex_fragmentation_writing_modes;
 mod float_shrink_to_min;
+mod button_inline_flex_children;
 mod form_control_baseline;
 mod fragmentation;
 mod fragmentation_widows_orphans;

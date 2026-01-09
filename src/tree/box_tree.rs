@@ -185,7 +185,7 @@ pub enum FormControlKind {
     /// Optional cols hint (default 20)
     cols: Option<u32>,
   },
-  /// Button control (<button> and <input type=button|submit|reset>)
+  /// Button-like control (`<input type=button|submit|reset>`)
   Button { label: String },
   /// Selection control (<select>)
   Select(SelectControl),
@@ -619,7 +619,7 @@ pub enum ReplacedType {
   /// MathML content
   Math(MathReplaced),
 
-  /// Native form controls (input/select/textarea/button)
+  /// Native form controls (input/select/textarea)
   FormControl(FormControl),
 }
 
