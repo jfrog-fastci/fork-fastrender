@@ -46,6 +46,7 @@ pub mod webidl;
 pub mod bindings;
 pub mod window_realm;
 pub mod dom_bindings;
+pub mod events_bindings;
 
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
