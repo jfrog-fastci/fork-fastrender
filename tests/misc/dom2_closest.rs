@@ -80,8 +80,46 @@ fn closest_does_not_cross_inert_template_boundaries() {
   let inner = find_node_by_id_attr(&doc, "inner");
   assert!(doc.is_descendant_of_inert_template(inner));
 
+  // `Document.getElementById` must not return elements inside inert `<template>` contents.
+  assert_eq!(doc.get_element_by_id("outer"), None);
+  assert_eq!(doc.get_element_by_id("inner"), None);
+
   assert_eq!(doc.closest(inner, "div#outer").unwrap(), Some(outer));
   assert_eq!(doc.closest(inner, "body").unwrap(), None);
   assert_eq!(doc.closest(inner, "template").unwrap(), None);
   assert_eq!(doc.closest(outer, "template").unwrap(), None);
+}
+
+#[test]
+fn get_element_by_id_does_not_traverse_shadow_roots() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<div id=host>",
+    "<template shadowroot=open><div id=shadow></div></template>",
+    "</div>",
+    "<div id=light></div>",
+    "</body></html>"
+  );
+  let root = parse_html(html).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  assert!(
+    doc.get_element_by_id("host").is_some(),
+    "expected #host to be discoverable in the light DOM"
+  );
+  assert!(
+    doc.get_element_by_id("light").is_some(),
+    "expected #light to be discoverable in the light DOM"
+  );
+
+  // `Document.getElementById` does not cross shadow DOM boundaries.
+  assert_eq!(doc.get_element_by_id("shadow"), None);
+
+  // The element still exists in the underlying tree; it's just not reachable by `getElementById`.
+  let shadow = find_node_by_id_attr(&doc, "shadow");
+  assert!(
+    doc.ancestors(shadow).any(|ancestor| matches!(doc.node(ancestor).kind, NodeKind::ShadowRoot { .. })),
+    "expected #shadow to be inside a shadow root"
+  );
 }
