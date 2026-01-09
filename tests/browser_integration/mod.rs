@@ -25,6 +25,7 @@ mod ui_fragment_navigation;
 mod ui_render_worker_thread_builder_test;
 mod ui_select_listbox_click;
 mod ui_stage_heartbeat_forwarding;
+mod ui_worker_base_url_isolation;
 mod ui_worker_cancellation;
 mod ui_worker_history;
 mod ui_worker_hover_active;
