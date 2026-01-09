@@ -20090,6 +20090,7 @@ mod tests {
       left: side,
       image: None,
       radii: BorderRadii::ZERO,
+      gap: None,
     })));
 
     let pixmap = renderer.render(&list).unwrap();
@@ -20152,6 +20153,7 @@ mod tests {
       left: side,
       image: Some(border_image),
       radii: BorderRadii::ZERO,
+      gap: None,
     })));
 
     let pixmap = renderer.render(&list).unwrap();
@@ -20299,6 +20301,7 @@ mod tests {
         left: side,
         image: None,
         radii: BorderRadii::ZERO,
+        gap: None,
       })));
       list
     };
