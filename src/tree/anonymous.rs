@@ -239,7 +239,7 @@ impl AnonymousBoxCreator {
       BoxType::Anonymous(anon)
         if matches!(
           anon.anonymous_type,
-          AnonymousType::Block | AnonymousType::TableCell
+          AnonymousType::Block | AnonymousType::FieldsetContent | AnonymousType::TableCell
         ) =>
       {
         Self::fixup_block_children(children, parent_style.as_ref())

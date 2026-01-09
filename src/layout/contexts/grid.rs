@@ -650,7 +650,9 @@ fn is_collapsible_whitespace_grid_item(node: &BoxNode) -> bool {
     crate::tree::box_tree::BoxType::Anonymous(anon)
       if matches!(
         anon.anonymous_type,
-        crate::tree::box_tree::AnonymousType::Block | crate::tree::box_tree::AnonymousType::Inline
+        crate::tree::box_tree::AnonymousType::Block
+          | crate::tree::box_tree::AnonymousType::FieldsetContent
+          | crate::tree::box_tree::AnonymousType::Inline
       ) =>
     {
       subtree_is_whitespace_only(node)

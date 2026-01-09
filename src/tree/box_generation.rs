@@ -52,6 +52,7 @@ use crate::svg::parse_svg_view_box;
 use crate::svg::svg_intrinsic_dimensions_from_attributes;
 use crate::svg::SvgLength;
 use crate::tree::anonymous::AnonymousBoxCreator;
+use crate::tree::anonymous::inherited_style;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
@@ -3376,6 +3377,56 @@ fn generate_boxes_for_styled_into(
         } else {
           Arc::clone(&styled.styles)
         };
+
+        // HTML fieldset/legend rendering model:
+        // - Separate the first `<legend>` element child (if any) so it can be positioned on the
+        //   fieldset border.
+        // - Wrap remaining children in an anonymous "fieldset content" box.
+        if let DomNodeType::Element {
+          tag_name,
+          namespace,
+          ..
+        } = &styled.node.node_type
+        {
+          if namespace == HTML_NAMESPACE && tag_name.eq_ignore_ascii_case("fieldset") {
+            let is_legend_child = |node: &BoxNode| -> bool {
+              if node.generated_pseudo.is_some() {
+                return false;
+              }
+              let Some(styled_id) = node.styled_node_id else {
+                return false;
+              };
+              let Some(styled_node) = styled_lookup.get(styled_id) else {
+                return false;
+              };
+              match &styled_node.node.node_type {
+                DomNodeType::Element { tag_name, namespace, .. } => {
+                  namespace == HTML_NAMESPACE && tag_name.eq_ignore_ascii_case("legend")
+                }
+                _ => false,
+              }
+            };
+
+            let legend_index = children.iter().position(is_legend_child);
+            let mut legend = legend_index.map(|idx| children.remove(idx));
+            if let Some(legend) = legend.as_mut() {
+              // Legends size to their contents even when they are blocks (`width: auto` behaves like
+              // shrink-to-fit). Preserve authored CSS but apply the internal flag that enables the
+              // sizing behavior in block layout.
+              Arc::make_mut(&mut legend.style).shrink_to_fit_inline_size = true;
+            }
+
+            let mut wrapper_style = inherited_style(base_style.as_ref());
+            wrapper_style.display = Display::Block;
+            let wrapper = BoxNode::new_anonymous_fieldset_content(Arc::new(wrapper_style), children);
+
+            children = if let Some(legend) = legend {
+              vec![legend, wrapper]
+            } else {
+              vec![wrapper]
+            };
+          }
+        }
 
         let style = blockify_style_for_flex_or_grid_item_if_needed(&base_style, &stack);
         let display = style.display;

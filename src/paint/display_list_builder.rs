@@ -47,6 +47,7 @@ use crate::paint::display_list::BlendMode;
 use crate::paint::display_list::BlendModeItem;
 use crate::paint::display_list::BorderImageItem;
 use crate::paint::display_list::BorderImageSourceItem;
+use crate::paint::display_list::BorderGap;
 use crate::paint::display_list::BorderItem;
 use crate::paint::display_list::BorderRadii;
 use crate::paint::display_list::BorderSide;
@@ -120,6 +121,7 @@ use crate::style::block_axis_positive;
 use crate::style::color::Rgba;
 use crate::style::inline_axis_positive;
 use crate::style::position::Position;
+use crate::style::PhysicalSide;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
 use crate::style::types::BackfaceVisibility;
@@ -2128,7 +2130,8 @@ impl DisplayListBuilder {
           );
         }
 
-        self.emit_border_from_style(decoration_rect, style);
+        let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
+        self.emit_border_from_style(decoration_rect, style, gap);
         if decoration_clip_pushed {
           self.list.push(DisplayItem::PopClip);
         }
@@ -2397,7 +2400,8 @@ impl DisplayListBuilder {
           self.list.push(DisplayItem::PushClip(clip));
         }
         self.emit_background_from_style(decoration_rect, style);
-        self.emit_border_from_style(decoration_rect, style);
+        let gap = self.fieldset_legend_border_gap(fragment, decoration_rect, style);
+        self.emit_border_from_style(decoration_rect, style, gap);
         if decoration_clip_pushed {
           self.list.push(DisplayItem::PopClip);
         }
@@ -7683,7 +7687,57 @@ impl DisplayListBuilder {
     }
   }
 
-  fn emit_border_from_style(&mut self, rect: Rect, style: &ComputedStyle) {
+  fn fieldset_legend_border_gap(
+    &self,
+    fragment: &crate::tree::fragment_tree::FragmentNode,
+    rect: Rect,
+    style: &crate::style::ComputedStyle,
+  ) -> Option<BorderGap> {
+    let legend = fragment.children.iter().find(|child| {
+      child
+        .style
+        .as_deref()
+        .is_some_and(|s| s.shrink_to_fit_inline_size)
+    })?;
+
+    let horizontal = block_axis_is_horizontal(style.writing_mode);
+    let positive = block_axis_positive(style.writing_mode);
+    let edge = if horizontal {
+      if positive {
+        PhysicalSide::Left
+      } else {
+        PhysicalSide::Right
+      }
+    } else if positive {
+      PhysicalSide::Top
+    } else {
+      PhysicalSide::Bottom
+    };
+
+    let pad = 1.0f32;
+    let legend_rect = Rect::from_xywh(
+      rect.x() + legend.bounds.x(),
+      rect.y() + legend.bounds.y(),
+      legend.bounds.width(),
+      legend.bounds.height(),
+    );
+    let (start, end) = match edge {
+      PhysicalSide::Top | PhysicalSide::Bottom => {
+        let start = (legend_rect.x() - pad).max(rect.x());
+        let end = (legend_rect.x() + legend_rect.width() + pad).min(rect.x() + rect.width());
+        (start, end)
+      }
+      PhysicalSide::Left | PhysicalSide::Right => {
+        let start = (legend_rect.y() - pad).max(rect.y());
+        let end = (legend_rect.y() + legend_rect.height() + pad).min(rect.y() + rect.height());
+        (start, end)
+      }
+    };
+
+    (end > start && start.is_finite() && end.is_finite()).then_some(BorderGap { edge, start, end })
+  }
+
+  fn emit_border_from_style(&mut self, rect: Rect, style: &ComputedStyle, gap: Option<BorderGap>) {
     if matches!(style.border_image.source, BorderImageSource::None)
       && !Self::border_style_visible(style.border_top_style)
       && !Self::border_style_visible(style.border_right_style)
@@ -7815,6 +7869,7 @@ impl DisplayListBuilder {
       left: sides.3,
       image: border_image,
       radii,
+      gap,
     })));
   }
 
@@ -10277,7 +10332,7 @@ impl DisplayListBuilder {
 
               if let Some(track_style) = track_style {
                 self.emit_box_shadows_from_style(track_rect, track_style, true);
-                self.emit_border_from_style(track_rect, track_style);
+                self.emit_border_from_style(track_rect, track_style, None);
               }
             }
           }
@@ -10313,7 +10368,7 @@ impl DisplayListBuilder {
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
             self.emit_background_from_style(knob_rect, style_for_thumb);
             self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
-            self.emit_border_from_style(knob_rect, style_for_thumb);
+            self.emit_border_from_style(knob_rect, style_for_thumb, None);
           }
           if push_thumb_opacity {
             self.pop_opacity();
@@ -10722,7 +10777,7 @@ impl DisplayListBuilder {
           self.emit_box_shadows_from_style(button_rect, button_style, false);
           self.emit_background_from_style(button_rect, button_style);
           self.emit_box_shadows_from_style(button_rect, button_style, true);
-          self.emit_border_from_style(button_rect, button_style);
+          self.emit_border_from_style(button_rect, button_style, None);
         } else if !appearance_none {
           let button_bg = if control.disabled {
             Rgba::rgb(235, 235, 235)

@@ -87,6 +87,7 @@ use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::BoxNode;
+use crate::tree::box_tree::AnonymousType;
 use crate::tree::box_tree::BoxType;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::fragment_tree::BlockFragmentMetadata;
@@ -6547,6 +6548,86 @@ impl FormattingContext for BlockFormattingContext {
         value = 0.0;
       }
       content_height = value.max(0.0);
+    }
+
+    // HTML fieldset/legend layout (approximation):
+    //
+    // The HTML rendering model positions the first `<legend>` element child on the fieldset
+    // border and wraps the remaining children in a "fieldset content" box. To approximate this in
+    // a CSS-centric block formatting context we:
+    // - Keep the anonymous fieldset content box in normal flow.
+    // - Pull the legend upward so it overlaps the fieldset border.
+    // - Pull the content box upward so it does not reserve the legend's full block-size, while
+    //   still avoiding overlap with the legend's lower half.
+    if let Some((fieldset_content_id, legend_id)) = {
+      let mut content_id: Option<usize> = None;
+      let mut legend_id: Option<usize> = None;
+      for child in &box_node.children {
+        if matches!(
+          &child.box_type,
+          BoxType::Anonymous(anon) if anon.anonymous_type == AnonymousType::FieldsetContent
+        ) {
+          content_id = Some(child.id);
+          continue;
+        }
+        if child.style.shrink_to_fit_inline_size && legend_id.is_none() {
+          legend_id = Some(child.id);
+        }
+      }
+      content_id.map(|content_id| (content_id, legend_id))
+    } {
+      if let Some(legend_id) = legend_id {
+        let mut legend_idx: Option<usize> = None;
+        let mut content_idx: Option<usize> = None;
+        for (idx, frag) in child_fragments.iter().enumerate() {
+          let FragmentContent::Block { box_id: Some(id) } = frag.content else {
+            continue;
+          };
+          if id == legend_id {
+            legend_idx = Some(idx);
+          } else if id == fieldset_content_id {
+            content_idx = Some(idx);
+          }
+          if legend_idx.is_some() && content_idx.is_some() {
+            break;
+          }
+        }
+
+        if let (Some(legend_idx), Some(content_idx)) = (legend_idx, content_idx) {
+          let legend_block_size = child_fragments[legend_idx].bounds.height().max(0.0);
+          let legend_half_block = legend_block_size * 0.5;
+
+          // Desired legend placement in the fieldset's border box coordinate space: center it on
+          // the block-start border edge so it straddles the border line.
+          let legend_border_y = border_top - legend_half_block;
+          let legend_content_y = legend_border_y - content_origin.y;
+
+          // Place the content box at the normal content origin unless the legend's lower half would
+          // overlap it.
+          let content_border_y = border_top + padding_top.max(legend_half_block);
+          let content_content_y = content_border_y - content_origin.y;
+
+          let legend_delta = legend_content_y - child_fragments[legend_idx].bounds.y();
+          let content_delta = content_content_y - child_fragments[content_idx].bounds.y();
+          if legend_delta.is_finite() {
+            child_fragments[legend_idx].translate_root_in_place(Point::new(0.0, legend_delta));
+          }
+          if content_delta.is_finite() {
+            child_fragments[content_idx].translate_root_in_place(Point::new(0.0, content_delta));
+          }
+
+          // Recompute the flow block-size after repositioning so the legend does not artificially
+          // increase the fieldset's auto height.
+          let mut max_end = 0.0f32;
+          for frag in &child_fragments {
+            let end = frag.bounds.y() + frag.bounds.height();
+            if end.is_finite() {
+              max_end = max_end.max(end.max(0.0));
+            }
+          }
+          content_height = max_end;
+        }
+      }
     }
 
     // Child fragments are produced in the block's content coordinate space (0,0 at the content

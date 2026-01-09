@@ -27,6 +27,7 @@ mod backface_culling_non_stacking_context;
 mod backface_visibility_does_not_create_stacking_context;
 mod abspos_containing_block_rebase_test;
 mod border_image_outset_bounds;
+mod fieldset_legend_border_gap;
 mod canvas_background_propagation_test;
 mod viewport_scrollbar_gutter_test;
 mod canvas_test;

@@ -1192,15 +1192,30 @@ fn snapshot_display_item(item_id: usize, item: &DisplayItem) -> DisplayItemSnaps
     ),
     DisplayItem::Border(border) => (
       "border".to_string(),
-      Some(serde_json::json!({
-        "rect": snapshot_rect(border.rect),
-        "top": snapshot_border_side(&border.top),
-        "right": snapshot_border_side(&border.right),
-        "bottom": snapshot_border_side(&border.bottom),
-        "left": snapshot_border_side(&border.left),
-        "has_image": border.image.is_some(),
-        "radii": snapshot_radii(border.radii),
-      })),
+      {
+        let mut obj = serde_json::Map::new();
+        obj.insert("rect".to_string(), serde_json::json!(snapshot_rect(border.rect)));
+        obj.insert("top".to_string(), snapshot_border_side(&border.top));
+        obj.insert("right".to_string(), snapshot_border_side(&border.right));
+        obj.insert("bottom".to_string(), snapshot_border_side(&border.bottom));
+        obj.insert("left".to_string(), snapshot_border_side(&border.left));
+        obj.insert(
+          "has_image".to_string(),
+          serde_json::Value::Bool(border.image.is_some()),
+        );
+        obj.insert("radii".to_string(), snapshot_radii(border.radii));
+        if let Some(gap) = border.gap {
+          obj.insert(
+            "gap".to_string(),
+            serde_json::json!({
+              "edge": format!("{:?}", gap.edge),
+              "start": gap.start,
+              "end": gap.end,
+            }),
+          );
+        }
+        Some(serde_json::Value::Object(obj))
+      },
     ),
     DisplayItem::TableCollapsedBorders(borders) => (
       "table_collapsed_borders".to_string(),

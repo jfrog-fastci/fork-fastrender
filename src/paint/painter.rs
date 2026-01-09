@@ -45,6 +45,7 @@ use crate::paint::blur::apply_gaussian_blur;
 use crate::paint::canvas::draw_pixmap_with_plus_blend;
 use crate::paint::clip_path::resolve_clip_path;
 use crate::paint::clip_path::ResolvedClipPath;
+use crate::paint::display_list::BorderGap;
 use crate::paint::display_list::BorderRadii;
 use crate::paint::display_list::ImageData;
 use crate::paint::display_list::Transform2D;
@@ -82,6 +83,7 @@ use crate::style::color::Color;
 use crate::style::color::Rgba;
 use crate::style::display::Display;
 use crate::style::position::Position;
+use crate::style::PhysicalSide;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
 use crate::style::types::BackfaceVisibility;
@@ -712,6 +714,7 @@ enum DisplayCommand {
   Border {
     rect: Rect,
     style: Arc<ComputedStyle>,
+    gap: Option<BorderGap>,
   },
   Text {
     rect: Rect,
@@ -2558,6 +2561,56 @@ impl Painter {
     Ok(())
   }
 
+  fn fieldset_legend_border_gap(
+    &self,
+    fragment: &FragmentNode,
+    rect: Rect,
+    style: &ComputedStyle,
+  ) -> Option<BorderGap> {
+    let legend = fragment.children.iter().find(|child| {
+      child
+        .style
+        .as_deref()
+        .is_some_and(|s| s.shrink_to_fit_inline_size)
+    })?;
+
+    let horizontal = crate::style::block_axis_is_horizontal(style.writing_mode);
+    let positive = crate::style::block_axis_positive(style.writing_mode);
+    let edge = if horizontal {
+      if positive {
+        PhysicalSide::Left
+      } else {
+        PhysicalSide::Right
+      }
+    } else if positive {
+      PhysicalSide::Top
+    } else {
+      PhysicalSide::Bottom
+    };
+
+    let pad = 1.0f32;
+    let legend_rect = Rect::from_xywh(
+      rect.x() + legend.bounds.x(),
+      rect.y() + legend.bounds.y(),
+      legend.bounds.width(),
+      legend.bounds.height(),
+    );
+    let (start, end) = match edge {
+      PhysicalSide::Top | PhysicalSide::Bottom => {
+        let start = (legend_rect.x() - pad).max(rect.x());
+        let end = (legend_rect.x() + legend_rect.width() + pad).min(rect.x() + rect.width());
+        (start, end)
+      }
+      PhysicalSide::Left | PhysicalSide::Right => {
+        let start = (legend_rect.y() - pad).max(rect.y());
+        let end = (legend_rect.y() + legend_rect.height() + pad).min(rect.y() + rect.height());
+        (start, end)
+      }
+    };
+
+    (end > start && start.is_finite() && end.is_finite()).then_some(BorderGap { edge, start, end })
+  }
+
   /// Enqueue background and border commands for a fragment (no children).
   fn enqueue_background_and_borders(
     &self,
@@ -2627,9 +2680,11 @@ impl Painter {
       .max(0.0)
         > 0.0;
     if has_border {
+      let gap = self.fieldset_legend_border_gap(fragment, abs_bounds, style.as_ref());
       items.push(DisplayCommand::Border {
         rect: abs_bounds,
         style: style.clone(),
+        gap,
       });
     }
 
@@ -2831,8 +2886,8 @@ impl Painter {
       DisplayCommand::Background { rect, style } => {
         self.paint_background(rect.x(), rect.y(), rect.width(), rect.height(), &style);
       }
-      DisplayCommand::Border { rect, style } => {
-        self.paint_borders(rect.x(), rect.y(), rect.width(), rect.height(), &style);
+      DisplayCommand::Border { rect, style, gap } => {
+        self.paint_borders(rect.x(), rect.y(), rect.width(), rect.height(), &style, gap);
       }
       DisplayCommand::Outline { rect, style } => {
         self.paint_outline(rect.x(), rect.y(), rect.width(), rect.height(), &style);
@@ -5174,7 +5229,15 @@ impl Painter {
   }
 
   /// Paints the borders of a fragment
-  fn paint_borders(&mut self, x: f32, y: f32, width: f32, height: f32, style: &ComputedStyle) {
+  fn paint_borders(
+    &mut self,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    style: &ComputedStyle,
+    gap: Option<BorderGap>,
+  ) {
     // Only paint if there are borders
     let viewport = (self.css_width, self.css_height);
     let base = width.max(0.0);
@@ -5228,6 +5291,13 @@ impl Painter {
     let y = self.device_y(y);
     let width = self.device_length(width);
     let height = self.device_length(height);
+    let gap = gap.map(|gap| {
+      let (start, end) = match gap.edge {
+        PhysicalSide::Top | PhysicalSide::Bottom => (self.device_x(gap.start), self.device_x(gap.end)),
+        PhysicalSide::Left | PhysicalSide::Right => (self.device_y(gap.start), self.device_y(gap.end)),
+      };
+      (gap.edge, start.min(end), start.max(end))
+    });
 
     if top <= 0.0 && right <= 0.0 && bottom <= 0.0 && left <= 0.0 {
       return;
@@ -5249,58 +5319,226 @@ impl Painter {
 
     // Top border
     if top > 0.0 {
-      self.paint_border_edge(
-        BorderEdge::Top,
-        top_start,
-        top_center,
-        top_end,
-        top_center,
-        top,
-        style.border_top_style,
-        &style.border_top_color,
-      );
+      if let Some((PhysicalSide::Top, gap_start, gap_end)) = gap {
+        let start = gap_start.clamp(top_start, top_end);
+        let end = gap_end.clamp(top_start, top_end);
+        if end > start {
+          if start > top_start {
+            self.paint_border_edge(
+              BorderEdge::Top,
+              top_start,
+              top_center,
+              start,
+              top_center,
+              top,
+              style.border_top_style,
+              &style.border_top_color,
+            );
+          }
+          if end < top_end {
+            self.paint_border_edge(
+              BorderEdge::Top,
+              end,
+              top_center,
+              top_end,
+              top_center,
+              top,
+              style.border_top_style,
+              &style.border_top_color,
+            );
+          }
+        } else {
+          self.paint_border_edge(
+            BorderEdge::Top,
+            top_start,
+            top_center,
+            top_end,
+            top_center,
+            top,
+            style.border_top_style,
+            &style.border_top_color,
+          );
+        }
+      } else {
+        self.paint_border_edge(
+          BorderEdge::Top,
+          top_start,
+          top_center,
+          top_end,
+          top_center,
+          top,
+          style.border_top_style,
+          &style.border_top_color,
+        );
+      }
     }
 
     // Right border
     if right > 0.0 {
-      self.paint_border_edge(
-        BorderEdge::Right,
-        right_center,
-        right_start,
-        right_center,
-        right_end,
-        right,
-        style.border_right_style,
-        &style.border_right_color,
-      );
+      if let Some((PhysicalSide::Right, gap_start, gap_end)) = gap {
+        let start = gap_start.clamp(right_start, right_end);
+        let end = gap_end.clamp(right_start, right_end);
+        if end > start {
+          if start > right_start {
+            self.paint_border_edge(
+              BorderEdge::Right,
+              right_center,
+              right_start,
+              right_center,
+              start,
+              right,
+              style.border_right_style,
+              &style.border_right_color,
+            );
+          }
+          if end < right_end {
+            self.paint_border_edge(
+              BorderEdge::Right,
+              right_center,
+              end,
+              right_center,
+              right_end,
+              right,
+              style.border_right_style,
+              &style.border_right_color,
+            );
+          }
+        } else {
+          self.paint_border_edge(
+            BorderEdge::Right,
+            right_center,
+            right_start,
+            right_center,
+            right_end,
+            right,
+            style.border_right_style,
+            &style.border_right_color,
+          );
+        }
+      } else {
+        self.paint_border_edge(
+          BorderEdge::Right,
+          right_center,
+          right_start,
+          right_center,
+          right_end,
+          right,
+          style.border_right_style,
+          &style.border_right_color,
+        );
+      }
     }
 
     // Bottom border
     if bottom > 0.0 {
-      self.paint_border_edge(
-        BorderEdge::Bottom,
-        bottom_start,
-        bottom_center,
-        bottom_end,
-        bottom_center,
-        bottom,
-        style.border_bottom_style,
-        &style.border_bottom_color,
-      );
+      if let Some((PhysicalSide::Bottom, gap_start, gap_end)) = gap {
+        let start = gap_start.clamp(bottom_start, bottom_end);
+        let end = gap_end.clamp(bottom_start, bottom_end);
+        if end > start {
+          if start > bottom_start {
+            self.paint_border_edge(
+              BorderEdge::Bottom,
+              bottom_start,
+              bottom_center,
+              start,
+              bottom_center,
+              bottom,
+              style.border_bottom_style,
+              &style.border_bottom_color,
+            );
+          }
+          if end < bottom_end {
+            self.paint_border_edge(
+              BorderEdge::Bottom,
+              end,
+              bottom_center,
+              bottom_end,
+              bottom_center,
+              bottom,
+              style.border_bottom_style,
+              &style.border_bottom_color,
+            );
+          }
+        } else {
+          self.paint_border_edge(
+            BorderEdge::Bottom,
+            bottom_start,
+            bottom_center,
+            bottom_end,
+            bottom_center,
+            bottom,
+            style.border_bottom_style,
+            &style.border_bottom_color,
+          );
+        }
+      } else {
+        self.paint_border_edge(
+          BorderEdge::Bottom,
+          bottom_start,
+          bottom_center,
+          bottom_end,
+          bottom_center,
+          bottom,
+          style.border_bottom_style,
+          &style.border_bottom_color,
+        );
+      }
     }
 
     // Left border
     if left > 0.0 {
-      self.paint_border_edge(
-        BorderEdge::Left,
-        left_center,
-        left_start,
-        left_center,
-        left_end,
-        left,
-        style.border_left_style,
-        &style.border_left_color,
-      );
+      if let Some((PhysicalSide::Left, gap_start, gap_end)) = gap {
+        let start = gap_start.clamp(left_start, left_end);
+        let end = gap_end.clamp(left_start, left_end);
+        if end > start {
+          if start > left_start {
+            self.paint_border_edge(
+              BorderEdge::Left,
+              left_center,
+              left_start,
+              left_center,
+              start,
+              left,
+              style.border_left_style,
+              &style.border_left_color,
+            );
+          }
+          if end < left_end {
+            self.paint_border_edge(
+              BorderEdge::Left,
+              left_center,
+              end,
+              left_center,
+              left_end,
+              left,
+              style.border_left_style,
+              &style.border_left_color,
+            );
+          }
+        } else {
+          self.paint_border_edge(
+            BorderEdge::Left,
+            left_center,
+            left_start,
+            left_center,
+            left_end,
+            left,
+            style.border_left_style,
+            &style.border_left_color,
+          );
+        }
+      } else {
+        self.paint_border_edge(
+          BorderEdge::Left,
+          left_center,
+          left_start,
+          left_center,
+          left_end,
+          left,
+          style.border_left_style,
+          &style.border_left_color,
+        );
+      }
     }
   }
 
@@ -12593,7 +12831,7 @@ fn root_border_image_bounds(
   viewport: (f32, f32),
 ) -> Option<Rect> {
   for cmd in commands {
-    let DisplayCommand::Border { rect, style } = cmd else {
+    let DisplayCommand::Border { rect, style, .. } = cmd else {
       continue;
     };
     if !approx_same_rect(*rect, root_rect) {
@@ -12683,7 +12921,7 @@ fn command_bounds(cmd: &DisplayCommand, viewport: (f32, f32)) -> Option<Rect> {
     | DisplayCommand::Outline { rect, .. }
     | DisplayCommand::Text { rect, .. }
     | DisplayCommand::Replaced { rect, .. } => Some(*rect),
-    DisplayCommand::Border { rect, style } => {
+    DisplayCommand::Border { rect, style, .. } => {
       if let Some(bounds) =
         crate::paint::paint_bounds::border_image_paint_bounds(*rect, style, Some(viewport))
       {
@@ -20575,7 +20813,7 @@ mod tests {
     };
 
     let mut painter = Painter::new(16, 16, Rgba::WHITE).expect("painter");
-    painter.paint_borders(0.0, 0.0, 16.0, 16.0, &style);
+    painter.paint_borders(0.0, 0.0, 16.0, 16.0, &style, None);
 
     let tl = painter.pixmap.pixel(0, 0).unwrap();
     let tr = painter.pixmap.pixel(15, 0).unwrap();
@@ -20619,7 +20857,7 @@ mod tests {
     style.border_left_color = Rgba::from_rgba8(0, 0, 0, 255);
 
     let mut painter = Painter::new(6, 6, Rgba::WHITE).expect("painter");
-    painter.paint_borders(0.0, 0.0, 6.0, 6.0, &style);
+    painter.paint_borders(0.0, 0.0, 6.0, 6.0, &style, None);
 
     // The top edge should paint a solid 1px line when double is too thin.
     for x in 0..6 {
@@ -20682,7 +20920,7 @@ mod tests {
 
     let mut painter = Painter::new(14, 14, Rgba::WHITE).expect("painter");
     painter.fill_background();
-    painter.paint_borders(0.0, 0.0, 14.0, 14.0, &style);
+    painter.paint_borders(0.0, 0.0, 14.0, 14.0, &style, None);
 
     // Top edge has a gap between tiles when spaced.
     let gap_top = painter.pixmap.pixel(7, 1).unwrap();
@@ -20786,7 +21024,7 @@ mod tests {
 
     let mut painter = Painter::new(16, 16, Rgba::WHITE).expect("painter");
     painter.fill_background();
-    painter.paint_borders(0.0, 0.0, 16.0, 16.0, &style);
+    painter.paint_borders(0.0, 0.0, 16.0, 16.0, &style, None);
 
     let top = painter.pixmap.pixel(8, 0).unwrap();
     assert!(

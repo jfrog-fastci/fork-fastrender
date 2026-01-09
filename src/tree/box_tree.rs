@@ -861,6 +861,13 @@ pub enum AnonymousType {
   /// Generated when a block container has mixed inline/block children.
   Block,
 
+  /// Anonymous fieldset content box.
+  ///
+  /// HTML `<fieldset>` elements wrap all children other than the first `<legend>` element child in
+  /// an anonymous box so the legend can be positioned on the fieldset border without participating
+  /// in normal flow layout.
+  FieldsetContent,
+
   /// Anonymous inline box
   ///
   /// Generated to wrap text nodes that aren't in explicit inline elements.
@@ -940,6 +947,7 @@ impl BoxType {
       BoxType::Anonymous(anon) => matches!(
         anon.anonymous_type,
         AnonymousType::Block
+          | AnonymousType::FieldsetContent
           | AnonymousType::TableWrapper
           | AnonymousType::TableRowGroup
           | AnonymousType::TableRow
@@ -1000,6 +1008,7 @@ impl fmt::Display for BoxType {
       BoxType::Replaced(_) => write!(f, "Replaced"),
       BoxType::Anonymous(anon) => match anon.anonymous_type {
         AnonymousType::Block => write!(f, "AnonymousBlock"),
+        AnonymousType::FieldsetContent => write!(f, "AnonymousFieldsetContent"),
         AnonymousType::Inline => write!(f, "AnonymousInline"),
         AnonymousType::TableWrapper => write!(f, "AnonymousTableWrapper"),
         AnonymousType::TableRowGroup => write!(f, "AnonymousTableRowGroup"),
@@ -1330,6 +1339,27 @@ impl BoxNode {
     }
   }
 
+  /// Creates an anonymous fieldset content box.
+  pub fn new_anonymous_fieldset_content(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
+    Self {
+      style,
+      starting_style: None,
+      box_type: BoxType::Anonymous(AnonymousBox {
+        anonymous_type: AnonymousType::FieldsetContent,
+      }),
+      children,
+      footnote_body: None,
+      id: 0,
+      debug_info: None,
+      styled_node_id: None,
+      generated_pseudo: None,
+      table_cell_span: None,
+      table_column_span: None,
+      first_line_style: None,
+      first_letter_style: None,
+    }
+  }
+
   /// Creates an anonymous inline box
   pub fn new_anonymous_inline(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Self {
     Self {
@@ -1440,7 +1470,7 @@ impl BoxNode {
       BoxType::Inline(inline) => inline.formatting_context.is_some(), // inline-block
       BoxType::Anonymous(anon) => matches!(
         anon.anonymous_type,
-        AnonymousType::Block | AnonymousType::TableCell
+        AnonymousType::Block | AnonymousType::FieldsetContent | AnonymousType::TableCell
       ),
       _ => false,
     }

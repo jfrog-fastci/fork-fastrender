@@ -193,7 +193,7 @@ impl TableStructureFixer {
       BoxType::Anonymous(anon)
         if matches!(
           anon.anonymous_type,
-          AnonymousType::Block | AnonymousType::Inline
+          AnonymousType::Block | AnonymousType::FieldsetContent | AnonymousType::Inline
         ) =>
       {
         box_node

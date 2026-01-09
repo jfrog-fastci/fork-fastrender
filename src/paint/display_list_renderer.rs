@@ -98,6 +98,7 @@ use crate::render_control::{
   active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
 };
 use crate::style::color::Rgba;
+use crate::style::PhysicalSide;
 use crate::style::types::BackfaceVisibility;
 use crate::style::types::BackgroundImage;
 use crate::style::types::BackgroundPosition;
@@ -6242,6 +6243,9 @@ impl DisplayListRenderer {
     let blend_mode = self.canvas.blend_mode();
     let rect = self.ds_rect(item.rect);
     let radii = self.ds_radii(item.radii);
+    let gap = item
+      .gap
+      .map(|gap| (gap.edge, gap.start * self.scale, gap.end * self.scale));
     let top = BorderSide {
       width: self.ds_len(item.top.width),
       ..item.top.clone()
@@ -6322,6 +6326,95 @@ impl DisplayListRenderer {
     ];
 
     for (edge, side, (x1, y1), (x2, y2)) in edges {
+      let gap_matches_edge = gap.is_some_and(|(gap_edge, _, _)| {
+        gap_edge
+          == match edge {
+            BorderEdge::Top => PhysicalSide::Top,
+            BorderEdge::Right => PhysicalSide::Right,
+            BorderEdge::Bottom => PhysicalSide::Bottom,
+            BorderEdge::Left => PhysicalSide::Left,
+          }
+      });
+
+      if let (true, Some((_, gap_start, gap_end))) = (gap_matches_edge, gap) {
+        match edge.orientation() {
+          EdgeOrientation::Horizontal => {
+            let min_x = x1.min(x2);
+            let max_x = x1.max(x2);
+            let start = gap_start.clamp(min_x, max_x);
+            let end = gap_end.clamp(min_x, max_x);
+            if end > start {
+              if start > min_x {
+                self.render_border_edge(
+                  edge,
+                  min_x,
+                  y1,
+                  start,
+                  y1,
+                  side,
+                  blend_mode,
+                  opacity,
+                  clip.as_ref(),
+                  transform,
+                );
+              }
+              if end < max_x {
+                self.render_border_edge(
+                  edge,
+                  end,
+                  y1,
+                  max_x,
+                  y1,
+                  side,
+                  blend_mode,
+                  opacity,
+                  clip.as_ref(),
+                  transform,
+                );
+              }
+              continue;
+            }
+          }
+          EdgeOrientation::Vertical => {
+            let min_y = y1.min(y2);
+            let max_y = y1.max(y2);
+            let start = gap_start.clamp(min_y, max_y);
+            let end = gap_end.clamp(min_y, max_y);
+            if end > start {
+              if start > min_y {
+                self.render_border_edge(
+                  edge,
+                  x1,
+                  min_y,
+                  x1,
+                  start,
+                  side,
+                  blend_mode,
+                  opacity,
+                  clip.as_ref(),
+                  transform,
+                );
+              }
+              if end < max_y {
+                self.render_border_edge(
+                  edge,
+                  x1,
+                  end,
+                  x1,
+                  max_y,
+                  side,
+                  blend_mode,
+                  opacity,
+                  clip.as_ref(),
+                  transform,
+                );
+              }
+              continue;
+            }
+          }
+        }
+      }
+
       self.render_border_edge(
         edge,
         x1,
@@ -11649,6 +11742,7 @@ impl DisplayListRenderer {
           },
           image: None,
           radii: BorderRadii::ZERO,
+          gap: None,
         };
         self.render_border(&border_item)?;
       }
@@ -11713,6 +11807,7 @@ impl DisplayListRenderer {
           left: zero_side.clone(),
           image: None,
           radii: BorderRadii::ZERO,
+          gap: None,
         };
         self.render_border(&border_item)?;
       }
@@ -11747,6 +11842,7 @@ impl DisplayListRenderer {
           left: side,
           image: None,
           radii: BorderRadii::ZERO,
+          gap: None,
         };
         self.render_border(&border_item)?;
       }

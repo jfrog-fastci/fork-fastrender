@@ -43,6 +43,7 @@ use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::homography::Homography;
 use crate::paint::optimize::DisplayListOptimizer;
 use crate::style::color::Rgba;
+use crate::style::PhysicalSide;
 use crate::style::types::BackfaceVisibility;
 use crate::style::types::BackgroundImage;
 use crate::style::types::BackgroundPosition;
@@ -1538,6 +1539,18 @@ pub enum GradientSpread {
   Reflect,
 }
 
+/// Optional border gap used by special layout models (e.g. `<fieldset><legend>`).
+///
+/// `start`/`end` are expressed in the same coordinate space as the owning border item's `rect`:
+/// - For `edge == Top/Bottom`, `start` and `end` are X coordinates.
+/// - For `edge == Left/Right`, `start` and `end` are Y coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BorderGap {
+  pub edge: PhysicalSide,
+  pub start: f32,
+  pub end: f32,
+}
+
 /// CSS border with per-side styles/colors/widths.
 #[derive(Debug, Clone)]
 pub struct BorderItem {
@@ -1561,6 +1574,9 @@ pub struct BorderItem {
 
   /// Border corner radii (currently informational)
   pub radii: BorderRadii,
+
+  /// Optional gap to carve out of one border edge (e.g. a legend gap on fieldset border-top).
+  pub gap: Option<BorderGap>,
 }
 
 /// Collapsed-border paint primitive for a table.
