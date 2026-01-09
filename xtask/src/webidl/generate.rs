@@ -299,6 +299,9 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
     .arg("2021")
     .arg("--config-path")
     .arg(rustfmt_config_path)
+    // Suppress the leading `<path>:` header rustfmt prints for `--emit stdout` (otherwise the
+    // random tempfile name makes the generator nondeterministic).
+    .arg("--quiet")
     .args(["--emit", "stdout"])
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

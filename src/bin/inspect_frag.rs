@@ -1,7 +1,7 @@
 use fastrender::cli_utils as common;
 
 use clap::Parser;
-use common::args::{parse_viewport, CompatArgs, DiskCacheArgs, MediaPreferenceArgs};
+use common::args::{parse_viewport, CompatArgs, DiskCacheArgs, MediaPreferenceArgs, MediaTypeArg};
 use common::media_prefs::MediaPreferences;
 use fastrender::api::FastRender;
 use fastrender::debug::runtime::{self, RuntimeToggles};
@@ -16,7 +16,6 @@ use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
   CachingFetcherConfig, HttpFetcher, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
-use fastrender::style::media::MediaType;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::{snapshot_pipeline, OutputFormat, RenderArtifactRequest, RenderOptions};
@@ -128,6 +127,10 @@ struct Args {
   /// Device pixel ratio for media queries/srcset.
   #[arg(long, default_value = "1.0")]
   dpr: f32,
+
+  /// Media type for evaluating media queries.
+  #[arg(long, value_enum, default_value_t = MediaTypeArg::Screen)]
+  media: MediaTypeArg,
 
   /// Horizontal scroll offset in CSS px.
   #[arg(long, default_value = "0.0")]
@@ -959,7 +962,7 @@ fn inspect_pipeline(
   let options = RenderOptions::new()
     .with_viewport(args.viewport.0, args.viewport.1)
     .with_device_pixel_ratio(args.dpr)
-    .with_media_type(MediaType::Screen)
+    .with_media_type(args.media.as_media_type())
     .with_scroll(args.scroll_x, args.scroll_y);
 
   let report = renderer.render_html_with_stylesheets_report(

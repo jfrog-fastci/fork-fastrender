@@ -9,6 +9,7 @@ use tempfile::TempDir;
 use url::Url;
 
 mod capability_map;
+mod cmd;
 mod chrome_baseline_fixtures;
 mod fixture_chrome_diff;
 mod fixture_determinism;
@@ -17,6 +18,7 @@ mod generate_emoji_tables;
 mod import_page_fixture;
 mod js;
 mod lint_no_panics;
+mod page_loop;
 mod recapture_page_fixtures;
 mod sync_progress_accuracy;
 mod update_pageset_guardrails;
@@ -32,6 +34,7 @@ fn main() -> Result<()> {
     Commands::UpdateGoldens(args) => run_update_goldens(args),
     Commands::Js(args) => js::run_js(args),
     Commands::RenderPage(args) => run_render_page(args),
+    Commands::PageLoop(args) => page_loop::run_page_loop(args),
     Commands::Pageset(args) => run_pageset(args),
     Commands::PagesetDiff(args) => run_pageset_diff(args),
     Commands::DiffRenders(args) => run_diff_renders(args),
@@ -91,6 +94,8 @@ enum Commands {
   Js(js::JsArgs),
   /// Render a single page via the fetch_and_render binary
   RenderPage(RenderPageArgs),
+  /// Run the "page loop" workflow for a single offline fixture (FastRender render + optional overlay + optional Chrome diff).
+  PageLoop(page_loop::PageLoopArgs),
   /// Fetch pages, prefetch subresources, and update the committed pageset scoreboard (`progress/pages/*.json`)
   Pageset(PagesetArgs),
   /// Refresh the pageset scoreboard and compare against a baseline

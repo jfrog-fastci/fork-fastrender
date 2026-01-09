@@ -142,14 +142,6 @@ fn validate_repo_pages_regression_fixtures_are_offline() {
   .find(|path| path.is_file())
   .expect("expected a pages_regression manifest under tests/pages_regression_test.rs or tests/regression/pages.rs");
 
-  if !regression_manifest.exists() {
-    eprintln!(
-      "skipping regression fixtures offline validation: missing {}",
-      regression_manifest.display()
-    );
-    return;
-  }
-
   let contents = fs::read_to_string(&regression_manifest)
     .unwrap_or_else(|e| panic!("read {}: {}", regression_manifest.display(), e));
   let mut fixtures = Vec::new();
