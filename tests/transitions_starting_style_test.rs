@@ -143,6 +143,12 @@ fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> fastrender::
   style.border_top_color
 }
 
+fn fragment_border_right_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.border_right_color
+}
+
 fn fragment_clip_rect(tree: &FragmentTree, box_id: usize) -> Option<ClipRect> {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   frag.style.as_ref().and_then(|s| s.clip.clone())
@@ -434,6 +440,47 @@ fn transitions_interpolate_registered_custom_properties_with_transition_all() {
     Some(CustomPropertyTypedValue::Number(v)) => assert!((v - 0.5).abs() < 1e-3, "v={v}"),
     other => panic!("expected typed number, got {other:?}"),
   }
+}
+
+#[test]
+fn transitions_transition_all_animates_border_color_longhands() {
+  let html = r#"
+    <style>
+      @starting-style {
+        #box {
+          border-style: solid;
+          border-width: 4px;
+          border-top-color: rgb(255, 0, 0);
+          border-right-color: rgb(0, 255, 0);
+        }
+      }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-style: solid;
+        border-width: 4px;
+        border-top-color: rgb(0, 0, 255);
+        border-right-color: rgb(255, 255, 0);
+        transition: all 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert_eq!(
+    fragment_border_top_color(&mid, box_id),
+    fastrender::Rgba::new(128, 0, 128, 1.0)
+  );
+  assert_eq!(
+    fragment_border_right_color(&mid, box_id),
+    fastrender::Rgba::new(128, 255, 0, 1.0)
+  );
 }
 
 #[test]
@@ -848,6 +895,30 @@ fn transitions_interpolate_border_shorthand_over_time_with_allow_discrete() {
     fragment_border_top_color(&late, box_id),
     fastrender::Rgba::new(102, 0, 153, 1.0)
   );
+}
+
+#[test]
+fn transitions_expand_border_radius_shorthand_to_corner_longhands() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-radius: 0px; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-radius: 10px;
+        transition: border-radius 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((fragment_border_top_left_radius_x(&mid, box_id) - 5.0).abs() < 1e-3);
 }
 
 #[test]
