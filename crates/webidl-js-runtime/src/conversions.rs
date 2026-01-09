@@ -388,22 +388,25 @@ fn convert_to_string<R: WebIdlJsRuntime>(
   string_type: StringType,
   state: ConversionState,
 ) -> Result<ConvertedValue<R::JsValue>, R::Error> {
-  // DOMString conversion has a LegacyNullToEmptyString special case.
-  if matches!(string_type, StringType::DomString) && state.legacy_null_to_empty_string && rt.is_null(v) {
+  // DOMString conversion has a LegacyNullToEmptyString special case. USVString conversion is
+  // specified in terms of an initial DOMString conversion, so it inherits the same behaviour.
+  if state.legacy_null_to_empty_string
+    && rt.is_null(v)
+    && matches!(string_type, StringType::DomString | StringType::UsvString)
+  {
     return Ok(ConvertedValue::String(String::new()));
   }
 
   let string_val = rt.to_string(v)?;
-  let s = string_to_rust_string_with_limits(rt, string_val)?;
-
   match string_type {
-    StringType::DomString => Ok(ConvertedValue::String(s)),
-    StringType::UsvString => {
-      // Our runtime string extraction already produces Unicode scalar values, so this is already a
-      // USVString (surrogates are replaced with U+FFFD by construction).
-      Ok(ConvertedValue::String(s))
-    }
+    StringType::DomString => Ok(ConvertedValue::String(string_to_rust_string_with_limits(
+      rt, string_val,
+    )?)),
+    StringType::UsvString => Ok(ConvertedValue::String(usv_string_to_rust_string_with_limits(
+      rt, string_val,
+    )?)),
     StringType::ByteString => {
+      let s = string_to_rust_string_with_limits(rt, string_val)?;
       if s.chars().any(|c| (c as u32) > 0xFF) {
         return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
       }
@@ -424,6 +427,36 @@ fn string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
     Ok(String::from_utf16_lossy(units))
   })?;
   result.map_err(|e| throw_webidl_exception(rt, e))
+}
+
+fn usv_string_to_rust_string_with_limits<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  string: R::JsValue,
+) -> Result<String, R::Error> {
+  let max_units = rt.limits().max_string_code_units;
+  let result = rt.with_string_code_units(string, |units| {
+    if units.len() > max_units {
+      return Err(WebIdlException::range_error("string exceeds maximum length"));
+    }
+    Ok(usv_string_from_utf16_code_units(units))
+  })?;
+  result.map_err(|e| throw_webidl_exception(rt, e))
+}
+
+fn usv_string_from_utf16_code_units(units: &[u16]) -> String {
+  // A USVString is a Unicode scalar value string: any surrogate code points in the input must be
+  // replaced with U+FFFD.
+  //
+  // We do an explicit UTF-16 decode here to keep behaviour deterministic for ill-formed sequences
+  // (e.g. lone surrogates), rather than relying on engine-specific string implementations.
+  let mut out = String::new();
+  for item in std::char::decode_utf16(units.iter().copied()) {
+    match item {
+      Ok(ch) => out.push(ch),
+      Err(_) => out.push('\u{FFFD}'),
+    }
+  }
+  out
 }
 
 fn convert_to_enum<R: WebIdlJsRuntime>(
