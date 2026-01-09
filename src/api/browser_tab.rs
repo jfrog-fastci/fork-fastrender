@@ -1,4 +1,5 @@
 use crate::dom::HTML_NAMESPACE;
+use crate::debug::trace::TraceHandle;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
@@ -10,6 +11,7 @@ use crate::js::{
 use crate::resource::{FetchDestination, FetchRequest};
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
 
@@ -31,6 +33,7 @@ struct ScriptEntry {
 }
 
 pub struct BrowserTabHost {
+  trace: TraceHandle,
   document: BrowserDocumentDom2,
   executor: Box<dyn BrowserTabJsExecutor>,
   current_script: CurrentScriptStateHandle,
@@ -40,11 +43,17 @@ pub struct BrowserTabHost {
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
+  external_script_sources: HashMap<String, String>,
 }
 
 impl BrowserTabHost {
-  fn new(document: BrowserDocumentDom2, executor: Box<dyn BrowserTabJsExecutor>) -> Self {
+  fn new(
+    document: BrowserDocumentDom2,
+    executor: Box<dyn BrowserTabJsExecutor>,
+    trace: TraceHandle,
+  ) -> Self {
     Self {
+      trace,
       document,
       executor,
       current_script: CurrentScriptStateHandle::default(),
@@ -54,7 +63,12 @@ impl BrowserTabHost {
       executed: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
+      external_script_sources: HashMap::new(),
     }
+  }
+
+  fn register_external_script_source(&mut self, url: String, source: String) {
+    self.external_script_sources.insert(url, source);
   }
 
   pub fn dom(&self) -> &Document {
@@ -300,6 +314,7 @@ impl BrowserTabHost {
     let script_type = entry.spec.script_type;
 
     struct Adapter<'a> {
+      script_id: ScriptId,
       source_text: &'a str,
       spec: &'a ScriptElementSpec,
       event_loop: &'a mut EventLoop<BrowserTabHost>,
@@ -318,6 +333,15 @@ impl BrowserTabHost {
           return Ok(());
         }
 
+        let mut span = host.trace.span("js.script.execute", "js");
+        span.arg_u64("script_id", self.script_id.as_u64());
+        if let Some(url) = self.spec.src.as_deref() {
+          span.arg_str("url", url);
+        }
+        span.arg_bool("async_attr", self.spec.async_attr);
+        span.arg_bool("defer_attr", self.spec.defer_attr);
+        span.arg_bool("parser_inserted", self.spec.parser_inserted);
+
         let current_script = host.current_script_node();
         let (document, executor) = (&mut host.document, &mut host.executor);
         executor.execute_classic_script(
@@ -331,6 +355,7 @@ impl BrowserTabHost {
     }
 
     let mut adapter = Adapter {
+      script_id,
       source_text,
       spec: &entry.spec,
       event_loop,
@@ -357,14 +382,14 @@ impl BrowserTabHost {
       .is_some_and(|entry| entry.spec.src.is_some() && !entry.spec.async_attr && !entry.spec.defer_attr);
 
     if is_blocking {
-      let source = self.fetch_script_source(&url)?;
+      let source = self.fetch_script_source(script_id, &url)?;
       let actions = self.scheduler.fetch_completed(script_id, source)?;
       self.apply_scheduler_actions(actions, event_loop)?;
       return Ok(());
     }
 
     event_loop.queue_task(TaskSource::Networking, move |host, event_loop| {
-      let source = host.fetch_script_source(&url)?;
+      let source = host.fetch_script_source(script_id, &url)?;
       let actions = host.scheduler.fetch_completed(script_id, source)?;
       host.apply_scheduler_actions(actions, event_loop)?;
       Ok(())
@@ -372,13 +397,23 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn fetch_script_source(&self, url: &str) -> Result<String> {
+  fn fetch_script_source(&self, script_id: ScriptId, url: &str) -> Result<String> {
+    let mut span = self.trace.span("js.script.fetch", "js");
+    span.arg_u64("script_id", script_id.as_u64());
+    span.arg_str("url", url);
+
+    if let Some(source) = self.external_script_sources.get(url) {
+      span.arg_u64("bytes", source.as_bytes().len() as u64);
+      return Ok(source.clone());
+    }
+
     let fetcher = self.document.fetcher();
     let mut req = FetchRequest::new(url, FetchDestination::Other);
     if let Some(referrer) = self.document_url.as_deref() {
       req = req.with_referrer_url(referrer);
     }
     let resource = fetcher.fetch_with_request(req)?;
+    span.arg_u64("bytes", resource.bytes.len() as u64);
     Ok(String::from_utf8_lossy(&resource.bytes).to_string())
   }
 }
@@ -390,6 +425,8 @@ impl CurrentScriptHost for BrowserTabHost {
 }
 
 pub struct BrowserTab {
+  trace: TraceHandle,
+  trace_output: Option<PathBuf>,
   host: BrowserTabHost,
   event_loop: EventLoop<BrowserTabHost>,
 }
@@ -399,26 +436,61 @@ impl BrowserTab {
   where
     E: BrowserTabJsExecutor + 'static,
   {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    let trace_handle = trace_session.handle.clone();
+    let trace_output = trace_session.output.clone();
+
     let document = BrowserDocumentDom2::from_html(html, options)?;
+    let host = BrowserTabHost::new(document, Box::new(executor), trace_handle.clone());
+    let mut event_loop = EventLoop::new();
+    event_loop.set_trace_handle(trace_handle.clone());
+
     let mut tab = Self {
-      host: BrowserTabHost::new(document, Box::new(executor)),
-      event_loop: EventLoop::new(),
+      trace: trace_handle,
+      trace_output,
+      host,
+      event_loop,
     };
     tab.host.reset_scripting_state(None);
     tab.discover_and_schedule_scripts(None)?;
     Ok(tab)
   }
 
+  pub fn register_script_source(&mut self, url: impl Into<String>, source: impl Into<String>) {
+    self
+      .host
+      .register_external_script_source(url.into(), source.into());
+  }
+
+  pub fn write_trace(&self) -> Result<()> {
+    let Some(path) = self.trace_output.as_deref() else {
+      return Ok(());
+    };
+    self.trace.write_chrome_trace(path).map_err(Error::Io)
+  }
+
   pub fn navigate_to_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    self.trace = trace_session.handle.clone();
+    self.trace_output = trace_session.output.clone();
+
     self.host.document.reset_with_html(html, options)?;
     self.event_loop = EventLoop::new();
+    self.event_loop.set_trace_handle(self.trace.clone());
+    self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(None);
     self.discover_and_schedule_scripts(None)
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
+    let trace_session = super::TraceSession::from_options(Some(&options));
+    self.trace = trace_session.handle.clone();
+    self.trace_output = trace_session.output.clone();
+
     let report = self.host.document.navigate_url(url, options)?;
     self.event_loop = EventLoop::new();
+    self.event_loop.set_trace_handle(self.trace.clone());
+    self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(report.final_url.clone());
     self.discover_and_schedule_scripts(report.final_url.as_deref())
   }

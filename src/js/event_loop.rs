@@ -1,4 +1,5 @@
 use crate::error::{Error, RenderStage, Result};
+use crate::debug::trace::TraceHandle;
 use crate::render_control::{self, record_stage, StageGuard, StageHeartbeat};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
@@ -18,6 +19,16 @@ pub enum TaskSource {
   Networking,
   DOMManipulation,
   Timer,
+}
+
+fn task_source_name(source: TaskSource) -> &'static str {
+  match source {
+    TaskSource::Script => "Script",
+    TaskSource::Microtask => "Microtask",
+    TaskSource::Networking => "Networking",
+    TaskSource::DOMManipulation => "DOMManipulation",
+    TaskSource::Timer => "Timer",
+  }
 }
 
 type Runnable<Host> = Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
@@ -157,6 +168,7 @@ pub struct EventLoop<Host: 'static> {
   clock: Arc<dyn Clock>,
   default_deadline_stage: RenderStage,
   queue_limits: QueueLimits,
+  trace: TraceHandle,
   task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
   microtask_queue: VecDeque<Task<Host>>,
   next_task_seq: u64,
@@ -175,6 +187,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
       clock: Arc::new(RealClock::default()),
       default_deadline_stage: RenderStage::Script,
       queue_limits: QueueLimits::default(),
+      trace: TraceHandle::default(),
       task_queues: BTreeMap::new(),
       microtask_queue: VecDeque::new(),
       next_task_seq: 0,
@@ -205,6 +218,10 @@ impl<Host: 'static> EventLoop<Host> {
   pub fn with_stage_guard<T>(&mut self, stage: RenderStage, f: impl FnOnce(&mut Self) -> T) -> T {
     let _guard = render_control::StageGuard::install(Some(stage));
     f(self)
+  }
+
+  pub(crate) fn set_trace_handle(&mut self, trace: TraceHandle) {
+    self.trace = trace;
   }
 
   pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
@@ -337,6 +354,9 @@ impl<Host: 'static> EventLoop<Host> {
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
 
+    let mut trace_span = self.trace.span("js.microtask_checkpoint", "js");
+    trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
+    let mut drained: u64 = 0;
     let result = (|| {
       while !self.microtask_queue.is_empty() {
         let Some(task) = self.microtask_queue.pop_front() else {
@@ -349,10 +369,12 @@ impl<Host: 'static> EventLoop<Host> {
           is_microtask: true,
         });
         task.run(host, self)?;
+        drained = drained.saturating_add(1);
       }
       Ok(())
     })();
 
+    trace_span.arg_u64("drained", drained);
     self.currently_running_task = previous_running_task;
     self.performing_microtask_checkpoint = false;
     result
@@ -374,6 +396,10 @@ impl<Host: 'static> EventLoop<Host> {
     let Some(task) = self.pop_next_task() else {
       return Ok(false);
     };
+
+    let mut trace_span = self.trace.span("js.task.run", "js");
+    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_u64("seq", task.seq);
 
     let previous_timer_nesting_level = self.timer_nesting_level;
     if task.source != TaskSource::Timer {
@@ -507,6 +533,10 @@ impl<Host: 'static> EventLoop<Host> {
     run_state.check_deadline()?;
     run_state.before_task()?;
 
+    let mut trace_span = self.trace.span("js.task.run", "js");
+    trace_span.arg_str("source", task_source_name(task.source));
+    trace_span.arg_u64("seq", task.seq);
+
     let previous_timer_nesting_level = self.timer_nesting_level;
     if task.source != TaskSource::Timer {
       self.timer_nesting_level = 0;
@@ -588,6 +618,10 @@ impl<Host: 'static> EventLoop<Host> {
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
 
+    let mut trace_span = self.trace.span("js.microtask_checkpoint", "js");
+    trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
+    let mut drained: u64 = 0;
+
     let result = (|| -> RunStepResult<()> {
       while !self.microtask_queue.is_empty() {
         run_state.check_deadline()?;
@@ -601,10 +635,12 @@ impl<Host: 'static> EventLoop<Host> {
           is_microtask: true,
         });
         task.run(host, self).map_err(RunStepError::Error)?;
+        drained = drained.saturating_add(1);
       }
       Ok(())
     })();
 
+    trace_span.arg_u64("drained", drained);
     self.currently_running_task = previous_running_task;
     self.performing_microtask_checkpoint = false;
     result

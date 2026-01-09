@@ -7,6 +7,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use serde_json::{Map as JsonMap, Value as JsonValue};
+
+/// Maximum number of bytes captured for trace metadata strings.
+///
+/// Trace data is primarily for debugging and perf analysis, and may include URLs or other
+/// attacker-controlled strings. We cap these so tracing cannot be used as an OOM vector.
+const MAX_TRACE_METADATA_STRING_BYTES: usize = 1024;
+
+fn cap_trace_string(value: &str) -> String {
+  if value.len() <= MAX_TRACE_METADATA_STRING_BYTES {
+    return value.to_string();
+  }
+
+  let mut end = MAX_TRACE_METADATA_STRING_BYTES;
+  while end > 0 && !value.is_char_boundary(end) {
+    end -= 1;
+  }
+  value[..end].to_string()
+}
+
+type TraceArgs = JsonMap<String, JsonValue>;
+
 fn current_thread_numeric_id() -> u64 {
   static NEXT_ID: AtomicU64 = AtomicU64::new(1);
   static IDS: OnceLock<Mutex<HashMap<std::thread::ThreadId, u64>>> = OnceLock::new();
@@ -42,14 +64,14 @@ impl TraceHandle {
     self.inner.is_some()
   }
 
-  pub(crate) fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan<'_> {
+  pub(crate) fn span(&self, name: &'static str, cat: &'static str) -> TraceSpan {
     match &self.inner {
       Some(state) => TraceSpan::new(state.clone(), Cow::Borrowed(name), cat),
       None => TraceSpan::noop(),
     }
   }
 
-  pub(crate) fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan<'_> {
+  pub(crate) fn span_owned(&self, name: String, cat: &'static str) -> TraceSpan {
     match &self.inner {
       Some(state) => TraceSpan::new(state.clone(), Cow::Owned(name), cat),
       None => TraceSpan::noop(),
@@ -94,6 +116,17 @@ impl TraceState {
   }
 
   fn push_event(&self, name: Cow<'static, str>, cat: &'static str, start: Instant, end: Instant) {
+    self.push_event_with_args(name, cat, start, end, None);
+  }
+
+  fn push_event_with_args(
+    &self,
+    name: Cow<'static, str>,
+    cat: &'static str,
+    start: Instant,
+    end: Instant,
+    args: Option<TraceArgs>,
+  ) {
     let ts = start.duration_since(self.start).as_micros() as u64;
     let dur = end.duration_since(start).as_micros() as u64;
     let tid = current_thread_numeric_id();
@@ -106,27 +139,28 @@ impl TraceState {
         dur,
         pid: std::process::id(),
         tid,
+        args,
       });
     }
   }
 }
 
-pub(crate) struct TraceSpan<'a> {
+pub(crate) struct TraceSpan {
   state: Option<Arc<TraceState>>,
   name: Cow<'static, str>,
   cat: &'static str,
   start: Option<Instant>,
-  _phantom: std::marker::PhantomData<&'a ()>,
+  args: Option<TraceArgs>,
 }
 
-impl<'a> TraceSpan<'a> {
+impl TraceSpan {
   fn new(state: Arc<TraceState>, name: Cow<'static, str>, cat: &'static str) -> Self {
     Self {
       state: Some(state),
       name,
       cat,
       start: Some(Instant::now()),
-      _phantom: std::marker::PhantomData,
+      args: None,
     }
   }
 
@@ -136,15 +170,57 @@ impl<'a> TraceSpan<'a> {
       name: Cow::Borrowed(""),
       cat: "",
       start: None,
-      _phantom: std::marker::PhantomData,
+      args: None,
     }
+  }
+
+  #[inline]
+  pub(crate) fn arg_u64(&mut self, key: &'static str, value: u64) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    let args = self.args.get_or_insert_with(TraceArgs::new);
+    args.insert(key.to_string(), JsonValue::Number(value.into()));
+  }
+
+  #[inline]
+  pub(crate) fn arg_i64(&mut self, key: &'static str, value: i64) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    let args = self.args.get_or_insert_with(TraceArgs::new);
+    args.insert(key.to_string(), JsonValue::Number(value.into()));
+  }
+
+  #[inline]
+  pub(crate) fn arg_bool(&mut self, key: &'static str, value: bool) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    let args = self.args.get_or_insert_with(TraceArgs::new);
+    args.insert(key.to_string(), JsonValue::Bool(value));
+  }
+
+  #[inline]
+  pub(crate) fn arg_str(&mut self, key: &'static str, value: &str) {
+    let Some(_state) = &self.state else {
+      return;
+    };
+    let args = self.args.get_or_insert_with(TraceArgs::new);
+    args.insert(key.to_string(), JsonValue::String(cap_trace_string(value)));
   }
 }
 
-impl Drop for TraceSpan<'_> {
+impl Drop for TraceSpan {
   fn drop(&mut self) {
     if let (Some(state), Some(start)) = (&self.state, self.start) {
-      state.push_event(self.name.clone(), self.cat, start, Instant::now());
+      state.push_event_with_args(
+        self.name.clone(),
+        self.cat,
+        start,
+        Instant::now(),
+        self.args.take(),
+      );
     }
   }
 }
@@ -158,6 +234,8 @@ struct TraceEvent {
   dur: u64,
   pid: u32,
   tid: u64,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  args: Option<TraceArgs>,
 }
 
 #[derive(Serialize)]

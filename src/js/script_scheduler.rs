@@ -300,6 +300,14 @@ impl ScriptId {
   }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ScriptTraceMetadata<'a> {
+  pub url: Option<&'a str>,
+  pub async_attr: bool,
+  pub defer_attr: bool,
+  pub parser_inserted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredScript<NodeId> {
   pub id: ScriptId,
@@ -352,6 +360,9 @@ struct ExternalScriptEntry<NodeId> {
   base_url_at_discovery: Option<String>,
   #[allow(dead_code)]
   url: String,
+  async_attr: bool,
+  defer_attr: bool,
+  parser_inserted: bool,
   mode: ExternalMode,
   fetch_completed: bool,
   source_text: Option<String>,
@@ -381,6 +392,16 @@ impl<NodeId: Copy> Default for ScriptScheduler<NodeId> {
 impl<NodeId: Copy> ScriptScheduler<NodeId> {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub(crate) fn trace_metadata(&self, script_id: ScriptId) -> Option<ScriptTraceMetadata<'_>> {
+    let entry = self.scripts.get(&script_id)?;
+    Some(ScriptTraceMetadata {
+      url: Some(entry.url.as_str()),
+      async_attr: entry.async_attr,
+      defer_attr: entry.defer_attr,
+      parser_inserted: entry.parser_inserted,
+    })
   }
 
   fn alloc_script_id(&mut self) -> ScriptId {
@@ -428,6 +449,9 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
           node_id,
           base_url_at_discovery,
           url: url.clone(),
+          async_attr: element.async_attr,
+          defer_attr: element.defer_attr,
+          parser_inserted: element.parser_inserted,
           mode,
           fetch_completed: false,
           source_text: None,
