@@ -14,5 +14,5 @@ pub use idl_type::{
 };
 pub use parser::{parse_default_value, parse_idl_type, parse_idl_type_complete, ParseError};
 pub use value::{
-  DictionaryMemberSchema, DictionarySchema, TypeContext, WebIdlException, WebIdlValue,
+  DictionaryMemberSchema, DictionarySchema, PlatformObject, TypeContext, WebIdlException, WebIdlValue,
 };

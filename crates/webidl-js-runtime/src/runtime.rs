@@ -43,11 +43,18 @@ pub trait JsRuntime {
   /// Error type used by the runtime (usually the engine's exception/termination type).
   type Error;
 
+  fn js_undefined(&self) -> Self::JsValue;
+  fn js_null(&self) -> Self::JsValue;
+  fn js_boolean(&self, value: bool) -> Self::JsValue;
+  fn js_number(&self, value: f64) -> Self::JsValue;
+  fn alloc_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error>;
+
   /// Constructs a property key from a Rust string.
   ///
   /// This is primarily used by generated bindings and conversion algorithms that need to access
   /// object properties by name in a runtime-agnostic way.
   fn property_key_from_str(&mut self, s: &str) -> Result<Self::PropertyKey, Self::Error>;
+  fn property_key_from_u32(&mut self, index: u32) -> Result<Self::PropertyKey, Self::Error>;
 
   /// Returns true if `key` is a Symbol.
   fn property_key_is_symbol(&self, key: Self::PropertyKey) -> bool;
@@ -58,10 +65,18 @@ pub trait JsRuntime {
   /// Converts a property key to a JS String value.
   ///
   /// Per ECMAScript `ToString`, this must throw a TypeError if `key` is a Symbol.
-  fn property_key_to_js_string(
+  fn property_key_to_js_string(&mut self, key: Self::PropertyKey) -> Result<Self::JsValue, Self::Error>;
+
+  fn alloc_object(&mut self) -> Result<Self::JsValue, Self::Error>;
+  fn alloc_array(&mut self) -> Result<Self::JsValue, Self::Error>;
+
+  fn define_data_property(
     &mut self,
+    obj: Self::JsValue,
     key: Self::PropertyKey,
-  ) -> Result<Self::JsValue, Self::Error>;
+    value: Self::JsValue,
+    enumerable: bool,
+  ) -> Result<(), Self::Error>;
 
   fn is_object(&self, value: Self::JsValue) -> bool;
   fn is_callable(&self, value: Self::JsValue) -> bool;
@@ -133,6 +148,13 @@ pub trait WebIdlJsRuntime: JsRuntime {
 
   /// If the value is a TypedArray object, returns its `TypedArrayName` internal slot.
   fn typed_array_name(&self, value: Self::JsValue) -> Option<&'static str>;
+
+  /// Converts an opaque platform object back into a JS value for this runtime.
+  ///
+  /// This provides an escape hatch for interface return values while the binding generator does
+  /// not yet synthesize wrapper objects. Implementations should return `None` if the platform
+  /// object does not belong to this runtime.
+  fn platform_object_to_js_value(&mut self, value: &webidl_ir::PlatformObject) -> Option<Self::JsValue>;
 
   fn throw_type_error(&mut self, message: &str) -> Self::Error;
   fn throw_range_error(&mut self, message: &str) -> Self::Error;

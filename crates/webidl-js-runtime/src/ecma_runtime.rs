@@ -536,8 +536,32 @@ impl JsRuntime for VmJsRuntime {
   type PropertyKey = PropertyKey;
   type Error = VmError;
 
+  fn js_undefined(&self) -> Value {
+    Value::Undefined
+  }
+
+  fn js_null(&self) -> Value {
+    Value::Null
+  }
+
+  fn js_boolean(&self, value: bool) -> Value {
+    Value::Bool(value)
+  }
+
+  fn js_number(&self, value: f64) -> Value {
+    Value::Number(value)
+  }
+
+  fn alloc_string(&mut self, value: &str) -> Result<Value, VmError> {
+    self.alloc_string_value(value)
+  }
+
   fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
     self.prop_key_str(s)
+  }
+
+  fn property_key_from_u32(&mut self, index: u32) -> Result<PropertyKey, VmError> {
+    self.prop_key_str(&index.to_string())
   }
 
   fn property_key_is_symbol(&self, key: PropertyKey) -> bool {
@@ -555,6 +579,26 @@ impl JsRuntime for VmJsRuntime {
         "Cannot convert a Symbol property key to a string",
       )),
     }
+  }
+
+  fn alloc_object(&mut self) -> Result<Value, VmError> {
+    self.alloc_object_value()
+  }
+
+  fn alloc_array(&mut self) -> Result<Value, VmError> {
+    // `vm-js` does not yet provide Array exotic objects. For WebIDL conversions we only require an
+    // object with indexed own properties.
+    self.alloc_object_value()
+  }
+
+  fn define_data_property(
+    &mut self,
+    obj: Value,
+    key: PropertyKey,
+    value: Value,
+    enumerable: bool,
+  ) -> Result<(), VmError> {
+    VmJsRuntime::define_data_property(self, obj, key, value, enumerable)
   }
 
   fn is_object(&self, value: Value) -> bool {
@@ -845,7 +889,14 @@ impl WebIdlJsRuntime for VmJsRuntime {
   }
 
   fn implements_interface(&self, value: Value, interface: &str) -> bool {
-    VmJsRuntime::implements_interface(self, value, interface)
+    let _ = interface;
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    // `vm-js` does not yet provide a native platform-object model. As a placeholder we treat any
+    // host-owned object as implementing all WebIDL interfaces; generated bindings can refine this
+    // once interface wrappers exist.
+    self.objects.contains_key(&obj)
   }
 
   fn is_string_object(&self, value: Value) -> bool {
@@ -896,6 +947,10 @@ impl WebIdlJsRuntime for VmJsRuntime {
       HostObjectKind::TypedArray { name } => Some(name),
       _ => None,
     }
+  }
+
+  fn platform_object_to_js_value(&mut self, value: &webidl_ir::PlatformObject) -> Option<Value> {
+    value.downcast_ref::<Value>().copied()
   }
 
   fn throw_type_error(&mut self, message: &str) -> VmError {

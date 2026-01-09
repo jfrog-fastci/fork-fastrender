@@ -1,5 +1,37 @@
 use crate::{DefaultValue, IdlType};
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+
+/// Opaque host value carried through WebIDL conversion layers.
+///
+/// This is primarily used as a placeholder for interface return values: bindings can embed a
+/// runtime-specific handle (e.g. a JS object reference) inside a [`WebIdlValue`] and let the
+/// runtime convert it back into an ECMAScript value.
+#[derive(Clone)]
+pub struct PlatformObject(Rc<dyn Any>);
+
+impl PlatformObject {
+  pub fn new<T: Any>(value: T) -> Self {
+    Self(Rc::new(value))
+  }
+
+  pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+    self.0.as_ref().downcast_ref::<T>()
+  }
+}
+
+impl std::fmt::Debug for PlatformObject {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str("PlatformObject(..)")
+  }
+}
+
+impl PartialEq for PlatformObject {
+  fn eq(&self, other: &Self) -> bool {
+    Rc::ptr_eq(&self.0, &other.0)
+  }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebIdlValue {
@@ -35,6 +67,8 @@ pub enum WebIdlValue {
     member_ty: Box<IdlType>,
     value: Box<WebIdlValue>,
   },
+  /// Opaque platform value (typically a runtime-owned JS object handle).
+  PlatformObject(PlatformObject),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
