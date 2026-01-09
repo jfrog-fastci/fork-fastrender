@@ -68,6 +68,22 @@ fn resolved_test_render_delay_ms() -> u64 {
   parsed
 }
 
+/// Returns the configured test render delay, in milliseconds.
+///
+/// This is only meaningful when compiled with `debug_assertions`, `cfg(test)`, or the `browser_ui`
+/// feature. In other builds it always returns `0`.
+pub fn test_render_delay_ms() -> u64 {
+  #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
+  {
+    resolved_test_render_delay_ms()
+  }
+
+  #[cfg(not(any(debug_assertions, test, feature = "browser_ui")))]
+  {
+    0
+  }
+}
+
 /// Override the global test render delay, in milliseconds.
 ///
 /// This affects *all* threads that call `RenderDeadline::check` while compiled with
