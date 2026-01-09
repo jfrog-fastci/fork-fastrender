@@ -182,3 +182,53 @@ fn clip_path_url_svg_allows_object_bounding_box_clip_region_outside_border_box()
     );
   }
 }
+
+#[test]
+fn clip_path_url_svg_allows_object_bounding_box_clip_region_outside_border_box_with_transform() {
+  let html = r#"
+    <style>
+      body { margin: 0; background: white; }
+      #target {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 100px;
+        height: 100px;
+        background: rgb(255, 0, 0);
+        clip-path: url(#big);
+      }
+      #child {
+        position: absolute;
+        left: -20px;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgb(0, 255, 0);
+      }
+    </style>
+    <svg width="0" height="0" style="position:absolute">
+      <defs>
+        <clipPath id="big" clipPathUnits="objectBoundingBox" transform="translate(-0.2 0)">
+          <rect x="0" y="0" width="0.6" height="1" />
+        </clipPath>
+      </defs>
+    </svg>
+    <div id="target"><div id="child"></div></div>
+  "#;
+
+  let (dl, legacy) = render_both(html, 140, 140);
+  for (backend, pixmap) in [("display_list", dl), ("legacy", legacy)] {
+    // Sample a point in the overflow-visible child area (left of the border box). The clipPath is
+    // shifted left by 0.2 of the reference box via `transform`, so this area should remain visible.
+    assert_is_green(
+      rgba_at(&pixmap, 5, 30),
+      &format!("{backend}: expected overflow-visible child to remain visible"),
+    );
+
+    // Sample a point inside the border box but outside the clipPath rect; should be clipped away.
+    assert_is_white(
+      rgba_at(&pixmap, 110, 30),
+      &format!("{backend}: expected border-box area outside clipPath to be clipped"),
+    );
+  }
+}
