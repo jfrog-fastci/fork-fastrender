@@ -1,8 +1,14 @@
 use fastrender::dom2::{Document as Dom2Document, NodeId, NodeKind};
+use fastrender::js::runtime::with_event_loop;
 use fastrender::js::{
-  ScriptBlockExecutor, ScriptOrchestrator, ScriptType, WindowHostState, WindowRealm, WindowRealmConfig,
+  EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
+  VirtualClock, WindowHostState, WindowRealm, WindowRealmConfig,
 };
+use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
 use fastrender::{Error, Result};
+use selectors::context::QuirksMode;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use vm_js::{Heap, PropertyKey, Scope, Value, Vm, VmError};
 
 fn get_string(heap: &Heap, value: Value) -> String {
@@ -10,6 +16,51 @@ fn get_string(heap: &Heap, value: Value) -> String {
     panic!("expected string value");
   };
   heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
+fn format_vm_error(heap: &mut Heap, err: VmError) -> String {
+  match err {
+    VmError::Throw(value) => {
+      if let Value::String(s) = value {
+        if let Ok(js) = heap.get_string(s) {
+          return js.to_utf8_lossy();
+        }
+      }
+
+      if let Value::Object(obj) = value {
+        let mut scope = heap.scope();
+        scope.push_root(Value::Object(obj)).ok();
+
+        let mut get_prop_str = |name: &str| -> Option<String> {
+          let key_s = scope.alloc_string(name).ok()?;
+          scope.push_root(Value::String(key_s)).ok()?;
+          let key = PropertyKey::from_string(key_s);
+          let value = scope
+            .heap()
+            .object_get_own_data_property_value(obj, &key)
+            .ok()?
+            .unwrap_or(Value::Undefined);
+          match value {
+            Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+            _ => None,
+          }
+        };
+
+        let name = get_prop_str("name");
+        let message = get_prop_str("message");
+        match (name, message) {
+          (Some(name), Some(message)) if !message.is_empty() => format!("{name}: {message}"),
+          (Some(name), _) => name,
+          (_, Some(message)) => message,
+          _ => "uncaught exception".to_string(),
+        }
+      } else {
+        "uncaught exception".to_string()
+      }
+    }
+    VmError::Syntax(diags) => format!("syntax error: {diags:?}"),
+    other => other.to_string(),
+  }
 }
 
 fn get_data_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Value {
@@ -334,5 +385,270 @@ fn document_current_script_is_visible_to_js_execution() -> Result<()> {
 
   assert_eq!(executor.wrapper_identity_ok, vec![true, true]);
   assert_eq!(executor.observed, vec![scripts[0].index(), scripts[1].index()]);
+  Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct StubResponse {
+  bytes: Vec<u8>,
+  status: u16,
+}
+
+#[derive(Debug)]
+struct InMemoryFetcher {
+  routes: HashMap<String, StubResponse>,
+  last_request_headers: Mutex<Vec<(String, String)>>,
+}
+
+impl InMemoryFetcher {
+  fn new() -> Self {
+    Self {
+      routes: HashMap::new(),
+      last_request_headers: Mutex::new(Vec::new()),
+    }
+  }
+
+  fn with_response(mut self, url: &str, bytes: impl Into<Vec<u8>>, status: u16) -> Self {
+    self.routes.insert(
+      url.to_string(),
+      StubResponse {
+        bytes: bytes.into(),
+        status,
+      },
+    );
+    self
+  }
+
+  fn lookup(&self, url: &str) -> Result<StubResponse> {
+    self
+      .routes
+      .get(url)
+      .cloned()
+      .ok_or_else(|| Error::Other(format!("no stubbed response for {url}")))
+  }
+
+  fn last_request_headers(&self) -> Vec<(String, String)> {
+    self
+      .last_request_headers
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone()
+  }
+}
+
+impl Default for InMemoryFetcher {
+  fn default() -> Self {
+    Self::new()
+  }
+}
+
+impl ResourceFetcher for InMemoryFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    let fetch = FetchRequest::new(url, FetchDestination::Fetch);
+    self.fetch_http_request(HttpRequest::new(fetch, "GET"))
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    {
+      let mut lock = self
+        .last_request_headers
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      *lock = req.headers.to_vec();
+    }
+
+    let stub = self.lookup(req.fetch.url)?;
+    let mut resource = FetchedResource::new(stub.bytes, None);
+    resource.status = Some(stub.status);
+    // Echo request headers back as response headers so JS can observe them via `Response.headers`
+    // if desired.
+    resource.response_headers = Some(req.headers.to_vec());
+    Ok(resource)
+  }
+}
+
+fn read_log_object(heap: &mut Heap, global: vm_js::GcObject) -> Result<Vec<String>> {
+  let mut scope = heap.scope();
+  scope
+    .push_root(Value::Object(global))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let log_obj = match get_data_prop(&mut scope, global, "__log") {
+    Value::Object(obj) => obj,
+    _ => return Err(Error::Other("__log missing".to_string())),
+  };
+  scope
+    .push_root(Value::Object(log_obj))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let len = match get_data_prop(&mut scope, global, "__log_len") {
+    Value::Number(n) => n as u32,
+    _ => return Err(Error::Other("__log_len missing".to_string())),
+  };
+
+  let mut out = Vec::with_capacity(len as usize);
+  for idx in 0..len {
+    let key_s = scope
+      .alloc_string(&idx.to_string())
+      .map_err(|e| Error::Other(e.to_string()))?;
+    scope
+      .push_root(Value::String(key_s))
+      .map_err(|e| Error::Other(e.to_string()))?;
+    let key = PropertyKey::from_string(key_s);
+    let value = scope
+      .heap()
+      .object_get_own_data_property_value(log_obj, &key)
+      .map_err(|e| Error::Other(e.to_string()))?
+      .unwrap_or(Value::Undefined);
+    out.push(get_string(scope.heap(), value));
+  }
+  Ok(out)
+}
+
+#[test]
+fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/x", b"hello", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ globalThis.__log = {};
+ globalThis.__log_len = 0;
+ queueMicrotask(() => {
+   globalThis.__log[globalThis.__log_len] = "micro";
+   globalThis.__log_len = globalThis.__log_len + 1;
+ });
+ fetch("https://example.com/x")
+   .then(r => r.text())
+   .then(t => {
+     globalThis.__log[globalThis.__log_len] = t;
+     globalThis.__log_len = globalThis.__log_len + 1;
+   });
+ globalThis.__log[globalThis.__log_len] = "sync";
+ globalThis.__log_len = globalThis.__log_len + 1;
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let log = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    read_log_object(heap, global)?
+  };
+
+  assert_eq!(log, vec!["sync", "micro", "hello"]);
+  Ok(())
+}
+
+#[test]
+fn window_fetch_forwards_request_headers() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/headers", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ fetch("https://example.com/headers", { headers: { "x-test": "1" } })
+   .then(() => {});
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(
+    fetcher
+      .last_request_headers()
+      .iter()
+      .any(|(name, value)| name == "x-test" && value == "1"),
+    "expected ResourceFetcher::fetch_http_request to receive x-test: 1"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_response_json_parses_body() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/json", br#"{"ok": true}"#, 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher,
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+ fetch("https://example.com/json").then(r => r.json()).then(v => globalThis.__json_ok = v.ok);
+ "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let json_ok = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    get_data_prop(&mut scope, global, "__json_ok")
+  };
+  assert_eq!(json_ok, Value::Bool(true));
   Ok(())
 }

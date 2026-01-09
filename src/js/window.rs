@@ -5,9 +5,11 @@ use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
-  install_window_animation_frame_bindings, install_window_timers_bindings, DomHost, EventLoop,
-  RunLimits, RunUntilIdleOutcome, TaskSource,
+  install_window_animation_frame_bindings, install_window_fetch_bindings, install_window_timers_bindings,
+  unregister_window_fetch_env, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchEnv,
 };
+use crate::resource::{HttpFetcher, ResourceFetcher};
+use std::sync::Arc;
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
@@ -25,14 +27,30 @@ pub struct WindowHost {
 
 impl WindowHost {
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
+    Self::new_with_fetcher(dom, document_url, Arc::new(HttpFetcher::new()))
+  }
+
+  pub fn new_with_fetcher(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
     Ok(Self {
-      host: WindowHostState::new(dom, document_url)?,
+      host: WindowHostState::new_with_fetcher(dom, document_url, fetcher)?,
       event_loop: EventLoop::new(),
     })
   }
 
   pub fn from_renderer_dom(root: &crate::dom::DomNode, document_url: impl Into<String>) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
+  }
+
+  pub fn from_renderer_dom_with_fetcher(
+    root: &crate::dom::DomNode,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
+    Self::new_with_fetcher(dom2::Document::from_renderer_dom(root), document_url, fetcher)
   }
 
   pub fn host(&self) -> &WindowHostState {
@@ -93,10 +111,19 @@ pub struct WindowHostState {
   pub base_url: Option<String>,
   document: DocumentHostState,
   window: WindowRealm,
+  fetch_env_id: u64,
 }
 
 impl WindowHostState {
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
+    Self::new_with_fetcher(dom, document_url, Arc::new(HttpFetcher::new()))
+  }
+
+  pub fn new_with_fetcher(
+    dom: dom2::Document,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
     let document_url = document_url.into();
     let document = DocumentHostState::new(dom);
     let mut window = WindowRealm::new(
@@ -107,24 +134,40 @@ impl WindowHostState {
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
-    {
+    let fetch_env_id = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       install_window_timers_bindings::<WindowHostState>(vm, realm, heap)
         .map_err(|e| Error::Other(e.to_string()))?;
       install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
         .map_err(|e| Error::Other(e.to_string()))?;
-    }
+      install_window_fetch_bindings::<WindowHostState>(
+        vm,
+        realm,
+        heap,
+        WindowFetchEnv::for_document(fetcher, Some(document_url.clone())),
+      )
+      .map_err(|e| Error::Other(e.to_string()))?
+    };
 
     Ok(Self {
       base_url: Some(document_url.clone()),
       document_url,
       document,
       window,
+      fetch_env_id,
     })
   }
 
   pub fn from_renderer_dom(root: &crate::dom::DomNode, document_url: impl Into<String>) -> Result<Self> {
     Self::new(dom2::Document::from_renderer_dom(root), document_url)
+  }
+
+  pub fn from_renderer_dom_with_fetcher(
+    root: &crate::dom::DomNode,
+    document_url: impl Into<String>,
+    fetcher: Arc<dyn ResourceFetcher>,
+  ) -> Result<Self> {
+    Self::new_with_fetcher(dom2::Document::from_renderer_dom(root), document_url, fetcher)
   }
 
   pub fn dom(&self) -> &dom2::Document {
@@ -177,6 +220,12 @@ impl CurrentScriptHost for WindowHostState {
 impl WindowRealmHost for WindowHostState {
   fn window_realm(&mut self) -> &mut WindowRealm {
     &mut self.window
+  }
+}
+
+impl Drop for WindowHostState {
+  fn drop(&mut self) {
+    unregister_window_fetch_env(self.fetch_env_id);
   }
 }
 

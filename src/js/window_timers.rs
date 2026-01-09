@@ -205,7 +205,7 @@ fn store_timer_record(
   Ok(())
 }
 
-fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Error {
+fn vm_error_to_event_loop_error(heap: &mut Heap, err: VmError) -> crate::error::Error {
   match err {
     VmError::Throw(value) => {
       if let Value::String(s) = value {
@@ -213,8 +213,39 @@ fn vm_error_to_event_loop_error(heap: &Heap, err: VmError) -> crate::error::Erro
           return crate::error::Error::Other(js.to_utf8_lossy());
         }
       }
+
+      if let Value::Object(obj) = value {
+        let mut scope = heap.scope();
+        let _ = scope.push_root(Value::Object(obj));
+
+        let mut get_prop_str = |name: &str| -> Option<String> {
+          let key_s = scope.alloc_string(name).ok()?;
+          scope.push_root(Value::String(key_s)).ok()?;
+          let key = PropertyKey::from_string(key_s);
+          let value = scope
+            .heap()
+            .object_get_own_data_property_value(obj, &key)
+            .ok()?
+            .unwrap_or(Value::Undefined);
+          match value {
+            Value::String(s) => Some(scope.heap().get_string(s).ok()?.to_utf8_lossy()),
+            _ => None,
+          }
+        };
+
+        let name = get_prop_str("name");
+        let message = get_prop_str("message");
+        if let (Some(name), Some(message)) = (name, message) {
+          if !message.is_empty() {
+            return crate::error::Error::Other(format!("{name}: {message}"));
+          }
+          return crate::error::Error::Other(name);
+        }
+      }
+
       crate::error::Error::Other("uncaught exception".to_string())
     }
+    VmError::Syntax(diags) => crate::error::Error::Other(format!("syntax error: {diags:?}")),
     other => crate::error::Error::Other(other.to_string()),
   }
 }
@@ -382,7 +413,7 @@ impl<Host: WindowRealmHost + 'static> VmHostHooks for VmJsEventLoopHooks<Host> {
           }
 
           job_result
-            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap(), err))
+            .map_err(|err| vm_error_to_event_loop_error(window_realm.heap_mut(), err))
             .map(|_| ())
         })
       })
@@ -489,7 +520,7 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         }
 
         call_result
-          .map_err(|err| vm_error_to_event_loop_error(&*heap, err))
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ())
       });
 
@@ -627,7 +658,7 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         }
 
         call_result
-          .map_err(|err| vm_error_to_event_loop_error(&*heap, err))
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ())
       });
 
@@ -743,7 +774,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         }
 
         call_result
-          .map_err(|err| vm_error_to_event_loop_error(&*heap, err))
+          .map_err(|err| vm_error_to_event_loop_error(heap, err))
           .map(|_| ())
       });
 
