@@ -63,6 +63,7 @@ mod grid_fragmentation;
 mod grid_fragmentation_writing_mode;
 mod grid_intrinsic_sizing_keywords;
 mod grid_named_span_autoplacement;
+mod grid_auto_min_size_aspect_ratio_transferred;
 mod grid_overflow_auto_min_size;
 mod grid_parallel_flow_fragmentation;
 mod grid_percent_gap;

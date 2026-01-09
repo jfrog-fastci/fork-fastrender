@@ -527,6 +527,7 @@ impl GridItem {
     tree: &mut impl LayoutPartialTree,
     axis: AbstractAxis,
     axis_tracks: &[GridTrack],
+    other_axis_tracks: &[GridTrack],
     known_dimensions: Size<Option<f32>>,
     inner_node_size: Size<Option<f32>>,
   ) -> f32 {
@@ -545,14 +546,12 @@ impl GridItem {
     let size = self
       .size
       .maybe_resolve(inner_node_size, |val, basis| tree.calc(val, basis))
-      .maybe_apply_aspect_ratio(self.aspect_ratio)
       .maybe_add(box_sizing_adjustment)
       .get(axis)
       .or_else(|| {
         self
           .min_size
           .maybe_resolve(inner_node_size, |val, basis| tree.calc(val, basis))
-          .maybe_apply_aspect_ratio(self.aspect_ratio)
           .maybe_add(box_sizing_adjustment)
           .get(axis)
       })
@@ -562,18 +561,16 @@ impl GridItem {
 
         // To provide a more reasonable default minimum size for grid items, the used value of its automatic minimum size
         // in a given axis is the content-based minimum size if all of the following are true:
+        // https://www.w3.org/TR/css-grid-1/#min-size-auto
         let item_axis_tracks = &axis_tracks[self.track_range_excluding_lines(axis)];
 
-        // it is not a scroll container
-        // TODO: support overflow property
-
-        // it spans at least one track in that axis whose min track sizing function is auto
+        // 1) it spans at least one track in that axis whose min track sizing function is auto
         let spans_auto_min_track = item_axis_tracks
           .iter()
           // TODO: should this be 'behaves as auto' rather than just literal auto?
           .any(|track| track.min_track_sizing_function.is_auto());
 
-        // if it spans more than one track in that axis, none of those tracks are flexible
+        // 2) if it spans more than one track in that axis, none of those tracks are flexible
         let only_span_one_track = item_axis_tracks.len() == 1;
         let spans_a_flexible_track = item_axis_tracks
           .iter()
@@ -583,41 +580,208 @@ impl GridItem {
           spans_auto_min_track && (only_span_one_track || !spans_a_flexible_track);
 
         // Otherwise, the automatic minimum size is zero, as usual.
-        if use_content_based_minimum {
-          let mut minimum_contribution =
-            self.min_content_contribution_cached(axis, tree, known_dimensions, inner_node_size);
+        if !use_content_based_minimum {
+          return 0.0;
+        }
 
-          // If the item is a compressible replaced element, and has a definite preferred size or maximum size in the
-          // relevant axis, the size suggestion is capped by those sizes; for this purpose, any indefinite percentages
-          // in these sizes are resolved against zero (and considered definite).
-          if self.is_compressible_replaced {
-            let size = self
-              .size
-              .get(axis)
-              .maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis));
-            let max_size = self
-              .max_size
-              .get(axis)
-              .maybe_resolve(Some(0.0), |val, basis| tree.calc(val, basis));
-            minimum_contribution = minimum_contribution.maybe_min(size).maybe_min(max_size);
+        // --- Content-based minimum size -----------------------------------
+        //
+        // See "Automatic Minimum Size of Grid Items":
+        // https://www.w3.org/TR/css-grid-1/#min-size-auto
+        //
+        // The content-based minimum size in an axis is:
+        //   specified size suggestion -> transferred size suggestion -> content size suggestion
+        // with additional clamping rules.
+
+        // If the item spans only fixed max tracks then the specified/content size suggestions
+        // (and the input from this dimension to the transferred size suggestion in the opposite dimension)
+        // are clamped to the grid area's maximum size in that dimension.
+        let axis_fixed_track_limit = self.spanned_fixed_track_limit(
+          axis,
+          axis_tracks,
+          inner_node_size.get(axis),
+          &|val, basis| tree.resolve_calc_value(val, basis),
+        );
+        let other_axis_fixed_track_limit = self.spanned_fixed_track_limit(
+          axis.other(),
+          other_axis_tracks,
+          inner_node_size.get(axis.other()),
+          &|val, basis| tree.resolve_calc_value(val, basis),
+        );
+
+        fn resolve_dimension<Tree: LayoutPartialTree>(
+          tree: &Tree,
+          dimension: Dimension,
+          context: Option<f32>,
+        ) -> Option<f32> {
+          dimension.maybe_resolve(context, |val, basis| tree.calc(val, basis))
+        }
+
+        fn resolve_dimension_with_box_sizing<Tree: LayoutPartialTree>(
+          tree: &Tree,
+          dimension: Dimension,
+          context: Option<f32>,
+          axis: AbstractAxis,
+          box_sizing_adjustment: Size<f32>,
+        ) -> Option<f32> {
+          resolve_dimension(tree, dimension, context)
+            .map(|val| val + box_sizing_adjustment.get(axis))
+        }
+
+        // Specified size suggestion: if preferred size in the axis is definite, use it.
+        let specified_size_suggestion = resolve_dimension_with_box_sizing(
+          tree,
+          self.size.get(axis),
+          known_dimensions.get(axis),
+          axis,
+          box_sizing_adjustment,
+        )
+        .maybe_min(axis_fixed_track_limit);
+
+        // Transferred size suggestion (for preferred aspect ratios).
+        let transferred_size_suggestion = self.aspect_ratio.and_then(|ratio| {
+          if ratio <= 0.0 {
+            return None;
           }
 
-          minimum_contribution
-        } else {
-          0.0
-        }
-      });
+          // Preferred size in the opposite axis must be definite.
+          let opposite_preferred = resolve_dimension_with_box_sizing(
+            tree,
+            self.size.get(axis.other()),
+            known_dimensions.get(axis.other()),
+            axis.other(),
+            box_sizing_adjustment,
+          )?;
 
-    // In all cases, the size suggestion is additionally clamped by the maximum size in the affected axis, if it’s definite.
-    // Note: The argument to fit-content() does not clamp the content-based minimum size in the same way as a fixed max track
-    // sizing function.
-    let limit = self.spanned_fixed_track_limit(
-      axis,
-      axis_tracks,
-      inner_node_size.get(axis),
-      &|val, basis| tree.resolve_calc_value(val, basis),
-    );
-    size.maybe_min(limit)
+          // Clamp opposite preferred size by definite opposite min/max.
+          let opposite_min = resolve_dimension_with_box_sizing(
+            tree,
+            self.min_size.get(axis.other()),
+            known_dimensions.get(axis.other()),
+            axis.other(),
+            box_sizing_adjustment,
+          );
+          let opposite_max = resolve_dimension_with_box_sizing(
+            tree,
+            self.max_size.get(axis.other()),
+            known_dimensions.get(axis.other()),
+            axis.other(),
+            box_sizing_adjustment,
+          );
+          let opposite_preferred = Some(opposite_preferred)
+            .maybe_clamp(opposite_min, opposite_max)
+            .maybe_min(other_axis_fixed_track_limit)?;
+
+          // Convert through aspect ratio.
+          let mut transferred = match axis {
+            AbstractAxis::Inline => opposite_preferred * ratio,
+            AbstractAxis::Block => opposite_preferred / ratio,
+          };
+
+          // If the item has a definite preferred size or maximum size in the relevant axis, cap.
+          // For this purpose, any indefinite percentages are resolved against zero (and considered definite).
+          let preferred_cap = resolve_dimension_with_box_sizing(
+            tree,
+            self.size.get(axis),
+            Some(0.0),
+            axis,
+            box_sizing_adjustment,
+          );
+          let max_cap = resolve_dimension_with_box_sizing(
+            tree,
+            self.max_size.get(axis),
+            Some(0.0),
+            axis,
+            box_sizing_adjustment,
+          );
+          transferred = transferred.maybe_min(preferred_cap).maybe_min(max_cap);
+
+          Some(transferred)
+        });
+
+        // Content size suggestion: min-content size in the axis, clamped by opposite min/max through aspect ratio.
+        let content_size_suggestion = {
+          let mut min_content =
+            self.min_content_contribution_cached(axis, tree, known_dimensions, inner_node_size);
+
+          if let Some(ratio) = self.aspect_ratio {
+            if ratio > 0.0 {
+              let opposite_min = resolve_dimension_with_box_sizing(
+                tree,
+                self.min_size.get(axis.other()),
+                known_dimensions.get(axis.other()),
+                axis.other(),
+                box_sizing_adjustment,
+              );
+              let opposite_max = resolve_dimension_with_box_sizing(
+                tree,
+                self.max_size.get(axis.other()),
+                known_dimensions.get(axis.other()),
+                axis.other(),
+                box_sizing_adjustment,
+              );
+
+              let converted_min = opposite_min.map(|val| match axis {
+                AbstractAxis::Inline => val * ratio,
+                AbstractAxis::Block => val / ratio,
+              });
+              let converted_max = opposite_max.map(|val| match axis {
+                AbstractAxis::Inline => val * ratio,
+                AbstractAxis::Block => val / ratio,
+              });
+
+              min_content = min_content.maybe_clamp(converted_min, converted_max);
+            }
+          }
+
+          // Clamp by the grid area's max size if spanning only fixed max tracks.
+          min_content.maybe_min(axis_fixed_track_limit)
+        };
+
+        // Choose the content-based minimum size.
+        let mut suggestion = if let Some(specified) = specified_size_suggestion {
+          specified
+        } else if let Some(transferred) = transferred_size_suggestion {
+          // Note: The Grid 1 spec only uses the transferred size suggestion for replaced elements.
+          // FastRender uses `aspect-ratio` on non-replaced boxes; align with that behavior.
+          transferred
+        } else {
+          content_size_suggestion
+        };
+
+        // In all cases, clamp by the definite max-size in this axis.
+        let definite_max_size = resolve_dimension_with_box_sizing(
+          tree,
+          self.max_size.get(axis),
+          known_dimensions.get(axis),
+          axis,
+          box_sizing_adjustment,
+        );
+        suggestion = suggestion.maybe_min(definite_max_size);
+
+        // Compressible replaced element caps.
+        // Indefinite percentages are resolved against zero (and considered definite) for this purpose.
+        if self.is_compressible_replaced {
+          let preferred_cap = resolve_dimension_with_box_sizing(
+            tree,
+            self.size.get(axis),
+            Some(0.0),
+            axis,
+            box_sizing_adjustment,
+          );
+          let max_cap = resolve_dimension_with_box_sizing(
+            tree,
+            self.max_size.get(axis),
+            Some(0.0),
+            axis,
+            box_sizing_adjustment,
+          );
+          suggestion = suggestion.maybe_min(preferred_cap).maybe_min(max_cap);
+        }
+
+        suggestion
+      });
+    size
   }
 
   /// Retrieve the item's minimum contribution from the cache or compute it using the provided parameters
@@ -627,6 +791,7 @@ impl GridItem {
     tree: &mut impl LayoutPartialTree,
     axis: AbstractAxis,
     axis_tracks: &[GridTrack],
+    other_axis_tracks: &[GridTrack],
     known_dimensions: Size<Option<f32>>,
     inner_node_size: Size<Option<f32>>,
   ) -> f32 {
@@ -635,7 +800,14 @@ impl GridItem {
       .get(axis)
       .unwrap_or_else(|| {
         let size =
-          self.minimum_contribution(tree, axis, axis_tracks, known_dimensions, inner_node_size);
+          self.minimum_contribution(
+            tree,
+            axis,
+            axis_tracks,
+            other_axis_tracks,
+            known_dimensions,
+            inner_node_size,
+          );
         self.minimum_contribution_cache.set(axis, Some(size));
         size
       })

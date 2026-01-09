@@ -177,6 +177,7 @@ where
       self.tree,
       self.axis,
       axis_tracks,
+      self.other_axis_tracks,
       available_space,
       self.inner_node_size,
     );
