@@ -602,13 +602,9 @@ impl AnonymousBoxCreator {
       }
 
       let style = inline_style.get_or_insert_with(|| {
-        if parent_style.display == Display::Inline {
-          parent_style.clone()
-        } else {
-          let mut style = (**parent_style).clone();
-          style.display = Display::Inline;
-          Arc::new(style)
-        }
+        let mut inherited = inherited_style(parent_style.as_ref());
+        inherited.display = Display::Inline;
+        Arc::new(inherited)
       });
 
       Self::wrap_text_in_anonymous_inline_in_place(child, style.clone());
@@ -960,6 +956,8 @@ mod tests {
   use crate::style::color::Rgba;
   use crate::style::display::{Display, FormattingContextType};
   use crate::style::position::Position;
+  use crate::style::types::BorderStyle;
+  use crate::style::values::Length;
   use crate::tree::box_tree::MarkerContent;
   use crate::tree::table_fixup::TableStructureFixer;
 
@@ -1423,5 +1421,50 @@ mod tests {
     assert!(wrapper.is_anonymous());
     assert_eq!(wrapper.style.display, Display::Inline);
     assert_eq!(wrapper.style.position, Position::Static);
+  }
+
+  #[test]
+  fn anonymous_inline_text_wrappers_do_not_copy_padding_or_border_from_parent() {
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let root_style = Arc::new(root_style);
+
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Inline;
+    inline_style.padding_top = Length::px(10.0);
+    inline_style.padding_right = Length::px(13.0);
+    inline_style.padding_bottom = Length::px(11.0);
+    inline_style.padding_left = Length::px(12.0);
+    inline_style.border_top_width = Length::px(1.0);
+    inline_style.border_right_width = Length::px(1.0);
+    inline_style.border_bottom_width = Length::px(1.0);
+    inline_style.border_left_width = Length::px(1.0);
+    inline_style.border_top_style = BorderStyle::Solid;
+    inline_style.border_right_style = BorderStyle::Solid;
+    inline_style.border_bottom_style = BorderStyle::Solid;
+    inline_style.border_left_style = BorderStyle::Solid;
+    inline_style.background_color = Rgba::RED;
+    let inline_style = Arc::new(inline_style);
+
+    let text = BoxNode::new_text(inline_style.clone(), "Hello".to_string());
+    let inline = BoxNode::new_inline(inline_style, vec![text]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![inline]);
+
+    let fixed = fixup_tree(root);
+    let inline_fixed = &fixed.children[0];
+    assert_eq!(inline_fixed.children.len(), 1);
+
+    let wrapper = &inline_fixed.children[0];
+    assert!(wrapper.is_anonymous() && wrapper.is_inline_level());
+    assert_eq!(wrapper.style.display, Display::Inline);
+    assert_eq!(wrapper.style.padding_top, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_right, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_bottom, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_left, Length::px(0.0));
+    assert_eq!(wrapper.style.border_top_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_right_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_bottom_width, Length::px(0.0));
+    assert_eq!(wrapper.style.border_left_width, Length::px(0.0));
+    assert_eq!(wrapper.style.background_color, Rgba::TRANSPARENT);
   }
 }
