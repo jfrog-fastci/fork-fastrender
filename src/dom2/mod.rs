@@ -1,9 +1,8 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
-use crate::web::events;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
-use crate::web::events;
+use crate::web::events as web_events;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
@@ -121,7 +120,7 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
-  events: events::EventListenerRegistry,
+  events: web_events::EventListenerRegistry,
 }
 
 impl Clone for Document {
@@ -131,7 +130,7 @@ impl Clone for Document {
       root: self.root,
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
       // registry so callers can snapshot structure without inheriting the old event graph.
-      events: events::EventListenerRegistry::new(),
+      events: web_events::EventListenerRegistry::new(),
     }
   }
 }
@@ -244,7 +243,7 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
-      events: events::EventListenerRegistry::new(),
+      events: web_events::EventListenerRegistry::new(),
     };
     let root = doc.push_node(
       NodeKind::Document { quirks_mode },
@@ -260,11 +259,11 @@ impl Document {
     self.root
   }
 
-  pub fn events(&self) -> &events::EventListenerRegistry {
+  pub fn events(&self) -> &web_events::EventListenerRegistry {
     &self.events
   }
 
-  pub fn events_mut(&mut self) -> &mut events::EventListenerRegistry {
+  pub fn events_mut(&mut self) -> &mut web_events::EventListenerRegistry {
     &mut self.events
   }
 
