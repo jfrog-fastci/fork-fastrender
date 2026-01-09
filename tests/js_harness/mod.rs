@@ -147,6 +147,7 @@ const JS_BOOTSTRAP: &str = r##"
   }
 
   g.setTimeout = function (cb, ms /*, ...args */) {
+    if (typeof cb === "string") throw new TypeError("setTimeout does not currently support string handlers");
     if (typeof cb !== "function") throw new TypeError("setTimeout callback is not callable");
     var args = [];
     for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
@@ -161,6 +162,7 @@ const JS_BOOTSTRAP: &str = r##"
   };
 
   g.setInterval = function (cb, ms /*, ...args */) {
+    if (typeof cb === "string") throw new TypeError("setInterval does not currently support string handlers");
     if (typeof cb !== "function") throw new TypeError("setInterval callback is not callable");
     var args = [];
     for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
@@ -175,6 +177,7 @@ const JS_BOOTSTRAP: &str = r##"
   };
 
   g.queueMicrotask = function (cb) {
+    if (typeof cb === "string") throw new TypeError("queueMicrotask does not currently support string callbacks");
     if (typeof cb !== "function") throw new TypeError("queueMicrotask callback is not callable");
     var id = g.__fastrender_host_queue_microtask();
     callbacks.set(id, { cb: cb, microtask: true, args: [] });

@@ -70,3 +70,87 @@ fn harness_queue_microtask_calls_callback_with_undefined_this_in_strict_mode() -
   assert_eq!(h.take_log(), vec!["true".to_string()]);
   Ok(())
 }
+
+#[test]
+fn harness_microtasks_run_after_each_timer_task() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      setTimeout(() => {
+        console.log("t1");
+        queueMicrotask(() => console.log("m1"));
+      }, 0);
+      setTimeout(() => console.log("t2"), 0);
+    "#,
+  )?;
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec![
+      "t1".to_string(),
+      "m1".to_string(),
+      "t2".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
+fn harness_set_interval_passes_args_and_can_cancel_itself() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      var count = 0;
+      var id = setInterval(function (x) {
+        console.log(x);
+        console.log(this === window);
+        count++;
+        if (count === 2) clearInterval(id);
+      }, 0, "x");
+    "#,
+  )?;
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec![
+      "x".to_string(),
+      "true".to_string(),
+      "x".to_string(),
+      "true".to_string(),
+    ]
+  );
+  Ok(())
+}
+
+#[test]
+fn harness_set_timeout_rejects_string_handler() -> Result<()> {
+  let html = "<!doctype html><html><body></body></html>";
+  let mut h = Harness::new("https://example.com/", html)?;
+
+  h.exec_script(
+    r#"
+      try {
+        setTimeout("console.log('nope')", 0);
+      } catch (e) {
+        console.log(e instanceof TypeError);
+        console.log(e.message);
+      }
+    "#,
+  )?;
+
+  h.run_until_idle(RunLimits::unbounded())?;
+  assert_eq!(
+    h.take_log(),
+    vec![
+      "true".to_string(),
+      "setTimeout does not currently support string handlers".to_string(),
+    ]
+  );
+  Ok(())
+}
