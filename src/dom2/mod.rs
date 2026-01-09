@@ -1,4 +1,5 @@
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
+use crate::dom::HTML_NAMESPACE;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
@@ -23,6 +24,8 @@ pub use html5ever_tree_sink::Dom2TreeSink;
 
 #[cfg(test)]
 mod class_list_tests;
+#[cfg(test)]
+mod wbr_tests;
 
 /// Convenience helper mirroring `Document.getElementById`.
 ///
@@ -115,6 +118,11 @@ pub struct RendererDomMapping {
 impl RendererDomMapping {
   /// Translate a 1-based renderer pre-order id (as produced by [`crate::dom::enumerate_dom_ids`])
   /// back into a `dom2` [`NodeId`].
+  ///
+  /// Note: the renderer snapshot may include synthetic nodes that do not exist in the `dom2` tree
+  /// (currently: `<wbr>` synthesizes a zero-width break text node). For these nodes, the returned
+  /// `NodeId` will be the corresponding real `dom2` node (e.g., the parent `<wbr>` element),
+  /// meaning multiple renderer preorder ids can map to the same `NodeId`.
   pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
     self
       .preorder_to_node_id
@@ -125,7 +133,10 @@ impl RendererDomMapping {
 
   /// Translate a `dom2` [`NodeId`] to its 1-based renderer pre-order id.
   ///
-  /// Returns `None` for nodes that are not reachable from the document root (detached subtrees).
+  /// Returns `None` for nodes that are not reachable from the document root (detached subtrees). If
+  /// a `dom2` node corresponds to multiple renderer preorder ids (e.g. `<wbr>` + its synthetic text
+  /// child), this returns the preorder id of the real node (the `<wbr>` element) and not the
+  /// synthetic one.
   pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
     self
       .node_id_to_preorder
@@ -153,7 +164,9 @@ impl SelectorDomMapping {
   /// Translate a `dom2` [`NodeId`] to its selector-matching pre-order id.
   ///
   /// Returns `None` when the node is either detached or lives under an inert `<template>` subtree
-  /// that is skipped for selector matching.
+  /// that is skipped for selector matching. If a node corresponds to multiple selector preorder ids
+  /// (e.g. `<wbr>` + its synthetic text child), this returns the preorder id of the real node (the
+  /// `<wbr>` element) and not the synthetic one.
   pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
     self
       .node_id_to_preorder
@@ -170,6 +183,36 @@ pub struct RendererDomSnapshot {
 }
 
 impl Document {
+  fn should_inject_wbr_zwsp(&self, node_id: NodeId) -> bool {
+    let node = self.node(node_id);
+    let NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } = &node.kind
+    else {
+      return false;
+    };
+    if !tag_name.eq_ignore_ascii_case("wbr") {
+      return false;
+    }
+    if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+      return false;
+    }
+
+    // Avoid duplicating the renderer's historical `<wbr>` behaviour when importing from an
+    // existing renderer DOM tree that may already contain a ZWSP text node child.
+    for &child in &node.children {
+      if let NodeKind::Text { content } = &self.node(child).kind {
+        if content == "\u{200B}" {
+          return false;
+        }
+      }
+    }
+
+    true
+  }
+
   pub fn new(quirks_mode: QuirksMode) -> Self {
     let mut doc = Self {
       nodes: Vec::new(),
@@ -292,9 +335,10 @@ impl Document {
         stack.push(frame);
 
         let child_src = self.node(child_id);
+        let extra_capacity = usize::from(self.should_inject_wbr_zwsp(child_id));
         dst.children.push(DomNode {
           node_type: node_kind_to_dom_node_type(&child_src.kind),
-          children: Vec::with_capacity(child_src.children.len()),
+          children: Vec::with_capacity(child_src.children.len() + extra_capacity),
         });
         let child_dst = dst
           .children
@@ -305,6 +349,16 @@ impl Document {
           src: child_id,
           dst: child_dst,
           next_child: 0,
+        });
+      } else if self.should_inject_wbr_zwsp(frame.src) {
+        // HTML <wbr> elements represent optional break opportunities. Synthesize a zero-width break
+        // text node so line breaking can consider the opportunity while still allowing the element
+        // to be styled/selected.
+        dst.children.push(DomNode {
+          node_type: DomNodeType::Text {
+            content: "\u{200B}".to_string(),
+          },
+          children: Vec::new(),
         });
       }
     }
@@ -318,17 +372,38 @@ impl Document {
     let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
     preorder_to_node_id.push(None);
     let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
+ 
+    enum StackItem {
+      Real(NodeId),
+      SyntheticWbrZwsp(NodeId),
+    }
 
-    let mut stack: Vec<NodeId> = vec![self.root];
-    while let Some(id) = stack.pop() {
-      let preorder_id = preorder_to_node_id.len();
-      preorder_to_node_id.push(Some(id));
-      node_id_to_preorder[id.0] = preorder_id;
+    let mut stack: Vec<StackItem> = vec![StackItem::Real(self.root)];
+    while let Some(item) = stack.pop() {
+      match item {
+        StackItem::Real(id) => {
+          let preorder_id = preorder_to_node_id.len();
+          preorder_to_node_id.push(Some(id));
+          node_id_to_preorder[id.0] = preorder_id;
 
-      let node = self.node(id);
-      // Push children in reverse so we traverse in tree order.
-      for child in node.children.iter().rev() {
-        stack.push(*child);
+          let node = self.node(id);
+          // Push children in reverse so we traverse in tree order.
+          //
+          // For `<wbr>` we also synthesize a trailing ZWSP text child in the renderer snapshot;
+          // insert a synthetic stack item so preorder ids stay aligned.
+          if self.should_inject_wbr_zwsp(id) {
+            stack.push(StackItem::SyntheticWbrZwsp(id));
+          }
+          for child in node.children.iter().rev() {
+            stack.push(StackItem::Real(*child));
+          }
+        }
+        StackItem::SyntheticWbrZwsp(parent) => {
+          // Synthetic ZWSP nodes map back to their parent `<wbr>` element `NodeId`.
+          preorder_to_node_id.push(Some(parent));
+          // Do not overwrite `node_id_to_preorder` for the `<wbr>` element; it should remain the
+          // preorder id of the element itself (the first mapping entry).
+        }
       }
     }
 
@@ -344,20 +419,38 @@ impl Document {
     let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
     preorder_to_node_id.push(None);
     let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
+ 
+    enum StackItem {
+      Real(NodeId),
+      SyntheticWbrZwsp(NodeId),
+    }
 
-    let mut stack: Vec<NodeId> = vec![self.root];
-    while let Some(id) = stack.pop() {
-      let preorder_id = preorder_to_node_id.len();
-      preorder_to_node_id.push(Some(id));
-      node_id_to_preorder[id.0] = preorder_id;
+    let mut stack: Vec<StackItem> = vec![StackItem::Real(self.root)];
+    while let Some(item) = stack.pop() {
+      match item {
+        StackItem::Real(id) => {
+          let preorder_id = preorder_to_node_id.len();
+          preorder_to_node_id.push(Some(id));
+          node_id_to_preorder[id.0] = preorder_id;
 
-      let node = self.node(id);
-      if node.inert_subtree {
-        continue;
-      }
-      // Push children in reverse so we traverse in tree order.
-      for child in node.children.iter().rev() {
-        stack.push(*child);
+          let node = self.node(id);
+          if node.inert_subtree {
+            continue;
+          }
+
+          // Keep selector preorder ids aligned with the renderer snapshot by accounting for
+          // synthetic `<wbr>` ZWSP nodes.
+          if self.should_inject_wbr_zwsp(id) {
+            stack.push(StackItem::SyntheticWbrZwsp(id));
+          }
+          // Push children in reverse so we traverse in tree order.
+          for child in node.children.iter().rev() {
+            stack.push(StackItem::Real(*child));
+          }
+        }
+        StackItem::SyntheticWbrZwsp(parent) => {
+          preorder_to_node_id.push(Some(parent));
+        }
       }
     }
 
