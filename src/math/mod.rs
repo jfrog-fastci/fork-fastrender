@@ -787,6 +787,36 @@ fn parse_math_length(raw: Option<&str>) -> Option<MathLength> {
       .ok()
       .map(MathLength::Px);
   }
+  if let Some(v) = value.strip_suffix("in") {
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(|inches| MathLength::Px(inches * 96.0));
+  }
+  if let Some(v) = value.strip_suffix("cm") {
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(|cm| MathLength::Px(cm * 96.0 / 2.54));
+  }
+  if let Some(v) = value.strip_suffix("mm") {
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(|mm| MathLength::Px(mm * 96.0 / 25.4));
+  }
+  if let Some(v) = value.strip_suffix("pt") {
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(|pt| MathLength::Px(pt * 96.0 / 72.0));
+  }
+  if let Some(v) = value.strip_suffix("pc") {
+    return trim_ascii_whitespace(v)
+      .parse::<f32>()
+      .ok()
+      .map(|pc| MathLength::Px(pc * 96.0 / 6.0));
+  }
   value.parse::<f32>().ok().map(MathLength::Em)
 }
 
@@ -4779,6 +4809,29 @@ mod tests {
       baseline_layout.baseline,
       voffset_layout.baseline
     );
+  }
+
+  #[test]
+  fn mspace_parses_absolute_length_units() {
+    let style = ComputedStyle::default();
+
+    let cases = [
+      ("1in", 96.0),
+      ("2.54cm", 96.0),
+      ("25.4mm", 96.0),
+      ("72pt", 96.0),
+      ("6pc", 96.0),
+    ];
+
+    for (value, expected_px) in cases {
+      let node = parse_math_from_html(&format!("<math><mspace width=\"{value}\"/></math>"));
+      let layout = layout_mathml(&node, &style, &FontContext::empty());
+      assert!(
+        (layout.width - expected_px).abs() < 0.05,
+        "expected mspace width={value} to resolve to ~{expected_px}px, got {}",
+        layout.width
+      );
+    }
   }
 
   #[test]
