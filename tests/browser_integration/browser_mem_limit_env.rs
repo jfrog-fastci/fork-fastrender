@@ -48,7 +48,7 @@ fn browser_applies_mem_limit_from_env_and_exits() {
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
-    stderr.contains("Applied (1024 MiB)"),
+    stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB: Applied (1024 MiB)"),
     "expected mem-limit status line, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }
@@ -59,7 +59,7 @@ fn browser_applies_mem_limit_with_underscore_separators() {
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
-    stderr.contains("Applied (1024 MiB)"),
+    stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB: Applied (1024 MiB)"),
     "expected mem-limit status line, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }
@@ -70,7 +70,7 @@ fn browser_applies_mem_limit_with_ascii_whitespace() {
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
-    stderr.contains("Applied (1024 MiB)"),
+    stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB: Applied (1024 MiB)"),
     "expected mem-limit status line, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }
@@ -101,11 +101,16 @@ fn browser_disables_mem_limit_for_zero() {
 
 #[test]
 fn browser_disables_mem_limit_for_invalid_non_numeric_value() {
-  let (status, stderr, stdout) = run_browser_with_mem_env(Some("abc"));
+  let value = "not-a-number";
+  let (status, stderr, stdout) = run_browser_with_mem_env(Some(value));
   assert_browser_succeeded(status, &stderr, &stdout);
 
   assert!(
-    stderr.contains("Disabled (invalid value:"),
+    stderr.contains("FASTR_BROWSER_MEM_LIMIT_MB: Disabled (invalid value:"),
     "expected invalid-value status line, got stderr:\n{stderr}\nstdout:\n{stdout}"
+  );
+  assert!(
+    stderr.contains(value),
+    "expected stderr to mention invalid value {value:?}, got stderr:\n{stderr}\nstdout:\n{stdout}"
   );
 }

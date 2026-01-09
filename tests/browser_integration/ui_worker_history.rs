@@ -28,14 +28,16 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 fn assert_frame_has_color(frame: &RenderedFrame, expected: (u8, u8, u8, u8)) {
   let pixmap = &frame.pixmap;
   assert!(pixmap.width() > 0 && pixmap.height() > 0, "expected non-empty pixmap");
-  let corners = [
-    pixel(pixmap, 0, 0),
-    pixel(pixmap, pixmap.width() - 1, 0),
-    pixel(pixmap, 0, pixmap.height() - 1),
-    pixel(pixmap, pixmap.width() - 1, pixmap.height() - 1),
+  // Sample pixels away from the right/bottom edges to avoid flaking when scrollbars are rendered.
+  let x1 = if pixmap.width() > 1 { 1 } else { 0 };
+  let y1 = if pixmap.height() > 1 { 1 } else { 0 };
+  let samples = [
+    pixel(pixmap, x1, y1),
     pixel(pixmap, pixmap.width() / 2, pixmap.height() / 2),
+    pixel(pixmap, x1, pixmap.height() / 2),
+    pixel(pixmap, pixmap.width() / 2, y1),
   ];
-  for (idx, sample) in corners.into_iter().enumerate() {
+  for (idx, sample) in samples.into_iter().enumerate() {
     assert_eq!(
       sample, expected,
       "expected sample {idx} to match {expected:?}; got {sample:?}"

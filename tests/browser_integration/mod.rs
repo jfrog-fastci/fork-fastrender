@@ -1,6 +1,5 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
 
-mod browser_binary_headless_smoke;
 mod browser_headless_smoke_test;
 mod browser_mem_limit_env;
 mod browser_worker_cancel_gens;

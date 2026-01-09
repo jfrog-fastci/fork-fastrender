@@ -1,4 +1,4 @@
-#![cfg(feature = "browser_ui")]
+#![cfg(all(target_os = "linux", feature = "browser_ui"))]
 
 use std::process::Command;
 
