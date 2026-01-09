@@ -43,25 +43,30 @@ has `required-features = ["browser_ui"]`. See:
 - [`Cargo.toml`](../Cargo.toml)
 - Platform prerequisites + MSRV constraints + UI architecture details: [browser_ui.md](browser_ui.md)
 
-## Current UI status
+## Current capabilities (MVP)
 
-The `browser` window UI is still intentionally minimal (early-stage wiring):
+The `browser` UI is intentionally minimal, but it is now wired up end-to-end:
 
-- Top chrome bar with back/forward/reload buttons + an address bar text field.
-  - Note: the navigation buttons and address bar submission are not yet wired in the window UI.
-- Content area currently shows a dummy checkerboard pixmap.
-- Clicking in the page prints the local click position to stdout.
+- **Tabs**: create/close/switch tabs.
+- **Navigation**:
+  - address bar URL entry (press Enter to navigate; user input is normalized, e.g. `example.com`
+    → `https://example.com/`, filesystem paths → `file://...`)
+  - per-tab history with back/forward/reload
+  - loading + error status in the chrome
+- **Scrolling**: mouse wheel / trackpad scroll updates the viewport scroll offset and repaints.
+- **Pointer/keyboard routing**: the window UI forwards pointer and keyboard events to the render
+  worker (see `UiToWorker` in [`src/ui/messages.rs`](../src/ui/messages.rs)).
 
-The repository contains additional browser UI building blocks under [`src/ui/`](../src/ui/) that are
-intended to be wired into the windowed UI:
+Basic hit-testing/link navigation and non-JS form interactions are implemented in the headless UI
+worker loop under [`src/ui/worker.rs`](../src/ui/worker.rs) (and exercised by integration tests),
+including:
 
-- a headless “UI worker loop” (`spawn_ui_worker`) that already supports navigation/scroll/pointer
-  events and basic form interactions (used by integration tests),
-- tab history helpers (`TabHistory`),
-- address bar URL normalization (`normalize_user_url`),
-- about pages (`about:*`) helpers.
+- clicking links (hit-test fragments → navigate)
+- basic focus + text input for `<input>` / `<textarea>`
+- checkbox/radio toggling
 
-See [browser_ui.md](browser_ui.md) for implementation details.
+Wiring these interactions into the windowed `browser` app is ongoing. See [browser_ui.md](browser_ui.md)
+for implementation details.
 
 ## Environment variables / resource limits
 

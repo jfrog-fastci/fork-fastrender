@@ -7,10 +7,6 @@ This is **feature-gated** so the core renderer can compile without pulling in th
 For a higher-level overview of the `browser` binary (current capabilities, env vars, and how to run
 it), see [browser.md](browser.md).
 
-Note: the windowed `browser` UI (`src/bin/browser.rs`) is still an early stub (placeholder pixmap +
-limited wiring). Most “browser UI” functionality currently lives in the headless worker loops under
-`src/ui/` (used by integration tests), and wiring that into the windowed app is ongoing.
-
 ## Build / run
 
 The `browser` binary is behind the Cargo feature `browser_ui` (note the underscore) and is **not**
@@ -42,19 +38,20 @@ The `browser` binary also supports an in-process, best-effort address-space cap 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
   [`src/ui/`](../src/ui/)
+  - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
+  - egui chrome widgets (tabs row, nav buttons, address bar): [`src/ui/chrome.rs`](../src/ui/chrome.rs)
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
+  - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Render worker wrapper + large-stack thread spawn:
-    [`src/ui/worker.rs`](../src/ui/worker.rs)
-    - Note: this module also contains a headless “UI worker loop” (`spawn_ui_worker`) that
-      processes `UiToWorker` messages and emits `WorkerToUi` events (frames/navigation/etc.).
-      It is exercised by the `tests/browser_integration/ui_worker_interaction.rs` integration tests.
+  - Headless UI worker loop (`spawn_ui_worker`) that implements navigation + scroll + pointer +
+    basic non-JS form interactions: [`src/ui/worker.rs`](../src/ui/worker.rs)
+    - Exercised by `tests/browser_integration/ui_worker_interaction.rs`.
   - Synchronous “navigate + render a frame” helper used by the worker: [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
-  - Headless UI worker loop used by browser UI integration tests: [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
-    - This is a smaller/specialized worker used by the `tests/browser_integration/ui_worker_scroll.rs`
-      tests to exercise scroll-wheel behavior (including scrolling overflow containers under the pointer).
+  - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
+    wheel scrolling): [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
+    - Exercised by `tests/browser_integration/ui_worker_scroll.rs`.
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
     - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
