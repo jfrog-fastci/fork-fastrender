@@ -306,6 +306,7 @@ fn set_text_content(dom: &mut dom2::Document, node: NodeId, value: &str) -> Resu
       return Ok(());
     }
     NodeKind::Document { .. }
+    | NodeKind::DocumentFragment
     | NodeKind::Element { .. }
     | NodeKind::Slot { .. }
     | NodeKind::ShadowRoot { .. } => {
@@ -1086,6 +1087,7 @@ fn install_constructors(
         NodeKind::Comment { .. } => 8,
         NodeKind::Document { .. } => 9,
         NodeKind::Doctype { .. } => 10,
+        NodeKind::DocumentFragment => 11,
         NodeKind::ShadowRoot { .. } => 11,
       };
       Ok(Value::Number(node_type as f64))
@@ -1106,7 +1108,9 @@ fn install_constructors(
         NodeKind::Text { .. } => "#text".to_string(),
         NodeKind::Comment { .. } => "#comment".to_string(),
         NodeKind::ProcessingInstruction { target, .. } => target.clone(),
-        NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
+          "#document-fragment".to_string()
+        }
       };
       rt.alloc_string_value(&name)
     })?;

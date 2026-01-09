@@ -159,6 +159,7 @@ pub enum Dom2NodeKindSnapshot {
     #[serde(default)]
     quirks_mode: QuirksModeSnapshot,
   },
+  DocumentFragment,
   Comment {
     content: String,
   },
@@ -491,6 +492,7 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
     crate::dom2::NodeKind::Document { quirks_mode } => Dom2NodeKindSnapshot::Document {
       quirks_mode: QuirksModeSnapshot::from(*quirks_mode),
     },
+    crate::dom2::NodeKind::DocumentFragment => Dom2NodeKindSnapshot::DocumentFragment,
     crate::dom2::NodeKind::Comment { content } => Dom2NodeKindSnapshot::Comment {
       content: truncate_dom2_snapshot_text(content),
     },

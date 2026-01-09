@@ -51,6 +51,12 @@ pub enum NodeKind {
   Document {
     quirks_mode: QuirksMode,
   },
+  /// A detached node used for batched insertion.
+  ///
+  /// When passed as `new_child` to `append_child`/`insert_before`/`replace_child`, the fragment
+  /// itself is not inserted. Instead, its children are inserted (in order) and the fragment is
+  /// emptied.
+  DocumentFragment,
   /// An HTML comment node.
   ///
   /// Comments are currently ignored when snapshotting back into the renderer's immutable `DomNode`
@@ -523,6 +529,9 @@ impl Document {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
         },
+        NodeKind::DocumentFragment => unreachable!(
+          "DocumentFragment nodes should never appear in the renderer snapshot tree; fragments must remain detached/empty"
+        ),
         NodeKind::ShadowRoot {
           mode,
           delegates_focus,
@@ -637,6 +646,9 @@ impl Document {
       Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
+        },
+        NodeKind::DocumentFragment => DomNodeType::Document {
+          quirks_mode: QuirksMode::NoQuirks,
         },
         NodeKind::ShadowRoot {
           mode,
@@ -1569,3 +1581,6 @@ mod template_inert_tests {
     );
   }
 }
+
+#[cfg(test)]
+mod document_fragment_tests;

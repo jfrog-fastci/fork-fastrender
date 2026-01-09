@@ -127,6 +127,7 @@ impl Dom2TreeSink {
           }
         }
         NodeKind::Document { .. }
+        | NodeKind::DocumentFragment
         | NodeKind::Doctype { .. }
         | NodeKind::Comment { .. }
         | NodeKind::ProcessingInstruction { .. }

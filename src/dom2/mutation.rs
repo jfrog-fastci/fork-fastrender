@@ -45,7 +45,7 @@ impl Document {
         _ => return Err(DomError::HierarchyRequestError),
       },
       NodeKind::Slot { .. } => match parent_kind {
-        NodeKind::Element { .. } => {}
+        NodeKind::Element { .. } | NodeKind::ShadowRoot { .. } | NodeKind::DocumentFragment => {}
         _ => return Err(DomError::HierarchyRequestError),
       },
       _ => {}
@@ -190,6 +190,82 @@ impl Document {
     Ok(())
   }
 
+  fn validate_document_fragment_splice(
+    &self,
+    parent: NodeId,
+    prefix: &[NodeId],
+    inserted: &[NodeId],
+    suffix: &[NodeId],
+  ) -> Result<(), DomError> {
+    let parent_kind = &self.node_checked(parent)?.kind;
+    if !matches!(parent_kind, NodeKind::Document { .. }) {
+      return Ok(());
+    }
+
+    let mut element_count = 0usize;
+    let mut doctype_count = 0usize;
+    let mut first_element_pos: Option<usize> = None;
+    let mut first_doctype_pos: Option<usize> = None;
+
+    let mut pos = 0usize;
+    for &id in prefix.iter().chain(inserted.iter()).chain(suffix.iter()) {
+      let kind = &self.node_checked(id)?.kind;
+      match kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => {
+          element_count += 1;
+          if element_count > 1 {
+            return Err(DomError::HierarchyRequestError);
+          }
+          if first_element_pos.is_none() {
+            first_element_pos = Some(pos);
+          }
+        }
+        NodeKind::Doctype { .. } => {
+          doctype_count += 1;
+          if doctype_count > 1 {
+            return Err(DomError::HierarchyRequestError);
+          }
+          if first_doctype_pos.is_none() {
+            first_doctype_pos = Some(pos);
+          }
+        }
+        _ => {}
+      }
+      pos += 1;
+    }
+
+    if let (Some(doctype_pos), Some(element_pos)) = (first_doctype_pos, first_element_pos) {
+      if doctype_pos > element_pos {
+        return Err(DomError::HierarchyRequestError);
+      }
+    }
+
+    Ok(())
+  }
+
+  fn validate_document_fragment_insertion(
+    &self,
+    parent: NodeId,
+    insertion_idx: usize,
+    fragment_children: &[NodeId],
+  ) -> Result<(), DomError> {
+    let children = self.node_checked(parent)?.children.as_slice();
+    let (prefix, suffix) = children.split_at(insertion_idx);
+    self.validate_document_fragment_splice(parent, prefix, fragment_children, suffix)
+  }
+
+  fn validate_document_fragment_replacement(
+    &self,
+    parent: NodeId,
+    old_child_idx: usize,
+    fragment_children: &[NodeId],
+  ) -> Result<(), DomError> {
+    let children = self.node_checked(parent)?.children.as_slice();
+    let prefix = &children[..old_child_idx];
+    let suffix = &children[old_child_idx + 1..];
+    self.validate_document_fragment_splice(parent, prefix, fragment_children, suffix)
+  }
+
   fn validate_no_cycles(&self, parent: NodeId, child: NodeId) -> Result<(), DomError> {
     if parent == child {
       return Err(DomError::HierarchyRequestError);
@@ -291,6 +367,14 @@ impl Document {
     )
   }
 
+  pub fn create_document_fragment(&mut self) -> NodeId {
+    self.push_node(
+      NodeKind::DocumentFragment,
+      None,
+      /* inert_subtree */ false,
+    )
+  }
+
   pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
     let node = self.node_checked(node)?;
     match &node.kind {
@@ -313,7 +397,6 @@ impl Document {
       _ => Err(DomError::InvalidNodeType),
     }
   }
-
   pub fn parent(&self, node: NodeId) -> Result<Option<NodeId>, DomError> {
     Ok(self.node_checked(node)?.parent)
   }
@@ -355,6 +438,40 @@ impl Document {
         .ok_or(DomError::NotFoundError)?,
       None => self.nodes[parent.index()].children.len(),
     };
+
+    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+      // DocumentFragment insertion is transparent: insert its children in order, then empty it.
+      // Pre-validate all children before mutating to ensure atomicity.
+      let frag_children_len = self.nodes[new_child.index()].children.len();
+      for idx in 0..frag_children_len {
+        let child = self.nodes[new_child.index()].children[idx];
+        self.validate_insert_hierarchy(parent, child)?;
+        self.validate_no_cycles(parent, child)?;
+      }
+
+      if frag_children_len == 0 {
+        return Ok(false);
+      }
+
+      self.validate_document_fragment_insertion(
+        parent,
+        insertion_idx,
+        self.nodes[new_child.index()].children.as_slice(),
+      )?;
+
+      let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
+      // Fragments are always detached.
+      self.nodes[new_child.index()].parent = None;
+
+      for &child in &children_to_move {
+        self.nodes[child.index()].parent = Some(parent);
+      }
+
+      self.nodes[parent.index()]
+        .children
+        .splice(insertion_idx..insertion_idx, children_to_move);
+      return Ok(true);
+    }
 
     self.validate_document_insertion(parent, new_child, reference, insertion_idx)?;
 
@@ -431,6 +548,43 @@ impl Document {
     let mut old_child_idx = self
       .index_of_child_internal(parent, old_child)?
       .ok_or(DomError::NotFoundError)?;
+
+    if matches!(self.nodes[new_child.index()].kind, NodeKind::DocumentFragment) {
+      // DocumentFragment insertion is transparent: insert its children before `old_child`, then
+      // remove `old_child`.
+      //
+      // Pre-validate all children before mutating to ensure atomicity.
+      let frag_children_len = self.nodes[new_child.index()].children.len();
+      for idx in 0..frag_children_len {
+        let child = self.nodes[new_child.index()].children[idx];
+        self.validate_insert_hierarchy(parent, child)?;
+        self.validate_no_cycles(parent, child)?;
+      }
+
+      self.validate_document_fragment_replacement(
+        parent,
+        old_child_idx,
+        self.nodes[new_child.index()].children.as_slice(),
+      )?;
+
+      let children_to_move = std::mem::take(&mut self.nodes[new_child.index()].children);
+      self.nodes[new_child.index()].parent = None;
+
+      for &child in &children_to_move {
+        self.nodes[child.index()].parent = Some(parent);
+      }
+
+      let inserted_len = children_to_move.len();
+      self.nodes[parent.index()]
+        .children
+        .splice(old_child_idx..old_child_idx, children_to_move);
+
+      // `old_child` has been shifted to the right by `inserted_len`.
+      self.nodes[parent.index()].children.remove(old_child_idx + inserted_len);
+      self.nodes[old_child.index()].parent = None;
+
+      return Ok(true);
+    }
 
     self.validate_document_replacement(parent, new_child, old_child, old_child_idx)?;
 
