@@ -451,7 +451,17 @@ fn process_pair(
         error: Some(err),
       },
     },
-    (None, None) => unreachable!("stem discovered without any snapshots"),
+    (None, None) => PageReport {
+      name: stem.to_string(),
+      status: PageStatus::Error,
+      before_snapshot: None,
+      after_snapshot: None,
+      before_png: None,
+      after_png: None,
+      schema: None,
+      summary: None,
+      error: Some("Missing in both before and after inputs".to_string()),
+    },
   }
 }
 

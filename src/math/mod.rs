@@ -4134,7 +4134,7 @@ impl MathLayoutContext {
           let (dash, gap) = match style {
             TableLineStyle::Dashed => (3.0 * thickness, thickness),
             TableLineStyle::Dotted => (thickness, thickness),
-            _ => unreachable!(),
+            _ => return,
           };
 
           if rect.width() >= rect.height() {

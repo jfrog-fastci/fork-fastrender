@@ -10679,7 +10679,23 @@ impl FastRender {
       dom_with_state = artifacts.dom;
     }
 
-    unreachable!("viewport gutter iteration should always return within bounds");
+    // The loop above should always return once it converges or hits the max iteration count.
+    // If `MAX_VIEWPORT_GUTTER_ITERATIONS` is ever configured to 0, fall back to a single pass.
+    self.pending_device_size = preserved_device_size;
+    self.layout_document_for_media_with_artifacts_owned_single_pass(
+      dom_with_state,
+      needs_top_layer_state,
+      candidate_width,
+      candidate_height,
+      media_type,
+      options,
+      viewport_scroll,
+      deadline,
+      stage_mem_budget_bytes,
+      trace,
+      layout_parallelism,
+      stats.as_deref_mut(),
+    )
   }
 
   #[allow(clippy::cognitive_complexity)]

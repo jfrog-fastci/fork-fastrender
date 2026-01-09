@@ -384,7 +384,8 @@ impl AnonymousBoxCreator {
 
     loop {
       let Some(top) = stack.last_mut() else {
-        unreachable!("split stack always returns from within the loop");
+        debug_assert!(false, "split stack should always return from within the loop");
+        return InlineSplitOutcome::Split(Vec::new());
       };
 
       if let Some(child) = top.children.next() {

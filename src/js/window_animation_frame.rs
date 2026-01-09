@@ -405,9 +405,11 @@ fn request_animation_frame_native<Host: WindowRealmHost + 'static>(
 
   let id = event_loop
     .request_animation_frame(move |host, event_loop, ts| {
-      let id = id_cell_for_cb
-        .get()
-        .expect("requestAnimationFrame id should be set");
+      let Some(id) = id_cell_for_cb.get() else {
+        return Err(crate::error::Error::Other(
+          "requestAnimationFrame internal error: missing callback id".to_string(),
+        ));
+      };
 
       let window_realm = host.window_realm();
       window_realm.reset_interrupt();

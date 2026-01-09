@@ -442,11 +442,10 @@ impl CounterManager {
   /// purposes of `counter-increment` and `counter-set`.
   pub fn enter_style_containment(&mut self) {
     self.enter_scope();
-    let idx = self
-      .scopes
-      .len()
-      .checked_sub(1)
-      .expect("enter_scope always leaves at least one scope");
+    let Some(idx) = self.scopes.len().checked_sub(1) else {
+      debug_assert!(false, "enter_scope always leaves at least one scope");
+      return;
+    };
     self.style_containment_roots.push(idx);
   }
 

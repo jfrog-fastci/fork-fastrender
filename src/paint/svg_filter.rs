@@ -3913,7 +3913,15 @@ fn apply_gaussian_blur_with_edge_mode(
             copy_pixmap_region_with_offset(&mut padded, pixmap, -(pad_x as i32), -(pad_y as i32))?;
           }
           EdgeMode::Wrap => fill_pixmap_wrap(&mut padded, pixmap, pad_x, pad_y)?,
-          EdgeMode::Duplicate => unreachable!(),
+          EdgeMode::Duplicate => {
+            debug_assert!(false, "EdgeMode::Duplicate handled by outer match");
+            copy_pixmap_region_with_offset(
+              &mut padded,
+              pixmap,
+              -(pad_x as i32),
+              -(pad_y as i32),
+            )?;
+          }
         }
 
         with_blur_cache(blur_cache, |cache| {

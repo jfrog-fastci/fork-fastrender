@@ -44,7 +44,7 @@ Run `bash scripts/cargo_agent.sh xtask js wpt-dom --help` for the full CLI. Comm
 - `--filter <GLOB|REGEX>`
   - Filter tests by id (e.g. `smoke/**` or `event_loop/**`).
 - `--backend <auto|vmjs>`
-  - Choose which JS backend to execute with (`vm-js` is the only available backend today).
+  - Choose which JS backend to execute with (`vm-js` is currently the only available backend).
 
 ## What gets executed
 

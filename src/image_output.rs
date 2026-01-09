@@ -609,7 +609,7 @@ pub fn diff_png_with_alpha(
         }
         (None, None) => {
           // Both images are missing this pixel (can happen when each image provides one of the max
-          // dimensions). Treat this as a transparent match.
+          // dimensions). Treat this as an identical transparent pixel.
           diff_image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
         }
       }

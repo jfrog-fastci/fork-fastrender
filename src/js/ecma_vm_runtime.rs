@@ -468,7 +468,7 @@ impl ExecCtxGuard {
   ) -> R {
     EXEC_CTX.with(|cell| {
       let ctx = cell.get();
-      assert!(
+      debug_assert!(
         !ctx.host.is_null() && !ctx.event_loop.is_null(),
         "vm-js host hook called outside of an active JS execution context"
       );
@@ -535,10 +535,10 @@ impl<State: 'static> VmHostHooks for EcmaVmRuntime<State> {
     let enqueue_result: std::result::Result<(), Error> =
       ExecCtxGuard::with_current::<State, _>(|_host_ptr, event_loop_ptr| unsafe {
         (&mut *event_loop_ptr).queue_microtask(move |host, event_loop| {
-          let job = job_cell_for_task
-            .borrow_mut()
-            .take()
-            .expect("vm-js Job should be present when microtask runs");
+          let Some(job) = job_cell_for_task.borrow_mut().take() else {
+            debug_assert!(false, "vm-js Job should be present when microtask runs");
+            return Ok(());
+          };
 
           let _guard = ExecCtxGuard::install(host, event_loop);
           host.reset_budget_for_run();

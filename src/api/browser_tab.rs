@@ -527,7 +527,11 @@ impl BrowserTab {
           base_url_at_this_point,
         } => {
           let snapshot = {
-            let doc = parser.document();
+            let Some(doc) = parser.document() else {
+              return Err(Error::Other(
+                "StreamingHtmlParser yielded a script without an active document".to_string(),
+              ));
+            };
             doc.clone_with_events()
           };
 
@@ -554,7 +558,11 @@ impl BrowserTab {
           // DOM before resuming parsing.
           let updated = self.host.dom().clone_with_events();
           {
-            let mut doc = parser.document_mut();
+            let Some(mut doc) = parser.document_mut() else {
+              return Err(Error::Other(
+                "StreamingHtmlParser yielded a script without an active document".to_string(),
+              ));
+            };
             *doc = updated;
           }
         }

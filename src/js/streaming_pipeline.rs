@@ -13,7 +13,7 @@
 
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{Document, NodeId, NodeKind};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::html::base_url_tracker::resolve_script_src_at_parse_time;
 use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 
@@ -44,9 +44,8 @@ impl JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let cur = self.depth.get();
-    self
-      .depth
-      .set(cur.checked_sub(1).expect("js execution depth underflow"));
+    debug_assert!(cur > 0, "js execution depth underflow");
+    self.depth.set(cur.saturating_sub(1));
   }
 }
 
@@ -211,7 +210,9 @@ impl ClassicScriptPipelineState {
     // `BlockParserUntilExecuted` for external scripts, which would incorrectly stall parsing if the
     // script is disconnected.
     {
-      let dom = self.parser.document();
+      let dom = self.parser.document().ok_or_else(|| {
+        Error::Other("internal error: parser document unavailable at script boundary".to_string())
+      })?;
       if !dom.is_connected_for_scripting(script_node_id) {
         return Ok(());
       }
@@ -225,7 +226,9 @@ impl ClassicScriptPipelineState {
 
     // Scope the `document()` borrow so we can later mutably borrow `self` when applying actions.
     let (spec, discovered) = {
-      let dom = self.parser.document();
+      let dom = self.parser.document().ok_or_else(|| {
+        Error::Other("internal error: parser document unavailable at script boundary".to_string())
+      })?;
       let spec = self.build_script_element_spec(&dom, script_node_id, base_url_at_discovery);
       let base_url_at_discovery = spec.base_url.clone();
       let discovered = self.scheduler.discovered_parser_script(
@@ -389,10 +392,12 @@ impl ClassicScriptPipelineState {
     script_id: ScriptId,
     source_text: &str,
   ) -> Result<()> {
-    let script_node_id = *self
-      .script_node_by_id
-      .get(&script_id)
-      .expect("execute_script_now requires script node id");
+    let script_node_id = *self.script_node_by_id.get(&script_id).ok_or_else(|| {
+      Error::Other(format!(
+        "execute_script_now requires script node id (script_id={})",
+        script_id.as_u64()
+      ))
+    })?;
     let script_type = *self
       .script_type_by_id
       .get(&script_id)
@@ -415,7 +420,11 @@ impl ClassicScriptPipelineState {
       });
       orchestrator.execute_script_element(host, script_node_id, script_type, &mut exec)?;
     } else {
-      let dom = self.parser.document();
+      let dom = self.parser.document().ok_or_else(|| {
+        Error::Other(
+          "internal error: parser document unavailable when executing script".to_string(),
+        )
+      })?;
       let mut document = Document::clone(&dom);
       document.attach_shadow_roots();
       host.mutate_dom(|dom| {
@@ -437,10 +446,12 @@ impl ClassicScriptPipelineState {
     script_id: ScriptId,
     source_text: String,
   ) -> Result<()> {
-    let script_node_id = *self
-      .script_node_by_id
-      .get(&script_id)
-      .expect("queue_script_task requires script node id");
+    let script_node_id = *self.script_node_by_id.get(&script_id).ok_or_else(|| {
+      Error::Other(format!(
+        "queue_script_task requires script node id (script_id={})",
+        script_id.as_u64()
+      ))
+    })?;
     let script_type = *self
       .script_type_by_id
       .get(&script_id)
@@ -449,7 +460,11 @@ impl ClassicScriptPipelineState {
     let mut document = if let Some(doc) = self.document.as_ref() {
       doc.clone()
     } else {
-      let dom = self.parser.document();
+      let dom = self.parser.document().ok_or_else(|| {
+        Error::Other(
+          "internal error: parser document unavailable when queuing script task".to_string(),
+        )
+      })?;
       Document::clone(&dom)
     };
     document.attach_shadow_roots();

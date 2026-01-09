@@ -4393,8 +4393,14 @@ impl BlockFormattingContext {
         let box_width = used_border_box;
         let float_height = margin_top + fragment.bounds.height() + margin_bottom;
 
-        let side = resolve_float_side(child.style.float, parent.style.writing_mode, parent.style.direction)
-          .unwrap_or_else(|| panic!("expected floating side for box_id={}", child.id));
+        let side =
+          match resolve_float_side(child.style.float, parent.style.writing_mode, parent.style.direction) {
+            Some(side) => side,
+            None => {
+              debug_assert!(false, "expected floating side for box_id={}", child.id);
+              FloatSide::Left
+            }
+          };
 
         let (fx, fy) = float_ctx.compute_float_position(
           side,
@@ -7602,7 +7608,11 @@ impl FormattingContext for BlockFormattingContext {
       force_y = need_y;
     }
 
-    Ok(last.expect("at least one layout pass"))
+    let Some(last) = last else {
+      debug_assert!(false, "at least one layout pass");
+      return Err(LayoutError::MissingContext("block layout produced no fragments".to_string()));
+    };
+    Ok(last)
   }
 
   fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {

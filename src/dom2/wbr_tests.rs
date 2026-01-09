@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::debug::snapshot::snapshot_dom;
 use crate::dom::{enumerate_dom_ids, DomNode, DomNodeType};
 use selectors::context::QuirksMode;
@@ -142,4 +144,3 @@ fn to_renderer_dom_with_mapping_accounts_for_synthetic_wbr_zwsp_node() {
     "reverse mapping for `<wbr>` should point at the element itself, not the synthetic child"
   );
 }
-

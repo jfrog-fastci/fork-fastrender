@@ -194,23 +194,25 @@ fn dom2_set_attribute(
 }
 
 fn extract_document_element_class_name(script_text: &str) -> Option<String> {
-  static SINGLE_QUOTE_RE: OnceLock<Regex> = OnceLock::new();
-  static DOUBLE_QUOTE_RE: OnceLock<Regex> = OnceLock::new();
+  static SINGLE_QUOTE_RE: OnceLock<Option<Regex>> = OnceLock::new();
+  static DOUBLE_QUOTE_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
   let single = SINGLE_QUOTE_RE.get_or_init(|| {
-    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*'([^']*)'"#)
-      .expect("valid regex")
+    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*'([^']*)'"#).ok()
   });
-  if let Some(caps) = single.captures(script_text) {
-    return Some(caps.get(1)?.as_str().to_string());
+  if let Some(single) = single.as_ref() {
+    if let Some(caps) = single.captures(script_text) {
+      return Some(caps.get(1)?.as_str().to_string());
+    }
   }
 
   let double = DOUBLE_QUOTE_RE.get_or_init(|| {
-    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*"([^"]*)""#)
-      .expect("valid regex")
+    Regex::new(r#"document\s*\.\s*documentElement\s*\.\s*className\s*=\s*"([^"]*)""#).ok()
   });
-  if let Some(caps) = double.captures(script_text) {
-    return Some(caps.get(1)?.as_str().to_string());
+  if let Some(double) = double.as_ref() {
+    if let Some(caps) = double.captures(script_text) {
+      return Some(caps.get(1)?.as_str().to_string());
+    }
   }
 
   None

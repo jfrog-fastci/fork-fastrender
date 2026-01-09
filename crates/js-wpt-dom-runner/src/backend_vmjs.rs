@@ -2118,6 +2118,7 @@ impl JsWptRuntime {
 
         formatted.unwrap_or_else(|_| "[object]".to_string())
       }
+      Value::BigInt(b) => b.to_decimal_string(),
       _ => {
         self
           .heap

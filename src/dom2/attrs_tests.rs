@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::dom::SVG_NAMESPACE;
 use selectors::context::QuirksMode;
 

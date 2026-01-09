@@ -604,8 +604,13 @@ impl Document {
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled)
-        .expect("document root must be representable in renderer DOM snapshot"),
+      node_type: node_kind_to_dom_node_type(&root_src.kind, scripting_enabled).unwrap_or_else(|| {
+        debug_assert!(false, "document root must be representable in renderer DOM snapshot");
+        DomNodeType::Document {
+          quirks_mode: QuirksMode::NoQuirks,
+          scripting_enabled,
+        }
+      }),
       children: Vec::with_capacity(root_src.children.len()),
     };
 
@@ -645,11 +650,11 @@ impl Document {
           node_type: child_node_type,
           children: Vec::with_capacity(child_src.children.len() + extra_capacity),
         });
-        let child_dst = dst
-          .children
-          .last_mut()
-          .map(|node| node as *mut DomNode)
-          .expect("child node missing after push");
+        let Some(child_dst) = dst.children.last_mut() else {
+          debug_assert!(false, "child node missing after push");
+          continue;
+        };
+        let child_dst = child_dst as *mut DomNode;
         stack.push(Frame {
           src: child_id,
           dst: child_dst,
@@ -765,11 +770,10 @@ impl Document {
           node_type: child_node_type,
           children: Vec::with_capacity(child_src.children.len() + extra_capacity),
         });
-        let child_dst = dst
-          .children
-          .last_mut()
-          .map(|node| node as *mut DomNode)
-          .expect("child node missing after push");
+        let Some(child_dst) = dst.children.last_mut().map(|node| node as *mut DomNode) else {
+          debug_assert!(false, "child node missing after push");
+          continue;
+        };
         stack.push(Frame {
           src: child_id,
           dst: child_dst,
@@ -853,7 +857,13 @@ impl Document {
   fn build_selector_preorder_mapping(&self) -> SelectorDomMapping {
     self
       .build_selector_preorder_mapping_from(self.root)
-      .expect("dom2 document root missing")
+      .unwrap_or_else(|| {
+        debug_assert!(false, "dom2 document root missing");
+        SelectorDomMapping {
+          preorder_to_node_id: vec![None],
+          node_id_to_preorder: vec![0; self.nodes.len()],
+        }
+      })
   }
 
   fn build_selector_preorder_mapping_from(&self, root: NodeId) -> Option<SelectorDomMapping> {
@@ -956,7 +966,9 @@ impl Document {
         self.build_selector_preorder_mapping(),
       )
     } else {
-      let scope_id = scope.expect("scope is Some when not using document snapshot");
+      let Some(scope_id) = scope else {
+        return Ok(None);
+      };
       let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
         return Ok(None);
       };
@@ -1105,7 +1117,9 @@ impl Document {
         self.build_selector_preorder_mapping(),
       )
     } else {
-      let scope_id = scope.expect("scope is Some when not using document snapshot");
+      let Some(scope_id) = scope else {
+        return Ok(Vec::new());
+      };
       let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
         return Ok(Vec::new());
       };

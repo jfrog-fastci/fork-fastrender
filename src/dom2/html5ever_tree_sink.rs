@@ -246,7 +246,9 @@ impl Dom2TreeSink {
       return;
     }
 
-    let reference = reference.unwrap();
+    let Some(reference) = reference else {
+      return;
+    };
     let Some(insert_pos) = doc.node(parent).children.iter().position(|&c| c == reference) else {
       return;
     };
@@ -261,7 +263,10 @@ impl Dom2TreeSink {
     let can_merge_next = !break_text_merge && matches!(&doc.node(reference).kind, NodeKind::Text { .. });
 
     if can_merge_prev {
-      let prev_id = prev.unwrap();
+      let Some(prev_id) = prev else {
+        debug_assert!(false, "can_merge_prev implies a previous sibling exists");
+        return;
+      };
       if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
         content.push_str(text);
       }
@@ -616,13 +621,20 @@ impl TreeSink for Dom2TreeSink {
         && matches!(&doc.node(next).kind, NodeKind::Text { .. })
       {
         let next_content = match &mut doc.node_mut(next).kind {
-          NodeKind::Text { content } => std::mem::take(content),
-          _ => unreachable!("kind checked above"),
+          NodeKind::Text { content } => Some(std::mem::take(content)),
+          _ => {
+            debug_assert!(false, "kind checked above");
+            None
+          }
         };
-        if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
-          content.push_str(&next_content);
+        if let Some(next_content) = next_content {
+          if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
+            content.push_str(&next_content);
+          } else {
+            debug_assert!(false, "prev kind checked above");
+          }
+          Self::detach_from_parent(&mut doc, next);
         }
-        Self::detach_from_parent(&mut doc, next);
       }
     }
 

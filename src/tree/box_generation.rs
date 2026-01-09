@@ -631,7 +631,10 @@ fn push_escaped_text(out: &mut String, value: &str) {
     match bytes[idx] {
       b'&' => out.push_str("&amp;"),
       b'<' => out.push_str("&lt;"),
-      _ => unreachable!("memchr2 returned non-matching byte"),
+      _ => {
+        debug_assert!(false, "memchr2 returned non-matching byte");
+        out.push(bytes[idx] as char);
+      }
     }
     last = idx + 1;
   }
@@ -652,7 +655,10 @@ fn push_escaped_attr(out: &mut String, value: &str) {
       b'&' => out.push_str("&amp;"),
       b'<' => out.push_str("&lt;"),
       b'"' => out.push_str("&quot;"),
-      _ => unreachable!("memchr3 returned non-matching byte"),
+      _ => {
+        debug_assert!(false, "memchr3 returned non-matching byte");
+        out.push(bytes[idx] as char);
+      }
     }
     last = idx + 1;
   }
@@ -1639,7 +1645,10 @@ fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Opt
     match visibility {
       Visibility::Visible => out.push_str("visible"),
       Visibility::Hidden => out.push_str("hidden"),
-      Visibility::Collapse => unreachable!("collapse is normalized to hidden"),
+      Visibility::Collapse => {
+        debug_assert!(false, "collapse is normalized to hidden");
+        out.push_str("hidden")
+      }
     }
   }
 
@@ -3209,7 +3218,8 @@ fn generate_boxes_for_styled_into(
                 || class_attr.contains("ad__slot")
                 || class_attr.contains("should-hold-space"))
             {
-              stack.pop().expect("frame exists");
+              let popped = stack.pop();
+              debug_assert!(popped.is_some(), "frame exists");
               counters.leave_scope();
               continue;
             }
@@ -3218,7 +3228,8 @@ fn generate_boxes_for_styled_into(
 
         // display:none suppresses box generation entirely.
         if styled.styles.display == Display::None {
-          stack.pop().expect("frame exists");
+          let popped = stack.pop();
+          debug_assert!(popped.is_some(), "frame exists");
           counters.leave_scope();
           continue;
         }
@@ -3228,7 +3239,8 @@ fn generate_boxes_for_styled_into(
         // newline character that could be collapsed to a space).
         if let Some(tag) = styled.node.tag_name() {
           if tag.eq_ignore_ascii_case("br") {
-            stack.pop().expect("frame exists");
+            let popped = stack.pop();
+            debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
             let mut box_node = BoxNode::new_line_break(Arc::clone(&styled.styles));
             box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
@@ -3247,7 +3259,8 @@ fn generate_boxes_for_styled_into(
             let dom_subtree = dom_subtree_from_styled(styled);
             let math_root = crate::math::parse_mathml(&dom_subtree)
               .unwrap_or_else(|| crate::math::MathNode::Row(Vec::new()));
-            stack.pop().expect("frame exists");
+            let popped = stack.pop();
+            debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
             let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
             let box_node = BoxNode::new_replaced(
@@ -3277,7 +3290,8 @@ fn generate_boxes_for_styled_into(
         let mut appearance_none_form_control: Option<FormControl> = None;
         if let Some(form_control) = create_form_control_replaced(styled) {
           if !matches!(form_control.appearance, crate::style::types::Appearance::None) {
-            stack.pop().expect("frame exists");
+            let popped = stack.pop();
+            debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
             let style = blockify_style_for_flex_or_grid_item_if_needed(&styled.styles, &stack);
             let box_node = BoxNode::new_replaced(
@@ -3305,7 +3319,8 @@ fn generate_boxes_for_styled_into(
             || tag.eq_ignore_ascii_case("option")
             || tag.eq_ignore_ascii_case("optgroup")
           {
-            stack.pop().expect("frame exists");
+            let popped = stack.pop();
+            debug_assert!(popped.is_some(), "frame exists");
             counters.leave_scope();
             continue;
           }
@@ -3335,7 +3350,8 @@ fn generate_boxes_for_styled_into(
               picture_sources_for_img,
               site_compat,
             ) {
-              stack.pop().expect("frame exists");
+              let popped = stack.pop();
+              debug_assert!(popped.is_some(), "frame exists");
               counters.leave_scope();
               let mut box_node = box_node;
               box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
@@ -3399,7 +3415,10 @@ fn generate_boxes_for_styled_into(
           composed_children(styled, styled_lookup)
         };
         let composed_len = composed_children.len();
-        let frame = stack.last_mut().expect("frame exists");
+        let Some(frame) = stack.last_mut() else {
+          debug_assert!(false, "frame exists");
+          break;
+        };
         frame.composed_children = Some(composed_children);
         frame.children = Vec::with_capacity(composed_len + 3 + fallback_children.len());
         frame.child_idx = 0;
@@ -3642,7 +3661,10 @@ fn generate_boxes_for_styled_into(
           | Display::TableCaption => {
             BoxNode::new_block(style, FormattingContextType::Block, children)
           }
-          Display::None | Display::Contents => unreachable!("handled above"),
+          Display::None | Display::Contents => {
+            debug_assert!(false, "display:none/contents should be handled above");
+            BoxNode::new_block(style, FormattingContextType::Block, children)
+          }
         };
 
         box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
@@ -3984,7 +4006,12 @@ fn create_pseudo_element_box(
   };
 
   let ContentValue::Items(items) = &content_value else {
-    unreachable!("non-empty pseudo-element content values must be ContentValue::Items");
+    debug_assert!(
+      false,
+      "non-empty pseudo-element content values must be ContentValue::Items"
+    );
+    counters.leave_scope();
+    return None;
   };
 
   for item in items {
@@ -4091,7 +4118,14 @@ fn create_pseudo_element_box(
 
   // Wrap in appropriate box type based on display
   let mut pseudo_box = match styles.display {
-    Display::None => unreachable!("display:none pseudo-elements are filtered before counter scope"),
+    Display::None => {
+      debug_assert!(
+        false,
+        "display:none pseudo-elements are filtered before counter scope"
+      );
+      counters.leave_scope();
+      return None;
+    }
     Display::Block | Display::FlowRoot | Display::ListItem => {
       BoxNode::new_block(pseudo_style.clone(), fc_type, children)
     }
@@ -4148,30 +4182,29 @@ fn create_pseudo_element_box(
 }
 
 fn create_box_from_style(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> Option<BoxNode> {
-  if matches!(style.display, Display::None) {
-    return None;
-  }
-
   let fc_type = style
     .display
     .formatting_context_type()
     .unwrap_or(FormattingContextType::Block);
 
-  Some(match style.display {
-    Display::Block | Display::FlowRoot | Display::ListItem => BoxNode::new_block(style, fc_type, children),
+  match style.display {
+    Display::None => None,
+    Display::Block | Display::FlowRoot | Display::ListItem => {
+      Some(BoxNode::new_block(style, fc_type, children))
+    }
     Display::Inline
     | Display::Ruby
     | Display::RubyBase
     | Display::RubyText
     | Display::RubyBaseContainer
-    | Display::RubyTextContainer => BoxNode::new_inline(style, children),
-    Display::InlineBlock => BoxNode::new_inline_block(style, fc_type, children),
-    Display::Flex => BoxNode::new_block(style, FormattingContextType::Flex, children),
-    Display::InlineFlex => BoxNode::new_inline_block(style, FormattingContextType::Flex, children),
-    Display::Grid => BoxNode::new_block(style, FormattingContextType::Grid, children),
-    Display::InlineGrid => BoxNode::new_inline_block(style, FormattingContextType::Grid, children),
-    Display::Table => BoxNode::new_block(style, FormattingContextType::Table, children),
-    Display::InlineTable => BoxNode::new_inline_block(style, FormattingContextType::Table, children),
+    | Display::RubyTextContainer => Some(BoxNode::new_inline(style, children)),
+    Display::InlineBlock => Some(BoxNode::new_inline_block(style, fc_type, children)),
+    Display::Flex => Some(BoxNode::new_block(style, FormattingContextType::Flex, children)),
+    Display::InlineFlex => Some(BoxNode::new_inline_block(style, FormattingContextType::Flex, children)),
+    Display::Grid => Some(BoxNode::new_block(style, FormattingContextType::Grid, children)),
+    Display::InlineGrid => Some(BoxNode::new_inline_block(style, FormattingContextType::Grid, children)),
+    Display::Table => Some(BoxNode::new_block(style, FormattingContextType::Table, children)),
+    Display::InlineTable => Some(BoxNode::new_inline_block(style, FormattingContextType::Table, children)),
     Display::TableRow
     | Display::TableCell
     | Display::TableRowGroup
@@ -4179,10 +4212,9 @@ fn create_box_from_style(style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> O
     | Display::TableFooterGroup
     | Display::TableColumn
     | Display::TableColumnGroup
-    | Display::TableCaption => BoxNode::new_block(style, FormattingContextType::Block, children),
-    Display::Contents => BoxNode::new_inline(style, children),
-    Display::None => unreachable!("handled above"),
-  })
+    | Display::TableCaption => Some(BoxNode::new_block(style, FormattingContextType::Block, children)),
+    Display::Contents => Some(BoxNode::new_inline(style, children)),
+  }
 }
 
 fn build_appearance_none_form_control_fallback(

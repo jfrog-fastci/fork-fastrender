@@ -643,7 +643,11 @@ fn clone_dom_subtree(node: &StyledNode) -> DomNode {
       frame.next_child += 1;
 
       dst.children.push(clone_shallow(child_src));
-      let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut DomNode;
+      let Some(child_dst) = dst.children.last_mut() else {
+        debug_assert!(false, "child was just pushed");
+        continue;
+      };
+      let child_dst = child_dst as *mut DomNode;
 
       stack.push(frame);
       stack.push(Frame {

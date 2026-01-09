@@ -239,7 +239,14 @@ impl WebUrlSearchParams {
           }
         }
         if !inserted {
-          out.push((new_key.take().expect("new_key set when !inserted"), new_value));
+          let key = match new_key.take() {
+            Some(key) => key,
+            None => {
+              debug_assert!(false, "new_key set when !inserted");
+              try_clone_str(name)?
+            }
+          };
+          out.push((key, new_value));
         }
 
         // Ensure the new list remains serializable within output limits before committing the
@@ -277,7 +284,14 @@ impl WebUrlSearchParams {
           }
         }
         if !inserted {
-          out.push((new_key.take().expect("new_key set when !inserted"), new_value));
+          let key = match new_key.take() {
+            Some(key) => key,
+            None => {
+              debug_assert!(false, "new_key set when !inserted");
+              try_clone_str(name)?
+            }
+          };
+          out.push((key, new_value));
         }
 
         *pairs = out;

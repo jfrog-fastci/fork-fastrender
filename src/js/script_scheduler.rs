@@ -15,9 +15,8 @@ struct JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let cur = self.depth.get();
-    self
-      .depth
-      .set(cur.checked_sub(1).expect("js execution depth underflow"));
+    debug_assert!(cur > 0, "js execution depth underflow");
+    self.depth.set(cur.saturating_sub(1));
   }
 }
 

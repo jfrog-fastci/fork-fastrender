@@ -334,16 +334,12 @@ impl BrowserDocumentDom2 {
     &mut self,
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    if self.prepared.is_none() {
+    let animation_time = self.animation_time_for_paint();
+    let Some(prepared) = self.prepared.as_ref() else {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocumentDom2 has no cached layout; call render_frame() first".to_string(),
       }));
     };
-    let animation_time = self.animation_time_for_paint();
-    let prepared = self
-      .prepared
-      .as_ref()
-      .expect("prepared checked by early return");
 
     // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
     // `RenderOptions::{timeout,cancel_callback}`.
@@ -489,13 +485,11 @@ impl crate::js::DomHost for BrowserDocumentDom2 {
   where
     F: FnOnce(&mut crate::dom2::Document) -> (R, bool),
   {
-    let mut out: Option<R> = None;
-    let _changed = BrowserDocumentDom2::mutate_dom(self, |dom| {
-      let (result, changed) = f(dom);
-      out = Some(result);
-      changed
-    });
-    out.expect("DomHost::mutate_dom closure did not set a result")
+    let (result, changed) = f(&mut self.dom);
+    if changed {
+      self.invalidate_all();
+    }
+    result
   }
 }
 

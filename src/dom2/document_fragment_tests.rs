@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{Document, DomError, NodeId};
 use selectors::context::QuirksMode;
 
@@ -147,4 +149,3 @@ fn atomicity_on_error() {
 
   assert_parent_child_invariants(&doc);
 }
-

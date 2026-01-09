@@ -1904,9 +1904,10 @@ impl FragmentTree {
 
     while !stack.is_empty() {
       let child = {
-        let frame = stack
-          .last_mut()
-          .expect("stack non-empty in hit_test_path_within_root");
+        let Some(frame) = stack.last_mut() else {
+          debug_assert!(false, "stack non-empty in hit_test_path_within_root");
+          return None;
+        };
         if frame.next_child == 0 {
           None
         } else {
@@ -1928,9 +1929,10 @@ impl FragmentTree {
       }
 
       let is_hit = {
-        let frame = stack
-          .last()
-          .expect("stack non-empty in hit_test_path_within_root");
+        let Some(frame) = stack.last() else {
+          debug_assert!(false, "stack non-empty in hit_test_path_within_root");
+          return None;
+        };
         frame.node.contains_point(frame.point)
       };
 

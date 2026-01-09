@@ -411,13 +411,11 @@ impl crate::js::DomHost for BrowserDocument2 {
   where
     F: FnOnce(&mut Document) -> (R, bool),
   {
-    let mut out: Option<R> = None;
-    let _changed = BrowserDocument2::mutate_dom(self, |dom| {
-      let (result, changed) = f(dom);
-      out = Some(result);
-      changed
-    });
-    out.expect("DomHost::mutate_dom closure did not set a result")
+    let (result, changed) = f(&mut self.dom);
+    if changed {
+      self.invalidate_all();
+    }
+    result
   }
 }
 

@@ -452,7 +452,7 @@ fn decimal_str_for_usize(mut value: usize, buf: &mut [u8; 20]) -> &str {
     }
   }
   // SAFETY: digits are always valid UTF-8.
-  std::str::from_utf8(&buf[i..]).expect("decimal digits should be valid UTF-8")
+  unsafe { std::str::from_utf8_unchecked(&buf[i..]) }
 }
 
 fn get_or_create_node_wrapper(

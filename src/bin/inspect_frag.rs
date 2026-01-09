@@ -1082,7 +1082,15 @@ fn inspect_pipeline(
       )?;
       matches.first().map(|m| m.node.node_id)
     }
-    _ => unreachable!("validated mutual exclusion above"),
+    _ => {
+      return Err(
+        io::Error::new(
+          io::ErrorKind::InvalidInput,
+          "inspect_frag: --filter-id and --filter-selector are mutually exclusive",
+        )
+        .into(),
+      );
+    }
   };
 
   if let Some(node_id) = target_node_id {

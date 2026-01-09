@@ -8801,7 +8801,11 @@ impl FormattingContext for InlineFormattingContext {
       force_y = need_y;
     }
 
-    Ok(last.expect("at least one layout pass"))
+    let Some(last) = last else {
+      debug_assert!(false, "at least one layout pass");
+      return Err(LayoutError::MissingContext("inline layout produced no fragments".to_string()));
+    };
+    Ok(last)
   }
 
   fn compute_intrinsic_inline_size(
@@ -9680,7 +9684,10 @@ impl InlineFormattingContext {
       writing_mode,
       direction,
     )
-    .unwrap_or_else(|| panic!("expected floating side for box_id={}", float_node.id));
+    .unwrap_or_else(|| {
+      debug_assert!(false, "expected floating side for box_id={}", float_node.id);
+      crate::layout::float_context::FloatSide::Left
+    });
 
     let cleared_y = float_ctx.compute_clearance(
       min_y,

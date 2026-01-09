@@ -1687,7 +1687,7 @@ impl FormattingContext for FlexFormattingContext {
                                         key.0,
                                         key.1
                                     );
-                                    assert!(
+                                    debug_assert!(
                                         !(abort_after_first && *guard >= log_first_n),
                                         "[flex-first-abort] seq={}",
                                         *guard
@@ -2515,7 +2515,10 @@ impl FormattingContext for FlexFormattingContext {
                       let mode = match avail.width {
                         AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
                         AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
-                        _ => unreachable!("width_is_intrinsic_probe guarded avail.width"),
+                        _ => {
+                          debug_assert!(false, "width_is_intrinsic_probe guarded avail.width");
+                          IntrinsicSizingMode::MaxContent
+                        }
                       };
                       if let Some(border_box_width) = fit_border_box_width {
                         // Fit-content sizing is already resolved in border-box terms. Convert to
@@ -4504,7 +4507,11 @@ impl FormattingContext for FlexFormattingContext {
       force_y = need_y;
     }
 
-    Ok(last.expect("at least one layout pass"))
+    let Some(last) = last else {
+      debug_assert!(false, "at least one layout pass");
+      return Err(LayoutError::MissingContext("flex layout produced no fragments".to_string()));
+    };
+    Ok(last)
   }
 
   /// Computes intrinsic size by running Taffy with appropriate constraints

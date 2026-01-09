@@ -88,7 +88,11 @@ impl<'a, Host> DomHost for ParserHost<'a, Host> {
   where
     F: FnOnce(&Document) -> R,
   {
-    let dom = self.parser.document();
+    let Some(dom) = self.parser.document() else {
+      debug_assert!(false, "StreamingHtmlParser document unavailable");
+      let fallback = Document::new(selectors::context::QuirksMode::NoQuirks);
+      return f(&fallback);
+    };
     f(&dom)
   }
 
@@ -96,7 +100,12 @@ impl<'a, Host> DomHost for ParserHost<'a, Host> {
   where
     F: FnOnce(&mut Document) -> (R, bool),
   {
-    let mut dom = self.parser.document_mut();
+    let Some(mut dom) = self.parser.document_mut() else {
+      debug_assert!(false, "StreamingHtmlParser document unavailable");
+      let mut fallback = Document::new(selectors::context::QuirksMode::NoQuirks);
+      let (result, _changed) = f(&mut fallback);
+      return result;
+    };
     let (result, _changed) = f(&mut dom);
     result
   }
@@ -396,7 +405,11 @@ where
           event_loop.perform_microtask_checkpoint(host)?;
         }
 
-        let doc = parser.document();
+        let Some(doc) = parser.document() else {
+          return Err(Error::Other(
+            "html_script_processing: parser document unavailable".to_string(),
+          ));
+        };
         let base_tracker = BaseUrlTracker::new(base_url_at_this_point.as_deref());
         let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base_tracker);
         let discovered =

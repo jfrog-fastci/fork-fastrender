@@ -606,7 +606,9 @@ fn trim_clipped_content_start(content: &mut FragmentNode, axis: &FragmentAxis, t
     }
   }
 
-  let token = target.take().unwrap();
+  let Some(token) = target.take() else {
+    return;
+  };
   let mut done = false;
   walk(content, axis, &token, &mut done);
 }

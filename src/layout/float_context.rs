@@ -132,7 +132,10 @@ pub(crate) fn resolve_float_side(float: Float, writing_mode: WritingMode, direct
         } else {
           FloatSide::Left
         }),
-        _ => unreachable!(),
+        _ => {
+          debug_assert!(false, "resolve_float_side: matched Float::Left|Right above");
+          Some(FloatSide::Left)
+        }
       }
     }
   }
@@ -168,7 +171,10 @@ pub(crate) fn resolve_clear_side(
             ClearSide::Left
           }
         }
-        _ => unreachable!(),
+        _ => {
+          debug_assert!(false, "resolve_clear_side: matched Clear::Left|Right above");
+          ClearSide::None
+        }
       }
     }
   }

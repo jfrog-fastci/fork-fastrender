@@ -40,14 +40,14 @@ struct EventLoopStackGuard {
 impl Drop for EventLoopStackGuard {
   fn drop(&mut self) {
     EVENT_LOOP_STACK.with(|stack| {
-      let popped = stack
-        .borrow_mut()
-        .pop()
-        .expect("event loop stack underflow");
-      debug_assert_eq!(
-        popped, self.expected_ptr,
-        "event loop stack corruption (expected different pointer)"
-      );
+      let popped = stack.borrow_mut().pop();
+      debug_assert!(popped.is_some(), "event loop stack underflow");
+      if let Some(popped) = popped {
+        debug_assert_eq!(
+          popped, self.expected_ptr,
+          "event loop stack corruption (expected different pointer)"
+        );
+      }
     });
   }
 }

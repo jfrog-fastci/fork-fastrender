@@ -1247,6 +1247,28 @@ pub fn lint_source(path: &Path, source: &str) -> Vec<Violation> {
   let bytes = source.as_bytes();
   let lines: Vec<&str> = source.lines().collect();
 
+  // `#![cfg(test)]` is an *inner* attribute that applies to the entire module/file.
+  //
+  // The main scanner below only knows how to skip the *next item* after a `#[cfg(test)]` attribute,
+  // which is correct for outer attributes but not for `#![...]`. If a file is explicitly marked
+  // test-only, skip it entirely so test scaffolding doesn't block `lint-no-panics`.
+  {
+    let mut idx = 0usize;
+    loop {
+      idx = skip_ws_and_comments(bytes, idx);
+      if bytes.get(idx..idx + 3) == Some(b"#![") {
+        if let Some((end_after, content)) = parse_attribute(source, bytes, idx) {
+          if attribute_is_cfg_test(content) {
+            return Vec::new();
+          }
+          idx = end_after;
+          continue;
+        }
+      }
+      break;
+    }
+  }
+
   let mut violations = Vec::new();
   let mut i = 0usize;
   let mut line = 1usize;
@@ -1614,5 +1636,24 @@ pub fn test_only() {
     );
     assert_eq!(violations[0].path, PathBuf::from("mod.rs"));
     assert_eq!(violations[0].kind, ViolationKind::Unwrap);
+  }
+
+  #[test]
+  fn ignores_file_level_cfg_test_modules() {
+    let src = r#"
+//! This whole file is test-only.
+#![cfg(test)]
+
+pub fn demo() {
+  let _ = Some(1).unwrap();
+  panic!("boom");
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert!(
+      violations.is_empty(),
+      "expected file-level cfg(test) modules to be ignored: {violations:#?}"
+    );
   }
 }

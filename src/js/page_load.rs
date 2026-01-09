@@ -1,7 +1,7 @@
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
-use crate::js::{EventLoop, ScriptScheduler, ScriptSchedulerAction, TaskSource};
+use crate::js::{EventLoop, ScriptElementSpec, ScriptScheduler, ScriptSchedulerAction, TaskSource};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
@@ -16,9 +16,8 @@ struct JsExecutionGuard {
 impl Drop for JsExecutionGuard {
   fn drop(&mut self) {
     let cur = self.depth.get();
-    self
-      .depth
-      .set(cur.checked_sub(1).expect("js execution depth underflow"));
+    debug_assert!(cur > 0, "js execution depth underflow");
+    self.depth.set(cur.saturating_sub(1));
   }
 }
 
@@ -230,25 +229,28 @@ where
       event_loop.perform_microtask_checkpoint(self)?;
     }
 
-    let spec = {
-      let sink = self.parser.sink();
-      let doc = sink.document();
-      crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
-        &doc,
-        script_node,
-        &*sink.base_url_tracker(),
-      )
-    };
-    let base_url_at_discovery = self.parser.sink().current_base_url();
-    let discovered =
-      self
-        .scheduler
-        .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
+    let spec = self.build_script_spec(script_node)?;
+    let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
+    let discovered = self.scheduler.discovered_parser_script(
+      spec,
+      script_node,
+      base_url_at_discovery,
+    )?;
     self.script_nodes.insert(discovered.id, script_node);
     self.apply_actions(discovered.actions, event_loop)?;
     Ok(())
   }
 
+  fn build_script_spec(&self, script_node: NodeId) -> Result<ScriptElementSpec> {
+    let Some(sink) = self.parser.sink() else {
+      return Err(Error::Other("page_load: parser sink unavailable".to_string()));
+    };
+    let doc = sink.document();
+    let base = sink.base_url_tracker();
+    Ok(crate::js::streaming::build_parser_inserted_script_element_spec_dom2(
+      &doc, script_node, &base,
+    ))
+  }
   fn apply_actions(
     &mut self,
     actions: Vec<ScriptSchedulerAction<NodeId>>,

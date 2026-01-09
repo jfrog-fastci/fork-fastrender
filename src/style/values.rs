@@ -815,21 +815,14 @@ impl CalcLength {
         Some(total)
       }
       CalcLengthKind::Min | CalcLengthKind::Max => {
-        let mut extremum = match self.kind {
-          CalcLengthKind::Min => f32::INFINITY,
-          CalcLengthKind::Max => f32::NEG_INFINITY,
-          _ => unreachable!(),
-        };
+        let is_min = self.kind == CalcLengthKind::Min;
+        let mut extremum = if is_min { f32::INFINITY } else { f32::NEG_INFINITY };
         let mut current = 0.0;
         let mut saw_any = false;
 
         for term in self.terms() {
           if term.unit == LengthUnit::Calc {
-            extremum = match self.kind {
-              CalcLengthKind::Min => extremum.min(current),
-              CalcLengthKind::Max => extremum.max(current),
-              _ => extremum,
-            };
+            extremum = if is_min { extremum.min(current) } else { extremum.max(current) };
             current = 0.0;
             saw_any = true;
             continue;
@@ -838,11 +831,7 @@ impl CalcLength {
         }
 
         // Final argument
-        extremum = match self.kind {
-          CalcLengthKind::Min => extremum.min(current),
-          CalcLengthKind::Max => extremum.max(current),
-          _ => extremum,
-        };
+        extremum = if is_min { extremum.min(current) } else { extremum.max(current) };
         if !saw_any && !extremum.is_finite() {
           return None;
         }
@@ -953,10 +942,11 @@ impl CalcLength {
         Some(total)
       }
       CalcLengthKind::Min | CalcLengthKind::Max => {
-        let mut extremum = match self.kind {
-          CalcLengthKind::Min => f32::INFINITY,
-          CalcLengthKind::Max => f32::NEG_INFINITY,
-          _ => unreachable!(),
+        let mut extremum = if self.kind == CalcLengthKind::Min {
+          f32::INFINITY
+        } else {
+          debug_assert!(self.kind == CalcLengthKind::Max);
+          f32::NEG_INFINITY
         };
         let mut current = 0.0;
         let mut saw_any = false;
@@ -1045,20 +1035,13 @@ impl CalcLength {
         Some(total)
       }
       CalcLengthKind::Min | CalcLengthKind::Max => {
-        let mut extremum = if self.kind == CalcLengthKind::Min {
-          f32::INFINITY
-        } else {
-          f32::NEG_INFINITY
-        };
+        let is_min = self.kind == CalcLengthKind::Min;
+        let mut extremum = if is_min { f32::INFINITY } else { f32::NEG_INFINITY };
         let mut current = 0.0;
         let mut saw_sep = false;
         for term in self.terms() {
           if term.unit == LengthUnit::Calc {
-            extremum = match self.kind {
-              CalcLengthKind::Min => extremum.min(current),
-              CalcLengthKind::Max => extremum.max(current),
-              _ => extremum,
-            };
+            extremum = if is_min { extremum.min(current) } else { extremum.max(current) };
             current = 0.0;
             saw_sep = true;
             continue;
@@ -1068,11 +1051,7 @@ impl CalcLength {
           }
           current += Length::new(term.value, term.unit).to_px();
         }
-        extremum = match self.kind {
-          CalcLengthKind::Min => extremum.min(current),
-          CalcLengthKind::Max => extremum.max(current),
-          _ => extremum,
-        };
+        extremum = if is_min { extremum.min(current) } else { extremum.max(current) };
         if !saw_sep && !extremum.is_finite() {
           return None;
         }
@@ -1120,7 +1099,10 @@ impl CalcLength {
         CalcLengthKind::Min => "min(",
         CalcLengthKind::Max => "max(",
         CalcLengthKind::Clamp => "clamp(",
-        CalcLengthKind::Linear => unreachable!(),
+        CalcLengthKind::Linear => {
+          debug_assert!(false, "calc-length kind should not be linear here");
+          "calc("
+        }
       };
 
       out.write_str(func_name)?;

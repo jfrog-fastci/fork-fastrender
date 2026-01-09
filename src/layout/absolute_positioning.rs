@@ -522,11 +522,19 @@ impl AbsoluteLayout {
     } else if matches!(width_value, WidthValue::Keyword(_)) && style.display.is_inline_level() {
       true
     } else {
-      let left = left.unwrap();
-      let right = right.unwrap();
-      let width = specified_width_for_overconstraint.unwrap();
-      let total = left + right + margin_left + margin_right + total_horizontal_spacing + width;
-      (total - cb_width).abs() > 0.01
+      match (left, right, specified_width_for_overconstraint) {
+        (Some(left), Some(right), Some(width)) => {
+          let total = left + right + margin_left + margin_right + total_horizontal_spacing + width;
+          (total - cb_width).abs() > 0.01
+        }
+        _ => {
+          debug_assert!(
+            false,
+            "insets_and_width_specified implies left/right/width are all Some"
+          );
+          false
+        }
+      }
     };
 
     let (resolved_left, resolved_right) = if overconstrained {

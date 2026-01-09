@@ -97,7 +97,9 @@ impl DomJsRealm {
     let window = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(window)?;
     let Value::Object(window_obj) = window else {
-      unreachable!("alloc_object_value must return an object");
+      return Err(VmError::InvariantViolation(
+        "alloc_object_value must return an object",
+      ));
     };
 
     // Prototypes.
@@ -142,7 +144,9 @@ impl DomJsRealm {
     let _ = rt.heap_mut().add_root(document)?;
     rt.set_prototype(document, Some(document_proto))?;
     let Value::Object(document_obj) = document else {
-      unreachable!("alloc_object_value must return an object");
+      return Err(VmError::InvariantViolation(
+        "alloc_object_value must return an object",
+      ));
     };
 
     // Platform-object bookkeeping (brand checks + identity).
@@ -240,7 +244,9 @@ impl DomJsRealm {
 
 fn prop_key_str(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {
   let Value::String(s) = rt.alloc_string_value(name)? else {
-    unreachable!("alloc_string_value must return a string");
+    return Err(VmError::InvariantViolation(
+      "alloc_string_value must return a string",
+    ));
   };
   Ok(PropertyKey::String(s))
 }
@@ -279,7 +285,7 @@ fn define_accessor(
 fn to_rust_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
   let v = rt.to_string(v)?;
   let Value::String(s) = v else {
-    unreachable!("ToString must return a string");
+    return Err(VmError::InvariantViolation("ToString must return a string"));
   };
   Ok(rt.heap().get_string(s)?.to_utf8_lossy())
 }
@@ -651,7 +657,7 @@ fn with_event<R>(
   if let Some(ptr) = active {
     // SAFETY: entries in `active_events` are only created by `dispatchEvent` and removed once
     // dispatch completes. While present, the pointer is valid.
-    let event = unsafe { ptr.as_ptr().as_mut().expect("NonNull is never null") };
+    let event = unsafe { &mut *ptr.as_ptr() };
     return Ok(f(event));
   }
 
@@ -724,7 +730,9 @@ fn wrap_node(
   let _ = rt.heap_mut().add_root(obj)?;
   rt.set_prototype(obj, Some(proto))?;
   let Value::Object(obj_handle) = obj else {
-    unreachable!("alloc_object_value must return an object");
+    return Err(VmError::InvariantViolation(
+      "alloc_object_value must return an object",
+    ));
   };
 
   node_wrapper_cache.borrow_mut().insert(node_id, obj_handle);
@@ -839,7 +847,9 @@ fn install_constructors(
       let _ = rt.heap_mut().add_root(obj)?;
       rt.set_prototype(obj, Some(event_proto))?;
       let Value::Object(obj_handle) = obj else {
-        unreachable!("alloc_object_value must return an object");
+        return Err(VmError::InvariantViolation(
+          "alloc_object_value must return an object",
+        ));
       };
       platform_objects
         .borrow_mut()

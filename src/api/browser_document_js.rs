@@ -103,10 +103,12 @@ impl BrowserDocumentJs {
   /// Execute at most one task turn (or a standalone microtask checkpoint) and return a freshly
   /// rendered frame when the document becomes dirty.
   pub fn tick_frame(&mut self) -> Result<Option<Pixmap>> {
-    let mut event_loop = self
-      .event_loop
-      .take()
-      .ok_or_else(|| Error::Other("BrowserDocumentJs event loop is unavailable".to_string()))?;
+    let Some(mut event_loop) = self.event_loop.take() else {
+      return Err(Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      ));
+    };
 
     let run_limits = self.js_execution_options.event_loop_run_limits;
     if event_loop.pending_microtask_count() > 0 {
@@ -200,10 +202,13 @@ impl BrowserDocumentJs {
   ///
   /// Note: inside task callbacks, use the `&mut EventLoop` passed to the callback instead of
   /// attempting to reach into the host's stored event loop.
-  pub fn event_loop_mut(&mut self) -> &mut EventLoop<Self> {
-    self.event_loop.as_mut().expect(
-      "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback",
-    )
+  pub fn event_loop_mut(&mut self) -> Result<&mut EventLoop<Self>> {
+    self.event_loop.as_mut().ok_or_else(|| {
+      Error::Other(
+        "BrowserDocumentJs event loop is unavailable (likely inside run_until_stable); use the EventLoop passed to the task callback"
+          .to_string(),
+      )
+    })
   }
 
   /// Drive the JS event loop and rerender until no more work remains or a limit is hit.

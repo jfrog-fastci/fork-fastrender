@@ -217,7 +217,10 @@ fn resolve_calc_length_with_percentage_metrics(
       let mut extremum = match calc.kind() {
         crate::style::values::CalcLengthKind::Min => f32::INFINITY,
         crate::style::values::CalcLengthKind::Max => f32::NEG_INFINITY,
-        _ => unreachable!(),
+        _ => {
+          debug_assert!(false, "CalcLengthKind::Min|Max handled by outer match");
+          f32::INFINITY
+        }
       };
       let mut current = 0.0;
       for term in calc.terms() {

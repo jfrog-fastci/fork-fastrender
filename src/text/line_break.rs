@@ -359,12 +359,16 @@ thread_local! {
   // ICU segmenters are relatively expensive to construct and are not `Sync` by default (they store
   // provider payloads in `Rc`). Cache one instance per thread to keep per-call overhead low without
   // requiring a global mutex.
-  static ICU_WORD_SEGMENTER: WordSegmenter = WordSegmenter::try_new_auto(WordBreakOptions::default())
-    .expect("ICU word segmenter data should be available");
+  static ICU_WORD_SEGMENTER: Option<WordSegmenter> =
+    WordSegmenter::try_new_auto(WordBreakOptions::default()).ok();
 }
 
-fn with_icu_word_segmenter<R>(f: impl FnOnce(&WordSegmenter) -> R) -> R {
-  ICU_WORD_SEGMENTER.with(|segmenter| f(segmenter))
+fn with_icu_word_segmenter(f: impl FnOnce(&WordSegmenter)) {
+  ICU_WORD_SEGMENTER.with(|segmenter| {
+    if let Some(segmenter) = segmenter.as_ref() {
+      f(segmenter);
+    }
+  })
 }
 
 fn sort_and_dedup_break_opportunities(mut opportunities: Vec<BreakOpportunity>) -> Vec<BreakOpportunity> {

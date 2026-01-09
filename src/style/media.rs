@@ -3497,28 +3497,31 @@ impl<'a> MediaQueryParser<'a> {
         '<' | '>' | '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
           parts.push(trim_ascii_whitespace(&input[last..idx]));
           let mut end = idx + ch.len_utf8();
-          let op = match ch {
-            '<' => {
-              if let Some((eq_idx, '=')) = chars.peek().copied() {
-                let _ = chars.next();
-                end = eq_idx + 1;
-                ComparisonOp::LessThanEqual
-              } else {
-                ComparisonOp::LessThan
+            let op = match ch {
+              '<' => {
+                if let Some((eq_idx, '=')) = chars.peek().copied() {
+                  let _ = chars.next();
+                  end = eq_idx + 1;
+                  ComparisonOp::LessThanEqual
+                } else {
+                  ComparisonOp::LessThan
+                }
               }
-            }
-            '>' => {
-              if let Some((eq_idx, '=')) = chars.peek().copied() {
-                let _ = chars.next();
-                end = eq_idx + 1;
-                ComparisonOp::GreaterThanEqual
-              } else {
-                ComparisonOp::GreaterThan
+              '>' => {
+                if let Some((eq_idx, '=')) = chars.peek().copied() {
+                  let _ = chars.next();
+                  end = eq_idx + 1;
+                  ComparisonOp::GreaterThanEqual
+                } else {
+                  ComparisonOp::GreaterThan
+                }
               }
-            }
-            '=' => ComparisonOp::Equal,
-            _ => unreachable!(),
-          };
+              '=' => ComparisonOp::Equal,
+              _ => {
+                debug_assert!(false, "range operator should be one of '<', '>', '='");
+                ComparisonOp::Equal
+              }
+            };
           ops.push(op);
           last = end;
         }
@@ -3577,7 +3580,10 @@ impl<'a> MediaQueryParser<'a> {
             RangeFeature::Height => "height",
             RangeFeature::DeviceWidth => "device-width",
             RangeFeature::DeviceHeight => "device-height",
-            _ => unreachable!(),
+            _ => {
+              debug_assert!(false, "range feature should be a length");
+              "width"
+            }
           };
           RangeValue::Length(MediaFeature::parse_length_value(feature_name, Some(raw))?)
         }
@@ -3585,7 +3591,10 @@ impl<'a> MediaQueryParser<'a> {
           let feature_name = match feature {
             RangeFeature::AspectRatio => "aspect-ratio",
             RangeFeature::DeviceAspectRatio => "device-aspect-ratio",
-            _ => unreachable!(),
+            _ => {
+              debug_assert!(false, "range feature should be an aspect ratio");
+              "aspect-ratio"
+            }
           };
           let (w, h) = MediaFeature::parse_ratio_value(feature_name, Some(raw))?;
           RangeValue::AspectRatio(w, h)

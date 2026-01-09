@@ -360,9 +360,10 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
   {
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for node_id in dom_index.node_ids() {
-      let node = dom_index
-        .node(node_id)
-        .expect("node_ids only yields valid ids");
+      let Some(node) = dom_index.node(node_id) else {
+        debug_assert!(false, "node_ids only yields valid ids");
+        continue;
+      };
       let Some(id_attr) = node.get_attribute_ref("id") else {
         continue;
       };
@@ -382,9 +383,10 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
     if !dom_index.is_ancestor(label_node_id, candidate_id) {
       continue;
     }
-    let node = dom_index
-      .node(candidate_id)
-      .expect("node_ids only yields valid ids");
+    let Some(node) = dom_index.node(candidate_id) else {
+      debug_assert!(false, "node_ids only yields valid ids");
+      continue;
+    };
     if node_is_form_control(node) {
       return Some(candidate_id);
     }

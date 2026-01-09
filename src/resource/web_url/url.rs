@@ -264,7 +264,8 @@ impl WebUrl {
     if let Some(port) = port {
       use std::fmt::Write as _;
       out.push(':');
-      write!(&mut out, "{port}").expect("writing to String should not fail");
+      let res = write!(&mut out, "{port}");
+      debug_assert!(res.is_ok(), "writing to String should not fail");
     }
     Ok(out)
   }
@@ -353,7 +354,8 @@ impl WebUrl {
     let mut out = String::new();
     out.try_reserve_exact(5)?;
     use std::fmt::Write as _;
-    write!(&mut out, "{port}").expect("writing to String should not fail");
+    let res = write!(&mut out, "{port}");
+    debug_assert!(res.is_ok(), "writing to String should not fail");
     Ok(out)
   }
 

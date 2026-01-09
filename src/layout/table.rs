@@ -2054,9 +2054,10 @@ impl TableStructure {
     for run in &ordered_runs {
       let run_end = next_display_row + run.rows.len();
       for &source_row in &run.rows {
-        let row = *source_rows
-          .get(source_row)
-          .expect("row index must be in bounds");
+        let Some(row) = source_rows.get(source_row).copied() else {
+          debug_assert!(false, "row index must be in bounds");
+          continue;
+        };
         let row_visibility = *row_visibilities
           .get(source_row)
           .unwrap_or(&Visibility::Visible);
@@ -3877,6 +3878,7 @@ impl RowMetrics {
   }
 }
 
+#[cfg(test)]
 #[test]
 fn row_metrics_without_baseline_fall_back_to_row_height() {
   let mut metrics = RowMetrics::new(24.0);
@@ -8600,7 +8602,11 @@ impl FormattingContext for TableFormattingContext {
       force_y = need_y;
     }
 
-    Ok(last.expect("at least one layout pass"))
+    let Some(last) = last else {
+      debug_assert!(false, "at least one layout pass");
+      return Err(LayoutError::MissingContext("table layout produced no fragments".to_string()));
+    };
+    Ok(last)
   }
 
   /// Calculates intrinsic inline size for the table

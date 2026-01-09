@@ -38,13 +38,10 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     if chunk.is_empty() {
       return;
     }
-    let parser = self
-      .parser
-      .as_ref()
-      .expect("push_str called after parser finished");
-    parser
-      .input_buffer
-      .push_back(StrTendril::from_slice(chunk));
+    let Some(parser) = self.parser.as_ref() else {
+      return;
+    };
+    parser.input_buffer.push_back(StrTendril::from_slice(chunk));
   }
 
   /// Like `document.write`: inject text before any buffered “remaining input”.
@@ -52,13 +49,10 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     if chunk.is_empty() {
       return;
     }
-    let parser = self
-      .parser
-      .as_ref()
-      .expect("push_front_str called after parser finished");
-    parser
-      .input_buffer
-      .push_front(StrTendril::from_slice(chunk));
+    let Some(parser) = self.parser.as_ref() else {
+      return;
+    };
+    parser.input_buffer.push_front(StrTendril::from_slice(chunk));
   }
 
   /// Signal no more input will arrive.
@@ -75,61 +69,37 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
   ///
   /// This can be used between [`pump`](Self::pump) calls to inspect or mutate the
   /// live DOM / base-url state when html5ever yields `TokenizerResult::Script`.
-  ///
-  /// # Panics
-  ///
-  /// Panics if called after the parser has finished (after `pump()` returned
-  /// [`Html5everPump::Finished`]).
-  pub fn with_sink<R>(&mut self, f: impl FnOnce(&mut Sink) -> R) -> R {
-    let parser = self
+  pub fn with_sink<R>(&mut self, f: impl FnOnce(&mut Sink) -> R) -> Option<R> {
+    self
       .parser
       .as_mut()
-      .expect("with_sink called after parser finished");
-    f(&mut parser.tokenizer.sink.sink)
+      .map(|parser| f(&mut parser.tokenizer.sink.sink))
   }
 
   /// Borrow the underlying tree sink.
   ///
-  /// # Panics
-  /// Panics if called after the parser has finished (after `pump` returned
-  /// [`Html5everPump::Finished`]).
-  pub fn sink(&self) -> &Sink {
-    &self
-      .parser
-      .as_ref()
-      .expect("sink called after parser finished")
-      .tokenizer
-      .sink
-      .sink
+  pub fn sink(&self) -> Option<&Sink> {
+    self.parser.as_ref().map(|parser| &parser.tokenizer.sink.sink)
   }
 
   /// Mutably borrow the underlying tree sink.
   ///
-  /// # Panics
-  /// Panics if called after the parser has finished (after `pump` returned
-  /// [`Html5everPump::Finished`]).
-  pub fn sink_mut(&mut self) -> &mut Sink {
-    &mut self
+  pub fn sink_mut(&mut self) -> Option<&mut Sink> {
+    self
       .parser
       .as_mut()
-      .expect("sink_mut called after parser finished")
-      .tokenizer
-      .sink
-      .sink
+      .map(|parser| &mut parser.tokenizer.sink.sink)
   }
 
   /// Run the tokenizer/tree-builder until it either needs a script, needs more
   /// input, or finishes.
   pub fn pump(&mut self) -> Html5everPump<Sink::Handle, Sink::Output> {
     loop {
-      let result = {
-        let parser = self
-          .parser
-          .as_mut()
-          .expect("pump called after parser finished");
-        // Drive html5ever directly so `TokenizerResult::Script` can be observed.
-        parser.tokenizer.feed(&parser.input_buffer)
+      let Some(parser) = self.parser.as_mut() else {
+        return Html5everPump::NeedMoreInput;
       };
+      // Drive html5ever directly so `TokenizerResult::Script` can be observed.
+      let result = parser.tokenizer.feed(&parser.input_buffer);
 
       match result {
         TokenizerResult::Script(handle) => return Html5everPump::Script(handle),
@@ -138,10 +108,9 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
             return Html5everPump::NeedMoreInput;
           }
 
-          let parser = self
-            .parser
-            .take()
-            .expect("pump called after parser finished");
+          let Some(parser) = self.parser.take() else {
+            return Html5everPump::NeedMoreInput;
+          };
 
           parser.tokenizer.end();
           let output = parser.tokenizer.sink.sink.finish();
@@ -211,7 +180,7 @@ mod tests {
     };
 
     {
-      let sink = parser.sink();
+      let sink = parser.sink().unwrap();
       assert!(
         contains_handle(&sink.document, &h1),
         "expected yielded script handle to be present in the in-progress DOM"
@@ -256,8 +225,7 @@ mod tests {
   }
 
   #[test]
-  #[should_panic(expected = "with_sink called after parser finished")]
-  fn sink_accessor_panics_after_finished() {
+  fn sink_accessor_returns_none_after_finished() {
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
         scripting_enabled: true,
@@ -275,12 +243,11 @@ mod tests {
       _ => panic!("expected parser to finish without yielding Script"),
     };
 
-    parser.with_sink(|_| {});
+    assert!(parser.with_sink(|_| ()).is_none());
   }
 
   #[test]
-  #[should_panic(expected = "sink called after parser finished")]
-  fn sink_panics_after_finished() {
+  fn sink_returns_none_after_finished() {
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
         scripting_enabled: true,
@@ -298,12 +265,11 @@ mod tests {
       _ => panic!("expected parser to finish without yielding Script"),
     };
 
-    let _ = parser.sink();
+    assert!(parser.sink().is_none());
   }
 
   #[test]
-  #[should_panic(expected = "sink_mut called after parser finished")]
-  fn sink_mut_panics_after_finished() {
+  fn sink_mut_returns_none_after_finished() {
     let opts = ParseOpts {
       tree_builder: TreeBuilderOpts {
         scripting_enabled: true,
@@ -321,6 +287,6 @@ mod tests {
       _ => panic!("expected parser to finish without yielding Script"),
     };
 
-    let _ = parser.sink_mut();
+    assert!(parser.sink_mut().is_none());
   }
 }

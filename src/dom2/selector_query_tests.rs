@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use crate::dom::parse_html;
 use crate::dom::{DomNode, DomNodeType};
 use selectors::context::QuirksMode;

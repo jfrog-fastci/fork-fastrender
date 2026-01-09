@@ -10405,7 +10405,11 @@ impl FormattingContext for GridFormattingContext {
       force_y = need_y;
     }
 
-    Ok(last.expect("at least one layout pass"))
+    let Some(last) = last else {
+      debug_assert!(false, "at least one layout pass");
+      return Err(LayoutError::MissingContext("grid layout produced no fragments".to_string()));
+    };
+    Ok(last)
   }
 
   fn compute_intrinsic_inline_size(

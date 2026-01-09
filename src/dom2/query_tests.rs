@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::{Document, NodeId, NodeKind};
 use crate::dom::SVG_NAMESPACE;
 use selectors::context::QuirksMode;

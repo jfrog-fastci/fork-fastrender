@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::dom::{DomNode, DomNodeType};
 use crate::dom2::{Document, NodeId};

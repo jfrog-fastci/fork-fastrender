@@ -64,11 +64,11 @@ pub fn depth_sort_scene<T>(items: Vec<SceneItem<T>>) -> Vec<SceneItem<T>> {
   let mut slots: Vec<Option<SceneItem<T>>> = kept.into_iter().map(Some).collect();
   let mut sorted = Vec::with_capacity(order.len());
   for idx in order {
-    sorted.push(
-      slots[idx]
-        .take()
-        .expect("depth_sort returned index in-bounds"),
-    );
+    let Some(item) = slots.get_mut(idx).and_then(Option::take) else {
+      debug_assert!(false, "depth_sort returned index in-bounds");
+      continue;
+    };
+    sorted.push(item);
   }
   sorted
 }

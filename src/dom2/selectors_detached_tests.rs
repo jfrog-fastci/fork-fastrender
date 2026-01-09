@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::Document;
 use super::parse_html;
 use selectors::context::QuirksMode;

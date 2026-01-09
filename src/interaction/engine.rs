@@ -1322,7 +1322,7 @@ fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_i
   let Some(first_enabled_idx) = first_enabled_idx else {
     return false;
   };
-  let last_enabled_idx = last_enabled_idx.expect("first_enabled implies at least one enabled option");
+  let last_enabled_idx = last_enabled_idx.unwrap_or(first_enabled_idx);
 
   // Selection anchor: last `<option selected>` in tree order; fallback to first enabled option.
   let anchor_idx = last_selected_idx.unwrap_or(first_enabled_idx);
@@ -1852,14 +1852,13 @@ impl InteractionEngine {
         .to_string();
       let mut next = current;
       next.push_str(text);
-      let changed_value = set_node_attr(
-        index.node_mut(focused).expect("node exists"),
-        "value",
-        &next,
-      );
+      let Some(node_mut) = index.node_mut(focused) else {
+        return changed;
+      };
+      let changed_value = set_node_attr(node_mut, "value", &next);
       changed |= changed_value;
       if changed_value {
-        changed |= dom_mutation::mark_user_validity(index.node_mut(focused).expect("node exists"));
+        changed |= dom_mutation::mark_user_validity(node_mut);
       }
       return changed;
     }
@@ -1956,20 +1955,18 @@ impl InteractionEngine {
             .and_then(|node| node.get_attribute_ref("value"))
             .unwrap_or("")
             .to_string();
-          let mut next = current;
-          if next.pop().is_some() {
-            let changed_value = set_node_attr(
-              index.node_mut(focused).expect("node exists"),
-              "value",
-              &next,
-            );
+           let mut next = current;
+           if next.pop().is_some() {
+            let Some(node_mut) = index.node_mut(focused) else {
+              return changed;
+            };
+            let changed_value = set_node_attr(node_mut, "value", &next);
             changed |= changed_value;
             if changed_value {
-              changed |=
-                dom_mutation::mark_user_validity(index.node_mut(focused).expect("node exists"));
+              changed |= dom_mutation::mark_user_validity(node_mut);
             }
-          }
-        } else if index.node(focused).is_some_and(is_textarea) {
+           }
+         } else if index.node(focused).is_some_and(is_textarea) {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
             || node_is_readonly(&index, focused)
@@ -2110,8 +2107,7 @@ impl InteractionEngine {
           let Some(first_enabled_idx) = first_enabled_idx else {
             return changed;
           };
-          let last_enabled_idx =
-            last_enabled_idx.expect("first_enabled implies at least one enabled option");
+          let last_enabled_idx = last_enabled_idx.unwrap_or(first_enabled_idx);
 
           // Anchor: last selected option; fallback to first enabled option.
           let anchor_idx = last_selected_idx.unwrap_or(first_enabled_idx);
@@ -2153,7 +2149,7 @@ impl InteractionEngine {
         }
       }
       KeyAction::Tab | KeyAction::ShiftTab => {
-        unreachable!("handled above")
+        debug_assert!(false, "handled above");
       }
     }
 

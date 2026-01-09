@@ -925,11 +925,13 @@ impl Evaluator<'_> {
     let result = {
       // Re-borrow after argument evaluation so we don't hold a mutable reference across
       // `eval_expr` calls (which also borrow `&mut self`).
-      let entry = self
-        .host_functions
-        .get_mut(&obj)
-        .expect("checked host function exists above");
-      (entry.func)(&args)
+      match self.host_functions.get_mut(&obj) {
+        Some(entry) => (entry.func)(&args),
+        None => Err(ScriptError::Runtime {
+          message: "missing host function".to_string(),
+          stack_trace: format_stack_trace(&self.vm.capture_stack()),
+        }),
+      }
     };
     self.vm.pop_frame();
 

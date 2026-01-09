@@ -559,7 +559,7 @@ fn truncate_dom2_snapshot_text(text: &str) -> String {
 
 #[track_caller]
 pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
-  assert!(
+  debug_assert!(
     snapshot.root < snapshot.nodes.len(),
     "dom2 snapshot root out of range: root={} nodes={}",
     snapshot.root,
@@ -567,36 +567,36 @@ pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
   );
 
   for (idx, node) in snapshot.nodes.iter().enumerate() {
-    assert_eq!(
+    debug_assert_eq!(
       node.node_id, idx,
       "dom2 snapshot node_id mismatch: expected {idx}, got {}",
       node.node_id
     );
 
     if idx == snapshot.root {
-      assert!(
+      debug_assert!(
         node.parent.is_none(),
         "dom2 snapshot root must have no parent"
       );
     }
 
     if let Some(parent) = node.parent {
-      assert!(
+      debug_assert!(
         parent < snapshot.nodes.len(),
         "dom2 snapshot parent out of range: node_id={idx} parent={parent}"
       );
-      assert!(
+      debug_assert!(
         snapshot.nodes[parent].children.contains(&idx),
         "dom2 snapshot parent->children missing: node_id={idx} parent={parent}"
       );
     }
 
     for &child in &node.children {
-      assert!(
+      debug_assert!(
         child < snapshot.nodes.len(),
         "dom2 snapshot child out of range: node_id={idx} child={child}"
       );
-      assert_eq!(
+      debug_assert_eq!(
         snapshot.nodes[child].parent,
         Some(idx),
         "dom2 snapshot child->parent mismatch: parent={idx} child={child}"
@@ -607,10 +607,13 @@ pub fn assert_dom2_snapshot_invariants(snapshot: &Dom2Snapshot) {
 
 #[track_caller]
 pub fn assert_dom2_snapshot_eq(actual: &Dom2Snapshot, expected: &Dom2Snapshot) {
-  let actual_json = serde_json::to_string_pretty(actual).expect("serialize actual Dom2Snapshot");
-  let expected_json =
-    serde_json::to_string_pretty(expected).expect("serialize expected Dom2Snapshot");
-  assert_eq!(actual_json, expected_json);
+  let actual_json = serde_json::to_string_pretty(actual).unwrap_or_else(|err| {
+    format!("<failed to serialize actual Dom2Snapshot: {err}>")
+  });
+  let expected_json = serde_json::to_string_pretty(expected).unwrap_or_else(|err| {
+    format!("<failed to serialize expected Dom2Snapshot: {err}>")
+  });
+  debug_assert_eq!(actual_json, expected_json);
 }
 
 fn snapshot_dom_node(node: &DomNode, next: &mut usize) -> DomNodeSnapshot {

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::Dom2TreeSink;
 use super::{Document, NodeId, NodeKind};
 use crate::debug::snapshot::snapshot_dom;

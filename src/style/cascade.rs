@@ -17248,17 +17248,15 @@ fn apply_styles_internal_with_ancestors<'a>(
         let ua_styles = needs_ua_styles.then(|| Arc::new(ua_styles));
 
         if let Some(key) = share_key {
-          let ua_styles = ua_styles
-            .as_ref()
-            .expect("shareable keys require a UA computed style snapshot");
-          style_sharing_cache.insert_cached(
-            key,
-            Arc::new(StyleSharingCachedStyles {
-              styles: Arc::clone(&styles),
-              ua_styles: Arc::clone(ua_styles),
-              before_styles: before_styles.clone(),
-              after_styles: after_styles.clone(),
-              marker_styles: marker_styles.clone(),
+          if let Some(ua_styles_snapshot) = ua_styles.as_ref() {
+            style_sharing_cache.insert_cached(
+              key,
+              Arc::new(StyleSharingCachedStyles {
+                styles: Arc::clone(&styles),
+                ua_styles: Arc::clone(ua_styles_snapshot),
+                before_styles: before_styles.clone(),
+                after_styles: after_styles.clone(),
+                marker_styles: marker_styles.clone(),
                 placeholder_styles: placeholder_styles.clone(),
                 file_selector_button_styles: file_selector_button_styles.clone(),
                 footnote_call_styles: footnote_call_styles.clone(),
@@ -17275,7 +17273,13 @@ fn apply_styles_internal_with_ancestors<'a>(
                 meter_even_less_good_value_styles: meter_even_less_good_value_styles.clone(),
               }),
             );
+          } else {
+            debug_assert!(
+              false,
+              "shareable keys require a UA computed style snapshot"
+            );
           }
+        }
 
         (
           styles,
@@ -17364,17 +17368,21 @@ fn apply_styles_internal_with_ancestors<'a>(
       .flatten();
 
     if cache_flat_inheritance_parent {
-      let ua_styles = ua_styles
-        .as_ref()
-        .expect("slot inheritance cache requires UA computed style snapshot");
-      flat_tree_inheritance_cache.insert(
-        node_id,
-        FlatTreeInheritanceParent {
-          styles: Arc::clone(&styles),
-          ua_styles: Arc::clone(ua_styles),
-          starting_styles: cached_starting_styles,
-        },
-      );
+      if let Some(ua_styles_snapshot) = ua_styles.as_ref() {
+        flat_tree_inheritance_cache.insert(
+          node_id,
+          FlatTreeInheritanceParent {
+            styles: Arc::clone(&styles),
+            ua_styles: Arc::clone(ua_styles_snapshot),
+            starting_styles: cached_starting_styles,
+          },
+        );
+      } else {
+        debug_assert!(
+          false,
+          "slot inheritance cache requires UA computed style snapshot"
+        );
+      }
     }
 
     let styled = StyledNode {
@@ -34040,12 +34048,18 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::UserAgent => defaults,
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
-      let revert_layer_base_custom_properties = track_custom_revert_layer.then(|| {
+      let revert_layer_base_custom_properties = if track_custom_revert_layer {
         let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
-        custom_layer_snapshots
-          .get(&layer_key)
-          .expect("custom layer base missing")
-      });
+        match custom_layer_snapshots.get(&layer_key) {
+          Some(base) => Some(base),
+          None => {
+            debug_assert!(false, "custom layer base missing");
+            None
+          }
+        }
+      } else {
+        None
+      };
       let (start, end) = important_custom_ranges[rule_idx];
       let decls = rule.declarations.as_ref();
       for &decl_order in important_custom_decl_orders[start..end].iter() {
@@ -34295,11 +34309,13 @@ fn apply_cascaded_declarations<'a, F>(
       };
       let revert_layer_base = if track_revert_layer {
         let layer_key = (rule.origin.rank(), Arc::clone(&rule.layer_order));
-        Some(
-          layer_snapshots
-            .get(&layer_key)
-            .expect("layer snapshot missing for important declarations"),
-        )
+        match layer_snapshots.get(&layer_key) {
+          Some(base) => Some(base),
+          None => {
+            debug_assert!(false, "layer snapshot missing for important declarations");
+            None
+          }
+        }
       } else {
         None
       };

@@ -110,11 +110,16 @@ impl StreamingHtmlParser {
         // Only run this promotion when the yielded script is connected for scripting; scripts inside
         // inert `<template>` contents must remain inert, and promoting while still parsing inside a
         // template could invalidate html5ever's template state.
-        {
-          let mut doc = self.parser.sink().document_mut();
+        if let Some(sink) = self.parser.sink() {
+          let mut doc = sink.document_mut();
           if doc.is_connected_for_scripting(script) {
             doc.attach_shadow_roots();
           }
+        } else {
+          debug_assert!(
+            false,
+            "StreamingHtmlParser yielded a script without an active DOM sink"
+          );
         }
 
         StreamingParserYield::Script {
@@ -131,22 +136,16 @@ impl StreamingHtmlParser {
   ///
   /// The returned borrow must not be held across calls to [`pump`](Self::pump), since pumping will
   /// mutate the underlying DOM via interior mutability.
-  ///
-  /// # Panics
-  /// Panics if called after the parser has finished (after `pump` returns [`Finished`](StreamingParserYield::Finished)).
-  pub fn document(&self) -> Ref<'_, Document> {
-    self.parser.sink().document()
+  pub fn document(&self) -> Option<Ref<'_, Document>> {
+    self.parser.sink().map(|sink| sink.document())
   }
 
   /// Mutably borrow the current partially-built document.
   ///
   /// The returned borrow must not be held across calls to [`pump`](Self::pump), since pumping will
   /// mutate the underlying DOM via interior mutability.
-  ///
-  /// # Panics
-  /// Panics if called after the parser has finished (after `pump` returns [`Finished`](StreamingParserYield::Finished)).
-  pub fn document_mut(&self) -> RefMut<'_, Document> {
-    self.parser.sink().document_mut()
+  pub fn document_mut(&self) -> Option<RefMut<'_, Document>> {
+    self.parser.sink().map(|sink| sink.document_mut())
   }
 
   /// Returns the current parse-time base URL.
@@ -215,7 +214,9 @@ mod tests {
       loop {
         match parser.pump() {
           StreamingParserYield::Script { script, .. } => {
-            let doc = parser.document();
+            let doc = parser
+              .document()
+              .expect("document should be available while parsing");
             scripts.push(text_children_concat(&doc, script));
           }
           StreamingParserYield::NeedMoreInput => break,
@@ -228,7 +229,9 @@ mod tests {
     loop {
       match parser.pump() {
         StreamingParserYield::Script { script, .. } => {
-          let doc = parser.document();
+          let doc = parser
+            .document()
+            .expect("document should be available while parsing");
           scripts.push(text_children_concat(&doc, script));
         }
         StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
@@ -367,7 +370,9 @@ mod tests {
           script,
           base_url_at_this_point,
         } => {
-          let doc = parser.document();
+          let doc = parser
+            .document()
+            .expect("document should be available while parsing");
           let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
           let spec = build_parser_inserted_script_element_spec_dom2(&doc, script, &base);
           specs.push(spec);

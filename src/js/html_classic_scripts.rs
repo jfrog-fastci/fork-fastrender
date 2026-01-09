@@ -132,10 +132,14 @@ where
     script_type: ScriptType,
     event_loop: &mut EventLoop<Self>,
   ) -> Result<()> {
-    let mut exec = self
-      .executor
-      .take()
-      .expect("ClassicScriptRunner executor missing");
+    let mut exec = match self.executor.take() {
+      Some(exec) => exec,
+      None => {
+        return Err(Error::Other(
+          "ClassicScriptRunner executor missing".to_string(),
+        ))
+      }
+    };
     let result = exec.execute(self, source_text, script_node_id, script_type, event_loop);
     self.executor = Some(exec);
     result
@@ -224,9 +228,11 @@ where
           host.in_flight_fetches.len()
         )));
       }
-      let doc = pipeline
-        .finished_document()
-        .expect("parsing_finished implies finished_document");
+      let Some(doc) = pipeline.finished_document() else {
+        return Err(Error::Other(
+          "HTML parsing finished but no document was produced".to_string(),
+        ));
+      };
       host.dom = doc.clone();
       return Ok(doc);
     }

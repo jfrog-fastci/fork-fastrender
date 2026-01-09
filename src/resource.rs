@@ -841,7 +841,13 @@ fn normalize_http_url_for_fetch(raw: &str) -> Option<String> {
         i += 1;
       }
       _ => {
-        let ch = rest[i..].chars().next().expect("valid UTF-8");
+        let Some(tail) = rest.get(i..) else {
+          debug_assert!(false, "valid UTF-8");
+          break;
+        };
+        let Some(ch) = tail.chars().next() else {
+          break;
+        };
         out.push(ch);
         i += ch.len_utf8();
       }
@@ -3774,7 +3780,10 @@ fn http_referer_header_value(
   let full_value = full_referrer;
 
   match policy {
-    ReferrerPolicy::EmptyString => unreachable!("policy resolved above"),
+    ReferrerPolicy::EmptyString => {
+      debug_assert!(false, "policy resolved above");
+      None
+    }
     ReferrerPolicy::NoReferrer => None,
     ReferrerPolicy::NoReferrerWhenDowngrade => {
       if downgrade {
