@@ -39,7 +39,17 @@ impl BrowserDocumentDom2 {
 
   /// Creates a new live document from an HTML string using the provided renderer.
   pub fn new(renderer: super::FastRender, html: &str, options: RenderOptions) -> Result<Self> {
-    let dom = renderer.parse_html(html)?;
+    // Keep HTML parsing cancellable via `RenderOptions::{timeout,cancel_callback}` (see
+    // `BrowserDocument::new` for details).
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      renderer.parse_html(html)?
+    } else {
+      renderer.parse_html(html)?
+    };
     let dom = crate::dom2::Document::from_renderer_dom(&dom);
     Ok(Self {
       renderer,
@@ -157,7 +167,15 @@ impl BrowserDocumentDom2 {
 
   /// Parses HTML using the internal renderer and resets the document state.
   pub fn reset_with_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
-    let dom = self.renderer.parse_html(html)?;
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      self.renderer.parse_html(html)?
+    } else {
+      self.renderer.parse_html(html)?
+    };
     let dom = crate::dom2::Document::from_renderer_dom(&dom);
     self.reset_with_dom(dom, options);
     Ok(())

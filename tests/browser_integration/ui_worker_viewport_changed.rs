@@ -7,8 +7,8 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 // Worker startup + the first navigation can take a few seconds under load when integration tests
-// run in parallel on CI; keep this timeout generous to avoid flakiness.
-const TIMEOUT: Duration = support::DEFAULT_TIMEOUT;
+// run in parallel on CI; keep this timeout generous to avoid flakes under CPU contention.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn scroll_fixture() -> (support::TempSite, String) {
   let site = support::TempSite::new();

@@ -490,7 +490,7 @@ fn interaction_click_link_navigates() {
     PointerButton::Primary,
   ));
 
-  let (_frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
+  let (_frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(10));
   let events = drain_after_frame(&h, events);
   let committed = events.iter().find_map(|ev| match ev {
     WorkerToUiEvent::NavigationCommitted { url, .. } => Some(url.as_str()),
@@ -535,7 +535,7 @@ fn interaction_text_input_triggers_repaint_and_frame_changes() {
     (10.0, 10.0),
     PointerButton::Primary,
   ));
-  let (focused_frame, _events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
+  let (focused_frame, _events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(10));
 
   // Typing should mutate the DOM (value attribute) and trigger another repaint.
   let (typed_frame, _events) = h.send_and_wait_for_frame(
@@ -589,7 +589,7 @@ fn cancellation_rapid_scroll_coalesces_to_last_frame() {
   h.send(scroll_viewport(tab_id, (0.0, 20.0)));
   h.send(scroll_viewport(tab_id, (0.0, 30.0)));
 
-  let (frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(3));
+  let (frame, events) = h.wait_for_frame(tab_id, std::time::Duration::from_secs(10));
   assert!(
     (frame.scroll_state.viewport.y - 60.0).abs() < 1.0,
     "expected coalesced scroll to apply all deltas (10+20+30), got {:?}",

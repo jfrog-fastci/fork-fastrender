@@ -53,7 +53,18 @@ impl BrowserDocument {
 
   /// Creates a new live document from an HTML string using the provided renderer.
   pub fn new(renderer: super::FastRender, html: &str, options: RenderOptions) -> Result<Self> {
-    let dom = renderer.parse_html(html)?;
+    // `FastRender::parse_html` cooperatively checks any *active* render deadline, but it does not
+    // accept `RenderOptions` directly. Install a temporary deadline so callers can cancel/timeout
+    // large HTML parses (e.g. browser UI `about:` pages) via `RenderOptions::{timeout,cancel_callback}`.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      renderer.parse_html(html)?
+    } else {
+      renderer.parse_html(html)?
+    };
     // Preserve the renderer's initial document URL hint so later `<base href>` mutations do not
     // accidentally change origin/referrer semantics.
     let document_url = renderer.document_url_hint().map(|url| url.to_string());
@@ -305,7 +316,18 @@ impl BrowserDocument {
 
   /// Parses HTML using the internal renderer and resets the document state.
   pub fn reset_with_html(&mut self, html: &str, options: RenderOptions) -> Result<()> {
-    let dom = self.renderer.parse_html(html)?;
+    // Like `BrowserDocument::new`, install a scoped deadline so HTML parsing can be cancelled via
+    // `RenderOptions::{timeout,cancel_callback}`. This is particularly important for browser-UI
+    // integrations that may cancel a navigation mid-way and immediately enqueue a new one.
+    let deadline_enabled = options.timeout.is_some() || options.cancel_callback.is_some();
+    let dom = if deadline_enabled {
+      let deadline =
+        crate::render_control::RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _guard = crate::render_control::DeadlineGuard::install(Some(&deadline));
+      self.renderer.parse_html(html)?
+    } else {
+      self.renderer.parse_html(html)?
+    };
     self.reset_with_dom(dom, options);
     Ok(())
   }
@@ -684,8 +706,14 @@ impl BrowserDocument {
       }
 
       self.prepared = Some(prepared);
+      // We now have fresh style/layout artifacts stored in `self.prepared`, even if the subsequent
+      // paint step is cancelled or fails. Clear the layout dirtiness so callers can retry paint
+      // from cache without re-running cascade/layout.
       self.style_dirty = false;
       self.layout_dirty = false;
+      // Layout changes always require a paint attempt. Keep paint marked dirty so a cancelled paint
+      // can be retried.
+      self.paint_dirty = true;
     }
 
     let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;

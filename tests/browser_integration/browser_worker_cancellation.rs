@@ -3,10 +3,13 @@
 use super::support;
 use fastrender::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use std::time::{Duration, Instant};
 
 const MAX_WAIT: Duration = Duration::from_secs(15);
+// Worker startup + first render can take a few seconds under parallel load (CI), and cancellation
+// tests need enough slack to cancel in-flight work before it commits.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 #[test]
 fn navigation_cancellation_drops_stale_frame_and_is_silent() {
@@ -533,4 +536,236 @@ fn bump_paint_during_navigation_does_not_emit_navigation_failed() {
     "expected FrameReady after cancellation to use the updated viewport; messages:\n{}",
     support::format_messages(&captured)
   );
+}
+
+#[test]
+fn canceled_navigation_does_not_mutate_committed_base_url_hints() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+
+  let page_a_url = site.write(
+    "a/index.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #link { display: block; width: 160px; height: 60px; background: rgb(255, 0, 0); }
+          </style>
+        </head>
+        <body>
+          <a href="target.html" id="link">Go</a>
+        </body>
+      </html>
+    "##,
+  );
+  let target_a_url = site.write(
+    "a/target.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>Target A</body>
+      </html>
+    "##,
+  );
+
+  // The cancelled navigation targets a different directory, so a stale base URL hint would cause
+  // `href="target.html"` to resolve to `b/target.html` instead of `a/target.html`.
+  let slow_b_url = {
+    let mut body = String::new();
+    // Keep this comfortably large so the navigation remains in-flight long enough for us to cancel
+    // after we observe stage heartbeats.
+    for i in 0..8000 {
+      body.push_str(&format!("<div class=\"row\">row {i}</div>\n"));
+    }
+    site.write(
+      "b/slow.html",
+      &format!(
+        r##"<!doctype html>
+          <html>
+            <head>
+              <style>
+                html, body {{ margin: 0; padding: 0; }}
+                .row {{ height: 16px; border-bottom: 1px solid #ccc; }}
+              </style>
+            </head>
+            <body>
+              {body}
+            </body>
+          </html>
+        "##,
+      ),
+    )
+  };
+  let target_b_url = site.write(
+    "b/target.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>Target B</body>
+      </html>
+    "##,
+  );
+
+  let cancel = CancelGens::new();
+  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let tab_id = TabId::new();
+
+  worker
+    .tx
+    .send(UiToWorker::CreateTab {
+      tab_id,
+      initial_url: Some(page_a_url.clone()),
+      cancel: cancel.clone(),
+    })
+    .expect("CreateTab");
+  worker
+    .tx
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 120),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+  let mut initial_frame = None::<fastrender::ui::messages::RenderedFrame>;
+  while Instant::now() < deadline && initial_frame.is_none() {
+    match worker.rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => match msg {
+        WorkerToUi::FrameReady { frame, .. } => {
+          initial_frame = Some(frame);
+        }
+        other => captured.push(other),
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  let initial_frame = initial_frame.unwrap_or_else(|| {
+    captured.extend(support::drain_for(&worker.rx, Duration::from_millis(200)));
+    panic!(
+      "timed out waiting for initial FrameReady; messages:\n{}",
+      support::format_messages(&captured)
+    )
+  });
+  assert_eq!(
+    support::rgba_at(&initial_frame.pixmap, 10, 10),
+    [255, 0, 0, 255],
+    "expected Page A link background at top before cancellation"
+  );
+
+  // Drain follow-up messages from the initial navigation to reduce flakiness.
+  let _ = support::drain_for(&worker.rx, Duration::from_millis(100));
+
+  worker
+    .tx
+    .send(UiToWorker::Navigate {
+      tab_id,
+      url: slow_b_url.clone(),
+      reason: NavigationReason::TypedUrl,
+    })
+    .expect("Navigate to slow page B");
+
+  // Wait until rendering work for B has actually started (Stage heartbeat), then cancel it.
+  let _started = support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::NavigationStarted { url, .. } if url == &slow_b_url)
+  })
+  .expect("expected NavigationStarted for B");
+  let _stage = support::recv_for_tab(&worker.rx, tab_id, TIMEOUT, |msg| matches!(msg, WorkerToUi::Stage { .. }))
+    .expect("expected Stage heartbeat for B");
+  cancel.bump_nav();
+
+  // Click the link in Page A. If the cancelled navigation mutated the committed document's base URL
+  // hint, this will incorrectly resolve to `b/target.html`.
+  worker
+    .tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .expect("PointerDown");
+  worker
+    .tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .expect("PointerUp");
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut committed_url: Option<String> = None;
+  let mut final_pixel: Option<[u8; 4]> = None;
+  let mut saw_b_commit_or_fail = false;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+
+  while Instant::now() < deadline && (committed_url.is_none() || final_pixel.is_none()) {
+    match worker.rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::NavigationCommitted { url, .. } => {
+            if url == &slow_b_url || url == &target_b_url {
+              saw_b_commit_or_fail = true;
+            }
+            if url == &target_a_url {
+              committed_url = Some(url.clone());
+            }
+          }
+          WorkerToUi::NavigationFailed { url, .. } => {
+            if url == &slow_b_url || url == &target_b_url {
+              saw_b_commit_or_fail = true;
+            }
+          }
+          WorkerToUi::FrameReady { frame, .. } => {
+            if committed_url.is_some() {
+              // Sample away from the default body text so antialiasing doesn't affect the pixel.
+              final_pixel = Some(support::rgba_at(&frame.pixmap, 190, 110));
+            }
+          }
+          _ => {}
+        }
+        captured.push(msg);
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  if committed_url.is_none() || final_pixel.is_none() {
+    captured.extend(support::drain_for(&worker.rx, Duration::from_millis(200)));
+  }
+
+  assert!(
+    !saw_b_commit_or_fail,
+    "expected cancelled navigation to B to be silent; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  assert_eq!(
+    committed_url.as_deref(),
+    Some(target_a_url.as_str()),
+    "expected click to resolve against Page A base URL (a/target.html); messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert_eq!(
+    final_pixel,
+    Some([0, 255, 0, 255]),
+    "expected navigation to a/target.html to paint green background; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  drop(worker.tx);
+  worker.join.join().expect("worker join");
 }
