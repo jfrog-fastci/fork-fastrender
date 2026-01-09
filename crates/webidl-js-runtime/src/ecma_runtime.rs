@@ -6,58 +6,27 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind,
-  Value, VmError,
+  Value, VmError, WeakGcObject,
 };
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
 
 #[derive(Clone)]
 enum HostObjectKind {
-  Ordinary,
   PlatformObject {
     primary_interface: &'static str,
     implements: &'static [&'static str],
     opaque: u64,
   },
   Function(HostFn),
-  StringObject { string_data: GcString },
-  BooleanObject { boolean_data: bool },
-  NumberObject { number_data: f64 },
-  SymbolObject { symbol_data: GcSymbol },
-  Error { name: &'static str, message: GcString },
+  Error { name: &'static str },
   // Built-in internal-slot stubs (not yet provided by `vm-js`).
-  ArrayBuffer {
-    shared: bool,
-  },
+  #[allow(dead_code)]
+  ArrayBuffer { shared: bool },
+  #[allow(dead_code)]
   DataView,
-  TypedArray {
-    name: &'static str,
-  },
-}
-
-struct HostObject {
-  kind: HostObjectKind,
-  prototype: Option<GcObject>,
-  properties: Vec<(PropertyKey, PropertyDescriptor)>,
-}
-
-fn root_value(heap: &mut Heap, value: Value) {
-  // For now we keep all values ever created by this runtime alive by pinning them in the heap's
-  // persistent root set. This avoids stale-handle bugs if the heap runs GC while the host keeps
-  // references in `VmJsRuntime::objects`.
-  //
-  // Once `vm-js` grows a native object model, this adapter can shed most of this rooting logic.
-  let _ = heap.add_root(value);
-}
-
-fn upsert_property(heap: &Heap, host: &mut HostObject, key: PropertyKey, desc: PropertyDescriptor) {
-  for (existing_key, existing_desc) in &mut host.properties {
-    if heap.property_key_eq(existing_key, &key) {
-      *existing_desc = desc;
-      return;
-    }
-  }
-  host.properties.push((key, desc));
+  #[allow(dead_code)]
+  TypedArray { name: &'static str },
 }
 
 /// A concrete [`WebIdlJsRuntime`] implementation backed by `ecma-rs`'s `vm-js` value types.
@@ -67,28 +36,45 @@ fn upsert_property(heap: &Heap, host: &mut HostObject, key: PropertyKey, desc: P
 /// object/property model that host bindings can use. This runtime provides that adapter layer.
 pub struct VmJsRuntime {
   heap: Heap,
-  // Host-owned object model keyed by `vm-js` object handles.
-  objects: HashMap<GcObject, HostObject>,
-  // Intern pool for common strings used as property keys.
-  interned_strings: HashMap<String, GcString>,
+  /// Host-side metadata for objects that need special behaviour (callability, platform object
+  /// branding, internal-slot stubs, etc). Keyed by `WeakGcObject` so it does not keep wrappers alive.
+  host_objects: HashMap<WeakGcObject, HostObjectKind>,
   webidl_limits: WebIdlLimits,
   well_known_iterator: Option<GcSymbol>,
   well_known_async_iterator: Option<GcSymbol>,
+
+  // Internal-slot emulation for `ToObject` wrapper objects.
+  //
+  // These are stored as hidden, non-enumerable symbol-keyed data properties so the heap GC traces
+  // the stored values without requiring host-side tracing hooks.
+  string_data_symbol: Option<GcSymbol>,
+  boolean_data_symbol: Option<GcSymbol>,
+  number_data_symbol: Option<GcSymbol>,
+  symbol_data_symbol: Option<GcSymbol>,
+
+  last_swept_gc_runs: u64,
 }
 
 impl VmJsRuntime {
-  /// Creates a new runtime with conservative heap limits suitable for unit tests.
+  /// Creates a new runtime with conservative heap limits.
   pub fn new() -> Self {
-    // Keep limits high enough that adapter-level tests won't trigger GC. When this runtime is used
-    // for real JS execution, the embedding should plumb in renderer-level memory budgets.
-    let limits = HeapLimits::new(128 * 1024 * 1024, 128 * 1024 * 1024);
+    // Defaults should be conservative; real embeddings should plumb in renderer budgets via
+    // `VmJsRuntime::with_limits`.
+    Self::with_limits(HeapLimits::new(16 * 1024 * 1024, 8 * 1024 * 1024))
+  }
+
+  pub fn with_limits(limits: HeapLimits) -> Self {
     Self {
       heap: Heap::new(limits),
-      objects: HashMap::new(),
-      interned_strings: HashMap::new(),
+      host_objects: HashMap::new(),
       webidl_limits: WebIdlLimits::default(),
       well_known_iterator: None,
       well_known_async_iterator: None,
+      string_data_symbol: None,
+      boolean_data_symbol: None,
+      number_data_symbol: None,
+      symbol_data_symbol: None,
+      last_swept_gc_runs: 0,
     }
   }
 
@@ -104,39 +90,87 @@ impl VmJsRuntime {
     self.webidl_limits = limits;
   }
 
-  fn intern_string(&mut self, s: &str) -> Result<GcString, VmError> {
-    if let Some(existing) = self.interned_strings.get(s).copied() {
-      return Ok(existing);
+  fn sweep_dead_host_objects_if_needed(&mut self) {
+    let gc_runs = self.heap.gc_runs();
+    if gc_runs == self.last_swept_gc_runs {
+      return;
     }
-    let handle = {
-      let mut scope = self.heap.scope();
-      scope.alloc_string(s)?
-    };
-    // Keep the string alive even if GC runs.
-    root_value(&mut self.heap, Value::String(handle));
-    self.interned_strings.insert(s.to_string(), handle);
-    Ok(handle)
+    self.last_swept_gc_runs = gc_runs;
+
+    let heap = &self.heap;
+    self
+      .host_objects
+      .retain(|weak, _| weak.upgrade(heap).is_some());
+  }
+
+  fn with_stack_roots<R>(
+    &mut self,
+    roots: impl IntoIterator<Item = Value>,
+    f: impl FnOnce(&mut Self) -> Result<R, VmError>,
+  ) -> Result<R, VmError> {
+    let len = self.heap.stack_root_len();
+    for v in roots {
+      self.heap.push_stack_root(v);
+    }
+    let result = f(self);
+    self.heap.truncate_stack_roots(len);
+    result
+  }
+
+  fn alloc_string_handle(&mut self, s: &str) -> Result<GcString, VmError> {
+    let mut scope = self.heap.scope();
+    scope.alloc_string(s)
   }
 
   /// Creates a string [`PropertyKey`] from a Rust `&str`.
   ///
-  /// This is a convenience for embeddings (e.g. DOM bindings) that need to define/read properties
-  /// by name without having to pattern-match a [`Value::String`] just to construct
-  /// `PropertyKey::String`.
-  ///
-  /// # GC / rooting
-  ///
-  /// `Value`/`PropertyKey` are GC handles. Today, this adapter pins all values it allocates in the
-  /// heap's persistent root set (see `root_value`), so returned keys remain valid for the lifetime
-  /// of the `VmJsRuntime`. Callers should still treat returned handles as GC-managed; a future
-  /// engine integration may require explicit rooting or scoped handles instead of globally pinning
-  /// everything.
+  /// This is a convenience for embeddings that want to access properties by name without having to
+  /// allocate a JS string value first.
   pub fn prop_key_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
-    Ok(PropertyKey::String(self.intern_string(s)?))
+    self.property_key_from_str(s)
+  }
+
+  fn internal_symbol(slot: &mut Option<GcSymbol>, heap: &mut Heap, key: GcString) -> Result<GcSymbol, VmError> {
+    if let Some(sym) = *slot {
+      return Ok(sym);
+    }
+    let sym = heap.symbol_for(key)?;
+    *slot = Some(sym);
+    Ok(sym)
+  }
+
+  fn string_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[StringData]]")?;
+    Self::internal_symbol(&mut self.string_data_symbol, &mut self.heap, key)
+  }
+
+  fn boolean_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[BooleanData]]")?;
+    Self::internal_symbol(&mut self.boolean_data_symbol, &mut self.heap, key)
+  }
+
+  fn number_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[NumberData]]")?;
+    Self::internal_symbol(&mut self.number_data_symbol, &mut self.heap, key)
+  }
+
+  fn symbol_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[SymbolData]]")?;
+    Self::internal_symbol(&mut self.symbol_data_symbol, &mut self.heap, key)
+  }
+
+  fn is_internal_key(&self, key: &PropertyKey) -> bool {
+    let PropertyKey::Symbol(sym) = key else {
+      return false;
+    };
+    self.string_data_symbol == Some(*sym)
+      || self.boolean_data_symbol == Some(*sym)
+      || self.number_data_symbol == Some(*sym)
+      || self.symbol_data_symbol == Some(*sym)
   }
 
   pub fn alloc_string_value(&mut self, s: &str) -> Result<Value, VmError> {
-    Ok(Value::String(self.intern_string(s)?))
+    Ok(Value::String(self.alloc_string_handle(s)?))
   }
 
   pub fn alloc_object_value(&mut self) -> Result<Value, VmError> {
@@ -144,15 +178,6 @@ impl VmJsRuntime {
       let mut scope = self.heap.scope();
       scope.alloc_object()?
     };
-    root_value(&mut self.heap, Value::Object(obj));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::Ordinary,
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
     Ok(Value::Object(obj))
   }
 
@@ -166,17 +191,12 @@ impl VmJsRuntime {
       let mut scope = self.heap.scope();
       scope.alloc_object()?
     };
-    root_value(&mut self.heap, Value::Object(obj));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::PlatformObject {
-          primary_interface,
-          implements,
-          opaque,
-        },
-        prototype: None,
-        properties: Vec::new(),
+    self.host_objects.insert(
+      WeakGcObject::from(obj),
+      HostObjectKind::PlatformObject {
+        primary_interface,
+        implements,
+        opaque,
       },
     );
     Ok(Value::Object(obj))
@@ -186,8 +206,10 @@ impl VmJsRuntime {
     let Value::Object(obj) = v else {
       return None;
     };
-    let host = self.objects.get(&obj)?;
-    match &host.kind {
+    if !self.heap.is_valid_object(obj) {
+      return None;
+    }
+    match self.host_objects.get(&WeakGcObject::from(obj))? {
       HostObjectKind::PlatformObject { opaque, .. } => Some(*opaque),
       _ => None,
     }
@@ -197,125 +219,15 @@ impl VmJsRuntime {
     let Value::Object(obj) = v else {
       return None;
     };
-    let host = self.objects.get(&obj)?;
-    match &host.kind {
+    if !self.heap.is_valid_object(obj) {
+      return None;
+    }
+    match self.host_objects.get(&WeakGcObject::from(obj))? {
       HostObjectKind::PlatformObject {
         primary_interface, ..
       } => Some(*primary_interface),
       _ => None,
     }
-  }
-
-  pub fn implements_interface(&self, v: Value, interface: &str) -> bool {
-    let Value::Object(obj) = v else {
-      return false;
-    };
-    let Some(host) = self.objects.get(&obj) else {
-      return false;
-    };
-    match &host.kind {
-      HostObjectKind::PlatformObject {
-        primary_interface,
-        implements,
-        ..
-      } => *primary_interface == interface || implements.iter().any(|i| *i == interface),
-      _ => false,
-    }
-  }
-
-  pub fn alloc_string_object_value(&mut self, s: &str) -> Result<Value, VmError> {
-    let string_data = self.intern_string(s)?;
-    self.alloc_string_object_from_handle(string_data)
-  }
-
-  fn alloc_string_object_from_handle(&mut self, string_data: GcString) -> Result<Value, VmError> {
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    root_value(&mut self.heap, Value::Object(obj));
-    root_value(&mut self.heap, Value::String(string_data));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::StringObject { string_data },
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
-    Ok(Value::Object(obj))
-  }
-
-  fn alloc_boolean_object_value(&mut self, boolean_data: bool) -> Result<Value, VmError> {
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    root_value(&mut self.heap, Value::Object(obj));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::BooleanObject { boolean_data },
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
-    Ok(Value::Object(obj))
-  }
-
-  fn alloc_number_object_value(&mut self, number_data: f64) -> Result<Value, VmError> {
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    root_value(&mut self.heap, Value::Object(obj));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::NumberObject { number_data },
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
-    Ok(Value::Object(obj))
-  }
-
-  fn alloc_symbol_object_value(&mut self, symbol_data: GcSymbol) -> Result<Value, VmError> {
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    root_value(&mut self.heap, Value::Object(obj));
-    root_value(&mut self.heap, Value::Symbol(symbol_data));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::SymbolObject { symbol_data },
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
-    Ok(Value::Object(obj))
-  }
-
-  pub fn alloc_function_value<F>(&mut self, f: F) -> Result<Value, VmError>
-  where
-    F: Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError> + 'static,
-  {
-    let obj = {
-      let mut scope = self.heap.scope();
-      scope.alloc_object()?
-    };
-    root_value(&mut self.heap, Value::Object(obj));
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::Function(Rc::new(f)),
-        prototype: None,
-        properties: Vec::new(),
-      },
-    );
-    Ok(Value::Object(obj))
   }
 
   pub fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {
@@ -327,48 +239,7 @@ impl VmJsRuntime {
       Some(Value::Object(p)) => Some(p),
       Some(_) => return Err(self.throw_type_error("set_prototype: prototype is not an object")),
     };
-    let Some(host) = self.objects.get_mut(&obj) else {
-      return Err(VmError::Unimplemented(
-        "set_prototype on non-host object is not supported",
-      ));
-    };
-    host.prototype = proto_obj;
-    Ok(())
-  }
-
-  pub fn define_data_property(
-    &mut self,
-    obj: Value,
-    key: PropertyKey,
-    value: Value,
-    enumerable: bool,
-  ) -> Result<(), VmError> {
-    let Value::Object(obj) = obj else {
-      return Err(self.throw_type_error("define_data_property: receiver is not an object"));
-    };
-    let Some(host) = self.objects.get_mut(&obj) else {
-      return Err(VmError::Unimplemented(
-        "define_data_property on non-host object is not supported",
-      ));
-    };
-
-    // Root the stored values so GC cannot invalidate handles that the host holds in `self.objects`.
-    match key {
-      PropertyKey::String(s) => root_value(&mut self.heap, Value::String(s)),
-      PropertyKey::Symbol(sym) => root_value(&mut self.heap, Value::Symbol(sym)),
-    }
-    root_value(&mut self.heap, value);
-
-    let desc = PropertyDescriptor {
-      enumerable,
-      configurable: true,
-      kind: PropertyKind::Data {
-        value,
-        writable: true,
-      },
-    };
-    upsert_property(&self.heap, host, key, desc);
-    Ok(())
+    self.heap.object_set_prototype(obj, proto_obj)
   }
 
   pub fn define_accessor_property(
@@ -382,26 +253,90 @@ impl VmJsRuntime {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("define_accessor_property: receiver is not an object"));
     };
-    let Some(host) = self.objects.get_mut(&obj) else {
-      return Err(VmError::Unimplemented(
-        "define_accessor_property on non-host object is not supported",
-      ));
-    };
-
-    match key {
-      PropertyKey::String(s) => root_value(&mut self.heap, Value::String(s)),
-      PropertyKey::Symbol(sym) => root_value(&mut self.heap, Value::Symbol(sym)),
-    }
-    root_value(&mut self.heap, get);
-    root_value(&mut self.heap, set);
 
     let desc = PropertyDescriptor {
       enumerable,
       configurable: true,
       kind: PropertyKind::Accessor { get, set },
     };
-    upsert_property(&self.heap, host, key, desc);
-    Ok(())
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, key, desc)
+  }
+
+  fn define_hidden_slot(&mut self, obj: GcObject, sym: GcSymbol, value: Value) -> Result<(), VmError> {
+    let desc = PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value,
+        writable: false,
+      },
+    };
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, PropertyKey::Symbol(sym), desc)
+  }
+
+  pub fn alloc_string_object_value(&mut self, s: &str) -> Result<Value, VmError> {
+    let string_data = self.alloc_string_handle(s)?;
+    self.alloc_string_object_from_handle(string_data)
+  }
+
+  fn alloc_string_object_from_handle(&mut self, string_data: GcString) -> Result<Value, VmError> {
+    let sym = self.string_data_symbol()?;
+    self.with_stack_roots([Value::String(string_data)], |rt| {
+      let obj = {
+        let mut scope = rt.heap.scope();
+        scope.alloc_object()?
+      };
+      rt.define_hidden_slot(obj, sym, Value::String(string_data))?;
+      Ok(Value::Object(obj))
+    })
+  }
+
+  fn alloc_boolean_object_value(&mut self, boolean_data: bool) -> Result<Value, VmError> {
+    let sym = self.boolean_data_symbol()?;
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    self.define_hidden_slot(obj, sym, Value::Bool(boolean_data))?;
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_number_object_value(&mut self, number_data: f64) -> Result<Value, VmError> {
+    let sym = self.number_data_symbol()?;
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    self.define_hidden_slot(obj, sym, Value::Number(number_data))?;
+    Ok(Value::Object(obj))
+  }
+
+  fn alloc_symbol_object_value(&mut self, symbol_data: GcSymbol) -> Result<Value, VmError> {
+    let sym = self.symbol_data_symbol()?;
+    self.with_stack_roots([Value::Symbol(symbol_data)], |rt| {
+      let obj = {
+        let mut scope = rt.heap.scope();
+        scope.alloc_object()?
+      };
+      rt.define_hidden_slot(obj, sym, Value::Symbol(symbol_data))?;
+      Ok(Value::Object(obj))
+    })
+  }
+
+  pub fn alloc_function_value<F>(&mut self, f: F) -> Result<Value, VmError>
+  where
+    F: Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError> + 'static,
+  {
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    self
+      .host_objects
+      .insert(WeakGcObject::from(obj), HostObjectKind::Function(Rc::new(f)));
+    Ok(Value::Object(obj))
   }
 
   fn call_internal(
@@ -410,78 +345,33 @@ impl VmJsRuntime {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    self.sweep_dead_host_objects_if_needed();
     let Value::Object(func) = callee else {
       return Err(self.throw_type_error("value is not callable"));
     };
-    let Some(obj) = self.objects.get(&func) else {
-      return Err(VmError::Unimplemented(
-        "Call: calling non-host functions is not supported",
-      ));
-    };
-    let HostObjectKind::Function(f) = &obj.kind else {
+    if !self.heap.is_valid_object(func) {
+      return Err(VmError::InvalidHandle);
+    }
+    let Some(HostObjectKind::Function(f)) = self.host_objects.get(&WeakGcObject::from(func)) else {
       return Err(self.throw_type_error("value is not callable"));
     };
 
     let f = f.clone();
-    f(self, this, args)
+    self.with_stack_roots(
+      std::iter::once(callee)
+        .chain(std::iter::once(this))
+        .chain(args.iter().copied()),
+      |rt| f(rt, this, args),
+    )
   }
 
-  /// Invokes `callee` as a function with an explicit `this` value and argument list.
+  /// Call a JS function value.
   ///
-  /// This is the minimal embedding API needed by DOM/WebIDL bindings to call event listeners and
-  /// callback interfaces.
-  ///
-  /// # Current limitations
-  ///
-  /// Only host-callable objects created via [`VmJsRuntime::alloc_function_value`] are supported
-  /// today. Attempting to call an arbitrary JS value will either throw a `TypeError` (if it is not
-  /// callable) or return [`VmError::Unimplemented`] (if it is some non-host callable we don't know
-  /// how to invoke yet).
-  ///
-  /// # GC / rooting
-  ///
-  /// `Value`/`PropertyKey` are GC handles. This runtime currently pins all values it allocates in
-  /// the heap's persistent root set, allowing callers to store handles without additional rooting.
-  /// Do not rely on this long-term: a future engine integration may require explicit rooting or
-  /// handle scopes.
+  /// This currently only supports host-defined function objects created via
+  /// [`VmJsRuntime::alloc_function_value`]. It is sufficient for early host integration plumbing
+  /// while the full `vm-js` interpreter is still under development.
   pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
     <Self as JsRuntime>::call(self, callee, this, args)
-  }
-  fn find_own_property(&self, obj: GcObject, key: &PropertyKey) -> Option<PropertyDescriptor> {
-    let host = self.objects.get(&obj)?;
-    for (k, desc) in &host.properties {
-      if self.heap.property_key_eq(k, key) {
-        return Some(*desc);
-      }
-    }
-    None
-  }
-
-  fn string_to_array_index(&self, s: GcString) -> Option<u32> {
-    let js = self.heap.get_string(s).ok()?;
-    let units = js.as_code_units();
-    if units.is_empty() {
-      return None;
-    }
-    if units.len() > 1 && units[0] == b'0' as u16 {
-      return None;
-    }
-    let mut n: u64 = 0;
-    for &u in units {
-      if !(b'0' as u16..=b'9' as u16).contains(&u) {
-        return None;
-      }
-      n = n.checked_mul(10)?;
-      n = n.checked_add((u - b'0' as u16) as u64)?;
-      if n > u32::MAX as u64 {
-        return None;
-      }
-    }
-    // Array index is uint32 < 2^32 - 1.
-    if n == u32::MAX as u64 {
-      return None;
-    }
-    Some(n as u32)
   }
 
   fn to_number_from_string(&self, s: GcString) -> Result<f64, VmError> {
@@ -505,10 +395,7 @@ impl VmJsRuntime {
     } else {
       (1.0, trimmed)
     };
-    if let Some(rest) = digits
-      .strip_prefix("0x")
-      .or_else(|| digits.strip_prefix("0X"))
-    {
+    if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -517,10 +404,7 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits
-      .strip_prefix("0b")
-      .or_else(|| digits.strip_prefix("0B"))
-    {
+    if let Some(rest) = digits.strip_prefix("0b").or_else(|| digits.strip_prefix("0B")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -529,10 +413,7 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = digits
-      .strip_prefix("0o")
-      .or_else(|| digits.strip_prefix("0O"))
-    {
+    if let Some(rest) = digits.strip_prefix("0o").or_else(|| digits.strip_prefix("0O")) {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -550,88 +431,147 @@ impl VmJsRuntime {
 
   fn to_string_from_number(&mut self, n: f64) -> Result<GcString, VmError> {
     if n.is_nan() {
-      return self.intern_string("NaN");
+      return self.alloc_string_handle("NaN");
     }
     if n == 0.0 {
       // Covers +0 and -0.
-      return self.intern_string("0");
+      return self.alloc_string_handle("0");
     }
     if n == f64::INFINITY {
-      return self.intern_string("Infinity");
+      return self.alloc_string_handle("Infinity");
     }
     if n == f64::NEG_INFINITY {
-      return self.intern_string("-Infinity");
+      return self.alloc_string_handle("-Infinity");
     }
-
-    // Note: This is not a full implementation of ECMA-262 `Number::toString` formatting, but it is
-    // sufficient for WebIDL conversions which generally do not depend on the exact exponent
-    // formatting. We intentionally use Rust's shortest-roundtrip formatting here.
-    self.intern_string(&n.to_string())
+    self.alloc_string_handle(&n.to_string())
   }
 
   fn create_error_object(&mut self, name: &'static str, message: &str) -> Value {
-    // Allocate error object.
     let obj = match {
       let mut scope = self.heap.scope();
       scope.alloc_object()
     } {
       Ok(obj) => obj,
-      Err(_) => {
-        // If allocation fails, fall back to throwing a primitive.
-        return Value::Undefined;
-      }
+      Err(_) => return Value::Undefined,
     };
-    root_value(&mut self.heap, Value::Object(obj));
 
     let message_handle = match self
-      .intern_string(message)
-      .or_else(|_| self.intern_string("error"))
+      .alloc_string_handle(message)
+      .or_else(|_| self.alloc_string_handle("error"))
     {
       Ok(s) => s,
-      Err(_) => {
-        // If we cannot allocate the message string, fall back to throwing a primitive.
-        return Value::Undefined;
-      }
+      Err(_) => return Value::Undefined,
     };
-    root_value(&mut self.heap, Value::String(message_handle));
 
-    self.objects.insert(
-      obj,
-      HostObject {
-        kind: HostObjectKind::Error {
-          name,
-          message: message_handle,
-        },
-        prototype: None,
-        properties: Vec::new(),
+    self
+      .host_objects
+      .insert(WeakGcObject::from(obj), HostObjectKind::Error { name });
+
+    let _ = self.with_stack_roots(
+      [Value::Object(obj), Value::String(message_handle)],
+      |rt| {
+        let name_key = rt.property_key_from_str("name")?;
+        let name_value = rt.alloc_string("TypeError")?; // overwritten below when name != TypeError
+        let name_value = match name {
+          "TypeError" => name_value,
+          other => rt.alloc_string(other)?,
+        };
+        rt.define_data_property(Value::Object(obj), name_key, name_value, false)?;
+
+        let message_key = rt.property_key_from_str("message")?;
+        rt.define_data_property(
+          Value::Object(obj),
+          message_key,
+          Value::String(message_handle),
+          false,
+        )?;
+        Ok(())
       },
     );
 
-    // Best-effort "name" + "message" own properties (non-enumerable per spec, but not critical).
-    if let (Ok(name_key), Ok(name_value)) = (self.intern_string("name"), self.intern_string(name)) {
-      let _ = self.define_data_property(
-        Value::Object(obj),
-        PropertyKey::String(name_key),
-        Value::String(name_value),
-        false,
-      );
-    }
-    if let Ok(message_key) = self.intern_string("message") {
-      let _ = self.define_data_property(
-        Value::Object(obj),
-        PropertyKey::String(message_key),
-        Value::String(message_handle),
-        false,
-      );
-    }
-
     Value::Object(obj)
   }
-}
 
-impl Default for VmJsRuntime {
-  fn default() -> Self {
-    Self::new()
+  fn string_object_data(&self, obj: GcObject) -> Result<Option<GcString>, VmError> {
+    let Some(sym) = self.string_data_symbol else {
+      return Ok(None);
+    };
+    match self
+      .heap
+      .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
+    {
+      Ok(Some(Value::String(s))) => Ok(Some(s)),
+      Ok(_) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
+  fn boolean_object_data(&self, obj: GcObject) -> Result<Option<bool>, VmError> {
+    let Some(sym) = self.boolean_data_symbol else {
+      return Ok(None);
+    };
+    match self
+      .heap
+      .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
+    {
+      Ok(Some(Value::Bool(b))) => Ok(Some(b)),
+      Ok(_) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
+  fn number_object_data(&self, obj: GcObject) -> Result<Option<f64>, VmError> {
+    let Some(sym) = self.number_data_symbol else {
+      return Ok(None);
+    };
+    match self
+      .heap
+      .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
+    {
+      Ok(Some(Value::Number(n))) => Ok(Some(n)),
+      Ok(_) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
+  fn symbol_object_data(&self, obj: GcObject) -> Result<Option<GcSymbol>, VmError> {
+    let Some(sym) = self.symbol_data_symbol else {
+      return Ok(None);
+    };
+    match self
+      .heap
+      .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
+    {
+      Ok(Some(Value::Symbol(s))) => Ok(Some(s)),
+      Ok(_) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
+  fn throw_symbol_to_number(&mut self, symbol_data: GcSymbol) -> VmError {
+    let message = match self
+      .heap
+      .symbol_description(symbol_data)
+      .and_then(|s| self.heap.get_string(s).ok())
+      .map(|s| s.to_utf8_lossy())
+    {
+      Some(desc) => format!("Cannot convert a Symbol({desc}) value to a number"),
+      None => "Cannot convert a Symbol value to a number".to_string(),
+    };
+    self.throw_type_error(&message)
+  }
+
+  fn throw_symbol_to_string(&mut self, symbol_data: GcSymbol) -> VmError {
+    let message = match self
+      .heap
+      .symbol_description(symbol_data)
+      .and_then(|s| self.heap.get_string(s).ok())
+      .map(|s| s.to_utf8_lossy())
+    {
+      Some(desc) => format!("Cannot convert a Symbol({desc}) value to a string"),
+      None => "Cannot convert a Symbol value to a string".to_string(),
+    };
+    self.throw_type_error(&message)
   }
 }
 
@@ -640,8 +580,11 @@ impl WebIdlHooks<Value> for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::PlatformObject { .. })
     )
   }
@@ -650,22 +593,21 @@ impl WebIdlHooks<Value> for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
-    let Some(host) = self.objects.get(&obj) else {
+    if !self.heap.is_valid_object(obj) {
       return false;
     };
-    match &host.kind {
-      HostObjectKind::PlatformObject {
-        primary_interface,
-        implements,
-        ..
-      } => {
-        InterfaceId::from_name(primary_interface) == interface
-          || implements
-            .iter()
-            .any(|name| InterfaceId::from_name(name) == interface)
-      }
-      _ => false,
-    }
+    let Some(HostObjectKind::PlatformObject {
+      primary_interface,
+      implements,
+      ..
+    }) = self.host_objects.get(&WeakGcObject::from(obj))
+    else {
+      return false;
+    };
+    InterfaceId::from_name(primary_interface) == interface
+      || implements
+        .iter()
+        .any(|name| InterfaceId::from_name(name) == interface)
   }
 }
 
@@ -699,7 +641,6 @@ impl JsRuntime for VmJsRuntime {
       let mut scope = self.heap.scope();
       scope.alloc_string_from_code_units(units)?
     };
-    root_value(&mut self.heap, Value::String(handle));
     Ok(Value::String(handle))
   }
 
@@ -718,10 +659,9 @@ impl JsRuntime for VmJsRuntime {
   ) -> Result<R, VmError> {
     let handle = match string {
       Value::String(s) => s,
-      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
-        Some(HostObjectKind::StringObject { string_data }) => *string_data,
-        _ => return Err(self.throw_type_error("value is not a string")),
-      },
+      Value::Object(obj) => self
+        .string_object_data(obj)?
+        .ok_or_else(|| self.throw_type_error("value is not a string"))?,
       _ => return Err(self.throw_type_error("value is not a string")),
     };
     let js = self.heap.get_string(handle)?;
@@ -729,11 +669,11 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
-    self.prop_key_str(s)
+    Ok(PropertyKey::String(self.alloc_string_handle(s)?))
   }
 
   fn property_key_from_u32(&mut self, index: u32) -> Result<PropertyKey, VmError> {
-    self.prop_key_str(&index.to_string())
+    Ok(PropertyKey::String(self.alloc_string_handle(&index.to_string())?))
   }
 
   fn property_key_is_symbol(&self, key: PropertyKey) -> bool {
@@ -770,7 +710,20 @@ impl JsRuntime for VmJsRuntime {
     value: Value,
     enumerable: bool,
   ) -> Result<(), VmError> {
-    VmJsRuntime::define_data_property(self, obj, key, value, enumerable)
+    let Value::Object(obj) = obj else {
+      return Err(self.throw_type_error("define_data_property: receiver is not an object"));
+    };
+
+    let desc = PropertyDescriptor {
+      enumerable,
+      configurable: true,
+      kind: PropertyKind::Data {
+        value,
+        writable: true,
+      },
+    };
+    let mut scope = self.heap.scope();
+    scope.define_property(obj, key, desc)
   }
 
   fn is_object(&self, value: Value) -> bool {
@@ -781,8 +734,11 @@ impl JsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::Function(_))
     )
   }
@@ -850,86 +806,87 @@ impl JsRuntime for VmJsRuntime {
       Value::Symbol(_) => {
         return Err(self.throw_type_error("Cannot convert a Symbol value to a number"));
       }
-      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
-        Some(HostObjectKind::StringObject { string_data }) => self.to_number_from_string(*string_data)?,
-        Some(HostObjectKind::BooleanObject { boolean_data }) => {
-          if *boolean_data { 1.0 } else { 0.0 }
+      Value::Object(obj) => {
+        if let Some(string_data) = self.string_object_data(obj)? {
+          self.to_number_from_string(string_data)?
+        } else if let Some(boolean_data) = self.boolean_object_data(obj)? {
+          if boolean_data { 1.0 } else { 0.0 }
+        } else if let Some(number_data) = self.number_object_data(obj)? {
+          number_data
+        } else if let Some(symbol_data) = self.symbol_object_data(obj)? {
+          return Err(self.throw_symbol_to_number(symbol_data));
+        } else {
+          f64::NAN
         }
-        Some(HostObjectKind::NumberObject { number_data }) => *number_data,
-        Some(HostObjectKind::SymbolObject { symbol_data }) => {
-          let message = match self
-            .heap
-            .symbol_description(*symbol_data)
-            .and_then(|s| self.heap.get_string(s).ok())
-            .map(|s| s.to_utf8_lossy())
-          {
-            Some(desc) => format!("Cannot convert a Symbol({desc}) value to a number"),
-            None => "Cannot convert a Symbol value to a number".to_string(),
-          };
-          return Err(self.throw_type_error(&message));
-        }
-        _ => f64::NAN,
-      },
+      }
     })
   }
 
   fn to_string(&mut self, value: Value) -> Result<Value, VmError> {
-    let s = match value {
-      Value::String(s) => s,
-      Value::Undefined => self.intern_string("undefined")?,
-      Value::Null => self.intern_string("null")?,
-      Value::Bool(true) => self.intern_string("true")?,
-      Value::Bool(false) => self.intern_string("false")?,
-      Value::Number(n) => self.to_string_from_number(n)?,
-      Value::Symbol(_) => {
-        return Err(self.throw_type_error("Cannot convert a Symbol value to a string"));
-      }
-      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
-        Some(HostObjectKind::StringObject { string_data }) => *string_data,
-        Some(HostObjectKind::BooleanObject { boolean_data }) => {
-          if *boolean_data {
-            self.intern_string("true")?
+    self.sweep_dead_host_objects_if_needed();
+
+    self.with_stack_roots([value], |rt| {
+      let s = match value {
+        Value::String(s) => s,
+        Value::Undefined => rt.alloc_string_handle("undefined")?,
+        Value::Null => rt.alloc_string_handle("null")?,
+        Value::Bool(true) => rt.alloc_string_handle("true")?,
+        Value::Bool(false) => rt.alloc_string_handle("false")?,
+        Value::Number(n) => rt.to_string_from_number(n)?,
+        Value::Symbol(_) => {
+          return Err(rt.throw_type_error("Cannot convert a Symbol value to a string"));
+        }
+        Value::Object(obj) => {
+          if let Some(string_data) = rt.string_object_data(obj)? {
+            string_data
+          } else if let Some(boolean_data) = rt.boolean_object_data(obj)? {
+            if boolean_data {
+              rt.alloc_string_handle("true")?
+            } else {
+              rt.alloc_string_handle("false")?
+            }
+          } else if let Some(number_data) = rt.number_object_data(obj)? {
+            rt.to_string_from_number(number_data)?
+          } else if let Some(symbol_data) = rt.symbol_object_data(obj)? {
+            return Err(rt.throw_symbol_to_string(symbol_data));
+          } else if rt.heap.is_valid_object(obj) {
+            match rt.host_objects.get(&WeakGcObject::from(obj)) {
+              Some(HostObjectKind::Error { name }) => {
+                let name_str = (*name).to_string();
+                let message_key = rt.property_key_from_str("message")?;
+                let message_value = rt
+                  .heap
+                  .object_get_own_data_property_value(obj, &message_key)
+                  .unwrap_or(None)
+                  .unwrap_or(Value::Undefined);
+                let message = match message_value {
+                  Value::String(s) => rt.heap.get_string(s)?.to_utf8_lossy(),
+                  _ => String::new(),
+                };
+                let combined = if message.is_empty() {
+                  name_str
+                } else {
+                  format!("{name_str}: {message}")
+                };
+                rt.alloc_string_handle(&combined)?
+              }
+              _ => rt.alloc_string_handle("[object Object]")?,
+            }
           } else {
-            self.intern_string("false")?
+            rt.alloc_string_handle("[object Object]")?
           }
         }
-        Some(HostObjectKind::NumberObject { number_data }) => self.to_string_from_number(*number_data)?,
-        Some(HostObjectKind::SymbolObject { symbol_data }) => {
-          let message = match self
-            .heap
-            .symbol_description(*symbol_data)
-            .and_then(|s| self.heap.get_string(s).ok())
-            .map(|s| s.to_utf8_lossy())
-          {
-            Some(desc) => format!("Cannot convert a Symbol({desc}) value to a string"),
-            None => "Cannot convert a Symbol value to a string".to_string(),
-          };
-          return Err(self.throw_type_error(&message));
-        }
-        Some(HostObjectKind::Error { name, message }) => {
-          // A minimal `Error.prototype.toString`-like formatting.
-          let name = (*name).to_string();
-          let message = self.heap.get_string(*message)?.to_utf8_lossy();
-          let combined = if message.is_empty() {
-            name
-          } else {
-            format!("{name}: {message}")
-          };
-          self.intern_string(&combined)?
-        }
-        _ => self.intern_string("[object Object]")?,
-      },
-    };
-    Ok(Value::String(s))
+      };
+      Ok(Value::String(s))
+    })
   }
 
   fn string_to_utf8_lossy(&mut self, string: Value) -> Result<String, VmError> {
     let handle = match string {
       Value::String(s) => s,
-      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
-        Some(HostObjectKind::StringObject { string_data }) => *string_data,
-        _ => return Err(self.throw_type_error("value is not a string")),
-      },
+      Value::Object(obj) => self
+        .string_object_data(obj)?
+        .ok_or_else(|| self.throw_type_error("value is not a string"))?,
       _ => return Err(self.throw_type_error("value is not a string")),
     };
     Ok(self.heap.get_string(handle)?.to_utf8_lossy())
@@ -947,39 +904,25 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn get(&mut self, obj: Value, key: PropertyKey) -> Result<Value, VmError> {
-    // Per ECMAScript `[[Get]]`, accessor properties are invoked with the original receiver, not the
-    // object in the prototype chain where the property was found.
-    let receiver = obj;
-    let Value::Object(mut current) = obj else {
+    let Value::Object(receiver) = obj else {
       return Err(self.throw_type_error("Get: receiver is not an object"));
     };
+    self.sweep_dead_host_objects_if_needed();
 
-    loop {
-      let Some(host) = self.objects.get(&current) else {
-        return Err(VmError::Unimplemented(
-          "Get on non-host objects is not supported",
-        ));
-      };
-
-      if let Some(desc) = self.find_own_property(current, &key) {
-        return match desc.kind {
-          PropertyKind::Data { value, .. } => Ok(value),
-          PropertyKind::Accessor { get, .. } => {
-            if matches!(get, Value::Undefined) {
-              return Ok(Value::Undefined);
-            }
-            if !self.is_callable(get) {
-              return Err(self.throw_type_error("Getter is not callable"));
-            }
-            self.call(get, receiver, &[])
-          }
-        };
+    let Some(desc) = self.heap.get_property(receiver, &key)? else {
+      return Ok(Value::Undefined);
+    };
+    match desc.kind {
+      PropertyKind::Data { value, .. } => Ok(value),
+      PropertyKind::Accessor { get, .. } => {
+        if matches!(get, Value::Undefined) {
+          return Ok(Value::Undefined);
+        }
+        if !self.is_callable(get) {
+          return Err(self.throw_type_error("Getter is not callable"));
+        }
+        self.call_internal(get, Value::Object(receiver), &[])
       }
-
-      let Some(proto) = host.prototype else {
-        return Ok(Value::Undefined);
-      };
-      current = proto;
     }
   }
 
@@ -987,34 +930,10 @@ impl JsRuntime for VmJsRuntime {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("OwnPropertyKeys: receiver is not an object"));
     };
-    let Some(host) = self.objects.get(&obj) else {
-      return Err(VmError::Unimplemented(
-        "OwnPropertyKeys on non-host objects is not supported",
-      ));
-    };
+    self.sweep_dead_host_objects_if_needed();
 
-    let mut array_keys: Vec<(u32, PropertyKey)> = Vec::new();
-    let mut string_keys: Vec<PropertyKey> = Vec::new();
-    let mut symbol_keys: Vec<PropertyKey> = Vec::new();
-
-    for (k, _desc) in &host.properties {
-      match k {
-        PropertyKey::String(s) => {
-          if let Some(idx) = self.string_to_array_index(*s) {
-            array_keys.push((idx, *k));
-          } else {
-            string_keys.push(*k);
-          }
-        }
-        PropertyKey::Symbol(_) => symbol_keys.push(*k),
-      }
-    }
-
-    array_keys.sort_by_key(|(idx, _)| *idx);
-    let mut out = Vec::with_capacity(array_keys.len() + string_keys.len() + symbol_keys.len());
-    out.extend(array_keys.into_iter().map(|(_idx, k)| k));
-    out.extend(string_keys);
-    out.extend(symbol_keys);
+    let mut out = self.heap.own_property_keys(obj)?;
+    out.retain(|k| !self.is_internal_key(k));
     Ok(out)
   }
 
@@ -1026,7 +945,7 @@ impl JsRuntime for VmJsRuntime {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("GetOwnProperty: receiver is not an object"));
     };
-    let Some(desc) = self.find_own_property(obj, &key) else {
+    let Some(desc) = self.heap.object_get_own_property(obj, &key)? else {
       return Ok(None);
     };
 
@@ -1062,16 +981,18 @@ impl JsRuntime for VmJsRuntime {
       return Err(self.throw_type_error("Iterator method did not return an object"));
     }
 
-    let next_key = self.prop_key_str("next")?;
-    let next = self.get(iterator, next_key)?;
-    if !self.is_callable(next) {
-      return Err(self.throw_type_error("Iterator.next is not callable"));
-    }
+    self.with_stack_roots([iterator], |rt| {
+      let next_key = rt.property_key_from_str("next")?;
+      let next = rt.get(iterator, next_key)?;
+      if !rt.is_callable(next) {
+        return Err(rt.throw_type_error("Iterator.next is not callable"));
+      }
 
-    Ok(IteratorRecord {
-      iterator,
-      next_method: next,
-      done: false,
+      Ok(IteratorRecord {
+        iterator,
+        next_method: next,
+        done: false,
+      })
     })
   }
 
@@ -1083,22 +1004,28 @@ impl JsRuntime for VmJsRuntime {
       return Ok(None);
     }
 
-    let result = self.call_internal(iterator_record.next_method, iterator_record.iterator, &[])?;
-    if !self.is_object(result) {
-      return Err(self.throw_type_error("Iterator.next() did not return an object"));
-    }
+    let iterator = iterator_record.iterator;
+    let next_method = iterator_record.next_method;
+    self.with_stack_roots([iterator, next_method], |rt| {
+      let result = rt.call_internal(next_method, iterator, &[])?;
+      if !rt.is_object(result) {
+        return Err(rt.throw_type_error("Iterator.next() did not return an object"));
+      }
 
-    let done_key = self.prop_key_str("done")?;
-    let done = self.get(result, done_key)?;
-    let done = self.to_boolean(done)?;
-    if done {
-      iterator_record.done = true;
-      return Ok(None);
-    }
+      rt.with_stack_roots([result], |rt| {
+        let done_key = rt.property_key_from_str("done")?;
+        let done = rt.get(result, done_key)?;
+        let done = rt.to_boolean(done)?;
+        if done {
+          iterator_record.done = true;
+          return Ok(None);
+        }
 
-    let value_key = self.prop_key_str("value")?;
-    let value = self.get(result, value_key)?;
-    Ok(Some(value))
+        let value_key = rt.property_key_from_str("value")?;
+        let value = rt.get(result, value_key)?;
+        Ok(Some(value))
+      })
+    })
   }
 }
 
@@ -1115,9 +1042,8 @@ impl WebIdlJsRuntime for VmJsRuntime {
     if let Some(sym) = self.well_known_iterator {
       return Ok(PropertyKey::Symbol(sym));
     }
-    let key = self.intern_string("Symbol.iterator")?;
+    let key = self.alloc_string_handle("Symbol.iterator")?;
     let sym = self.heap.symbol_for(key)?;
-    root_value(&mut self.heap, Value::Symbol(sym));
     self.well_known_iterator = Some(sym);
     Ok(PropertyKey::Symbol(sym))
   }
@@ -1126,9 +1052,8 @@ impl WebIdlJsRuntime for VmJsRuntime {
     if let Some(sym) = self.well_known_async_iterator {
       return Ok(PropertyKey::Symbol(sym));
     }
-    let key = self.intern_string("Symbol.asyncIterator")?;
+    let key = self.alloc_string_handle("Symbol.asyncIterator")?;
     let sym = self.heap.symbol_for(key)?;
-    root_value(&mut self.heap, Value::Symbol(sym));
     self.well_known_async_iterator = Some(sym);
     Ok(PropertyKey::Symbol(sym))
   }
@@ -1141,7 +1066,21 @@ impl WebIdlJsRuntime for VmJsRuntime {
   }
 
   fn implements_interface(&self, value: Value, interface: &str) -> bool {
-    VmJsRuntime::implements_interface(self, value, interface)
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
+    let Some(HostObjectKind::PlatformObject {
+      primary_interface,
+      implements,
+      ..
+    }) = self.host_objects.get(&WeakGcObject::from(obj))
+    else {
+      return false;
+    };
+    *primary_interface == interface || implements.iter().any(|i| *i == interface)
   }
 
   fn platform_object_opaque(&self, value: Value) -> Option<u64> {
@@ -1152,18 +1091,21 @@ impl WebIdlJsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
-    matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
-      Some(HostObjectKind::StringObject { .. })
-    )
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
+    matches!(self.string_object_data(obj), Ok(Some(_)))
   }
 
   fn is_platform_object(&self, value: Value) -> bool {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::PlatformObject { .. })
     )
   }
@@ -1172,8 +1114,11 @@ impl WebIdlJsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::ArrayBuffer { .. })
     )
   }
@@ -1182,8 +1127,11 @@ impl WebIdlJsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::ArrayBuffer { shared: true })
     )
   }
@@ -1192,8 +1140,11 @@ impl WebIdlJsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return false;
     };
+    if !self.heap.is_valid_object(obj) {
+      return false;
+    }
     matches!(
-      self.objects.get(&obj).map(|o| &o.kind),
+      self.host_objects.get(&WeakGcObject::from(obj)),
       Some(HostObjectKind::DataView)
     )
   }
@@ -1202,7 +1153,10 @@ impl WebIdlJsRuntime for VmJsRuntime {
     let Value::Object(obj) = value else {
       return None;
     };
-    match self.objects.get(&obj)?.kind {
+    if !self.heap.is_valid_object(obj) {
+      return None;
+    }
+    match self.host_objects.get(&WeakGcObject::from(obj))? {
       HostObjectKind::TypedArray { name } => Some(name),
       _ => None,
     }
@@ -1234,7 +1188,7 @@ mod tests {
 
   #[test]
   fn to_string_primitives() {
-    let mut rt = VmJsRuntime::new();
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
     let s = rt.to_string(Value::Undefined).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "undefined");
     let s = rt.to_string(Value::Null).unwrap();
@@ -1251,7 +1205,7 @@ mod tests {
 
   #[test]
   fn to_number_primitives() {
-    let mut rt = VmJsRuntime::new();
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
     assert!(rt.to_number(Value::Undefined).unwrap().is_nan());
     assert_eq!(rt.to_number(Value::Null).unwrap(), 0.0);
     assert_eq!(rt.to_number(Value::Bool(true)).unwrap(), 1.0);
@@ -1262,7 +1216,7 @@ mod tests {
 
   #[test]
   fn to_string_and_to_number_on_string_object() {
-    let mut rt = VmJsRuntime::new();
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
     let obj = rt.alloc_string_object_value("456").unwrap();
     let s = rt.to_string(obj).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "456");
@@ -1272,24 +1226,26 @@ mod tests {
 
   #[test]
   fn get_method_invokes_getter_once() {
-    let mut rt = VmJsRuntime::new();
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
 
     let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
     let calls_for_getter = calls.clone();
 
+    let method_key = rt.property_key_from_str("method").unwrap();
     let method = rt
       .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
       .unwrap();
 
     let getter = rt
-      .alloc_function_value(move |_rt, _this, _args| {
+      .alloc_function_value(move |rt, this, _args| {
         calls_for_getter.set(calls_for_getter.get() + 1);
-        Ok(method)
+        rt.get(this, method_key)
       })
       .unwrap();
 
     let obj = rt.alloc_object_value().unwrap();
-    let key = rt.prop_key_str("m").unwrap();
+    rt.define_data_property(obj, method_key, method, true).unwrap();
+    let key = rt.property_key_from_str("m").unwrap();
     rt.define_accessor_property(obj, key, getter, Value::Undefined, true)
       .unwrap();
 
@@ -1333,5 +1289,127 @@ mod tests {
     let name_key = rt.prop_key_str("name").unwrap();
     let name_value = rt.get(thrown, name_key).unwrap();
     assert_eq!(as_utf8_lossy(&rt, name_value), "TypeError");
+  }
+
+  #[test]
+  fn gc_collects_unreachable_values() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024));
+    let baseline = rt.heap().used_bytes();
+
+    let mut weak_objects: Vec<WeakGcObject> = Vec::new();
+    let mut strings: Vec<GcString> = Vec::new();
+
+    for i in 0..10_000u32 {
+      let obj = rt.alloc_object_value()?;
+      let Value::Object(obj) = obj else {
+        unreachable!();
+      };
+      weak_objects.push(WeakGcObject::from(obj));
+
+      let s = rt.alloc_string_value(&format!("s{i}"))?;
+      let Value::String(s) = s else {
+        unreachable!();
+      };
+      strings.push(s);
+    }
+
+    let before = rt.heap().used_bytes();
+    assert!(before > baseline);
+
+    rt.heap_mut().collect_garbage();
+    let after = rt.heap().used_bytes();
+    assert!(after < before);
+
+    for weak in weak_objects {
+      assert_eq!(weak.upgrade(rt.heap()), None);
+    }
+    for s in strings {
+      assert!(!rt.heap().is_valid_string(s));
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn property_reachability_keeps_values_alive() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+    let obj = rt.alloc_object_value()?;
+    let Value::Object(obj_handle) = obj else {
+      unreachable!();
+    };
+    let weak = WeakGcObject::from(obj_handle);
+
+    let value = rt.alloc_string_value("hello")?;
+    let Value::String(s_handle) = value else {
+      unreachable!();
+    };
+
+    let key = rt.property_key_from_str("x")?;
+    rt.define_data_property(obj, key, value, true)?;
+
+    let root = rt.heap_mut().add_root(Value::Object(obj_handle));
+    rt.heap_mut().collect_garbage();
+
+    assert_eq!(weak.upgrade(rt.heap()), Some(obj_handle));
+    assert!(rt.heap().is_valid_string(s_handle));
+
+    let got = rt.get(obj, key)?;
+    assert_eq!(as_utf8_lossy(&rt, got), "hello");
+
+    rt.heap_mut().remove_root(root);
+    rt.heap_mut().collect_garbage();
+
+    assert_eq!(weak.upgrade(rt.heap()), None);
+    assert!(!rt.heap().is_valid_string(s_handle));
+
+    Ok(())
+  }
+
+  #[test]
+  fn own_property_keys_orders_indices_then_strings_then_symbols() -> Result<(), VmError> {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(8 * 1024 * 1024, 8 * 1024 * 1024));
+
+    let obj = rt.alloc_object_value()?;
+
+    let k_b = rt.property_key_from_str("b")?;
+    let k_1 = rt.property_key_from_str("1")?;
+    let k_a = rt.property_key_from_str("a")?;
+    let k_0 = rt.property_key_from_str("0")?;
+    let k_01 = rt.property_key_from_str("01")?;
+
+    let sym1 = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_symbol(Some("s1"))?
+    };
+    let sym2 = {
+      let mut scope = rt.heap_mut().scope();
+      scope.alloc_symbol(Some("s2"))?
+    };
+
+    rt.define_data_property(obj, k_b, Value::Number(0.0), true)?;
+    rt.define_data_property(obj, k_1, Value::Number(0.0), true)?;
+    rt.define_data_property(obj, k_a, Value::Number(0.0), true)?;
+    rt.define_data_property(obj, PropertyKey::Symbol(sym1), Value::Number(0.0), true)?;
+    rt.define_data_property(obj, k_0, Value::Number(0.0), true)?;
+    rt.define_data_property(obj, PropertyKey::Symbol(sym2), Value::Number(0.0), true)?;
+    rt.define_data_property(obj, k_01, Value::Number(0.0), true)?;
+
+    let got = rt.own_property_keys(obj)?;
+    let expected = vec![
+      k_0,
+      k_1,
+      k_b,
+      k_a,
+      k_01,
+      PropertyKey::Symbol(sym1),
+      PropertyKey::Symbol(sym2),
+    ];
+    assert_eq!(got.len(), expected.len());
+    for (got, expected) in got.iter().zip(expected.iter()) {
+      assert!(rt.heap().property_key_eq(got, expected));
+    }
+
+    Ok(())
   }
 }
