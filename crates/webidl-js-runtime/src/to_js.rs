@@ -420,7 +420,7 @@ fn record_key_string_type_inner(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::runtime::JsRuntime;
+  use crate::JsRuntime;
   use crate::VmJsRuntime;
   use std::collections::BTreeMap;
   use vm_js::Value;

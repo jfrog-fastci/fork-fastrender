@@ -1052,6 +1052,13 @@ impl WebIdlJsRuntime for VmJsRuntime {
     Ok(PropertyKey::Symbol(sym))
   }
 
+  fn symbol_to_property_key(&mut self, symbol: Value) -> Result<PropertyKey, VmError> {
+    let Value::Symbol(sym) = symbol else {
+      return Err(self.throw_type_error("expected a Symbol value"));
+    };
+    Ok(PropertyKey::Symbol(sym))
+  }
+
   fn implements_interface(&self, value: Value, interface: &str) -> bool {
     VmJsRuntime::implements_interface(self, value, interface)
   }
@@ -1067,6 +1074,16 @@ impl WebIdlJsRuntime for VmJsRuntime {
     matches!(
       self.objects.get(&obj).map(|o| &o.kind),
       Some(HostObjectKind::StringObject { .. })
+    )
+  }
+
+  fn is_platform_object(&self, value: Value) -> bool {
+    let Value::Object(obj) = value else {
+      return false;
+    };
+    matches!(
+      self.objects.get(&obj).map(|o| &o.kind),
+      Some(HostObjectKind::PlatformObject { .. })
     )
   }
 

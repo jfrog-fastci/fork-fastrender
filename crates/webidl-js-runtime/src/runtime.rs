@@ -152,6 +152,9 @@ pub trait WebIdlJsRuntime: JsRuntime {
   /// `%Symbol.asyncIterator%`.
   fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
+  /// Converts a JavaScript `Symbol` value into a property key value suitable for `get`/`get_method`.
+  fn symbol_to_property_key(&mut self, symbol: Self::JsValue) -> Result<Self::PropertyKey, Self::Error>;
+
   /// Returns true if the value is a platform object that implements the given WebIDL interface.
   fn implements_interface(&self, value: Self::JsValue, interface: &str) -> bool;
 
@@ -164,6 +167,9 @@ pub trait WebIdlJsRuntime: JsRuntime {
 
   /// Returns true if the value is a String object (has `[[StringData]]`).
   fn is_string_object(&self, value: Self::JsValue) -> bool;
+
+  /// Returns true if the value is an embedding-defined platform object.
+  fn is_platform_object(&self, value: Self::JsValue) -> bool;
 
   /// Returns true if the value is an ArrayBuffer object (has `[[ArrayBufferData]]`).
   fn is_array_buffer(&self, value: Self::JsValue) -> bool;

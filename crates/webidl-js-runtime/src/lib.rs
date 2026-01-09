@@ -12,5 +12,9 @@ pub mod to_js;
 
 pub use conversions::{convert_arguments, convert_to_idl, ArgumentSchema, ConvertedValue};
 pub use ecma_runtime::VmJsRuntime;
+pub use overload_resolution::{
+  resolve_overload, throw_no_matching_overload, ConvertedArgument, OverloadArg, OverloadSig,
+  Optionality, ResolvedOverload, WebIdlValue,
+};
 pub use runtime::{IteratorRecord, JsOwnPropertyDescriptor, JsRuntime, WebIdlJsRuntime};
 pub use to_js::{to_js, to_js_with_limits, ToJsLimits};
