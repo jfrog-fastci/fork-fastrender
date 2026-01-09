@@ -78,7 +78,7 @@ fn write_class_tokens(doc: &mut Document, node: NodeId, tokens: &[String]) -> Re
 impl Document {
   pub fn class_list_tokens(&self, node: NodeId) -> Result<Vec<String>, DomError> {
     ensure_element_or_slot(self, node)?;
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     Ok(parse_class_attribute(value))
   }
 
@@ -86,7 +86,7 @@ impl Document {
     ensure_element_or_slot(self, node)?;
     validate_token(token)?;
 
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     let tokens = parse_class_attribute(value);
     Ok(tokens.iter().any(|t| t == token))
   }
@@ -101,7 +101,7 @@ impl Document {
       return Ok(false);
     }
 
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     let mut token_set = parse_class_attribute(value);
 
     let mut changed = false;
@@ -130,7 +130,7 @@ impl Document {
       return Ok(false);
     }
 
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     let mut token_set = parse_class_attribute(value);
     let old_len = token_set.len();
 
@@ -156,7 +156,7 @@ impl Document {
     ensure_element_or_slot(self, node)?;
     validate_token(token)?;
 
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     let mut token_set = parse_class_attribute(value);
     let pos = token_set.iter().position(|t| t == token);
 
@@ -189,7 +189,7 @@ impl Document {
     validate_token(token)?;
     validate_token(new_token)?;
 
-    let value = self.get_attribute(node, "class").unwrap_or_default();
+    let value = self.get_attribute(node, "class")?.unwrap_or_default();
     let mut token_set = parse_class_attribute(value);
 
     let Some(pos) = token_set.iter().position(|t| t == token) else {
@@ -212,4 +212,3 @@ impl Document {
     Ok(true)
   }
 }
-

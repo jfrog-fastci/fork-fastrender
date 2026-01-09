@@ -181,10 +181,12 @@ impl<Host: ClassicScriptPipelineHost> ClassicScriptPipeline<Host> {
     script_node_id: NodeId,
     base_url: Option<String>,
   ) -> ScriptElementSpec {
-    let async_attr = dom.has_attribute(script_node_id, "async");
-    let defer_attr = dom.has_attribute(script_node_id, "defer");
+    let async_attr = dom.has_attribute(script_node_id, "async").unwrap_or(false);
+    let defer_attr = dom.has_attribute(script_node_id, "defer").unwrap_or(false);
     let raw_src = dom
       .get_attribute(script_node_id, "src")
+      .ok()
+      .flatten()
       .map(|v| v.to_string());
     let src =
       raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));

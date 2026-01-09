@@ -65,34 +65,34 @@ fn add_remove_toggle_update_attribute_with_normalized_serialization() {
   doc.set_attribute(el, "CLASS", "  a\tb  ").unwrap();
 
   assert_eq!(doc.class_list_add(el, &["c"]).unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a b c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a b c"));
 
   // Idempotent.
   assert_eq!(doc.class_list_add(el, &["b"]).unwrap(), false);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a b c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a b c"));
 
   assert_eq!(doc.class_list_remove(el, &["b"]).unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a c"));
 
   // Idempotent.
   assert_eq!(doc.class_list_remove(el, &["b"]).unwrap(), false);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a c"));
 
   // Toggle removes when present.
   assert_eq!(doc.class_list_toggle(el, "c", None).unwrap(), false);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a"));
 
   // Toggle adds when absent.
   assert_eq!(doc.class_list_toggle(el, "c", None).unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a c"));
 
   // force=true keeps it present (no change).
   assert_eq!(doc.class_list_toggle(el, "c", Some(true)).unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a c"));
 
   // force=false keeps it absent (no change).
   assert_eq!(doc.class_list_toggle(el, "d", Some(false)).unwrap(), false);
-  assert_eq!(doc.get_attribute(el, "class"), Some("a c"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a c"));
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn removing_last_class_removes_attribute() {
 
   doc.set_attribute(el, "class", "a").unwrap();
   assert_eq!(doc.class_list_remove(el, &["a"]).unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "class"), None);
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), None);
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn invalid_tokens_throw_syntax_error_and_do_not_mutate() {
     doc.class_list_add(el, &["b", "c d"]),
     Err(DomError::SyntaxError)
   );
-  assert_eq!(doc.get_attribute(el, "class"), Some("a"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("a"));
 }
 
 #[test]
@@ -141,4 +141,3 @@ fn class_list_errors_on_non_elements() {
     Err(DomError::InvalidNodeType)
   );
 }
-

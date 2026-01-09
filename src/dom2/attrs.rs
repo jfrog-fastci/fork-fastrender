@@ -49,27 +49,29 @@ fn attrs_and_is_html_mut(kind: &mut NodeKind) -> Option<(&mut Vec<(String, Strin
 }
 
 impl Document {
-  pub fn get_attribute(&self, node: NodeId, name: &str) -> Option<&str> {
-    let node = self.nodes.get(node.index())?;
-    let kind = &node.kind;
-    let (attrs, is_html) = attrs_and_is_html(kind)?;
-    attrs
-      .iter()
-      .find(|(k, _)| name_matches(k.as_str(), name, is_html))
-      .map(|(_, v)| v.as_str())
+  pub fn get_attribute(&self, node: NodeId, name: &str) -> Result<Option<&str>, DomError> {
+    let node = self.nodes.get(node.index()).ok_or(DomError::NotFoundError)?;
+    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
+      return Err(DomError::InvalidNodeType);
+    };
+    Ok(
+      attrs
+        .iter()
+        .find(|(k, _)| name_matches(k.as_str(), name, is_html))
+        .map(|(_, v)| v.as_str()),
+    )
   }
 
-  pub fn has_attribute(&self, node: NodeId, name: &str) -> bool {
-    let Some(node) = self.nodes.get(node.index()) else {
-      return false;
+  pub fn has_attribute(&self, node: NodeId, name: &str) -> Result<bool, DomError> {
+    let node = self.nodes.get(node.index()).ok_or(DomError::NotFoundError)?;
+    let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
+      return Err(DomError::InvalidNodeType);
     };
-    let kind = &node.kind;
-    let Some((attrs, is_html)) = attrs_and_is_html(kind) else {
-      return false;
-    };
-    attrs
-      .iter()
-      .any(|(k, _)| name_matches(k.as_str(), name, is_html))
+    Ok(
+      attrs
+        .iter()
+        .any(|(k, _)| name_matches(k.as_str(), name, is_html)),
+    )
   }
 
   pub fn set_attribute(
@@ -82,8 +84,7 @@ impl Document {
       .nodes
       .get_mut(node.index())
       .ok_or(DomError::NotFoundError)?;
-    let kind = &mut node.kind;
-    let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
+    let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
 
@@ -108,8 +109,7 @@ impl Document {
       .nodes
       .get_mut(node.index())
       .ok_or(DomError::NotFoundError)?;
-    let kind = &mut node.kind;
-    let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
+    let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
 
@@ -135,8 +135,7 @@ impl Document {
         .nodes
         .get_mut(node.index())
         .ok_or(DomError::NotFoundError)?;
-      let kind = &mut node.kind;
-      let Some((attrs, is_html)) = attrs_and_is_html_mut(kind) else {
+      let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
         return Err(DomError::InvalidNodeType);
       };
       if attrs
@@ -152,11 +151,11 @@ impl Document {
     }
   }
 
-  pub fn id(&self, node: NodeId) -> Option<&str> {
+  pub fn id(&self, node: NodeId) -> Result<Option<&str>, DomError> {
     self.get_attribute(node, "id")
   }
 
-  pub fn class_name(&self, node: NodeId) -> Option<&str> {
+  pub fn class_name(&self, node: NodeId) -> Result<Option<&str>, DomError> {
     self.get_attribute(node, "class")
   }
 }

@@ -221,8 +221,8 @@ pub fn determine_script_type_dom2(
   }
 
   determine_script_type_from_attrs(
-    doc.get_attribute(node, "type"),
-    doc.get_attribute(node, "language"),
+    doc.get_attribute(node, "type").ok().flatten(),
+    doc.get_attribute(node, "language").ok().flatten(),
   )
 }
 #[cfg(test)]

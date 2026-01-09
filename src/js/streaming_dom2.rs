@@ -56,11 +56,13 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     };
   }
 
-  let async_attr = doc.has_attribute(script, "async");
-  let defer_attr = doc.has_attribute(script, "defer");
+  let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
+  let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
 
   let src = doc
     .get_attribute(script, "src")
+    .ok()
+    .flatten()
     .and_then(|raw_src| base.resolve_script_src(raw_src));
 
   let mut inline_text = String::new();

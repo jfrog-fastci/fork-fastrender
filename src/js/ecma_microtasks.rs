@@ -307,8 +307,8 @@ mod tests {
         host: &mut host,
         realm: None,
       };
-      let root = job
-        .add_root(&mut ctx, vm_js::Value::Null)
+       let root = job
+         .add_root(&mut ctx, vm_js::Value::Null)
         .map_err(|e| Error::Other(e.to_string()))?;
       (root, job)
     };
@@ -326,8 +326,8 @@ mod tests {
         host: &mut host,
         realm: None,
       };
-      let root = job
-        .add_root(&mut ctx, vm_js::Value::Undefined)
+       let root = job
+         .add_root(&mut ctx, vm_js::Value::Undefined)
         .map_err(|e| Error::Other(e.to_string()))?;
       (root, job)
     };

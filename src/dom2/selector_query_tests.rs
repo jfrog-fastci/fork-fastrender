@@ -108,7 +108,7 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
   assert_eq!(all.len(), 1);
   assert_eq!(attr_value(&doc, all[0], "id"), Some("in"));
 
-  // Detached scopes should be treated as non-existent.
+  // Detached scopes with no matching descendants should return no matches.
   let detached = doc.push_node(
     NodeKind::Element {
       tag_name: "div".to_string(),
@@ -120,6 +120,18 @@ fn query_selector_scope_limits_to_subtree_and_detached_scope_returns_none() {
   );
   assert_eq!(doc.query_selector(".x", Some(detached)).unwrap(), None);
   assert!(doc.query_selector_all(".x", Some(detached)).unwrap().is_empty());
+
+  // Detached subtrees should still be queryable.
+  let detached_child = doc.push_node(
+    NodeKind::Element {
+      tag_name: "div".to_string(),
+      namespace: "".to_string(),
+      attributes: vec![("class".to_string(), "x".to_string())],
+    },
+    Some(detached),
+    /* inert_subtree */ false,
+  );
+  assert_eq!(doc.query_selector(".x", Some(detached)).unwrap(), Some(detached_child));
 }
 
 #[test]
@@ -156,8 +168,8 @@ fn matches_selector_returns_false_for_non_elements_and_inert_template_descendant
   let inert_div = find_inert_descendant_with_class(&doc, "x");
   assert!(doc.is_descendant_of_inert_template(inert_div));
   assert!(
-    !doc.matches_selector(inert_div, ".x").unwrap(),
-    "inert template descendants should not match selectors"
+    doc.matches_selector(inert_div, ".x").unwrap(),
+    "inert template descendants should still match selectors when queried directly"
   );
 
   let out_div = find_element_by_id(&doc, "out");

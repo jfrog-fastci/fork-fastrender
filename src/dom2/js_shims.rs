@@ -84,7 +84,7 @@ impl Document {
   /// invalid.
   pub fn dataset_get(&self, element: NodeId, prop: &str) -> Option<&str> {
     let attr = dataset_prop_to_attr(prop)?;
-    self.get_attribute(element, &attr)
+    self.get_attribute(element, &attr).ok().flatten()
   }
 
   /// Implements `Element.dataset.<prop> = value`.
@@ -118,7 +118,11 @@ impl Document {
       return String::new();
     };
 
-    let style_attr = self.get_attribute(element, "style").unwrap_or("");
+    let style_attr = self
+      .get_attribute(element, "style")
+      .ok()
+      .flatten()
+      .unwrap_or("");
     let decls = parse_style_attribute(style_attr);
     decls.get(&prop).cloned().unwrap_or_default()
   }
@@ -138,7 +142,7 @@ impl Document {
       return Ok(false);
     };
 
-    let style_attr = self.get_attribute(element, "style").unwrap_or("");
+    let style_attr = self.get_attribute(element, "style")?.unwrap_or("");
     let mut decls = parse_style_attribute(style_attr);
 
     let value = value.trim();
@@ -191,7 +195,7 @@ impl Document {
   // --- Common reflected attributes ------------------------------------------
 
   fn reflected_string(&self, element: NodeId, attr: &str) -> &str {
-    self.get_attribute(element, attr).unwrap_or("")
+    self.get_attribute(element, attr).ok().flatten().unwrap_or("")
   }
 
   fn set_reflected_string(
@@ -204,7 +208,7 @@ impl Document {
   }
 
   fn reflected_bool(&self, element: NodeId, attr: &str) -> bool {
-    self.has_attribute(element, attr)
+    self.has_attribute(element, attr).unwrap_or(false)
   }
 
   fn set_reflected_bool(
@@ -333,4 +337,3 @@ impl Document {
     self.set_reflected_string(element, "width", value)
   }
 }
-

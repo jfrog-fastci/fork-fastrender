@@ -230,19 +230,67 @@ fn get_element_by_id_returns_none_for_empty_id() {
 }
 
 #[test]
+fn query_selector_works_for_detached_subtrees() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<div id=scope><span id=target class=hit></span></div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let scope = doc.get_element_by_id("scope").unwrap();
+  let target = doc.get_element_by_id("target").unwrap();
+
+  // Detach the scope subtree from the document.
+  detach(&mut doc, scope);
+  assert_eq!(doc.get_element_by_id("target"), None);
+
+  // Document-wide queries should not see detached nodes.
+  assert_eq!(doc.query_selector(".hit", None).unwrap(), None);
+
+  // But querying within the detached subtree should still work.
+  assert_eq!(doc.query_selector(".hit", Some(scope)).unwrap(), Some(target));
+  assert_eq!(doc.query_selector_all(".hit", Some(scope)).unwrap(), vec![target]);
+}
+
+#[test]
+fn matches_selector_works_for_detached_elements() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<div id=scope><span id=target class=hit></span></div>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let scope = doc.get_element_by_id("scope").unwrap();
+  let target = doc.get_element_by_id("target").unwrap();
+
+  detach(&mut doc, scope);
+
+  assert!(doc.matches_selector(target, ".hit").unwrap());
+  assert!(doc.matches_selector(target, "div span.hit").unwrap());
+}
+
+#[test]
 fn get_element_by_id_ignores_inert_template_contents() {
   let html = concat!(
     "<!DOCTYPE html>",
     "<html><body>",
-    "<template><div id=dup></div></template>",
+    "<template><div id=inert></div><div id=dup></div></template>",
     "<span id=dup></span>",
     "</body></html>"
   );
   let root = crate::dom::parse_html(html).unwrap();
   let doc = Document::from_renderer_dom(&root);
 
-  let found = doc.get_element_by_id("dup").unwrap();
-  assert_eq!(tag_name(&doc, found), Some("span"));
+  assert_eq!(doc.get_element_by_id("inert"), None);
+
+  let dup = doc.get_element_by_id("dup").unwrap();
+  assert_eq!(tag_name(&doc, dup), Some("span"));
 }
 
 #[test]
@@ -291,4 +339,52 @@ fn get_element_by_id_matches_attribute_name_case_insensitively_only_in_html_name
   let html = doc.get_element_by_id("a").unwrap();
   assert_eq!(tag_name(&doc, html), Some("div"));
   assert_eq!(doc.get_element_by_id("b"), None);
+}
+
+#[test]
+fn selector_apis_work_for_inert_template_subtrees() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<template><div id=scope><span id=target class=hit></span></div></template>",
+    "<span id=outside class=hit></span>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  // Inert template contents are still present in the `dom2` node list, but must not be reachable
+  // via document-wide queries.
+  assert_eq!(doc.get_element_by_id("scope"), None);
+  assert_eq!(doc.get_element_by_id("target"), None);
+
+  let outside = doc.get_element_by_id("outside").unwrap();
+  assert_eq!(doc.query_selector(".hit", None).unwrap(), Some(outside));
+
+  // Locate template contents by scanning the node list.
+  let mut scope: Option<NodeId> = None;
+  let mut target: Option<NodeId> = None;
+  for (idx, node) in doc.nodes().iter().enumerate() {
+    let attrs = match &node.kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+      _ => continue,
+    };
+    if attrs
+      .iter()
+      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "scope")
+    {
+      scope = Some(NodeId(idx));
+    }
+    if attrs
+      .iter()
+      .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "target")
+    {
+      target = Some(NodeId(idx));
+    }
+  }
+  let scope = scope.expect("inert scope node not found");
+  let target = target.expect("inert target node not found");
+
+  assert_eq!(doc.query_selector(".hit", Some(scope)).unwrap(), Some(target));
+  assert!(doc.matches_selector(target, "div span.hit").unwrap());
 }

@@ -33,13 +33,13 @@ fn html_attribute_names_are_ascii_case_insensitive() {
   assert_eq!(doc.set_attribute(el, "id", "a").unwrap(), true);
   assert_eq!(doc.set_attribute(el, "CLASS", "b").unwrap(), true);
 
-  assert_eq!(doc.get_attribute(el, "ID"), Some("a"));
-  assert_eq!(doc.get_attribute(el, "class"), Some("b"));
-  assert!(doc.has_attribute(el, "Id"));
-  assert!(doc.has_attribute(el, "ClAsS"));
+  assert_eq!(doc.get_attribute(el, "ID").unwrap(), Some("a"));
+  assert_eq!(doc.get_attribute(el, "class").unwrap(), Some("b"));
+  assert!(doc.has_attribute(el, "Id").unwrap());
+  assert!(doc.has_attribute(el, "ClAsS").unwrap());
 
-  assert_eq!(doc.id(el), Some("a"));
-  assert_eq!(doc.class_name(el), Some("b"));
+  assert_eq!(doc.id(el).unwrap(), Some("a"));
+  assert_eq!(doc.class_name(el).unwrap(), Some("b"));
 
   // Setting the same value is a no-op.
   assert_eq!(doc.set_attribute(el, "ID", "a").unwrap(), false);
@@ -61,13 +61,13 @@ fn non_html_attribute_names_are_case_sensitive() {
   let el = make_element(&mut doc, SVG_NAMESPACE);
 
   assert_eq!(doc.set_attribute(el, "viewBox", "A").unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "viewBox"), Some("A"));
-  assert_eq!(doc.get_attribute(el, "viewbox"), None);
+  assert_eq!(doc.get_attribute(el, "viewBox").unwrap(), Some("A"));
+  assert_eq!(doc.get_attribute(el, "viewbox").unwrap(), None);
 
   // Different casing is treated as a distinct attribute.
   assert_eq!(doc.set_attribute(el, "viewbox", "B").unwrap(), true);
-  assert_eq!(doc.get_attribute(el, "viewBox"), Some("A"));
-  assert_eq!(doc.get_attribute(el, "viewbox"), Some("B"));
+  assert_eq!(doc.get_attribute(el, "viewBox").unwrap(), Some("A"));
+  assert_eq!(doc.get_attribute(el, "viewbox").unwrap(), Some("B"));
 
   let attrs = match &doc.node(el).kind {
     NodeKind::Element { attributes, .. } => attributes,
@@ -93,11 +93,11 @@ fn set_bool_attribute_matches_existing_interaction_helpers() {
 
   assert_eq!(doc.set_bool_attribute(el, "disabled", true).unwrap(), true);
   assert_eq!(doc.set_bool_attribute(el, "DISABLED", true).unwrap(), false);
-  assert!(doc.has_attribute(el, "disabled"));
+  assert!(doc.has_attribute(el, "disabled").unwrap());
 
   assert_eq!(doc.set_bool_attribute(el, "disabled", false).unwrap(), true);
   assert_eq!(doc.set_bool_attribute(el, "disabled", false).unwrap(), false);
-  assert!(!doc.has_attribute(el, "disabled"));
+  assert!(!doc.has_attribute(el, "disabled").unwrap());
 }
 
 #[test]
@@ -129,4 +129,3 @@ fn text_data_editing_works_and_errors_on_non_text_nodes() {
   assert_eq!(doc.text_data(el), Err(DomError::InvalidNodeType));
   assert_eq!(doc.set_text_data(el, "x"), Err(DomError::InvalidNodeType));
 }
-
