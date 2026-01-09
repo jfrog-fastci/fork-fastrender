@@ -283,6 +283,122 @@ const DOM_SHIM: &str = r##"
     return child;
   };
 
+  Node.prototype.insertBefore = function (child, reference) {
+    var parentId = nodeIdFromThis(this);
+    if (typeof child !== "object" || child === null) {
+      throw new TypeError("Failed to execute 'insertBefore' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+    var childId = child[NODE_ID];
+    if (typeof childId !== "number") {
+      throw new TypeError("Failed to execute 'insertBefore' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+
+    var referenceNode = null;
+    var referenceId = -1;
+    if (reference !== null && reference !== undefined) {
+      if (typeof reference !== "object" || reference === null) {
+        throw new TypeError("Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
+      }
+      referenceId = reference[NODE_ID];
+      if (typeof referenceId !== "number") {
+        throw new TypeError("Failed to execute 'insertBefore' on 'Node': parameter 2 is not of type 'Node'.");
+      }
+      referenceNode = reference;
+    }
+
+    // Inserting a node before itself is a no-op.
+    if (referenceNode === child) {
+      var siblings = ensureArray(this, "childNodes");
+      var idx = siblings.indexOf(child);
+      if (idx >= 0) {
+        if (idx + 1 < siblings.length) {
+          referenceNode = siblings[idx + 1];
+          referenceId = referenceNode[NODE_ID];
+        } else {
+          referenceNode = null;
+          referenceId = -1;
+        }
+      }
+    }
+
+    g.__fastrender_dom_insert_before(parentId, childId, referenceId);
+
+    var parentNodes = ensureArray(this, "childNodes");
+    var insertIdx = referenceNode ? parentNodes.indexOf(referenceNode) : parentNodes.length;
+    if (insertIdx < 0) insertIdx = parentNodes.length;
+
+    if (child instanceof DocumentFragment) {
+      var fragNodes = ensureArray(child, "childNodes");
+      var moved = fragNodes.slice();
+      for (var i = 0; i < moved.length; i++) {
+        var n = moved[i];
+        detachFromParent(n);
+        parentNodes.splice(insertIdx + i, 0, n);
+        n.parentNode = this;
+      }
+      fragNodes.length = 0;
+      return child;
+    }
+
+    var oldParent = child.parentNode;
+    var oldIdx = oldParent === this ? parentNodes.indexOf(child) : -1;
+    detachFromParent(child);
+    if (oldParent === this && oldIdx >= 0 && oldIdx < insertIdx) {
+      insertIdx -= 1;
+    }
+    parentNodes.splice(insertIdx, 0, child);
+    child.parentNode = this;
+    return child;
+  };
+
+  Node.prototype.replaceChild = function (child, oldChild) {
+    var parentId = nodeIdFromThis(this);
+    if (typeof child !== "object" || child === null) {
+      throw new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+    var childId = child[NODE_ID];
+    if (typeof childId !== "number") {
+      throw new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 1 is not of type 'Node'.");
+    }
+    if (typeof oldChild !== "object" || oldChild === null) {
+      throw new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
+    }
+    var oldId = oldChild[NODE_ID];
+    if (typeof oldId !== "number") {
+      throw new TypeError("Failed to execute 'replaceChild' on 'Node': parameter 2 is not of type 'Node'.");
+    }
+
+    if (child === oldChild) return oldChild;
+
+    g.__fastrender_dom_replace_child(parentId, childId, oldId);
+
+    var parentNodes = ensureArray(this, "childNodes");
+    var idx = parentNodes.indexOf(oldChild);
+    if (idx < 0) idx = 0;
+
+    if (child instanceof DocumentFragment) {
+      var fragNodes = ensureArray(child, "childNodes");
+      var moved = fragNodes.slice();
+      for (var i = 0; i < moved.length; i++) {
+        var n = moved[i];
+        detachFromParent(n);
+        parentNodes.splice(idx + i, 0, n);
+        n.parentNode = this;
+      }
+      fragNodes.length = 0;
+      detachFromParent(oldChild);
+      return oldChild;
+    }
+
+    detachFromParent(child);
+    idx = parentNodes.indexOf(oldChild);
+    if (idx < 0) idx = 0;
+    parentNodes.splice(idx, 1, child);
+    oldChild.parentNode = null;
+    child.parentNode = this;
+    return oldChild;
+  };
+
   Node.prototype.removeChild = function (child) {
     var parentId = nodeIdFromThis(this);
     if (typeof child !== "object" || child === null) {
@@ -702,6 +818,168 @@ impl Dom {
 
     self.node_checked_mut(child)?.parent = Some(parent);
     self.node_checked_mut(parent)?.children.push(child);
+    Ok(())
+  }
+
+  fn insert_before(
+    &mut self,
+    parent: NodeId,
+    child: NodeId,
+    reference: Option<NodeId>,
+  ) -> Result<(), DomShimError> {
+    self.node_checked(parent)?;
+    self.node_checked(child)?;
+    self.validate_parent_can_have_children(parent)?;
+
+    if matches!(self.node_checked(child)?.kind, NodeKind::Document) {
+      return Err(DomShimError::InvalidNodeType);
+    }
+
+    let mut reference = reference;
+    if let Some(reference_id) = reference {
+      self.node_checked(reference_id)?;
+      if self.node_checked(reference_id)?.parent != Some(parent) {
+        return Err(DomShimError::NotFoundError);
+      }
+
+      // Inserting a node before itself is a no-op.
+      if reference_id == child {
+        if self.node_checked(child)?.parent != Some(parent) {
+          return Err(DomShimError::NotFoundError);
+        }
+        let siblings = self.node_checked(parent)?.children.clone();
+        if let Some(idx) = siblings.iter().position(|&id| id == child) {
+          reference = siblings.get(idx + 1).copied();
+        } else {
+          reference = None;
+        }
+      }
+    }
+
+    let mut insert_idx = match reference {
+      None => self.node_checked(parent)?.children.len(),
+      Some(reference) => self
+        .node_checked(parent)?
+        .children
+        .iter()
+        .position(|&id| id == reference)
+        .ok_or(DomShimError::NotFoundError)?,
+    };
+
+    if matches!(self.node_checked(child)?.kind, NodeKind::DocumentFragment) {
+      // DocumentFragment insertion semantics: move its children into `parent` and empty the
+      // fragment.
+      let fragment_children = self.node_checked(child)?.children.clone();
+      for &moved in &fragment_children {
+        if matches!(self.node_checked(moved)?.kind, NodeKind::Document) {
+          return Err(DomShimError::InvalidNodeType);
+        }
+        self.validate_no_cycles(parent, moved)?;
+      }
+
+      let fragment_children = std::mem::take(&mut self.node_checked_mut(child)?.children);
+      for &moved in &fragment_children {
+        self.node_checked_mut(moved)?.parent = Some(parent);
+      }
+
+      let parent_children = &mut self.node_checked_mut(parent)?.children;
+      parent_children.splice(insert_idx..insert_idx, fragment_children.iter().copied());
+      // Fragments are never inserted into the tree.
+      self.node_checked_mut(child)?.parent = None;
+      return Ok(());
+    }
+
+    self.validate_no_cycles(parent, child)?;
+
+    let old_parent = self.node_checked(child)?.parent;
+    if old_parent.is_some() {
+      if old_parent == Some(parent) {
+        let siblings = self.node_checked(parent)?.children.clone();
+        if let Some(idx) = siblings.iter().position(|&id| id == child) {
+          if idx < insert_idx {
+            insert_idx = insert_idx.saturating_sub(1);
+          }
+        }
+      }
+      self.detach_from_parent(child)?;
+    }
+
+    self.node_checked_mut(child)?.parent = Some(parent);
+    self.node_checked_mut(parent)?.children.insert(insert_idx, child);
+    Ok(())
+  }
+
+  fn replace_child(
+    &mut self,
+    parent: NodeId,
+    new_child: NodeId,
+    old_child: NodeId,
+  ) -> Result<(), DomShimError> {
+    self.node_checked(parent)?;
+    self.node_checked(new_child)?;
+    self.node_checked(old_child)?;
+    self.validate_parent_can_have_children(parent)?;
+
+    if self.node_checked(old_child)?.parent != Some(parent) {
+      return Err(DomShimError::NotFoundError);
+    }
+    if new_child == old_child {
+      return Ok(());
+    }
+
+    if matches!(self.node_checked(new_child)?.kind, NodeKind::Document) {
+      return Err(DomShimError::InvalidNodeType);
+    }
+
+    let mut replace_idx = self
+      .node_checked(parent)?
+      .children
+      .iter()
+      .position(|&id| id == old_child)
+      .ok_or(DomShimError::NotFoundError)?;
+
+    if matches!(self.node_checked(new_child)?.kind, NodeKind::DocumentFragment) {
+      let fragment_children = self.node_checked(new_child)?.children.clone();
+      for &moved in &fragment_children {
+        if matches!(self.node_checked(moved)?.kind, NodeKind::Document) {
+          return Err(DomShimError::InvalidNodeType);
+        }
+        self.validate_no_cycles(parent, moved)?;
+      }
+
+      let fragment_children = std::mem::take(&mut self.node_checked_mut(new_child)?.children);
+      for &moved in &fragment_children {
+        self.node_checked_mut(moved)?.parent = Some(parent);
+      }
+
+      // Splice the fragment children into the parent's list, removing the replaced node.
+      self.node_checked_mut(parent)?.children.splice(
+        replace_idx..replace_idx + 1,
+        fragment_children.iter().copied(),
+      );
+      self.node_checked_mut(old_child)?.parent = None;
+      self.node_checked_mut(new_child)?.parent = None;
+      return Ok(());
+    }
+
+    self.validate_no_cycles(parent, new_child)?;
+
+    let old_parent = self.node_checked(new_child)?.parent;
+    if old_parent.is_some() {
+      if old_parent == Some(parent) {
+        let siblings = self.node_checked(parent)?.children.clone();
+        if let Some(idx) = siblings.iter().position(|&id| id == new_child) {
+          if idx < replace_idx {
+            replace_idx = replace_idx.saturating_sub(1);
+          }
+        }
+      }
+      self.detach_from_parent(new_child)?;
+    }
+
+    self.node_checked_mut(new_child)?.parent = Some(parent);
+    self.node_checked_mut(old_child)?.parent = None;
+    self.node_checked_mut(parent)?.children[replace_idx] = new_child;
     Ok(())
   }
 
@@ -1524,6 +1802,43 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let insert_before = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |parent_id: i32, child_id: i32, reference_id: i32| -> JsResult<()> {
+      if parent_id < 0 || child_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      let reference = if reference_id < 0 {
+        None
+      } else {
+        Some(NodeId(reference_id as usize))
+      };
+      dom
+        .borrow_mut()
+        .insert_before(NodeId(parent_id as usize), NodeId(child_id as usize), reference)
+        .map_err(dom_error_to_js_error)?;
+      Ok(())
+    }
+  })?;
+
+  let replace_child = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |parent_id: i32, new_child_id: i32, old_child_id: i32| -> JsResult<()> {
+      if parent_id < 0 || new_child_id < 0 || old_child_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow_mut()
+        .replace_child(
+          NodeId(parent_id as usize),
+          NodeId(new_child_id as usize),
+          NodeId(old_child_id as usize),
+        )
+        .map_err(dom_error_to_js_error)?;
+      Ok(())
+    }
+  })?;
+
   let remove_child = Function::new(ctx.clone(), {
     let dom = Rc::clone(&dom);
     move |parent_id: i32, child_id: i32| -> JsResult<()> {
@@ -1640,6 +1955,8 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_get_outer_html", get_outer_html)?;
   globals.set("__fastrender_dom_set_outer_html", set_outer_html)?;
   globals.set("__fastrender_dom_append_child", append_child)?;
+  globals.set("__fastrender_dom_insert_before", insert_before)?;
+  globals.set("__fastrender_dom_replace_child", replace_child)?;
   globals.set("__fastrender_dom_remove_child", remove_child)?;
   globals.set("__fastrender_dom_has_child_nodes", has_child_nodes)?;
   globals.set("__fastrender_dom_get_tag_name", get_tag_name)?;

@@ -958,17 +958,27 @@ impl JsWptRuntime {
       .heap
       .object_set_prototype(node_proto, Some(event_target_proto))?;
     let append_child = self.alloc_native_function(native_node_append_child)?;
+    let insert_before = self.alloc_native_function(native_node_insert_before)?;
     let contains = self.alloc_native_function(native_node_contains)?;
     let has_child_nodes = self.alloc_native_function(native_node_has_child_nodes)?;
     let remove = self.alloc_native_function(native_node_remove)?;
     let remove_child = self.alloc_native_function(native_dom_remove_child)?;
+    let replace_child = self.alloc_native_function(native_node_replace_child)?;
     let append_child_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("appendChild")?)
     };
+    let insert_before_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("insertBefore")?)
+    };
     let remove_child_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("removeChild")?)
+    };
+    let replace_child_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("replaceChild")?)
     };
     let contains_key = {
       let mut scope = self.heap.scope();
@@ -983,10 +993,12 @@ impl JsWptRuntime {
       PropertyKey::from_string(scope.alloc_string("remove")?)
     };
     self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
+    self.define_data_prop(node_proto, insert_before_key, Value::Object(insert_before))?;
     self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
     self.define_data_prop(node_proto, has_child_nodes_key, Value::Object(has_child_nodes))?;
     self.define_data_prop(node_proto, remove_key, Value::Object(remove))?;
     self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
+    self.define_data_prop(node_proto, replace_child_key, Value::Object(replace_child))?;
     self.node_proto = Some(node_proto);
 
     // Element prototype (inherits Node, adds selector + DOMParsing APIs).
@@ -3713,6 +3725,431 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
   Ok(Value::Object(child))
 }
 
+fn native_node_insert_before(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let parent = dom_require_node(rt, this, "insertBefore")?;
+
+  let Value::Object(child) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: insertBefore requires a Node",
+    )?)));
+  };
+  if !dom_is_node(rt, child) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: insertBefore requires a Node",
+    )?)));
+  }
+
+  let reference_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let mut reference = match reference_value {
+    Value::Undefined | Value::Null => None,
+    Value::Object(obj) if dom_is_node(rt, obj) => Some(obj),
+    _ => {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: insertBefore requires a Node",
+      )?)))
+    }
+  };
+
+  let child_is_fragment = rt
+    .dom_nodes
+    .get(&child)
+    .is_some_and(|state| state.kind == DomNodeKind::DocumentFragment);
+
+  if child_is_fragment {
+    // DocumentFragment insertion: insert the fragment's children before the reference node.
+    if rt.dom_nodes.contains_key(&parent) && rt.dom_nodes.contains_key(&child) {
+      let parent_tag = rt
+        .dom_nodes
+        .get(&parent)
+        .map(|s| s.tag_name.clone())
+        .unwrap_or_default();
+      let parent_is_template = parent_tag == "template";
+
+      let siblings = if parent_is_template {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.template_content.clone())
+          .unwrap_or_default()
+      } else {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.children.clone())
+          .unwrap_or_default()
+      };
+
+      let insert_idx = match reference {
+        None => siblings.len(),
+        Some(node) => match siblings.iter().position(|&n| n == node) {
+          Some(idx) => idx,
+          None => return dom_throw_dom_exception(rt, "NotFoundError"),
+        },
+      };
+
+      let fragment_children = rt
+        .dom_nodes
+        .get(&child)
+        .map(|s| s.children.clone())
+        .unwrap_or_default();
+
+      // Clear the fragment before mutation so `childNodes` observes the update atomically.
+      if let Some(state) = rt.dom_nodes.get_mut(&child) {
+        state.children.clear();
+        state.template_content.clear();
+        state.parent = None;
+      }
+      let parent_node_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("parentNode")?)
+      };
+      rt.define_data_prop(child, parent_node_key, Value::Null)?;
+
+      for (offset, moved) in fragment_children.into_iter().enumerate() {
+        if let Some(moved_state) = rt.event_targets.get_mut(&moved) {
+          moved_state.parent = Some(parent);
+        }
+
+        if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          if parent_is_template {
+            state.template_content.insert(insert_idx + offset, moved);
+          } else {
+            state.children.insert(insert_idx + offset, moved);
+          }
+        }
+        if let Some(state) = rt.dom_nodes.get_mut(&moved) {
+          state.parent = Some(parent);
+        }
+        rt.define_data_prop(moved, parent_node_key, Value::Object(parent))?;
+      }
+
+      rt.update_dom_child_nodes(parent)?;
+      rt.update_dom_child_nodes(child)?;
+    }
+
+    return Ok(Value::Object(child));
+  }
+
+  // Update the EventTarget propagation parent pointer.
+  if let Some(child_state) = rt.event_targets.get_mut(&child) {
+    child_state.parent = Some(parent);
+  }
+
+  if rt.dom_nodes.contains_key(&parent) && rt.dom_nodes.contains_key(&child) {
+    let parent_tag = rt
+      .dom_nodes
+      .get(&parent)
+      .map(|s| s.tag_name.clone())
+      .unwrap_or_default();
+    let parent_is_template = parent_tag == "template";
+
+    let parent_node_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+
+    // Inserting a node before itself is a no-op.
+    if reference == Some(child) {
+      let siblings = if parent_is_template {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.template_content.clone())
+          .unwrap_or_default()
+      } else {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.children.clone())
+          .unwrap_or_default()
+      };
+      if let Some(idx) = siblings.iter().position(|&n| n == child) {
+        reference = siblings.get(idx + 1).copied();
+      } else {
+        return dom_throw_dom_exception(rt, "NotFoundError");
+      }
+    }
+
+    let siblings = if parent_is_template {
+      rt.dom_nodes
+        .get(&parent)
+        .map(|s| s.template_content.clone())
+        .unwrap_or_default()
+    } else {
+      rt.dom_nodes
+        .get(&parent)
+        .map(|s| s.children.clone())
+        .unwrap_or_default()
+    };
+
+    let mut insert_idx = match reference {
+      None => siblings.len(),
+      Some(node) => match siblings.iter().position(|&n| n == node) {
+        Some(idx) => idx,
+        None => return dom_throw_dom_exception(rt, "NotFoundError"),
+      },
+    };
+
+    let old_parent = rt.dom_nodes.get(&child).and_then(|s| s.parent);
+    if let Some(old_parent) = old_parent {
+      if old_parent == parent {
+        if let Some(child_idx) = siblings.iter().position(|&n| n == child) {
+          if child_idx < insert_idx {
+            insert_idx = insert_idx.saturating_sub(1);
+          }
+        }
+      }
+
+      let old_tag = rt
+        .dom_nodes
+        .get(&old_parent)
+        .map(|s| s.tag_name.clone())
+        .unwrap_or_default();
+      let old_is_template = old_tag == "template";
+      if let Some(state) = rt.dom_nodes.get_mut(&old_parent) {
+        if old_is_template {
+          state.template_content.retain(|&c| c != child);
+        } else {
+          state.children.retain(|&c| c != child);
+        }
+      }
+      rt.update_dom_child_nodes(old_parent)?;
+    }
+
+    if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+      if parent_is_template {
+        state.template_content.insert(insert_idx, child);
+      } else {
+        state.children.insert(insert_idx, child);
+      }
+    }
+    if let Some(state) = rt.dom_nodes.get_mut(&child) {
+      state.parent = Some(parent);
+    }
+    rt.define_data_prop(child, parent_node_key, Value::Object(parent))?;
+    rt.update_dom_child_nodes(parent)?;
+  }
+
+  Ok(Value::Object(child))
+}
+
+fn native_node_replace_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let parent = dom_require_node(rt, this, "replaceChild")?;
+
+  let Value::Object(new_child) = args.get(0).copied().unwrap_or(Value::Undefined) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: replaceChild requires a Node",
+    )?)));
+  };
+  if !dom_is_node(rt, new_child) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: replaceChild requires a Node",
+    )?)));
+  }
+
+  let Value::Object(old_child) = args.get(1).copied().unwrap_or(Value::Undefined) else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: replaceChild requires a Node",
+    )?)));
+  };
+  if !dom_is_node(rt, old_child) {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: replaceChild requires a Node",
+    )?)));
+  }
+
+  if new_child == old_child {
+    return Ok(Value::Object(old_child));
+  }
+
+  let new_is_fragment = rt
+    .dom_nodes
+    .get(&new_child)
+    .is_some_and(|state| state.kind == DomNodeKind::DocumentFragment);
+
+  if new_is_fragment {
+    if rt.dom_nodes.contains_key(&parent) && rt.dom_nodes.contains_key(&new_child) && rt.dom_nodes.contains_key(&old_child) {
+      let parent_tag = rt
+        .dom_nodes
+        .get(&parent)
+        .map(|s| s.tag_name.clone())
+        .unwrap_or_default();
+      let parent_is_template = parent_tag == "template";
+
+      let siblings = if parent_is_template {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.template_content.clone())
+          .unwrap_or_default()
+      } else {
+        rt.dom_nodes
+          .get(&parent)
+          .map(|s| s.children.clone())
+          .unwrap_or_default()
+      };
+
+      let replace_idx = match siblings.iter().position(|&n| n == old_child) {
+        Some(idx) => idx,
+        None => return dom_throw_dom_exception(rt, "NotFoundError"),
+      };
+
+      let fragment_children = rt
+        .dom_nodes
+        .get(&new_child)
+        .map(|s| s.children.clone())
+        .unwrap_or_default();
+
+      if let Some(state) = rt.dom_nodes.get_mut(&new_child) {
+        state.children.clear();
+        state.template_content.clear();
+        state.parent = None;
+      }
+
+      let parent_node_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("parentNode")?)
+      };
+      rt.define_data_prop(new_child, parent_node_key, Value::Null)?;
+
+      // Remove the replaced node from the parent's list.
+      if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+        if parent_is_template {
+          if replace_idx < state.template_content.len() {
+            state.template_content.remove(replace_idx);
+          }
+        } else if replace_idx < state.children.len() {
+          state.children.remove(replace_idx);
+        }
+      }
+
+      if let Some(state) = rt.dom_nodes.get_mut(&old_child) {
+        if state.parent == Some(parent) {
+          state.parent = None;
+        }
+      }
+      rt.define_data_prop(old_child, parent_node_key, Value::Null)?;
+      if let Some(state) = rt.event_targets.get_mut(&old_child) {
+        if state.parent == Some(parent) {
+          state.parent = None;
+        }
+      }
+
+      for (offset, moved) in fragment_children.into_iter().enumerate() {
+        if let Some(moved_state) = rt.event_targets.get_mut(&moved) {
+          moved_state.parent = Some(parent);
+        }
+
+        if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          if parent_is_template {
+            state.template_content.insert(replace_idx + offset, moved);
+          } else {
+            state.children.insert(replace_idx + offset, moved);
+          }
+        }
+        if let Some(state) = rt.dom_nodes.get_mut(&moved) {
+          state.parent = Some(parent);
+        }
+        rt.define_data_prop(moved, parent_node_key, Value::Object(parent))?;
+      }
+
+      rt.update_dom_child_nodes(parent)?;
+      rt.update_dom_child_nodes(new_child)?;
+    }
+
+    return Ok(Value::Object(old_child));
+  }
+
+  // Update the EventTarget propagation parent pointer.
+  if let Some(state) = rt.event_targets.get_mut(&new_child) {
+    state.parent = Some(parent);
+  }
+
+  if rt.dom_nodes.contains_key(&parent) && rt.dom_nodes.contains_key(&new_child) && rt.dom_nodes.contains_key(&old_child) {
+    let parent_tag = rt
+      .dom_nodes
+      .get(&parent)
+      .map(|s| s.tag_name.clone())
+      .unwrap_or_default();
+    let parent_is_template = parent_tag == "template";
+
+    let siblings = if parent_is_template {
+      rt.dom_nodes
+        .get(&parent)
+        .map(|s| s.template_content.clone())
+        .unwrap_or_default()
+    } else {
+      rt.dom_nodes
+        .get(&parent)
+        .map(|s| s.children.clone())
+        .unwrap_or_default()
+    };
+
+    let mut replace_idx = match siblings.iter().position(|&n| n == old_child) {
+      Some(idx) => idx,
+      None => return dom_throw_dom_exception(rt, "NotFoundError"),
+    };
+
+    let old_parent = rt.dom_nodes.get(&new_child).and_then(|s| s.parent);
+    if let Some(old_parent) = old_parent {
+      if old_parent == parent {
+        if let Some(idx) = siblings.iter().position(|&n| n == new_child) {
+          if idx < replace_idx {
+            replace_idx = replace_idx.saturating_sub(1);
+          }
+        }
+      }
+
+      let old_tag = rt
+        .dom_nodes
+        .get(&old_parent)
+        .map(|s| s.tag_name.clone())
+        .unwrap_or_default();
+      let old_is_template = old_tag == "template";
+      if let Some(state) = rt.dom_nodes.get_mut(&old_parent) {
+        if old_is_template {
+          state.template_content.retain(|&c| c != new_child);
+        } else {
+          state.children.retain(|&c| c != new_child);
+        }
+      }
+      rt.update_dom_child_nodes(old_parent)?;
+    }
+
+    // Replace the old child in-place.
+    if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+      if parent_is_template {
+        if replace_idx < state.template_content.len() {
+          state.template_content[replace_idx] = new_child;
+        }
+      } else if replace_idx < state.children.len() {
+        state.children[replace_idx] = new_child;
+      }
+    }
+
+    let parent_node_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+
+    if let Some(state) = rt.dom_nodes.get_mut(&new_child) {
+      state.parent = Some(parent);
+    }
+    rt.define_data_prop(new_child, parent_node_key, Value::Object(parent))?;
+
+    if let Some(state) = rt.dom_nodes.get_mut(&old_child) {
+      if state.parent == Some(parent) {
+        state.parent = None;
+      }
+    }
+    rt.define_data_prop(old_child, parent_node_key, Value::Null)?;
+    if let Some(state) = rt.event_targets.get_mut(&old_child) {
+      if state.parent == Some(parent) {
+        state.parent = None;
+      }
+    }
+
+    rt.update_dom_child_nodes(parent)?;
+  }
+
+  Ok(Value::Object(old_child))
+}
+
 fn native_node_contains(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
   let this_node = dom_require_node(rt, this, "contains")?;
 
@@ -4223,6 +4660,10 @@ fn dom_throw_syntax_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value,
 
 fn dom_throw_invalid_character_error(rt: &mut JsWptRuntime, message: &str) -> Result<Value, JsError> {
   dom_throw_named_error(rt, "InvalidCharacterError", message)
+}
+
+fn dom_throw_dom_exception(rt: &mut JsWptRuntime, name: &str) -> Result<Value, JsError> {
+  dom_throw_named_error(rt, name, "")
 }
 
 fn parse_dom_selector_list(input: &str) -> Result<Vec<DomSelector>, ()> {
