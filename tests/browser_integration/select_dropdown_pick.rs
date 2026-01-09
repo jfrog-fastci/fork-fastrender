@@ -69,6 +69,7 @@ fn wait_for_rgb_at_css(
 
 #[test]
 fn dropdown_select_pick_updates_dom_and_repaints() {
+  let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
   let url = site.write(
     "index.html",
