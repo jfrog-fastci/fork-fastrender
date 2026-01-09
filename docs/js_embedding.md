@@ -70,15 +70,18 @@ later without changing the public API.
 
 What `BrowserTab` does today:
 
-- discovers and schedules classic `<script>` elements (currently via best-effort post-parse DOM
-  discovery),
+- for `BrowserTab::from_html(...)` / `BrowserTab::navigate_to_html(...)`, drives a script-aware
+  streaming parser so **parser-inserted** classic `<script>` elements execute at parse time (scripts
+  observe a partially-built DOM),
+- for `BrowserTab::navigate_to_url(...)`, performs best-effort post-parse `<script>` discovery for
+  now,
 - fetches external scripts through the document’s `ResourceFetcher`,
 - runs microtask checkpoints after script execution,
 - rerenders when DOM mutations invalidate layout/paint (`render_if_needed` / `render_frame`).
 
 What it does **not** do yet (important gaps):
 
-- spec-correct streaming-parser integration for scripts (true “scripts run during parsing” semantics),
+- fully spec-correct parser/event-loop interleaving (e.g. “async-ready” scripts interrupting parsing),
 - module scripts / import maps,
 - a production author-script JS runtime + full DOM/WebIDL exposure (still being built out).
 
@@ -152,8 +155,8 @@ Key modules:
 - `src/js/script_scheduler.rs`
   - `ScriptScheduler` → produces `ScriptSchedulerAction` values (start fetch / block parser / execute now / queue task)
   - `ClassicScriptScheduler` helper that runs classic scripts against an `EventLoop` through a tiny host trait boundary
-- `src/js/streaming.rs`
-  - parse-time helpers for building `ScriptElementSpec` (base URL + attrs + inline text)
+- `src/js/streaming.rs`, `src/js/streaming_dom2.rs`
+  - parse-time helpers for building `ScriptElementSpec` (base URL timing + attrs + inline text)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
 - `src/js/window_timers.rs`, `src/js/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
@@ -322,8 +325,8 @@ JS language conformance.
 
 The JS workstream is intentionally staged. Today, important missing/unsupported pieces include:
 
-- `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements yet (HTML parser
-  integration is staged; see [`docs/html_script_processing.md`](html_script_processing.md))
+- `BrowserDocumentDom2::from_html(...)` does not execute author `<script>` elements by itself (script
+  execution is hosted by `BrowserTab`; see [`docs/html_script_processing.md`](html_script_processing.md))
 - no module scripts (`type="module"`), no import maps, no dynamic `import()`
 - no `document.write()` / parser re-entry
 - no CSP/SRI/CORS nuances for scripts

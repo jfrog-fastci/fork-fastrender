@@ -20,8 +20,11 @@ still evolving, so treat this section as a “where is the real code?” map.
 
 There is now an end-to-end “tab” integration point (`api::BrowserTab`) that ties together the live
 `dom2` document, classic script scheduling, an HTML-shaped event loop, and rendering invalidation.
-It still uses **best-effort post-parse `<script>` discovery** (not streaming-parser/parse-time
-execution), so treat it as an MVP integration surface rather than a final spec-correct pipeline.
+When loading HTML strings (`BrowserTab::from_html` / `BrowserTab::navigate_to_html`), it uses the
+script-aware streaming parser (`StreamingHtmlParser`) so parser-inserted scripts execute at `</script>`
+boundaries against a partially-built DOM. `BrowserTab::navigate_to_url` still uses best-effort
+post-parse `<script>` discovery for now, so treat it as an MVP integration surface rather than a final
+spec-correct pipeline.
 
 What exists today (in-tree):
 
@@ -40,8 +43,8 @@ What exists today (in-tree):
     so `<script src>` resolution uses the base URL *at script preparation time*.
 - **Script element normalization at parse time:**
   - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
-  - `src/js/streaming.rs`: helpers for building `ScriptElementSpec` at the moment a `<script>`
-    finishes parsing.
+  - `src/js/streaming.rs`, `src/js/streaming_dom2.rs`: helpers for building `ScriptElementSpec` at the
+    moment a `<script>` finishes parsing.
 - **Script scheduling + event loop:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
     including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
@@ -55,8 +58,9 @@ What exists today (in-tree):
     `document.currentScript` via `CurrentScriptStateHandle`.
 - **JS-enabled host container (early embedding surface):**
   - `src/api/browser_tab.rs`: `BrowserTab` couples `BrowserDocumentDom2` + `EventLoop` +
-    `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. Script discovery is
-    currently best-effort post-parse and will be replaced by streaming-parser integration.
+    `ScriptScheduler` + `ScriptOrchestrator` and re-renders after DOM mutations. For HTML-string loads
+    it drives `StreamingHtmlParser` so parser-inserted scripts execute during parsing; URL navigations
+    still use best-effort post-parse discovery.
   - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
     runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
 - **Mutable DOM for bindings (`dom2`):**

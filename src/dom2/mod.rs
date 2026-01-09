@@ -230,6 +230,20 @@ pub struct RendererDomSnapshot {
 }
 
 impl Document {
+  /// Clone the document including the active event listener registry.
+  ///
+  /// `Document`'s `Clone` implementation intentionally resets the listener registry so callers can
+  /// snapshot a tree's structure without implicitly inheriting active listeners. When an embedding
+  /// needs to transfer the *live* document state (e.g. between a streaming HTML parser and a host),
+  /// use this method instead.
+  pub fn clone_with_events(&self) -> Self {
+    Self {
+      nodes: self.nodes.clone(),
+      root: self.root,
+      events: self.events.clone(),
+    }
+  }
+
   /// Convert a raw node index (e.g. from an FFI/binding handle) into a validated [`NodeId`].
   ///
   /// This is the preferred way for external code to "re-hydrate" a `NodeId` from an integer, since

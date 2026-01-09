@@ -1,7 +1,7 @@
 use fastrender::dom2::{Document, NodeId};
 use fastrender::js::{Clock, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource, VirtualClock};
 use fastrender::{BrowserTab, BrowserTabHost, BrowserTabJsExecutor, Error, RenderOptions, Result};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn find_element_by_id(dom: &Document, target: &str) -> Option<NodeId> {
@@ -80,7 +80,9 @@ fn browser_tab_runs_queued_tasks_and_microtasks_and_rerenders() -> Result<()> {
         <script>queue-mutation</script>
       </body>
     </html>"#;
-  let options = RenderOptions::new().with_viewport(64, 64);
+  let options = RenderOptions::new()
+    .with_viewport(64, 64)
+    .with_timeout(Some(Duration::from_secs(1)));
 
   let mut tab = BrowserTab::from_html(html, options, QueuedMutationExecutor::default())?;
   let frame_a = tab.render_frame()?;
@@ -176,7 +178,12 @@ fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()>
   let clock_for_loop: Arc<dyn Clock> = clock.clone();
   let event_loop = EventLoop::<BrowserTabHost>::with_clock(clock_for_loop);
 
-  let mut tab = BrowserTab::from_html_with_event_loop(html, options, TimerMutationExecutor::default(), event_loop)?;
+  let mut tab = BrowserTab::from_html_with_event_loop(
+    html,
+    options,
+    TimerMutationExecutor::default(),
+    event_loop,
+  )?;
   tab.render_frame()?;
 
   assert_eq!(
@@ -207,5 +214,56 @@ fn browser_tab_timer_tasks_fire_after_clock_advance_and_rerender() -> Result<()>
   tab
     .render_if_needed()?
     .expect("expected render after timer mutation");
+  Ok(())
+}
+
+#[derive(Clone)]
+struct ParseTimeDomAssertionExecutor {
+  log: Arc<Mutex<Vec<String>>>,
+}
+
+impl BrowserTabJsExecutor for ParseTimeDomAssertionExecutor {
+  fn execute_classic_script(
+    &mut self,
+    script_text: &str,
+    _spec: &fastrender::js::ScriptElementSpec,
+    _current_script: Option<NodeId>,
+    document: &mut fastrender::BrowserDocumentDom2,
+    _event_loop: &mut EventLoop<BrowserTabHost>,
+  ) -> Result<()> {
+    let code = script_text.trim().to_string();
+    if code == "assert-partial-dom" {
+      assert!(
+        find_element_by_id(document.dom(), "after").is_none(),
+        "markup after </script> must not be visible when the script executes"
+      );
+    }
+    self
+      .log
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .push(code);
+    Ok(())
+  }
+}
+
+#[test]
+fn browser_tab_executes_parser_inserted_scripts_against_partial_dom() -> Result<()> {
+  let log = Arc::new(Mutex::new(Vec::<String>::new()));
+  let executor = ParseTimeDomAssertionExecutor { log: Arc::clone(&log) };
+  let options = RenderOptions::new().with_viewport(1, 1);
+
+  let html = "<!doctype html><script>assert-partial-dom</script><div id=after></div>";
+  let tab = BrowserTab::from_html(html, options, executor)?;
+
+  assert!(
+    find_element_by_id(tab.dom(), "after").is_some(),
+    "expected parsing to resume after executing the script"
+  );
+
+  assert_eq!(
+    log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_slice(),
+    &["assert-partial-dom".to_string()]
+  );
   Ok(())
 }

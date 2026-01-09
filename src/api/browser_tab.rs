@@ -3,6 +3,7 @@ use crate::debug::trace::TraceHandle;
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
+use crate::html::streaming_parser::{StreamingHtmlParser, StreamingParserYield};
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, JsExecutionOptions, RunLimits,
   RunAnimationFrameOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
@@ -15,6 +16,8 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+
+use selectors::context::QuirksMode;
 
 use super::{BrowserDocumentDom2, Pixmap, RenderOptions, RunUntilStableOutcome, RunUntilStableStopReason};
 
@@ -508,6 +511,70 @@ pub struct BrowserTab {
 }
 
 impl BrowserTab {
+  fn parse_html_streaming_and_schedule_scripts(
+    &mut self,
+    html: &str,
+    document_url: Option<&str>,
+  ) -> Result<()> {
+    let mut parser = StreamingHtmlParser::new(document_url);
+    parser.push_str(html);
+    parser.set_eof();
+
+    loop {
+      match parser.pump() {
+        StreamingParserYield::Script {
+          script,
+          base_url_at_this_point,
+        } => {
+          let snapshot = {
+            let doc = parser.document();
+            doc.clone_with_events()
+          };
+
+          self.host.mutate_dom(|dom| {
+            *dom = snapshot;
+            ((), true)
+          });
+
+          // HTML: before executing a parser-inserted script at a script end-tag boundary, perform a
+          // microtask checkpoint when the JS execution context stack is empty. For this integration
+          // point, approximate that by checking whether the event loop is currently executing a
+          // task.
+          if self.event_loop.currently_running_task().is_none() {
+            self.event_loop.perform_microtask_checkpoint(&mut self.host)?;
+          }
+
+          let base = BaseUrlTracker::new(base_url_at_this_point.as_deref());
+          let spec =
+            crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(self.host.dom(), script, &base);
+          let base_url_at_discovery = spec.base_url.clone();
+          self.on_parser_discovered_script(script, spec, base_url_at_discovery)?;
+
+          // Sync any DOM mutations from the executed script back into the streaming parser's live
+          // DOM before resuming parsing.
+          let updated = self.host.dom().clone_with_events();
+          {
+            let mut doc = parser.document_mut();
+            *doc = updated;
+          }
+        }
+        StreamingParserYield::NeedMoreInput => {
+          return Err(Error::Other(
+            "StreamingHtmlParser unexpectedly requested more input after EOF".to_string(),
+          ));
+        }
+        StreamingParserYield::Finished { document } => {
+          self.host.mutate_dom(|dom| {
+            *dom = document;
+            ((), true)
+          });
+          self.on_parsing_completed()?;
+          return Ok(());
+        }
+      }
+    }
+  }
+
   pub fn from_html<E>(html: &str, options: RenderOptions, executor: E) -> Result<Self>
   where
     E: BrowserTabJsExecutor + 'static,
@@ -546,7 +613,9 @@ impl BrowserTab {
     let trace_handle = trace_session.handle.clone();
     let trace_output = trace_session.output.clone();
 
-    let document = BrowserDocumentDom2::from_html(html, options)?;
+    // Parse-time script execution requires a script-aware streaming parser driver. Start the tab
+    // with an empty DOM and then stream-parse the provided HTML, pausing at `</script>` boundaries.
+    let document = BrowserDocumentDom2::from_html("", options.clone())?;
     let host = BrowserTabHost::new(
       document,
       Box::new(executor),
@@ -564,7 +633,7 @@ impl BrowserTab {
       event_loop,
     };
     tab.host.reset_scripting_state(None);
-    tab.discover_and_schedule_scripts(None)?;
+    tab.parse_html_streaming_and_schedule_scripts(html, None)?;
     Ok(tab)
   }
 
@@ -621,11 +690,14 @@ impl BrowserTab {
     self.trace = trace_session.handle.clone();
     self.trace_output = trace_session.output.clone();
 
-    self.host.document.reset_with_html(html, options)?;
+    self
+      .host
+      .document
+      .reset_with_dom(Document::new(QuirksMode::NoQuirks), options);
     self.reset_event_loop();
     self.host.trace = self.trace.clone();
     self.host.reset_scripting_state(None);
-    self.discover_and_schedule_scripts(None)
+    self.parse_html_streaming_and_schedule_scripts(html, None)
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
@@ -767,8 +839,9 @@ impl BrowserTab {
 
   /// Notify the tab that the HTML parser discovered a parser-inserted `<script>` element.
   ///
-  /// This is intended for future streaming parser integration; the current `from_html` / navigation
-  /// APIs perform best-effort post-parse discovery instead.
+  /// This is the integration point used by the script-aware streaming HTML parser driver
+  /// (`StreamingHtmlParser`). `navigate_to_url` still performs best-effort post-parse discovery for
+  /// now.
   pub(crate) fn on_parser_discovered_script(
     &mut self,
     node_id: NodeId,
