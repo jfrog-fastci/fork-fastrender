@@ -1671,6 +1671,52 @@ fn install_constructors(
     })?;
     define_accessor(rt, prototypes.node, "childNodes", child_nodes_get, Value::Undefined)?;
 
+    // hasChildNodes
+    let dom_for_has_child_nodes = dom.clone();
+    let platform_objects_for_has_child_nodes = platform_objects.clone();
+    let has_child_nodes = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_has_child_nodes, this)?;
+      let dom_ref = dom_for_has_child_nodes.borrow();
+      let child_ids = direct_child_nodes(&dom_ref, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("hasChildNodes: {e}")))?;
+      Ok(Value::Bool(!child_ids.is_empty()))
+    })?;
+    define_method(rt, prototypes.node, "hasChildNodes", has_child_nodes)?;
+
+    // contains
+    let dom_for_contains = dom.clone();
+    let platform_objects_for_contains = platform_objects.clone();
+    let contains = rt.alloc_function_value(move |rt, this, args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_contains, this)?;
+      let other = args.get(0).copied().unwrap_or(Value::Undefined);
+
+      let other_id = match other {
+        Value::Undefined | Value::Null => return Ok(Value::Bool(false)),
+        Value::Object(obj) => match platform_objects_for_contains
+          .borrow()
+          .get(&WeakGcObject::from(obj))
+        {
+          Some(PlatformObjectKind::Document { node_id }) => *node_id,
+          Some(PlatformObjectKind::Node { node_id }) => *node_id,
+          _ => {
+            return Err(rt.throw_type_error(
+              "contains: argument must be a Node (or null/undefined)",
+            ))
+          }
+        },
+        _ => {
+          return Err(rt.throw_type_error(
+            "contains: argument must be a Node (or null/undefined)",
+          ))
+        }
+      };
+
+      let dom_ref = dom_for_contains.borrow();
+      let contains = dom_ref.ancestors(other_id).any(|id| id == node_id);
+      Ok(Value::Bool(contains))
+    })?;
+    define_method(rt, prototypes.node, "contains", contains)?;
+
     // children (element-only)
     let dom_for_children = dom.clone();
     let platform_objects_for_children = platform_objects.clone();
@@ -3067,13 +3113,127 @@ mod tests {
     let node_name_key = pk(&mut realm.rt, "nodeName");
     let node_name = realm.rt.get(comment, node_name_key).unwrap();
     assert_eq!(as_str(&realm.rt, node_name), "#comment");
-
     let comment_id = extract_node_id(&mut realm.rt, &realm.platform_objects, comment).unwrap();
     let dom_ref = realm.dom.borrow();
     match &dom_ref.node(comment_id).kind {
       NodeKind::Comment { content } => assert_eq!(content, "hello"),
-      other => panic!("expected Comment node, got {other:?}"),
+      other => panic!("expected comment node, got {other:?}"),
     }
+    assert_eq!(dom_ref.parent(comment_id).unwrap(), None);
+  }
+
+  #[test]
+  fn create_document_fragment_inserts_children_transparently() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let document = realm.document();
+
+    let div_id = realm.dom.borrow_mut().create_element("div", "");
+    let span_id = realm.dom.borrow_mut().create_element("span", "");
+    let p_id = realm.dom.borrow_mut().create_element("p", "");
+
+    let div = realm.wrap_node(div_id).unwrap();
+    let span = realm.wrap_node(span_id).unwrap();
+    let p = realm.wrap_node(p_id).unwrap();
+
+    let create_fragment_key = pk(&mut realm.rt, "createDocumentFragment");
+    let create_fragment = realm.rt.get(document, create_fragment_key).unwrap();
+    let fragment = realm
+      .rt
+      .call_function(create_fragment, document, &[])
+      .unwrap();
+    let fragment_id = extract_node_id(&mut realm.rt, &realm.platform_objects, fragment).unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let fragment_append = realm.rt.get(fragment, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(fragment_append, fragment, &[span])
+      .unwrap();
+    realm
+      .rt
+      .call_function(fragment_append, fragment, &[p])
+      .unwrap();
+
+    let div_append = realm.rt.get(div, append_child_key).unwrap();
+    let returned = realm
+      .rt
+      .call_function(div_append, div, &[fragment])
+      .unwrap();
+    assert_eq!(returned, fragment);
+
+    let dom_ref = realm.dom.borrow();
+    assert_eq!(dom_ref.children(div_id).unwrap(), &[span_id, p_id]);
+    assert!(dom_ref.children(fragment_id).unwrap().is_empty());
+    assert_eq!(dom_ref.parent(span_id).unwrap(), Some(div_id));
+    assert_eq!(dom_ref.parent(p_id).unwrap(), Some(div_id));
+    assert_eq!(dom_ref.parent(fragment_id).unwrap(), None);
+  }
+
+  #[test]
+  fn contains_and_has_child_nodes_reflect_dom_relationships() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let div_id = realm.dom.borrow_mut().create_element("div", "");
+    let span_id = realm.dom.borrow_mut().create_element("span", "");
+    let q_id = realm.dom.borrow_mut().create_element("q", "");
+
+    let div = realm.wrap_node(div_id).unwrap();
+    let span = realm.wrap_node(span_id).unwrap();
+    let q = realm.wrap_node(q_id).unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let div_append = realm.rt.get(div, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(div_append, div, &[span])
+      .unwrap();
+
+    let has_child_nodes_key = pk(&mut realm.rt, "hasChildNodes");
+    let has_child_nodes = realm.rt.get(div, has_child_nodes_key).unwrap();
+    assert_eq!(
+      realm.rt.call_function(has_child_nodes, div, &[]).unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.rt.call_function(has_child_nodes, span, &[]).unwrap(),
+      Value::Bool(false)
+    );
+
+    let contains_key = pk(&mut realm.rt, "contains");
+    let contains = realm.rt.get(div, contains_key).unwrap();
+    assert_eq!(
+      realm.rt.call_function(contains, div, &[span]).unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.rt.call_function(contains, div, &[div]).unwrap(),
+      Value::Bool(true)
+    );
+    assert_eq!(
+      realm.rt.call_function(contains, span, &[div]).unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm.rt.call_function(contains, div, &[q]).unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm
+        .rt
+        .call_function(contains, div, &[Value::Null])
+        .unwrap(),
+      Value::Bool(false)
+    );
+    assert_eq!(
+      realm
+        .rt
+        .call_function(contains, div, &[Value::Undefined])
+        .unwrap(),
+      Value::Bool(false)
+    );
   }
 
   #[test]
@@ -3928,6 +4088,8 @@ mod tests {
       .rt
       .call_function(create_element, document, &[div_tag])
       .unwrap();
+    // Keep the target wrapper alive across `collect_garbage()` below.
+    let target_root = realm.rt.heap_mut().add_root(target).unwrap();
 
     let append_child_key = pk(&mut realm.rt, "appendChild");
     let append_child = realm.rt.get(document, append_child_key).unwrap();
@@ -3971,6 +4133,7 @@ mod tests {
       .rt
       .call_function(event_ctor, Value::Undefined, &[type_x2])
       .unwrap();
+    let event_root = realm.rt.heap_mut().add_root(event).unwrap();
 
     let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
     let dispatch = realm.rt.get(target, dispatch_key).unwrap();
@@ -3996,6 +4159,8 @@ mod tests {
       .unwrap();
     assert_eq!(dispatched_again, Value::Bool(true));
     assert_eq!(calls.get(), 1);
+    realm.rt.heap_mut().remove_root(event_root);
+    realm.rt.heap_mut().remove_root(target_root);
   }
 
   #[test]
