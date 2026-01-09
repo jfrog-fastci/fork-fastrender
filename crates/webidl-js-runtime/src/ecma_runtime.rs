@@ -231,6 +231,11 @@ impl VmJsRuntime {
     Self::internal_symbol(&mut self.symbol_data_symbol, &mut self.heap, key)
   }
 
+  fn bigint_data_symbol(&mut self) -> Result<GcSymbol, VmError> {
+    let key = self.alloc_string_handle("VmJsRuntime.[[BigIntData]]")?;
+    Self::internal_symbol(&mut self.bigint_data_symbol, &mut self.heap, key)
+  }
+
   fn is_internal_key(&self, key: &PropertyKey) -> bool {
     let PropertyKey::Symbol(sym) = key else {
       return false;
@@ -1047,8 +1052,15 @@ impl JsRuntime for VmJsRuntime {
     Ok(self.heap.get_string(handle)?.to_utf8_lossy())
   }
 
-  fn to_bigint(&mut self, _value: Value) -> Result<Value, VmError> {
-    Err(self.throw_type_error("BigInt is not supported by vm-js yet"))
+  fn to_bigint(&mut self, value: Value) -> Result<Value, VmError> {
+    match value {
+      Value::BigInt(_) => Ok(value),
+      Value::Object(obj) => self
+        .bigint_object_data(obj)?
+        .map(Value::BigInt)
+        .ok_or_else(|| self.throw_type_error("Cannot convert value to a BigInt")),
+      _ => Err(self.throw_type_error("Cannot convert value to a BigInt")),
+    }
   }
 
   fn to_numeric(&mut self, value: Value) -> Result<Value, VmError> {
