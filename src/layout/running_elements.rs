@@ -1,4 +1,3 @@
-use crate::geometry::Point;
 use crate::layout::axis::FragmentAxes;
 use crate::style::content::{RunningElementSelect, RunningElementValues};
 use crate::tree::box_tree::BoxNode;
@@ -63,20 +62,53 @@ pub fn collect_running_element_events(
   axes: FragmentAxes,
 ) -> Vec<RunningElementEvent> {
   let mut events = Vec::new();
-  collect_running_element_occurrences(
-    root,
-    Point::ZERO,
-    0.0,
-    axes.block_size(&root.logical_bounds()),
-    axes,
-    &mut events,
-  );
+  collect_running_element_occurrences(root, 0.0, axes.block_size(&root.logical_bounds()), axes, &mut events);
   events.sort_by(|a, b| {
     a.abs_block
       .partial_cmp(&b.abs_block)
       .unwrap_or(std::cmp::Ordering::Equal)
   });
   events
+}
+
+/// Collect running element events from a page subtree.
+///
+/// Pagination translates the clipped page content subtree into the page box after clipping, so the
+/// root fragment is generally offset from the page content origin. Margin box selection, however,
+/// treats the page content block-start edge as position 0. This helper shifts the coordinate space
+/// so that `abs_block == 0` corresponds to the page content start, ensuring `element(name, start)`
+/// behaves consistently across writing modes (including reversed block progression).
+pub fn collect_running_element_events_for_page(
+  root: &FragmentNode,
+  axes: FragmentAxes,
+) -> (Vec<RunningElementEvent>, f32) {
+  let bounds = root.logical_bounds();
+  let block_size = axes.block_size(&bounds);
+  let root_start = axes.block_start(&bounds, block_size);
+  let mut events = Vec::new();
+  collect_running_element_occurrences(root, -root_start, block_size, axes, &mut events);
+  events.sort_by(|a, b| {
+    a.abs_block
+      .partial_cmp(&b.abs_block)
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+  (events, block_size)
+}
+
+/// Computes running element values for a single page subtree.
+///
+/// The returned map contains [`RunningElementValues`] keyed by running element name. The
+/// `start` field is initialized from [`RunningElementState::last`] (the carried value from the
+/// previous page), and is replaced with the first occurrence in this page when that occurrence is
+/// positioned at the page start boundary (within `EPSILON`).
+pub fn running_elements_for_page_fragment(
+  root: &FragmentNode,
+  axes: FragmentAxes,
+  state: &mut RunningElementState,
+) -> HashMap<String, RunningElementValues> {
+  let (events, block_size) = collect_running_element_events_for_page(root, axes);
+  let mut idx = 0usize;
+  running_elements_for_page(&events, &mut idx, state, 0.0, block_size)
 }
 
 /// Compute running element values for a page range.
@@ -143,31 +175,31 @@ pub fn running_elements_for_page(
   values
 }
 
-/// Select a running element snapshot for the current page.
+/// Resolves a running element snapshot for `element()` in @page margin boxes.
+///
+/// This matches the engine's [`ContentContext`](crate::style::content::ContentContext) semantics:
+///
+/// - `first`: first occurrence within the page, falling back to the carried `start` value.
+/// - `start`: carried value at the page start, replaced by the page's first occurrence when that
+///   occurrence begins exactly at the page start boundary.
+/// - `last`: last occurrence within the page, falling back to the carried `start` value.
+/// - `first-except`: resolves to `None` on pages where an occurrence exists; otherwise behaves like
+///   `first` (falling back to the carried `start` value).
 pub fn select_running_element(
   ident: &str,
   select: RunningElementSelect,
   page_values: &HashMap<String, RunningElementValues>,
-  state: &RunningElementState,
 ) -> Option<FragmentNode> {
   let page = page_values.get(ident);
   match select {
-    RunningElementSelect::First => page
-      .and_then(|v| v.first.clone().or_else(|| v.start.clone()))
-      .or_else(|| state.last.get(ident).cloned()),
-    RunningElementSelect::Start => page
-      .and_then(|v| v.start.clone())
-      .or_else(|| state.last.get(ident).cloned()),
-    RunningElementSelect::Last => page
-      .and_then(|v| v.last.clone().or_else(|| v.start.clone()))
-      .or_else(|| state.last.get(ident).cloned()),
+    RunningElementSelect::First => page.and_then(|v| v.first.clone().or_else(|| v.start.clone())),
+    RunningElementSelect::Start => page.and_then(|v| v.start.clone()),
+    RunningElementSelect::Last => page.and_then(|v| v.last.clone().or_else(|| v.start.clone())),
     RunningElementSelect::FirstExcept => {
       if page.is_some_and(|v| v.first.is_some()) {
         None
       } else {
-        page
-          .and_then(|v| v.first.clone().or_else(|| v.start.clone()))
-          .or_else(|| state.last.get(ident).cloned())
+        page.and_then(|v| v.first.clone().or_else(|| v.start.clone()))
       }
     }
   }
@@ -175,14 +207,12 @@ pub fn select_running_element(
 
 fn collect_running_element_occurrences(
   node: &FragmentNode,
-  origin: Point,
   abs_block_start: f32,
   parent_block_size: f32,
   axes: FragmentAxes,
   out: &mut Vec<RunningElementEvent>,
 ) {
   let logical_bounds = node.logical_bounds();
-  let abs_origin = Point::new(origin.x + logical_bounds.x(), origin.y + logical_bounds.y());
   let node_abs_block = axes.abs_block_start(&logical_bounds, abs_block_start, parent_block_size);
   let node_block_size = axes.block_size(&logical_bounds);
 
@@ -215,23 +245,23 @@ fn collect_running_element_occurrences(
   }
 
   for child in node.children() {
-    collect_running_element_occurrences(
-      child,
-      abs_origin,
-      node_abs_block,
-      node_block_size,
-      axes,
-      out,
-    );
+    collect_running_element_occurrences(child, node_abs_block, node_block_size, axes, out);
   }
 }
 
 fn clean_running_snapshot(node: &mut FragmentNode) {
   strip_running_anchor_fragments(node);
   clear_running_position(node);
-  let logical = node.logical_bounds();
-  let offset = Point::new(-logical.x(), -logical.y());
-  translate_fragment(node, offset.x, offset.y);
+  let offset = crate::geometry::Point::new(-node.bounds.x(), -node.bounds.y());
+  node.translate_root_in_place(offset);
+  if let Some(logical) = node.logical_override {
+    node.logical_override = Some(crate::geometry::Rect::from_xywh(
+      0.0,
+      0.0,
+      logical.width(),
+      logical.height(),
+    ));
+  }
 }
 
 fn strip_running_anchor_fragments(node: &mut FragmentNode) {
@@ -257,26 +287,6 @@ fn clear_running_position(node: &mut FragmentNode) {
   }
   for child in node.children_mut().iter_mut() {
     clear_running_position(child);
-  }
-}
-
-fn translate_fragment(node: &mut FragmentNode, dx: f32, dy: f32) {
-  node.bounds = crate::geometry::Rect::from_xywh(
-    node.bounds.x() + dx,
-    node.bounds.y() + dy,
-    node.bounds.width(),
-    node.bounds.height(),
-  );
-  if let Some(logical) = node.logical_override {
-    node.logical_override = Some(crate::geometry::Rect::from_xywh(
-      logical.x() + dx,
-      logical.y() + dy,
-      logical.width(),
-      logical.height(),
-    ));
-  }
-  for child in node.children_mut().iter_mut() {
-    translate_fragment(child, dx, dy);
   }
 }
 
@@ -347,6 +357,9 @@ mod tests {
         .as_deref()
         .map_or(true, |style| style.running_position.is_none())
     }));
+
+    assert!(root.bounds.x().abs() < EPSILON);
+    assert!(root.bounds.y().abs() < EPSILON);
 
     let logical = root.logical_bounds();
     assert!(logical.x().abs() < EPSILON);

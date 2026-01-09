@@ -20,9 +20,10 @@ use crate::layout::fragmentation::{
   parallel_flow_content_extent, propagate_fragment_metadata, AtomicRange, ForcedBoundary,
   FragmentAxis, FragmentationContext, TableRepetitionInfo,
 };
+use crate::layout::running_elements::{running_elements_for_page, running_elements_for_page_fragment};
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
-  ContentContext, ContentItem, ContentValue, CounterStyle, RunningElementSelect,
+  ContentContext, ContentItem, ContentValue, CounterStyle, RunningElementValues,
   RunningStringValues,
 };
 use crate::style::display::{Display, FormattingContextType};
@@ -714,6 +715,7 @@ pub fn paginate_fragment_tree(
   });
   let mut string_event_idx = 0usize;
   let mut string_set_carry: HashMap<String, String> = HashMap::new();
+  let mut running_element_state = crate::layout::running_elements::RunningElementState::default();
 
   let mut block_axis_mappings: HashMap<PageLayoutKey, BlockAxisMapping> = HashMap::new();
   block_axis_mappings.insert(base_key, BlockAxisMapping::identity(base_total_height));
@@ -722,7 +724,7 @@ pub fn paginate_fragment_tree(
     FragmentNode,
     ResolvedPageStyle,
     HashMap<String, RunningStringValues>,
-    HashMap<String, RunningElementPageValues>,
+    HashMap<String, RunningElementValues>,
   )> = Vec::new();
   let mut consumed_base = 0.0f32;
   let mut page_index = 0usize;
@@ -776,7 +778,7 @@ pub fn paginate_fragment_tree(
       Vec::new(),
       Arc::new(page_style.page_style.clone()),
     );
-    let mut page_running_elements: HashMap<String, RunningElementPageValues> = HashMap::new();
+    let mut page_running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
     let mut end_in_base = start_in_base;
 
@@ -1022,7 +1024,7 @@ pub fn paginate_fragment_tree(
           page_style.content_origin.x,
           page_style.content_origin.y,
         );
-        page_running_elements = collect_running_elements_for_page(&content, root_axes);
+        page_running_elements = running_elements_for_page_fragment(&content, root_axes, &mut running_element_state);
         if log_running_elements {
           let mut counts: HashMap<String, usize> = HashMap::new();
           fn collect(node: &FragmentNode, out: &mut HashMap<String, usize>) {
@@ -1107,6 +1109,19 @@ pub fn paginate_fragment_tree(
       end_in_base,
     );
 
+    if is_blank_page {
+      // Blank pages still participate in margin box running element resolution by carrying the last
+      // running element seen so far.
+      let mut idx = 0usize;
+      page_running_elements = running_elements_for_page(
+        &[],
+        &mut idx,
+        &mut running_element_state,
+        0.0,
+        0.0,
+      );
+    }
+
     pages.push((page_root, page_style, page_strings, page_running_elements));
     if !is_blank_page {
       consumed_base = end_in_base;
@@ -1124,7 +1139,6 @@ pub fn paginate_fragment_tree(
 
   let count = pages.len();
   let mut page_roots = Vec::with_capacity(count);
-  let mut running_element_state: HashMap<String, FragmentNode> = HashMap::new();
   for (idx, (mut page, style, running_strings, running_elements)) in pages.into_iter().enumerate() {
     page.children_mut().extend(build_margin_box_fragments(
       &style,
@@ -1133,13 +1147,7 @@ pub fn paginate_fragment_tree(
       count,
       &running_strings,
       &running_elements,
-      &running_element_state,
     ));
-    for (name, values) in &running_elements {
-      if let Some(last) = &values.last {
-        running_element_state.insert(name.clone(), last.clone());
-      }
-    }
     propagate_fragment_metadata(&mut page, idx, count);
     page_roots.push(page);
   }
@@ -1566,70 +1574,6 @@ fn running_strings_for_page(
   snapshot
 }
 
-#[derive(Debug, Clone, Default)]
-struct RunningElementPageValues {
-  first: Option<FragmentNode>,
-  first_at_page_start: bool,
-  last: Option<FragmentNode>,
-}
-
-fn clean_running_element_snapshot(snapshot: &mut FragmentNode) {
-  strip_running_anchor_fragments(snapshot);
-  clear_running_position(snapshot);
-  let offset = Point::new(-snapshot.bounds.x(), -snapshot.bounds.y());
-  snapshot.translate_root_in_place(offset);
-}
-
-fn collect_running_elements_for_page(
-  root: &FragmentNode,
-  axes: FragmentAxes,
-) -> HashMap<String, RunningElementPageValues> {
-  let mut occurrences: HashMap<String, Vec<(f32, FragmentNode)>> = HashMap::new();
-  let root_bounds = root.logical_bounds();
-  let root_block_size = axes.block_size(&root_bounds);
-  // Margin boxes select running elements relative to the page content area's origin. Because
-  // pagination translates the content slice into the page box after clipping, the fragment's root
-  // may be offset from (0, 0). Shift the absolute coordinate space so the root's block-start is
-  // always 0, ensuring `element(..., start)` correctly detects elements that begin the page.
-  let root_start = axes.block_start(&root_bounds, root_block_size);
-  collect_running_element_occurrences(
-    root,
-    -root_start,
-    root_block_size,
-    axes,
-    false,
-    &mut occurrences,
-  );
-
-  let mut out: HashMap<String, RunningElementPageValues> = HashMap::new();
-  for (name, mut entries) in occurrences {
-    entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-    let first_at_page_start = entries
-      .first()
-      .is_some_and(|(pos, _)| pos.abs() < EPSILON);
-    let first = entries.first().map(|(_, snapshot)| {
-      let mut snapshot = snapshot.clone();
-      clean_running_element_snapshot(&mut snapshot);
-      snapshot
-    });
-    let last = entries.last().map(|(_, snapshot)| {
-      let mut snapshot = snapshot.clone();
-      clean_running_element_snapshot(&mut snapshot);
-      snapshot
-    });
-    out.insert(
-      name,
-      RunningElementPageValues {
-        first,
-        first_at_page_start,
-        last,
-      },
-    );
-  }
-
-  out
-}
-
 #[derive(Debug, Clone)]
 struct FootnoteOccurrence {
   pos: f32,
@@ -1840,105 +1784,6 @@ fn build_footnote_area_fragment(
   Some(FragmentNode::new_block(bounds, children))
 }
 
-fn collect_running_element_occurrences(
-  node: &FragmentNode,
-  abs_start: f32,
-  parent_block_size: f32,
-  axes: FragmentAxes,
-  in_style_containment: bool,
-  out: &mut HashMap<String, Vec<(f32, FragmentNode)>>,
-) {
-  let logical_bounds = node.logical_bounds();
-  let start = axes.abs_block_start(&logical_bounds, abs_start, parent_block_size);
-  let node_block_size = axes.block_size(&logical_bounds);
-  let in_style_containment = in_style_containment
-    || node
-      .style
-      .as_deref()
-      .is_some_and(|style| style.containment.style);
-
-  if !in_style_containment {
-    if let FragmentContent::RunningAnchor { name, snapshot } = &node.content {
-      out
-        .entry(name.to_string())
-        .or_default()
-        .push((start, (**snapshot).clone()));
-    } else if node.content.is_block() || node.content.is_inline() || node.content.is_replaced() {
-      if let Some(name) = node
-        .style
-        .as_deref()
-        .and_then(|style| style.running_position.as_ref())
-      {
-        out
-          .entry(name.clone())
-          .or_default()
-          .push((start, node.clone()));
-      }
-    }
-  }
-
-  for child in node.children.iter() {
-    collect_running_element_occurrences(child, start, node_block_size, axes, in_style_containment, out);
-  }
-}
-
-fn strip_running_anchor_fragments(node: &mut FragmentNode) {
-  let mut kept: Vec<FragmentNode> = Vec::with_capacity(node.children.len());
-  for mut child in node.children_mut().drain(..) {
-    if matches!(child.content, FragmentContent::RunningAnchor { .. }) {
-      continue;
-    }
-    strip_running_anchor_fragments(&mut child);
-    kept.push(child);
-  }
-  node.set_children(kept);
-}
-
-fn clear_running_position(node: &mut FragmentNode) {
-  if let Some(style) = node.style.as_deref() {
-    if style.running_position.is_some() {
-      let mut owned = style.clone();
-      owned.running_position = None;
-      node.style = Some(Arc::new(owned));
-    }
-  }
-  for child in node.children_mut() {
-    clear_running_position(child);
-  }
-}
-
-fn select_running_element(
-  ident: &str,
-  select: RunningElementSelect,
-  page_values: &HashMap<String, RunningElementPageValues>,
-  running_state: &HashMap<String, FragmentNode>,
-) -> Option<FragmentNode> {
-  let page = page_values.get(ident);
-  match select {
-    RunningElementSelect::First => page
-      .and_then(|v| v.first.clone())
-      .or_else(|| running_state.get(ident).cloned()),
-    RunningElementSelect::Start => {
-      if page.is_some_and(|v| v.first_at_page_start) {
-        if let Some(first) = page.and_then(|v| v.first.clone()) {
-          return Some(first);
-        }
-      }
-      running_state.get(ident).cloned()
-    }
-    RunningElementSelect::Last => page
-      .and_then(|v| v.last.clone())
-      .or_else(|| running_state.get(ident).cloned()),
-    RunningElementSelect::FirstExcept => {
-      if page.is_some_and(|v| v.first.is_some()) {
-        None
-      } else {
-        running_state.get(ident).cloned()
-      }
-    }
-  }
-}
-
 fn translate_fragment(node: &mut FragmentNode, dx: f32, dy: f32) {
   node.bounds = Rect::from_xywh(
     node.bounds.x() + dx,
@@ -1995,8 +1840,7 @@ fn build_margin_box_fragments(
   page_index: usize,
   page_count: usize,
   running_strings: &HashMap<String, RunningStringValues>,
-  running_elements: &HashMap<String, RunningElementPageValues>,
-  running_state: &HashMap<String, FragmentNode>,
+  running_elements: &HashMap<String, RunningElementValues>,
 ) -> Vec<FragmentNode> {
   let mut fragments = Vec::new();
 
@@ -2043,9 +1887,11 @@ fn build_margin_box_fragments(
         let mut element_snapshots = Vec::new();
         for item in items {
           if let ContentItem::Element { ident, select } = item {
-            if let Some(snapshot) =
-              select_running_element(ident, *select, running_elements, running_state)
-            {
+            if let Some(snapshot) = crate::layout::running_elements::select_running_element(
+              ident,
+              *select,
+              running_elements,
+            ) {
               element_snapshots.push(snapshot);
             }
           }
@@ -2375,6 +2221,7 @@ fn margin_box_bounds(area: PageMarginArea, style: &ResolvedPageStyle) -> Option<
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::content::RunningElementSelect;
   use crate::style::display::Display;
   use crate::style::ComputedStyle;
   use crate::text::font_db::FontDatabase;
@@ -2449,11 +2296,15 @@ mod tests {
       "fixture should include a running anchor fragment"
     );
 
-    let running = collect_running_elements_for_page(&root, FragmentAxes::default());
-    let values = running
-      .get("header")
+    let events = crate::layout::running_elements::collect_running_element_events(
+      &root,
+      FragmentAxes::default(),
+    );
+    let snapshot = events
+      .iter()
+      .find(|event| event.name == "header")
+      .map(|event| &event.snapshot)
       .expect("running element snapshot collected");
-    let snapshot = values.first.as_ref().expect("running element snapshot");
 
     assert_eq!(snapshot.bounds.x(), 0.0);
     assert_eq!(snapshot.bounds.y(), 0.0);
@@ -2463,8 +2314,10 @@ mod tests {
     let logical = snapshot
       .logical_override
       .expect("logical override should be preserved");
-    assert_eq!(logical.x(), logical_bounds.x() - header_bounds.x());
-    assert_eq!(logical.y(), logical_bounds.y() - header_bounds.y());
+    assert_eq!(logical.x(), 0.0);
+    assert_eq!(logical.y(), 0.0);
+    assert_eq!(logical.width(), logical_bounds.width());
+    assert_eq!(logical.height(), logical_bounds.height());
 
     assert_eq!(snapshot.children.len(), 1);
     let child = &snapshot.children[0];
@@ -2505,11 +2358,10 @@ mod tests {
 
     let font_ctx = FontContext::with_database(Arc::new(FontDatabase::empty()));
     let running_strings: HashMap<String, RunningStringValues> = HashMap::new();
-    let running_elements: HashMap<String, RunningElementPageValues> = HashMap::new();
 
     for _ in 0..8 {
       let mut margin_boxes: BTreeMap<PageMarginArea, ComputedStyle> = BTreeMap::new();
-      let mut running_state: HashMap<String, FragmentNode> = HashMap::new();
+      let mut running_elements: HashMap<String, RunningElementValues> = HashMap::new();
 
       for area in expected_order {
         let ident = format!("{area:?}");
@@ -2520,9 +2372,17 @@ mod tests {
           select: RunningElementSelect::Start,
         }]);
         margin_boxes.insert(area, box_style);
-        running_state.insert(
+        running_elements.insert(
           ident.clone(),
-          FragmentNode::new_text(Rect::from_xywh(0.0, 0.0, 0.0, 0.0), ident, 0.0),
+          RunningElementValues {
+            start: Some(FragmentNode::new_text(
+              Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
+              ident,
+              0.0,
+            )),
+            first: None,
+            last: None,
+          },
         );
       }
 
@@ -2548,7 +2408,6 @@ mod tests {
         1,
         &running_strings,
         &running_elements,
-        &running_state,
       );
 
       assert_eq!(fragments.len(), expected_text.len());

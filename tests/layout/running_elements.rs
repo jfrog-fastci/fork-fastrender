@@ -191,3 +191,109 @@ fn running_elements_and_strings_coexist() {
     );
   }
 }
+
+#[test]
+fn first_except_suppresses_pages_with_occurrences_but_falls_back_when_missing() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+            @top-center { content: element(header, first-except); }
+          }
+          body { margin: 0; }
+          h1 { position: running(header); margin: 0; font-size: 16px; }
+          .fill { height: 260px; }
+        </style>
+      </head>
+      <body>
+        <h1>Carry Me</h1>
+        <div class="fill"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(page_roots.len() >= 2);
+
+  let first_margin = margin_texts(page_roots[0]);
+  let second_margin = margin_texts(page_roots[1]);
+
+  assert!(
+    !first_margin.iter().any(|t| t.contains("CarryMe")),
+    "first-except should resolve to none on pages with an occurrence"
+  );
+  assert!(
+    second_margin.iter().any(|t| t.contains("CarryMe")),
+    "first-except should fall back to the carried running element when no occurrence exists"
+  );
+}
+
+#[test]
+fn running_header_start_selection_handles_vertical_rl_page_start() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page {
+            size: 200px 200px;
+            margin: 20px;
+            @top-center { content: element(header, start); }
+          }
+          html { writing-mode: vertical-rl; }
+          body { margin: 0; }
+          h1 { position: running(header); margin: 0; font-size: 16px; }
+          /* `width` maps to block-size in vertical writing modes. */
+          .spacer { width: 20px; height: 10px; }
+          .breaker { break-after: page; width: 10px; height: 10px; }
+          .tail { width: 1px; height: 10px; }
+        </style>
+      </head>
+      <body>
+        <h1>One</h1>
+        <div class="breaker"></div>
+        <div class="spacer"></div>
+        <h1>Two</h1>
+        <div class="breaker"></div>
+        <h1>Three</h1>
+        <div class="tail"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 3,
+    "expected at least 3 pages for the forced breaks, got {}",
+    page_roots.len()
+  );
+
+  let first_margin = margin_texts(page_roots[0]);
+  let second_margin = margin_texts(page_roots[1]);
+  let third_margin = margin_texts(page_roots[2]);
+
+  assert!(
+    first_margin.iter().any(|t| t.contains("One")),
+    "page 1 should use the running header that starts the page"
+  );
+  assert!(
+    second_margin.iter().any(|t| t.contains("One")) && !second_margin.iter().any(|t| t.contains("Two")),
+    "page 2 header should remain the carried start value because the new running element is not at page start"
+  );
+  assert!(
+    third_margin.iter().any(|t| t.contains("Three")),
+    "page 3 should update when the running header starts the page in vertical-rl"
+  );
+}
