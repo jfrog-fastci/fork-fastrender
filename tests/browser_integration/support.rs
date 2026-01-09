@@ -297,6 +297,25 @@ pub fn create_tab_msg_with_cancel(
   }
 }
 
+/// Construct a `UiToWorker::CreateTab` message with sensible defaults for integration tests.
+///
+/// This is a convenience wrapper around [`create_tab_msg`] that accepts `&str` URLs for common
+/// callsites that use string literals.
+#[cfg(feature = "browser_ui")]
+pub fn create_tab(tab_id: TabId, initial_url: Option<&str>) -> UiToWorker {
+  create_tab_with_cancel(tab_id, initial_url, Default::default())
+}
+
+/// Like [`create_tab`], but allows the caller to provide a custom `CancelGens`.
+#[cfg(feature = "browser_ui")]
+pub fn create_tab_with_cancel(
+  tab_id: TabId,
+  initial_url: Option<&str>,
+  cancel: fastrender::ui::cancel::CancelGens,
+) -> UiToWorker {
+  create_tab_msg_with_cancel(tab_id, initial_url.map(ToString::to_string), cancel)
+}
+
 /// Construct a `UiToWorker::ViewportChanged` message.
 #[cfg(feature = "browser_ui")]
 pub fn viewport_changed_msg(tab_id: TabId, viewport_css: (u32, u32), dpr: f32) -> UiToWorker {
@@ -320,5 +339,50 @@ pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32
     tab_id,
     delta_css,
     pointer_css,
+  }
+}
+
+#[cfg(all(test, feature = "browser_ui"))]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn create_tab_sets_expected_fields_and_default_cancel() {
+    let tab_id = TabId(123);
+    let msg = create_tab(tab_id, Some("about:blank"));
+
+    match msg {
+      UiToWorker::CreateTab {
+        tab_id: got_tab,
+        initial_url,
+        cancel,
+      } => {
+        assert_eq!(got_tab, tab_id);
+        assert_eq!(initial_url.as_deref(), Some("about:blank"));
+
+        let default = fastrender::ui::cancel::CancelGens::default();
+        assert_eq!(cancel.snapshot_prepare(), default.snapshot_prepare());
+        assert_eq!(cancel.snapshot_paint(), default.snapshot_paint());
+      }
+      other => panic!("expected UiToWorker::CreateTab, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn create_tab_preserves_none_initial_url() {
+    let tab_id = TabId(7);
+    let msg = create_tab(tab_id, None);
+
+    match msg {
+      UiToWorker::CreateTab {
+        tab_id: got_tab,
+        initial_url,
+        ..
+      } => {
+        assert_eq!(got_tab, tab_id);
+        assert!(initial_url.is_none());
+      }
+      other => panic!("expected UiToWorker::CreateTab, got {other:?}"),
+    }
   }
 }
