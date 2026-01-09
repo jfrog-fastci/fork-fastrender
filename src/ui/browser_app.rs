@@ -149,7 +149,11 @@ impl BrowserAppState {
       None
     } else {
       // Prefer the tab that shifted into the removed index, otherwise the new last tab.
-      Some(self.tabs.get(idx).or_else(|| self.tabs.last()).unwrap().id)
+      self
+        .tabs
+        .get(idx)
+        .or_else(|| self.tabs.last())
+        .map(|tab| tab.id)
     };
     self.active_tab = new_active;
     self.sync_address_bar_to_active();
@@ -167,4 +171,3 @@ impl BrowserAppState {
       .unwrap_or_default();
   }
 }
-

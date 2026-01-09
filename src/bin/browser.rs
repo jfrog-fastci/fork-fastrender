@@ -1313,17 +1313,25 @@ fn spawn_default_render_worker(
               url: url.clone(),
             });
 
-            let options = RenderOptions::default()
-              .with_viewport(800, 600)
-              .with_device_pixel_ratio(1.0);
-            match renderer.prepare_url(&url, options) {
-              Ok(report) => {
-                tabs.get_mut(&tab_id).unwrap().doc = Some(report);
-                let _ = worker_to_ui_tx.send(WorkerToUi::NavigationCommitted {
-                  tab_id,
-                  url: url.clone(),
-                  title: None,
-                  can_go_back: false,
+              let options = RenderOptions::default()
+                .with_viewport(800, 600)
+                .with_device_pixel_ratio(1.0);
+              match renderer.prepare_url(&url, options) {
+                Ok(report) => {
+                  if let Some(tab) = tabs.get_mut(&tab_id) {
+                    tab.doc = Some(report);
+                  } else {
+                    // Best-effort: should be impossible because we just inserted the tab.
+                    let _ = worker_to_ui_tx.send(WorkerToUi::DebugLog {
+                      tab_id,
+                      line: "worker invariant violated: missing newly created tab".to_string(),
+                    });
+                  }
+                  let _ = worker_to_ui_tx.send(WorkerToUi::NavigationCommitted {
+                    tab_id,
+                    url: url.clone(),
+                    title: None,
+                    can_go_back: false,
                   can_go_forward: false,
                 });
                 repaint_tab(tab_id, &mut tabs, &worker_to_ui_tx);
