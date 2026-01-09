@@ -1,7 +1,7 @@
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::Result;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
-use crate::js::{EventLoop, ScriptElementSpec, ScriptScheduler, ScriptSchedulerAction, TaskSource};
+use crate::js::{EventLoop, ScriptScheduler, ScriptSchedulerAction, TaskSource};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
@@ -215,7 +215,11 @@ where
     }
   }
 
-  fn handle_script_boundary(&mut self, script_node: NodeId, event_loop: &mut EventLoop<Self>) -> Result<()> {
+  fn handle_script_boundary(
+    &mut self,
+    script_node: NodeId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
     // HTML: When a parser-inserted script end tag is seen, perform a microtask checkpoint *before*
     // preparing the script, but only when the JS execution context stack is empty.
     //
@@ -226,23 +230,23 @@ where
       event_loop.perform_microtask_checkpoint(self)?;
     }
 
-    let spec = self.build_script_spec(script_node);
+    let spec = {
+      let sink = self.parser.sink();
+      let doc = sink.document();
+      crate::js::streaming_dom2::build_parser_inserted_script_element_spec_dom2(
+        &doc,
+        script_node,
+        &*sink.base_url_tracker(),
+      )
+    };
     let base_url_at_discovery = self.parser.sink().current_base_url();
-    let discovered = self.scheduler.discovered_parser_script(
-      spec,
-      script_node,
-      base_url_at_discovery,
-    )?;
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
     self.script_nodes.insert(discovered.id, script_node);
     self.apply_actions(discovered.actions, event_loop)?;
     Ok(())
-  }
-
-  fn build_script_spec(&self, script_node: NodeId) -> ScriptElementSpec {
-    let sink = self.parser.sink();
-    let doc = sink.document();
-    let base = sink.base_url_tracker();
-    crate::js::streaming::build_parser_inserted_script_element_spec_dom2(&doc, script_node, &base)
   }
 
   fn apply_actions(
@@ -378,7 +382,13 @@ mod tests {
   #[test]
   fn inline_scripts_execute_in_order_and_flush_microtasks_between() -> Result<()> {
     let html = "<!doctype html><script>a</script><script>b</script>".to_string();
-    let mut host = TestHost::new(html, None, 8, ManualFetcher::default(), LoggingExecutor::default());
+    let mut host = TestHost::new(
+      html,
+      None,
+      8,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
     let mut event_loop = EventLoop::<TestHost>::new();
 
     host.start(&mut event_loop)?;
@@ -477,7 +487,8 @@ mod tests {
 
   #[test]
   fn defer_scripts_execute_after_parsing_completed_in_document_order() -> Result<()> {
-    let html = "<!doctype html><script defer src=d1.js></script><script defer src=d2.js></script>".to_string();
+    let html = "<!doctype html><script defer src=d1.js></script><script defer src=d2.js></script>"
+      .to_string();
     let mut host = TestHost::new(
       html,
       Some("https://example.com/dir/page.html"),
@@ -555,7 +566,13 @@ mod tests {
     // Use a large chunk size so the parser hits the </script> boundary within the first parsing
     // task. This reproduces the HTML requirement to perform a microtask checkpoint *mid-task*
     // (before preparing/executing the parser-inserted script).
-    let mut host = TestHost::new(html, None, 1024, ManualFetcher::default(), LoggingExecutor::default());
+    let mut host = TestHost::new(
+      html,
+      None,
+      1024,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
     let mut event_loop = EventLoop::<TestHost>::new();
 
     // Queue a microtask *before* parsing begins. This must run before the parser-inserted script
@@ -587,7 +604,13 @@ mod tests {
     // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
     // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
     // when the JS execution context stack is not empty.
-    let mut host = TestHost::new(String::new(), None, 1, ManualFetcher::default(), LoggingExecutor::default());
+    let mut host = TestHost::new(
+      String::new(),
+      None,
+      1,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
     let mut event_loop = EventLoop::<TestHost>::new();
 
     // Queue a microtask before encountering the script boundary. It must *not* run before the
@@ -624,6 +647,31 @@ mod tests {
         "microtask".to_string(),
         "microtask:RUN".to_string(),
       ]
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn skips_foreign_namespace_svg_scripts() -> Result<()> {
+    // html5ever yields TokenizerResult::Script for SVG <script>, so the orchestrator must ensure it
+    // does not execute it using HTML semantics.
+    let html = "<!doctype html><svg xmlns=\"http://www.w3.org/2000/svg\"><script>bad</script></svg><script>good</script>"
+      .to_string();
+    let mut host = TestHost::new(
+      html,
+      None,
+      32,
+      ManualFetcher::default(),
+      LoggingExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    host.start(&mut event_loop)?;
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(
+      host.executor.log,
+      vec!["script:good".to_string(), "microtask:good".to_string(),]
     );
     Ok(())
   }
