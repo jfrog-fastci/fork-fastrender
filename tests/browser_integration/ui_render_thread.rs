@@ -93,30 +93,38 @@ fn scroll_produces_scroll_update_and_frame() {
   ))
   .unwrap();
 
-  // Wait for the initial frame.
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
-    if matches!(msg, WorkerToUi::FrameReady { .. }) {
-      break;
-    }
-  }
+  // Wait for the initial frame before issuing scroll commands so the document has cached layout.
+  assert!(
+    super::support::recv_until(&rx, DEFAULT_TIMEOUT * 2, |msg| {
+      matches!(msg, WorkerToUi::FrameReady { .. })
+    })
+    .is_some(),
+    "timed out waiting for initial FrameReady"
+  );
 
   tx.send(scroll_msg(tab_id, (0.0, 200.0), None)).unwrap();
 
   let mut saw_scroll = false;
   let mut saw_frame = false;
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
-    match msg {
-      WorkerToUi::ScrollStateUpdated { scroll, .. } => {
-        if scroll.viewport.y > 0.0 {
-          saw_scroll = true;
+  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
+  while std::time::Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(msg) => match msg {
+        WorkerToUi::ScrollStateUpdated { scroll, .. } => {
+          if scroll.viewport.y > 0.0 {
+            saw_scroll = true;
+          }
         }
-      }
-      WorkerToUi::FrameReady { frame, .. } => {
-        if frame.scroll_state.viewport.y > 0.0 {
-          saw_frame = true;
+        WorkerToUi::FrameReady { frame, .. } => {
+          if frame.scroll_state.viewport.y > 0.0 {
+            saw_frame = true;
+          }
         }
-      }
-      _ => {}
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
     if saw_scroll && saw_frame {
       break;
@@ -223,11 +231,13 @@ fn enter_submits_focused_text_input_form() {
   .unwrap();
 
   // Wait for the initial frame so the document has cached layout for hit-testing.
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
-    if matches!(msg, WorkerToUi::FrameReady { .. }) {
-      break;
-    }
-  }
+  assert!(
+    super::support::recv_until(&rx, DEFAULT_TIMEOUT * 2, |msg| {
+      matches!(msg, WorkerToUi::FrameReady { .. })
+    })
+    .is_some(),
+    "timed out waiting for initial FrameReady"
+  );
 
   let pos_css = (5.0, 5.0);
   tx.send(UiToWorker::PointerDown {
