@@ -212,7 +212,10 @@ impl SvgPreserveAspectRatio {
       return parsed;
     }
     let mut parts = split_svg_whitespace(raw);
-    let first = parts.next().unwrap_or("");
+    let mut first = parts.next().unwrap_or("");
+    if first.eq_ignore_ascii_case("defer") {
+      first = parts.next().unwrap_or("");
+    }
     if first.eq_ignore_ascii_case("none") {
       parsed.none = true;
       return parsed;
@@ -360,7 +363,7 @@ pub(crate) fn svg_view_box_root_transform(
 mod tests {
   use super::{
     parse_svg_length, parse_svg_view_box, svg_root_view_box, svg_view_box_root_transform,
-    SvgPreserveAspectRatio,
+    SvgAlign, SvgMeetOrSlice, SvgPreserveAspectRatio,
   };
 
   #[test]
@@ -388,6 +391,19 @@ mod tests {
     let nbsp = "\u{00A0}";
     assert!(SvgPreserveAspectRatio::parse(Some("none")).none);
     assert!(!SvgPreserveAspectRatio::parse(Some(&format!("{nbsp}none"))).none);
+  }
+
+  #[test]
+  fn svg_preserve_aspect_ratio_supports_defer_none() {
+    assert!(SvgPreserveAspectRatio::parse(Some("defer none")).none);
+  }
+
+  #[test]
+  fn svg_preserve_aspect_ratio_supports_defer_align_and_slice() {
+    let parsed = SvgPreserveAspectRatio::parse(Some("defer xMinYMin slice"));
+    assert!(!parsed.none);
+    assert!(matches!(parsed.align, SvgAlign::XMinYMin));
+    assert!(matches!(parsed.meet_or_slice, SvgMeetOrSlice::Slice));
   }
 
   #[test]
