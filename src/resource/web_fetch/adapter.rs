@@ -794,7 +794,7 @@ mod tests {
     // Use a basic response surface so we can assert response headers directly (CORS responses are
     // filtered by `Access-Control-Expose-Headers`).
     let mut request = Request::new("GET", "https://example.com/a");
-    request.mode = RequestMode::Navigate;
+    request.set_mode(RequestMode::Navigate);
     let mut response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
 
@@ -939,7 +939,7 @@ mod tests {
     // Use a basic response surface so we can observe the raw header list (CORS responses are
     // filtered by `Access-Control-Expose-Headers`).
     let mut request = Request::new("GET", "https://example.com/a");
-    request.mode = RequestMode::Navigate;
+    request.set_mode(RequestMode::Navigate);
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.headers.get("x-ok").unwrap().as_deref(), Some("y"));
