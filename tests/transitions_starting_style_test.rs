@@ -1306,6 +1306,35 @@ fn transitions_interpolate_transform_origin_over_time() {
 }
 
 #[test]
+fn transitions_transform_origin_respects_transform_box_content_box() {
+  let html = r#"
+    <style>
+      @starting-style { #box { transform-origin: 0% 0%; } }
+      #box {
+        box-sizing: border-box;
+        width: 100px; height: 100px;
+        padding: 10px;
+        border: 10px solid black;
+        transform-box: content-box;
+        transform-origin: 100% 100%;
+        transition: transform-origin 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let (x, y) = fragment_transform_origin(&mid, box_id);
+  assert!((x - 30.0).abs() < 1e-3, "x={x}");
+  assert!((y - 30.0).abs() < 1e-3, "y={y}");
+}
+
+#[test]
 fn transitions_interpolate_perspective_origin_over_time() {
   let html = r#"
     <style>
@@ -1329,6 +1358,34 @@ fn transitions_interpolate_perspective_origin_over_time() {
   let (x, y) = fragment_perspective_origin(&mid, box_id);
   assert!((x - 100.0).abs() < 1e-3, "x={x}");
   assert!((y - 50.0).abs() < 1e-3, "y={y}");
+}
+
+#[test]
+fn transitions_transform_translate_percentage_respects_transform_box_content_box() {
+  let html = r#"
+    <style>
+      @starting-style { #box { transform: translateX(0%); } }
+      #box {
+        box-sizing: border-box;
+        width: 100px; height: 100px;
+        padding: 10px;
+        border: 10px solid black;
+        transform-box: content-box;
+        transform: translateX(100%);
+        transition: transform 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let translated = fragment_transform_x(&mid, box_id);
+  assert!((translated - 30.0).abs() < 1e-3, "translated={translated}");
 }
 
 #[test]

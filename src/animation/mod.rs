@@ -65,6 +65,7 @@ use crate::style::types::ShapeRadius;
 use crate::style::types::TimelineAxis;
 use crate::style::types::TimelineOffset;
 use crate::style::types::TimelineScopeProperty;
+use crate::style::types::TransformBox;
 use crate::style::types::TransformOrigin;
 use crate::style::types::TransitionBehavior;
 use crate::style::types::TransitionProperty;
@@ -307,6 +308,48 @@ fn resolve_length_px(
       style.root_font_size,
     )
     .unwrap_or_else(|| len.to_px())
+}
+
+fn transform_reference_size(style: &ComputedStyle, ctx: &AnimationResolveContext) -> (f32, f32) {
+  let border_box_width = if ctx.element_size.width.is_finite() {
+    ctx.element_size.width.max(0.0)
+  } else {
+    0.0
+  };
+  let border_box_height = if ctx.element_size.height.is_finite() {
+    ctx.element_size.height.max(0.0)
+  } else {
+    0.0
+  };
+
+  match style.transform_box {
+    TransformBox::ContentBox => {
+      // Mirror `paint::transform_resolver::background_rects`: padding percentages are resolved
+      // against the border box width per CSS2.1.
+      let base = Some(border_box_width);
+
+      let border_left = resolve_length_px(&style.used_border_left_width(), base, style, ctx);
+      let border_right = resolve_length_px(&style.used_border_right_width(), base, style, ctx);
+      let border_top = resolve_length_px(&style.used_border_top_width(), base, style, ctx);
+      let border_bottom = resolve_length_px(&style.used_border_bottom_width(), base, style, ctx);
+
+      let padding_left = resolve_length_px(&style.padding_left, base, style, ctx);
+      let padding_right = resolve_length_px(&style.padding_right, base, style, ctx);
+      let padding_top = resolve_length_px(&style.padding_top, base, style, ctx);
+      let padding_bottom = resolve_length_px(&style.padding_bottom, base, style, ctx);
+
+      let content_width =
+        (border_box_width - border_left - border_right - padding_left - padding_right).max(0.0);
+      let content_height =
+        (border_box_height - border_top - border_bottom - padding_top - padding_bottom).max(0.0);
+
+      (content_width, content_height)
+    }
+    TransformBox::BorderBox
+    | TransformBox::FillBox
+    | TransformBox::StrokeBox
+    | TransformBox::ViewBox => (border_box_width, border_box_height),
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -2047,8 +2090,7 @@ fn extract_translate(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<AnimatedValue> {
-  let width = ctx.element_size.width;
-  let height = ctx.element_size.height;
+  let (width, height) = transform_reference_size(style, ctx);
   let resolved = match style.translate {
     TranslateValue::None => TranslateValue::None,
     TranslateValue::Values { x, y, z } => TranslateValue::Values {
@@ -2508,8 +2550,7 @@ fn extract_transform_origin(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<AnimatedValue> {
-  let width = ctx.element_size.width;
-  let height = ctx.element_size.height;
+  let (width, height) = transform_reference_size(style, ctx);
   Some(AnimatedValue::TransformOrigin(TransformOrigin {
     x: Length::px(resolve_length_px(
       &style.transform_origin.x,
@@ -2536,8 +2577,7 @@ fn extract_perspective_origin(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<AnimatedValue> {
-  let width = ctx.element_size.width;
-  let height = ctx.element_size.height;
+  let (width, height) = transform_reference_size(style, ctx);
   Some(AnimatedValue::TransformOrigin(TransformOrigin {
     x: Length::px(resolve_length_px(
       &style.perspective_origin.x,
@@ -3793,8 +3833,7 @@ fn resolve_transform_list(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Vec<crate::css::types::Transform> {
-  let width = ctx.element_size.width;
-  let height = ctx.element_size.height;
+  let (width, height) = transform_reference_size(style, ctx);
   list
     .iter()
     .map(|t| match t {
