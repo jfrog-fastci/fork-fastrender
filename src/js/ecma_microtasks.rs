@@ -216,6 +216,16 @@ mod tests {
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
 
+  fn noop(
+    _vm: &mut vm_js::Vm,
+    _scope: &mut vm_js::Scope<'_>,
+    _callee: vm_js::GcObject,
+    _this: vm_js::Value,
+    _args: &[vm_js::Value],
+  ) -> Result<vm_js::Value, vm_js::VmError> {
+    Ok(vm_js::Value::Undefined)
+  }
+
   #[test]
   fn vm_js_promise_jobs_run_after_a_task_and_before_the_next_task() -> crate::Result<()> {
     struct Host {
@@ -291,6 +301,8 @@ mod tests {
 
   #[test]
   fn vm_js_promise_jobs_discard_persistent_roots_when_enqueue_fails() -> crate::Result<()> {
+    let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
+
     struct Host {
       vm: vm_js::Vm,
       heap: vm_js::Heap,
@@ -337,7 +349,7 @@ mod tests {
       };
       let root = job
         .add_root(&mut ctx, vm_js::Value::Null)
-        .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(vm_err)?;
       (root, job)
     };
     hooks.host_enqueue_promise_job(job1, None);
@@ -356,7 +368,7 @@ mod tests {
       };
       let root = job
         .add_root(&mut ctx, vm_js::Value::Undefined)
-        .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(vm_err)?;
       (root, job)
     };
     hooks.host_enqueue_promise_job(job2, None);
@@ -417,7 +429,6 @@ mod tests {
       vm: vm_js::Vm::new(vm_js::VmOptions::default()),
       heap: vm_js::Heap::new(limits),
     };
-
     let mut event_loop = EventLoop::<Host>::new();
     let mut hooks = VmJsHostHooks::new(&mut event_loop);
     hooks.host_enqueue_promise_job(
@@ -439,5 +450,101 @@ mod tests {
       msg.contains("vm-js job failed: type error: boom"),
       "msg={msg}"
     );
+  }
+
+  #[test]
+  fn vm_js_promise_jobs_root_captured_values_until_run() -> crate::Result<()> {
+    let vm_err = |err: vm_js::VmError| Error::Other(format!("vm-js error: {err}"));
+
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap
+      }
+
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+    let mut event_loop = EventLoop::<Host>::new();
+
+    let call_id = host.vm.register_native_call(noop).map_err(vm_err)?;
+
+    // Queue a PromiseReactionJob that captures heap values, then run GC before the microtask runs.
+    // The job should keep the captures alive until it executes and cleans up its roots.
+    let callback_obj;
+    let argument_obj;
+    {
+      let mut hooks = VmJsHostHooks::new(&mut event_loop);
+      let mut scope = host.heap.scope();
+
+      callback_obj = {
+        let name = scope.alloc_string("onFulfilled").map_err(vm_err)?;
+        scope
+          .alloc_native_function(call_id, None, name, 1)
+          .map_err(vm_err)?
+      };
+      scope
+        .push_root(vm_js::Value::Object(callback_obj))
+        .map_err(vm_err)?;
+
+      argument_obj = scope.alloc_object().map_err(vm_err)?;
+      let argument = vm_js::Value::Object(argument_obj);
+      scope.push_root(argument).map_err(vm_err)?;
+
+      let job_callback = hooks.host_make_job_callback(callback_obj);
+      let fulfill_reaction = vm_js::PromiseReaction {
+        capability: None,
+        reaction_type: vm_js::PromiseReactionType::Fulfill,
+        handler: Some(vm_js::PromiseHandler::JobCallback(job_callback)),
+      };
+
+      let job = vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument)
+        .map_err(vm_err)?;
+      hooks.host_enqueue_promise_job(job, None);
+      drop(scope);
+      assert!(hooks.finish(&mut host).is_none());
+    }
+
+    host.heap.collect_garbage();
+    assert!(
+      host.heap.is_valid_object(callback_obj),
+      "Promise job should keep callback object alive until the microtask runs"
+    );
+    assert!(
+      host.heap.is_valid_object(argument_obj),
+      "Promise job should keep captured argument alive until the microtask runs"
+    );
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+
+    host.heap.collect_garbage();
+    assert!(
+      !host.heap.is_valid_object(callback_obj),
+      "Job::run should remove persistent roots after execution"
+    );
+    assert!(
+      !host.heap.is_valid_object(argument_obj),
+      "Job::run should remove persistent roots after execution"
+    );
+
+    Ok(())
   }
 }
