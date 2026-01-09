@@ -1219,7 +1219,13 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           overrides: parse_style_overrides(node),
           children: parse_children(node),
         }),
-        "merror" => wrap_row_or_single(parse_children(node)),
+        "merror" => {
+          let child = wrap_row_or_single(parse_children(node)).unwrap_or_else(empty_text_node);
+          Some(MathNode::Enclose {
+            notation: vec![MencloseNotation::Box],
+            child: Box::new(child),
+          })
+        }
         "mfrac" => {
           let mut children = parse_children(node).into_iter();
           let num = children.next().unwrap_or_else(empty_text_node);
@@ -4722,6 +4728,31 @@ mod tests {
       }
     }
     panic!("operator {operator_text:?} not found in row");
+  }
+
+  #[test]
+  fn merror_parses_as_boxed_enclose_and_emits_stroke_rect() {
+    let parsed = parse_math_from_html("<math><merror><mi>x</mi><mo>+</mo><mi>y</mi></merror></math>");
+    let MathNode::Math { children, .. } = &parsed else {
+      panic!("expected math root");
+    };
+    let MathNode::Enclose { notation, child } = &children[0] else {
+      panic!("expected merror to parse as enclose box");
+    };
+    assert_eq!(notation, &vec![MencloseNotation::Box]);
+    assert!(
+      matches!(child.as_ref(), MathNode::Row(row) if row.len() == 3),
+      "expected merror child to be row-wrapped when it has multiple children",
+    );
+
+    let layout = layout_mathml(&parsed, &ComputedStyle::default(), &FontContext::empty());
+    assert!(
+      layout
+        .fragments
+        .iter()
+        .any(|frag| matches!(frag, MathFragment::StrokeRect { .. })),
+      "expected merror to produce a StrokeRect fragment",
+    );
   }
 
   #[test]

@@ -445,6 +445,18 @@ fn math_displaystyle_limits_match_golden() {
 }
 
 #[test]
+fn math_merror_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_merror")).expect("load math_merror");
+    let png = renderer
+      .render_to_png(&html, 520, 240)
+      .expect("render math merror");
+    compare_golden("math_merror", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_semantics_annotations_ignored_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();

@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<style>
+  body {
+    margin: 0;
+    font-size: 20px;
+    font-family: "DejaVu Serif", serif;
+    color: rgb(20, 20, 20);
+  }
+  .cell {
+    display: inline-block;
+    vertical-align: top;
+    width: 240px;
+    margin: 8px;
+  }
+  .label {
+    font-size: 14px;
+    color: rgb(90, 90, 90);
+    margin: 0 0 4px 0;
+  }
+  math {
+    display: block;
+    margin: 0;
+  }
+</style>
+<body>
+  <div class="cell">
+    <div class="label">Normal (token)</div>
+    <math display="block"><mi>x</mi></math>
+  </div>
+  <div class="cell">
+    <div class="label">merror (token)</div>
+    <math display="block"><merror><mi>x</mi></merror></math>
+  </div>
+
+  <div class="cell">
+    <div class="label">Normal (nested)</div>
+    <math display="block">
+      <mfrac>
+        <mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow>
+        <mrow><mi>c</mi><mo>+</mo><mn>1</mn></mrow>
+      </mfrac>
+    </math>
+  </div>
+  <div class="cell">
+    <div class="label">merror (nested)</div>
+    <math display="block">
+      <merror>
+        <mfrac>
+          <mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow>
+          <mrow><mi>c</mi><mo>+</mo><mn>1</mn></mrow>
+        </mfrac>
+      </merror>
+    </math>
+  </div>
+</body>
+</html>
+
