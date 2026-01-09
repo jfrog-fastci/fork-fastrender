@@ -55,66 +55,14 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   script: dom2::NodeId,
   base_url_tracker: &html::base_url_tracker::BaseUrlTracker,
 ) -> ScriptElementSpec {
-  fn is_html_namespace(namespace: &str) -> bool {
-    namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE
-  }
-
-  fn attr_name_matches(existing: &str, query: &str, is_html: bool) -> bool {
-    if is_html {
-      existing.eq_ignore_ascii_case(query)
-    } else {
-      existing == query
-    }
-  }
-
-  fn get_attribute<'a>(doc: &'a dom2::Document, node: dom2::NodeId, name: &str) -> Option<&'a str> {
-    let kind = &doc.node(node).kind;
-    let (attrs, is_html) = match kind {
-      dom2::NodeKind::Element {
-        namespace,
-        attributes,
-        ..
-      }
-      | dom2::NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
-      } => (attributes, is_html_namespace(namespace)),
-      _ => return None,
-    };
-    attrs
-      .iter()
-      .find(|(k, _)| attr_name_matches(k.as_str(), name, is_html))
-      .map(|(_, v)| v.as_str())
-  }
-
-  fn has_attribute(doc: &dom2::Document, node: dom2::NodeId, name: &str) -> bool {
-    let kind = &doc.node(node).kind;
-    let (attrs, is_html) = match kind {
-      dom2::NodeKind::Element {
-        namespace,
-        attributes,
-        ..
-      }
-      | dom2::NodeKind::Slot {
-        namespace,
-        attributes,
-        ..
-      } => (attributes, is_html_namespace(namespace)),
-      _ => return false,
-    };
-    attrs
-      .iter()
-      .any(|(k, _)| attr_name_matches(k.as_str(), name, is_html))
-  }
-
   let base_url = base_url_tracker.current_base_url();
 
-  let async_attr = has_attribute(doc, script, "async");
-  let defer_attr = has_attribute(doc, script, "defer");
+  let async_attr = doc.has_attribute(script, "async");
+  let defer_attr = doc.has_attribute(script, "defer");
 
-  let src =
-    get_attribute(doc, script, "src").and_then(|raw_src| base_url_tracker.resolve_script_src(raw_src));
+  let src = doc
+    .get_attribute(script, "src")
+    .and_then(|raw_src| base_url_tracker.resolve_script_src(raw_src));
 
   let mut inline_text = String::new();
   for &child in &doc.node(script).children {
@@ -123,19 +71,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     }
   }
 
-  let script_type = match &doc.node(script).kind {
-    dom2::NodeKind::Element { tag_name, .. } => {
-      if !tag_name.eq_ignore_ascii_case("script") {
-        super::ScriptType::Unknown
-      } else {
-        super::determine_script_type_from_attrs(
-          get_attribute(doc, script, "type"),
-          get_attribute(doc, script, "language"),
-        )
-      }
-    }
-    _ => super::ScriptType::Unknown,
-  };
+  let script_type = super::determine_script_type_dom2(doc, script);
 
   ScriptElementSpec {
     base_url,
