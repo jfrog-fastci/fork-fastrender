@@ -16,6 +16,8 @@
 
 use std::fmt;
 
+use smallvec::SmallVec;
+
 /// CSS length units
 ///
 /// Represents the unit portion of a CSS length value.
@@ -1503,7 +1505,12 @@ impl fmt::Display for LengthOrAuto {
 // ============================================================================
 
 /// Supported syntaxes for registered custom properties.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// This mirrors a small subset of the Properties & Values API:
+/// - Primitive syntaxes like `<length>`
+/// - Unions via `|`
+/// - List syntaxes via `+` (space-separated) and `#` (comma-separated)
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CustomPropertySyntax {
   Length,
   /// `<length-percentage>` from the Properties & Values API, represented using `Length` since
@@ -1514,6 +1521,12 @@ pub enum CustomPropertySyntax {
   Color,
   Angle,
   Universal,
+  /// Union of multiple syntaxes, e.g. `<length> | <color>`.
+  Union(Box<[CustomPropertySyntax]>),
+  /// Space-separated list of values matching the inner syntax (`+` multiplier).
+  SpaceSeparatedList(Box<CustomPropertySyntax>),
+  /// Comma-separated list of values matching the inner syntax (`#` multiplier).
+  CommaSeparatedList(Box<CustomPropertySyntax>),
 }
 
 /// Parsed typed value for a registered custom property.
@@ -1524,6 +1537,16 @@ pub enum CustomPropertyTypedValue {
   Percentage(f32),
   Color(crate::style::color::Color),
   Angle(f32),
+  List {
+    separator: CustomPropertyListSeparator,
+    items: Vec<CustomPropertyTypedValue>,
+  },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CustomPropertyListSeparator {
+  Space,
+  Comma,
 }
 
 impl CustomPropertyTypedValue {
@@ -1546,6 +1569,19 @@ impl CustomPropertyTypedValue {
         } else {
           format!("{deg}deg")
         }
+      }
+      CustomPropertyTypedValue::List { separator, items } => {
+        let mut out = String::new();
+        for (idx, item) in items.iter().enumerate() {
+          if idx > 0 {
+            match separator {
+              CustomPropertyListSeparator::Space => out.push(' '),
+              CustomPropertyListSeparator::Comma => out.push_str(", "),
+            }
+          }
+          out.push_str(&item.to_css());
+        }
+        out
       }
     }
   }
@@ -1578,18 +1614,81 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 }
 
 impl CustomPropertySyntax {
+  pub fn is_universal(&self) -> bool {
+    matches!(self, CustomPropertySyntax::Universal)
+  }
+
   /// Parses a syntax descriptor such as `<length>` or `*`.
   pub fn parse(s: &str) -> Option<Self> {
-    match trim_ascii_whitespace(s).to_ascii_lowercase().as_str() {
-      "<length>" => Some(CustomPropertySyntax::Length),
-      "<length-percentage>" => Some(CustomPropertySyntax::LengthPercentage),
-      "<number>" => Some(CustomPropertySyntax::Number),
-      "<percentage>" => Some(CustomPropertySyntax::Percentage),
-      "<color>" => Some(CustomPropertySyntax::Color),
-      "<angle>" => Some(CustomPropertySyntax::Angle),
-      "*" => Some(CustomPropertySyntax::Universal),
-      _ => None,
+    let s = trim_ascii_whitespace(strip_quotes_custom_property_syntax(s));
+    if s == "*" {
+      return Some(CustomPropertySyntax::Universal);
     }
+
+    fn parse_primitive(token: &str) -> Option<CustomPropertySyntax> {
+      if token.eq_ignore_ascii_case("<length>") {
+        Some(CustomPropertySyntax::Length)
+      } else if token.eq_ignore_ascii_case("<length-percentage>") {
+        Some(CustomPropertySyntax::LengthPercentage)
+      } else if token.eq_ignore_ascii_case("<number>") {
+        Some(CustomPropertySyntax::Number)
+      } else if token.eq_ignore_ascii_case("<percentage>") {
+        Some(CustomPropertySyntax::Percentage)
+      } else if token.eq_ignore_ascii_case("<color>") {
+        Some(CustomPropertySyntax::Color)
+      } else if token.eq_ignore_ascii_case("<angle>") {
+        Some(CustomPropertySyntax::Angle)
+      } else {
+        None
+      }
+    }
+
+    let mut members: SmallVec<[CustomPropertySyntax; 4]> = SmallVec::new();
+    for part in s.split('|') {
+      let part = trim_ascii_whitespace(part);
+      if part.is_empty() {
+        return None;
+      }
+
+      let mut multiplier = None;
+      let mut core = part;
+      if let Some(stripped) = core.strip_suffix('+') {
+        multiplier = Some(CustomPropertyListSeparator::Space);
+        core = stripped;
+      } else if let Some(stripped) = core.strip_suffix('#') {
+        multiplier = Some(CustomPropertyListSeparator::Comma);
+        core = stripped;
+      }
+      core = trim_ascii_whitespace(core);
+      let Some(mut syntax) = parse_primitive(core) else {
+        return None;
+      };
+
+      if let Some(sep) = multiplier {
+        syntax = match sep {
+          CustomPropertyListSeparator::Space => {
+            CustomPropertySyntax::SpaceSeparatedList(Box::new(syntax))
+          }
+          CustomPropertyListSeparator::Comma => {
+            CustomPropertySyntax::CommaSeparatedList(Box::new(syntax))
+          }
+        };
+      }
+
+      members.push(syntax);
+    }
+
+    if members.is_empty() {
+      return None;
+    }
+    if members.len() == 1 {
+      return members.pop();
+    }
+    if members.iter().any(|m| m.is_universal()) {
+      // `*` is only supported as a standalone descriptor.
+      return None;
+    }
+    Some(CustomPropertySyntax::Union(members.into_vec().into_boxed_slice()))
   }
 
   /// Attempts to parse a value string according to this syntax.
@@ -1638,8 +1737,195 @@ impl CustomPropertySyntax {
         parse_angle_token(trim_ascii_whitespace(value)).map(CustomPropertyTypedValue::Angle)
       }
       CustomPropertySyntax::Universal => None,
+      CustomPropertySyntax::Union(members) => members.iter().find_map(|m| m.parse_value(value)),
+      CustomPropertySyntax::SpaceSeparatedList(inner) => {
+        parse_custom_property_list_value(value, inner.as_ref(), CustomPropertyListSeparator::Space)
+      }
+      CustomPropertySyntax::CommaSeparatedList(inner) => {
+        parse_custom_property_list_value(value, inner.as_ref(), CustomPropertyListSeparator::Comma)
+      }
     }
   }
+}
+
+fn strip_quotes_custom_property_syntax(value: &str) -> &str {
+  let value = trim_ascii_whitespace(value);
+  if value.len() >= 2 {
+    let bytes = value.as_bytes();
+    let last = value.len() - 1;
+    if (bytes[0] == b'"' && bytes[last] == b'"') || (bytes[0] == b'\'' && bytes[last] == b'\'') {
+      return &value[1..last];
+    }
+  }
+  value
+}
+
+fn parse_custom_property_list_value(
+  raw: &str,
+  inner: &CustomPropertySyntax,
+  separator: CustomPropertyListSeparator,
+) -> Option<CustomPropertyTypedValue> {
+  let raw = trim_ascii_whitespace(raw);
+  let mut items: Vec<CustomPropertyTypedValue> = Vec::new();
+
+  match separator {
+    CustomPropertyListSeparator::Comma => {
+      let mut depth = 0i32;
+      let mut bracket = 0i32;
+      let mut brace = 0i32;
+      let mut in_string: Option<u8> = None;
+      let mut idx = 0usize;
+      let bytes = raw.as_bytes();
+      let mut start = 0usize;
+
+      while idx < bytes.len() {
+        let b = bytes[idx];
+        if let Some(quote) = in_string {
+          if b == b'\\' {
+            idx = idx.saturating_add(2);
+            continue;
+          }
+          if b == quote {
+            in_string = None;
+          }
+          idx += 1;
+          continue;
+        }
+
+        if b == b'\\' {
+          idx = idx.saturating_add(2);
+          continue;
+        }
+
+        if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+          idx += 2;
+          while idx + 1 < bytes.len() {
+            if bytes[idx] == b'*' && bytes[idx + 1] == b'/' {
+              idx += 2;
+              break;
+            }
+            idx += 1;
+          }
+          // Comments behave like whitespace in CSS; keep scanning.
+          continue;
+        }
+
+        match b {
+          b'(' => depth += 1,
+          b')' => depth = (depth - 1).max(0),
+          b'[' => bracket += 1,
+          b']' => bracket = (bracket - 1).max(0),
+          b'{' => brace += 1,
+          b'}' => brace = (brace - 1).max(0),
+          b'\'' | b'"' => in_string = Some(b),
+          b',' if depth == 0 && bracket == 0 && brace == 0 => {
+            let part = trim_ascii_whitespace(&raw[start..idx]);
+            if part.is_empty() {
+              return None;
+            }
+            let typed = inner.parse_value(part)?;
+            items.push(typed);
+            start = idx + 1;
+          }
+          _ => {}
+        }
+        idx += 1;
+      }
+
+      let tail = trim_ascii_whitespace(&raw[start..]);
+      if tail.is_empty() {
+        return None;
+      }
+      items.push(inner.parse_value(tail)?);
+    }
+    CustomPropertyListSeparator::Space => {
+      let mut depth = 0i32;
+      let mut bracket = 0i32;
+      let mut brace = 0i32;
+      let mut in_string: Option<u8> = None;
+      let mut idx = 0usize;
+      let bytes = raw.as_bytes();
+      let mut start = 0usize;
+
+      while idx < bytes.len() {
+        let b = bytes[idx];
+        if let Some(quote) = in_string {
+          if b == b'\\' {
+            idx = idx.saturating_add(2);
+            continue;
+          }
+          if b == quote {
+            in_string = None;
+          }
+          idx += 1;
+          continue;
+        }
+
+        if b == b'\\' {
+          idx = idx.saturating_add(2);
+          continue;
+        }
+
+        if b == b'/' && bytes.get(idx + 1) == Some(&b'*') {
+          let comment_start = idx;
+          idx += 2;
+          while idx + 1 < bytes.len() {
+            if bytes[idx] == b'*' && bytes[idx + 1] == b'/' {
+              idx += 2;
+              break;
+            }
+            idx += 1;
+          }
+          if depth == 0 && bracket == 0 && brace == 0 {
+            let part = trim_ascii_whitespace(&raw[start..comment_start]);
+            if !part.is_empty() {
+              items.push(inner.parse_value(part)?);
+            }
+            start = idx;
+          }
+          continue;
+        }
+
+        match b {
+          b'(' => depth += 1,
+          b')' => depth = (depth - 1).max(0),
+          b'[' => bracket += 1,
+          b']' => bracket = (bracket - 1).max(0),
+          b'{' => brace += 1,
+          b'}' => brace = (brace - 1).max(0),
+          b'\'' | b'"' => in_string = Some(b),
+          b'\t' | b'\n' | b'\r' | 0x0c | b' '
+            if depth == 0 && bracket == 0 && brace == 0 =>
+          {
+            let part = trim_ascii_whitespace(&raw[start..idx]);
+            if !part.is_empty() {
+              items.push(inner.parse_value(part)?);
+            }
+            idx += 1;
+            while idx < bytes.len()
+              && matches!(bytes[idx], b'\t' | b'\n' | b'\r' | 0x0c | b' ')
+            {
+              idx += 1;
+            }
+            start = idx;
+            continue;
+          }
+          _ => {}
+        }
+        idx += 1;
+      }
+
+      let tail = trim_ascii_whitespace(&raw[start..]);
+      if !tail.is_empty() {
+        items.push(inner.parse_value(tail)?);
+      }
+    }
+  }
+
+  if items.is_empty() {
+    return None;
+  }
+  Some(CustomPropertyTypedValue::List { separator, items })
 }
 
 fn parse_angle_token(token: &str) -> Option<f32> {

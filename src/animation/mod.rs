@@ -66,8 +66,7 @@ use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
 use crate::style::values::{
-  CalcLength, CustomPropertySyntax, CustomPropertyTypedValue, CustomPropertyValue, Length,
-  LengthUnit,
+  CalcLength, CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit,
 };
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
@@ -3784,7 +3783,7 @@ fn sample_keyframes_with_default_timing(
       ) {
         (Some(from_rule), Some(to_rule))
           if from_rule.syntax == to_rule.syntax
-            && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
+            && !from_rule.syntax.is_universal() =>
         {
           true
         }
@@ -6149,7 +6148,7 @@ fn transition_value_for_custom_property(
   ) {
     (Some(from_rule), Some(to_rule))
       if from_rule.syntax == to_rule.syntax
-        && !matches!(from_rule.syntax, CustomPropertySyntax::Universal) =>
+        && !from_rule.syntax.is_universal() =>
     {
       true
     }

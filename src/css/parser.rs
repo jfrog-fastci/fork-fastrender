@@ -3436,11 +3436,12 @@ fn parse_property_descriptors<'i, 't>(
   };
 
   let initial_value = if let Some(raw) = initial_value_raw {
-    let typed = match syntax {
-      CustomPropertySyntax::Universal => None,
-      _ => syntax.parse_value(&raw),
+    let typed = if syntax.is_universal() {
+      None
+    } else {
+      syntax.parse_value(&raw)
     };
-    if matches!(syntax, CustomPropertySyntax::Universal) || typed.is_some() {
+    if syntax.is_universal() || typed.is_some() {
       Some(CustomPropertyValue::new(raw, typed))
     } else {
       return Ok(None);
@@ -3452,7 +3453,7 @@ fn parse_property_descriptors<'i, 't>(
   // The Properties & Values API requires an `initial-value` for typed syntaxes. The universal
   // syntax (`*`) behaves like an unregistered custom property, so Tailwind and other toolchains
   // omit `initial-value` even when `inherits:false`.
-  if initial_value.is_none() && !matches!(syntax, CustomPropertySyntax::Universal) {
+  if initial_value.is_none() && !syntax.is_universal() {
     return Ok(None);
   }
 
@@ -7079,7 +7080,7 @@ mod tests {
     for rule in collected {
       registry.register(RegisteredPropertyRule {
         name: rule.rule.name.clone(),
-        syntax: rule.rule.syntax,
+        syntax: rule.rule.syntax.clone(),
         inherits: rule.rule.inherits,
         initial_value: rule.rule.initial_value.clone(),
       });
@@ -7110,7 +7111,7 @@ mod tests {
     for rule in collected {
       registry.register(RegisteredPropertyRule {
         name: rule.rule.name.clone(),
-        syntax: rule.rule.syntax,
+        syntax: rule.rule.syntax.clone(),
         inherits: rule.rule.inherits,
         initial_value: rule.rule.initial_value.clone(),
       });
@@ -7141,7 +7142,7 @@ mod tests {
     for rule in collected {
       registry.register(RegisteredPropertyRule {
         name: rule.rule.name.clone(),
-        syntax: rule.rule.syntax,
+        syntax: rule.rule.syntax.clone(),
         inherits: rule.rule.inherits,
         initial_value: rule.rule.initial_value.clone(),
       });
@@ -7171,7 +7172,7 @@ mod tests {
     for rule in collected {
       registry.register(RegisteredPropertyRule {
         name: rule.rule.name.clone(),
-        syntax: rule.rule.syntax,
+        syntax: rule.rule.syntax.clone(),
         inherits: rule.rule.inherits,
         initial_value: rule.rule.initial_value.clone(),
       });
@@ -7201,7 +7202,7 @@ mod tests {
     for rule in collected {
       registry.register(RegisteredPropertyRule {
         name: rule.rule.name.clone(),
-        syntax: rule.rule.syntax,
+        syntax: rule.rule.syntax.clone(),
         inherits: rule.rule.inherits,
         initial_value: rule.rule.initial_value.clone(),
       });

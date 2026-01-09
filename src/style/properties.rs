@@ -36,7 +36,6 @@ use crate::style::inline_axis_is_horizontal;
 use crate::style::position::Position;
 use crate::style::string_set::parse_string_set_value;
 use crate::style::types::*;
-use crate::style::values::CustomPropertySyntax;
 use crate::style::values::CustomPropertyValue;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
@@ -7463,7 +7462,7 @@ impl ComputedStyle {
     // they behave like unregistered custom properties in this scope.
     if registry_changed {
       for (name, rule) in parent_styles.custom_property_registry.iter() {
-        if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+        if rule.syntax.is_universal() {
           continue;
         }
         let Some(value) = store.get(name.as_str()) else {
@@ -7475,7 +7474,7 @@ impl ComputedStyle {
         let keep_typed = self
           .custom_property_registry
           .get(name.as_str())
-          .is_some_and(|rule| !matches!(rule.syntax, CustomPropertySyntax::Universal));
+          .is_some_and(|rule| !rule.syntax.is_universal());
         if keep_typed {
           continue;
         }
@@ -7515,7 +7514,7 @@ impl ComputedStyle {
     // streams in the parent scope).
     if registry_changed {
       for (name, rule) in self.custom_property_registry.iter() {
-        if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+        if rule.syntax.is_universal() {
           if let Some(value) = store.get(name.as_str()) {
             if value.typed.is_some() {
               store.insert(
@@ -7827,7 +7826,7 @@ fn apply_custom_property_declaration(
       return true;
     }
 
-    if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+    if rule.syntax.is_universal() {
       styles.custom_properties.insert(
         Arc::clone(custom_name),
         CustomPropertyValue::new(resolved, None),
@@ -7861,7 +7860,7 @@ fn apply_custom_property_declaration(
 
   // Registered custom properties with `syntax: *` behave like token streams, but still use the
   // registered keyword behavior (handled above).
-  if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+  if rule.syntax.is_universal() {
     if styles
       .custom_properties
       .get(custom_name.as_ref())
@@ -20357,6 +20356,7 @@ mod tests {
   use crate::style::types::TransformBox;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
+  use crate::style::values::CustomPropertySyntax;
   use crate::style::values::CalcLength;
   use crate::style::values::CustomPropertyTypedValue;
   use crate::style::values::LengthUnit;

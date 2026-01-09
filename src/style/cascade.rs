@@ -2751,28 +2751,28 @@ fn eval_style_range_value(
     },
     StyleRangeValue::CustomProperty(name) => {
       let entry = styles.custom_properties.get(name)?;
-      if let Some(typed) = entry.typed.as_ref() {
-        use crate::style::values::CustomPropertyTypedValue;
-        return match typed {
-          CustomPropertyTypedValue::Length(len) => Some(NumericValue {
-            ty: NumericType::LengthPx,
-            value: resolve_length_for_query(len, container, ctx)?,
-          }),
-          CustomPropertyTypedValue::Number(n) => Some(NumericValue {
-            ty: NumericType::Number,
-            value: *n,
-          }),
-          CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
-            ty: NumericType::Percentage,
-            value: *p,
-          }),
-          CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
-            ty: NumericType::AngleDeg,
-            value: *deg,
-          }),
-          CustomPropertyTypedValue::Color(_) => None,
-        };
-      }
+        if let Some(typed) = entry.typed.as_ref() {
+          use crate::style::values::CustomPropertyTypedValue;
+          return match typed {
+            CustomPropertyTypedValue::Length(len) => Some(NumericValue {
+              ty: NumericType::LengthPx,
+              value: resolve_length_for_query(len, container, ctx)?,
+            }),
+            CustomPropertyTypedValue::Number(n) => Some(NumericValue {
+              ty: NumericType::Number,
+              value: *n,
+            }),
+            CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
+              ty: NumericType::Percentage,
+              value: *p,
+            }),
+            CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
+              ty: NumericType::AngleDeg,
+              value: *deg,
+            }),
+            CustomPropertyTypedValue::Color(_) | CustomPropertyTypedValue::List { .. } => None,
+          };
+        }
       parse_numeric_value(&entry.value, container, ctx)
     }
     StyleRangeValue::Value(raw) => parse_numeric_value(raw, container, ctx),
@@ -10430,7 +10430,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         for rule in collected {
           let converted = crate::style::custom_properties::PropertyRule {
             name: rule.rule.name.clone(),
-            syntax: rule.rule.syntax,
+            syntax: rule.rule.syntax.clone(),
             inherits: rule.rule.inherits,
             initial_value: rule.rule.initial_value.clone(),
           };
@@ -10924,7 +10924,7 @@ impl<'a> PreparedCascade<'a> {
             for rule in collected {
               let converted = crate::style::custom_properties::PropertyRule {
                 name: rule.rule.name.clone(),
-                syntax: rule.rule.syntax,
+                syntax: rule.rule.syntax.clone(),
                 inherits: rule.rule.inherits,
                 initial_value: rule.rule.initial_value.clone(),
               };

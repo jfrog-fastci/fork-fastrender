@@ -37,7 +37,7 @@ impl CustomPropertyRegistry {
   /// Returns `Err(())` when the value does not conform to the registered syntax.
   pub fn parse_value(&self, name: &str, raw: &str) -> Result<CustomPropertyValue, ()> {
     if let Some(rule) = self.get(name) {
-      if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+      if rule.syntax.is_universal() {
         return Ok(CustomPropertyValue::new(raw, None));
       }
       if let Some(typed) = rule.syntax.parse_value(raw) {
