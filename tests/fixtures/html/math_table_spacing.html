@@ -6,53 +6,84 @@
     font-size: 22px;
     color: rgb(15, 15, 15);
   }
+  .examples {
+    display: flex;
+    gap: 18px;
+    padding: 10px 12px;
+  }
+  .example {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
   .label {
-    margin: 10px 12px 0;
+    margin: 0 0 6px;
     font-size: 14px;
     font-family: sans-serif;
   }
   math {
     display: block;
-    margin: 6px 12px;
+    margin: 0;
     font-family: "STIX Two Math", "STIXTwoMath", "DejaVu Serif", serif;
   }
 </style>
 <body>
-  <div class="label">default spacing</div>
-  <math display="block">
-    <mrow>
-      <mo stretchy="true">(</mo>
-      <mtable>
-        <mtr>
-          <mtd><mi>a</mi></mtd>
-          <mtd><mi>b</mi></mtd>
-        </mtr>
-        <mtr>
-          <mtd><mi>c</mi></mtd>
-          <mtd><mi>d</mi></mtd>
-        </mtr>
-      </mtable>
-      <mo stretchy="true">)</mo>
-    </mrow>
-  </math>
+  <div class="examples">
+    <div class="example">
+      <div class="label">default spacing</div>
+      <math display="block">
+        <mrow>
+          <mo stretchy="true">(</mo>
+          <mtable>
+            <mtr>
+              <mtd><mi>a</mi></mtd>
+              <mtd><mi>b</mi></mtd>
+            </mtr>
+            <mtr>
+              <mtd><mi>c</mi></mtd>
+              <mtd><mi>d</mi></mtd>
+            </mtr>
+          </mtable>
+          <mo stretchy="true">)</mo>
+        </mrow>
+      </math>
+    </div>
 
-  <div class="label">columnspacing="0" rowspacing="0"</div>
-  <math display="block">
-    <mrow>
-      <mo stretchy="true">(</mo>
-      <mtable columnspacing="0" rowspacing="0">
-        <mtr>
-          <mtd><mi>a</mi></mtd>
-          <mtd><mi>b</mi></mtd>
-        </mtr>
-        <mtr>
-          <mtd><mi>c</mi></mtd>
-          <mtd><mi>d</mi></mtd>
-        </mtr>
-      </mtable>
-      <mo stretchy="true">)</mo>
-    </mrow>
-  </math>
+    <div class="example">
+      <div class="label">spacing="0"</div>
+      <math display="block">
+        <mrow>
+          <mo stretchy="true">(</mo>
+          <mtable columnspacing="0" rowspacing="0">
+            <mtr>
+              <mtd><mi>a</mi></mtd>
+              <mtd><mi>b</mi></mtd>
+            </mtr>
+            <mtr>
+              <mtd><mi>c</mi></mtd>
+              <mtd><mi>d</mi></mtd>
+            </mtr>
+          </mtable>
+          <mo stretchy="true">)</mo>
+        </mrow>
+      </math>
+    </div>
+
+    <div class="example">
+      <div class="label">lines + frame</div>
+      <math display="block">
+        <mtable columnspacing="0.4em" rowspacing="0.2em" columnlines="solid" rowlines="solid" frame="solid" framespacing="0.2em 0.1em">
+          <mtr>
+            <mtd><mi>a</mi></mtd>
+            <mtd><mi>b</mi></mtd>
+          </mtr>
+          <mtr>
+            <mtd><mi>c</mi></mtd>
+            <mtd><mi>d</mi></mtd>
+          </mtr>
+        </mtable>
+      </math>
+    </div>
+  </div>
 </body>
 </html>
-

@@ -301,6 +301,14 @@ pub enum ColumnAlign {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableLineStyle {
+  None,
+  Solid,
+  Dashed,
+  Dotted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperatorForm {
   Prefix,
   Infix,
@@ -368,6 +376,10 @@ pub struct MathTable {
   pub row_aligns: Vec<RowAlign>,
   pub column_spacings: Option<Vec<MathLengthOrKeyword>>,
   pub row_spacings: Option<Vec<MathLengthOrKeyword>>,
+  pub column_lines: Option<Vec<TableLineStyle>>,
+  pub row_lines: Option<Vec<TableLineStyle>>,
+  pub frame: Option<TableLineStyle>,
+  pub frame_spacing: Option<(MathLength, MathLength)>,
 }
 
 /// Parsed MathML node
@@ -817,6 +829,9 @@ fn parse_math_space(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
 const DEFAULT_TABLE_COLUMN_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.8));
 const DEFAULT_TABLE_ROW_SPACING: MathLengthOrKeyword = MathLengthOrKeyword::Length(MathLength::Em(0.2));
 
+const DEFAULT_TABLE_FRAME_SPACING_X: MathLength = MathLength::Em(0.4);
+const DEFAULT_TABLE_FRAME_SPACING_Y: MathLength = MathLength::Ex(0.5);
+
 fn parse_math_space_list(value: Option<&str>, default: MathLengthOrKeyword) -> Option<Vec<MathLengthOrKeyword>> {
   let raw = value?;
   let parsed: Vec<MathLengthOrKeyword> = raw
@@ -828,6 +843,41 @@ fn parse_math_space_list(value: Option<&str>, default: MathLengthOrKeyword) -> O
   } else {
     Some(parsed)
   }
+}
+
+fn parse_table_line_style(raw: Option<&str>) -> Option<TableLineStyle> {
+  let value = trim_ascii_whitespace(raw?);
+  if value.is_empty() {
+    return None;
+  }
+  match value.to_ascii_lowercase().as_str() {
+    "none" => Some(TableLineStyle::None),
+    "solid" => Some(TableLineStyle::Solid),
+    "dashed" => Some(TableLineStyle::Dashed),
+    "dotted" => Some(TableLineStyle::Dotted),
+    _ => None,
+  }
+}
+
+fn parse_table_line_list(value: Option<&str>) -> Option<Vec<TableLineStyle>> {
+  let raw = value?;
+  let parsed: Vec<TableLineStyle> = raw
+    .split(|c| c == ' ' || c == ',')
+    .filter_map(|item| parse_table_line_style(Some(item)))
+    .collect();
+  if parsed.is_empty() {
+    Some(vec![TableLineStyle::None])
+  } else {
+    Some(parsed)
+  }
+}
+
+fn parse_frame_spacing(value: Option<&str>) -> Option<(MathLength, MathLength)> {
+  let raw = value?;
+  let mut parts = raw.split(|c| c == ' ' || c == ',').filter(|s| !s.is_empty());
+  let first = parse_math_length(parts.next())?;
+  let second = parts.next().and_then(|v| parse_math_length(Some(v))).unwrap_or(first);
+  Some((first, second))
 }
 
 fn parse_row_align_list(value: Option<&str>) -> Vec<RowAlign> {
@@ -1328,6 +1378,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             parse_math_space_list(node.get_attribute_ref("columnspacing"), DEFAULT_TABLE_COLUMN_SPACING);
           let row_spacings =
             parse_math_space_list(node.get_attribute_ref("rowspacing"), DEFAULT_TABLE_ROW_SPACING);
+          let column_lines = parse_table_line_list(node.get_attribute_ref("columnlines"));
+          let row_lines = parse_table_line_list(node.get_attribute_ref("rowlines"));
+          let frame = parse_table_line_style(node.get_attribute_ref("frame"));
+          let frame_spacing = parse_frame_spacing(node.get_attribute_ref("framespacing"));
           let mut rows = Vec::new();
           for child in node.children.iter() {
             let Some(tag) = child.tag_name() else {
@@ -1377,6 +1431,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             row_aligns: table_row_aligns,
             column_spacings,
             row_spacings,
+            column_lines,
+            row_lines,
+            frame,
+            frame_spacing,
           }))
         }
         _ => Some(MathNode::Row(parse_children(node))),
@@ -3479,9 +3537,10 @@ impl MathLayoutContext {
       vec![heuristic_row_spacing; row_gap_count]
     };
 
-    let width: f32 = col_widths.iter().copied().sum::<f32>() + col_gaps.iter().copied().sum::<f32>();
+    let width: f32 =
+      col_widths.iter().copied().sum::<f32>() + col_gaps.iter().copied().sum::<f32>();
     let mut y = 0.0;
-    let mut fragments = Vec::new();
+    let mut cell_fragments = Vec::new();
     let mut table_baseline = 0.0;
     let mut trailing_annotations = MathLayoutAnnotations::default();
     for (row_idx, (row, layouts)) in table.rows.iter().zip(cell_layouts.into_iter()).enumerate() {
@@ -3493,6 +3552,13 @@ impl MathLayoutContext {
       }
       let mut x = 0.0;
       for (col_idx, (cell, layout)) in row.cells.iter().zip(layouts.into_iter()).enumerate() {
+        let MathLayout {
+          width: cell_width,
+          height: cell_height,
+          baseline: cell_baseline,
+          fragments: cell_frags,
+          annotations: cell_annotations,
+        } = layout;
         let col_align_default =
           repeating_value(&table.column_aligns, col_idx).unwrap_or(ColumnAlign::Center);
         let col_align = cell
@@ -3508,26 +3574,26 @@ impl MathLayoutContext {
           _ => row_baseline,
         };
         let offset_y = match cell_row_align {
-          RowAlign::Baseline | RowAlign::Axis => y + (baseline_target - layout.baseline),
+          RowAlign::Baseline | RowAlign::Axis => y + (baseline_target - cell_baseline),
           RowAlign::Top => y,
-          RowAlign::Bottom => y + (row_height - layout.height),
-          RowAlign::Center => y + (row_height - layout.height) / 2.0,
+          RowAlign::Bottom => y + (row_height - cell_height),
+          RowAlign::Center => y + (row_height - cell_height) / 2.0,
         };
-        let width_available = col_widths.get(col_idx).copied().unwrap_or(layout.width);
+        let width_available = col_widths.get(col_idx).copied().unwrap_or(cell_width);
         let offset_x = x
           + match col_align {
             ColumnAlign::Left => 0.0,
-            ColumnAlign::Center => (width_available - layout.width) / 2.0,
-            ColumnAlign::Right => (width_available - layout.width).max(0.0),
+            ColumnAlign::Center => (width_available - cell_width) / 2.0,
+            ColumnAlign::Right => (width_available - cell_width).max(0.0),
           };
-         for frag in layout.fragments {
-           fragments.push(frag.translate(Point::new(offset_x, offset_y)));
-         }
+        for frag in cell_frags {
+          cell_fragments.push(frag.translate(Point::new(offset_x, offset_y)));
+        }
         x += width_available;
         if col_idx + 1 < row.cells.len() {
           x += col_gaps.get(col_idx).copied().unwrap_or(0.0);
         }
-        trailing_annotations = trailing_annotations.merge_trailing(&layout.annotations);
+        trailing_annotations = trailing_annotations.merge_trailing(&cell_annotations);
       }
       y += row_height;
       if row_idx + 1 < table.rows.len() {
@@ -3535,10 +3601,90 @@ impl MathLayoutContext {
       }
     }
 
+    let height = y;
+
+    let mut line_fragments: Vec<MathFragment> = Vec::new();
+    let stroke = Self::rule_thickness(style);
+
+    if let Some(lines) = table.column_lines.as_deref() {
+      let mut x_cursor = 0.0;
+      for (gap_idx, col_width) in col_widths.iter().copied().enumerate() {
+        x_cursor += col_width;
+        if gap_idx < col_gaps.len() {
+          let line_style = repeating_value(lines, gap_idx).unwrap_or(TableLineStyle::None);
+          if !matches!(line_style, TableLineStyle::None) {
+            let gap = col_gaps[gap_idx];
+            let x = x_cursor + gap * 0.5 - stroke * 0.5;
+            line_fragments.push(MathFragment::Rule(Rect::from_xywh(
+              x,
+              0.0,
+              stroke,
+              height,
+            )));
+          }
+          x_cursor += col_gaps[gap_idx];
+        }
+      }
+    }
+
+    if let Some(lines) = table.row_lines.as_deref() {
+      let mut y_cursor = 0.0;
+      for (gap_idx, row_height) in row_heights.iter().copied().enumerate() {
+        y_cursor += row_height;
+        if gap_idx < row_gaps.len() {
+          let line_style = repeating_value(lines, gap_idx).unwrap_or(TableLineStyle::None);
+          if !matches!(line_style, TableLineStyle::None) {
+            let gap = row_gaps[gap_idx];
+            let y = y_cursor + gap * 0.5 - stroke * 0.5;
+            line_fragments.push(MathFragment::Rule(Rect::from_xywh(
+              0.0,
+              y,
+              width,
+              stroke,
+            )));
+          }
+          y_cursor += row_gaps[gap_idx];
+        }
+      }
+    }
+
+    // Ensure rules paint behind cell content.
+    let mut fragments = line_fragments;
+    fragments.extend(cell_fragments);
+
+    let mut out_width = width;
+    let mut out_height = height;
+    let mut out_baseline = table_baseline;
+
+    if let Some(frame) = table.frame {
+      if !matches!(frame, TableLineStyle::None) {
+        let (pad_x, pad_y) = table
+          .frame_spacing
+          .unwrap_or((DEFAULT_TABLE_FRAME_SPACING_X, DEFAULT_TABLE_FRAME_SPACING_Y));
+        let pad_x = self.resolve_length(pad_x, style, &metrics);
+        let pad_y = self.resolve_length(pad_y, style, &metrics);
+        let offset = Point::new(pad_x + stroke * 0.5, pad_y + stroke * 0.5);
+        fragments = fragments
+          .into_iter()
+          .map(|frag| frag.translate(offset))
+          .collect();
+        out_width = out_width + pad_x * 2.0 + stroke;
+        out_height = out_height + pad_y * 2.0 + stroke;
+        out_baseline = out_baseline + offset.y;
+
+        let outer_rect = Rect::from_xywh(0.0, 0.0, out_width.max(0.0), out_height.max(0.0));
+        fragments.push(MathFragment::StrokeRect {
+          rect: outer_rect,
+          radius: 0.0,
+          width: stroke,
+        });
+      }
+    }
+
     MathLayout {
-      width,
-      height: y,
-      baseline: table_baseline,
+      width: out_width,
+      height: out_height,
+      baseline: out_baseline,
       fragments,
       annotations: trailing_annotations,
     }
@@ -4238,6 +4384,10 @@ mod tests {
       row_aligns: Vec::new(),
       column_spacings: None,
       row_spacings: None,
+      column_lines: None,
+      row_lines: None,
+      frame: None,
+      frame_spacing: None,
     });
     let layout = layout_mathml(&node, &style, &FontContext::empty());
     assert!(layout.width > 0.0);
@@ -4299,6 +4449,10 @@ mod tests {
       row_aligns: Vec::new(),
       column_spacings: None,
       row_spacings: None,
+      column_lines: None,
+      row_lines: None,
+      frame: None,
+      frame_spacing: None,
     });
     let ctx = FontContext::new();
     let layout = layout_mathml(&node, &style, &ctx);
@@ -4395,6 +4549,66 @@ mod tests {
       "expected repeated rowspacing to match explicit list ({} vs {})",
       layout_short.height,
       layout_explicit.height
+    );
+  }
+
+  #[test]
+  fn table_lines_emit_rule_fragments() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let node = parse_math_from_html(
+      "<math><mtable columnlines=\"solid\" rowlines=\"solid\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></math>",
+    );
+    let layout = layout_mathml(&node, &style, &ctx);
+    let rules: Vec<&Rect> = layout
+      .fragments
+      .iter()
+      .filter_map(|f| match f {
+        MathFragment::Rule(r) => Some(r),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(rules.len(), 2, "expected one columnline and one rowline");
+    assert!(
+      rules.iter().any(|r| r.width() < r.height()),
+      "expected a vertical rule (columnline), got {rules:?}"
+    );
+    assert!(
+      rules.iter().any(|r| r.width() > r.height()),
+      "expected a horizontal rule (rowline), got {rules:?}"
+    );
+  }
+
+  #[test]
+  fn table_frame_emits_stroke_rect_fragment() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let without_frame = parse_math_from_html(
+      "<math><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+    );
+    let with_frame = parse_math_from_html(
+      "<math><mtable frame=\"solid\" framespacing=\"0 0\"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>",
+    );
+    let layout_without = layout_mathml(&without_frame, &style, &ctx);
+    let layout_with = layout_mathml(&with_frame, &style, &ctx);
+    assert!(
+      layout_with
+        .fragments
+        .iter()
+        .any(|f| matches!(f, MathFragment::StrokeRect { .. })),
+      "expected frame to emit a StrokeRect fragment"
+    );
+    assert!(
+      layout_with.width > layout_without.width,
+      "expected frame to increase table width ({} -> {})",
+      layout_without.width,
+      layout_with.width
+    );
+    assert!(
+      layout_with.height > layout_without.height,
+      "expected frame to increase table height ({} -> {})",
+      layout_without.height,
+      layout_with.height
     );
   }
 
