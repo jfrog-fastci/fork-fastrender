@@ -240,8 +240,10 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
       let has_focus = response.has_focus();
       if has_focus != app.chrome.address_bar_has_focus {
-        app.chrome.address_bar_has_focus = has_focus;
-        app.chrome.address_bar_editing = has_focus;
+        // Keep `address_bar_editing` and `address_bar_has_focus` in sync, and when the user leaves
+        // the address bar revert any uncommitted edits back to the active tab URL (matching typical
+        // browser UX).
+        app.set_address_bar_editing(has_focus);
         actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
       }
 
@@ -286,6 +288,17 @@ mod tests {
   use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
   use crate::ui::messages::TabId;
 
+  fn new_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    ctx.begin_frame(raw);
+    ctx
+  }
+
   fn new_context_with_key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Context {
     let ctx = egui::Context::default();
     let mut raw = egui::RawInput::default();
@@ -301,6 +314,28 @@ mod tests {
     });
     ctx.begin_frame(raw);
     ctx
+  }
+
+  #[test]
+  fn address_bar_blur_reverts_uncommitted_text() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(
+      BrowserTabState::new(tab_id, "https://example.com".to_string()),
+      true,
+    );
+
+    app.chrome.address_bar_text = "https://typed.example".to_string();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context();
+    let _actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert_eq!(app.chrome.address_bar_text, "https://example.com");
+    assert!(!app.chrome.address_bar_has_focus);
+    assert!(!app.chrome.address_bar_editing);
   }
 
   #[test]
