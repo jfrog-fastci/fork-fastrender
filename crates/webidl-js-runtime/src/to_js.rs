@@ -10,6 +10,9 @@ use webidl_ir::{
   IdlType, NamedType, NamedTypeKind, NumericType, StringType, TypeContext, WebIdlValue,
 };
 
+const BYTESTRING_INVALID_CODE_UNITS: &str =
+  "ByteString value must only contain code units in range 0..=255";
+
 /// Limits applied while converting WebIDL values back into JavaScript.
 ///
 /// These are defensive bounds: return conversions can allocate JS strings/objects/arrays and should
@@ -78,8 +81,8 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
     },
     IdlType::Numeric(numeric_type) => to_js_numeric(rt, *numeric_type, value),
     IdlType::BigInt => Err(rt.throw_type_error("BigInt return values are not supported yet")),
-    IdlType::String(_) => match value {
-      WebIdlValue::String(s) => to_js_string(rt, s, limits),
+    IdlType::String(string_ty) => match value {
+      WebIdlValue::String(s) => to_js_string_type(rt, *string_ty, s, limits),
       _ => Err(rt.throw_type_error("expected a string value")),
     },
     IdlType::Object => match value {
@@ -205,6 +208,18 @@ fn to_js_string<R: WebIdlJsRuntime>(
     return Err(rt.throw_range_error("string exceeds maximum length"));
   }
   rt.alloc_string(s)
+}
+
+fn to_js_string_type<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  ty: StringType,
+  s: &str,
+  limits: ToJsLimits,
+) -> Result<R::JsValue, R::Error> {
+  if ty == StringType::ByteString && s.chars().any(|c| (c as u32) > 0xFF) {
+    return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
+  }
+  to_js_string(rt, s, limits)
 }
 
 fn to_js_sequence<R: WebIdlJsRuntime>(
@@ -379,7 +394,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
       return Err(rt.throw_range_error("record key exceeds maximum length"));
     }
     if string_type == StringType::ByteString && key.chars().any(|c| (c as u32) > 0xFF) {
-      return Err(rt.throw_type_error("record ByteString keys must only contain code points <= 0xFF"));
+      return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
     }
     let js_value = to_js_with_limits(rt, ctx, value_ty, v, limits)?;
     let prop_key = rt.property_key_from_str(key)?;
@@ -666,6 +681,37 @@ mod tests {
     assert!(
       msg.starts_with("TypeError:"),
       "expected TypeError, got {msg:?}"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn bytestring_return_validates_code_units() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = parse_idl_type_complete("ByteString")?;
+    let ok = WebIdlValue::String("abc".to_string());
+    let out = to_js(&mut rt, &ctx, &ty, &ok)?;
+    let Value::String(handle) = out else {
+      return Err("expected JS string".into());
+    };
+    assert_eq!(rt.heap().get_string(handle)?.to_utf8_lossy(), "abc");
+
+    let bad = WebIdlValue::String("\u{0100}".to_string());
+    let err = to_js(&mut rt, &ctx, &ty, &bad).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(
+      msg.contains(BYTESTRING_INVALID_CODE_UNITS),
+      "expected ByteString error message, got {msg:?}"
     );
 
     Ok(())
