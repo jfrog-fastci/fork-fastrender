@@ -149,6 +149,11 @@ impl Dom2TreeSink {
           // DOM's "root" concept stops at a ShadowRoot boundary. For parse-time `<base href>`
           // tracking, `<base>` elements inside a shadow tree must not be treated as being in the
           // document `<head>`.
+          //
+          // Note: A shadow tree can itself contain a `<head>` element. That `<head>` must *not*
+          // count as being inside the document's `<head>` for base-href selection, so clear any
+          // previously-detected `in_head` flag before stopping the walk.
+          in_head = false;
           break;
         }
         NodeKind::Document { .. }

@@ -576,6 +576,33 @@ mod tests {
   }
 
   #[test]
+  fn base_in_shadow_root_head_does_not_update_or_freeze_base_url() {
+    // `<base href>` elements inside a declarative shadow root must not affect the document base
+    // URL, even if the shadow tree itself contains a `<head>` element.
+    //
+    // Regression test: a `<head>` inside the shadow tree must not be treated as the document's
+    // `<head>` for base-href selection (and must not "freeze" base-href selection before a later
+    // valid `<base>` in the real document `<head>`).
+    let html = r#"<!doctype html><html><head>
+      <template shadowrootmode=open><head><base href="https://bad.example/"></head></template>
+      <base href="https://good.example/">
+    </head></html>"#;
+    let mut parser = StreamingHtmlParser::new(Some("https://example.com/dir/page.html"));
+    parser.push_str(html);
+    parser.set_eof();
+
+    match parser.pump().unwrap() {
+      StreamingParserYield::Finished { .. } => {}
+      other => panic!("expected Finished, got {other:?}"),
+    }
+
+    assert_eq!(
+      parser.current_base_url().as_deref(),
+      Some("https://good.example/")
+    );
+  }
+
+  #[test]
   fn declarative_shadow_root_is_attached_before_script_yields() {
     let mut parser = StreamingHtmlParser::new(None);
     parser.push_str(
