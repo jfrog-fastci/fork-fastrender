@@ -5,8 +5,9 @@ use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::runtime::with_event_loop;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
 use crate::js::{
-  install_window_animation_frame_bindings, install_window_fetch_bindings, install_window_timers_bindings,
-  unregister_window_fetch_env, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource, WindowFetchEnv,
+  install_window_animation_frame_bindings, install_window_fetch_bindings_with_guard,
+  install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
+  WindowFetchBindings, WindowFetchEnv,
 };
 use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::sync::Arc;
@@ -111,7 +112,7 @@ pub struct WindowHostState {
   pub base_url: Option<String>,
   document: DocumentHostState,
   window: WindowRealm,
-  fetch_env_id: u64,
+  _fetch_bindings: WindowFetchBindings,
 }
 
 impl WindowHostState {
@@ -134,13 +135,13 @@ impl WindowHostState {
 
     // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
     // this host can schedule work onto the accompanying `EventLoop`.
-    let fetch_env_id = {
+    let fetch_bindings = {
       let (vm, realm, heap) = window.vm_realm_and_heap_mut();
       install_window_timers_bindings::<WindowHostState>(vm, realm, heap)
         .map_err(|e| Error::Other(e.to_string()))?;
       install_window_animation_frame_bindings::<WindowHostState>(vm, realm, heap)
         .map_err(|e| Error::Other(e.to_string()))?;
-      install_window_fetch_bindings::<WindowHostState>(
+      install_window_fetch_bindings_with_guard::<WindowHostState>(
         vm,
         realm,
         heap,
@@ -154,7 +155,7 @@ impl WindowHostState {
       document_url,
       document,
       window,
-      fetch_env_id,
+      _fetch_bindings: fetch_bindings,
     })
   }
 
@@ -220,12 +221,6 @@ impl CurrentScriptHost for WindowHostState {
 impl WindowRealmHost for WindowHostState {
   fn window_realm(&mut self) -> &mut WindowRealm {
     &mut self.window
-  }
-}
-
-impl Drop for WindowHostState {
-  fn drop(&mut self) {
-    unregister_window_fetch_env(self.fetch_env_id);
   }
 }
 

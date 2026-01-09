@@ -111,6 +111,51 @@ pub fn unregister_window_fetch_env(env_id: u64) {
   lock.remove(&env_id);
 }
 
+/// RAII guard returned by [`install_window_fetch_bindings_with_guard`].
+///
+/// Dropping this guard unregisters the backing Rust state for `fetch`/`Headers`/`Request`/`Response`
+/// installed into a given `vm-js` realm.
+///
+/// This mirrors the `TimeBindings` pattern in `src/js/time.rs`: callers should keep the returned
+/// value alive for at least as long as the JS realm is reachable.
+#[derive(Debug)]
+#[must_use = "fetch bindings are only valid while the returned WindowFetchBindings is kept alive"]
+pub struct WindowFetchBindings {
+  env_id: u64,
+  active: bool,
+}
+
+impl WindowFetchBindings {
+  fn new(env_id: u64) -> Self {
+    Self {
+      env_id,
+      active: true,
+    }
+  }
+
+  /// Returns the internal env id used to associate JS wrapper objects with their Rust state.
+  pub fn env_id(&self) -> u64 {
+    self.env_id
+  }
+
+  /// Disable automatic cleanup and return the env id.
+  ///
+  /// This is used by the legacy `install_window_fetch_bindings` API, which returns the env id and
+  /// requires callers to manually invoke [`unregister_window_fetch_env`].
+  fn disarm(mut self) -> u64 {
+    self.active = false;
+    self.env_id
+  }
+}
+
+impl Drop for WindowFetchBindings {
+  fn drop(&mut self) {
+    if self.active {
+      unregister_window_fetch_env(self.env_id);
+    }
+  }
+}
+
 fn with_env_state<R>(env_id: u64, f: impl FnOnce(&EnvState) -> Result<R, VmError>) -> Result<R, VmError> {
   let lock = envs().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
   let state = lock
@@ -1745,6 +1790,18 @@ pub fn install_window_fetch_bindings<Host: WindowRealmHost + 'static>(
   heap: &mut Heap,
   env: WindowFetchEnv,
 ) -> Result<u64, VmError> {
+  let bindings = install_window_fetch_bindings_with_guard::<Host>(vm, realm, heap, env)?;
+  Ok(bindings.disarm())
+}
+
+/// Install Fetch bindings onto the window global object, returning an RAII guard that automatically
+/// unregisters the backing Rust state when dropped.
+pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>(
+  vm: &mut Vm,
+  realm: &Realm,
+  heap: &mut Heap,
+  env: WindowFetchEnv,
+) -> Result<WindowFetchBindings, VmError> {
   let env_id = NEXT_ENV_ID.fetch_add(1, Ordering::Relaxed);
   let promise_executor_call = vm.register_native_call(promise_capability_executor_call)?;
   {
@@ -1752,13 +1809,7 @@ pub fn install_window_fetch_bindings<Host: WindowRealmHost + 'static>(
     lock.insert(env_id, EnvState::new(env, promise_executor_call));
   }
 
-  struct EnvGuard(u64);
-  impl Drop for EnvGuard {
-    fn drop(&mut self) {
-      unregister_window_fetch_env(self.0);
-    }
-  }
-  let env_guard = EnvGuard(env_id);
+  let bindings = WindowFetchBindings::new(env_id);
 
   let mut scope = heap.scope();
   let global = realm.global_object();
@@ -1944,6 +1995,47 @@ pub fn install_window_fetch_bindings<Host: WindowRealmHost + 'static>(
   let key = alloc_key(&mut scope, ENV_ID_KEY)?;
   scope.define_property(global, key, data_desc(Value::Number(env_id as f64), false))?;
 
-  std::mem::forget(env_guard);
-  Ok(env_id)
+  Ok(bindings)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use vm_js::{HeapLimits, VmOptions};
+
+  struct DummyHost;
+
+  impl WindowRealmHost for DummyHost {
+    fn window_realm(&mut self) -> &mut WindowRealm {
+      panic!("DummyHost.window_realm should not be called in install tests");
+    }
+  }
+
+  #[test]
+  fn window_fetch_bindings_drop_unregisters_env() -> Result<(), VmError> {
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let env_id = bindings.env_id();
+    assert!(envs()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .contains_key(&env_id));
+
+    drop(bindings);
+
+    assert!(!envs()
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .contains_key(&env_id));
+    realm.teardown(&mut heap);
+    Ok(())
+  }
 }

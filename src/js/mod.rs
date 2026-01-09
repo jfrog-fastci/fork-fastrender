@@ -103,7 +103,10 @@ pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};
 pub use window_animation_frame::install_window_animation_frame_bindings;
-pub use window_fetch::{install_window_fetch_bindings, unregister_window_fetch_env, WindowFetchEnv};
+pub use window_fetch::{
+  install_window_fetch_bindings, install_window_fetch_bindings_with_guard, unregister_window_fetch_env,
+  WindowFetchBindings, WindowFetchEnv,
+};
 pub use window_timers::install_window_timers_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use window::{WindowHost, WindowHostState};
