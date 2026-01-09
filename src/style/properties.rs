@@ -7553,8 +7553,7 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       }
 
       if parser.is_exhausted() {
-        // `styleset(foo,)` is invalid; require another <ident> after a comma (or any other
-        // separator token).
+        // `styleset(foo,)` is invalid; require another <feature-value-name> after a comma.
         return None;
       }
 
@@ -34271,6 +34270,52 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.swash,
       Some(FontVariantAlternateValue::Name("Swishy".to_string()))
+    );
+  }
+
+  #[test]
+  fn font_variant_alternates_parses_numeric_arguments() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      value: PropertyValue::Keyword(
+        "stylistic(2) styleset(3, 4) character-variant(5 6) swash(7) ornaments(8) annotation(9)"
+          .to_string(),
+      ),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylistic,
+      Some(FontVariantAlternateValue::Number(2))
+    );
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![
+        FontVariantAlternateValue::Number(3),
+        FontVariantAlternateValue::Number(4),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.character_variants,
+      vec![
+        FontVariantAlternateValue::Number(5),
+        FontVariantAlternateValue::Number(6),
+      ]
+    );
+    assert_eq!(
+      style.font_variant_alternates.swash,
+      Some(FontVariantAlternateValue::Number(7))
+    );
+    assert_eq!(
+      style.font_variant_alternates.ornaments,
+      Some(FontVariantAlternateValue::Number(8))
+    );
+    assert_eq!(
+      style.font_variant_alternates.annotation,
+      Some(FontVariantAlternateValue::Number(9))
     );
   }
 
