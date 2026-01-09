@@ -1,11 +1,11 @@
 use fastrender::dom2;
-use fastrender::js::webidl::JsRuntime as WebIdlJsRuntime;
+use fastrender::js::webidl::{JsPropertyKind, JsRuntime as WebIdlJsRuntime};
 use fastrender::js::JsDomEvents;
 use fastrender::web::events::{AddEventListenerOptions, Event, EventInit, EventTargetId};
 use fastrender::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vm_js::{PropertyKey, Value};
+use vm_js::{PropertyKey, Value, VmError};
 
 #[derive(Debug, Clone, Copy)]
 enum Action {
@@ -37,6 +37,27 @@ fn assert_js_value_eq(rt: &fastrender::js::webidl::VmJsRuntime, got: Value, expe
     }
     _ => assert_eq!(got, expected),
   }
+}
+
+fn event_accessor_setter(
+  rt: &mut fastrender::js::webidl::VmJsRuntime,
+  event: Value,
+  key: PropertyKey,
+) -> std::result::Result<Value, VmError> {
+  let Value::Object(obj) = event else {
+    panic!("expected Event object");
+  };
+  let proto = rt
+    .heap()
+    .object_prototype(obj)?
+    .expect("Event object is missing prototype");
+  let desc = rt
+    .get_own_property(Value::Object(proto), key)?
+    .expect("Event prototype is missing property");
+  let JsPropertyKind::Accessor { set, .. } = desc.kind else {
+    panic!("expected accessor property");
+  };
+  Ok(set)
 }
 
 fn make_listener(
@@ -918,5 +939,125 @@ fn js_callback_interface_listener_object_invokes_handle_event() -> Result<()> {
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
 
   assert_eq!(*log.borrow(), vec!["handleEvent"]);
+  Ok(())
+}
+
+#[test]
+fn js_cancel_bubble_setter_stops_propagation() -> Result<()> {
+  let (doc, parent, target) = build_doc();
+  let mut js = JsDomEvents::new()?;
+
+  let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+  let key_cancel_bubble = key(js.runtime_mut(), "cancelBubble");
+
+  let log_for_target = log.clone();
+  let target_listener = js
+    .runtime_mut()
+    .alloc_function_value(move |rt, _this, args| {
+      let event = args.get(0).copied().unwrap_or(Value::Undefined);
+      log_for_target.borrow_mut().push("target");
+
+      let initial = rt.get(event, key_cancel_bubble)?;
+      assert_eq!(initial, Value::Bool(false));
+
+      let setter = event_accessor_setter(rt, event, key_cancel_bubble)?;
+      rt.call_function(setter, event, &[Value::Bool(true)])?;
+
+      let updated = rt.get(event, key_cancel_bubble)?;
+      assert_eq!(updated, Value::Bool(true));
+
+      Ok(Value::Undefined)
+    })
+    .expect("alloc function");
+
+  let log_for_parent = log.clone();
+  let parent_listener = js
+    .runtime_mut()
+    .alloc_function_value(move |_rt, _this, _args| {
+      log_for_parent.borrow_mut().push("parent");
+      Ok(Value::Undefined)
+    })
+    .expect("alloc function");
+
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(target),
+    "test",
+    target_listener,
+    AddEventListenerOptions::default(),
+  )?;
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(parent),
+    "test",
+    parent_listener,
+    AddEventListenerOptions::default(),
+  )?;
+
+  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
+
+  assert_eq!(*log.borrow(), vec!["target"]);
+  Ok(())
+}
+
+#[test]
+fn js_return_value_setter_false_calls_prevent_default() -> Result<()> {
+  let (doc, _parent, target) = build_doc();
+  let mut js = JsDomEvents::new()?;
+
+  let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+
+  let key_return_value = key(js.runtime_mut(), "returnValue");
+  let key_default_prevented = key(js.runtime_mut(), "defaultPrevented");
+
+  let log_for_cb = log.clone();
+  let expected_this = Value::Number(target.index() as f64);
+  let listener = js
+    .runtime_mut()
+    .alloc_function_value(move |rt, this, args| {
+      assert_eq!(this, expected_this);
+      let event = args.get(0).copied().unwrap_or(Value::Undefined);
+      log_for_cb.borrow_mut().push("listener");
+
+      let initial = rt.get(event, key_return_value)?;
+      assert_eq!(initial, Value::Bool(true));
+      let initial_prevented = rt.get(event, key_default_prevented)?;
+      assert_eq!(initial_prevented, Value::Bool(false));
+
+      let setter = event_accessor_setter(rt, event, key_return_value)?;
+      rt.call_function(setter, event, &[Value::Bool(false)])?;
+
+      let updated = rt.get(event, key_return_value)?;
+      assert_eq!(updated, Value::Bool(false));
+      let updated_prevented = rt.get(event, key_default_prevented)?;
+      assert_eq!(updated_prevented, Value::Bool(true));
+
+      Ok(Value::Undefined)
+    })
+    .expect("alloc function");
+
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(target),
+    "test",
+    listener,
+    AddEventListenerOptions::default(),
+  )?;
+
+  let mut event = Event::new(
+    "test",
+    EventInit {
+      bubbles: true,
+      cancelable: true,
+      ..Default::default()
+    },
+  );
+  let dispatch_ok = js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
+
+  assert!(
+    !dispatch_ok,
+    "dispatchEvent should return false when canceled via returnValue"
+  );
+  assert!(event.default_prevented);
+  assert_eq!(*log.borrow(), vec!["listener"]);
   Ok(())
 }

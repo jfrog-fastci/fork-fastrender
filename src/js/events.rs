@@ -41,6 +41,8 @@ struct EventKeys {
   event_phase: PropertyKey,
   is_trusted: PropertyKey,
   default_prevented: PropertyKey,
+  cancel_bubble: PropertyKey,
+  return_value: PropertyKey,
   stop_propagation: PropertyKey,
   stop_immediate_propagation: PropertyKey,
   prevent_default: PropertyKey,
@@ -77,7 +79,9 @@ impl EventWrapper {
       is_trusted: Self::intern_key(rt, "isTrusted")?,
       default_prevented: Self::intern_key(rt, "defaultPrevented")?,
       stop_propagation: Self::intern_key(rt, "stopPropagation")?,
+      cancel_bubble: Self::intern_key(rt, "cancelBubble")?,
       stop_immediate_propagation: Self::intern_key(rt, "stopImmediatePropagation")?,
+      return_value: Self::intern_key(rt, "returnValue")?,
       prevent_default: Self::intern_key(rt, "preventDefault")?,
     };
 
@@ -98,7 +102,9 @@ impl EventWrapper {
       keys.is_trusted,
       keys.default_prevented,
       keys.stop_propagation,
+      keys.cancel_bubble,
       keys.stop_immediate_propagation,
+      keys.return_value,
       keys.prevent_default,
     ] {
       match key {
@@ -136,6 +142,35 @@ impl EventWrapper {
     };
     rt.define_data_property(prototype, keys.stop_propagation, stop_propagation, false)?;
 
+    let cancel_bubble_getter = {
+      let active = active_events.clone();
+      let key_event_id = keys.event_id;
+      rt.alloc_function_value(move |rt, this, _args| {
+        let id = get_event_id(rt, this, key_event_id)?;
+        let flag = with_active_event_ret(rt, &active, id, |event| event.propagation_stopped)?;
+        Ok(Value::Bool(flag))
+      })?
+    };
+    let cancel_bubble_setter = {
+      let active = active_events.clone();
+      let key_event_id = keys.event_id;
+      rt.alloc_function_value(move |rt, this, args| {
+        let id = get_event_id(rt, this, key_event_id)?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        if rt.to_boolean(value)? {
+          with_active_event(rt, &active, id, |event| event.stop_propagation())?;
+        }
+        Ok(Value::Undefined)
+      })?
+    };
+    rt.define_accessor_property(
+      prototype,
+      keys.cancel_bubble,
+      cancel_bubble_getter,
+      cancel_bubble_setter,
+      false,
+    )?;
+
     let stop_immediate = {
       let active = active_events.clone();
       let key_event_id = keys.event_id;
@@ -149,6 +184,35 @@ impl EventWrapper {
       prototype,
       keys.stop_immediate_propagation,
       stop_immediate,
+      false,
+      )?;
+
+    let return_value_getter = {
+      let active = active_events.clone();
+      let key_event_id = keys.event_id;
+      rt.alloc_function_value(move |rt, this, _args| {
+        let id = get_event_id(rt, this, key_event_id)?;
+        let flag = with_active_event_ret(rt, &active, id, |event| !event.default_prevented)?;
+        Ok(Value::Bool(flag))
+      })?
+    };
+    let return_value_setter = {
+      let active = active_events.clone();
+      let key_event_id = keys.event_id;
+      rt.alloc_function_value(move |rt, this, args| {
+        let id = get_event_id(rt, this, key_event_id)?;
+        let value = args.get(0).copied().unwrap_or(Value::Undefined);
+        if !rt.to_boolean(value)? {
+          with_active_event(rt, &active, id, |event| event.prevent_default())?;
+        }
+        Ok(Value::Undefined)
+      })?
+    };
+    rt.define_accessor_property(
+      prototype,
+      keys.return_value,
+      return_value_getter,
+      return_value_setter,
       false,
     )?;
 
