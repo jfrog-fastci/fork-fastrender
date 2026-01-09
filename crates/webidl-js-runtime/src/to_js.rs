@@ -58,11 +58,23 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
   value: &WebIdlValue,
   limits: ToJsLimits,
 ) -> Result<R::JsValue, R::Error> {
+  let mut typedef_stack = Vec::<String>::new();
+  to_js_with_limits_inner(rt, ctx, ty, value, limits, &mut typedef_stack)
+}
+
+fn to_js_with_limits_inner<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  ctx: &TypeContext,
+  ty: &IdlType,
+  value: &WebIdlValue,
+  limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
+) -> Result<R::JsValue, R::Error> {
   match ty {
-    IdlType::Annotated { inner, .. } => to_js_with_limits(rt, ctx, inner, value, limits),
+    IdlType::Annotated { inner, .. } => to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack),
     IdlType::Nullable(inner) => match value {
       WebIdlValue::Null => Ok(rt.js_null()),
-      _ => to_js_with_limits(rt, ctx, inner, value, limits),
+      _ => to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack),
     },
     IdlType::Union(_members) => {
       let WebIdlValue::Union { member_ty, value } = value else {
@@ -75,10 +87,10 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
       {
         return Err(rt.throw_type_error("union return value member type is not part of the union"));
       }
-      to_js_with_limits(rt, ctx, member_ty, value, limits)
+      to_js_with_limits_inner(rt, ctx, member_ty, value, limits, typedef_stack)
     }
 
-    IdlType::Any => to_js_any(rt, ctx, value, limits),
+    IdlType::Any => to_js_any(rt, ctx, value, limits, typedef_stack),
     IdlType::Undefined => match value {
       WebIdlValue::Undefined => Ok(rt.js_undefined()),
       _ => Err(rt.throw_type_error("expected `undefined`")),
@@ -108,13 +120,13 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
       )),
     },
     IdlType::Symbol => Err(rt.throw_type_error("symbol return values are not supported")),
-    IdlType::Named(named) => to_js_named(rt, ctx, named, value, limits),
+    IdlType::Named(named) => to_js_named(rt, ctx, named, value, limits, typedef_stack),
 
     IdlType::Sequence(elem) | IdlType::FrozenArray(elem) => {
       let WebIdlValue::Sequence { values, .. } = value else {
         return Err(rt.throw_type_error("expected a sequence value"));
       };
-      to_js_sequence(rt, ctx, elem, values, limits)
+      to_js_sequence(rt, ctx, elem, values, limits, typedef_stack)
     }
 
     IdlType::AsyncSequence(_) => Err(rt.throw_type_error("async sequence return values are not supported")),
@@ -122,7 +134,7 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
       let WebIdlValue::Record { entries, .. } = value else {
         return Err(rt.throw_type_error("expected a record value"));
       };
-      to_js_record(rt, ctx, key_ty, value_ty, entries, limits)
+      to_js_record(rt, ctx, key_ty, value_ty, entries, limits, typedef_stack)
     }
     IdlType::Promise(_) => Err(rt.throw_type_error("promise return values are not supported yet")),
   }
@@ -133,6 +145,7 @@ fn to_js_any<R: WebIdlJsRuntime>(
   ctx: &TypeContext,
   value: &WebIdlValue,
   limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   match value {
     WebIdlValue::Undefined => Ok(rt.js_undefined()),
@@ -156,17 +169,21 @@ fn to_js_any<R: WebIdlJsRuntime>(
       Ok(rt.js_number(n))
     }
     WebIdlValue::String(s) | WebIdlValue::Enum(s) => to_js_string(rt, s, limits),
-    WebIdlValue::Sequence { elem_ty, values } => to_js_sequence(rt, ctx, elem_ty, values, limits),
+    WebIdlValue::Sequence { elem_ty, values } => {
+      to_js_sequence(rt, ctx, elem_ty, values, limits, typedef_stack)
+    }
     WebIdlValue::Record {
       key_ty,
       value_ty,
       entries,
-    } => to_js_record(rt, ctx, key_ty, value_ty, entries, limits),
+    } => to_js_record(rt, ctx, key_ty, value_ty, entries, limits, typedef_stack),
     WebIdlValue::Dictionary { name, members } => {
       // Convert as if the return type was that dictionary.
-      to_js_dictionary(rt, ctx, name, members, limits)
+      to_js_dictionary(rt, ctx, name, members, limits, typedef_stack)
     }
-    WebIdlValue::Union { member_ty, value } => to_js_with_limits(rt, ctx, member_ty, value, limits),
+    WebIdlValue::Union { member_ty, value } => {
+      to_js_with_limits_inner(rt, ctx, member_ty, value, limits, typedef_stack)
+    }
     WebIdlValue::PlatformObject(obj) => rt
       .platform_object_to_js_value(obj)
       .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime")),
@@ -251,6 +268,7 @@ fn to_js_sequence<R: WebIdlJsRuntime>(
   elem_ty: &IdlType,
   values: &[WebIdlValue],
   limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   if values.len() > limits.max_sequence_length {
     return Err(rt.throw_range_error("sequence exceeds maximum length"));
@@ -261,7 +279,7 @@ fn to_js_sequence<R: WebIdlJsRuntime>(
     let idx_u32: u32 = idx
       .try_into()
       .map_err(|_| rt.throw_range_error("sequence index exceeds u32"))?;
-    let js_value = to_js_with_limits(rt, ctx, elem_ty, item, limits)?;
+    let js_value = to_js_with_limits_inner(rt, ctx, elem_ty, item, limits, typedef_stack)?;
     let key = rt.property_key_from_u32(idx_u32)?;
     rt.define_data_property(array, key, js_value, true)?;
   }
@@ -278,6 +296,7 @@ fn to_js_named<R: WebIdlJsRuntime>(
   named: &NamedType,
   value: &WebIdlValue,
   limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   let kind = match &named.kind {
     NamedTypeKind::Unresolved => resolve_named_kind(ctx, &named.name).ok_or_else(|| {
@@ -306,13 +325,24 @@ fn to_js_named<R: WebIdlJsRuntime>(
       if name != &named.name {
         return Err(rt.throw_type_error("dictionary value name does not match declared type"));
       }
-      to_js_dictionary(rt, ctx, &named.name, members, limits)
+      to_js_dictionary(rt, ctx, &named.name, members, limits, typedef_stack)
     }
     NamedTypeKind::Typedef => {
       let Some(inner) = ctx.typedefs.get(&named.name) else {
         return Err(rt.throw_type_error("unknown typedef"));
       };
-      to_js_with_limits(rt, ctx, inner, value, limits)
+      if typedef_stack.contains(&named.name) {
+        let message = format!(
+          "typedef cycle detected: {} -> {}",
+          typedef_stack.join(" -> "),
+          named.name
+        );
+        return Err(rt.throw_type_error(&message));
+      }
+      typedef_stack.push(named.name.clone());
+      let out = to_js_with_limits_inner(rt, ctx, inner, value, limits, typedef_stack);
+      typedef_stack.pop();
+      out
     }
     NamedTypeKind::Interface => match value {
       WebIdlValue::PlatformObject(obj) => {
@@ -356,6 +386,7 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
   name: &str,
   members: &std::collections::BTreeMap<String, WebIdlValue>,
   limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   if members.len() > limits.max_dictionary_entries {
     return Err(rt.throw_range_error("dictionary exceeds maximum entry count"));
@@ -403,7 +434,7 @@ fn to_js_dictionary<R: WebIdlJsRuntime>(
     let Some(v) = v else {
       continue;
     };
-    let js_value = to_js_with_limits(rt, ctx, &member.ty, &v, limits)?;
+    let js_value = to_js_with_limits_inner(rt, ctx, &member.ty, &v, limits, typedef_stack)?;
     let prop_key = rt.property_key_from_str(&member.name)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
@@ -425,6 +456,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
   value_ty: &IdlType,
   entries: &std::collections::BTreeMap<String, WebIdlValue>,
   limits: ToJsLimits,
+  typedef_stack: &mut Vec<String>,
 ) -> Result<R::JsValue, R::Error> {
   if entries.len() > limits.max_dictionary_entries {
     return Err(rt.throw_range_error("record exceeds maximum entry count"));
@@ -442,7 +474,7 @@ fn to_js_record<R: WebIdlJsRuntime>(
     if string_type == StringType::ByteString && key.chars().any(|c| (c as u32) > 0xFF) {
       return Err(rt.throw_type_error(BYTESTRING_INVALID_CODE_UNITS));
     }
-    let js_value = to_js_with_limits(rt, ctx, value_ty, v, limits)?;
+    let js_value = to_js_with_limits_inner(rt, ctx, value_ty, v, limits, typedef_stack)?;
     let prop_key = rt.property_key_from_str(key)?;
     rt.define_data_property(obj, prop_key, js_value, true)?;
   }
@@ -831,6 +863,32 @@ mod tests {
     assert!(
       msg.contains("member type is not part of the union"),
       "expected union member error message, got {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn typedef_cycles_throw_type_error() -> Result<(), Box<dyn std::error::Error>> {
+    let mut ctx = TypeContext::default();
+    // `A` is a typedef to itself; this should not recurse forever.
+    ctx.add_typedef("A", parse_idl_type_complete("A")?);
+
+    let ty = parse_idl_type_complete("A")?;
+    let value = WebIdlValue::Long(1);
+    let mut rt = VmJsRuntime::new();
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("typedef cycle detected"),
+      "expected typedef cycle message, got {msg:?}"
     );
     Ok(())
   }
