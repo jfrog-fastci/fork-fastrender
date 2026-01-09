@@ -547,6 +547,37 @@ mod tests {
   }
 
   #[test]
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+    // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
+    // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
+    // when the JS execution context stack is not empty.
+    let html = "<!doctype html><script>RUN</script>";
+    let mut host = HtmlScriptingDriver::new(
+      html.to_string(),
+      ManualStylesheetLoader::default(),
+      LogExecutor::default(),
+    );
+    let mut event_loop = EventLoop::<HtmlScriptingDriver<ManualStylesheetLoader, LogExecutor>>::new();
+
+    event_loop.queue_microtask(|host, _| {
+      host
+        .script_executor
+        .executed
+        .push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let _outer_js = host.enter_js_execution();
+    host.parse_until_blocked(&mut event_loop)?;
+
+    assert_eq!(
+      host.script_executor.executed,
+      vec!["RUN".to_string(), "microtask".to_string()]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn parser_blocking_scripts_wait_for_stylesheet_load_completion() -> Result<()> {
     let html = r#"<!doctype html><link rel=stylesheet href="a.css"><script>RUN</script>"#;
     let mut host = HtmlScriptingDriver::new(

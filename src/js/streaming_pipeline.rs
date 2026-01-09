@@ -731,6 +731,49 @@ mod tests {
   }
 
   #[test]
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+    // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
+    // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
+    // when the JS execution context stack is not empty.
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+
+    event_loop.queue_microtask(|host, _| {
+      host.log.push("microtask".to_string());
+      Ok(())
+    })?;
+
+    let mut state = ClassicScriptPipelineState::new(Some("https://ex/doc.html"), ParseBudget::default());
+    state.parser.push_str("<script>RUN</script>");
+    state.parser.set_eof();
+    let (script_node_id, base_url_at_this_point) = match state.parser.pump() {
+      StreamingParserYield::Script {
+        script,
+        base_url_at_this_point,
+      } => (script, base_url_at_this_point),
+      other => panic!("expected parser to yield Script, got {other:?}"),
+    };
+
+    let _outer_js = JsExecutionGuard::enter(&state.js_execution_depth);
+    state.on_script_boundary(
+      &mut host,
+      &mut event_loop,
+      script_node_id,
+      base_url_at_this_point,
+    )?;
+
+    assert_eq!(
+      host.log,
+      vec![
+        "RUN".to_string(),
+        "microtask".to_string(),
+        "mRUN".to_string()
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn blocking_external_script_delays_later_scripts_until_fetch_completes_and_executes() -> Result<()> {
     let mut host = Host::default();
     let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
