@@ -69,6 +69,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
     let mut scope = heap.scope();
+
     // `vm-js` jobs are executed as host work; if a realm is provided, run the call under an
     // execution context bound to that realm.
     if let Some(realm) = self.realm {
@@ -103,8 +104,8 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
-    // Route through `vm_js_heap_mut` so hosts can override which heap is exposed without forcing a
-    // `vm_js_vm_and_heap_mut` borrow.
+    // Route through `vm_js_heap_mut` so hosts can override which heap stores persistent roots
+    // without forcing a `vm_js_vm_and_heap_mut` borrow.
     self.host.vm_js_heap_mut().add_root(value)
   }
 
