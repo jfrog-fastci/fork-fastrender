@@ -219,37 +219,49 @@ impl StreamingHtmlParser {
   fn push_front_str_injects_before_buffered_remainder() {
     let mut parser = StreamingHtmlParser::new(None);
 
-    // Parse the initial `<p>a` chunk to completion so the parser is waiting for more input.
-    parser.push_str("<p>a");
+    // Feed markup such that after the first script yields, there is already buffered input
+    // remaining in the same chunk.
+    parser.push_str("<body><script>1</script><p>after</p></body>");
     match parser.pump() {
-      StreamingParserYield::NeedMoreInput => {}
-      other => panic!("expected NeedMoreInput, got {other:?}"),
+      StreamingParserYield::Script { .. } => {}
+      other => panic!("expected Script yield, got {other:?}"),
     }
 
-    // Inject markup that should be processed before the upcoming closing tag.
-    parser.push_front_str("<span>b</span>");
-    parser.push_str("</p>");
+    // Inject markup that should be parsed before the remaining `<p>after</p>` in the input stream
+    // (document.write semantics while paused for a script).
+    parser.push_front_str("<p>injected</p>");
     parser.set_eof();
 
     let doc = loop {
       match parser.pump() {
         StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
-        StreamingParserYield::Script { .. } => panic!("unexpected script yield"),
+        StreamingParserYield::Script { .. } => panic!("unexpected second script yield"),
         StreamingParserYield::Finished { document } => break document,
       }
     };
 
-    let p = find_first_element(&doc, "p").expect("missing <p>");
-    assert_eq!(text_children_concat(&doc, p), "a");
+    let body = find_first_element(&doc, "body").expect("missing <body>");
+    let body_elements = element_children(&doc, body);
+    assert_eq!(body_elements.len(), 3);
 
-    let p_elements = element_children(&doc, p);
-    assert_eq!(p_elements.len(), 1);
-    let span = p_elements[0];
-    match &doc.node(span).kind {
-      NodeKind::Element { tag_name, .. } => assert!(tag_name.eq_ignore_ascii_case("span")),
-      _ => panic!("expected span element"),
+    match &doc.node(body_elements[0]).kind {
+      NodeKind::Element { tag_name, .. } => assert!(tag_name.eq_ignore_ascii_case("script")),
+      _ => panic!("expected script element"),
     }
-    assert_eq!(text_children_concat(&doc, span), "b");
+
+    let injected_p = body_elements[1];
+    match &doc.node(injected_p).kind {
+      NodeKind::Element { tag_name, .. } => assert!(tag_name.eq_ignore_ascii_case("p")),
+      _ => panic!("expected injected <p> element"),
+    }
+    assert_eq!(text_children_concat(&doc, injected_p), "injected");
+
+    let after_p = body_elements[2];
+    match &doc.node(after_p).kind {
+      NodeKind::Element { tag_name, .. } => assert!(tag_name.eq_ignore_ascii_case("p")),
+      _ => panic!("expected after <p> element"),
+    }
+    assert_eq!(text_children_concat(&doc, after_p), "after");
   }
 
   #[test]
