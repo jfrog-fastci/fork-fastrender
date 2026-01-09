@@ -41,6 +41,7 @@ pub(super) struct TransitionRecord {
   pub(super) allow_discrete: bool,
   pub(super) from_style: Arc<ComputedStyle>,
   pub(super) to_style: Arc<ComputedStyle>,
+  pub(super) reversing_adjusted_start_value: TransitionValue,
   pub(super) reversing_shortening_factor: f32,
 }
 
@@ -577,9 +578,7 @@ impl TransitionState {
           );
           let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
 
-          let reversing = TransitionRecord::extract_value(&existing.from_style, name, &cmp_ctx)
-            .map(|v| v == after_value)
-            .unwrap_or(false);
+          let reversing = existing.reversing_adjusted_start_value == after_value;
 
           if !allow_discrete && is_discrete_property(name) {
             element.completed.remove(&name_arc);
@@ -602,33 +601,56 @@ impl TransitionState {
           };
 
           let record = if reversing {
-            let old_progress = existing.raw_progress(now_ms);
-            let start_time_ms = now_ms - delay - (1.0 - old_progress) * duration;
-            TransitionRecord {
-              property: name_arc.clone(),
-              start_time_ms,
-              delay_ms: delay,
-              duration_ms: duration,
-              timing_function: timing,
-              transition_behavior: behavior,
+            let Some(old_end_value) =
+              TransitionRecord::extract_value(&existing.to_style, name, &cmp_ctx)
+            else {
+              element.completed.remove(&name_arc);
+              continue;
+            };
+
+            let old_timing_output =
+              existing.timing_function.value_at(existing.raw_progress(now_ms));
+            let new_factor = (old_timing_output * existing.reversing_shortening_factor
+              + (1.0 - existing.reversing_shortening_factor))
+              .abs()
+              .clamp(0.0, 1.0);
+
+            let scaled_delay = if delay >= 0.0 { delay } else { delay * new_factor };
+            let scaled_duration = duration * new_factor;
+
+            let record = start_transition_record(
+              name_arc.clone(),
+              &before_style_arc,
+              &after_style_arc,
+              &before_value,
+              now_ms,
+              scaled_delay,
+              scaled_duration,
+              timing,
+              behavior,
               allow_discrete,
-              from_style: existing.to_style.clone(),
-              to_style: after_style_arc.clone(),
-              reversing_shortening_factor: old_progress,
-            }
+              old_end_value,
+              new_factor,
+            );
+            let Some(record) = record else {
+              element.completed.remove(&name_arc);
+              continue;
+            };
+            record
           } else {
             let record = start_transition_record(
               name_arc.clone(),
               &before_style_arc,
               &after_style_arc,
               &before_value,
-              &after_value,
               now_ms,
               delay,
               adjusted_duration,
               timing,
               behavior,
               allow_discrete,
+              before_value.clone(),
+              1.0,
             );
             let Some(record) = record else {
               element.completed.remove(&name_arc);
@@ -706,6 +728,7 @@ impl TransitionState {
           // Use the raw computed styles so percentage-based values resolve correctly at paint-time.
           from_style: before_style_arc.clone(),
           to_style: after_style_arc.clone(),
+          reversing_adjusted_start_value: before_value.clone(),
           reversing_shortening_factor: 1.0,
         };
 
@@ -780,13 +803,14 @@ fn start_transition_record(
   before_style_arc: &Arc<ComputedStyle>,
   after_style_arc: &Arc<ComputedStyle>,
   before_value: &TransitionValue,
-  _after_value: &TransitionValue,
   now_ms: f32,
   delay_ms: f32,
   duration_ms: f32,
   timing: TransitionTimingFunction,
   behavior: TransitionBehavior,
   allow_discrete: bool,
+  reversing_adjusted_start_value: TransitionValue,
+  reversing_shortening_factor: f32,
 ) -> Option<TransitionRecord> {
   let mut start_style = (**before_style_arc).clone();
   if name_arc.starts_with("--") {
@@ -814,7 +838,8 @@ fn start_transition_record(
     allow_discrete,
     from_style: Arc::new(start_style),
     to_style: after_style_arc.clone(),
-    reversing_shortening_factor: 1.0,
+    reversing_adjusted_start_value,
+    reversing_shortening_factor,
   })
 }
 
@@ -827,13 +852,19 @@ mod tests {
   use crate::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
   use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 
-  fn make_opacity_style_with_transition(opacity: f32, transition_properties: Arc<[TransitionProperty]>, duration_ms: f32) -> Arc<ComputedStyle> {
+  fn make_opacity_style_with_transition(
+    opacity: f32,
+    transition_properties: Arc<[TransitionProperty]>,
+    duration_ms: f32,
+    delay_ms: f32,
+    timing: TransitionTimingFunction,
+  ) -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.opacity = opacity;
     style.transition_properties = transition_properties;
     style.transition_durations = Arc::from([duration_ms]);
-    style.transition_delays = Arc::from([0.0]);
-    style.transition_timing_functions = Arc::from([TransitionTimingFunction::Linear]);
+    style.transition_delays = Arc::from([delay_ms]);
+    style.transition_timing_functions = Arc::from([timing]);
     style.transition_behaviors = Arc::from([TransitionBehavior::Normal]);
     Arc::new(style)
   }
@@ -843,6 +874,8 @@ mod tests {
       opacity,
       Arc::from([TransitionProperty::Name("opacity".to_string())]),
       1000.0,
+      0.0,
+      TransitionTimingFunction::Linear,
     )
   }
 
@@ -910,9 +943,23 @@ mod tests {
       .and_then(|el| el.running.get("opacity"))
       .expect("reverse transition record");
     assert!(
-      (record.start_time_ms - -600.0).abs() < 1e-6,
-      "expected adjusted start time, got {}",
-      record.start_time_ms
+      (record.start_time_ms - 200.0).abs() < 1e-6,
+      "expected start time at reversal event, got {}",
+      record.start_time_ms,
+    );
+    assert!(
+      (record.duration_ms - 200.0).abs() < 1e-6,
+      "expected shortened duration, got {}",
+      record.duration_ms,
+    );
+    assert!(
+      (record.reversing_shortening_factor - 0.2).abs() < 1e-6,
+      "expected reversing shortening factor, got {}",
+      record.reversing_shortening_factor,
+    );
+    assert_eq!(
+      record.reversing_adjusted_start_value,
+      TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
     );
 
     let mut t300 = make_fragment_tree(tree_a.root.style.clone(), state_ba.clone());
@@ -924,6 +971,139 @@ mod tests {
     super::super::apply_transitions(&mut t450, 450.0, Size::new(100.0, 100.0));
     let style = t450.root.style.as_deref().expect("style");
     assert!((style.opacity - 0.0).abs() < 1e-6, "opacity={}", style.opacity);
+  }
+
+  #[test]
+  fn transition_state_reversing_shortens_duration_using_timing_function_output() {
+    let tree_a = make_box_tree(make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      TransitionTimingFunction::EaseIn,
+    ));
+    let tree_b = make_box_tree(make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      TransitionTimingFunction::EaseIn,
+    ));
+
+    // Start A -> B at t=0ms, then reverse at 500ms. With ease-in timing, the timing function
+    // output at t=0.5 is ~0.315, so the reversed transition should be shortened to ~315ms.
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_ba =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_a, 500.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record = state_ba
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("reverse transition record");
+
+    let expected_factor = TransitionTimingFunction::EaseIn.value_at(0.5);
+    let expected_duration = 1000.0 * expected_factor;
+    let eps = 1e-4;
+
+    assert!((record.start_time_ms - 500.0).abs() < eps, "start_time={}", record.start_time_ms);
+    assert!(
+      (record.duration_ms - expected_duration).abs() < eps,
+      "expected duration {expected_duration}, got {}",
+      record.duration_ms
+    );
+    assert!(
+      (record.reversing_shortening_factor - expected_factor).abs() < eps,
+      "expected factor {expected_factor}, got {}",
+      record.reversing_shortening_factor
+    );
+    assert_eq!(
+      record.reversing_adjusted_start_value,
+      TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
+    );
+  }
+
+  #[test]
+  fn transition_state_repeated_reversals_accumulate_reversing_shortening_factor() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+
+    // A -> B at t=0, reverse to A at t=200, then reverse back to B at t=250.
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_ba =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_a, 200.0);
+    let state_ab2 =
+      TransitionState::update_for_style_change(Some(&state_ba), Some(&tree_a), &tree_b, 250.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record = state_ab2
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("second reverse transition record");
+
+    // Derived from the spec formula with linear timing:
+    // - first reversal: shortening factor = 0.2 (at t=0.2)
+    // - second reversal happens 50ms into a 200ms transition => raw progress 0.25
+    //   new factor = 0.25 * 0.2 + (1 - 0.2) = 0.85
+    let eps = 1e-6;
+    assert!((record.start_time_ms - 250.0).abs() < eps, "start_time={}", record.start_time_ms);
+    assert!(
+      (record.reversing_shortening_factor - 0.85).abs() < eps,
+      "factor={}",
+      record.reversing_shortening_factor
+    );
+    assert!((record.duration_ms - 850.0).abs() < eps, "duration={}", record.duration_ms);
+    assert_eq!(
+      record.reversing_adjusted_start_value,
+      TransitionValue::Builtin(AnimatedValue::Opacity(0.0))
+    );
+  }
+
+  #[test]
+  fn transition_state_reversing_scales_negative_delay_by_shortening_factor() {
+    let tree_a = make_box_tree(make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      -500.0,
+      TransitionTimingFunction::Linear,
+    ));
+    let tree_b = make_box_tree(make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      -500.0,
+      TransitionTimingFunction::Linear,
+    ));
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_ba =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_a, 200.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record = state_ba
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("reverse transition record");
+
+    // With delay=-500ms, at t=200ms the raw progress is (200 - (-500))/1000 = 0.7, so the
+    // reversing shortening factor is 0.7. The negative delay is scaled by that factor.
+    let eps = 1e-6;
+    assert!((record.reversing_shortening_factor - 0.7).abs() < eps, "factor={}", record.reversing_shortening_factor);
+    assert!((record.delay_ms - -350.0).abs() < eps, "delay={}", record.delay_ms);
+    assert!((record.duration_ms - 700.0).abs() < eps, "duration={}", record.duration_ms);
   }
 
   #[test]
@@ -997,6 +1177,8 @@ mod tests {
       1.0,
       Arc::from([TransitionProperty::None]),
       1000.0,
+      0.0,
+      TransitionTimingFunction::Linear,
     );
     let none_tree = make_box_tree(none_style);
     let state2 =
@@ -1046,6 +1228,8 @@ mod tests {
       0.0,
       Arc::from([TransitionProperty::Name("opacity".to_string())]),
       0.0,
+      0.0,
+      TransitionTimingFunction::Linear,
     );
     let duration_zero_tree = make_box_tree(duration_zero_style);
     let state2 = TransitionState::update_for_style_change(
@@ -1074,6 +1258,7 @@ mod tests {
       allow_discrete: false,
       from_style: before_style.clone(),
       to_style: after_style.clone(),
+      reversing_adjusted_start_value: TransitionValue::Builtin(AnimatedValue::Opacity(0.0)),
       reversing_shortening_factor: 1.0,
     };
 
