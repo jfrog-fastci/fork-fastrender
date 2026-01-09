@@ -2454,6 +2454,158 @@ fn floats_defer_to_next_page_and_clear_following_text() {
 }
 
 #[test]
+fn tall_float_fragments_across_pages_and_clears_following_text() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .float {
+            float: left;
+            width: 200px;
+            height: 350px;
+            background: rgb(255, 0, 0);
+          }
+          p { clear: both; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="float"></div>
+        <p>After float paragraph</p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 2,
+    "expected tall float to require at least two pages"
+  );
+
+  fn collect_float_bottoms(node: &FragmentNode, origin: (f32, f32), out: &mut Vec<f32>) {
+    let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+    if node
+      .style
+      .as_ref()
+      .is_some_and(|style| style.float.is_floating())
+    {
+      out.push(current.1 + node.bounds.height());
+    }
+    for child in node.children.iter() {
+      collect_float_bottoms(child, current, out);
+    }
+  }
+
+  let mut first_page_floats = Vec::new();
+  collect_float_bottoms(page_roots[0], (0.0, 0.0), &mut first_page_floats);
+  assert!(
+    !first_page_floats.is_empty(),
+    "tall float should appear on the first page (as a clipped fragment)"
+  );
+
+  let mut second_page_floats = Vec::new();
+  collect_float_bottoms(page_roots[1], (0.0, 0.0), &mut second_page_floats);
+  assert!(
+    !second_page_floats.is_empty(),
+    "tall float should continue onto the second page"
+  );
+
+  let float_bottom = second_page_floats
+    .into_iter()
+    .fold(0.0f32, f32::max);
+  let text_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
+    .expect("paragraph should appear on the second page");
+  assert!(
+    text_pos.1 >= float_bottom - 0.1,
+    "clearing paragraph should appear below the float fragment"
+  );
+}
+
+#[test]
+fn forced_break_inside_tall_float_does_not_block_main_flow() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; }
+          body { margin: 0; }
+          .float {
+            float: left;
+            width: 200px;
+            background: rgb(255, 0, 0);
+          }
+          .part1 { height: 220px; break-after: page; }
+          .part2 { height: 80px; }
+          p { clear: both; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <div class="float">
+          <div class="part1">Part1</div>
+          <div class="part2">Part2</div>
+        </div>
+        <p>After float paragraph</p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 3,
+    "expected forced break inside float to create a continuation page"
+  );
+
+  fn collect_float_bottoms(node: &FragmentNode, origin: (f32, f32), out: &mut Vec<f32>) {
+    let current = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
+    if node
+      .style
+      .as_ref()
+      .is_some_and(|style| style.float.is_floating())
+    {
+      out.push(current.1 + node.bounds.height());
+    }
+    for child in node.children.iter() {
+      collect_float_bottoms(child, current, out);
+    }
+  }
+
+  let mut second_page_floats = Vec::new();
+  collect_float_bottoms(page_roots[1], (0.0, 0.0), &mut second_page_floats);
+  let float_bottom = second_page_floats
+    .into_iter()
+    .fold(0.0f32, f32::max);
+
+  let after_pos = find_text_position(page_roots[1], "After float paragraph", (0.0, 0.0))
+    .expect("main-flow paragraph should remain on the second page");
+  assert!(
+    after_pos.1 >= float_bottom - 0.1,
+    "main-flow content should clear the float fragment instead of being pushed to a later page"
+  );
+
+  assert!(
+    find_text(page_roots[2], "Part2").is_some(),
+    "float continuation content should appear on the following page"
+  );
+  assert!(
+    find_text(page_roots[2], "After float paragraph").is_none(),
+    "main-flow paragraph should not be delayed until the continuation page"
+  );
+}
+
+#[test]
 fn rtl_direction_flips_first_page_side() {
   let html = r#"
     <html>

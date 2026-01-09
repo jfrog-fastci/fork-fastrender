@@ -1965,6 +1965,40 @@ pub(crate) fn clip_node(
     );
   }
 
+  // Forced breaks inside floats are modeled by shifting descendants so continuation content lands on
+  // later pages (see `apply_float_parallel_flow_forced_break_shifts`). When those shifts introduce
+  // blank space, the float fragment should *not* keep occupying the remainder of the fragmentainer:
+  // the blank space must remain available for the main flow (e.g. cleared blocks).
+  if style.float.is_floating() && axis.block_positive && !node.children.is_empty() {
+    // Use the children that survived clipping to find the actual block-axis extent of this float
+    // fragment. `cloned.bounds` is based on the intersection of the float's (potentially expanded)
+    // logical bounding box with the fragmentainer window, which can include trailing blank space.
+    let original_block_size = axis.block_size(&cloned.bounds);
+    let mut max_flow_end = 0.0f32;
+    for child in cloned.children.iter() {
+      let (_, end) = axis.flow_range(0.0, original_block_size, &child.bounds);
+      if end.is_finite() {
+        max_flow_end = max_flow_end.max(end);
+      }
+    }
+
+    if max_flow_end <= BREAK_EPSILON {
+      // No visible content in this float slice; dropping the fragment avoids generating empty
+      // float fragments that would otherwise block following cleared content.
+      return Ok(None);
+    }
+
+    if max_flow_end + BREAK_EPSILON < original_block_size {
+      let block_start = axis.block_start(&cloned.bounds);
+      cloned.bounds = axis.update_block_components(cloned.bounds, block_start, max_flow_end);
+      // Update slice metadata so background painting and other consumers see the trimmed extent.
+      let slice_offset = cloned.slice_info.slice_offset;
+      let slice_end_offset = slice_offset + max_flow_end;
+      let epsilon = 0.01;
+      cloned.slice_info.is_last = slice_end_offset >= cloned.slice_info.original_block_size - epsilon;
+    }
+  }
+
   Ok(Some(cloned))
 }
 
