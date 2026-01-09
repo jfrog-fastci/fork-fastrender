@@ -225,6 +225,10 @@ fn to_js_sequence<R: WebIdlJsRuntime>(
     let key = rt.property_key_from_u32(idx_u32)?;
     rt.define_data_property(array, key, js_value, true)?;
   }
+
+  // Arrays expose a non-enumerable `length` data property.
+  let length_key = rt.property_key_from_str("length")?;
+  rt.define_data_property(array, length_key, rt.js_number(values.len() as f64), false)?;
   Ok(array)
 }
 
@@ -426,6 +430,14 @@ mod tests {
         .ok_or_else(|| "missing indexed property")?;
       assert!(desc.enumerable);
     }
+
+    let length_key = rt.property_key_from_str("length")?;
+    let length_value = rt.get(array, length_key)?;
+    assert_eq!(rt.to_number(length_value)?, 2.0);
+    let desc = rt
+      .get_own_property(array, length_key)?
+      .ok_or_else(|| "missing length property")?;
+    assert!(!desc.enumerable);
 
     Ok(())
   }
