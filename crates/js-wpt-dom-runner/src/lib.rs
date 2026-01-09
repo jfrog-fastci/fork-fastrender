@@ -15,6 +15,7 @@ mod discover;
 mod backend;
 mod backend_quickjs;
 mod backend_vmjs;
+mod dom_bindings;
 mod meta;
 mod timer_event_loop;
 mod runner;

@@ -1,4 +1,5 @@
 use crate::backend::{Backend, BackendInit, BackendReport};
+use crate::dom_bindings::install_dom_bindings;
 use crate::timer_event_loop::{QueueLimits, TimerEventLoop, TimerExecution};
 use crate::RunError;
 use rquickjs::{Context, Function, Object, Runtime};
@@ -83,7 +84,13 @@ impl Backend for QuickJsBackend {
       ctx
         .eval::<(), _>(HOST_SHIMS)
         .map_err(|e| RunError::Js(e.to_string()))?;
- 
+
+      // DOM bindings (mutations + selectors) for the curated WPT subset.
+      //
+      // Installed after `HOST_SHIMS` so we can patch its `Document`/`Element` shims rather than
+      // replacing them (which would break event tests).
+      install_dom_bindings(ctx.clone(), &globals).map_err(|e| RunError::Js(e.to_string()))?;
+
       // Define the host hook used by `fastrender_testharness_report.js` to emit a result payload.
       ctx
         .eval::<(), _>(FASTR_REPORT_HOOK)
