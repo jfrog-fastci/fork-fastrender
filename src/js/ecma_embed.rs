@@ -1515,4 +1515,37 @@ mod tests {
       }
     ));
   }
+
+  #[test]
+  fn vm_js_env_record_oom_does_not_exceed_used_bytes_limit() {
+    // Regression guard: vm-js env record binding table growth must be accounted for in
+    // `Heap::used_bytes`, and heap OOM checks should keep `used_bytes` <= `max_bytes`.
+    //
+    // Note: This is a FastRender-side test so we can enforce the behavior without pinning a
+    // specific `vm-js` submodule commit (submodule bumps are frequent during JS bring-up).
+    let max_bytes = 2048;
+    let mut heap = Heap::new(HeapLimits::new(max_bytes, max_bytes / 2));
+    let mut scope = heap.scope();
+
+    let env = scope.env_create(None).expect("env_create should succeed");
+    scope.push_env_root(env).expect("push_env_root should succeed");
+
+    let mut saw_oom = false;
+    for i in 0..10_000usize {
+      match scope.env_create_mutable_binding(env, &format!("k{i}")) {
+        Ok(()) => {}
+        Err(VmError::OutOfMemory) => {
+          saw_oom = true;
+          break;
+        }
+        Err(other) => panic!("unexpected vm-js error: {other:?}"),
+      }
+    }
+
+    assert!(saw_oom, "expected heap growth to eventually hit VmError::OutOfMemory");
+    assert!(
+      scope.heap().used_bytes() <= max_bytes,
+      "heap.used_bytes should never exceed the configured max_bytes"
+    );
+  }
 }
