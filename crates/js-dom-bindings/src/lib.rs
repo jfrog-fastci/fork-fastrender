@@ -225,6 +225,22 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_create_document_fragment",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move || {
+        let mut dom = dom.borrow_mut();
+        let id = dom.mutate_dom(|dom| {
+          let id = dom.create_document_fragment();
+          // Detached nodes do not affect rendered output.
+          (id, false)
+        });
+        Ok::<u32, rquickjs::Error>(id.index() as u32)
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_append_child",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -874,9 +890,37 @@ const DOM_BINDINGS_SHIM: &str = r##"
       throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
     }
 
+    var isFragment = String(child.__node_kind) === "fragment";
+    var fragmentChildren = null;
+    if (isFragment) {
+      ensureArrayProp(child, "childNodes");
+      fragmentChildren = Array.isArray(child.childNodes) ? child.childNodes.slice() : [];
+    }
+
     g.__fastrender_dom_append_child(this.__node_id, child.__node_id);
 
     ensureArrayProp(this, "childNodes");
+
+    if (isFragment) {
+      if (Array.isArray(this.childNodes) && fragmentChildren && fragmentChildren.length) {
+        for (var i = 0; i < fragmentChildren.length; i++) {
+          var c = fragmentChildren[i];
+          if (!c || (typeof c !== "object" && typeof c !== "function") || c.__node_id == null) continue;
+          var oldParent = c.parentNode;
+          if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
+            var oldIdx = oldParent.childNodes.indexOf(c);
+            if (oldIdx >= 0) oldParent.childNodes.splice(oldIdx, 1);
+          }
+          var existingIdx = this.childNodes.indexOf(c);
+          if (existingIdx >= 0) this.childNodes.splice(existingIdx, 1);
+          this.childNodes.push(c);
+          c.parentNode = this;
+        }
+      }
+      if (Array.isArray(child.childNodes)) child.childNodes.length = 0;
+      child.parentNode = null;
+      return child;
+    }
 
     // Maintain a small JS-side view of the tree for bootstrap scripts that inspect `childNodes`.
     // If the child was already attached somewhere else, detach it from the old parent's JS list.
@@ -904,6 +948,13 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
     var refId = referenceChild == null ? null : referenceChild.__node_id;
 
+    var isFragment = String(child.__node_kind) === "fragment";
+    var fragmentChildren = null;
+    if (isFragment) {
+      ensureArrayProp(child, "childNodes");
+      fragmentChildren = Array.isArray(child.childNodes) ? child.childNodes.slice() : [];
+    }
+
     g.__fastrender_dom_insert_before(this.__node_id, child.__node_id, refId);
 
     ensureArrayProp(this, "childNodes");
@@ -911,6 +962,41 @@ const DOM_BINDINGS_SHIM: &str = r##"
       // If the reference child wrapper isn't in our JS-side list yet (e.g. initial DOM nodes), add
       // it so we can maintain relative ordering for nodes inserted via JS.
       this.childNodes.push(referenceChild);
+    }
+
+    if (isFragment) {
+      if (Array.isArray(this.childNodes)) {
+        var insertIdx = referenceChild == null ? this.childNodes.length : this.childNodes.indexOf(referenceChild);
+        if (insertIdx < 0) insertIdx = this.childNodes.length;
+
+        if (fragmentChildren && fragmentChildren.length) {
+          for (var i = 0; i < fragmentChildren.length; i++) {
+            var c = fragmentChildren[i];
+            if (!c || (typeof c !== "object" && typeof c !== "function") || c.__node_id == null) continue;
+            var oldParent = c.parentNode;
+            if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
+              var oldIdx = oldParent.childNodes.indexOf(c);
+              if (oldIdx >= 0) oldParent.childNodes.splice(oldIdx, 1);
+            }
+            var existingIdx = this.childNodes.indexOf(c);
+            if (existingIdx >= 0) {
+              this.childNodes.splice(existingIdx, 1);
+              if (existingIdx < insertIdx) insertIdx -= 1;
+            }
+          }
+
+          for (var i = 0; i < fragmentChildren.length; i++) {
+            var c = fragmentChildren[i];
+            if (!c || (typeof c !== "object" && typeof c !== "function") || c.__node_id == null) continue;
+            this.childNodes.splice(insertIdx, 0, c);
+            insertIdx += 1;
+            c.parentNode = this;
+          }
+        }
+      }
+      if (Array.isArray(child.childNodes)) child.childNodes.length = 0;
+      child.parentNode = null;
+      return child;
     }
 
     // Mirror appendChild JS-tree maintenance: detach from old parent's list, then insert.
@@ -961,9 +1047,52 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
     if (newChild === oldChild) return oldChild;
 
+    var isFragment = String(newChild.__node_kind) === "fragment";
+    var fragmentChildren = null;
+    if (isFragment) {
+      ensureArrayProp(newChild, "childNodes");
+      fragmentChildren = Array.isArray(newChild.childNodes) ? newChild.childNodes.slice() : [];
+    }
+
     g.__fastrender_dom_replace_child(this.__node_id, newChild.__node_id, oldChild.__node_id);
 
     ensureArrayProp(this, "childNodes");
+
+    if (isFragment) {
+      if (Array.isArray(this.childNodes)) {
+        var idx = this.childNodes.indexOf(oldChild);
+        if (idx >= 0) {
+          this.childNodes.splice(idx, 1);
+        } else {
+          idx = this.childNodes.length;
+        }
+
+        if (fragmentChildren && fragmentChildren.length) {
+          for (var i = 0; i < fragmentChildren.length; i++) {
+            var c = fragmentChildren[i];
+            if (!c || (typeof c !== "object" && typeof c !== "function") || c.__node_id == null) continue;
+            var existingIdx = this.childNodes.indexOf(c);
+            if (existingIdx >= 0) {
+              this.childNodes.splice(existingIdx, 1);
+              if (existingIdx < idx) idx -= 1;
+            }
+          }
+
+          for (var i = 0; i < fragmentChildren.length; i++) {
+            var c = fragmentChildren[i];
+            if (!c || (typeof c !== "object" && typeof c !== "function") || c.__node_id == null) continue;
+            this.childNodes.splice(idx, 0, c);
+            idx += 1;
+            c.parentNode = this;
+          }
+        }
+      }
+
+      if (oldChild.parentNode === this) oldChild.parentNode = null;
+      newChild.parentNode = null;
+      if (Array.isArray(newChild.childNodes)) newChild.childNodes.length = 0;
+      return oldChild;
+    }
 
     var oldParent = newChild.parentNode;
     if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
@@ -1054,6 +1183,8 @@ const DOM_BINDINGS_SHIM: &str = r##"
         switch (String(this.__node_kind)) {
           case "document":
             return 9;
+          case "fragment":
+            return 11;
           case "text":
             return 3;
           case "comment":
@@ -1070,6 +1201,8 @@ const DOM_BINDINGS_SHIM: &str = r##"
         switch (String(this.__node_kind)) {
           case "document":
             return "#document";
+          case "fragment":
+            return "#document-fragment";
           case "text":
             return "#text";
           case "comment":
@@ -1463,6 +1596,23 @@ const DOM_BINDINGS_SHIM: &str = r##"
     // Ignore.
   }
 
+  function DocumentFragment() {}
+  DocumentFragment.prototype = Object.create(Node.prototype);
+  DocumentFragment.prototype.constructor = DocumentFragment;
+  DocumentFragment.prototype.querySelector = function (selectors) {
+    var id = g.__fastrender_dom_query_selector(String(selectors), this.__node_id);
+    if (id == null) return null;
+    return g.__fastrender_wrap_node_id(id, "element");
+  };
+  DocumentFragment.prototype.querySelectorAll = function (selectors) {
+    var ids = g.__fastrender_dom_query_selector_all(String(selectors), this.__node_id);
+    var out = [];
+    for (var i = 0; i < ids.length; i++) {
+      out.push(g.__fastrender_wrap_node_id(ids[i], "element"));
+    }
+    return out;
+  };
+
   function Document() {}
   Document.prototype = Object.create(Node.prototype);
   Document.prototype.constructor = Document;
@@ -1478,6 +1628,10 @@ const DOM_BINDINGS_SHIM: &str = r##"
   Document.prototype.createComment = function (data) {
     var id = g.__fastrender_dom_create_comment(String(data));
     return g.__fastrender_wrap_node_id(id, "comment");
+  };
+  Document.prototype.createDocumentFragment = function () {
+    var id = g.__fastrender_dom_create_document_fragment();
+    return g.__fastrender_wrap_node_id(id, "fragment");
   };
   Document.prototype.querySelector = function (selectors) {
     // Pass an explicit `null` scope so the host binding can treat it as "no scope" even if the
@@ -1531,6 +1685,12 @@ const DOM_BINDINGS_SHIM: &str = r##"
     } else if (kind === "comment") {
       try {
         Object.setPrototypeOf(obj, Comment.prototype);
+      } catch (_e) {
+        // Ignore.
+      }
+    } else if (kind === "fragment") {
+      try {
+        Object.setPrototypeOf(obj, DocumentFragment.prototype);
       } catch (_e) {
         // Ignore.
       }
@@ -2373,6 +2533,111 @@ const DOM_BINDINGS_SHIM: &str = r##"
       .map_err(|e| Error::Other(e.to_string()))?;
 
     assert_eq!(outcome, "ok");
+    Ok(())
+  }
+
+  #[test]
+  fn document_fragment_create_query_selector_and_splice_insertion_behave_like_dom() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let outcome = ctx
+      .with(|ctx| {
+        ctx.eval::<String, _>(
+          r##"(function () {
+            try {
+              var outside = document.createElement("div");
+              outside.id = "outside";
+              document.body.appendChild(outside);
+
+              var frag = document.createDocumentFragment();
+              if (frag.nodeType !== 11) return "bad_fragment_type:" + String(frag.nodeType);
+              if (frag.nodeName !== "#document-fragment") return "bad_fragment_name:" + String(frag.nodeName);
+              if (typeof frag.querySelector !== "function") return "missing_fragment_querySelector";
+              if (typeof frag.querySelectorAll !== "function") return "missing_fragment_querySelectorAll";
+              if (frag.querySelector("#outside") !== null) return "fragment_query_leaked_to_document";
+
+              var inside1 = document.createElement("div");
+              inside1.id = "inside1";
+              frag.appendChild(inside1);
+              if (frag.querySelector("#inside1") !== inside1) return "fragment_query_mismatch";
+              if (document.getElementById("inside1") !== null) return "fragment_child_visible_before_insertion";
+
+              var returned = document.body.appendChild(frag);
+              if (returned !== frag) return "appendChild_returned_wrong_node";
+              if (frag.parentNode !== null) return "fragment_parentNode_should_be_null";
+              if (!frag.childNodes || frag.childNodes.length !== 0) return "fragment_should_be_emptied";
+              if (document.getElementById("inside1") !== inside1) return "wrapper_cache_mismatch_after_append";
+              if (inside1.parentNode !== document.body) return "inside1_parent_wrong_after_append";
+              if (document.body.childNodes.length !== 2) return "body_child_count_after_append:" + String(document.body.childNodes.length);
+              if (document.body.childNodes[0] !== outside) return "body_child0_after_append";
+              if (document.body.childNodes[1] !== inside1) return "body_child1_after_append";
+
+              var marker = document.createElement("div");
+              marker.id = "marker";
+              document.body.appendChild(marker);
+
+              var frag2 = document.createDocumentFragment();
+              var inside2 = document.createElement("div");
+              inside2.id = "inside2";
+              var inside3 = document.createElement("div");
+              inside3.id = "inside3";
+              frag2.appendChild(inside2);
+              frag2.appendChild(inside3);
+              returned = document.body.insertBefore(frag2, marker);
+              if (returned !== frag2) return "insertBefore_returned_wrong_node";
+              if (!frag2.childNodes || frag2.childNodes.length !== 0) return "fragment2_should_be_emptied";
+              if (inside2.parentNode !== document.body || inside3.parentNode !== document.body) return "fragment2_child_parent_wrong";
+              if (document.body.childNodes.length !== 5) return "body_child_count_after_insertBefore:" + String(document.body.childNodes.length);
+              if (document.body.childNodes[2] !== inside2) return "body_child2_after_insertBefore";
+              if (document.body.childNodes[3] !== inside3) return "body_child3_after_insertBefore";
+              if (document.body.childNodes[4] !== marker) return "body_child4_after_insertBefore";
+              if (document.getElementById("inside2") !== inside2) return "wrapper_cache_mismatch_inside2";
+              if (document.getElementById("inside3") !== inside3) return "wrapper_cache_mismatch_inside3";
+
+              var frag3 = document.createDocumentFragment();
+              var repl1 = document.createElement("div");
+              repl1.id = "repl1";
+              frag3.appendChild(repl1);
+              returned = document.body.replaceChild(frag3, inside1);
+              if (returned !== inside1) return "replaceChild_returned_wrong_node";
+              if (inside1.parentNode !== null) return "replaced_child_parent_not_cleared";
+              if (!frag3.childNodes || frag3.childNodes.length !== 0) return "fragment3_should_be_emptied";
+              if (document.getElementById("inside1") !== null) return "replaced_id_still_visible";
+              if (document.getElementById("repl1") !== repl1) return "wrapper_cache_mismatch_repl1";
+              if (document.body.childNodes.length !== 5) return "body_child_count_after_replaceChild:" + String(document.body.childNodes.length);
+              if (document.body.childNodes[1] !== repl1) return "body_child1_after_replaceChild";
+              if (document.body.childNodes[2] !== inside2) return "body_child2_after_replaceChild";
+              if (document.body.childNodes[3] !== inside3) return "body_child3_after_replaceChild";
+              if (document.body.childNodes[4] !== marker) return "body_child4_after_replaceChild";
+
+              return "ok";
+            } catch (e) {
+              if (!e) return "unknown_error";
+              return String(e) + "\n" + String(e.stack || "");
+            }
+          })()"##,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    assert_eq!(outcome, "ok", "DocumentFragment JS failed: {outcome}");
+
+    let dom_ref = &dom.borrow().dom;
+    let body = dom_ref.body().expect("expected body");
+    let children = dom_ref.children(body).expect("read body children");
+    assert_eq!(children.len(), 5);
+    assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("outside"));
+    assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("repl1"));
+    assert_eq!(dom_ref.get_attribute(children[2], "id").unwrap(), Some("inside2"));
+    assert_eq!(dom_ref.get_attribute(children[3], "id").unwrap(), Some("inside3"));
+    assert_eq!(dom_ref.get_attribute(children[4], "id").unwrap(), Some("marker"));
+
     Ok(())
   }
 

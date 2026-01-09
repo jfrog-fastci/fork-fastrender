@@ -84,7 +84,7 @@ fn create_document_fragment_is_parentless() {
 }
 
 #[test]
-fn inserting_document_fragment_errors() {
+fn inserting_empty_document_fragment_is_a_noop() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();
 
@@ -92,14 +92,14 @@ fn inserting_document_fragment_errors() {
   doc.append_child(root, parent).unwrap();
 
   let frag = doc.create_document_fragment();
-  assert_eq!(
-    doc.append_child(root, frag),
-    Err(DomError::HierarchyRequestError)
-  );
-  assert_eq!(
-    doc.append_child(parent, frag),
-    Err(DomError::HierarchyRequestError)
-  );
+  assert_eq!(doc.append_child(root, frag).unwrap(), false);
+  assert_eq!(doc.append_child(parent, frag).unwrap(), false);
+
+  assert_eq!(doc.children(root).unwrap(), &[parent]);
+  assert_eq!(doc.children(parent).unwrap(), &[]);
+  assert_eq!(doc.parent(frag).unwrap(), None);
+  assert_eq!(doc.children(frag).unwrap(), &[]);
+  assert_parent_child_invariants(&doc);
 }
 
 #[test]
