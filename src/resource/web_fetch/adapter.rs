@@ -101,8 +101,16 @@ fn resolve_request_url<'a>(
   storage: &'a mut Option<String>,
 ) -> Option<&'a str> {
   let normalized_candidate = normalize_http_url_for_resolution(candidate);
-  if Url::parse(candidate).is_ok() {
-    return Some(candidate);
+  if let Ok(url) = Url::parse(candidate) {
+    // Fetch uses a parsed URL record; serialize it back to a string so callers observe a canonical
+    // URL (e.g. "https://example.com" → "https://example.com/") and so redirect detection doesn't
+    // treat pure serialization differences as a redirect.
+    let canonical = url.to_string();
+    if canonical == candidate {
+      return Some(candidate);
+    }
+    *storage = Some(canonical);
+    return storage.as_deref();
   }
   if normalized_candidate.as_ref() != candidate {
     if Url::parse(normalized_candidate.as_ref()).is_ok() {
@@ -692,6 +700,33 @@ mod tests {
     assert_eq!(response.status, 404);
     assert_eq!(response.url, "https://example.com/b");
     assert!(response.redirected);
+  }
+
+  #[test]
+  fn absolute_request_urls_are_canonicalized() {
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(b"hello".to_vec(), None),
+    };
+    // URL parsing/serialization canonicalizes the trailing slash for empty paths.
+    let request = Request::new("GET", "https://EXAMPLE.com");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.url, "https://example.com/");
+    assert!(!response.redirected);
+  }
+
+  #[test]
+  fn redirected_is_false_when_final_url_only_differs_by_serialization() {
+    let mut resource = FetchedResource::new(b"hello".to_vec(), None);
+    resource.final_url = Some("https://example.com/".to_string());
+    let fetcher = StaticFetcher { resource };
+    // Browsers treat this as the same URL as "https://example.com/" (no redirect should be
+    // observable via `Response.redirected`).
+    let request = Request::new("GET", "https://example.com");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.url, "https://example.com/");
+    assert!(!response.redirected);
   }
 
   #[test]
