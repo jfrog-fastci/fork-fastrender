@@ -22,6 +22,8 @@ use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::{Opt, This};
 use rquickjs::{Class, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result as JsResult, Value};
 
+use crate::js::resolve_url;
+
 use fastrender::resource::{
   DocumentOrigin, FetchDestination, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
 };
@@ -298,7 +300,12 @@ impl<'js> JsRequest<'js> {
         Ok(url) => url,
         Err(_) => return throw_type_error(ctx, "Request input must be a string or a Request"),
       };
-      Self::new_empty(ctx.clone(), url)?
+      let base: Option<String> = ctx.globals().get("__fastrender_document_url")?;
+      let resolved = match resolve_url(&url, base.as_deref()) {
+        Ok(resolved) => resolved,
+        Err(err) => return throw_type_error(ctx, &err.to_string()),
+      };
+      Self::new_empty(ctx.clone(), resolved)?
     };
 
     let Some(init) = init.0.filter(|v| !v.is_undefined()) else {
@@ -586,6 +593,8 @@ pub fn install_fetch_bindings<'js>(
   globals: &Object<'js>,
   env: QuickjsFetchEnv,
 ) -> JsResult<()> {
+  globals.set("__fastrender_document_url", env.document_url.clone())?;
+
   Class::<JsHeaders>::define(globals)?;
   Class::<JsRequest<'js>>::define(globals)?;
   Class::<JsResponse<'js>>::define(globals)?;

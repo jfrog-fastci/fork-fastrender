@@ -13,6 +13,7 @@
 use crate::error::Error;
 use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
+use crate::js::url_resolve::resolve_url;
 use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
@@ -1309,6 +1310,9 @@ fn request_ctor_construct(
       default_fetch_limits().max_url_bytes,
       FETCH_URL_TOO_LONG_ERROR,
     )?;
+    let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+    let url = resolve_url(&url, base_url.as_deref())
+      .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
     CoreRequest::new("GET", url)
   };
 
@@ -1887,6 +1891,9 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
         default_fetch_limits().max_url_bytes,
         FETCH_URL_TOO_LONG_ERROR,
       )?;
+      let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+      let url = resolve_url(&url, base_url.as_deref())
+        .map_err(|err| throw_type_error(vm, scope, host_hooks, &err.to_string()))?;
       let mut request = CoreRequest::new("GET", url);
       request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
        request

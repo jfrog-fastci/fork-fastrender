@@ -43,6 +43,7 @@ pub mod script_loader_resource;
 pub mod runtime;
 pub mod time;
 pub mod url;
+pub mod url_resolve;
 pub mod url_bindings;
 pub mod window_animation_frame;
 pub mod vm_dom;
@@ -102,6 +103,7 @@ pub use page_load::{
 pub use vm_dom::{install_dom_bindings, install_dom_bindings_with_limits};
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
+pub use url_resolve::{resolve_url, UrlResolveError};
 pub use url_bindings::{install_url_bindings, install_url_bindings_with_limits};
 pub use window_animation_frame::install_window_animation_frame_bindings;
 pub use window_fetch::{

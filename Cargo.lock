@@ -2196,6 +2196,7 @@ dependencies = [
  "base64",
  "clap",
  "conformance-harness",
+ "fastrender",
  "globset",
  "html5ever",
  "markup5ever",

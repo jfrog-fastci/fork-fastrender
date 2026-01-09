@@ -1,5 +1,6 @@
 use super::{Backend, BackendInit, HostEnvironment};
 use crate::dom_shims::install_dom_shims;
+use crate::fetch::install_fetch_shims;
 use crate::window_or_worker_global_scope::{
   forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
   latin1_encode, serialized_origin_for_document_url,
@@ -342,7 +343,7 @@ fn install_window_shims<'js>(
     .set("atob", atob)
     .map_err(|e| RunError::Js(e.to_string()))?;
 
-  let btoa = Function::new(ctx, |ctx: rquickjs::Ctx<'js>, data: String| {
+  let btoa = Function::new(ctx.clone(), |ctx: rquickjs::Ctx<'js>, data: String| {
     let bytes = match latin1_encode(&data) {
       Ok(bytes) => bytes,
       Err(_) => return Err(throw_dom_exception(&ctx, "InvalidCharacterError", "The string to be encoded contains characters outside of the Latin1 range.")),
@@ -357,6 +358,8 @@ fn install_window_shims<'js>(
   globals
     .set("btoa", btoa)
     .map_err(|e| RunError::Js(e.to_string()))?;
+
+  install_fetch_shims(ctx, globals).map_err(|e| RunError::Js(e.to_string()))?;
 
   Ok(())
 }

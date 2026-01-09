@@ -119,6 +119,33 @@ fn runs_node_replace_child_smoke_test() {
 
 #[test]
 #[cfg(feature = "quickjs")]
+fn runs_fetch_relative_url_smoke_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/fetch_relative.window.js")
+    .expect("missing fetch_relative.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(
+    fs,
+    RunnerConfig {
+      backend: BackendSelection::QuickJs,
+      ..RunnerConfig::default()
+    },
+  );
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+  let report = result
+    .wpt_report
+    .unwrap_or_else(|| panic!("fetch_relative should include report payload"));
+  assert_eq!(report.file_status, "pass");
+}
+
+#[test]
+#[cfg(feature = "quickjs")]
 fn runs_dom_shims_window_js() {
   let corpus_root = corpus_root();
   let tests_root = tests_root();
