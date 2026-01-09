@@ -10061,6 +10061,19 @@ impl FlexFormattingContext {
     fragment: &FragmentNode,
     deadline_counter: &mut usize,
   ) -> Result<Size, LayoutError> {
+    // Out-of-flow positioned fragments do not contribute to an element's intrinsic size.
+    //
+    // Excluding them here prevents flex item measurement from "seeing" hidden/fixed overlays and
+    // incorrectly expanding the flex line (e.g. vogue.com's hidden nav overlays), and also avoids
+    // flex items with only abspos overlays (e.g. "sr-only" link text) accidentally inflating their
+    // flex base size.
+    #[inline]
+    fn is_out_of_flow_positioned(fragment: &FragmentNode) -> bool {
+      fragment.style.as_deref().is_some_and(|style| {
+        style.running_position.is_some()
+          || matches!(style.position, Position::Absolute | Position::Fixed)
+      })
+    }
     fn walk(
       node: &FragmentNode,
       offset: Point,
@@ -10069,17 +10082,7 @@ impl FlexFormattingContext {
       deadline_counter: &mut usize,
     ) -> Result<(), LayoutError> {
       check_layout_deadline(deadline_counter)?;
-      // Out-of-flow positioned fragments (absolute/fixed + running elements) do not contribute to
-      // an element's intrinsic size. Skipping them avoids flex items with only abspos overlays
-      // (e.g. "sr-only" link text) accidentally inflating their flex base size.
-      if node
-        .style
-        .as_deref()
-        .is_some_and(|style| {
-          style.running_position.is_some()
-            || matches!(style.position, Position::Absolute | Position::Fixed)
-        })
-      {
+      if is_out_of_flow_positioned(node) {
         return Ok(());
       }
       let origin = Point::new(node.bounds.x() + offset.x, node.bounds.y() + offset.y);
@@ -10089,6 +10092,9 @@ impl FlexFormattingContext {
       max.x = max.x.max(bounds.max_x());
       max.y = max.y.max(bounds.max_y());
       for child in node.children.iter() {
+        if is_out_of_flow_positioned(child) {
+          continue;
+        }
         walk(child, origin, min, max, deadline_counter)?;
       }
       Ok(())
@@ -10107,6 +10113,13 @@ impl FlexFormattingContext {
     fragment: &FragmentNode,
     deadline_counter: &mut usize,
   ) -> Result<Option<Size>, LayoutError> {
+    #[inline]
+    fn is_out_of_flow_positioned(fragment: &FragmentNode) -> bool {
+      fragment.style.as_deref().is_some_and(|style| {
+        style.running_position.is_some()
+          || matches!(style.position, Position::Absolute | Position::Fixed)
+      })
+    }
     fn walk(
       node: &FragmentNode,
       offset: Point,
@@ -10117,14 +10130,7 @@ impl FlexFormattingContext {
     ) -> Result<(), LayoutError> {
       check_layout_deadline(deadline_counter)?;
       for child in node.children.iter() {
-        if child
-          .style
-          .as_deref()
-          .is_some_and(|style| {
-            style.running_position.is_some()
-              || matches!(style.position, Position::Absolute | Position::Fixed)
-          })
-        {
+        if is_out_of_flow_positioned(child) {
           continue;
         }
         let origin = Point::new(child.bounds.x() + offset.x, child.bounds.y() + offset.y);
