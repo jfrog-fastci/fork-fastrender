@@ -4,6 +4,183 @@ use xtask::webidl::load::{load_combined_webidl, WebIdlSource};
 use xtask::webidl::resolve::{resolve_webidl_world, ExposureTarget};
 use xtask::webidl::{parse_webidl, BuiltinType, IdlType};
 
+fn delimiter_depths(input: &str) -> (u32, u32, u32) {
+  let bytes = input.as_bytes();
+  let mut curly = 0u32;
+  let mut bracket = 0u32;
+  let mut paren = 0u32;
+  let mut in_string: Option<u8> = None;
+  let mut in_line_comment = false;
+  let mut in_block_comment = false;
+  let mut escape = false;
+
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_block_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    // Start of a comment.
+    if b == b'/' && i + 1 < bytes.len() {
+      if bytes[i + 1] == b'/' {
+        in_line_comment = true;
+        i += 2;
+        continue;
+      }
+      if bytes[i + 1] == b'*' {
+        in_block_comment = true;
+        i += 2;
+        continue;
+      }
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        i += 1;
+      }
+      b'{' => {
+        curly += 1;
+        i += 1;
+      }
+      b'}' => {
+        curly = curly.saturating_sub(1);
+        i += 1;
+      }
+      b'[' => {
+        bracket += 1;
+        i += 1;
+      }
+      b']' => {
+        bracket = bracket.saturating_sub(1);
+        i += 1;
+      }
+      b'(' => {
+        paren += 1;
+        i += 1;
+      }
+      b')' => {
+        paren = paren.saturating_sub(1);
+        i += 1;
+      }
+      _ => i += 1,
+    }
+  }
+
+  (curly, bracket, paren)
+}
+
+fn unmatched_open_curly_positions(input: &str) -> Vec<usize> {
+  let bytes = input.as_bytes();
+  let mut stack = Vec::<usize>::new();
+  let mut in_string: Option<u8> = None;
+  let mut in_line_comment = false;
+  let mut in_block_comment = false;
+  let mut escape = false;
+
+  let mut i = 0usize;
+  while i < bytes.len() {
+    let b = bytes[i];
+
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+    if in_block_comment {
+      if b == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        in_block_comment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if escape {
+        escape = false;
+        i += 1;
+        continue;
+      }
+      if b == b'\\' {
+        escape = true;
+        i += 1;
+        continue;
+      }
+      if b == q {
+        in_string = None;
+      }
+      i += 1;
+      continue;
+    }
+
+    if b == b'/' && i + 1 < bytes.len() {
+      if bytes[i + 1] == b'/' {
+        in_line_comment = true;
+        i += 2;
+        continue;
+      }
+      if bytes[i + 1] == b'*' {
+        in_block_comment = true;
+        i += 2;
+        continue;
+      }
+    }
+
+    match b {
+      b'"' | b'\'' => {
+        in_string = Some(b);
+        i += 1;
+      }
+      b'{' => {
+        stack.push(i);
+        i += 1;
+      }
+      b'}' => {
+        stack.pop();
+        i += 1;
+      }
+      _ => i += 1,
+    }
+  }
+
+  stack
+}
+
 #[test]
 fn merges_partials_and_includes_with_deterministic_ordering() {
   let idl = r#"
@@ -119,11 +296,66 @@ fn smoke_resolve_whatwg_html() {
     return;
   }
 
+  assert!(
+    loaded
+      .combined_idl
+      .contains("interface mixin WindowOrWorkerGlobalScope"),
+    "expected extracted IDL text to mention WindowOrWorkerGlobalScope"
+  );
+  assert!(
+    loaded
+      .combined_idl
+      .contains("typedef (DOMString or Function or TrustedScript) TimerHandler"),
+    "expected extracted IDL text to mention TimerHandler"
+  );
+  let depths = delimiter_depths(&loaded.combined_idl);
+  if depths != (0, 0, 0) {
+    let stack = unmatched_open_curly_positions(&loaded.combined_idl);
+    if let Some(&idx) = stack.last() {
+      let start = idx.saturating_sub(2000);
+      let end = (idx + 2000).min(loaded.combined_idl.len());
+      let snippet = loaded
+        .combined_idl
+        .get(start..end)
+        .unwrap_or("<snippet not at UTF-8 boundaries>");
+      eprintln!(
+        "unbalanced extracted IDL: depths={depths:?}, last unmatched `{{` at byte {idx}\n{snippet}"
+      );
+    } else {
+      eprintln!("unbalanced extracted IDL: depths={depths:?} (no unmatched `{{` found)");
+    }
+  }
+  assert_eq!(
+    depths,
+    (0, 0, 0),
+    "expected extracted IDL to have balanced delimiters (curly/bracket/paren)"
+  );
+
   let parsed = parse_webidl(&loaded.combined_idl).unwrap();
   let resolved = resolve_webidl_world(&parsed);
   assert!(
     !resolved.interfaces.is_empty(),
     "expected non-empty interface set from WHATWG HTML"
+  );
+
+  // Regression coverage: ensure later-file globals are present. These used to be missing when the
+  // HTML extractor stopped scanning early (e.g. due to malformed tags / nested `<code>` handling).
+  assert!(
+    resolved.interface_mixins.contains_key("WindowOrWorkerGlobalScope"),
+    "expected WindowOrWorkerGlobalScope interface mixin to be extracted+parsed"
+  );
+  assert!(
+    resolved.typedefs.contains_key("TimerHandler"),
+    "expected TimerHandler typedef to be extracted+parsed"
+  );
+  let window = resolved
+    .interfaces
+    .get("Window")
+    .expect("expected Window interface to be extracted+parsed");
+  assert_eq!(
+    window.inherits.as_deref(),
+    Some("EventTarget"),
+    "expected Window to inherit EventTarget"
   );
 }
 

@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::fs;
 use std::path::{Path, PathBuf};
+use xtask::webidl::load::{load_combined_webidl, WebIdlSource};
 
 #[derive(Args, Debug)]
 pub struct WebIdlCodegenArgs {
@@ -45,30 +46,28 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
     .with_context(|| format!("resolve URL source path {}", args.url_source.display()))?;
   let fetch_source = to_repo_rel_source(&repo_root, &args.fetch_source)
     .with_context(|| format!("resolve Fetch source path {}", args.fetch_source.display()))?;
-
   let out_path = absolutize(repo_root.clone(), args.out);
 
   let sources = [
-    xtask::webidl::load::WebIdlSource {
+    WebIdlSource {
       rel_path: dom_source.as_str(),
       label: "DOM",
     },
-    xtask::webidl::load::WebIdlSource {
+    WebIdlSource {
       rel_path: html_source.as_str(),
       label: "HTML",
     },
-    xtask::webidl::load::WebIdlSource {
+    WebIdlSource {
       rel_path: url_source.as_str(),
       label: "URL",
     },
-    xtask::webidl::load::WebIdlSource {
+    WebIdlSource {
       rel_path: fetch_source.as_str(),
       label: "Fetch",
     },
   ];
 
-  let loaded = xtask::webidl::load::load_combined_webidl(&repo_root, &sources)
-    .context("load combined WebIDL sources")?;
+  let loaded = load_combined_webidl(&repo_root, &sources).context("load combined WebIDL sources")?;
   if !loaded.missing_sources.is_empty() {
     let mut message = String::from("missing WebIDL sources:\n");
     for (label, path) in &loaded.missing_sources {

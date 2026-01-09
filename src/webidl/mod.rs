@@ -185,4 +185,37 @@ mod tests {
       "expected EventListener to be marked as a callback interface"
     );
   }
+
+  #[test]
+  fn generated_world_includes_window_globals_and_timers() {
+    let window = WORLD
+      .interface("Window")
+      .expect("generated world should include Window interface");
+    assert_eq!(
+      window.inherits,
+      Some("EventTarget"),
+      "expected Window to inherit EventTarget"
+    );
+
+    let member_names = window
+      .members
+      .iter()
+      .filter_map(|m| m.name)
+      .collect::<Vec<_>>();
+    assert!(
+      member_names.contains(&"document"),
+      "expected Window to contain document: {member_names:?}"
+    );
+    assert!(
+      member_names.contains(&"setTimeout"),
+      "expected Window to contain setTimeout: {member_names:?}"
+    );
+
+    WORLD
+      .interface_mixin("WindowOrWorkerGlobalScope")
+      .expect("generated world should include WindowOrWorkerGlobalScope mixin");
+    WORLD
+      .typedef_("TimerHandler")
+      .expect("generated world should include TimerHandler typedef");
+  }
 }

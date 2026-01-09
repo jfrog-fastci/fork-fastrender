@@ -146,47 +146,51 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
   let mut current = String::new();
 
   for line in source.lines() {
-    if !in_idl {
-      if let Some(idx) = line.find("<pre") {
-        // Only treat `<pre>` tags with `class=idl` as Bikeshed IDL blocks.
-        //
-        // Important: WHATWG HTML embeds IDL in `<pre><code class="idl">...</code></pre>`. The
-        // `<pre>` start tag itself typically has no `class`, but the `<code>` tag does. A naive
-        // substring search would incorrectly treat those blocks as Bikeshed IDL and capture raw
-        // HTML markup/comments, which then breaks statement splitting/parsing.
-        let tag_end = find_html_tag_end(line, idx);
-        let pre_tag = tag_end.map(|end| &line[idx..=end]).unwrap_or(&line[idx..]);
-        let is_idl_pre = if tag_end.is_some() {
-          html_start_tag_has_class_token(pre_tag, "idl")
-        } else {
-          // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
-          // after the opening `<pre class=idl` tag, e.g.:
-          //   `<pre class=idl>[Exposed=(Window,Worker)]`
-          // In that case, inspect only the start tag fragment (up to the first `[` if present).
-          let tag_head = pre_tag.split_once('[').map(|(h, _)| h).unwrap_or(pre_tag);
-          tag_head.contains("class=idl")
-            || tag_head.contains("class='idl'")
-            || tag_head.contains("class=\"idl\"")
-        };
+      if !in_idl {
+        if let Some(idx) = line.find("<pre") {
+          // Avoid matching tags like `<prefix>`.
+          let after_name = idx + "<pre".len();
+          if line
+            .get(after_name..)
+          .and_then(|s| s.chars().next())
+          .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+          continue;
+        }
 
-        if is_idl_pre {
-          // Everything after the first '>' is IDL content (some blocks place it on the same line).
-          let tag = &line[idx..];
-          let after = if let Some(gt) = tag.find('>') {
-            Some(&tag[gt + 1..])
-          } else if let Some(bracket) = tag.find('[') {
-            Some(&tag[bracket..])
-          } else {
-            None
-          };
-          if let Some(after) = after {
+        // Prefer parsing the *actual* `<pre ...>` tag so we don't accidentally match nested
+        // `<code class="idl">` tags in `<pre><code class="idl">...</code></pre>` (WHATWG HTML
+        // sources).
+        if let Some(tag_end) = find_html_tag_end(line, idx) {
+          let tag = &line[idx..=tag_end];
+          if html_start_tag_has_class_token(tag, "idl") {
+            // Everything after the closing `>` is IDL content (some blocks place it on the same line).
+            let after = &line[tag_end + 1..];
             if !after.is_empty() {
               current.push_str(after);
               current.push('\n');
             }
+            in_idl = true;
+            continue;
           }
-          in_idl = true;
-          continue;
+        } else {
+          // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
+          // after the opening `<pre class=idl` tag, e.g.:
+          //   `<pre class=idl>[Exposed=(Window,Worker)]`
+          // In that case, capture from the first `[` onwards.
+          let tag = &line[idx..];
+          if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"")
+          {
+            let after = tag.find('[').map(|bracket| &tag[bracket..]);
+            if let Some(after) = after {
+              if !after.is_empty() {
+                current.push_str(after);
+                current.push('\n');
+              }
+            }
+            in_idl = true;
+            continue;
+          }
         }
       }
       continue;
@@ -234,14 +238,10 @@ pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
       continue;
     }
 
-    // Skip closing tags.
-    if source[start..].starts_with("</code") {
-      i = start + "</code".len();
-      continue;
-    }
-
     let Some(tag_end) = find_html_tag_end(source, start) else {
-      break;
+      // Malformed/unclosed tag; skip and keep searching for later IDL blocks.
+      i = after_name;
+      continue;
     };
     let tag = &source[start..=tag_end];
     if !html_start_tag_has_class_token(tag, "idl") {
@@ -251,7 +251,9 @@ pub fn extract_webidl_blocks_from_whatwg_html(source: &str) -> Vec<String> {
 
     let content_start = tag_end + 1;
     let Some((content_end, close_end)) = find_matching_code_close(source, content_start) else {
-      break;
+      // Missing/unbalanced `</code>` for this block; keep scanning for later blocks.
+      i = content_start;
+      continue;
     };
     let raw = &source[content_start..content_end];
     let stripped = strip_html_tags_preserve_text(raw);
@@ -282,7 +284,19 @@ fn find_matching_code_close(source: &str, content_start: usize) -> Option<(usize
     let start = scan + rel_lt;
     let tail = &source[start..];
 
+    // Closing `</code>`.
     if tail.starts_with("</code") {
+      let after_name = start + "</code".len();
+      // Avoid matching tags like `</codec>`.
+      if source
+        .get(after_name..)
+        .and_then(|s| s.chars().next())
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+      {
+        let tag_end = find_html_tag_end(source, start)?;
+        scan = tag_end + 1;
+        continue;
+      }
       let tag_end = find_html_tag_end(source, start)?;
       depth = depth.saturating_sub(1);
       if depth == 0 {
@@ -292,7 +306,19 @@ fn find_matching_code_close(source: &str, content_start: usize) -> Option<(usize
       continue;
     }
 
+    // Opening `<code>`.
     if tail.starts_with("<code") {
+      let after_name = start + "<code".len();
+      // Avoid matching tags like `<codec>`.
+      if source
+        .get(after_name..)
+        .and_then(|s| s.chars().next())
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '-')
+      {
+        let tag_end = find_html_tag_end(source, start)?;
+        scan = tag_end + 1;
+        continue;
+      }
       let tag_end = find_html_tag_end(source, start)?;
       depth += 1;
       scan = tag_end + 1;
@@ -583,13 +609,21 @@ fn find_html_tag_end(input: &str, start: usize) -> Option<usize> {
     return None;
   }
 
-  // HTML comments (`<!-- ... -->`) can contain arbitrary text, including `'` and `"` characters.
-  // Treat them specially so we don't interpret those as quoted attribute delimiters and accidentally
-  // skip the rest of an IDL block.
-  if input.get(start..)?.starts_with("<!--") {
+  let tail = &input[start..];
+
+  // HTML comments (`<!-- ... -->`) can contain arbitrary text, including `'`, `"`, and `>`
+  // characters. Treat them specially so we don't interpret those as quoted attribute delimiters.
+  if tail.starts_with("<!--") {
     let after = start + "<!--".len();
     let rel_end = input.get(after..)?.find("-->")?;
     return Some(after + rel_end + "-->".len() - 1);
+  }
+
+  // CDATA blocks can also contain `>` characters.
+  if tail.starts_with("<![CDATA[") {
+    let after = start + "<![CDATA[".len();
+    let rel_end = input.get(after..)?.find("]]>")?;
+    return Some(after + rel_end + "]]>".len() - 1);
   }
 
   let mut i = start + 1;
@@ -709,62 +743,18 @@ fn strip_html_tags_preserve_text(input: &str) -> String {
       out.push_str(&input[last_text..i]);
     }
 
-    // HTML comment: `<!-- ... -->`.
-    //
-    // Comments can contain `'` and `"` characters, so don't use the generic tag scanner (which
-    // treats those as quoted attribute delimiters).
-    if input[i..].starts_with("<!--") {
-      if let Some(rel_end) = input[i + "<!--".len()..].find("-->") {
-        i = i + "<!--".len() + rel_end + "-->".len();
-        last_text = i;
-        continue;
-      }
-      // Unclosed comment: strip to end.
-      last_text = input.len();
-      break;
-    }
-
-    // Skip the tag itself (forgiving).
-    //
-    // Important: HTML IDL blocks sometimes contain HTML comments (`<!-- ... -->`) for spec notes.
-    // Comment bodies can contain `'`/`"` characters that are *not* attribute quotes; treating them
-    // as quotes would cause us to scan past the closing `-->` and potentially drop large parts of
-    // the IDL block (e.g. `HTMLSelectElement` in WHATWG HTML).
-    if input[i..].starts_with("<!--") {
-      if let Some(end_rel) = input[i + "<!--".len()..].find("-->") {
-        i = i + "<!--".len() + end_rel + "-->".len();
-      } else {
-        // Unterminated comment; drop the rest.
-        i = bytes.len();
-      }
+    // Skip the tag itself (forgiving). Use the same `find_html_tag_end` helper used by the IDL
+    // block scanner so we correctly handle constructs like HTML comments (`<!-- ... -->`), which
+    // may contain `'` / `"` characters that are not attribute quotes.
+    if let Some(tag_end) = find_html_tag_end(input, i) {
+      i = tag_end + 1;
       last_text = i;
       continue;
     }
 
+    // Malformed/unclosed tag; treat the `<` as text and continue scanning.
+    out.push('<');
     i += 1;
-    let mut in_quote: Option<u8> = None;
-    while i < bytes.len() {
-      let b = bytes[i];
-      if let Some(q) = in_quote {
-        if b == q {
-          in_quote = None;
-        }
-        i += 1;
-        continue;
-      }
-      match b {
-        b'\'' | b'"' => {
-          in_quote = Some(b);
-          i += 1;
-        }
-        b'>' => {
-          i += 1;
-          break;
-        }
-        _ => i += 1,
-      }
-    }
-
     last_text = i;
   }
 
