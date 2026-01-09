@@ -20,11 +20,21 @@ impl Document {
     }
 
     // Leaf nodes cannot accept children.
-    if matches!(parent_kind, NodeKind::Text { .. }) {
+    if matches!(
+      parent_kind,
+      NodeKind::Text { .. }
+        | NodeKind::Comment { .. }
+        | NodeKind::ProcessingInstruction { .. }
+        | NodeKind::Doctype { .. }
+    ) {
       return Err(DomError::HierarchyRequestError);
     }
 
     match child_kind {
+      NodeKind::Doctype { .. } => match parent_kind {
+        NodeKind::Document { .. } => {}
+        _ => return Err(DomError::HierarchyRequestError),
+      },
       NodeKind::ShadowRoot { .. } => match parent_kind {
         NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
         _ => return Err(DomError::HierarchyRequestError),

@@ -225,6 +225,73 @@ fn invalid_nodeid_returns_deterministic_errors_instead_of_panicking() {
 }
 
 #[test]
+fn leaf_nodes_reject_children() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+
+  let comment = doc.push_node(
+    NodeKind::Comment {
+      content: "hi".to_string(),
+    },
+    Some(root),
+    /* inert_subtree */ false,
+  );
+  let pi = doc.push_node(
+    NodeKind::ProcessingInstruction {
+      target: "xml".to_string(),
+      data: "version=\"1.0\"".to_string(),
+    },
+    Some(root),
+    /* inert_subtree */ false,
+  );
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    Some(root),
+    /* inert_subtree */ false,
+  );
+
+  for leaf in [comment, pi, doctype] {
+    let child = doc.create_element("div", "");
+    assert_eq!(
+      doc.append_child(leaf, child),
+      Err(DomError::HierarchyRequestError)
+    );
+    assert_eq!(doc.parent(child).unwrap(), None);
+  }
+
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
+fn doctype_nodes_can_only_be_inserted_under_document() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let doctype = doc.push_node(
+    NodeKind::Doctype {
+      name: "html".to_string(),
+      public_id: String::new(),
+      system_id: String::new(),
+    },
+    None,
+    /* inert_subtree */ false,
+  );
+
+  assert_eq!(
+    doc.append_child(parent, doctype),
+    Err(DomError::HierarchyRequestError)
+  );
+  assert_eq!(doc.parent(doctype).unwrap(), None);
+  assert_parent_child_invariants(&doc);
+}
+
+#[test]
 fn deep_tree_mutations_are_iterative() {
   const DEPTH: usize = 50_000;
 
@@ -248,4 +315,3 @@ fn deep_tree_mutations_are_iterative() {
     Err(DomError::HierarchyRequestError)
   );
 }
-
