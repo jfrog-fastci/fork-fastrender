@@ -494,10 +494,6 @@ id = "language/expressions/new/spread-err-sngl-err-unresolvable.js"
 status = "pass"
 
 [[expectations]]
-id = "language/expressions/relational/S9.1_A1_T4.js"
-status = "pass"
-
-[[expectations]]
 id = "language/expressions/strict-does-not-equals/S11.9.5_A2.1_T1.js"
 status = "pass"
 
