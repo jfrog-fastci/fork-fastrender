@@ -2809,11 +2809,21 @@ impl BlockFormattingContext {
     // Collapsing through an empty block (CSS 2.1 §8.3.1).
     let mut has_in_flow_content = matches!(node.box_type, BoxType::Replaced(_));
     if !has_in_flow_content {
+      let mut seen_float = false;
       for child in &node.children {
+        if child.style.float.is_floating()
+          && !matches!(child.style.position, Position::Absolute | Position::Fixed)
+        {
+          seen_float = true;
+        }
         if is_out_of_flow_or_float(child) || is_ignorable_whitespace(child) {
           continue;
         }
         if is_in_flow_block(child) {
+          if seen_float && child.style.clear != Clear::None {
+            has_in_flow_content = true;
+            break;
+          }
           let child_margins = self.collapsed_block_margins(child, containing_width, false);
           if !child_margins.collapsible_through {
             has_in_flow_content = true;
@@ -8293,6 +8303,65 @@ mod tests {
     style.height = Some(Length::px(height));
     style.height_keyword = None;
     Arc::new(style)
+  }
+
+  #[test]
+  fn margin_collapse_through_clear_without_floats() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut clear_style = ComputedStyle::default();
+    clear_style.display = Display::Block;
+    clear_style.clear = Clear::Both;
+
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        Arc::new(clear_style),
+        FormattingContextType::Block,
+        vec![],
+      )],
+    );
+
+    let margins = bfc.collapsed_block_margins(&parent, 800.0, false);
+    assert!(
+      margins.collapsible_through,
+      "A clear-only empty block should still be collapsible-through when it does not follow a float"
+    );
+  }
+
+  #[test]
+  fn margin_collapse_through_clear_after_float_breaks() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+
+    let mut clear_style = ComputedStyle::default();
+    clear_style.display = Display::Block;
+    clear_style.clear = Clear::Both;
+
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]),
+        BoxNode::new_block(Arc::new(clear_style), FormattingContextType::Block, vec![]),
+      ],
+    );
+
+    let margins = bfc.collapsed_block_margins(&parent, 800.0, false);
+    assert!(
+      !margins.collapsible_through,
+      "A block that contains a float and a later clearing block should not be treated as collapsible-through"
+    );
   }
 
   fn content_visibility_test_guard() -> runtime::ThreadRuntimeTogglesGuard {
