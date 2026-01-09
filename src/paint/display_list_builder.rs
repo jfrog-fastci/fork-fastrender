@@ -3621,14 +3621,13 @@ impl DisplayListBuilder {
     let right = bounds.x() + right_offset;
     let bottom = bounds.y() + bottom_offset;
 
-    let rect = Rect::from_xywh(left, top, right - left, bottom - top);
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-      None
-    } else {
-      Some(ClipItem {
-        shape: ClipShape::Rect { rect, radii: None },
-      })
-    }
+    // CSS2 `clip` can define an empty clipping region (e.g. `rect(1px, 1px, 1px, 1px)`), which
+    // should clip all painting for the element. Preserve that behavior by emitting an empty clip
+    // item rather than treating it as "no clip".
+    let rect = Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0));
+    Some(ClipItem {
+      shape: ClipShape::Rect { rect, radii: None },
+    })
   }
 
   fn used_transform_style(style: &ComputedStyle) -> TransformStyle {
@@ -11517,6 +11516,34 @@ mod tests {
     assert!((rect.y() - 50.0).abs() < 1e-6);
     assert!((rect.width() - 40.0).abs() < 1e-6);
     assert!((rect.height() - 60.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn clip_rect_from_style_allows_empty_rects() {
+    // Sites often use `clip` + `position: absolute` to implement visually-hidden accessibility
+    // text. A degenerate clip rect should behave like a clip-to-empty (paint nothing), not as
+    // `clip: auto`.
+    let mut style = ComputedStyle::default();
+    style.position = Position::Absolute;
+    style.clip = Some(ClipRect {
+      top: ClipComponent::Length(Length::px(1.0)),
+      right: ClipComponent::Length(Length::px(1.0)),
+      bottom: ClipComponent::Length(Length::px(1.0)),
+      left: ClipComponent::Length(Length::px(1.0)),
+    });
+
+    let bounds = Rect::from_xywh(50.0, 40.0, 100.0, 80.0);
+    let clip = DisplayListBuilder::clip_rect_from_style(&style, bounds, None)
+      .expect("expected empty clip rect to produce a clip item");
+    let rect = match clip.shape {
+      ClipShape::Rect { rect, .. } => rect,
+      other => panic!("expected rect clip, got {other:?}"),
+    };
+
+    assert!((rect.x() - 51.0).abs() < 1e-6);
+    assert!((rect.y() - 41.0).abs() < 1e-6);
+    assert!((rect.width() - 0.0).abs() < 1e-6);
+    assert!((rect.height() - 0.0).abs() < 1e-6);
   }
 
   #[test]
