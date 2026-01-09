@@ -1151,10 +1151,10 @@ impl JsRuntime for VmJsRuntime {
           }
         } else if let Some(number_data) = self.number_object_data(obj)? {
           number_data
+        } else if let Some(_) = self.bigint_object_data(obj)? {
+          return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
         } else if let Some(symbol_data) = self.symbol_object_data(obj)? {
           return Err(self.throw_symbol_to_number(symbol_data));
-        } else if self.bigint_object_data(obj)?.is_some() {
-          return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
         } else {
           f64::NAN
         }

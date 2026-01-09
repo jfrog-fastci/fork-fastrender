@@ -3,6 +3,7 @@
 mod browser_headless_smoke_test;
 mod browser_cli_help;
 mod browser_mem_limit_env;
+mod browser_thread_base_url_across_navigations;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;
 mod browser_worker_fragment_navigation;

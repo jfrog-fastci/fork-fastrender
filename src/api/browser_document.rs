@@ -204,6 +204,80 @@ impl BrowserDocument {
     })
   }
 
+  /// Prepares and installs an HTML string as the current document using the internal renderer.
+  ///
+  /// This is the HTML-string equivalent of [`BrowserDocument::navigate_url_with_options`]. It
+  /// allows browser-UI integrations to keep a stable `BrowserDocument`/renderer per tab while
+  /// rendering internal `about:` pages (or error pages) without constructing a new renderer.
+  ///
+  /// Returns `(committed_url, base_url)` where:
+  /// - `committed_url` is the provided `document_url` (after normalization).
+  /// - `base_url` is the effective base used for resolving relative URLs (after `<base href>`),
+  ///   falling back to `committed_url` when absent.
+  pub fn navigate_html_with_options(
+    &mut self,
+    document_url: &str,
+    html: &str,
+    base_url_hint: Option<&str>,
+    options: RenderOptions,
+  ) -> Result<(String, String)> {
+    // `prepare_dom_with_options` updates the renderer's URL hints early (before doing layout). If
+    // it errors (e.g. cancellation), restore the previous hints so the existing document continues
+    // to have consistent origin/base semantics.
+    let prev_document_url = self.renderer.document_url.clone();
+    let prev_base_url = self.renderer.base_url.clone();
+
+    // Seed relative URL resolution when the HTML document does not contain `<base href>`.
+    match base_url_hint
+      .map(super::trim_ascii_whitespace)
+      .filter(|url| !url.is_empty())
+    {
+      Some(url) => self.renderer.set_base_url(url.to_string()),
+      None => self.renderer.clear_base_url(),
+    }
+
+    let dom = match self.renderer.parse_html(html) {
+      Ok(dom) => dom,
+      Err(err) => {
+        self.set_navigation_urls(prev_document_url, prev_base_url);
+        return Err(err);
+      }
+    };
+
+    let report = match self
+      .renderer
+      .prepare_dom_with_options(dom, Some(document_url), options.clone())
+    {
+      Ok(report) => report,
+      Err(err) => {
+        self.set_navigation_urls(prev_document_url, prev_base_url);
+        return Err(err);
+      }
+    };
+
+    let committed_url = report
+      .final_url
+      .clone()
+      .unwrap_or_else(|| document_url.to_string());
+    let base_url = report
+      .base_url
+      .clone()
+      .filter(|base| !super::trim_ascii_whitespace(base).is_empty())
+      .unwrap_or_else(|| committed_url.clone());
+
+    // Update our stable document URL hint (used for origin/referrer semantics) and the renderer's
+    // navigation URL hints for relative URL resolution.
+    self.document_url =
+      (!super::trim_ascii_whitespace(&committed_url).is_empty()).then_some(committed_url.clone());
+    self.set_navigation_urls(Some(committed_url.clone()), Some(base_url.clone()));
+
+    // Install the prepared layout result and mark paint dirty so the next render call produces a
+    // frame without re-running layout.
+    self.reset_with_prepared(report.document, options);
+
+    Ok((committed_url, base_url))
+  }
+
   /// Replaces the live DOM, clears any cached preparation state, and marks the document dirty.
   pub fn reset_with_dom(&mut self, dom: DomNode, options: RenderOptions) {
     self.dom = dom;
@@ -578,15 +652,15 @@ impl BrowserDocument {
     }
 
     let needs_layout = self.style_dirty || self.layout_dirty;
-    if needs_layout {
-      let prev_prepared = self.prepared.take();
-      let mut prepared = match self.prepare_dom_with_options() {
-        Ok(prepared) => prepared,
-        Err(err) => {
-          self.prepared = prev_prepared;
-          return Err(err);
-        }
-      };
+      if needs_layout {
+        let prev_prepared = self.prepared.take();
+        let mut prepared = match self.prepare_dom_with_options() {
+          Ok(prepared) => prepared,
+          Err(err) => {
+            self.prepared = prev_prepared;
+            return Err(err);
+          }
+        };
 
       let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
@@ -610,6 +684,8 @@ impl BrowserDocument {
       }
 
       self.prepared = Some(prepared);
+      self.style_dirty = false;
+      self.layout_dirty = false;
     }
 
     let frame = self.paint_from_cache_frame_with_deadline(paint_deadline)?;
@@ -1054,9 +1130,41 @@ mod tests {
   }
 
   #[test]
+  fn render_frame_with_deadlines_caches_layout_on_paint_cancel() -> Result<()> {
+    let options = RenderOptions::default().with_viewport(32, 32);
+    let mut document = BrowserDocument::from_html("<div>hi</div>", options)?;
+
+    // Cancel the first paint. Layout should still complete and be cached so the next render can
+    // repaint without rerunning layout.
+    let cb: Arc<crate::render_control::CancelCallback> = Arc::new(|| true);
+    let paint_deadline = RenderDeadline::new(None, Some(cb));
+    let err = match document.render_frame_with_deadlines(Some(&paint_deadline)) {
+      Ok(_) => panic!("expected paint to be cancelled"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => {
+        assert_eq!(stage, RenderStage::Paint);
+      }
+      other => panic!("expected RenderError::Timeout; got {other:?}"),
+    }
+
+    let stages = capture_stages(|| document.render_frame_with_deadlines(None).map(|_| ()))?;
+    assert!(
+      !stages.contains(&StageHeartbeat::Layout),
+      "expected cached layout reuse after paint cancellation; got {stages:?}"
+    );
+    assert!(
+      stages.contains(&StageHeartbeat::PaintBuild) || stages.contains(&StageHeartbeat::PaintRasterize),
+      "expected paint stage heartbeats; got {stages:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
   fn paint_clamps_programmatic_viewport_scroll_to_bounds_excluding_fixed() -> Result<()> {
     let html = r#"<!doctype html>
-<html>
+ <html>
   <head>
     <style>
       html, body { margin: 0; padding: 0; }
