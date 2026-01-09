@@ -2790,6 +2790,7 @@ impl InlineFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
+    let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
       compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
@@ -2797,31 +2798,32 @@ impl InlineFormattingContext {
 
     let percentage_base = available_width.is_finite().then_some(available_width);
     let percentage_base_px = percentage_base.unwrap_or(0.0);
-
     let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
     let block_positive = crate::style::block_axis_positive(style.writing_mode);
-    let (inline_start_side, inline_end_side) = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
-      if inline_positive {
-        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+    let (inline_start_side, inline_end_side) =
+      if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        if inline_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if inline_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
       } else {
-        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
-      }
-    } else if inline_positive {
-      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
-    } else {
-      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
-    };
-    let (block_start_side, block_end_side) = if crate::style::block_axis_is_horizontal(style.writing_mode) {
-      if block_positive {
-        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
+    let (block_start_side, block_end_side) =
+      if crate::style::block_axis_is_horizontal(style.writing_mode) {
+        if block_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if block_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
       } else {
-        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
-      }
-    } else if block_positive {
-      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
-    } else {
-      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
-    };
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
 
     let resolve_margin_side = |side: crate::style::PhysicalSide| -> f32 {
       let raw = match side {
@@ -2844,14 +2846,16 @@ impl InlineFormattingContext {
         .unwrap_or(0.0)
     };
 
-    // Inline formatting context operates in logical inline/block coordinates. For vertical writing
-    // modes, inline-start/end map to physical top/bottom, and block-start/end map to left/right.
+    // Inline formatting context operates in logical inline/block coordinates. Map physical margins
+    // into those axes so `margin_left/right` always correspond to the inline axis and
+    // `margin_top/bottom` correspond to the block axis.
     let margin_left = resolve_margin_side(inline_start_side);
     let margin_right = resolve_margin_side(inline_end_side);
     let margin_top = resolve_margin_side(block_start_side);
     let margin_bottom = resolve_margin_side(block_end_side);
+    let (margin_inline_start, margin_inline_end) = (margin_left, margin_right);
     let available_for_box = if available_width.is_finite() {
-      (available_width - margin_left - margin_right).max(0.0)
+      (available_width - margin_inline_start - margin_inline_end).max(0.0)
     } else {
       available_width
     };
@@ -2867,12 +2871,21 @@ impl InlineFormattingContext {
       .unwrap_or_else(|| box_node.style.clone());
     {
       let s = Arc::make_mut(&mut probe_style);
-      s.width = None;
-      s.width_keyword = None;
-      s.min_width = None;
-      s.min_width_keyword = None;
-      s.max_width = None;
-      s.max_width_keyword = None;
+      if inline_vertical {
+        s.height = None;
+        s.height_keyword = None;
+        s.min_height = None;
+        s.min_height_keyword = None;
+        s.max_height = None;
+        s.max_height_keyword = None;
+      } else {
+        s.width = None;
+        s.width_keyword = None;
+        s.min_width = None;
+        s.min_width_keyword = None;
+        s.max_width = None;
+        s.max_width_keyword = None;
+      }
     }
 
     let compute_intrinsic_sizes =
@@ -2921,14 +2934,39 @@ impl InlineFormattingContext {
       }
     };
 
-    let edges_base0 =
-      horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
-    let edges_actual = horizontal_padding_and_borders(
-      style,
-      percentage_base_px,
-      self.viewport_size,
-      &self.font_context,
-    );
+    let inline_edges = |percentage_base: f32| {
+      if inline_vertical {
+        resolve_length_for_width(
+          style.padding_top,
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.padding_bottom,
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.used_border_top_width(),
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ) + resolve_length_for_width(
+          style.used_border_bottom_width(),
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      } else {
+        horizontal_padding_and_borders(style, percentage_base, self.viewport_size, &self.font_context)
+      }
+    };
+    let edges_base0 = inline_edges(0.0);
+    let edges_actual = inline_edges(percentage_base_px);
     let preferred_min_border = (preferred_min_border_base0 - edges_base0 + edges_actual).max(0.0);
     let preferred_border = (preferred_border_base0 - edges_base0 + edges_actual).max(0.0);
 
@@ -2948,17 +2986,31 @@ impl InlineFormattingContext {
       }
     };
 
-    let resolved_specified_height = style.height.as_ref().and_then(|h| {
-      available_height.filter(|h| h.is_finite()).and_then(|base| {
-        resolve_length_with_percentage_inline(
-          *h,
-          Some(base),
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
+    let resolved_specified_cross_size = if inline_vertical {
+      style.width.as_ref().and_then(|w| {
+        available_height.filter(|h| h.is_finite()).and_then(|base| {
+          resolve_length_with_percentage_inline(
+            *w,
+            Some(base),
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
       })
-    });
+    } else {
+      style.height.as_ref().and_then(|h| {
+        available_height.filter(|h| h.is_finite()).and_then(|base| {
+          resolve_length_with_percentage_inline(
+            *h,
+            Some(base),
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
+      })
+    };
 
     let resolve_fit_content_limit = |limit: Length| -> Option<f32> {
       if limit.unit.is_percentage() && percentage_base.is_none() {
@@ -2999,7 +3051,12 @@ impl InlineFormattingContext {
         }
       };
 
-    let specified_width_from_length = style.width.as_ref().and_then(|l| {
+    let specified_inline_length = if inline_vertical {
+      style.height.as_ref()
+    } else {
+      style.width.as_ref()
+    };
+    let specified_inline_from_length = specified_inline_length.and_then(|l| {
       if l.unit.is_percentage() && percentage_base.is_none() {
         None
       } else {
@@ -3012,52 +3069,61 @@ impl InlineFormattingContext {
         ))
       }
     });
-    let specified_width_from_keyword = style.width_keyword.and_then(resolve_intrinsic_keyword);
-    let specified_width = specified_width_from_length.or(specified_width_from_keyword);
-    let specified_width_is_keyword =
-      specified_width_from_length.is_none() && specified_width_from_keyword.is_some();
+    let specified_inline_from_keyword = (if inline_vertical {
+      style.height_keyword
+    } else {
+      style.width_keyword
+    })
+    .and_then(resolve_intrinsic_keyword);
+    let specified_inline = specified_inline_from_length.or(specified_inline_from_keyword);
+    let specified_inline_is_keyword =
+      specified_inline_from_length.is_none() && specified_inline_from_keyword.is_some();
 
-    let min_width = if let Some(keyword) = style.min_width_keyword {
+    let min_inline_keyword = if inline_vertical {
+      style.min_height_keyword
+    } else {
+      style.min_width_keyword
+    };
+    let min_inline_length = if inline_vertical {
+      style.min_height.as_ref()
+    } else {
+      style.min_width.as_ref()
+    };
+    let min_inline = if let Some(keyword) = min_inline_keyword {
       resolve_intrinsic_keyword(keyword).unwrap_or(0.0)
     } else {
-      style
-        .min_width
-        .as_ref()
+      min_inline_length
         .map(|l| {
-          resolve_length_for_width(
-            *l,
-            percentage_base_px,
-            style,
-            &self.font_context,
-            self.viewport_size,
-          )
+          resolve_length_for_width(*l, percentage_base_px, style, &self.font_context, self.viewport_size)
         })
         .unwrap_or(0.0)
     };
-    let max_width = if let Some(keyword) = style.max_width_keyword {
+    let max_inline_keyword = if inline_vertical {
+      style.max_height_keyword
+    } else {
+      style.max_width_keyword
+    };
+    let max_inline_length = if inline_vertical {
+      style.max_height.as_ref()
+    } else {
+      style.max_width.as_ref()
+    };
+    let max_inline = if let Some(keyword) = max_inline_keyword {
       resolve_intrinsic_keyword(keyword).unwrap_or(f32::INFINITY)
     } else {
-      style
-        .max_width
-        .as_ref()
+      max_inline_length
         .map(|l| {
-          resolve_length_for_width(
-            *l,
-            percentage_base_px,
-            style,
-            &self.font_context,
-            self.viewport_size,
-          )
+          resolve_length_for_width(*l, percentage_base_px, style, &self.font_context, self.viewport_size)
         })
         .unwrap_or(f32::INFINITY)
     };
 
-    let used_width = if let Some(specified) = specified_width {
+    let used_inline = if let Some(specified) = specified_inline {
       // Honor specified width. Preserve legacy capping behavior for numeric widths to keep line
       // layout stable, but intrinsic sizing keywords like `max-content` must be treated as truly
       // specified values (they may overflow the containing line).
-      let used = crate::layout::utils::clamp_with_order(specified, min_width, max_width);
-      if !specified_width_is_keyword && available_for_fit.is_finite() {
+      let used = crate::layout::utils::clamp_with_order(specified, min_inline, max_inline);
+      if !specified_inline_is_keyword && available_for_fit.is_finite() {
         used.min(available_for_fit.max(preferred_min))
       } else {
         used
@@ -3068,11 +3134,11 @@ impl InlineFormattingContext {
         | crate::style::types::AspectRatio::AutoRatio(ratio) => Some(ratio),
         crate::style::types::AspectRatio::Auto => None,
       },
-      resolved_specified_height,
+      resolved_specified_cross_size,
     ) {
       if ratio > 0.0 {
-        let target = h * ratio;
-        let used = crate::layout::utils::clamp_with_order(target, min_width, max_width);
+        let target = if inline_vertical { h / ratio } else { h * ratio };
+        let used = crate::layout::utils::clamp_with_order(target, min_inline, max_inline);
         if available_for_fit.is_finite() {
           used.min(available_for_fit.max(preferred_min))
         } else {
@@ -3080,7 +3146,7 @@ impl InlineFormattingContext {
         }
       } else {
         let shrink = preferred.min(available_for_fit.max(preferred_min));
-        crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
+        crate::layout::utils::clamp_with_order(shrink, min_inline, max_inline)
       }
     } else {
       let available = if available_for_fit.is_finite() {
@@ -3089,31 +3155,51 @@ impl InlineFormattingContext {
         preferred
       };
       let shrink = preferred.min(available.max(preferred_min));
-      crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
+      crate::layout::utils::clamp_with_order(shrink, min_inline, max_inline)
     };
 
-    let constraint_width = match style.box_sizing {
-      crate::style::types::BoxSizing::BorderBox => used_width.max(0.0),
-      crate::style::types::BoxSizing::ContentBox => (used_width + edges_actual).max(0.0),
+    let constraint_inline_border_box = match style.box_sizing {
+      crate::style::types::BoxSizing::BorderBox => used_inline.max(0.0),
+      crate::style::types::BoxSizing::ContentBox => (used_inline + edges_actual).max(0.0),
     };
 
-    let height_space = available_height
-      .filter(|h| h.is_finite())
-      .map(AvailableSpace::Definite)
-      .unwrap_or(AvailableSpace::Indefinite);
-
-    // Pass the containing block inline size as the available space so percentage-based edges on
+    // Pass the containing block inline size as the percentage base so percentage-based edges on
     // the inline-block itself resolve against the correct base (CSS 2.1 §10.3.9). The computed
-    // shrink-to-fit width is provided separately via `used_border_box_width` so the inner
+    // shrink-to-fit inline size is provided separately via `used_border_box_*` so the inner
     // formatting context lays out within the used size even when it differs from the containing
     // block.
-    let width_space = if available_width.is_finite() {
-      AvailableSpace::Definite(available_width.max(0.0))
+    let (width_space, height_space) = if inline_vertical {
+      let width_space = available_height
+        .filter(|h| h.is_finite())
+        .map(|h| AvailableSpace::Definite(h.max(0.0)))
+        .unwrap_or(AvailableSpace::Indefinite);
+      let height_space = if available_width.is_finite() {
+        AvailableSpace::Definite(available_width.max(0.0))
+      } else {
+        AvailableSpace::Indefinite
+      };
+      (width_space, height_space)
     } else {
-      AvailableSpace::Indefinite
+      let width_space = if available_width.is_finite() {
+        AvailableSpace::Definite(available_width.max(0.0))
+      } else {
+        AvailableSpace::Indefinite
+      };
+      let height_space = available_height
+        .filter(|h| h.is_finite())
+        .map(AvailableSpace::Definite)
+        .unwrap_or(AvailableSpace::Indefinite);
+      (width_space, height_space)
+    };
+
+    let (used_border_box_width, used_border_box_height) = if inline_vertical {
+      (None, Some(constraint_inline_border_box))
+    } else {
+      (Some(constraint_inline_border_box), None)
     };
     let constraints = LayoutConstraints::new(width_space, height_space)
-      .with_used_border_box_size(Some(constraint_width), None);
+      .with_inline_percentage_base(percentage_base)
+      .with_used_border_box_size(used_border_box_width, used_border_box_height);
     let fragment = fc.layout(box_node, &constraints)?;
     let mut fragment = crate::layout::contexts::block::unconvert_fragment_axes_root(fragment);
     let log_ids = crate::debug::runtime::runtime_toggles()
@@ -3132,7 +3218,7 @@ impl InlineFormattingContext {
         available_for_box,
         preferred_min_border,
         preferred_border,
-        constraint_width,
+        constraint_inline_border_box,
         fragment.bounds.width()
             );
     }
@@ -6668,6 +6754,13 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => self.create_item_fragment(item, inline_pos, block_pos),
       InlineItem::InlineBlock(block_item) => {
         let mut fragment = block_item.fragment.clone();
+        if fragment
+          .style
+          .as_ref()
+          .is_some_and(|s| crate::style::block_axis_is_horizontal(s.writing_mode))
+        {
+          fragment = crate::layout::contexts::block::convert_fragment_axes_root(fragment);
+        }
         if inline_vertical {
           fragment.bounds = Rect::from_xywh(
             block_pos + block_item.margin_top,

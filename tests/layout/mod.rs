@@ -132,6 +132,7 @@ mod intrinsic_sizing_keywords;
 mod legend_shrink_to_fit;
 mod line_height_normal_metrics;
 mod list_marker_outside_whitespace;
+mod inline_block_writing_mode;
 mod manual_multicol_breaks;
 mod multicol;
 mod nested_absolute;

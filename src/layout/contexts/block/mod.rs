@@ -7840,8 +7840,13 @@ impl FormattingContext for BlockFormattingContext {
     } else {
       vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
     };
-    // Honor specified widths that resolve without a containing block.
-    if let Some(specified) = style.width.as_ref() {
+    // Honor specified sizes in the inline axis that resolve without a containing block.
+    let specified_inline = if inline_is_horizontal {
+      style.width.as_ref()
+    } else {
+      style.height.as_ref()
+    };
+    if let Some(specified) = specified_inline {
       let resolved = resolve_length_for_width(
         *specified,
         0.0,
@@ -7895,9 +7900,17 @@ impl FormattingContext for BlockFormattingContext {
     // Replaced elements fall back to their intrinsic content size plus padding/borders.
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       let size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
-      let edges =
-        horizontal_padding_and_borders(style, size.width, self.viewport_size, &self.font_context);
-      let result = size.width + edges;
+      let inline_size = if inline_is_horizontal {
+        size.width
+      } else {
+        size.height
+      };
+      let edges = if inline_is_horizontal {
+        horizontal_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
+      } else {
+        vertical_padding_and_borders(style, inline_size, self.viewport_size, &self.font_context)
+      };
+      let result = inline_size + edges;
       intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
       intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
       return Ok((result, result));
@@ -8081,13 +8094,21 @@ impl FormattingContext for BlockFormattingContext {
     let mut max_width = max_content_width + edges;
 
     // Apply min/max constraints to the border box.
-    let min_constraint = style
-      .min_width
+    let min_inline_constraint = if inline_is_horizontal {
+      style.min_width
+    } else {
+      style.min_height
+    };
+    let min_constraint = min_inline_constraint
       .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(0.0);
-    let max_constraint = style
-      .max_width
+    let max_inline_constraint = if inline_is_horizontal {
+      style.max_width
+    } else {
+      style.max_height
+    };
+    let max_constraint = max_inline_constraint
       .map(|l| resolve_length_for_width(l, 0.0, style, &self.font_context, self.viewport_size))
       .map(|w| border_size_from_box_sizing(w, edges, style.box_sizing))
       .unwrap_or(f32::INFINITY);
@@ -8506,6 +8527,29 @@ pub(crate) fn unconvert_fragment_axes_root(fragment: FragmentNode) -> FragmentNo
     (fragment.bounds.width(), fragment.bounds.height())
   };
   unconvert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
+}
+
+/// Converts a fragment subtree produced in logical coordinates into physical coordinates.
+///
+/// Formatting contexts generally produce fragments in a logical coordinate system (inline axis = X,
+/// block axis = Y) and then convert them to physical coordinates based on `writing-mode`. Some
+/// layout algorithms (notably inline layout when embedding an inline-block fragment) need to round
+/// trip between coordinate spaces; this helper applies the forward conversion starting at the
+/// fragment root.
+pub(crate) fn convert_fragment_axes_root(fragment: FragmentNode) -> FragmentNode {
+  let style_wm = fragment
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(WritingMode::HorizontalTb);
+  let dir = fragment
+    .style
+    .as_ref()
+    .map(|s| s.direction)
+    .unwrap_or(crate::style::types::Direction::Ltr);
+  let inline_size = fragment.bounds.width();
+  let block_size = fragment.bounds.height();
+  convert_fragment_axes(fragment, inline_size, block_size, style_wm, dir)
 }
 
 fn logical_rect_to_physical(
