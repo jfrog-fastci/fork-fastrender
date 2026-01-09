@@ -3694,15 +3694,16 @@ fn atomic_containing_for_fragmentainer(
   fragmentainer: f32,
   atomic: &[AtomicRange],
 ) -> Option<AtomicRange> {
-  let range = atomic_containing(pos, atomic)?;
   if fragmentainer <= 0.0 {
     return None;
   }
-  let size = range.end - range.start;
-  if size > fragmentainer + BREAK_EPSILON {
-    return None;
-  }
-  Some(range)
+  // `atomic` ranges are filtered per-fragmentainer-size upstream (see `atomic_ranges_for`), using
+  // each candidate's `required_fragmentainer_size`. Some atomic candidates widen their range to
+  // include adjacent empty gutters (grid gaps, flex line gaps) while still using the *track/line
+  // size* as the required size. In those cases `range.end - range.start` can exceed the
+  // fragmentainer size, but we still want to treat the widened range as atomic so breaks never
+  // land inside the gutter.
+  atomic_containing(pos, atomic)
 }
 
 fn pos_is_inside_atomic_for_fragmentainer(pos: f32, fragmentainer: f32, atomic: &[AtomicRange]) -> bool {
