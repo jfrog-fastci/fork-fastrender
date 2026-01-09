@@ -626,6 +626,36 @@ mod tests {
   }
 
   #[test]
+  fn mutate_dom_noop_append_child_does_not_invalidate() {
+    let renderer = renderer_for_tests();
+    let mut doc = BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body></body></html>",
+      RenderOptions::new().with_viewport(32, 32),
+    )
+    .expect("document");
+    doc.render_frame().unwrap();
+
+    let body = doc.dom().body().expect("body element");
+
+    // Create a detached node. (Using `dom_mut()` here invalidates unconditionally; clear it before
+    // exercising `mutate_dom` invalidation behaviour.)
+    let child = doc.dom_mut().create_element("div", "");
+    doc.render_frame().unwrap();
+
+    // First append should change the tree and dirty the document.
+    let changed = doc.mutate_dom(|dom| dom.append_child(body, child).expect("append child"));
+    assert!(changed);
+    assert!(doc.render_if_needed().unwrap().is_some());
+    assert!(doc.render_if_needed().unwrap().is_none());
+
+    // Appending the same (already-last) child again is a no-op in dom2 and must not dirty the host.
+    let changed = doc.mutate_dom(|dom| dom.append_child(body, child).expect("append child"));
+    assert!(!changed);
+    assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
   fn realtime_animations_sample_document_timeline_when_enabled() -> Result<()> {
     let renderer = renderer_for_tests();
     let html = r#"
