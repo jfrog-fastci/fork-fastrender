@@ -1275,6 +1275,7 @@ impl FormattingContext for FlexFormattingContext {
     let log_measure_ids = toggles
       .usize_list("FASTR_LOG_FLEX_MEASURE_IDS")
       .unwrap_or_default();
+    let log_measure_max = toggles.usize_with_default("FASTR_LOG_FLEX_MEASURE_MAX", 3);
     let log_node_keys = toggles
       .usize_list("FASTR_LOG_FLEX_NODE_KEYS")
       .unwrap_or_default();
@@ -2019,7 +2020,10 @@ impl FormattingContext for FlexFormattingContext {
                     } else {
                       flex_cache_key_with_style(measure_box, measure_style)
                     };
-                    if let Some(cached) = pass_cache.get(&cache_key).and_then(|m| m.get(&key)).cloned() {
+                    if !force_full_measure {
+                      if let Some(cached) =
+                        pass_cache.get(&cache_key).and_then(|m| m.get(&key)).cloned()
+                      {
                         record_node_measure_hit(measure_box.id);
                         flex_profile::record_measure_hit();
                         flex_profile::record_measure_bucket_hit(w_state, h_state);
@@ -2058,8 +2062,8 @@ impl FormattingContext for FlexFormattingContext {
                             width: cached.measured_size.width,
                             height: cached.measured_size.height,
                         };
-                    }
-                    if let Some(entry) = pass_cache.get(&cache_key) {
+                      }
+                      if let Some(entry) = pass_cache.get(&cache_key) {
                         let target_w = fallback_size(known_dimensions.width, avail.width);
                         let target_h = fallback_size(known_dimensions.height, avail.height);
                         if let Some(cached) =
@@ -2109,8 +2113,8 @@ impl FormattingContext for FlexFormattingContext {
                                 height: cached.measured_size.height,
                             };
                         }
-                    }
-                    if let Some(cached) = measured_fragments.get(cache_key, &key) {
+                      }
+                      if let Some(cached) = measured_fragments.get(cache_key, &key) {
                         pass_cache
                             .entry(cache_key)
                             .or_default()
@@ -2153,39 +2157,41 @@ impl FormattingContext for FlexFormattingContext {
                             width: cached.measured_size.width,
                             height: cached.measured_size.height,
                         };
+                      }
                     }
                     let fc_type = measure_box.formatting_context().unwrap_or(FormattingContextType::Block);
+                    let mut log_measure_seq: Option<usize> = None;
                     if !log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id) {
-                        let seq = LOG_MEASURE_COUNTS
-                            .get_or_init(|| Mutex::new(HashMap::new()))
-                            .lock()
-                            .ok()
-                            .and_then(|mut counts| {
-                                let entry = counts.entry(measure_box.id).or_insert(0);
-                                (*entry < 3).then(|| {
-                                    *entry += 1;
-                                    *entry
-                                })
-                            });
-                        if let Some(seq) = seq {
-                            let selector = measure_box
-                                .debug_info
-                                .as_ref()
-                                .map(|d| d.to_selector())
-                                .unwrap_or_else(|| "<anon>".to_string());
-                            eprintln!(
-                                "[flex-measure] seq={} id={} selector={} display={:?} basis={:?} width_decl={:?} avail_w={:?} known_w={:?} avail_after={:?}",
-                                seq,
-                                measure_box.id,
-                                selector,
-                                measure_style.display,
-                                measure_style.flex_basis,
-                                measure_style.width,
-                                avail.width,
-                                known_dimensions.width,
-                                avail.width,
-                            );
-                        }
+                      log_measure_seq = LOG_MEASURE_COUNTS
+                        .get_or_init(|| Mutex::new(HashMap::new()))
+                        .lock()
+                        .ok()
+                        .and_then(|mut counts| {
+                          let entry = counts.entry(measure_box.id).or_insert(0);
+                          (*entry < log_measure_max).then(|| {
+                            *entry += 1;
+                            *entry
+                          })
+                        });
+                      if let Some(seq) = log_measure_seq {
+                        let selector = measure_box
+                          .debug_info
+                          .as_ref()
+                          .map(|d| d.to_selector())
+                          .unwrap_or_else(|| "<anon>".to_string());
+                        eprintln!(
+                          "[flex-measure] seq={} id={} selector={} display={:?} basis={:?} width_decl={:?} avail_w={:?} known_w={:?} avail_after={:?}",
+                          seq,
+                          measure_box.id,
+                          selector,
+                          measure_style.display,
+                          measure_style.flex_basis,
+                          measure_style.width,
+                          avail.width,
+                          known_dimensions.width,
+                          avail.width,
+                        );
+                      }
                     }
                     let mut constraints = this.constraints_from_taffy(known_dimensions, avail, None);
                     // When Taffy asks for a flex item's size without a known inline size, it can
@@ -2691,7 +2697,8 @@ impl FormattingContext for FlexFormattingContext {
                     //
                     // When possible, satisfy these probes via the formatting context's intrinsic
                     // sizing API, which is heavily cached and avoids constructing fragment trees.
-                    let width_is_intrinsic_probe = known_dimensions.width.is_none()
+                    let width_is_intrinsic_probe = !force_full_measure
+                      && known_dimensions.width.is_none()
                       && matches!(
                         avail.width,
                         AvailableSpace::MinContent | AvailableSpace::MaxContent
@@ -2711,6 +2718,15 @@ impl FormattingContext for FlexFormattingContext {
                       if let Some(border_box_width) = fit_border_box_width {
                         // Fit-content sizing is already resolved in border-box terms. Convert to
                         // the content-box size that Taffy expects from the measure callback.
+                        // Flex line-breaking happens during intrinsic-width probes. Inline/text
+                        // max-content sizing can be fractional, while downstream used sizes are
+                        // often effectively pixel-snapped; rounding here avoids wrap decisions
+                        // that would not occur once those used sizes are applied.
+                        let border_box_width = if border_box_width.is_finite() {
+                          border_box_width.round()
+                        } else {
+                          border_box_width
+                        };
                         let mut content_w = (border_box_width - fit_inset_w).max(0.0);
                         // Mirror the clamp behavior from the intrinsic fast path to avoid runaway
                         // widths propagating through flex sizing.
@@ -2785,6 +2801,14 @@ impl FormattingContext for FlexFormattingContext {
                       };
                       match intrinsic_result {
                         Ok(border_box_width) => {
+                          // See the comment in the fit-content branch above: make the intrinsic
+                          // probe consistent with pixel-snapped used sizes so Taffy doesn't wrap
+                          // items that would fit after snapping.
+                          let border_box_width = if border_box_width.is_finite() {
+                            border_box_width.round()
+                          } else {
+                            border_box_width
+                          };
                           // `compute_intrinsic_inline_size` returns a border-box size. Convert to a
                           // content-box size because Taffy adds padding/border/scrollbars from the
                           // style when computing the used border-box size for the flex item.
@@ -3194,64 +3218,51 @@ impl FormattingContext for FlexFormattingContext {
                         );
                     }
 
-                     if !log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id) {
-                         let seq = LOG_MEASURE_COUNTS
-                             .get_or_init(|| Mutex::new(HashMap::new()))
-                             .lock()
-                            .ok()
-                            .and_then(|mut counts| {
-                                let entry = counts.entry(measure_box.id).or_insert(0);
-                                (*entry < 3).then(|| {
-                                    *entry += 1;
-                                    *entry
-                                })
-                            });
-                         if let Some(seq) = seq {
-                             let selector = measure_box
-                                 .debug_info
-                                 .as_ref()
-                                 .map(|d| d.to_selector())
-                                 .unwrap_or_else(|| "<anon>".to_string());
-                             let intrinsic_inline_hint = if matches!(
-                               constraints.available_width,
-                               CrateAvailableSpace::MaxContent | CrateAvailableSpace::MinContent
-                             ) {
-                               #[cfg(test)]
-                               record_flex_measure_inline_hint_call();
-                               match fc.compute_intrinsic_inline_size(
-                                 measure_box,
-                                 IntrinsicSizingMode::MaxContent,
-                               ) {
-                                 Ok(size) => Some(size),
-                                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                                 Err(_) => None,
-                               }
-                             } else {
-                               None
-                             };
-                             eprintln!(
-                                 "[flex-measure-result] seq={} id={} selector={} avail=({:?},{:?}) known=({:?},{:?}) constraints=({:?},{:?}) content=({:.2},{:.2}) intrinsic=({:.2},{:.2}) min=({:.2},{:.2}) max=({:.2},{:.2}) inline_hint={:?}",
-                                 seq,
-                                 measure_box.id,
-                                 selector,
-                                avail.width,
-                                avail.height,
-                                known_dimensions.width,
-                                known_dimensions.height,
-                                constraints.available_width,
-                                constraints.available_height,
-                                content_size.width,
-                                content_size.height,
-                                intrinsic_size.width,
-                                intrinsic_size.height,
-                                min_w_bound,
-                                min_h_bound,
-                                 max_w_bound,
-                                 max_h_bound,
-                                 intrinsic_inline_hint,
-                              );
-                          }
-                      }
+                     if let Some(seq) = log_measure_seq {
+                       let selector = measure_box
+                         .debug_info
+                         .as_ref()
+                         .map(|d| d.to_selector())
+                         .unwrap_or_else(|| "<anon>".to_string());
+                       let intrinsic_inline_hint = if matches!(
+                         constraints.available_width,
+                         CrateAvailableSpace::MaxContent | CrateAvailableSpace::MinContent
+                       ) {
+                         #[cfg(test)]
+                         record_flex_measure_inline_hint_call();
+                         match fc.compute_intrinsic_inline_size(
+                           measure_box,
+                           IntrinsicSizingMode::MaxContent,
+                         ) {
+                           Ok(size) => Some(size),
+                           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                           Err(_) => None,
+                         }
+                       } else {
+                         None
+                       };
+                       eprintln!(
+                         "[flex-measure-result] seq={} id={} selector={} avail=({:?},{:?}) known=({:?},{:?}) constraints=({:?},{:?}) content=({:.2},{:.2}) intrinsic=({:.2},{:.2}) min=({:.2},{:.2}) max=({:.2},{:.2}) inline_hint={:?}",
+                         seq,
+                         measure_box.id,
+                         selector,
+                         avail.width,
+                         avail.height,
+                         known_dimensions.width,
+                         known_dimensions.height,
+                         constraints.available_width,
+                         constraints.available_height,
+                         content_size.width,
+                         content_size.height,
+                         intrinsic_size.width,
+                         intrinsic_size.height,
+                         min_w_bound,
+                         min_h_bound,
+                         max_w_bound,
+                         max_h_bound,
+                         intrinsic_inline_hint,
+                       );
+                     }
 
                     let mut measured_size =
                       Size::new(content_size.width.max(0.0), content_size.height.max(0.0));
@@ -5177,11 +5188,25 @@ impl FormattingContext for FlexFormattingContext {
       LayoutConstraints::new(CrateAvailableSpace::Indefinite, intrinsic_inline_space)
     };
     let fragment = self.layout(box_node, &constraints)?;
-    let block_size = if inline_is_horizontal {
+    let mut block_size = if inline_is_horizontal {
       fragment.bounds.height()
     } else {
       fragment.bounds.width()
     };
+    // Taffy can occasionally report a 0px size for the flex container itself even when its in-flow
+    // descendants have non-zero bounds (e.g. when sizing flex/grid containers via intrinsic width
+    // probes inside another flex container). In that case, fall back to the subtree bounds so we
+    // don't propagate a bogus 0 block-size up to the parent flex line.
+    let eps = 0.01;
+    if block_size <= eps || !block_size.is_finite() {
+      let mut deadline_counter = 0usize;
+      if let Ok(size) = Self::fragment_subtree_size(&fragment, &mut deadline_counter) {
+        let subtree_block = if inline_is_horizontal { size.height } else { size.width };
+        if subtree_block.is_finite() && subtree_block > block_size {
+          block_size = subtree_block;
+        }
+      }
+    }
     intrinsic_block_cache_store(box_node, mode, block_size);
     Ok(block_size)
   }
