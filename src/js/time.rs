@@ -133,6 +133,9 @@ pub fn install_time_bindings(
     let date_now_id = vm.register_native_call(date_now_native)?;
     let date_now_name = scope.alloc_string("now")?;
     let date_now = scope.alloc_native_function(date_now_id, None, date_now_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(date_now, Some(realm.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(date_now))?;
 
     let date_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
@@ -152,6 +155,9 @@ pub fn install_time_bindings(
     let perf_now_id = vm.register_native_call(performance_now_native)?;
     let perf_now_name = scope.alloc_string("now")?;
     let perf_now = scope.alloc_native_function(perf_now_id, None, perf_now_name, 0)?;
+    scope
+      .heap_mut()
+      .object_set_prototype(perf_now, Some(realm.intrinsics().function_prototype()))?;
     scope.push_root(Value::Object(perf_now))?;
 
     let perf_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
@@ -291,7 +297,20 @@ mod tests {
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
     let mut scope = heap.scope();
-    vm.call(&mut scope, callee, this, &[])
+    scope.push_root(callee).unwrap();
+    scope.push_root(this).unwrap();
+
+    // Host-created native functions must inherit from `Function.prototype` so `.call` works.
+    let Value::Object(func) = callee else {
+      panic!("expected function object");
+    };
+    let call_key_s = scope.alloc_string("call").expect("alloc key string");
+    scope.push_root(Value::String(call_key_s)).unwrap();
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call = vm.get(&mut scope, func, call_key).expect("get call");
+    scope.push_root(call).unwrap();
+
+    vm.call(&mut scope, call, callee, &[this])
       .expect("call should succeed")
   }
 

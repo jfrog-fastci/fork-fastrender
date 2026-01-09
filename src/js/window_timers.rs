@@ -488,18 +488,27 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let set_timeout_name = scope.alloc_string("setTimeout")?;
   scope.push_root(Value::String(set_timeout_name))?;
   let set_timeout = scope.alloc_native_function(set_timeout_id, None, set_timeout_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(set_timeout, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(set_timeout))?;
 
   let clear_timeout_id = vm.register_native_call(clear_timeout_native::<Host>)?;
   let clear_timeout_name = scope.alloc_string("clearTimeout")?;
   scope.push_root(Value::String(clear_timeout_name))?;
   let clear_timeout = scope.alloc_native_function(clear_timeout_id, None, clear_timeout_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(clear_timeout, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(clear_timeout))?;
 
   let set_interval_id = vm.register_native_call(set_interval_native::<Host>)?;
   let set_interval_name = scope.alloc_string("setInterval")?;
   scope.push_root(Value::String(set_interval_name))?;
   let set_interval = scope.alloc_native_function(set_interval_id, None, set_interval_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(set_interval, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(set_interval))?;
 
   let clear_interval_id = vm.register_native_call(clear_interval_native::<Host>)?;
@@ -507,6 +516,9 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(clear_interval_name))?;
   let clear_interval =
     scope.alloc_native_function(clear_interval_id, None, clear_interval_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(clear_interval, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(clear_interval))?;
 
   let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>)?;
@@ -514,6 +526,9 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   scope.push_root(Value::String(queue_microtask_name))?;
   let queue_microtask =
     scope.alloc_native_function(queue_microtask_id, None, queue_microtask_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(queue_microtask, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(queue_microtask))?;
 
   let set_timeout_key = alloc_key(&mut scope, "setTimeout")?;
@@ -771,14 +786,27 @@ mod tests {
     scope.push_root(Value::Object(global))?;
 
     let set_timeout = get_prop(&mut scope, global, "setTimeout");
+    let Value::Object(set_timeout_func) = set_timeout else {
+      panic!("expected setTimeout to be a function object");
+    };
     let not_a_function = scope.alloc_object()?;
     scope.push_root(Value::Object(not_a_function))?;
 
+    // `setTimeout` is a host-created native function; verify it inherits from `Function.prototype`
+    // by invoking it through `Function.prototype.call`.
+    let call_key_s = scope.alloc_string("call")?;
+    scope.push_root(Value::String(call_key_s))?;
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call = vm.get(&mut scope, set_timeout_func, call_key)?;
     let err = vm.call(
       &mut scope,
-      set_timeout,
-      Value::Object(global),
-      &[Value::Object(not_a_function), Value::Number(0.0)],
+      call,
+      Value::Object(set_timeout_func),
+      &[
+        Value::Object(global),
+        Value::Object(not_a_function),
+        Value::Number(0.0),
+      ],
     );
 
     let Err(VmError::TypeError(msg)) = err else {

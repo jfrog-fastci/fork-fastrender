@@ -327,6 +327,9 @@ fn console_log_native(
   let log_name = scope.alloc_string("log")?;
   scope.push_root(Value::String(log_name))?;
   let log_func = scope.alloc_native_function(log_call_id, None, log_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(log_func, Some(realm.intrinsics().function_prototype()))?;
   scope.push_root(Value::Object(log_func))?;
 
   let log_key = alloc_key(&mut scope, "log")?;
@@ -427,11 +430,21 @@ mod tests {
       panic!("expected object");
     };
     let log = get_prop(&mut scope, console_obj, "log");
+    let Value::Object(log_func) = log else {
+      panic!("expected console.log to be a function object");
+    };
+
+    // `console.log` is a host-created native function; ensure it inherits from `Function.prototype`
+    // by calling it through `Function.prototype.call`.
+    let call_key_s = scope.alloc_string("call")?;
+    scope.push_root(Value::String(call_key_s))?;
+    let call_key = PropertyKey::from_string(call_key_s);
+    let call = vm.get(&mut scope, log_func, call_key)?;
     let call_result = vm.call(
       &mut scope,
-      log,
-      Value::Object(console_obj),
-      &[Value::Number(1.0), Value::Null],
+      call,
+      Value::Object(log_func),
+      &[Value::Object(console_obj), Value::Number(1.0), Value::Null],
     )?;
     assert_eq!(call_result, Value::Undefined);
 
