@@ -3850,7 +3850,7 @@ impl ImageCache {
     let mut url_refs_seen = 0usize;
     let mut css_budget_remaining = MAX_CSS_BYTES_SCANNED;
 
-    let mut check_url = |raw: &str, base: &str| -> Result<()> {
+    let mut check_url = |raw: &str, base: &str, kind: ResourceKind| -> Result<()> {
       let href = trim_ascii_whitespace(raw);
       if href.is_empty()
         || href.starts_with('#')
@@ -3878,7 +3878,7 @@ impl ImageCache {
             .and_then(|doc_url| resolve_against_base(doc_url, href))
         })
         .unwrap_or_else(|| href.to_string());
-      if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved) {
+      if let Err(err) = ctx.check_allowed(kind, &resolved) {
         return Err(Error::Image(ImageError::LoadFailed {
           url: resolved,
           reason: format!("Blocked SVG subresource by policy: {}", err.reason),
@@ -3917,7 +3917,7 @@ impl ImageCache {
       false
     }
 
-    fn scan_css_urls<F: FnMut(&str) -> Result<()>>(
+    fn scan_css_urls<F: FnMut(&str, ResourceKind) -> Result<()>>(
       css: &str,
       include_imports: bool,
       budget_remaining: &mut usize,
@@ -3946,7 +3946,7 @@ impl ImageCache {
       let mut input = ParserInput::new(css);
       let mut parser = Parser::new(&mut input);
 
-      fn scan_parser<'i, 't, F: FnMut(&str) -> Result<()>>(
+      fn scan_parser<'i, 't, F: FnMut(&str, ResourceKind) -> Result<()>>(
         parser: &mut cssparser::Parser<'i, 't>,
         include_imports: bool,
         svg_url: &str,
@@ -3965,7 +3965,7 @@ impl ImageCache {
         while let Ok(token) = parser.next_including_whitespace_and_comments() {
           match token {
             Token::UnquotedUrl(url) => {
-              record(url.as_ref())?;
+              record(url.as_ref(), ResourceKind::Image)?;
             }
             Token::Function(ref name) if name.eq_ignore_ascii_case("url") => {
               let mut nested_error: Option<Error> = None;
@@ -4006,7 +4006,7 @@ impl ImageCache {
               }
 
               if let Ok(Some(url)) = parsed {
-                record(url.as_ref())?;
+                record(url.as_ref(), ResourceKind::Image)?;
               }
             }
             Token::AtKeyword(ref name) if include_imports && name.eq_ignore_ascii_case("import") => {
@@ -4019,11 +4019,11 @@ impl ImageCache {
                 match token {
                   Token::WhiteSpace(_) | Token::Comment(_) => continue,
                   Token::QuotedString(s) => {
-                    record(s.as_ref())?;
+                    record(s.as_ref(), ResourceKind::Stylesheet)?;
                     break;
                   }
                   Token::UnquotedUrl(s) => {
-                    record(s.as_ref())?;
+                    record(s.as_ref(), ResourceKind::Stylesheet)?;
                     break;
                   }
                   Token::Function(ref func) if func.eq_ignore_ascii_case("url") => {
@@ -4046,7 +4046,7 @@ impl ImageCache {
                       Ok::<_, cssparser::ParseError<'i, ()>>(())
                     });
                     if let Some(url) = url {
-                      record(url.as_ref())?;
+                      record(url.as_ref(), ResourceKind::Stylesheet)?;
                     }
                     break;
                   }
@@ -4104,7 +4104,7 @@ impl ImageCache {
           if local_name == "href"
             || (local_name == "src" && node.tag_name().name() == "image")
           {
-            check_url(value, &base)?;
+            check_url(value, &base, ResourceKind::Image)?;
             continue;
           }
 
@@ -4114,7 +4114,7 @@ impl ImageCache {
               false,
               &mut css_budget_remaining,
               svg_url,
-              &mut |url| check_url(url, &base),
+              &mut |url, kind| check_url(url, &base, kind),
             )?;
             continue;
           }
@@ -4131,7 +4131,7 @@ impl ImageCache {
             false,
             &mut css_budget_remaining,
             svg_url,
-            &mut |url| check_url(url, &base),
+            &mut |url, kind| check_url(url, &base, kind),
           )?;
         }
 
@@ -4140,8 +4140,8 @@ impl ImageCache {
           for child in node.children() {
             if child.is_text() {
               if let Some(text) = child.text() {
-                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut |url| {
-                  check_url(url, &base)
+                scan_css_urls(text, true, &mut css_budget_remaining, svg_url, &mut |url, kind| {
+                  check_url(url, &base, kind)
                 })?;
               }
             }
@@ -6808,6 +6808,40 @@ mod tests {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/a.png");
         assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_css_import_by_csp() {
+    use crate::html::content_security_policy::CspPolicy;
+
+    let doc_url = "https://doc.test/";
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+
+    // Allow cross-origin network loads by default, but use CSP to block cross-origin stylesheets.
+    let mut cache = ImageCache::new();
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = false;
+    ctx.csp = CspPolicy::from_values(["style-src 'self'; img-src *"]);
+    assert!(ctx.csp.is_some(), "CSP should parse");
+    cache.set_resource_context(Some(ctx));
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://cross.test/a.css); rect{fill:red}</style><rect width="10" height="10"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "https://doc.test/icon.svg")
+      .expect_err("expected SVG CSS @import to be blocked by CSP style-src");
+
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.css");
+        assert!(
+          reason.contains("Content-Security-Policy") && reason.contains("style-src"),
+          "{reason}"
+        );
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
     }

@@ -59,6 +59,10 @@ impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
   fn new(host: &'a mut Host, realm: Option<vm_js::RealmId>) -> Self {
     Self { host, realm }
   }
+
+  fn heap_mut(&mut self) -> &mut vm_js::Heap {
+    self.host.vm_js_heap_mut()
+  }
 }
 
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
