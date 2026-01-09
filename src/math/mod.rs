@@ -673,7 +673,7 @@ fn parse_menclose_notation(value: Option<&str>) -> Vec<MencloseNotation> {
   }
 }
 
-fn parse_mstyle_overrides(node: &DomNode) -> MathStyleOverrides {
+fn parse_style_overrides(node: &DomNode) -> MathStyleOverrides {
   MathStyleOverrides {
     display_style: parse_display_style(node.get_attribute_ref("displaystyle")),
     script_level: parse_script_level(node.get_attribute_ref("scriptlevel")),
@@ -681,6 +681,49 @@ fn parse_mstyle_overrides(node: &DomNode) -> MathStyleOverrides {
       .get_attribute_ref("mathsize")
       .and_then(|v| parse_math_size(v)),
     math_variant: parse_mathvariant(node),
+  }
+}
+
+fn has_style_overrides(overrides: &MathStyleOverrides) -> bool {
+  overrides.display_style.is_some()
+    || overrides.script_level.is_some()
+    || overrides.math_size.is_some()
+    || overrides.math_variant.is_some()
+}
+
+fn apply_presentation_attributes(node: &DomNode, tag: &str, parsed: MathNode) -> MathNode {
+  if matches!(&parsed, MathNode::Style { .. }) {
+    return parsed;
+  }
+
+  let mut overrides = parse_style_overrides(node);
+
+  // `<math>` already carries an explicit `display_style` field, so avoid wrapping the node only
+  // because of `displaystyle`. Other presentation attributes still apply via an outer wrapper.
+  if tag.eq_ignore_ascii_case("math") {
+    overrides.display_style = None;
+  }
+
+  // Token elements already store `mathvariant` as an explicit override on the token node itself.
+  // Skip wrapping tokens solely because they have `mathvariant`, but still allow other style
+  // attributes like `scriptlevel` and `mathsize`.
+  if matches!(
+    &parsed,
+    MathNode::Identifier { .. }
+      | MathNode::Number { .. }
+      | MathNode::Operator { .. }
+      | MathNode::Text { .. }
+  ) {
+    overrides.math_variant = None;
+  }
+
+  if has_style_overrides(&overrides) {
+    MathNode::Style {
+      overrides,
+      children: vec![parsed],
+    }
+  } else {
+    parsed
   }
 }
 
@@ -759,7 +802,7 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
     } => {
       let tag = tag_name.to_ascii_lowercase();
       let in_math_ns = namespace == MATHML_NAMESPACE;
-      match tag.as_str() {
+      let parsed = match tag.as_str() {
         "annotation" | "annotation-xml" => None,
         "semantics" => {
           let mut first_child = None;
@@ -831,7 +874,7 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           depth: parse_math_length(node.get_attribute_ref("depth")).unwrap_or(MathLength::Em(0.0)),
         }),
         "mstyle" => Some(MathNode::Style {
-          overrides: parse_mstyle_overrides(node),
+          overrides: parse_style_overrides(node),
           children: parse_children(node),
         }),
         "merror" => wrap_row_or_single(parse_children(node)),
@@ -982,44 +1025,45 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
             .unwrap_or_else(|| vec![',']);
           let inner = parse_children(node);
           if inner.is_empty() {
-            return None;
-          }
-          let mut row = Vec::new();
-          row.push(MathNode::Operator {
-            text: open,
-            form: None,
-            stretchy: Some(true),
-            lspace: None,
-            rspace: None,
-            variant: Some(MathVariant::Normal),
-          });
-          for (idx, child) in inner.into_iter().enumerate() {
-            if idx > 0 {
-              let sep = separators
-                .get(idx - 1)
-                .or_else(|| separators.last())
-                .copied()
-                .unwrap_or(',');
-              row.push(MathNode::Operator {
-                text: sep.to_string(),
-                form: None,
-                stretchy: Some(false),
-                lspace: None,
-                rspace: None,
-                variant: Some(MathVariant::Normal),
-              });
+            None
+          } else {
+            let mut row = Vec::new();
+            row.push(MathNode::Operator {
+              text: open,
+              form: None,
+              stretchy: Some(true),
+              lspace: None,
+              rspace: None,
+              variant: Some(MathVariant::Normal),
+            });
+            for (idx, child) in inner.into_iter().enumerate() {
+              if idx > 0 {
+                let sep = separators
+                  .get(idx - 1)
+                  .or_else(|| separators.last())
+                  .copied()
+                  .unwrap_or(',');
+                row.push(MathNode::Operator {
+                  text: sep.to_string(),
+                  form: None,
+                  stretchy: Some(false),
+                  lspace: None,
+                  rspace: None,
+                  variant: Some(MathVariant::Normal),
+                });
+              }
+              row.push(child);
             }
-            row.push(child);
+            row.push(MathNode::Operator {
+              text: close,
+              form: None,
+              stretchy: Some(true),
+              lspace: None,
+              rspace: None,
+              variant: Some(MathVariant::Normal),
+            });
+            Some(MathNode::Row(row))
           }
-          row.push(MathNode::Operator {
-            text: close,
-            form: None,
-            stretchy: Some(true),
-            lspace: None,
-            rspace: None,
-            variant: Some(MathVariant::Normal),
-          });
-          Some(MathNode::Row(row))
         }
         "menclose" => {
           let notation = parse_menclose_notation(node.get_attribute_ref("notation"));
@@ -1086,7 +1130,9 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           }))
         }
         _ => Some(MathNode::Row(parse_children(node))),
-      }
+      };
+
+      parsed.map(|parsed_node| apply_presentation_attributes(node, tag.as_str(), parsed_node))
     }
   }
 }
@@ -3464,6 +3510,25 @@ mod tests {
     parse_mathml(math_node).expect("math parsed")
   }
 
+  fn bundled_math_font_context() -> FontContext {
+    FontContext::with_config(
+      FontConfig::new()
+        .with_system_fonts(false)
+        .with_bundled_fonts(true),
+    )
+  }
+
+  fn first_glyph_run(layout: &MathLayout) -> &ShapedRun {
+    layout
+      .fragments
+      .iter()
+      .find_map(|frag| match frag {
+        MathFragment::Glyph { run, .. } => Some(run),
+        _ => None,
+      })
+      .expect("expected at least one glyph fragment")
+  }
+
   #[test]
   fn table_layout_completes() {
     let style = ComputedStyle::default();
@@ -3613,6 +3678,73 @@ mod tests {
     };
     assert_eq!(text, "x");
     assert!(matches!(variant, Some(MathVariant::Normal)));
+  }
+
+  #[test]
+  fn mathsize_on_math_scales_font_size() {
+    let style = ComputedStyle::default();
+    let ctx = bundled_math_font_context();
+    let baseline = parse_math_from_html("<math><mi>x</mi></math>");
+    let scaled = parse_math_from_html("<math mathsize=\"200%\"><mi>x</mi></math>");
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let scaled_layout = layout_mathml(&scaled, &style, &ctx);
+
+    let baseline_size = first_glyph_run(&baseline_layout).font_size;
+    let scaled_size = first_glyph_run(&scaled_layout).font_size;
+
+    assert!(
+      (scaled_size - baseline_size * 2.0).abs() < 0.01,
+      "expected mathsize=200% to scale font size ~2x ({} -> {})",
+      baseline_size,
+      scaled_size
+    );
+  }
+
+  #[test]
+  fn scriptlevel_on_token_element_scales_down_font_size() {
+    let style = ComputedStyle::default();
+    let ctx = bundled_math_font_context();
+    let baseline = parse_math_from_html("<math><mi>x</mi></math>");
+    let scripted = parse_math_from_html("<math><mi scriptlevel=\"+1\">x</mi></math>");
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let scripted_layout = layout_mathml(&scripted, &style, &ctx);
+
+    let baseline_size = first_glyph_run(&baseline_layout).font_size;
+    let scripted_size = first_glyph_run(&scripted_layout).font_size;
+
+    assert!(
+      scripted_size < baseline_size,
+      "expected scriptlevel=+1 to reduce font size ({} -> {})",
+      baseline_size,
+      scripted_size
+    );
+  }
+
+  #[test]
+  fn mathvariant_on_container_sets_upright_default_for_identifiers() {
+    let style = ComputedStyle::default();
+    let ctx = bundled_math_font_context();
+    let baseline = parse_math_from_html("<math><mi>x</mi></math>");
+    let upright = parse_math_from_html("<math mathvariant=\"normal\"><mi>x</mi></math>");
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let upright_layout = layout_mathml(&upright, &style, &ctx);
+
+    let baseline_run = first_glyph_run(&baseline_layout);
+    let upright_run = first_glyph_run(&upright_layout);
+
+    assert!(
+      baseline_run.synthetic_oblique > 0.0,
+      "expected default <mi> to request italic and synthesize an oblique slant, got {}",
+      baseline_run.synthetic_oblique
+    );
+    assert!(
+      upright_run.synthetic_oblique.abs() < 0.000_001,
+      "expected mathvariant=normal on <math> to select upright glyphs without synthetic slant, got {}",
+      upright_run.synthetic_oblique
+    );
   }
 
   #[test]
