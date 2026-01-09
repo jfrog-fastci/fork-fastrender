@@ -195,6 +195,29 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_insert_before",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, parent: u32, child: u32, reference: Option<u32>| {
+        let mut dom = dom.borrow_mut();
+        let reference = reference.map(|id| NodeId::from_index(id as usize));
+        let result = dom.mutate_dom(|dom| {
+          let parent = NodeId::from_index(parent as usize);
+          let child = NodeId::from_index(child as usize);
+          match dom.insert_before(parent, child, reference) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_remove_child",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -204,6 +227,29 @@ where
           let parent = NodeId::from_index(parent as usize);
           let child = NodeId::from_index(child as usize);
           match dom.remove_child(parent, child) {
+            Ok(changed) => (Ok(changed), changed),
+            Err(err) => (Err(err), false),
+          }
+        });
+        match result {
+          Ok(changed) => Ok(changed),
+          Err(err) => throw_dom_error(ctx, err),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_replace_child",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, parent: u32, new_child: u32, old_child: u32| {
+        let mut dom = dom.borrow_mut();
+        let result = dom.mutate_dom(|dom| {
+          let parent = NodeId::from_index(parent as usize);
+          let new_child = NodeId::from_index(new_child as usize);
+          let old_child = NodeId::from_index(old_child as usize);
+          match dom.replace_child(parent, new_child, old_child) {
             Ok(changed) => (Ok(changed), changed),
             Err(err) => (Err(err), false),
           }
@@ -664,6 +710,49 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return child;
   };
 
+  Node.prototype.insertBefore = function (child, referenceChild) {
+    if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    if (referenceChild === child) return child;
+    if (referenceChild != null && ((typeof referenceChild !== "object" && typeof referenceChild !== "function") || referenceChild.__node_id == null)) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    var refId = referenceChild == null ? null : referenceChild.__node_id;
+
+    g.__fastrender_dom_insert_before(this.__node_id, child.__node_id, refId);
+
+    ensureArrayProp(this, "childNodes");
+    if (referenceChild != null && Array.isArray(this.childNodes) && this.childNodes.indexOf(referenceChild) < 0) {
+      // If the reference child wrapper isn't in our JS-side list yet (e.g. initial DOM nodes), add
+      // it so we can maintain relative ordering for nodes inserted via JS.
+      this.childNodes.push(referenceChild);
+    }
+
+    // Mirror appendChild JS-tree maintenance: detach from old parent's list, then insert.
+    var oldParent = child.parentNode;
+    if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
+      var oldIdx = oldParent.childNodes.indexOf(child);
+      if (oldIdx >= 0) oldParent.childNodes.splice(oldIdx, 1);
+    }
+    if (Array.isArray(this.childNodes)) {
+      var existingIdx = this.childNodes.indexOf(child);
+      if (existingIdx >= 0) this.childNodes.splice(existingIdx, 1);
+      if (referenceChild == null) {
+        this.childNodes.push(child);
+      } else {
+        var refIdx = this.childNodes.indexOf(referenceChild);
+        if (refIdx < 0) {
+          this.childNodes.push(child);
+        } else {
+          this.childNodes.splice(refIdx, 0, child);
+        }
+      }
+    }
+    child.parentNode = this;
+    return child;
+  };
+
   Node.prototype.removeChild = function (child) {
     if (!child || (typeof child !== "object" && typeof child !== "function") || child.__node_id == null) {
       throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
@@ -677,6 +766,41 @@ const DOM_BINDINGS_SHIM: &str = r##"
     }
     if (child.parentNode === this) child.parentNode = null;
     return child;
+  };
+
+  Node.prototype.replaceChild = function (newChild, oldChild) {
+    if (!newChild || (typeof newChild !== "object" && typeof newChild !== "function") || newChild.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    if (!oldChild || (typeof oldChild !== "object" && typeof oldChild !== "function") || oldChild.__node_id == null) {
+      throw new g.DOMException("InvalidNodeType", "InvalidNodeType");
+    }
+    if (newChild === oldChild) return oldChild;
+
+    g.__fastrender_dom_replace_child(this.__node_id, newChild.__node_id, oldChild.__node_id);
+
+    ensureArrayProp(this, "childNodes");
+
+    var oldParent = newChild.parentNode;
+    if (oldParent && oldParent !== this && Array.isArray(oldParent.childNodes)) {
+      var oldIdx = oldParent.childNodes.indexOf(newChild);
+      if (oldIdx >= 0) oldParent.childNodes.splice(oldIdx, 1);
+    }
+
+    if (Array.isArray(this.childNodes)) {
+      var existingIdx = this.childNodes.indexOf(newChild);
+      if (existingIdx >= 0) this.childNodes.splice(existingIdx, 1);
+      var idx = this.childNodes.indexOf(oldChild);
+      if (idx >= 0) {
+        this.childNodes[idx] = newChild;
+      } else {
+        this.childNodes.push(newChild);
+      }
+    }
+
+    if (oldChild.parentNode === this) oldChild.parentNode = null;
+    newChild.parentNode = this;
+    return oldChild;
   };
 
   // DOM `ChildNode.remove()`: detach this node from its parent if connected.
@@ -1635,6 +1759,112 @@ const DOM_BINDINGS_SHIM: &str = r##"
       dom.borrow().dom.get_element_by_id("gone").is_none(),
       "expected removed element to be detached in dom2"
     );
+    Ok(())
+  }
+
+  #[test]
+  fn node_insert_before_moves_child_before_reference() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var a = document.createElement("div");
+            a.id = "a";
+            var b = document.createElement("div");
+            b.id = "b";
+
+            document.head.appendChild(a);
+            document.body.appendChild(b);
+
+            var returned = document.head.insertBefore(b, a);
+            if (returned !== b) return false;
+
+            if (document.getElementById("a") !== a) return false;
+            if (document.getElementById("b") !== b) return false;
+
+            if (document.body.childNodes.length !== 0) return false;
+            if (document.head.childNodes.length !== 2) return false;
+            if (document.head.childNodes[0] !== b) return false;
+            if (document.head.childNodes[1] !== a) return false;
+            if (b.parentNode !== document.head) return false;
+            if (a.parentNode !== document.head) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected Node.insertBefore to update child order");
+
+    let dom_ref = &dom.borrow().dom;
+    let head = dom_ref.head().expect("expected head");
+    let children = dom_ref.children(head).expect("read head children");
+    assert_eq!(children.len(), 2);
+    assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("b"));
+    assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("a"));
+
+    let body = dom_ref.body().expect("expected body");
+    assert!(dom_ref.children(body).unwrap().is_empty());
+
+    Ok(())
+  }
+
+  #[test]
+  fn node_replace_child_swaps_nodes_and_detaches_old_child() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let ok = ctx
+      .with(|ctx| {
+        ctx.eval::<bool, _>(
+          r#"(function () {
+            var a = document.createElement("div");
+            a.id = "a";
+            var b = document.createElement("div");
+            b.id = "b";
+            var c = document.createElement("div");
+            c.id = "c";
+
+            document.body.appendChild(a);
+            document.body.appendChild(b);
+
+            var returned = document.body.replaceChild(c, a);
+            if (returned !== a) return false;
+            if (document.getElementById("a") !== null) return false;
+            if (document.getElementById("c") !== c) return false;
+
+            if (document.body.childNodes.length !== 2) return false;
+            if (document.body.childNodes[0] !== c) return false;
+            if (document.body.childNodes[1] !== b) return false;
+            if (a.parentNode !== null) return false;
+            if (c.parentNode !== document.body) return false;
+            return true;
+          })()"#,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert!(ok, "expected Node.replaceChild to swap children");
+
+    let dom_ref = &dom.borrow().dom;
+    let body = dom_ref.body().expect("expected body");
+    let children = dom_ref.children(body).expect("read body children");
+    assert_eq!(children.len(), 2);
+    assert_eq!(dom_ref.get_attribute(children[0], "id").unwrap(), Some("c"));
+    assert_eq!(dom_ref.get_attribute(children[1], "id").unwrap(), Some("b"));
+    assert!(dom_ref.get_element_by_id("a").is_none());
+
     Ok(())
   }
 
