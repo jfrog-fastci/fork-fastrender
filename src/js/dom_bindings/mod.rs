@@ -1004,6 +1004,45 @@ fn install_constructors(
     })?;
     define_accessor(rt, prototypes.node, "nextSibling", next_sibling_get, Value::Undefined)?;
 
+    // nodeType
+    let dom_for_node_type = dom.clone();
+    let platform_objects_for_node_type = platform_objects.clone();
+    let node_type_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_node_type, this)?;
+      let dom_ref = dom_for_node_type.borrow();
+      let node_type = match &dom_ref.node(node_id).kind {
+        NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+        NodeKind::Text { .. } => 3,
+        NodeKind::ProcessingInstruction { .. } => 7,
+        NodeKind::Comment { .. } => 8,
+        NodeKind::Document { .. } => 9,
+        NodeKind::Doctype { .. } => 10,
+        NodeKind::ShadowRoot { .. } => 11,
+      };
+      Ok(Value::Number(node_type as f64))
+    })?;
+    define_accessor(rt, prototypes.node, "nodeType", node_type_get, Value::Undefined)?;
+
+    // nodeName
+    let dom_for_node_name = dom.clone();
+    let platform_objects_for_node_name = platform_objects.clone();
+    let node_name_get = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_node_name, this)?;
+      let dom_ref = dom_for_node_name.borrow();
+      let name = match &dom_ref.node(node_id).kind {
+        NodeKind::Document { .. } => "#document".to_string(),
+        NodeKind::Doctype { name, .. } => name.clone(),
+        NodeKind::Element { tag_name, .. } => tag_name.to_ascii_uppercase(),
+        NodeKind::Slot { .. } => "SLOT".to_string(),
+        NodeKind::Text { .. } => "#text".to_string(),
+        NodeKind::Comment { .. } => "#comment".to_string(),
+        NodeKind::ProcessingInstruction { target, .. } => target.clone(),
+        NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+      };
+      rt.alloc_string_value(&name)
+    })?;
+    define_accessor(rt, prototypes.node, "nodeName", node_name_get, Value::Undefined)?;
+
     // textContent
     let dom_for_text_content_get = dom.clone();
     let platform_objects_for_text_content_get = platform_objects.clone();
@@ -1542,6 +1581,7 @@ mod tests {
   use super::*;
   use selectors::context::QuirksMode;
   use std::cell::Cell;
+  use webidl_js_runtime::JsPropertyKind;
 
   fn pk(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
     prop_key_str(rt, name).unwrap()
@@ -2004,7 +2044,7 @@ mod tests {
       .unwrap()
       .expect("expected Node.prototype.textContent");
     let set = match desc.kind {
-      webidl_js_runtime::JsPropertyKind::Accessor { set, .. } => set,
+      JsPropertyKind::Accessor { set, .. } => set,
       other => panic!("expected accessor property, got {other:?}"),
     };
 
@@ -2040,5 +2080,41 @@ mod tests {
 
     let err = realm.wrap_node(node_id).unwrap_err();
     assert!(matches!(err, VmError::Throw(_)));
+  }
+
+  #[test]
+  fn node_type_and_name_reflect_dom2_node_kind() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let node_type_key = pk(&mut realm.rt, "nodeType");
+    let node_name_key = pk(&mut realm.rt, "nodeName");
+
+    assert_eq!(realm.rt.get(document, node_type_key).unwrap(), Value::Number(9.0));
+    let doc_name = realm.rt.get(document, node_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, doc_name), "#document");
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    assert_eq!(realm.rt.get(div, node_type_key).unwrap(), Value::Number(1.0));
+    let div_name = realm.rt.get(div, node_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, div_name), "DIV");
+
+    let create_text_key = pk(&mut realm.rt, "createTextNode");
+    let create_text = realm.rt.get(document, create_text_key).unwrap();
+    let hello = realm.rt.alloc_string_value("hello").unwrap();
+    let text = realm
+      .rt
+      .call_function(create_text, document, &[hello])
+      .unwrap();
+    assert_eq!(realm.rt.get(text, node_type_key).unwrap(), Value::Number(3.0));
+    let text_name = realm.rt.get(text, node_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, text_name), "#text");
   }
 }
