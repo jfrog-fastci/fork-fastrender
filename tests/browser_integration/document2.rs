@@ -141,3 +141,54 @@ fn browser_document_dom2_rerenders_after_js_dom_mutation() -> Result<()> {
 
   Ok(())
 }
+
+#[test]
+fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() -> Result<()> {
+  let options = RenderOptions::new().with_viewport(64, 64);
+  let renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()?;
+  let mut doc = BrowserDocumentDom2::new(
+    renderer,
+    "<!doctype html><html><body><div id=\"box\">Hello</div></body></html>",
+    options,
+  )?;
+
+  // First render clears dirty flags.
+  assert!(doc.render_if_needed()?.is_some());
+  assert!(doc.render_if_needed()?.is_none());
+
+  // querySelector is a read-only operation and should not mark the document dirty.
+  let box_id = fastrender::js::dom2_bindings::query_selector(&mut doc, "#box", None)
+    .expect("querySelector should succeed")
+    .expect("expected #box to exist");
+  assert!(doc.render_if_needed()?.is_none());
+
+  // setAttribute should dirty only when it changes the underlying attribute value.
+  let changed =
+    fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
+      .expect("setAttribute should succeed");
+  assert!(changed);
+  assert!(doc.render_if_needed()?.is_some());
+  assert!(doc.render_if_needed()?.is_none());
+
+  let changed =
+    fastrender::js::dom2_bindings::set_attribute(&mut doc, box_id, "data-x", "1")
+      .expect("setAttribute should succeed");
+  assert!(!changed);
+  assert!(doc.render_if_needed()?.is_none());
+
+  // removeAttribute should dirty only when the attribute existed.
+  let changed = fastrender::js::dom2_bindings::remove_attribute(&mut doc, box_id, "data-x")
+    .expect("removeAttribute should succeed");
+  assert!(changed);
+  assert!(doc.render_if_needed()?.is_some());
+  assert!(doc.render_if_needed()?.is_none());
+
+  let changed = fastrender::js::dom2_bindings::remove_attribute(&mut doc, box_id, "data-x")
+    .expect("removeAttribute should succeed");
+  assert!(!changed);
+  assert!(doc.render_if_needed()?.is_none());
+
+  Ok(())
+}
