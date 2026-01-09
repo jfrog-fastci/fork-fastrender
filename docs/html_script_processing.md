@@ -15,23 +15,26 @@ module scripts/import maps later.
 ## Status in this repository (reality check)
 FastRender has the **core building blocks** for a streaming, parse-time classic `<script>` pipeline
 (pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer` scripts, and keep
-observable document state like `Document.currentScript` correct). Some of the plumbing is still
-being wired together, so treat this section as a “where is the real code?” map.
+observable document state like `Document.currentScript` correct). Some plumbing is still evolving,
+so treat this section as a “where is the real code?” map.
 
 - **HTML parsing (pause/resume at `</script>`):**
   - `src/html/pausable_html5ever.rs`: wraps html5ever so the host can observe
     `TokenizerResult::Script` suspension points (html5ever’s built-in driver currently loops past
     them).
-  - `src/html/streaming_parser.rs`: streaming parser driver built on `PausableHtml5everParser`,
-    responsible for incremental feeding, pausing at script boundaries, and resuming from the exact
-    input offset.
-  - (Legacy/bridge) `src/dom/scripting_parser.rs`: an incremental html5ever parser that yields at
+  - (Target/new driver) `src/html/streaming_parser.rs`: streaming parser driver built on
+    `PausableHtml5everParser` (incremental feeding, pausing at script boundaries, resuming from the
+    exact input offset).
+  - (Bridge implementation) `src/dom/scripting_parser.rs`: an incremental html5ever parser that yields at
     `<script>` boundaries and snapshots the partial DOM to `crate::dom::DomNode` (useful for tests
     and incremental adoption; not `dom2`-backed).
 - **DOM construction:**
   - `src/dom2/`: mutable DOM (`dom2::Document`) used by JS bindings and script-visible mutations.
+  - `src/dom2/import.rs`: current bridge for constructing `dom2::Document` from the renderer’s
+    immutable `crate::dom::DomNode`.
   - **dom2 TreeSink:** the html5ever `TreeSink` implementation for `dom2::Document` lives under
-    `src/dom2/` (search for the `impl html5ever::tree_builder::TreeSink`).
+    `src/dom2/` (search for the `impl html5ever::tree_builder::TreeSink`). If you don’t see it in
+    your checkout yet, `import.rs` is the current bridge.
 - **Script scheduling / host orchestration:**
   - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`)
     integrated with the HTML-shaped `EventLoop`.
@@ -148,7 +151,7 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 - execute that script (which can mutate the DOM),
 - then resume parsing from the exact byte offset.
 
-**Home:** `src/html/streaming_parser.rs`.
+**Target home:** `src/html/streaming_parser.rs` (built on `src/html/pausable_html5ever.rs`).
 
 **Key operations (conceptual):**
 
