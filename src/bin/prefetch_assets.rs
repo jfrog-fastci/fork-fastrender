@@ -1835,7 +1835,8 @@ mod disk_cache_main {
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
           .with_referrer_url(stylesheet_url)
-          .with_referrer_policy(effective_referrer_policy);
+          .with_referrer_policy(effective_referrer_policy)
+          .with_credentials_mode(FetchCredentialsMode::SameOrigin);
         if let Some(origin) = client_origin {
           request = request.with_client_origin(origin);
         }
@@ -3986,6 +3987,7 @@ mod disk_cache_main {
           Vec<(
             String,
             FetchDestination,
+            FetchCredentialsMode,
             Option<String>,
             Option<DocumentOrigin>,
           )>,
@@ -4001,6 +4003,7 @@ mod disk_cache_main {
           self.calls.lock().unwrap().push((
             req.url.to_string(),
             req.destination,
+            req.credentials_mode,
             req.referrer_url.map(|r| r.to_string()),
             req.client_origin.cloned(),
           ));
@@ -4075,11 +4078,13 @@ mod disk_cache_main {
       let calls = fetcher_impl.calls.lock().unwrap().clone();
       let font_calls: Vec<_> = calls
         .iter()
-        .filter(|(url, dest, _, _)| url == FONT && *dest == FetchDestination::Font)
+        .filter(|(url, dest, _, _, _)| url == FONT && *dest == FetchDestination::Font)
         .collect();
       assert_eq!(font_calls.len(), 1, "expected a single font request");
-      assert_eq!(font_calls[0].2.as_deref(), Some(STYLESHEET));
-      assert_eq!(font_calls[0].3, Some(expected_origin));
+      assert_eq!(font_calls[0].1, FetchDestination::Font);
+      assert_eq!(font_calls[0].2, FetchCredentialsMode::SameOrigin);
+      assert_eq!(font_calls[0].3.as_deref(), Some(STYLESHEET));
+      assert_eq!(font_calls[0].4, Some(expected_origin));
     }
 
     fn assert_stylesheet_crossorigin_fetches(
