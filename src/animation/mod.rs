@@ -10409,4 +10409,67 @@ mod tests {
       assert_eq!(idx, 1, "{name} should use the border-left list index");
     }
   }
+
+  #[test]
+  fn transition_pairs_all_overrides_border_color_shorthand() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::Name("border-color".to_string()),
+      TransitionProperty::All,
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border-color"),
+      "expected shorthands to be expanded away"
+    );
+
+    for name in [
+      "border-top-color",
+      "border-right-color",
+      "border-bottom-color",
+      "border-left-color",
+    ] {
+      let idx = pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .1;
+      assert_eq!(idx, 1, "{name} should use the all list index");
+    }
+  }
+
+  #[test]
+  fn transition_pairs_all_overrides_border_top_shorthand() {
+    let start_style = ComputedStyle::default();
+
+    let mut style = ComputedStyle::default();
+    style.transition_properties = vec![
+      TransitionProperty::Name("border-top".to_string()),
+      TransitionProperty::All,
+    ]
+    .into();
+
+    let pairs = transition_pairs(&style.transition_properties, &start_style, &style)
+      .expect("transition pairs");
+
+    assert!(
+      !pairs.iter().any(|(name, _)| *name == "border-top"),
+      "expected shorthands to be expanded away"
+    );
+
+    for name in ["border-top-width", "border-top-color", "border-top-style"] {
+      let idx = pairs
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .1;
+      assert_eq!(idx, 1, "{name} should use the all list index");
+    }
+  }
 }
