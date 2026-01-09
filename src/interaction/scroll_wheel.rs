@@ -38,7 +38,7 @@ pub fn apply_wheel_scroll(
 ///
 /// Listbox selects are painted from their `SelectControl` model (not from laid-out `<option>`
 /// fragments), so layout does not produce a meaningful `scroll_overflow` size. Wheel scrolling
-/// needs an approximate scroll range, so we mirror the painter's `row_height * total_rows` logic.
+/// needs an approximate scroll range, so we mirror the painter's row-height logic.
 fn select_listbox_scroll_overflow_height(
   viewport_size: Size,
   fragment: &crate::tree::fragment_tree::FragmentNode,
@@ -57,9 +57,57 @@ fn select_listbox_scroll_overflow_height(
     return None;
   }
 
-  let row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
+  let mut row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
   if row_height <= 0.0 || !row_height.is_finite() {
     return None;
+  }
+
+  // Keep row geometry consistent with painting/hit-testing: when the listbox is explicitly larger
+  // than its intrinsic size, stretch rows so exactly `size` rows fill the content rect.
+  let base = fragment.bounds.width().max(0.0);
+  let border_rect_height = fragment.bounds.height().max(0.0);
+  let viewport = if viewport_size.width.is_finite() && viewport_size.height.is_finite() {
+    (viewport_size.width, viewport_size.height)
+  } else {
+    (base, base)
+  };
+  let font_size = style.font_size;
+  let root_font_size = style.root_font_size;
+
+  let border_top = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_top_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let border_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.used_border_bottom_width(),
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let padding_top = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_top,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+  let padding_bottom = crate::paint::paint_bounds::resolve_length_for_paint(
+    &style.padding_bottom,
+    font_size,
+    root_font_size,
+    base,
+    Some(viewport),
+  );
+
+  let content_height_viewport = (border_rect_height - border_top - border_bottom - padding_top - padding_bottom).max(0.0);
+  let size_rows = select.size.max(1) as f32;
+  let stretched_row_height = content_height_viewport / size_rows;
+  if stretched_row_height.is_finite() && stretched_row_height > 0.0 {
+    row_height = row_height.max(stretched_row_height);
   }
 
   let total_rows = select.items.len();

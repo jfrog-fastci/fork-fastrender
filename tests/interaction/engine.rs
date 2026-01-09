@@ -1614,6 +1614,74 @@ fn submit_click_navigates_with_get_query_and_encodes_space_as_plus() {
 }
 
 #[test]
+fn submit_click_strips_action_fragment() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("action", "/search#frag")],
+        vec![
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "abc")],
+            vec![],
+          ),
+          el("input", vec![("id", "submit"), ("type", "submit")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=abc".to_string()
+    }
+  );
+}
+
+#[test]
 fn submit_click_uses_form_attr_idref_owner() {
   let mut dom = doc(vec![el(
     "html",

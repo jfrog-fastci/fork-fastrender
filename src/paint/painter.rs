@@ -8394,7 +8394,11 @@ impl Painter {
 
         if is_listbox {
           let metrics = self.resolve_scaled_metrics(style);
-          let row_height = compute_line_height_with_metrics_viewport(
+          // Keep listbox row geometry in sync with interaction hit-testing:
+          // - base row height from `line-height`,
+          // - but when the listbox is explicitly taller than its intrinsic size, stretch rows so
+          //   exactly `size` rows fill the content rect.
+          let mut row_height = compute_line_height_with_metrics_viewport(
             style,
             metrics.as_ref(),
             Some(Size::new(self.css_width, self.css_height)),
@@ -8405,6 +8409,11 @@ impl Painter {
 
           let total_rows = select.items.len();
           let viewport_height = content_rect.height().max(0.0);
+          let size_rows = select.size.max(1) as f32;
+          let stretched_row_height = viewport_height / size_rows;
+          if stretched_row_height.is_finite() && stretched_row_height > 0.0 {
+            row_height = row_height.max(stretched_row_height);
+          }
           let content_height = row_height * total_rows as f32;
           let mut scroll_y = box_id
             .map(|id| self.scroll_state.element_offset(id).y)

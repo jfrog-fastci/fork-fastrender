@@ -891,12 +891,21 @@ fn apply_select_listbox_click(
   let viewport_size = fragment_tree.viewport_size();
   let content_rect = content_rect_for_border_rect(select_rect, style, viewport_size);
 
-  let row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
+  // Keep the click mapping consistent with the select listbox painter:
+  // - base row height from `line-height`,
+  // - but when the listbox is explicitly taller than its intrinsic size, stretch rows so exactly
+  //   `size` rows fill the content rect (avoids dead whitespace and keeps tests deterministic).
+  let mut row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
   if row_height <= 0.0 || !row_height.is_finite() {
     return false;
   }
 
   let viewport_height = content_rect.height().max(0.0);
+  let size_rows = control.size.max(1) as f32;
+  let stretched_row_height = viewport_height / size_rows;
+  if stretched_row_height.is_finite() && stretched_row_height > 0.0 {
+    row_height = row_height.max(stretched_row_height);
+  }
   let content_height = row_height * total_rows as f32;
   if !viewport_height.is_finite() || !content_height.is_finite() {
     return false;
@@ -1136,6 +1145,8 @@ fn build_get_form_submission_url(
   };
 
   let mut url = Url::parse(&action_url).ok()?;
+  // Form submission discards fragments.
+  url.set_fragment(None);
 
   // GET submissions set the query to the encoded form data.
   url.set_query(None);

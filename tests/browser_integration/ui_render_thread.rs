@@ -261,7 +261,7 @@ fn enter_submits_focused_text_input_form() {
   })
   .unwrap();
 
-  let expected_url = "about:test-form?q=a";
+  let expected_url = "about:test-form?q=a&go=1";
   let mut saw_commit = false;
   while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
     if let WorkerToUi::NavigationCommitted { url, .. } = msg {

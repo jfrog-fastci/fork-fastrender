@@ -162,11 +162,13 @@ fn test_form_html() -> String {
     <style>
       body { margin: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
       input { display: block; width: 180px; height: 28px; }
+      button { display: block; width: 180px; height: 28px; margin-top: 8px; }
     </style>
   </head>
   <body>
     <form>
       <input name=\"q\">
+      <button type=\"submit\" name=\"go\" value=\"1\">Go</button>
     </form>
   </body>
 </html>"
