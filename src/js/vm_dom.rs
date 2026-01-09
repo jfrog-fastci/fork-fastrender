@@ -564,6 +564,194 @@ fn dom_node_has_child_nodes(
   }
 }
 
+fn dom_node_parent_node_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let parent = match host.dom.borrow().parent(node_id) {
+    Ok(parent) => parent,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(parent_id) = parent else {
+    return Ok(Value::Null);
+  };
+
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(parent_id).kind);
+  wrap_node(host, scope, parent_id, kind)
+}
+
+fn dom_node_parent_element_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let parent = match host.dom.borrow().parent(node_id) {
+    Ok(parent) => parent,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(parent_id) = parent else {
+    return Ok(Value::Null);
+  };
+
+  let is_element_parent = {
+    let dom = host.dom.borrow();
+    matches!(
+      &dom.node(parent_id).kind,
+      NodeKind::Element { .. } | NodeKind::Slot { .. }
+    )
+  };
+  if is_element_parent {
+    wrap_node(host, scope, parent_id, DomKind::Element)
+  } else {
+    Ok(Value::Null)
+  }
+}
+
+fn dom_node_first_child_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let first = match host.dom.borrow().children(node_id) {
+    Ok(children) => children.first().copied(),
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(first_id) = first else {
+    return Ok(Value::Null);
+  };
+
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(first_id).kind);
+  wrap_node(host, scope, first_id, kind)
+}
+
+fn dom_node_last_child_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let last = match host.dom.borrow().children(node_id) {
+    Ok(children) => children.last().copied(),
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(last_id) = last else {
+    return Ok(Value::Null);
+  };
+
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(last_id).kind);
+  wrap_node(host, scope, last_id, kind)
+}
+
+fn dom_node_previous_sibling_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let parent = match host.dom.borrow().parent(node_id) {
+    Ok(parent) => parent,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(parent_id) = parent else {
+    return Ok(Value::Null);
+  };
+
+  let sibling_id = {
+    let dom = host.dom.borrow();
+    let siblings = match dom.children(parent_id) {
+      Ok(children) => children,
+      Err(err) => return throw_dom_error(scope, host, err),
+    };
+    let idx = siblings
+      .iter()
+      .position(|&id| id == node_id)
+      .ok_or(VmError::InvariantViolation(
+        "DOM node not found in parent's children list",
+      ))?;
+    if idx == 0 {
+      return Ok(Value::Null);
+    }
+    siblings[idx - 1]
+  };
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(sibling_id).kind);
+  wrap_node(host, scope, sibling_id, kind)
+}
+
+fn dom_node_next_sibling_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let parent = match host.dom.borrow().parent(node_id) {
+    Ok(parent) => parent,
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  let Some(parent_id) = parent else {
+    return Ok(Value::Null);
+  };
+
+  let sibling_id = {
+    let dom = host.dom.borrow();
+    let siblings = match dom.children(parent_id) {
+      Ok(children) => children,
+      Err(err) => return throw_dom_error(scope, host, err),
+    };
+    let idx = siblings
+      .iter()
+      .position(|&id| id == node_id)
+      .ok_or(VmError::InvariantViolation(
+        "DOM node not found in parent's children list",
+      ))?;
+    let Some(&sibling_id) = siblings.get(idx + 1) else {
+      return Ok(Value::Null);
+    };
+    sibling_id
+  };
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(sibling_id).kind);
+  wrap_node(host, scope, sibling_id, kind)
+}
+
 fn dom_element_set_attribute(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -964,6 +1152,12 @@ pub fn install_dom_bindings_with_limits(
   let call_query_selector = vm.register_native_call(dom_document_query_selector)?;
   let call_append_child = vm.register_native_call(dom_node_append_child)?;
   let call_has_child_nodes = vm.register_native_call(dom_node_has_child_nodes)?;
+  let call_parent_node = vm.register_native_call(dom_node_parent_node_getter)?;
+  let call_parent_element = vm.register_native_call(dom_node_parent_element_getter)?;
+  let call_first_child = vm.register_native_call(dom_node_first_child_getter)?;
+  let call_last_child = vm.register_native_call(dom_node_last_child_getter)?;
+  let call_previous_sibling = vm.register_native_call(dom_node_previous_sibling_getter)?;
+  let call_next_sibling = vm.register_native_call(dom_node_next_sibling_getter)?;
   let call_set_attribute = vm.register_native_call(dom_element_set_attribute)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
@@ -980,6 +1174,12 @@ pub fn install_dom_bindings_with_limits(
   install_method(&mut scope, proto_document, "querySelector", call_query_selector, 1)?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
   install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
+  install_getter(&mut scope, proto_node, "parentNode", call_parent_node)?;
+  install_getter(&mut scope, proto_node, "parentElement", call_parent_element)?;
+  install_getter(&mut scope, proto_node, "firstChild", call_first_child)?;
+  install_getter(&mut scope, proto_node, "lastChild", call_last_child)?;
+  install_getter(&mut scope, proto_node, "previousSibling", call_previous_sibling)?;
+  install_getter(&mut scope, proto_node, "nextSibling", call_next_sibling)?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
   install_accessor(

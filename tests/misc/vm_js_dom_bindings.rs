@@ -121,6 +121,98 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
     vm.call_without_host(&mut scope, has_child_nodes, document_val, &[])?;
   assert_eq!(doc_has_children, Value::Bool(true));
 
+  // Basic Node navigation getters.
+  let key_parent_node = PropertyKey::from_string(scope.alloc_string("parentNode")?);
+  let parent_node_get = get_accessor_getter(scope.heap(), el_obj, &key_parent_node)
+    .expect("parentNode getter should exist");
+  let key_parent_element = PropertyKey::from_string(scope.alloc_string("parentElement")?);
+  let parent_element_get = get_accessor_getter(scope.heap(), el_obj, &key_parent_element)
+    .expect("parentElement getter should exist");
+  let key_first_child = PropertyKey::from_string(scope.alloc_string("firstChild")?);
+  let first_child_get = get_accessor_getter(scope.heap(), el_obj, &key_first_child)
+    .expect("firstChild getter should exist");
+  let key_last_child = PropertyKey::from_string(scope.alloc_string("lastChild")?);
+  let last_child_get = get_accessor_getter(scope.heap(), el_obj, &key_last_child)
+    .expect("lastChild getter should exist");
+  let key_previous_sibling = PropertyKey::from_string(scope.alloc_string("previousSibling")?);
+  let previous_sibling_get = get_accessor_getter(scope.heap(), el_obj, &key_previous_sibling)
+    .expect("previousSibling getter should exist");
+  let key_next_sibling = PropertyKey::from_string(scope.alloc_string("nextSibling")?);
+  let next_sibling_get = get_accessor_getter(scope.heap(), el_obj, &key_next_sibling)
+    .expect("nextSibling getter should exist");
+
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_node_get, document_val, &[])?,
+    Value::Null
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_node_get, el_val, &[])?,
+    document_val
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_element_get, el_val, &[])?,
+    Value::Null
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, first_child_get, document_val, &[])?,
+    el_val
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, last_child_get, document_val, &[])?,
+    el_val
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, previous_sibling_get, el_val, &[])?,
+    Value::Null
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, next_sibling_get, el_val, &[])?,
+    Value::Null
+  );
+
+  // Add two child nodes under `<div id="foo">` so we can validate sibling relationships.
+  let tag_span = Value::String(scope.alloc_string("span")?);
+  let child1 = vm.call_without_host(&mut scope, create_element, document_val, &[tag_span])?;
+  let Value::Object(child1_obj) = child1 else {
+    panic!("createElement should return an object");
+  };
+  let child2 = vm.call_without_host(&mut scope, create_element, document_val, &[tag_span])?;
+  let Value::Object(child2_obj) = child2 else {
+    panic!("createElement should return an object");
+  };
+  vm.call_without_host(&mut scope, append_child, el_val, &[child1])?;
+  vm.call_without_host(&mut scope, append_child, el_val, &[child2])?;
+
+  assert_eq!(
+    vm.call_without_host(&mut scope, first_child_get, el_val, &[])?,
+    child1
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, last_child_get, el_val, &[])?,
+    child2
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_node_get, child1, &[])?,
+    el_val
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_element_get, child1, &[])?,
+    el_val
+  );
+
+  let next_sibling_get = get_accessor_getter(scope.heap(), child1_obj, &key_next_sibling)
+    .expect("nextSibling getter should exist");
+  let previous_sibling_get = get_accessor_getter(scope.heap(), child2_obj, &key_previous_sibling)
+    .expect("previousSibling getter should exist");
+  assert_eq!(
+    vm.call_without_host(&mut scope, next_sibling_get, child1, &[])?,
+    child2
+  );
+  assert_eq!(
+    vm.call_without_host(&mut scope, previous_sibling_get, child2, &[])?,
+    child1
+  );
+
   // Validate DOM mutation.
   let root = dom.borrow().root();
   let found = dom.borrow().get_element_by_id("foo").expect("id should be set");
