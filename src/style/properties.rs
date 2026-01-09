@@ -4635,7 +4635,10 @@ pub(crate) fn apply_property_from_source(
       styles.display_is_webkit_box = source.display_is_webkit_box;
     }
     "-webkit-box-orient" | "box-orient" => styles.webkit_box_orient = source.webkit_box_orient,
-    "visibility" => styles.visibility = source.visibility,
+    "visibility" => {
+      styles.visibility = source.visibility;
+      styles.visibility_is_inherited = source.visibility_is_inherited;
+    }
     "float" => styles.float = source.float,
     "clear" => styles.clear = source.clear,
     "overflow" => {
@@ -6581,7 +6584,10 @@ pub(crate) fn apply_property_from_source(
     "accent-color" => styles.accent_color = source.accent_color,
     "caret-color" => styles.caret_color = source.caret_color,
     "color-scheme" => styles.color_scheme = source.color_scheme.clone(),
-    "color" => styles.color = source.color,
+    "color" => {
+      styles.color = source.color;
+      styles.color_is_inherited = source.color_is_inherited;
+    }
     "-webkit-text-fill-color" => {
       styles.webkit_text_fill_color = source.webkit_text_fill_color.clone()
     }
@@ -6885,7 +6891,31 @@ fn apply_global_keyword(
   ) else {
     return false;
   };
-  apply_property_from_source(styles, source, property, order)
+  let applied = apply_property_from_source(styles, source, property, order);
+  if applied {
+    match property {
+      "color" => match keyword {
+        GlobalKeyword::Inherit | GlobalKeyword::Unset => {
+          styles.color_is_inherited = true;
+        }
+        GlobalKeyword::Initial => {
+          styles.color_is_inherited = false;
+        }
+        GlobalKeyword::Revert | GlobalKeyword::RevertLayer => {}
+      },
+      "visibility" => match keyword {
+        GlobalKeyword::Inherit | GlobalKeyword::Unset => {
+          styles.visibility_is_inherited = true;
+        }
+        GlobalKeyword::Initial => {
+          styles.visibility_is_inherited = false;
+        }
+        GlobalKeyword::Revert | GlobalKeyword::RevertLayer => {}
+      },
+      _ => {}
+    }
+  }
+  applied
 }
 
 fn apply_registered_custom_property_global_keyword(
@@ -8599,15 +8629,19 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "visibility" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
-        styles.visibility = if kw.eq_ignore_ascii_case("visible") {
-          crate::style::computed::Visibility::Visible
+        let parsed = if kw.eq_ignore_ascii_case("visible") {
+          Some(crate::style::computed::Visibility::Visible)
         } else if kw.eq_ignore_ascii_case("hidden") {
-          crate::style::computed::Visibility::Hidden
+          Some(crate::style::computed::Visibility::Hidden)
         } else if kw.eq_ignore_ascii_case("collapse") {
-          crate::style::computed::Visibility::Collapse
+          Some(crate::style::computed::Visibility::Collapse)
         } else {
-          styles.visibility
+          None
         };
+        if let Some(value) = parsed {
+          styles.visibility = value;
+          styles.visibility_is_inherited = false;
+        }
       }
     }
     "float" => {
@@ -13088,6 +13122,7 @@ fn apply_declaration_with_base_internal_with_order(
     "color" => {
       if let Some(c) = resolve_color_value(resolved_value) {
         styles.color = c;
+        styles.color_is_inherited = false;
       }
     }
     "-webkit-text-fill-color" => match resolved_value {

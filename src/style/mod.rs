@@ -886,6 +886,9 @@ pub struct ComputedStyle {
   /// Stacking order for positioned elements (`auto` = None)
   pub z_index: Option<i32>,
   pub visibility: Visibility,
+  /// Whether `visibility` was inherited from the parent (no specified value, or specified
+  /// `inherit`/`unset`).
+  pub visibility_is_inherited: bool,
   /// Cursor property (inherited)
   pub cursor: CursorKeyword,
   /// Custom cursor images (in order of preference)
@@ -1116,6 +1119,9 @@ pub struct ComputedStyle {
   pub caret_color: CaretColor,
   pub accent_color: AccentColor,
   pub color: Rgba,
+  /// Whether `color` was inherited from the parent (no specified value, or specified
+  /// `inherit`/`unset`).
+  pub color_is_inherited: bool,
   pub webkit_text_fill_color: Color,
 
   // SVG presentation properties (used when serializing inline SVG for resvg)
@@ -1320,6 +1326,7 @@ impl Default for ComputedStyle {
       orphans: 2,
       z_index: None,
       visibility: Visibility::Visible,
+      visibility_is_inherited: false,
       cursor: CursorKeyword::Auto,
       cursor_images: Arc::from(Vec::new()),
       outline_color: OutlineColor::Invert,
@@ -1507,6 +1514,7 @@ impl Default for ComputedStyle {
       caret_color: CaretColor::Auto,
       accent_color: AccentColor::Auto,
       color: Rgba::BLACK,
+      color_is_inherited: false,
       webkit_text_fill_color: Color::CurrentColor,
       svg_fill: None,
       svg_stroke: None,

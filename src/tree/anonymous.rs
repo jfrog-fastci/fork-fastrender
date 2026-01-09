@@ -929,6 +929,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.word_spacing = parent.word_spacing;
   style.justify_items = parent.justify_items;
   style.visibility = parent.visibility;
+  style.visibility_is_inherited = true;
   style.white_space = parent.white_space;
   style.line_break = parent.line_break;
   style.tab_size = parent.tab_size;
@@ -945,6 +946,7 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
   style.cursor = parent.cursor;
   style.cursor_images = parent.cursor_images.clone();
   style.color = parent.color;
+  style.color_is_inherited = true;
   style.custom_property_registry = parent.custom_property_registry.clone();
   style.custom_properties = parent.custom_properties.clone();
   style

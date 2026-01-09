@@ -94,6 +94,15 @@ fn fragment_visibility(tree: &FragmentTree, box_id: usize) -> Visibility {
     .expect("style present")
 }
 
+fn fragment_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  frag
+    .style
+    .as_ref()
+    .map(|s| s.color)
+    .expect("style present")
+}
+
 fn fragment_transform_x(tree: &FragmentTree, box_id: usize) -> f32 {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
@@ -359,6 +368,108 @@ fn transitions_interpolate_over_time() {
   let viewport = end.viewport_size();
   animation::apply_transitions(&mut end, 1000.0, viewport);
   assert!((fragment_opacity(&end, box_id) - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn transitions_inherit_color_current_value() {
+  let html = r#"
+    <style>
+      @starting-style { #parent { color: rgb(255, 0, 0); } }
+      #parent { color: rgb(0, 0, 255); transition: color 1000ms linear; }
+      #explicit { color: rgb(0, 255, 0); }
+    </style>
+    <div id="parent">
+      <span id="inherited">Inherited</span>
+      <span id="explicit">Explicit</span>
+    </div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let parent_styled = styled_node_id_by_id(&styled_tree, "parent").expect("styled id");
+  let inherited_styled = styled_node_id_by_id(&styled_tree, "inherited").expect("styled id");
+  let explicit_styled = styled_node_id_by_id(&styled_tree, "explicit").expect("styled id");
+  let parent_box = box_id_for_styled(&box_tree.root, parent_styled).expect("box id");
+  let inherited_box = box_id_for_styled(&box_tree.root, inherited_styled).expect("box id");
+  let explicit_box = box_id_for_styled(&box_tree.root, explicit_styled).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let expected = fastrender::Rgba::new(128, 0, 128, 1.0);
+  let inherited_frag = find_fragment(&mid.root, inherited_box).expect("fragment present");
+  let inherited_style = inherited_frag.style.as_ref().expect("style present");
+  assert!(
+    inherited_style.color_is_inherited,
+    "expected inherited span to track inherited color"
+  );
+  let explicit_frag = find_fragment(&mid.root, explicit_box).expect("fragment present");
+  let explicit_style = explicit_frag.style.as_ref().expect("style present");
+  assert!(
+    !explicit_style.color_is_inherited,
+    "expected explicit span to not track inherited color"
+  );
+  assert_eq!(
+    fragment_color(&mid, parent_box),
+    expected,
+    "parent box id {parent_box}"
+  );
+  assert_eq!(
+    fragment_color(&mid, inherited_box),
+    expected,
+    "inherited box id {inherited_box}"
+  );
+  assert_eq!(
+    fragment_color(&mid, explicit_box),
+    fastrender::Rgba::GREEN,
+    "explicit box id {explicit_box}"
+  );
+}
+
+#[test]
+fn transitions_inherit_visibility_current_value() {
+  let html = r#"
+    <style>
+      @starting-style { #parent { visibility: hidden; } }
+      #parent { visibility: visible; transition: visibility 1000ms linear allow-discrete; }
+      #explicit { visibility: visible; }
+    </style>
+    <div id="parent">
+      <span id="inherited">Inherited</span>
+      <span id="explicit">Explicit</span>
+    </div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let parent_styled = styled_node_id_by_id(&styled_tree, "parent").expect("styled id");
+  let inherited_styled = styled_node_id_by_id(&styled_tree, "inherited").expect("styled id");
+  let explicit_styled = styled_node_id_by_id(&styled_tree, "explicit").expect("styled id");
+  let parent_box = box_id_for_styled(&box_tree.root, parent_styled).expect("box id");
+  let inherited_box = box_id_for_styled(&box_tree.root, inherited_styled).expect("box id");
+  let explicit_box = box_id_for_styled(&box_tree.root, explicit_styled).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 0.0, viewport);
+  assert_eq!(
+    fragment_visibility(&early, parent_box),
+    Visibility::Hidden,
+    "parent should start hidden at t=0"
+  );
+  assert_eq!(
+    fragment_visibility(&early, inherited_box),
+    Visibility::Hidden,
+    "inherited child should receive parent's transitioned visibility"
+  );
+  assert_eq!(
+    fragment_visibility(&early, explicit_box),
+    Visibility::Visible,
+    "explicit child should not inherit parent's transitioned visibility"
+  );
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert_eq!(fragment_visibility(&mid, parent_box), Visibility::Visible);
+  assert_eq!(fragment_visibility(&mid, inherited_box), Visibility::Visible);
+  assert_eq!(fragment_visibility(&mid, explicit_box), Visibility::Visible);
 }
 
 #[test]

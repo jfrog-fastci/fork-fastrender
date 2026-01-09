@@ -15637,6 +15637,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   styles.word_spacing = parent.word_spacing;
   styles.justify_items = parent.justify_items;
   styles.visibility = parent.visibility;
+  styles.visibility_is_inherited = true;
   styles.white_space = parent.white_space;
   styles.line_break = parent.line_break;
   // widows and orphans inherit per CSS 2.1.
@@ -15665,6 +15666,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
 
   // Color inherits
   styles.color = parent.color;
+  styles.color_is_inherited = true;
   styles.webkit_text_fill_color = parent.webkit_text_fill_color.clone();
 
   // SVG presentation properties inherit per SVG/CSS painting rules.
