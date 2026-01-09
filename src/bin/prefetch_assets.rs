@@ -3523,7 +3523,7 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy, FetchCredentialsMode)>>,
       }
 
       impl ResourceFetcher for RecordingFetcher {
@@ -3536,6 +3536,7 @@ mod disk_cache_main {
             req.url.to_string(),
             req.destination,
             req.referrer_policy,
+            req.credentials_mode,
           ));
 
           match req.url {
@@ -3605,10 +3606,11 @@ mod disk_cache_main {
 
       let calls = fetcher_impl.calls.lock().unwrap();
       assert!(
-        calls.iter().any(|(url, dest, policy)| {
+        calls.iter().any(|(url, dest, policy, credentials_mode)| {
           url == "https://example.com/font.woff2"
             && *dest == FetchDestination::Font
             && *policy == ReferrerPolicy::NoReferrer
+            && *credentials_mode == FetchCredentialsMode::SameOrigin
         }),
         "expected font request to inherit stylesheet response Referrer-Policy header, got: {calls:?}"
       );
@@ -3620,7 +3622,7 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+        calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy, FetchCredentialsMode)>>,
       }
 
       impl ResourceFetcher for RecordingFetcher {
@@ -3633,6 +3635,7 @@ mod disk_cache_main {
             req.url.to_string(),
             req.destination,
             req.referrer_policy,
+            req.credentials_mode,
           ));
 
           match req.url {
@@ -3713,15 +3716,16 @@ mod disk_cache_main {
 
       let calls = fetcher_impl.calls.lock().unwrap();
       assert!(
-        calls.iter().any(|(url, dest, policy)| {
+        calls.iter().any(|(url, dest, policy, credentials_mode)| {
           url == "https://cdn.example.com/nested.woff2"
             && *dest == FetchDestination::Font
             && *policy == ReferrerPolicy::NoReferrer
+            && *credentials_mode == FetchCredentialsMode::SameOrigin
         }),
         "expected nested font request to inherit imported stylesheet response Referrer-Policy header, got: {calls:?}"
       );
       assert!(
-        calls.iter().all(|(url, dest, _)| {
+        calls.iter().all(|(url, dest, _, _)| {
           !(url == "https://example.com/nested.woff2" && *dest == FetchDestination::Font)
         }),
         "expected nested font URL to resolve against imported stylesheet final URL, got: {calls:?}"
