@@ -37,6 +37,7 @@ struct EventKeys {
   cancelable: PropertyKey,
   composed: PropertyKey,
   target: PropertyKey,
+  src_element: PropertyKey,
   current_target: PropertyKey,
   event_phase: PropertyKey,
   is_trusted: PropertyKey,
@@ -45,6 +46,7 @@ struct EventKeys {
   return_value: PropertyKey,
   stop_propagation: PropertyKey,
   stop_immediate_propagation: PropertyKey,
+  composed_path: PropertyKey,
   prevent_default: PropertyKey,
 }
 
@@ -74,6 +76,7 @@ impl EventWrapper {
       cancelable: Self::intern_key(rt, "cancelable")?,
       composed: Self::intern_key(rt, "composed")?,
       target: Self::intern_key(rt, "target")?,
+      src_element: Self::intern_key(rt, "srcElement")?,
       current_target: Self::intern_key(rt, "currentTarget")?,
       event_phase: Self::intern_key(rt, "eventPhase")?,
       is_trusted: Self::intern_key(rt, "isTrusted")?,
@@ -82,6 +85,7 @@ impl EventWrapper {
       cancel_bubble: Self::intern_key(rt, "cancelBubble")?,
       stop_immediate_propagation: Self::intern_key(rt, "stopImmediatePropagation")?,
       return_value: Self::intern_key(rt, "returnValue")?,
+      composed_path: Self::intern_key(rt, "composedPath")?,
       prevent_default: Self::intern_key(rt, "preventDefault")?,
     };
 
@@ -97,6 +101,7 @@ impl EventWrapper {
       keys.cancelable,
       keys.composed,
       keys.target,
+      keys.src_element,
       keys.current_target,
       keys.event_phase,
       keys.is_trusted,
@@ -105,6 +110,7 @@ impl EventWrapper {
       keys.cancel_bubble,
       keys.stop_immediate_propagation,
       keys.return_value,
+      keys.composed_path,
       keys.prevent_default,
     ] {
       match key {
@@ -216,6 +222,35 @@ impl EventWrapper {
       false,
     )?;
 
+    let composed_path = {
+      let active = active_events.clone();
+      let key_event_id = keys.event_id;
+      let window_target = window_target;
+      let document_target = document_target;
+      rt.alloc_function_value(move |rt, this, _args| {
+        let id = get_event_id(rt, this, key_event_id)?;
+        with_active_event_result(rt, &active, id, |rt, event| {
+          let arr = rt.alloc_array()?;
+          let arr_root = rt.heap_mut().add_root(arr)?;
+          let res = (|| {
+            for (idx, entry) in event.path.iter().rev().enumerate() {
+              let key = rt.property_key_from_u32(idx as u32)?;
+              let value = match entry.target {
+                EventTargetId::Window => window_target,
+                EventTargetId::Document => document_target,
+                EventTargetId::Node(node_id) => Value::Number(node_id.index() as f64),
+              };
+              rt.define_data_property(arr, key, value, true)?;
+            }
+            Ok(arr)
+          })();
+          rt.heap_mut().remove_root(arr_root);
+          res
+        })
+      })?
+    };
+    rt.define_data_property(prototype, keys.composed_path, composed_path, false)?;
+
     let prevent_default = {
       let active = active_events.clone();
       let key_event_id = keys.event_id;
@@ -290,6 +325,7 @@ impl EventWrapper {
 
     let target = self.js_value_for_target(event.target);
     rt.define_data_property(obj, self.keys.target, target, true)?;
+    rt.define_data_property(obj, self.keys.src_element, target, true)?;
 
     let current_target = self.js_value_for_target(event.current_target);
     rt.define_data_property(obj, self.keys.current_target, current_target, true)?;
@@ -368,6 +404,20 @@ fn with_active_event_ret<R: Copy>(
   let mut out: Option<R> = None;
   with_active_event(rt, active, id, |event| out = Some(f(event)))?;
   out.ok_or_else(|| rt.throw_type_error("Event is no longer active"))
+}
+
+fn with_active_event_result<R>(
+  rt: &mut VmJsRuntime,
+  active: &ActiveEventMap,
+  id: u64,
+  f: impl FnOnce(&mut VmJsRuntime, &mut Event) -> std::result::Result<R, VmError>,
+) -> std::result::Result<R, VmError> {
+  let ptr = { active.borrow().get(&id).copied() };
+  let Some(mut ptr) = ptr else {
+    return Err(rt.throw_type_error("Event is no longer active"));
+  };
+  // Safety: the pointer is installed by the dispatch invoker for the duration of a listener call.
+  unsafe { f(rt, ptr.as_mut()) }
 }
 
 struct ActiveEventGuard {

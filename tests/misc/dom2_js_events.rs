@@ -1061,3 +1061,74 @@ fn js_return_value_setter_false_calls_prevent_default() -> Result<()> {
   assert_eq!(*log.borrow(), vec!["listener"]);
   Ok(())
 }
+
+#[test]
+fn js_composed_path_and_src_element_reflect_dispatch_path() -> Result<()> {
+  let (doc, _parent, target) = build_doc();
+  let mut js = JsDomEvents::new()?;
+
+  let key_composed_path = key(js.runtime_mut(), "composedPath");
+  let key_length = key(js.runtime_mut(), "length");
+  let key_src_element = key(js.runtime_mut(), "srcElement");
+
+  let window_value = js
+    .runtime_mut()
+    .alloc_string_value("window")
+    .expect("alloc window string");
+  let document_value = js
+    .runtime_mut()
+    .alloc_string_value("document")
+    .expect("alloc document string");
+
+  let mut expected: Vec<Value> = Vec::new();
+  expected.push(Value::Number(target.index() as f64));
+  let mut current = target;
+  loop {
+    let Some(parent) = doc.node(current).parent else {
+      break;
+    };
+    if matches!(doc.node(parent).kind, dom2::NodeKind::Document { .. }) {
+      break;
+    }
+    expected.push(Value::Number(parent.index() as f64));
+    current = parent;
+  }
+  expected.push(document_value);
+  expected.push(window_value);
+
+  let expected_for_cb = expected.clone();
+  let listener = js
+    .runtime_mut()
+    .alloc_function_value(move |rt, _this, args| {
+      let event = args.get(0).copied().unwrap_or(Value::Undefined);
+
+      let src_element = rt.get(event, key_src_element)?;
+      assert_eq!(src_element, expected_for_cb[0]);
+
+      let composed_path_fn = rt.get(event, key_composed_path)?;
+      let path = rt.call_function(composed_path_fn, event, &[])?;
+
+      let len = rt.get(path, key_length)?;
+      assert_eq!(len, Value::Number(expected_for_cb.len() as f64));
+
+      for (idx, expected_value) in expected_for_cb.iter().copied().enumerate() {
+        let key = rt.property_key_from_u32(idx as u32)?;
+        let got = rt.get(path, key)?;
+        assert_js_value_eq(rt, got, expected_value);
+      }
+
+      Ok(Value::Undefined)
+    })
+    .expect("alloc function");
+
+  let _ = js.add_js_event_listener(
+    EventTargetId::Node(target),
+    "test",
+    listener,
+    AddEventListenerOptions::default(),
+  )?;
+
+  let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
+  js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
+  Ok(())
+}

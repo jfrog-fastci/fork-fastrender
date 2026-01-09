@@ -125,6 +125,10 @@ pub struct Event {
   pub target: Option<EventTargetId>,
   pub current_target: Option<EventTargetId>,
   pub event_phase: EventPhase,
+  /// The computed dispatch path for this event.
+  ///
+  /// This is populated by [`dispatch_event`] and reused by `Event.composedPath()`.
+  pub path: Vec<EventPathEntry>,
   pub is_trusted: bool,
   in_passive_listener: bool,
 }
@@ -142,6 +146,7 @@ impl Event {
       target: None,
       current_target: None,
       event_phase: EventPhase::None,
+      path: Vec::new(),
       // Only user agent-dispatched events are trusted; all synthetic events are not.
       is_trusted: false,
       in_passive_listener: false,
@@ -385,45 +390,47 @@ pub fn dispatch_event(
   event.immediate_propagation_stopped = false;
   event.in_passive_listener = false;
 
-  let path = build_event_path(target, dom);
-  if path.is_empty() {
+  event.path = build_event_path(target, dom);
+  if event.path.is_empty() {
     return Ok(!event.default_prevented);
   }
 
-  let target_index = path.len() - 1;
+  let target_index = event.path.len() - 1;
 
   // Capturing phase: Window → ... → parent
-  for entry in &path[..target_index] {
+  for idx in 0..target_index {
     if event.propagation_stopped {
       break;
     }
+    let target = event.path[idx].target;
     event.event_phase = EventPhase::Capturing;
-    event.current_target = Some(entry.target);
-    invoke_listeners(entry.target, event, registry, invoker, /* capture */ true)?;
+    event.current_target = Some(target);
+    invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
   }
 
   // At-target phase: capture listeners then bubble listeners.
   if !event.propagation_stopped {
-    let entry = path[target_index];
+    let target = event.path[target_index].target;
     event.event_phase = EventPhase::AtTarget;
-    event.current_target = Some(entry.target);
+    event.current_target = Some(target);
 
-    invoke_listeners(entry.target, event, registry, invoker, /* capture */ true)?;
+    invoke_listeners(target, event, registry, invoker, /* capture */ true)?;
 
     if !event.propagation_stopped && !event.immediate_propagation_stopped {
-      invoke_listeners(entry.target, event, registry, invoker, /* capture */ false)?;
+      invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
     }
   }
 
   // Bubbling phase: parent → ... → Window (only if bubbles)
   if event.bubbles && !event.propagation_stopped {
-    for entry in path[..target_index].iter().rev() {
+    for idx in (0..target_index).rev() {
       if event.propagation_stopped {
         break;
       }
+      let target = event.path[idx].target;
       event.event_phase = EventPhase::Bubbling;
-      event.current_target = Some(entry.target);
-      invoke_listeners(entry.target, event, registry, invoker, /* capture */ false)?;
+      event.current_target = Some(target);
+      invoke_listeners(target, event, registry, invoker, /* capture */ false)?;
     }
   }
 
