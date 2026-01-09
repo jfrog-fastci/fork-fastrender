@@ -96,7 +96,6 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
     - `spawn_ui_worker` exposes the same message-driven worker loop for headless integration tests.
     - `spawn_browser_ui_worker` is a small std::io wrapper around `spawn_browser_worker_with_name`.
   - Render-thread utilities (stage heartbeat forwarding, large-stack thread helper): [`src/ui/worker.rs`](../src/ui/worker.rs)
-  - Test-only worker spawn shim for backwards compatibility: [`src/ui/test_worker.rs`](../src/ui/test_worker.rs)
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Mostly used by unit tests and small helpers.
   - Headless worker tests exercise the same `UiToWorker`/`WorkerToUi` protocol via the canonical

@@ -16,12 +16,6 @@ pub mod history;
 pub mod messages;
 pub mod shortcuts;
 pub mod worker;
-/// Test-only helpers for spawning a headless UI worker.
-///
-/// This module is intentionally a thin wrapper around [`render_worker`] so tests do not drift onto
-/// a separate worker implementation.
-#[cfg(feature = "browser_ui")]
-pub mod test_worker;
 pub mod url;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
