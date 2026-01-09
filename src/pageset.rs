@@ -184,9 +184,13 @@ fn parse_collision_suffix(raw: &str) -> Option<(&str, &str)> {
     .filter(|(_, suffix)| suffix.len() == 8 && suffix.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
 /// Canonical pageset stem for filtering and reporting.
 pub fn pageset_stem(url_or_stem: &str) -> Option<String> {
-  let trimmed = strip_collision_suffix(url_or_stem.trim());
+  let trimmed = strip_collision_suffix(trim_ascii_whitespace(url_or_stem));
   normalize_page_name(trimmed)
 }
 
@@ -216,7 +220,7 @@ fn pageset_urls() -> Vec<String> {
   if let Ok(raw) = std::env::var("FASTR_PAGESET_URLS") {
     let urls: Vec<String> = raw
       .split(',')
-      .map(str::trim)
+      .map(trim_ascii_whitespace)
       .filter(|u| !u.is_empty())
       .map(str::to_string)
       .collect();
@@ -299,7 +303,7 @@ impl PagesetFilter {
   }
 
   fn add(&mut self, raw: &str) {
-    let trimmed = raw.trim();
+    let trimmed = trim_ascii_whitespace(raw);
     if trimmed.is_empty() {
       return;
     }
@@ -399,5 +403,11 @@ mod tests {
   fn cache_html_path_uses_cache_dir() {
     let path = cache_html_path("example.com");
     assert!(path.ends_with("fetches/html/example.com.html"));
+  }
+
+  #[test]
+  fn non_ascii_whitespace_pageset_stem_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(pageset_stem(&format!("{nbsp}example.com")).as_deref(), Some("_example.com"));
   }
 }

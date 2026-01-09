@@ -6,6 +6,7 @@ use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
 
 pub mod import;
+mod traversal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
