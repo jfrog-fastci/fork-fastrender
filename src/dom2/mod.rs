@@ -431,6 +431,7 @@ impl Document {
   /// Minimal HTML-ish semantics:
   /// - If `documentElement` exists and is an HTML `<html>` element, return the first HTML `<body>`
   ///   child element (tree order).
+  /// - If no `<body>` is present, return the first HTML `<frameset>` child element (tree order).
   /// - Otherwise return `None`.
   pub fn body(&self) -> Option<NodeId> {
     let html = self.document_element()?;
@@ -438,13 +439,24 @@ impl Document {
       return None;
     }
     let html_node = self.nodes.get(html.index())?;
-    html_node.children.iter().copied().find(|&child| {
+    let is_direct_child = |child: NodeId| {
       self
         .nodes
         .get(child.index())
         .is_some_and(|node| node.parent == Some(html))
-        && self.is_html_element(child, "body")
-    })
+    };
+
+    if let Some(body) = html_node.children.iter().copied().find(|&child| {
+      is_direct_child(child) && self.is_html_element(child, "body")
+    }) {
+      return Some(body);
+    }
+
+    html_node
+      .children
+      .iter()
+      .copied()
+      .find(|&child| is_direct_child(child) && self.is_html_element(child, "frameset"))
   }
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {
@@ -1288,5 +1300,50 @@ mod helper_tests {
     let body = doc.body().expect("expected body");
     assert_eq!(doc.get_attribute(head, "id").unwrap(), Some("a"));
     assert_eq!(doc.get_attribute(body, "id").unwrap(), Some("c"));
+  }
+
+  #[test]
+  fn body_returns_frameset_when_no_body() {
+    let root =
+      parse_html("<!doctype html><html><head></head><frameset id=a></frameset></html>").unwrap();
+    let doc = Document::from_renderer_dom(&root);
+
+    let body = doc.body().expect("expected frameset");
+    assert!(find_tag(&doc, body).is_some_and(|t| t.eq_ignore_ascii_case("frameset")));
+    assert_eq!(doc.get_attribute(body, "id").unwrap(), Some("a"));
+  }
+
+  #[test]
+  fn body_prefers_body_over_frameset() {
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let html = doc.push_node(
+      NodeKind::Element {
+        tag_name: "html".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: Vec::new(),
+      },
+      Some(doc.root()),
+      /* inert_subtree */ false,
+    );
+    doc.push_node(
+      NodeKind::Element {
+        tag_name: "frameset".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "fs".to_string())],
+      },
+      Some(html),
+      /* inert_subtree */ false,
+    );
+    let body = doc.push_node(
+      NodeKind::Element {
+        tag_name: "body".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "b".to_string())],
+      },
+      Some(html),
+      /* inert_subtree */ false,
+    );
+
+    assert_eq!(doc.body(), Some(body));
   }
 }
