@@ -97,6 +97,21 @@ const DOM_BINDINGS_SHIM: &str = r#"
     ensureRemoveChild(obj);
   }
 
+  function wrapAppendChild(proto) {
+    if (!proto || typeof proto.appendChild !== "function") return;
+    var orig = proto.appendChild;
+    proto.appendChild = function (child) {
+      if (!child || (typeof child !== "object" && typeof child !== "function")) {
+        throw domException("InvalidNodeType", "InvalidNodeType");
+      }
+      // HTML/DomError mapping: appending into Text must throw HierarchyRequestError.
+      if (this.__node_kind === "text") {
+        throw domException("HierarchyRequestError", "HierarchyRequestError");
+      }
+      return orig.call(this, child);
+    };
+  }
+
   ensureNodeKind(doc, "document");
   ensureNodeApis(doc);
 
@@ -127,9 +142,11 @@ const DOM_BINDINGS_SHIM: &str = r#"
   // Patch `removeChild` onto EventTarget's Document/Element prototypes when available.
   try {
     if (typeof g.Document === "function" && g.Document.prototype) {
+      wrapAppendChild(g.Document.prototype);
       ensureRemoveChild(g.Document.prototype);
     }
     if (typeof g.Element === "function" && g.Element.prototype) {
+      wrapAppendChild(g.Element.prototype);
       ensureRemoveChild(g.Element.prototype);
     }
   } catch (_e) {
@@ -231,6 +248,32 @@ mod tests {
         })()"#,
       );
       assert_eq!(out, "SyntaxError|true");
+    });
+  }
+
+  #[test]
+  fn maps_invalid_node_types_to_invalidnodetype_domexception() {
+    let rt = Runtime::new().expect("runtime");
+    let ctx = Context::full(&rt).expect("context");
+    ctx.with(|ctx| {
+      let globals = ctx.globals();
+      let document = Object::new(ctx.clone()).expect("document");
+      globals.set("document", document.clone()).expect("set document");
+      install_dom_bindings(ctx.clone(), &globals).expect("install bindings");
+
+      let out = eval_str(
+        &ctx,
+        r#"(() => {
+          try {
+            const el = document.createElement("div");
+            el.appendChild(123);
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException);
+          }
+        })()"#,
+      );
+      assert_eq!(out, "InvalidNodeType|true");
     });
   }
 }
