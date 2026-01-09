@@ -26,6 +26,15 @@ test(() => {
 }, "document.createDocumentFragment");
 
 test(() => {
+  assert_equals(document.documentElement.tagName, "HTML");
+  assert_equals(document.head.tagName, "HEAD");
+  assert_equals(document.body.tagName, "BODY");
+  assert_equals(document.documentElement.childNodes.length, 2);
+  assert_equals(document.documentElement.childNodes[0].tagName, "HEAD");
+  assert_equals(document.documentElement.childNodes[1].tagName, "BODY");
+}, "document.documentElement/head/body shims");
+
+test(() => {
   // Spec: if the element has no parent, `outerHTML = ...` is a no-op.
   const el = document.createElement("div");
   el.outerHTML = "<span>ignored</span>";

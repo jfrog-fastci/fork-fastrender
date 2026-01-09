@@ -39,6 +39,8 @@ const DOM_SHIM: &str = r#"
 
   // Document node id is always 0.
   g.document[NODE_ID] = 0;
+  g.document.parentNode = null;
+  g.document.childNodes = [];
 
   function ensureArray(o, key) {
     if (!o[key]) o[key] = [];
@@ -164,11 +166,29 @@ const DOM_SHIM: &str = r#"
   // Provide `document.head`/`document.body` for smoke tests.
   if (typeof g.__fastrender_dom_head_id === "number") {
     g.document.head = makeNode(Element.prototype, g.__fastrender_dom_head_id, "HEAD");
-    g.document.head.parentNode = g.document;
   }
   if (typeof g.__fastrender_dom_body_id === "number") {
     g.document.body = makeNode(Element.prototype, g.__fastrender_dom_body_id, "BODY");
-    g.document.body.parentNode = g.document;
+  }
+  if (typeof g.__fastrender_dom_document_element_id === "number") {
+    g.document.documentElement = makeNode(
+      Element.prototype,
+      g.__fastrender_dom_document_element_id,
+      "HTML"
+    );
+    g.document.documentElement.parentNode = g.document;
+    g.document.childNodes.push(g.document.documentElement);
+    if (g.document.head) {
+      g.document.head.parentNode = g.document.documentElement;
+      g.document.documentElement.childNodes.push(g.document.head);
+    }
+    if (g.document.body) {
+      g.document.body.parentNode = g.document.documentElement;
+      g.document.documentElement.childNodes.push(g.document.body);
+    }
+  } else {
+    if (g.document.head) g.document.head.parentNode = g.document;
+    if (g.document.body) g.document.body.parentNode = g.document;
   }
 
   Object.defineProperty(g, "Node", { value: Node, configurable: true, writable: true });
@@ -223,6 +243,7 @@ struct Node {
 #[derive(Debug, Clone)]
 struct Dom {
   nodes: Vec<Node>,
+  html: NodeId,
   head: NodeId,
   body: NodeId,
 }
@@ -231,6 +252,7 @@ impl Dom {
   fn new() -> Self {
     let mut dom = Self {
       nodes: Vec::new(),
+      html: NodeId(0),
       head: NodeId(0),
       body: NodeId(0),
     };
@@ -251,10 +273,15 @@ impl Dom {
       .append_child(html, body)
       .expect("<html> should accept <body>");
 
+    dom.html = html;
     dom.head = head;
     dom.body = body;
 
     dom
+  }
+
+  fn document_element(&self) -> NodeId {
+    self.html
   }
 
   fn head(&self) -> NodeId {
@@ -694,10 +721,15 @@ fn fragment_children_from_rcdom(rcdom: &RcDom) -> Vec<Handle> {
 pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<()> {
   let dom = Rc::new(RefCell::new(Dom::new()));
 
-  let (head_id, body_id) = {
+  let (document_element_id, head_id, body_id) = {
     let dom = dom.borrow();
-    (dom.head().0 as i32, dom.body().0 as i32)
+    (
+      dom.document_element().0 as i32,
+      dom.head().0 as i32,
+      dom.body().0 as i32,
+    )
   };
+  globals.set("__fastrender_dom_document_element_id", document_element_id)?;
   globals.set("__fastrender_dom_head_id", head_id)?;
   globals.set("__fastrender_dom_body_id", body_id)?;
 
