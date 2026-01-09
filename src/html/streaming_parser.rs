@@ -489,6 +489,33 @@ mod tests {
   }
 
   #[test]
+  fn base_in_declarative_shadow_rootmode_does_not_update_base_url() {
+    // Like the legacy `<template shadowroot=open>` syntax, `<template shadowrootmode=open>` should
+    // not allow `<base href>` inside the shadow tree to affect the document base URL.
+    //
+    // With html5ever's declarative shadow DOM hooks, shadowrootmode templates attach during parsing,
+    // meaning template descendants are inserted into a ShadowRoot node (not an inert `<template>`
+    // subtree). The base URL tracker must still ignore `<base>` inside that shadow root.
+    let html = r#"<!doctype html><html><head>
+      <template shadowrootmode=open><base href="https://bad.example/"></template>
+    </head></html>"#;
+
+    let mut parser = StreamingHtmlParser::new(Some("https://example.com/dir/page.html"));
+    parser.push_str(html);
+    parser.set_eof();
+
+    match parser.pump() {
+      StreamingParserYield::Finished { .. } => {}
+      other => panic!("expected Finished, got {other:?}"),
+    }
+
+    assert_eq!(
+      parser.current_base_url().as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+  }
+
+  #[test]
   fn declarative_shadow_root_is_attached_before_script_yields() {
     let mut parser = StreamingHtmlParser::new(None);
     parser.push_str(

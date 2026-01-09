@@ -145,12 +145,17 @@ impl Dom2TreeSink {
             in_foreign_namespace = true;
           }
         }
+        NodeKind::ShadowRoot { .. } => {
+          // DOM's "root" concept stops at a ShadowRoot boundary. For parse-time `<base href>`
+          // tracking, `<base>` elements inside a shadow tree must not be treated as being in the
+          // document `<head>`.
+          break;
+        }
         NodeKind::Document { .. }
         | NodeKind::DocumentFragment
         | NodeKind::Doctype { .. }
         | NodeKind::Comment { .. }
         | NodeKind::ProcessingInstruction { .. }
-        | NodeKind::ShadowRoot { .. }
         | NodeKind::Text { .. } => {}
       }
       current = doc.node(id).parent;
