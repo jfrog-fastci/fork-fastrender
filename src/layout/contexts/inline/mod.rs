@@ -11679,7 +11679,7 @@ fn compute_combine_boundary(
 fn can_combine_for_mode(ch: char, mode: TextCombineUpright) -> bool {
   match mode {
     TextCombineUpright::Digits(_) => ch.is_ascii_digit(),
-    TextCombineUpright::All => !ch.is_whitespace() && !ch.is_control(),
+    TextCombineUpright::All => !is_ascii_whitespace_char(ch) && !ch.is_control(),
     TextCombineUpright::None => false,
   }
 }
@@ -12575,6 +12575,14 @@ mod tests {
     assert!(
       !inline_item_ends_with_hyphen(&item),
       "NBSP must not be treated as collapsible whitespace when detecting hyphenated line ends"
+    );
+  }
+
+  #[test]
+  fn non_ascii_whitespace_text_combine_upright_all_does_not_treat_nbsp_as_whitespace() {
+    assert!(
+      can_combine_for_mode('\u{00A0}', TextCombineUpright::All),
+      "NBSP must not be treated as whitespace when selecting text-combine-upright=all candidates"
     );
   }
 
