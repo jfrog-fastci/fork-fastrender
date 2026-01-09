@@ -4,6 +4,7 @@ pub mod asset_discovery;
 pub mod base_url_tracker;
 pub mod color_scheme;
 pub mod content_security_policy;
+pub mod dom2_tree_sink;
 pub mod encoding;
 pub mod image_attrs;
 pub mod image_prefetch;
