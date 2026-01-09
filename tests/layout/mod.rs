@@ -125,6 +125,7 @@ mod paged_media;
 mod parallel_layout;
 mod render_wrap;
 mod replaced_writing_mode;
+mod vertical_writing_mode_atomic_inline_margins;
 mod ruby;
 mod running_elements;
 mod running_position;

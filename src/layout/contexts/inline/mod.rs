@@ -2404,7 +2404,6 @@ impl InlineFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
-    let inline_vertical = is_vertical_writing_mode(style.writing_mode);
     let metrics = self.resolve_scaled_metrics(style);
     let line_height =
       compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(self.viewport_size));
@@ -2412,58 +2411,59 @@ impl InlineFormattingContext {
 
     let percentage_base = available_width.is_finite().then_some(available_width);
     let percentage_base_px = percentage_base.unwrap_or(0.0);
-    let margin_left = style
-      .margin_left
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_right = style
-      .margin_right
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_top = style
-      .margin_top
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_bottom = style
-      .margin_bottom
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
+
+    let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
+    let block_positive = crate::style::block_axis_positive(style.writing_mode);
+    let (inline_start_side, inline_end_side) = if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+      if inline_positive {
+        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      } else {
+        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      }
+    } else if inline_positive {
+      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    } else {
+      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    };
+    let (block_start_side, block_end_side) = if crate::style::block_axis_is_horizontal(style.writing_mode) {
+      if block_positive {
+        (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+      } else {
+        (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+      }
+    } else if block_positive {
+      (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+    } else {
+      (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+    };
+
+    let resolve_margin_side = |side: crate::style::PhysicalSide| -> f32 {
+      let raw = match side {
+        crate::style::PhysicalSide::Left => style.margin_left,
+        crate::style::PhysicalSide::Right => style.margin_right,
+        crate::style::PhysicalSide::Top => style.margin_top,
+        crate::style::PhysicalSide::Bottom => style.margin_bottom,
+      };
+      raw
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            percentage_base_px,
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
+        .unwrap_or(0.0)
+    };
+
+    // Inline formatting context operates in logical inline/block coordinates. For vertical writing
+    // modes, inline-start/end map to physical top/bottom, and block-start/end map to left/right.
+    let margin_left = resolve_margin_side(inline_start_side);
+    let margin_right = resolve_margin_side(inline_end_side);
+    let margin_top = resolve_margin_side(block_start_side);
+    let margin_bottom = resolve_margin_side(block_end_side);
     let available_for_box = if available_width.is_finite() {
       (available_width - margin_left - margin_right).max(0.0)
     } else {
@@ -2750,33 +2750,6 @@ impl InlineFormattingContext {
         fragment.bounds.width()
             );
     }
-
-    let margin_left = style
-      .margin_left
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_right = style
-      .margin_right
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
 
     let va = self.convert_vertical_align(
       style.vertical_align,
@@ -4645,58 +4618,58 @@ impl InlineFormattingContext {
     } else {
       0.0
     };
-    let margin_left = style
-      .margin_left
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_right = style
-      .margin_right
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_top = style
-      .margin_top
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let margin_bottom = style
-      .margin_bottom
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
+    let inline_positive = crate::style::inline_axis_positive(style.writing_mode, style.direction);
+    let block_positive = crate::style::block_axis_positive(style.writing_mode);
+    let (inline_start_side, inline_end_side) =
+      if crate::style::inline_axis_is_horizontal(style.writing_mode) {
+        if inline_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if inline_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      } else {
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
+    let (block_start_side, block_end_side) =
+      if crate::style::block_axis_is_horizontal(style.writing_mode) {
+        if block_positive {
+          (crate::style::PhysicalSide::Left, crate::style::PhysicalSide::Right)
+        } else {
+          (crate::style::PhysicalSide::Right, crate::style::PhysicalSide::Left)
+        }
+      } else if block_positive {
+        (crate::style::PhysicalSide::Top, crate::style::PhysicalSide::Bottom)
+      } else {
+        (crate::style::PhysicalSide::Bottom, crate::style::PhysicalSide::Top)
+      };
+
+    let resolve_margin_side = |side: crate::style::PhysicalSide| -> f32 {
+      let raw = match side {
+        crate::style::PhysicalSide::Left => style.margin_left,
+        crate::style::PhysicalSide::Right => style.margin_right,
+        crate::style::PhysicalSide::Top => style.margin_top,
+        crate::style::PhysicalSide::Bottom => style.margin_bottom,
+      };
+      raw
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            percentage_base,
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
+        .unwrap_or(0.0)
+    };
+
+    let margin_left = resolve_margin_side(inline_start_side);
+    let margin_right = resolve_margin_side(inline_end_side);
+    let margin_top = resolve_margin_side(block_start_side);
+    let margin_bottom = resolve_margin_side(block_end_side);
 
     let va = self.convert_vertical_align(
       style.vertical_align,
@@ -6307,8 +6280,8 @@ impl InlineFormattingContext {
         let mut fragment = block_item.fragment.clone();
         if inline_vertical {
           fragment.bounds = Rect::from_xywh(
-            block_pos + block_item.margin_left,
-            inline_pos + block_item.margin_top,
+            block_pos + block_item.margin_top,
+            inline_pos + block_item.margin_left,
             block_item.height,
             block_item.width,
           );
@@ -6327,8 +6300,8 @@ impl InlineFormattingContext {
         let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
         if inline_vertical {
           let bounds = Rect::from_xywh(
-            block_pos + replaced_item.margin_left,
-            inline_pos + paint_offset + replaced_item.margin_top,
+            block_pos + replaced_item.margin_top,
+            inline_pos + paint_offset + replaced_item.margin_left,
             replaced_item.height,
             replaced_item.width,
           );
