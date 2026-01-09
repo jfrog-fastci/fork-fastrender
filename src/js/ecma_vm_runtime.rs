@@ -340,7 +340,7 @@ impl Evaluator<'_> {
           return Err(VmError::Unimplemented("unbound identifier"));
         }
 
-        child.ordinary_get(self.vm, global_obj, key, self.global_this)
+        child.ordinary_get_with_host(self.vm, self.hooks, global_obj, key, self.global_this)
       }
       Expr::This(_) => Ok(self.global_this),
       Expr::Member(node) => self.eval_member_expr(scope, &node.stx),
@@ -370,7 +370,7 @@ impl Evaluator<'_> {
     let key_s = child.alloc_string(&expr.right)?;
     child.push_root(Value::String(key_s))?;
     let key = vm_js::PropertyKey::String(key_s);
-    child.ordinary_get(self.vm, obj, key, obj_value)
+    child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)
   }
 
   fn eval_call_expr(
@@ -395,7 +395,7 @@ impl Evaluator<'_> {
         let key_s = child.alloc_string(&member.stx.right)?;
         child.push_root(Value::String(key_s))?;
         let key = vm_js::PropertyKey::String(key_s);
-        let func = child.ordinary_get(self.vm, obj, key, obj_value)?;
+        let func = child.ordinary_get_with_host(self.vm, self.hooks, obj, key, obj_value)?;
         (func, obj_value)
       }
       _ => {
@@ -1378,6 +1378,90 @@ mod tests {
   }
 
   #[test]
+  fn accessor_getters_run_with_runtime_host_hooks() -> Result<()> {
+    fn getter_enqueues_microtask(
+      _vm: &mut Vm,
+      _scope: &mut Scope<'_>,
+      _host: &mut dyn VmHost,
+      hooks: &mut dyn VmHostHooks,
+      _callee: vm_js::GcObject,
+      _this: Value,
+      _args: &[Value],
+    ) -> std::result::Result<Value, VmError> {
+      let realm_id = ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+        (*host_ptr).state.log.push("getter");
+        (*host_ptr).realm_id
+      });
+
+      hooks.host_enqueue_promise_job(
+        Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
+          ExecCtxGuard::with_current::<TestState, _>(|host_ptr, _| unsafe {
+            (*host_ptr).state.log.push("micro");
+          });
+          Ok(())
+        }),
+        Some(realm_id),
+      );
+
+      Ok(Value::Undefined)
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
+    let mut host = EcmaVmRuntime::new(TestState::default(), EcmaVmRuntimeConfig::default())?;
+
+    // Define an accessor on the global object whose getter enqueues a Promise job via host hooks.
+    {
+      let call_id = host
+        .vm
+        .register_native_call(getter_enqueues_microtask)
+        .map_err(map_vm_error)?;
+
+      let mut scope = host.heap.scope();
+
+      let name_s = scope.alloc_string("get_p").map_err(map_vm_error)?;
+      scope.push_root(Value::String(name_s)).map_err(map_vm_error)?;
+      let getter = scope
+        .alloc_native_function(call_id, None, name_s, 0)
+        .map_err(map_vm_error)?;
+      scope
+        .push_root(Value::Object(getter))
+        .map_err(map_vm_error)?;
+
+      let global = host.realm.global_object();
+      scope
+        .push_root(Value::Object(global))
+        .map_err(map_vm_error)?;
+
+      let key_s = scope.alloc_string("p").map_err(map_vm_error)?;
+      scope.push_root(Value::String(key_s)).map_err(map_vm_error)?;
+      let key = PropertyKey::from_string(key_s);
+
+      scope
+        .define_property(
+          global,
+          key,
+          vm_js::PropertyDescriptor {
+            enumerable: true,
+            configurable: true,
+            kind: PropertyKind::Accessor {
+              get: Value::Object(getter),
+              set: Value::Undefined,
+            },
+          },
+        )
+        .map_err(map_vm_error)?;
+    }
+
+    host.execute_classic_script("p;", &classic_spec(), &mut event_loop)?;
+    assert_eq!(host.state.log, vec!["getter"]);
+
+    event_loop.perform_microtask_checkpoint(&mut host)?;
+    assert_eq!(host.state.log, vec!["getter", "micro"]);
+    Ok(())
+  }
+
+  #[test]
   fn microtask_runs_before_timeout_task() -> Result<()> {
     let clock = Arc::new(VirtualClock::new());
     let mut event_loop = EventLoop::<EcmaVmRuntime<TestState>>::with_clock(clock);
@@ -1457,8 +1541,13 @@ mod tests {
         scope.push_root(global_value)?;
         let key_s = scope.alloc_string("clearInterval")?;
         scope.push_root(Value::String(key_s))?;
-        let func =
-          scope.ordinary_get(vm, global, vm_js::PropertyKey::String(key_s), global_value)?;
+        let func = scope.ordinary_get_with_host(
+          vm,
+          hooks,
+          global,
+          vm_js::PropertyKey::String(key_s),
+          global_value,
+        )?;
         vm.call_with_host(scope, hooks, func, global_value, &[Value::Number(id as f64)])?;
       }
 
