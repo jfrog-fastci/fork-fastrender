@@ -11,6 +11,14 @@ var FAIL = 1;
 var TIMEOUT = 2;
 var NOTRUN = 3;
 
+// Minimal subset of the upstream WPT `test()` API.
+//
+// The vm-js backend currently only supports synchronous tests; we schedule final reporting in a
+// microtask so it runs after the current script finishes evaluating.
+var __fastrender_test_failed = false;
+var __fastrender_test_message = null;
+var __fastrender_test_scheduled = false;
+
 function assert_true(value) {
   if (value !== true) {
     throw "assert_true";

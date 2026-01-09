@@ -2,9 +2,10 @@ use crate::backend::{Backend, BackendInit};
 use crate::wpt_report::WptReport;
 use crate::RunError;
 use parse_js::ast::class_or_object::{ClassOrObjKey, ClassOrObjVal, ObjMemberType};
-use parse_js::ast::expr::lit::{LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr};
+use parse_js::ast::expr::lit::{LitArrExpr, LitBoolExpr, LitNumExpr, LitObjExpr, LitStrExpr};
 use parse_js::ast::expr::{
-  BinaryExpr, CallExpr, ComputedMemberExpr, Expr, IdExpr, MemberExpr, UnaryExpr,
+  ArrowFuncExpr, BinaryExpr, CallExpr, ComputedMemberExpr, Expr, IdExpr, MemberExpr, UnaryExpr,
+  UnaryPostfixExpr,
 };
 use parse_js::ast::func::FuncBody;
 use parse_js::ast::node::Node;
@@ -363,7 +364,15 @@ enum Callable {
 #[derive(Debug)]
 struct UserFunction {
   params: Vec<String>,
-  body: Vec<Node<Stmt>>,
+  body: UserFunctionBody,
+  source: Rc<str>,
+  hoisted_functions: Vec<(String, GcObject)>,
+}
+
+#[derive(Debug)]
+enum UserFunctionBody {
+  Block(Vec<Node<Stmt>>),
+  Expression(Node<Expr>),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -733,6 +742,7 @@ struct JsWptRuntime {
   heap: Heap,
   env: Env,
   callables: HashMap<GcObject, Rc<Callable>>,
+  arrays: HashMap<GcObject, Vec<Value>>,
   event_targets: HashMap<GcObject, EventTargetState>,
   events: HashMap<GcObject, EventState>,
   dom_nodes: HashMap<GcObject, DomNodeState>,
@@ -743,6 +753,7 @@ struct JsWptRuntime {
   next_promise_job_id: u64,
   promise_job_runner: Option<GcObject>,
   promise_prototype: Option<GcObject>,
+  array_prototype: Option<GcObject>,
   event_target_proto: Option<GcObject>,
   node_proto: Option<GcObject>,
   global_object: GcObject,
@@ -750,6 +761,7 @@ struct JsWptRuntime {
   pub(crate) event_loop: EventLoop,
   report: Option<WptReport>,
   this_binding: Value,
+  current_source: Option<Rc<str>>,
 }
 
 impl JsWptRuntime {
@@ -785,6 +797,7 @@ impl JsWptRuntime {
       heap,
       env: Env::new(),
       callables: HashMap::new(),
+      arrays: HashMap::new(),
       event_targets: HashMap::new(),
       events: HashMap::new(),
       dom_nodes: HashMap::new(),
@@ -795,6 +808,7 @@ impl JsWptRuntime {
       next_promise_job_id: 1,
       promise_job_runner: None,
       promise_prototype: None,
+      array_prototype: None,
       event_target_proto: None,
       node_proto: None,
       global_object,
@@ -802,6 +816,7 @@ impl JsWptRuntime {
       event_loop: EventLoop::new(),
       report: None,
       this_binding: global_value,
+      current_source: None,
     };
 
     // Bind globalThis/window/self.
@@ -830,6 +845,7 @@ impl JsWptRuntime {
     rt.env.set("queueMicrotask", Value::Object(queue_microtask));
 
     rt.install_promise_shim().expect("install Promise");
+    rt.install_array_shim().expect("install Array");
     rt
       .install_event_target_and_event()
       .expect("install EventTarget/Event");
@@ -1052,6 +1068,27 @@ impl JsWptRuntime {
     Ok(())
   }
 
+  fn install_array_shim(&mut self) -> Result<(), JsError> {
+    let proto = self.alloc_object()?;
+
+    let push_fn = self.alloc_native_function(native_array_push)?;
+    let push_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("push")?)
+    };
+    self.define_data_prop(proto, push_key, Value::Object(push_fn))?;
+
+    let join_fn = self.alloc_native_function(native_array_join)?;
+    let join_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("join")?)
+    };
+    self.define_data_prop(proto, join_key, Value::Object(join_fn))?;
+
+    self.array_prototype = Some(proto);
+    Ok(())
+  }
+
   fn install_event_target_and_event(&mut self) -> Result<(), JsError> {
     // Event prototype.
     let event_proto = self.alloc_object()?;
@@ -1128,6 +1165,16 @@ impl JsWptRuntime {
     self.define_data_prop(et_ctor, prototype_key, Value::Object(et_proto))?;
     self.env.set("EventTarget", Value::Object(et_ctor));
     self.event_target_proto = Some(et_proto);
+
+    // Treat the global object as a Window-ish EventTarget so events can bubble through it.
+    self.event_targets.insert(
+      self.global_object,
+      EventTargetState {
+        parent: None,
+        listeners: HashMap::new(),
+      },
+    );
+    self.heap.object_set_prototype(self.global_object, Some(et_proto))?;
 
     Ok(())
   }
@@ -1351,6 +1398,7 @@ impl JsWptRuntime {
   }
 
   fn exec_script(&mut self, source: &str) -> Result<Value, JsError> {
+    self.current_source = Some(Rc::from(source));
     let opts = ParseOptions {
       dialect: Dialect::Ecma,
       source_type: SourceType::Script,
@@ -1364,6 +1412,10 @@ impl JsWptRuntime {
   }
 
   fn hoist_script_functions(&mut self, stmts: &mut [Node<Stmt>]) -> Result<(), JsError> {
+    let source = self
+      .current_source
+      .clone()
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("missing source text")))?;
     for stmt in stmts.iter_mut() {
       let Stmt::FunctionDecl(func_decl) = &mut *stmt.stx else {
         continue;
@@ -1391,13 +1443,66 @@ impl JsWptRuntime {
         return Err(JsError::Vm(VmError::Unimplemented("arrow bodies not supported")));
       };
 
+      let mut body_stmts = body_stmts;
+      let hoisted_functions = self.hoist_function_decls(&mut body_stmts, source.clone())?;
       let func_obj = self.alloc_user_function(UserFunction {
         params,
-        body: body_stmts,
+        body: UserFunctionBody::Block(body_stmts),
+        source: source.clone(),
+        hoisted_functions,
       })?;
       self.env.set(&name, Value::Object(func_obj));
     }
     Ok(())
+  }
+
+  fn hoist_function_decls(
+    &mut self,
+    stmts: &mut [Node<Stmt>],
+    source: Rc<str>,
+  ) -> Result<Vec<(String, GcObject)>, JsError> {
+    let mut out = Vec::new();
+    for stmt in stmts.iter_mut() {
+      let Stmt::FunctionDecl(func_decl) = &mut *stmt.stx else {
+        continue;
+      };
+
+      let Some(name_node) = func_decl.stx.name.as_ref() else {
+        continue;
+      };
+      let name = name_node.stx.name.clone();
+
+      let params = func_decl
+        .stx
+        .function
+        .stx
+        .parameters
+        .iter()
+        .filter_map(|p| simple_binding_identifier(&p.stx.pattern.stx).ok().flatten())
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+      let Some(body) = func_decl.stx.function.stx.body.take() else {
+        continue;
+      };
+      let FuncBody::Block(body_stmts) = body else {
+        return Err(JsError::Vm(VmError::Unimplemented(
+          "arrow bodies not supported",
+        )));
+      };
+
+      let mut body_stmts = body_stmts;
+      let hoisted_functions = self.hoist_function_decls(&mut body_stmts, source.clone())?;
+      let func_obj = self.alloc_user_function(UserFunction {
+        params,
+        body: UserFunctionBody::Block(body_stmts),
+        source: source.clone(),
+        hoisted_functions,
+      })?;
+
+      out.push((name, func_obj));
+    }
+    Ok(out)
   }
 
   fn hoist_var_decls(&mut self, stmts: &[Node<Stmt>]) -> Result<(), JsError> {
@@ -1769,6 +1874,7 @@ impl JsWptRuntime {
   fn eval_expr(&mut self, expr: &Node<Expr>) -> Result<Value, JsError> {
     match &*expr.stx {
       Expr::LitStr(node) => self.eval_lit_str(&node.stx),
+      Expr::LitArr(node) => self.eval_lit_arr(&node.stx),
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => self.eval_lit_bool(&node.stx),
       Expr::LitNull(_node) => self.eval_lit_null(),
@@ -1778,10 +1884,188 @@ impl JsWptRuntime {
       Expr::ComputedMember(node) => self.eval_computed_member(&node.stx),
       Expr::Call(node) => self.eval_call(&node.stx),
       Expr::Unary(node) => self.eval_unary(&node.stx),
+      Expr::UnaryPostfix(node) => self.eval_unary_postfix(&node.stx),
+      Expr::ArrowFunc(node) => self.eval_arrow_func(node),
       Expr::LitObj(node) => self.eval_lit_obj(&node.stx),
       Expr::IdPat(node) => self.eval_id_pat(&node.stx),
       _ => Err(JsError::Vm(VmError::Unimplemented("expression type"))),
     }
+  }
+
+  fn eval_lit_arr(&mut self, expr: &LitArrExpr) -> Result<Value, JsError> {
+    let proto = self
+      .array_prototype
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Array prototype")))?;
+    let obj = self.alloc_object()?;
+    self.heap.object_set_prototype(obj, Some(proto))?;
+
+    let mut elements = Vec::<Value>::with_capacity(expr.elements.len());
+    for elem in &expr.elements {
+      use parse_js::ast::expr::lit::LitArrElem;
+      match elem {
+        LitArrElem::Single(value) => elements.push(self.eval_expr(value)?),
+        LitArrElem::Empty => elements.push(Value::Undefined),
+        LitArrElem::Rest(_) => return Err(JsError::Vm(VmError::Unimplemented("array spread"))),
+      }
+    }
+
+    // Materialize dense arrays as ordinary objects with numeric string keys plus a `length` data
+    // property. The backing vector is used by `push`/`join` for now.
+    self.arrays.insert(obj, elements.clone());
+
+    let length_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("length")?)
+    };
+    self.define_data_prop(obj, length_key, Value::Number(elements.len() as f64))?;
+
+    for (idx, value) in elements.iter().enumerate() {
+      let key = {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
+      };
+      self.define_data_prop(obj, key, *value)?;
+    }
+
+    Ok(Value::Object(obj))
+  }
+
+  fn eval_unary_postfix(&mut self, expr: &UnaryPostfixExpr) -> Result<Value, JsError> {
+    match expr.operator {
+      OperatorName::PostfixIncrement => {
+        let old = self.eval_expr(&expr.argument)?;
+        let Value::Number(n) = old else {
+          return Err(JsError::Vm(VmError::Unimplemented(
+            "postfix ++ only supports numbers",
+          )));
+        };
+        let new = Value::Number(n + 1.0);
+        self.assign_to(&expr.argument, new)?;
+        Ok(old)
+      }
+      OperatorName::PostfixDecrement => {
+        let old = self.eval_expr(&expr.argument)?;
+        let Value::Number(n) = old else {
+          return Err(JsError::Vm(VmError::Unimplemented(
+            "postfix -- only supports numbers",
+          )));
+        };
+        let new = Value::Number(n - 1.0);
+        self.assign_to(&expr.argument, new)?;
+        Ok(old)
+      }
+      _ => Err(JsError::Vm(VmError::Unimplemented("unary postfix operator"))),
+    }
+  }
+
+  fn eval_arrow_func(&mut self, node: &Node<ArrowFuncExpr>) -> Result<Value, JsError> {
+    let source = self
+      .current_source
+      .as_ref()
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("missing source text")))?;
+    let start = node.loc.0;
+    let end = node.loc.1;
+    let raw_snippet = source
+      .get(start..end)
+      .ok_or_else(|| JsError::Vm(VmError::Unimplemented("invalid arrow function span")))?;
+
+    // `parse-js` nodes are not cheaply cloneable, so we re-parse the arrow function expression into
+    // an owned AST to store inside the function object.
+    let opts = ParseOptions {
+      dialect: Dialect::Ecma,
+      source_type: SourceType::Script,
+    };
+    let mut snippet = raw_snippet.trim_end();
+    let mut parsed = loop {
+      match parse_with_options(snippet, opts) {
+        Ok(ast) => break ast,
+        Err(err) => {
+          // Some parse-js nodes (notably arrow functions in argument position) currently report a
+          // span that includes delimiter tokens (e.g. `,)`). Trim common delimiters and retry so we
+          // can still materialize the function object.
+          let trimmed = snippet.trim_end();
+          let last = trimmed.chars().last();
+          match last {
+            Some(')') | Some(',') | Some(';') => {
+              snippet = trimmed
+                .get(..trimmed.len().saturating_sub(1))
+                .unwrap_or("")
+                .trim_end();
+              if snippet.is_empty() {
+                let mut preview = raw_snippet.replace('\n', "\\n");
+                if preview.len() > 120 {
+                  preview.truncate(120);
+                  preview.push_str("…");
+                }
+                return Err(JsError::Parse(format!(
+                  "arrow function parse failed: {err} (snippet={preview})"
+                )));
+              }
+              continue;
+            }
+            _ => {
+              let mut preview = raw_snippet.replace('\n', "\\n");
+              if preview.len() > 120 {
+                preview.truncate(120);
+                preview.push_str("…");
+              }
+              return Err(JsError::Parse(format!(
+                "arrow function parse failed: {err} (snippet={preview})"
+              )));
+            }
+          }
+        }
+      }
+    };
+
+    if parsed.stx.body.len() != 1 {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "arrow function parse produced multiple statements",
+      )));
+    }
+
+    let stmt = parsed.stx.body.pop().expect("single statement");
+    let Stmt::Expr(expr_stmt) = *stmt.stx else {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "arrow function parse did not yield an expression statement",
+      )));
+    };
+    let expr = (*expr_stmt.stx).expr;
+    let Expr::ArrowFunc(arrow) = *expr.stx else {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "arrow function parse did not yield an arrow expression",
+      )));
+    };
+
+    let mut func = *arrow.stx.func.stx;
+    let params = func
+      .parameters
+      .iter()
+      .filter_map(|p| simple_binding_identifier(&p.stx.pattern.stx).ok().flatten())
+      .map(|s| s.to_string())
+      .collect::<Vec<_>>();
+    let Some(body) = func.body.take() else {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "arrow function without a body",
+      )));
+    };
+    let source = Rc::<str>::from(snippet);
+    let (body, hoisted_functions) = match body {
+      FuncBody::Block(mut stmts) => {
+        let hoisted = self.hoist_function_decls(&mut stmts, source.clone())?;
+        (UserFunctionBody::Block(stmts), hoisted)
+      }
+      FuncBody::Expression(expr) => (UserFunctionBody::Expression(expr), Vec::new()),
+    };
+
+    let func_obj = self.alloc_user_function(UserFunction {
+      params,
+      body,
+      source,
+      hoisted_functions,
+    })?;
+
+    Ok(Value::Object(func_obj))
   }
 
   fn eval_lit_str(&mut self, expr: &LitStrExpr) -> Result<Value, JsError> {
@@ -1931,6 +2215,8 @@ impl JsWptRuntime {
     self.env.push_frame();
     let previous_this = self.this_binding;
     self.this_binding = this;
+    let previous_source = self.current_source.clone();
+    self.current_source = Some(func.source.clone());
 
     let result = (|| -> Result<Value, JsError> {
       for (idx, name) in func.params.iter().enumerate() {
@@ -1938,11 +2224,21 @@ impl JsWptRuntime {
         let value = args.get(idx).copied().unwrap_or(Value::Undefined);
         self.env.set(name, value);
       }
-      self.hoist_var_decls(&func.body)?;
-      self.eval_stmt_list(&func.body)
+      for (name, func_obj) in &func.hoisted_functions {
+        self.env.declare_var(name);
+        self.env.set(name, Value::Object(*func_obj));
+      }
+      match &func.body {
+        UserFunctionBody::Block(body) => {
+          self.hoist_var_decls(body)?;
+          self.eval_stmt_list(body)
+        }
+        UserFunctionBody::Expression(expr) => self.eval_expr(expr),
+      }
     })();
 
     self.this_binding = previous_this;
+    self.current_source = previous_source;
     self.env.pop_frame();
     result
   }
@@ -2330,6 +2626,77 @@ fn string_from_value(rt: &mut JsWptRuntime, value: Value) -> Result<String, JsEr
     Value::Symbol(_) => Ok("[symbol]".to_string()),
     Value::Object(_) => Ok("[object]".to_string()),
   }
+}
+
+fn native_array_push(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(arr) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: Array.prototype.push called on non-object",
+    )?)));
+  };
+  let mut appended = Vec::<(usize, Value)>::new();
+  let len = {
+    let Some(elements) = rt.arrays.get_mut(&arr) else {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: Array.prototype.push called on non-array",
+      )?)));
+    };
+
+    for value in args.iter().copied() {
+      let idx = elements.len();
+      elements.push(value);
+      appended.push((idx, value));
+    }
+
+    elements.len()
+  };
+
+  for (idx, value) in appended {
+    let key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string(&idx.to_string())?)
+    };
+    rt.define_data_prop(arr, key, value)?;
+  }
+
+  let len = len as f64;
+  let length_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("length")?)
+  };
+  rt.define_data_prop(arr, length_key, Value::Number(len))?;
+  Ok(Value::Number(len))
+}
+
+fn native_array_join(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(arr) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: Array.prototype.join called on non-object",
+    )?)));
+  };
+  let sep = match args.get(0).copied() {
+    None | Some(Value::Undefined) => ",".to_string(),
+    Some(v) => string_from_value(rt, v)?,
+  };
+
+  let Some(elements) = rt.arrays.get(&arr).cloned() else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: Array.prototype.join called on non-array",
+    )?)));
+  };
+
+  let mut out = String::new();
+  for (idx, value) in elements.iter().copied().enumerate() {
+    if idx > 0 {
+      out.push_str(&sep);
+    }
+    match value {
+      Value::Undefined | Value::Null => {}
+      Value::String(s) => out.push_str(&rt.heap.get_string(s)?.to_utf8_lossy()),
+      other => out.push_str(&rt.value_to_string_lossy(other)),
+    }
+  }
+  rt.alloc_string_value(&out)
 }
 
 fn get_bool_option(rt: &mut JsWptRuntime, obj: GcObject, name: &str) -> Result<bool, JsError> {

@@ -148,7 +148,6 @@ fn suite_events_tests_pass() {
     report.summary.mismatches.is_none(),
     "events suite should have no mismatches: {report:#?}"
   );
-
   assert_eq!(report.summary.skipped, 0, "events suite should not skip");
   assert_eq!(
     report.summary.total, report.summary.passed,
