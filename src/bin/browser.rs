@@ -197,7 +197,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "browser_ui")]
 fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
-  use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
+  use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
 
@@ -217,18 +217,21 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
   const DPR: f32 = 2.0;
   const TIMEOUT: Duration = Duration::from_secs(20);
-
+ 
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
-
-  let worker =
-    fastrender::ui::worker_loop::spawn_ui_worker("fastr-browser-headless-smoke-worker")?;
-  let (ui_to_worker_tx, worker_to_ui_rx, join) = worker.split();
+ 
+  let worker = fastrender::ui::spawn_browser_worker()?;
+  let fastrender::ui::BrowserWorkerHandle {
+    tx: ui_to_worker_tx,
+    rx: worker_to_ui_rx,
+    join,
+  } = worker;
 
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {
     tab_id,
-    initial_url: None,
+    initial_url: Some(URL.to_string()),
     cancel: CancelGens::new(),
   })?;
   ui_to_worker_tx.send(UiToWorker::ViewportChanged {
@@ -236,11 +239,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     viewport_css: VIEWPORT_CSS,
     dpr: DPR,
   })?;
-  ui_to_worker_tx.send(UiToWorker::Navigate {
-    tab_id,
-    url: URL.to_string(),
-    reason: NavigationReason::TypedUrl,
-  })?;
+  ui_to_worker_tx.send(UiToWorker::SetActiveTab { tab_id })?;
 
   // Close the channel so the worker thread exits after completing the above messages.
   drop(ui_to_worker_tx);
