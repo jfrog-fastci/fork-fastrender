@@ -6,6 +6,7 @@
 //! Reference: CSS Cascading and Inheritance Level 4
 //! <https://www.w3.org/TR/css-cascade-4/>
 
+use crate::css::properties::parse_property_value;
 use crate::css::parser::parse_declarations;
 use crate::css::parser::parse_inline_style_declarations;
 use crate::css::parser::parse_stylesheet;
@@ -53,6 +54,7 @@ use crate::dom::SelectorBloomSummaryRef;
 use crate::dom::SiblingListCache;
 use crate::dom::SlotAssignment;
 use crate::dom::HTML_NAMESPACE;
+use crate::dom::SVG_NAMESPACE;
 use crate::error::Error;
 use crate::geometry::Size;
 use crate::render_control::check_active_periodic;
@@ -12482,6 +12484,9 @@ fn append_presentational_hints<'a>(
     matching_rules.push(presentational_rule);
   }
   if let Some(presentational_rule) = hidden_presentational_hint(node, &layer_order, 11) {
+    matching_rules.push(presentational_rule);
+  }
+  if let Some(presentational_rule) = svg_presentation_attribute_hints(node, &layer_order, 12) {
     matching_rules.push(presentational_rule);
   }
 }
@@ -27573,6 +27578,100 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn svg_presentation_color_and_font_family_apply() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![
+          ("color".to_string(), "red".to_string()),
+          ("font-family".to_string(), "monospace".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    assert_eq!(styled.styles.color, Rgba::RED);
+    assert!(
+      styled
+        .styles
+        .font_family
+        .iter()
+        .any(|family| family == "monospace")
+    );
+  }
+
+  #[test]
+  fn author_css_overrides_svg_presentation_attribute() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "style".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "svg".to_string(),
+            namespace: SVG_NAMESPACE.to_string(),
+            attributes: vec![
+              ("color".to_string(), "red".to_string()),
+              ("font-family".to_string(), "monospace".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+      ],
+    };
+
+    let stylesheet = parse_stylesheet("svg { color: green; font-family: sans-serif; }").unwrap();
+    let styled = apply_styles(&dom, &stylesheet);
+    let svg = &styled.children[1];
+
+    assert_eq!(svg.styles.color, Rgba::rgb(0, 128, 0));
+    assert!(
+      svg
+        .styles
+        .font_family
+        .iter()
+        .any(|family| family == "sans-serif")
+    );
+  }
+
+  #[test]
+  fn svg_presentation_overflow_affects_foreign_object_capture() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "foreignObject".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("overflow".to_string(), "visible".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let styled = apply_styles(&dom, &StyleSheet::new());
+    let foreign_object = &styled.children[0];
+    assert_eq!(foreign_object.styles.overflow_x, Overflow::Visible);
+    assert_eq!(foreign_object.styles.overflow_y, Overflow::Visible);
+  }
+
+  #[test]
   fn aria_hidden_does_not_hide_element() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
@@ -34092,6 +34191,133 @@ fn hidden_presentational_hint(
     order,
     layer_order: layer_order.clone(),
     declarations: cached_declarations(&PRESENTATIONAL_HIDDEN_DECLS, "display: none;"),
+    starting_style: false,
+  })
+}
+
+fn svg_presentation_attribute_hints(
+  node: &DomNode,
+  layer_order: &Arc<[u32]>,
+  order: usize,
+) -> Option<MatchedRule<'static>> {
+  if node.namespace() != Some(SVG_NAMESPACE) {
+    return None;
+  }
+
+  fn push_parsed(decls: &mut Vec<Declaration>, property: &'static str, value: &str) {
+    let Some(parsed) = parse_property_value(property, value) else {
+      return;
+    };
+    let contains_var = crate::style::var_resolution::contains_var(value);
+    decls.push(Declaration {
+      property: property.into(),
+      value: parsed,
+      contains_var,
+      raw_value: String::new(),
+      important: false,
+    });
+  }
+
+  let mut declarations: Vec<Declaration> = Vec::new();
+
+  // SVG painting properties
+  if let Some(value) = node.get_attribute_ref("fill") {
+    push_parsed(&mut declarations, "fill", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke") {
+    push_parsed(&mut declarations, "stroke", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-width") {
+    push_parsed(&mut declarations, "stroke-width", value);
+  }
+  if let Some(value) = node.get_attribute_ref("fill-rule") {
+    push_parsed(&mut declarations, "fill-rule", value);
+  }
+  if let Some(value) = node.get_attribute_ref("clip-rule") {
+    push_parsed(&mut declarations, "clip-rule", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-linecap") {
+    push_parsed(&mut declarations, "stroke-linecap", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-linejoin") {
+    push_parsed(&mut declarations, "stroke-linejoin", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-miterlimit") {
+    push_parsed(&mut declarations, "stroke-miterlimit", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-dasharray") {
+    push_parsed(&mut declarations, "stroke-dasharray", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-dashoffset") {
+    push_parsed(&mut declarations, "stroke-dashoffset", value);
+  }
+  if let Some(value) = node.get_attribute_ref("fill-opacity") {
+    push_parsed(&mut declarations, "fill-opacity", value);
+  }
+  if let Some(value) = node.get_attribute_ref("stroke-opacity") {
+    push_parsed(&mut declarations, "stroke-opacity", value);
+  }
+
+  // SVG can set `color` and font properties as presentation attributes.
+  if let Some(value) = node.get_attribute_ref("color") {
+    push_parsed(&mut declarations, "color", value);
+  }
+  if let Some(value) = node.get_attribute_ref("font-family") {
+    push_parsed(&mut declarations, "font-family", value);
+  }
+  if let Some(value) = node.get_attribute_ref("font-size") {
+    // `font-size` is a presentation attribute, so it accepts SVG lengths (including unitless
+    // numbers). Prefer normal CSS parsing when possible, but fall back to SVG length parsing for
+    // unitless values.
+    if parse_property_value("font-size", value).is_some() {
+      push_parsed(&mut declarations, "font-size", value);
+    } else if let Some(length) = crate::svg::parse_svg_length(value) {
+      if !crate::style::var_resolution::contains_var(value) {
+        let len = match length {
+          crate::svg::SvgLength::Px(px) => Length::px(px),
+          crate::svg::SvgLength::Percentage(percent) => Length::percent(percent),
+        };
+        declarations.push(Declaration {
+          property: "font-size".into(),
+          value: PropertyValue::Length(len),
+          contains_var: false,
+          raw_value: String::new(),
+          important: false,
+        });
+      }
+    }
+  }
+  if let Some(value) = node.get_attribute_ref("font-weight") {
+    push_parsed(&mut declarations, "font-weight", value);
+  }
+  if let Some(value) = node.get_attribute_ref("font-style") {
+    push_parsed(&mut declarations, "font-style", value);
+  }
+
+  // Commonly-used properties affecting SVG element visibility and foreignObject capture.
+  if let Some(value) = node.get_attribute_ref("display") {
+    push_parsed(&mut declarations, "display", value);
+  }
+  if let Some(value) = node.get_attribute_ref("visibility") {
+    push_parsed(&mut declarations, "visibility", value);
+  }
+  if let Some(value) = node.get_attribute_ref("opacity") {
+    push_parsed(&mut declarations, "opacity", value);
+  }
+  if let Some(value) = node.get_attribute_ref("overflow") {
+    push_parsed(&mut declarations, "overflow", value);
+  }
+
+  if declarations.is_empty() {
+    return None;
+  }
+
+  Some(MatchedRule {
+    origin: StyleOrigin::Author,
+    specificity: 0,
+    order,
+    layer_order: layer_order.clone(),
+    declarations: Cow::Owned(declarations),
     starting_style: false,
   })
 }
