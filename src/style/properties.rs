@@ -7760,7 +7760,9 @@ mod light_dark_resolution_tests {
     let parent = ComputedStyle::default();
     let mut styles = ComputedStyle::default();
 
-    let decls = parse_declarations("--c: rgb(0,0,255); color: var(--c); fill: currentColor;");
+    let decls = parse_declarations(
+      "--c: rgb(0,0,255); color: var(--c); fill: currentColor; stroke: currentColor;",
+    );
     for decl in &decls {
       apply_declaration_with_base(
         &mut styles,
@@ -7777,7 +7779,9 @@ mod light_dark_resolution_tests {
 
     assert_eq!(styles.color, Rgba::BLUE);
     assert_eq!(styles.svg_fill, Some(ColorOrNone::Color(Rgba::BLUE)));
+    assert_eq!(styles.svg_stroke, Some(ColorOrNone::Color(Rgba::BLUE)));
     assert!(styles.var_dependent_declarations.contains_key("fill"));
+    assert!(styles.var_dependent_declarations.contains_key("stroke"));
 
     let decls = parse_declarations("--c: rgb(255,0,0);");
     apply_declaration_with_base(
@@ -7795,6 +7799,51 @@ mod light_dark_resolution_tests {
     styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
     assert_eq!(styles.color, Rgba::RED);
     assert_eq!(styles.svg_fill, Some(ColorOrNone::Color(Rgba::RED)));
+    assert_eq!(styles.svg_stroke, Some(ColorOrNone::Color(Rgba::RED)));
+  }
+
+  #[test]
+  fn recompute_var_dependent_properties_recomputes_background_color_current_color() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls = parse_declarations(
+      "--c: rgb(0,0,255); color: var(--c); background-color: currentColor;",
+    );
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert_eq!(styles.color, Rgba::BLUE);
+    assert_eq!(styles.background_color, Rgba::BLUE);
+    assert!(styles.var_dependent_declarations.contains_key("background-color"));
+
+    let decls = parse_declarations("--c: rgb(255,0,0);");
+    apply_declaration_with_base(
+      &mut styles,
+      &decls[0],
+      &parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+
+    styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
+    assert_eq!(styles.color, Rgba::RED);
+    assert_eq!(styles.background_color, Rgba::RED);
   }
 }
 
@@ -8054,12 +8103,40 @@ fn apply_declaration_with_base_internal_with_order(
   };
 
   if record_var_dependent_declarations {
-    let value_is_current_color = match &decl.value {
-      PropertyValue::Keyword(kw) => kw.eq_ignore_ascii_case("currentcolor"),
-      PropertyValue::Color(Color::CurrentColor) => true,
-      _ => false,
-    };
-    let depends_on_current_color = value_is_current_color && matches!(property, "fill" | "stroke");
+    fn value_contains_current_color(value: &PropertyValue) -> bool {
+      match value {
+        PropertyValue::Keyword(kw) => kw.eq_ignore_ascii_case("currentcolor"),
+        PropertyValue::Color(Color::CurrentColor) => true,
+        PropertyValue::Multiple(values) => values.iter().any(value_contains_current_color),
+        _ => false,
+      }
+    }
+
+    let property_depends_on_current_color = matches!(
+      property,
+      "fill"
+        | "stroke"
+        | "background-color"
+        | "border-color"
+        | "border-top-color"
+        | "border-right-color"
+        | "border-bottom-color"
+        | "border-left-color"
+        | "border-inline-start-color"
+        | "border-inline-end-color"
+        | "border-block-start-color"
+        | "border-block-end-color"
+        | "border-inline-color"
+        | "border-block-color"
+        | "column-rule"
+        | "column-rule-color"
+        | "caret-color"
+        | "accent-color"
+        | "scrollbar-color"
+    );
+
+    let depends_on_current_color =
+      property_depends_on_current_color && value_contains_current_color(&decl.value);
     if decl.contains_var || depends_on_current_color {
       Arc::make_mut(&mut styles.var_dependent_declarations).insert(
         property,
