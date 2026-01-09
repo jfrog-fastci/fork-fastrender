@@ -307,15 +307,17 @@ impl BrowserRuntime {
 
         let current_scroll = doc.scroll_state();
         let mut changed = false;
+        let mut wheel_handled = false;
 
         if let Some(pointer_css) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
           // Apply scroll wheel deltas to the scroll container under the pointer (including element
           // scroll offsets like `<select size>` listboxes).
           match doc.wheel_scroll_at_viewport_point(Point::new(pointer_css.0, pointer_css.1), (delta_x, delta_y)) {
             Ok(scrolled) => {
-              changed = scrolled;
-              if changed {
+              wheel_handled = true;
+              if scrolled {
                 tab.scroll_state = doc.scroll_state();
+                changed = true;
               }
             }
             Err(_) => {
@@ -324,9 +326,9 @@ impl BrowserRuntime {
           }
         }
 
-        // If no pointer position was provided (or we couldn't apply wheel scrolling), treat this as
-        // a basic viewport scroll and clamp to the content bounds when possible.
-        if !changed {
+        // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
+        // this as a basic viewport scroll and clamp to the content bounds when possible.
+        if !wheel_handled {
           let mut next = current_scroll.clone();
 
           if let Some(prepared) = doc.prepared() {
