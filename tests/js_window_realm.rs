@@ -470,6 +470,60 @@ fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
 }
 
 #[test]
+fn document_query_selector_returns_stable_wrapper() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body><div class=x id=a></div></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r###"
+  const el = document.querySelector(".x");
+  globalThis.__qs_found = (el !== null);
+  globalThis.__qs_same = (el === document.querySelector(".x"));
+  globalThis.__qs_id = el && el.getAttribute("id");
+  try {
+    document.querySelector("##");
+    globalThis.__qs_bad = "no";
+  } catch (e) {
+    globalThis.__qs_bad = e.name;
+  }
+  "###,
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+  }
+
+  let (qs_found, qs_same, qs_id, qs_bad) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let found = get_data_prop(&mut scope, global, "__qs_found");
+    let same = get_data_prop(&mut scope, global, "__qs_same");
+    let id = get_data_prop(&mut scope, global, "__qs_id");
+    let bad = get_data_prop(&mut scope, global, "__qs_bad");
+    (
+      found,
+      same,
+      get_string(scope.heap(), id),
+      get_string(scope.heap(), bad),
+    )
+  };
+
+  assert_eq!(qs_found, Value::Bool(true));
+  assert_eq!(qs_same, Value::Bool(true));
+  assert_eq!(qs_id, "a");
+  assert_eq!(qs_bad, "SyntaxError");
+
+  Ok(())
+}
+
+#[test]
 fn document_create_element_and_append_child_update_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;

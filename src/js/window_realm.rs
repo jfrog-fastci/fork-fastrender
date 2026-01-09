@@ -1248,6 +1248,59 @@ fn document_get_element_by_id_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn document_query_selector_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  match dom.query_selector(&selector, None) {
+    Ok(Some(node_id)) => get_or_create_node_wrapper(scope, document_obj, node_id),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+      };
+      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+    }
+  }
+}
+
 fn document_create_element_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2166,6 +2219,26 @@ fn init_window_globals(
     document_obj,
     get_element_by_id_key,
     data_desc(Value::Object(get_element_by_id_func)),
+  )?;
+
+  // document.querySelector
+  let query_selector_key = alloc_key(&mut scope, "querySelector")?;
+  let query_selector_call_id = vm.register_native_call(document_query_selector_native)?;
+  let query_selector_name = scope.alloc_string("querySelector")?;
+  scope.push_root(Value::String(query_selector_name))?;
+  let query_selector_func =
+    scope.alloc_native_function(query_selector_call_id, None, query_selector_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      query_selector_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(query_selector_func))?;
+  scope.define_property(
+    document_obj,
+    query_selector_key,
+    data_desc(Value::Object(query_selector_func)),
   )?;
 
   // document.createElement
