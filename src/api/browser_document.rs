@@ -566,7 +566,7 @@ impl BrowserDocument {
             now_ms,
           );
           transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
-          prepared.fragment_tree.transition_state = Some(Box::new(transition_state));
+          prepared.fragment_tree.transition_state = Some(Arc::new(transition_state));
         }
       }
 

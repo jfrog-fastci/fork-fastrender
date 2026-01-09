@@ -61,6 +61,7 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::scroll::ScrollMetadata;
+use crate::animation::TransitionState;
 use crate::style::color::Rgba;
 use crate::style::types::{BorderStyle, Overflow};
 use crate::style::ComputedStyle;
@@ -1594,7 +1595,10 @@ pub struct FragmentTree {
   ///
   /// When present, paint-time transition sampling (`animation::apply_transitions`) uses this state
   /// to animate between previous and current computed styles across multi-frame renders.
-  pub transition_state: Option<Box<crate::animation::TransitionState>>,
+  ///
+  /// Stored in an `Arc` so cloning a [`FragmentTree`] (which is designed to be cheap via structural
+  /// sharing) does not deep-clone the transition state.
+  pub transition_state: Option<Arc<TransitionState>>,
 
   /// SVG filter definitions serialized from the DOM (document-level registry).
   pub svg_filter_defs: Option<Arc<HashMap<String, String>>>,
@@ -1615,11 +1619,11 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: Vec::new(),
+      keyframes: HashMap::new(),
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: None,
-      keyframes: HashMap::new(),
       scroll_metadata: None,
     }
   }
@@ -1632,11 +1636,11 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: Vec::new(),
+      keyframes: HashMap::new(),
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: Some(viewport),
-      keyframes: HashMap::new(),
       scroll_metadata: None,
     }
   }
@@ -1653,11 +1657,11 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: roots,
+      keyframes: HashMap::new(),
       transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: Some(viewport),
-      keyframes: HashMap::new(),
       scroll_metadata: None,
     }
   }
