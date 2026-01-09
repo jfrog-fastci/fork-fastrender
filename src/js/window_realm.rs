@@ -332,6 +332,8 @@ const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
 const ELEMENT_ID_SET_KEY: &str = "__fastrender_element_id_set";
 const NODE_APPEND_CHILD_KEY: &str = "__fastrender_node_append_child";
+const ELEMENT_GET_ATTRIBUTE_KEY: &str = "__fastrender_element_get_attribute";
+const ELEMENT_SET_ATTRIBUTE_KEY: &str = "__fastrender_element_set_attribute";
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -991,6 +993,14 @@ fn get_or_create_node_wrapper(
     let key = alloc_key(scope, NODE_APPEND_CHILD_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
   };
+  let get_attribute = {
+    let key = alloc_key(scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let set_attribute = {
+    let key = alloc_key(scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
 
   let wrapper = scope.alloc_object()?;
   scope.push_root(Value::Object(wrapper))?;
@@ -1040,6 +1050,16 @@ fn get_or_create_node_wrapper(
 
   if let Some(Value::Object(func)) = append_child {
     let key = alloc_key(scope, "appendChild")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = get_attribute {
+    let key = alloc_key(scope, "getAttribute")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = set_attribute {
+    let key = alloc_key(scope, "setAttribute")?;
     scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
@@ -1553,6 +1573,150 @@ fn element_id_set_native(
   Ok(Value::Undefined)
 }
 
+fn element_get_attribute_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.getAttribute must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getAttribute requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.getAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.getAttribute requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.getAttribute must be called on an element object"))?;
+
+  match dom.get_attribute(node_id, &name) {
+    Ok(Some(value)) => Ok(Value::String(scope.alloc_string(value)?)),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?)),
+  }
+}
+
+fn element_set_attribute_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.setAttribute must be called on an element object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.setAttribute requires a DOM-backed document",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.setAttribute must be called on an element object",
+      ));
+    }
+  };
+
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name_value = scope.heap_mut().to_string(name_value)?;
+  let name = scope
+    .heap()
+    .get_string(name_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let value_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  let value_value = scope.heap_mut().to_string(value_value)?;
+  let value = scope
+    .heap()
+    .get_string(value_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.setAttribute requires a DOM-backed document",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.setAttribute must be called on an element object"))?;
+
+  if let Err(err) = dom.set_attribute(node_id, &name, &value) {
+    return Err(VmError::Throw(make_dom_exception(scope, err.code(), "")?));
+  }
+
+  Ok(Value::Undefined)
+}
+
 fn document_current_script_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2010,6 +2174,45 @@ fn init_window_globals(
     document_obj,
     append_child_key,
     data_desc(Value::Object(append_child_func)),
+  )?;
+
+  // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.
+  let get_attribute_call_id = vm.register_native_call(element_get_attribute_native)?;
+  let get_attribute_name = scope.alloc_string("getAttribute")?;
+  scope.push_root(Value::String(get_attribute_name))?;
+  let get_attribute_func =
+    scope.alloc_native_function(get_attribute_call_id, None, get_attribute_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      get_attribute_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(get_attribute_func))?;
+  let get_attribute_key = alloc_key(&mut scope, ELEMENT_GET_ATTRIBUTE_KEY)?;
+  scope.define_property(
+    document_obj,
+    get_attribute_key,
+    data_desc(Value::Object(get_attribute_func)),
+  )?;
+
+  let set_attribute_call_id = vm.register_native_call(element_set_attribute_native)?;
+  let set_attribute_name = scope.alloc_string("setAttribute")?;
+  scope.push_root(Value::String(set_attribute_name))?;
+  let set_attribute_func =
+    scope.alloc_native_function(set_attribute_call_id, None, set_attribute_name, 2)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      set_attribute_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(set_attribute_func))?;
+  let set_attribute_key = alloc_key(&mut scope, ELEMENT_SET_ATTRIBUTE_KEY)?;
+  scope.define_property(
+    document_obj,
+    set_attribute_key,
+    data_desc(Value::Object(set_attribute_func)),
   )?;
 
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.

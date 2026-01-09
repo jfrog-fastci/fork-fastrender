@@ -480,7 +480,10 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
     let res = realm.exec_script(
       r#"
   const el = document.createElement("div");
-  el.id = "x";
+  el.setAttribute("id", "x");
+  el.setAttribute("data-test", "1");
+  globalThis.__data_test = el.getAttribute("data-test");
+  globalThis.__missing_attr = (el.getAttribute("missing") === null);
   const ret = document.body.appendChild(el);
   globalThis.__append_same = (ret === el);
   globalThis.__found_same = (document.getElementById("x") === el);
@@ -492,7 +495,7 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
     }
   }
 
-  let (append_same, found_same) = {
+  let (append_same, found_same, data_test, missing_attr) = {
     let realm = host.window_mut();
     let global = realm.global_object();
     let (_vm, heap) = realm.vm_and_heap_mut();
@@ -500,11 +503,15 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
     (
       get_data_prop(&mut scope, global, "__append_same"),
       get_data_prop(&mut scope, global, "__found_same"),
+      get_data_prop(&mut scope, global, "__data_test"),
+      get_data_prop(&mut scope, global, "__missing_attr"),
     )
   };
 
   assert_eq!(append_same, Value::Bool(true));
   assert_eq!(found_same, Value::Bool(true));
+  assert_eq!(get_string(host.window().heap(), data_test), "1");
+  assert_eq!(missing_attr, Value::Bool(true));
 
   let node = host
     .dom()
@@ -520,6 +527,13 @@ fn document_create_element_and_append_child_update_dom() -> Result<()> {
       .parent(node)
       .expect("expected dom2::Document::parent to succeed"),
     Some(body)
+  );
+  assert_eq!(
+    host
+      .dom()
+      .get_attribute(node, "data-test")
+      .expect("expected get_attribute to succeed"),
+    Some("1")
   );
 
   Ok(())
