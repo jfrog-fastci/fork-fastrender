@@ -8256,25 +8256,55 @@ fn apply_transition_state_to_fragment(
   parent_styles: Option<&ComputedStyle>,
 ) {
   let Some(style_arc) = fragment.style.clone() else {
-    // Still traverse for running anchors/children.
+    // Still traverse for running anchors/children. Even without a style on this node, descendants
+    // may inherit from `parent_styles`, so mirror the inherited-property and var recomputation we
+    // do for styled nodes.
+    let parent_for_children = parent_styles.unwrap_or_else(|| default_parent_style());
     for child in fragment.children_mut() {
+      if let Some(child_style_arc) = child.style.as_mut() {
+        let child_style = Arc::make_mut(child_style_arc);
+        if child_style.color_is_inherited && child_style.color != parent_for_children.color {
+          child_style.color = parent_for_children.color;
+        }
+        if child_style.visibility_is_inherited
+          && child_style.visibility != parent_for_children.visibility
+        {
+          child_style.visibility = parent_for_children.visibility;
+        }
+        child_style.recompute_inherited_custom_properties(parent_for_children);
+        child_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      }
       apply_transition_state_to_fragment(
         child,
         transition_state,
         time_ms,
         viewport,
         log_enabled,
-        parent_styles,
+        Some(parent_for_children),
       );
     }
     if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
+      let snapshot_node = Arc::make_mut(snapshot);
+      if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
+        let snapshot_style = Arc::make_mut(snapshot_style_arc);
+        if snapshot_style.color_is_inherited && snapshot_style.color != parent_for_children.color {
+          snapshot_style.color = parent_for_children.color;
+        }
+        if snapshot_style.visibility_is_inherited
+          && snapshot_style.visibility != parent_for_children.visibility
+        {
+          snapshot_style.visibility = parent_for_children.visibility;
+        }
+        snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+        snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      }
       apply_transition_state_to_fragment(
-        Arc::make_mut(snapshot),
+        snapshot_node,
         transition_state,
         time_ms,
         viewport,
         log_enabled,
-        parent_styles,
+        Some(parent_for_children),
       );
     }
     return;
@@ -8354,6 +8384,14 @@ fn apply_transition_state_to_fragment(
   for child in fragment.children_mut() {
     if let Some(child_style_arc) = child.style.as_mut() {
       let child_style = Arc::make_mut(child_style_arc);
+      if child_style.color_is_inherited && child_style.color != parent_for_children.color {
+        child_style.color = parent_for_children.color;
+      }
+      if child_style.visibility_is_inherited
+        && child_style.visibility != parent_for_children.visibility
+      {
+        child_style.visibility = parent_for_children.visibility;
+      }
       child_style.recompute_inherited_custom_properties(parent_for_children);
       child_style.recompute_var_dependent_properties(parent_for_children, viewport);
     }
@@ -8370,6 +8408,14 @@ fn apply_transition_state_to_fragment(
     let snapshot_node = Arc::make_mut(snapshot);
     if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
       let snapshot_style = Arc::make_mut(snapshot_style_arc);
+      if snapshot_style.color_is_inherited && snapshot_style.color != parent_for_children.color {
+        snapshot_style.color = parent_for_children.color;
+      }
+      if snapshot_style.visibility_is_inherited
+        && snapshot_style.visibility != parent_for_children.visibility
+      {
+        snapshot_style.visibility = parent_for_children.visibility;
+      }
       snapshot_style.recompute_inherited_custom_properties(parent_for_children);
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
     }

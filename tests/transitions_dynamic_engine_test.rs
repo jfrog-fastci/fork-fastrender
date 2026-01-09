@@ -2,6 +2,7 @@ use fastrender::animation;
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::style::cascade::StyledNode;
+use fastrender::style::color::Rgba;
 use fastrender::style::types::BorderStyle;
 use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
@@ -87,6 +88,15 @@ fn fragment_opacity(tree: &FragmentTree, box_id: usize) -> f32 {
     .style
     .as_ref()
     .map(|s| s.opacity)
+    .expect("style present")
+}
+
+fn fragment_color(tree: &FragmentTree, box_id: usize) -> Rgba {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  frag
+    .style
+    .as_ref()
+    .map(|s| s.color)
     .expect("style present")
 }
 
@@ -815,6 +825,51 @@ fn transition_all_includes_registered_custom_properties_on_class_change() -> Res
     other => panic!("expected typed number, got {other:?}"),
   }
   assert!((style.opacity - 0.5).abs() < 1e-3, "opacity={}", style.opacity);
+
+  Ok(())
+}
+
+#[test]
+fn inherited_color_tracks_parent_transition_even_through_line_fragments() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #parent { color: rgb(0, 0, 0); transition: color 1000ms linear; }
+      #parent.b { color: rgb(255, 255, 255); }
+      /* Ensure the child does not start its own transition; it should inherit the parent's animated color. */
+      #child { transition: none; }
+    </style>
+    <div id="parent"><span id="child">X</span></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 50)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "parent", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let parent_id = box_id_by_element_id(prepared, "parent");
+  let child_id = box_id_by_element_id(prepared, "child");
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let expected = Rgba::new(128, 128, 128, 1.0);
+  assert_eq!(fragment_color(&sampled, parent_id), expected, "parent color");
+  assert_eq!(
+    fragment_color(&sampled, child_id),
+    expected,
+    "child should inherit parent's animated color"
+  );
 
   Ok(())
 }
