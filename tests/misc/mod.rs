@@ -37,6 +37,7 @@ mod inspect_api;
 mod integration_test;
 mod is_alias_matches_test;
 mod isolation_case_insensitive_test;
+mod dom2_js_events;
 mod js_event_loop_timers;
 mod list_border_outline_case_insensitive_test;
 mod logical_shorthand_parsing_test;

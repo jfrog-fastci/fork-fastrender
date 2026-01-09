@@ -343,6 +343,15 @@ impl VmJsRuntime {
     f(self, this, args)
   }
 
+  /// Call a JS function value.
+  ///
+  /// This currently only supports host-defined function objects created via
+  /// [`VmJsRuntime::alloc_function_value`]. It is sufficient for early host integration plumbing
+  /// (e.g. DOM event listeners) while the full `vm-js` interpreter is still under development.
+  pub fn call_function(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+    self.call(callee, this, args)
+  }
+
   fn find_own_property(&self, obj: GcObject, key: &PropertyKey) -> Option<PropertyDescriptor> {
     let host = self.objects.get(&obj)?;
     for (k, desc) in &host.properties {
@@ -657,6 +666,9 @@ impl JsRuntime for VmJsRuntime {
   }
 
   fn get(&mut self, obj: Value, key: PropertyKey) -> Result<Value, VmError> {
+    // Per ECMAScript `[[Get]]`, accessor properties are invoked with the original receiver, not the
+    // object in the prototype chain where the property was found.
+    let receiver = obj;
     let Value::Object(mut current) = obj else {
       return Err(self.throw_type_error("Get: receiver is not an object"));
     };
@@ -678,7 +690,7 @@ impl JsRuntime for VmJsRuntime {
             if !self.is_callable(get) {
               return Err(self.throw_type_error("Getter is not callable"));
             }
-            self.call(get, Value::Object(current), &[])
+            self.call(get, receiver, &[])
           }
         };
       }

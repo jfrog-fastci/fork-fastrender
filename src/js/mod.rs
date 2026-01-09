@@ -18,6 +18,7 @@
 
 pub mod dom_scripts;
 pub mod clock;
+pub mod events;
 pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod html_scripting;
@@ -35,6 +36,7 @@ pub mod window_realm;
 #[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
+pub use events::{JsDomEvents, JsFunctionHandle};
 pub use event_loop::{
   EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
   TaskSource, TimerId,
