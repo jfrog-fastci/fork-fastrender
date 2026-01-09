@@ -1,3 +1,5 @@
+#![cfg(feature = "browser_ui")]
+
 use crate::ui::browser_app::BrowserAppState;
 use crate::ui::messages::TabId;
 
@@ -92,4 +94,3 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
   actions
 }
-
