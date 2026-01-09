@@ -1,6 +1,8 @@
 pub mod about_pages;
+pub mod browser_app;
 pub mod browser_worker;
 pub mod cancel;
+pub mod chrome;
 pub mod history;
 pub mod messages;
 pub mod worker;
@@ -39,3 +41,6 @@ pub mod url;
 pub use url::normalize_user_url;
 
 pub use history::{HistoryEntry, TabHistory};
+
+pub use browser_app::{BrowserAppState, BrowserTabState, ChromeState, LatestFrameMeta};
+pub use chrome::{chrome_ui, ChromeAction};
