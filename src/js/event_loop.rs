@@ -454,6 +454,21 @@ impl<Host: 'static> EventLoop<Host> {
     }
   }
 
+  /// Run one animation frame "turn", treating callback errors as uncaught exceptions.
+  ///
+  /// If a callback returns an error, it is surfaced via `on_error` and does not abort the frame.
+  /// Remaining callbacks for the same frame still run.
+  pub fn run_animation_frame_handling_errors<F>(
+    &mut self,
+    host: &mut Host,
+    mut on_error: F,
+  ) -> Result<RunAnimationFrameOutcome>
+  where
+    F: FnMut(Error),
+  {
+    self.run_animation_frame_inner_with_error_handler(host, Some(&mut on_error))
+  }
+
   /// Perform a microtask checkpoint (HTML Standard terminology).
   ///
   /// - If a checkpoint is already in progress, this is a no-op (reentrancy guard).
@@ -894,6 +909,14 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   fn run_animation_frame_inner(&mut self, host: &mut Host) -> Result<RunAnimationFrameOutcome> {
+    self.run_animation_frame_inner_with_error_handler(host, None)
+  }
+
+  fn run_animation_frame_inner_with_error_handler(
+    &mut self,
+    host: &mut Host,
+    mut on_error: Option<&mut dyn FnMut(Error)>,
+  ) -> Result<RunAnimationFrameOutcome> {
     // If all callbacks have been cancelled, clear out any stale IDs from the queue.
     if self.animation_frame_callbacks.is_empty() {
       self.animation_frame_queue.clear();
@@ -933,7 +956,13 @@ impl<Host: 'static> EventLoop<Host> {
         let Some(mut callback) = self.animation_frame_callbacks.remove(&id) else {
           continue;
         };
-        (callback)(host, self, timestamp)?;
+        if let Err(err) = (callback)(host, self, timestamp) {
+          if let Some(handler) = on_error.as_mut() {
+            (*handler)(err);
+          } else {
+            return Err(err);
+          }
+        }
         executed += 1;
       }
       Ok(executed)
@@ -2129,6 +2158,79 @@ mod tests {
 
     assert_eq!(
       event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Idle
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_callback_errors_abort_without_error_handler() {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop
+      .request_animation_frame(|host, _event_loop, _ts| {
+        host.log.push("a");
+        Err(Error::Other("boom".to_string()))
+      })
+      .unwrap();
+    event_loop
+      .request_animation_frame(|host, _event_loop, _ts| {
+        host.log.push("b");
+        Ok(())
+      })
+      .unwrap();
+
+    let mut host = Host::default();
+    let err = event_loop
+      .run_animation_frame(&mut host)
+      .expect_err("expected animation frame error");
+    assert!(matches!(err, Error::Other(msg) if msg == "boom"));
+    assert_eq!(host.log, vec!["a"]);
+    assert_eq!(event_loop.currently_running_task(), None);
+  }
+
+  #[test]
+  fn animation_frame_callback_errors_are_reported_and_do_not_abort_frame() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("a");
+      Err(Error::Other("boom".to_string()))
+    })?;
+    event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("b");
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    let mut errors: Vec<String> = Vec::new();
+    assert_eq!(
+      event_loop.run_animation_frame_handling_errors(&mut host, |err| {
+        errors.push(err.to_string());
+      })?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+    assert_eq!(host.log, vec!["a", "b"]);
+    assert_eq!(errors, vec!["[other] boom".to_string()]);
+    assert_eq!(event_loop.currently_running_task(), None);
+
+    // Both callbacks were drained, so a second frame should be idle.
+    assert_eq!(
+      event_loop.run_animation_frame_handling_errors(&mut host, |_| {})?,
       RunAnimationFrameOutcome::Idle
     );
     Ok(())
