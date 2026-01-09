@@ -1,9 +1,11 @@
 use crate::runtime::{
-  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime, WebIdlHooks,
-  WebIdlJsRuntime, WebIdlLimits,
+  InterfaceId, IteratorRecord, JsOwnPropertyDescriptor, JsPropertyKind, JsRuntime,
+  NativeHostFunction, WebIdlBindingsRuntime, WebIdlHooks, WebIdlJsRuntime, WebIdlLimits,
 };
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::num::IntErrorKind;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, PropertyDescriptor, PropertyKey,
@@ -81,6 +83,7 @@ pub struct VmJsRuntime {
   /// Host-side metadata for objects that need special behaviour (callability, platform object
   /// branding, internal-slot stubs, etc). Keyed by `WeakGcObject` so it does not keep wrappers alive.
   host_objects: HashMap<WeakGcObject, HostObjectKind>,
+  global_object: Option<GcObject>,
   webidl_limits: WebIdlLimits,
   well_known_iterator: Option<GcSymbol>,
   well_known_async_iterator: Option<GcSymbol>,
@@ -96,6 +99,9 @@ pub struct VmJsRuntime {
   symbol_data_symbol: Option<GcSymbol>,
 
   last_swept_gc_runs: u64,
+
+  bindings_host_ptr: Option<NonNull<()>>,
+  bindings_host_type_id: Option<TypeId>,
 
   // A tiny, explicit intern table for values where host code relies on stable string identity.
   //
@@ -127,6 +133,7 @@ impl VmJsRuntime {
     Self {
       heap: Heap::new(limits),
       host_objects: HashMap::new(),
+      global_object: None,
       webidl_limits: WebIdlLimits::default(),
       well_known_iterator: None,
       well_known_async_iterator: None,
@@ -136,9 +143,42 @@ impl VmJsRuntime {
       bigint_data_symbol: None,
       symbol_data_symbol: None,
       last_swept_gc_runs: 0,
+      bindings_host_ptr: None,
+      bindings_host_type_id: None,
       interned_window: None,
       interned_document: None,
     }
+  }
+
+  /// Run `f` with a temporary `&mut Host` available to values created via
+  /// [`WebIdlBindingsRuntime::create_function`].
+  ///
+  /// This is primarily intended for unit tests and host-driven calls. Embeddings that execute JS
+  /// code should ensure they establish an equivalent host context before invoking JS functions that
+  /// were created via `create_function`.
+  pub fn with_host_context<Host: 'static, R>(
+    &mut self,
+    host: &mut Host,
+    f: impl FnOnce(&mut Self) -> Result<R, VmError>,
+  ) -> Result<R, VmError> {
+    let host_type_id = TypeId::of::<Host>();
+    if let Some(existing) = self.bindings_host_type_id {
+      if existing != host_type_id {
+        return Err(
+          self.throw_type_error("VmJsRuntime host context type mismatch for WebIDL bindings"),
+        );
+      }
+    } else {
+      self.bindings_host_type_id = Some(host_type_id);
+    }
+
+    let prev = self.bindings_host_ptr;
+    self.bindings_host_ptr = Some(NonNull::from(host).cast());
+
+    let out = f(self);
+
+    self.bindings_host_ptr = prev;
+    out
   }
 
   pub fn heap(&self) -> &Heap {
@@ -557,7 +597,10 @@ impl VmJsRuntime {
       }
     }
 
-    if let Some(rest) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+    if let Some(rest) = trimmed
+      .strip_prefix("0x")
+      .or_else(|| trimmed.strip_prefix("0X"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -566,7 +609,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = trimmed.strip_prefix("0b").or_else(|| trimmed.strip_prefix("0B")) {
+    if let Some(rest) = trimmed
+      .strip_prefix("0b")
+      .or_else(|| trimmed.strip_prefix("0B"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -575,7 +621,10 @@ impl VmJsRuntime {
       }
       return Ok(f64::NAN);
     }
-    if let Some(rest) = trimmed.strip_prefix("0o").or_else(|| trimmed.strip_prefix("0O")) {
+    if let Some(rest) = trimmed
+      .strip_prefix("0o")
+      .or_else(|| trimmed.strip_prefix("0O"))
+    {
       if rest.is_empty() {
         return Ok(f64::NAN);
       }
@@ -612,14 +661,14 @@ impl VmJsRuntime {
       return Err(self.throw_syntax_error("Cannot convert string to a BigInt"));
     }
 
-    let parse_mag = |rt: &mut Self, digits: &str, radix: u32| match u128::from_str_radix(digits, radix)
-    {
-      Ok(v) => Ok(v),
-      Err(err) => match err.kind() {
-        IntErrorKind::PosOverflow => Err(rt.throw_range_error("BigInt value is too large")),
-        _ => Err(rt.throw_syntax_error("Cannot convert string to a BigInt")),
-      },
-    };
+    let parse_mag =
+      |rt: &mut Self, digits: &str, radix: u32| match u128::from_str_radix(digits, radix) {
+        Ok(v) => Ok(v),
+        Err(err) => match err.kind() {
+          IntErrorKind::PosOverflow => Err(rt.throw_range_error("BigInt value is too large")),
+          _ => Err(rt.throw_syntax_error("Cannot convert string to a BigInt")),
+        },
+      };
 
     let magnitude = if has_sign {
       parse_mag(self, rest, 10)?
@@ -1475,6 +1524,52 @@ impl WebIdlJsRuntime for VmJsRuntime {
   }
 }
 
+impl<Host: 'static> WebIdlBindingsRuntime<Host> for VmJsRuntime {
+  fn create_function(&mut self, f: NativeHostFunction<Self, Host>) -> Result<Value, VmError> {
+    let host_type_id = TypeId::of::<Host>();
+
+    self.alloc_function_value(move |rt, this, args| {
+      let Some(ptr) = rt.bindings_host_ptr else {
+        return Err(rt.throw_type_error(
+          "WebIDL bindings host context is not active (missing VmJsRuntime::with_host_context)",
+        ));
+      };
+      if rt.bindings_host_type_id != Some(host_type_id) {
+        return Err(
+          rt.throw_type_error("WebIDL bindings host context type mismatch for this function"),
+        );
+      }
+
+      // SAFETY:
+      // - `with_host_context::<Host>` stores a `*mut Host` as `NonNull<()>`.
+      // - We check the stored `TypeId` matches `Host` before casting.
+      // - The host reference is only used for the duration of this call; it does not escape.
+      let host: &mut Host = unsafe { ptr.cast::<Host>().as_mut() };
+      f(rt, host, this, args)
+    })
+  }
+
+  fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {
+    VmJsRuntime::set_prototype(self, obj, proto)
+  }
+
+  fn global_object(&mut self) -> Result<Value, VmError> {
+    if let Some(obj) = self.global_object {
+      if self.heap.is_valid_object(obj) {
+        return Ok(Value::Object(obj));
+      }
+    }
+
+    let obj = {
+      let mut scope = self.heap.scope();
+      scope.alloc_object()?
+    };
+    let _ = self.heap.add_root(Value::Object(obj))?;
+    self.global_object = Some(obj);
+    Ok(Value::Object(obj))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -1539,7 +1634,8 @@ mod tests {
     assert_eq!(rt.to_number(Value::Bool(true)).unwrap(), 1.0);
     assert_eq!(rt.to_number(Value::Bool(false)).unwrap(), 0.0);
     assert!(matches!(
-      rt.to_number(Value::BigInt(JsBigInt::from_u128(1))).unwrap_err(),
+      rt.to_number(Value::BigInt(JsBigInt::from_u128(1)))
+        .unwrap_err(),
       VmError::Throw(_)
     ));
     let s = rt.alloc_string_value("  123  ").unwrap();
