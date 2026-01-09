@@ -1295,6 +1295,7 @@ fn document_query_selector_native(
           ("NoModificationAllowedError", message)
         }
         crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
       };
       Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
     }

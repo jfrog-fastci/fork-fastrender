@@ -285,6 +285,33 @@ fn number_to_u64(value: Value) -> Result<u64, VmError> {
   Ok(n as u64)
 }
 
+fn number_to_u16_wrapping(n: f64) -> u16 {
+  // WebIDL integer conversions for `unsigned short` use `ToUint16` (wrap modulo 2^16).
+  if !n.is_finite() {
+    return 0;
+  }
+  let n = n.trunc();
+  (n.rem_euclid(65536.0)) as u16
+}
+
+fn is_reason_phrase_byte_string(s: &str) -> bool {
+  // Fetch `ResponseInit.statusText` is a `ByteString` and must match the HTTP
+  // `reason-phrase = *( HTAB / SP / VCHAR / obs-text )` production (RFC 9110).
+  //
+  // Allowed bytes:
+  // - HTAB (0x09)
+  // - SP (0x20)
+  // - VCHAR (0x21..=0x7E)
+  // - obs-text (0x80..=0xFF)
+  //
+  // Reject any non-Latin-1 scalar values (enforces `ByteString`) and ASCII control bytes other
+  // than HTAB.
+  s.chars().all(|ch| {
+    let b = ch as u32;
+    matches!(b, 0x09 | 0x20..=0x7E | 0x80..=0xFF)
+  })
+}
+
 fn create_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -315,6 +342,18 @@ fn create_type_error(
   create_error(vm, scope, host, intr.type_error(), message)
 }
 
+fn create_range_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  message: &str,
+) -> Result<Value, VmError> {
+  let intr = vm.intrinsics().ok_or(VmError::Unimplemented(
+    "RangeError requires intrinsics (create a Realm first)",
+  ))?;
+  create_error(vm, scope, host, intr.range_error(), message)
+}
+
 fn create_syntax_error(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -334,6 +373,18 @@ fn throw_type_error(
   message: &str,
 ) -> VmError {
   match create_type_error(vm, scope, host, message) {
+    Ok(err) => VmError::Throw(err),
+    Err(_) => VmError::Throw(Value::Undefined),
+  }
+}
+
+fn throw_range_error(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  host: &mut dyn VmHostHooks,
+  message: &str,
+) -> VmError {
+  match create_range_error(vm, scope, host, message) {
     Ok(err) => VmError::Throw(err),
     Err(_) => VmError::Throw(Value::Undefined),
   }
@@ -1780,14 +1831,13 @@ fn response_ctor_construct(
     };
     let status_key = alloc_key(scope, "status")?;
     let status_val = vm.get(scope, init_obj, status_key)?;
-    if let Value::Number(n) = status_val {
-      if n.is_finite() && n >= 0.0 && n <= u16::MAX as f64 {
-        status = n as u16;
-      }
+    if !matches!(status_val, Value::Undefined) {
+      let n = scope.heap_mut().to_number(status_val)?;
+      status = number_to_u16_wrapping(n);
     }
     let status_text_key = alloc_key(scope, "statusText")?;
     let st_val = vm.get(scope, init_obj, status_text_key)?;
-    if !matches!(st_val, Value::Undefined | Value::Null) {
+    if !matches!(st_val, Value::Undefined) {
       status_text = to_rust_string_limited(
         scope.heap_mut(),
         st_val,
@@ -1800,6 +1850,31 @@ fn response_ctor_construct(
     if !matches!(headers_val, Value::Undefined | Value::Null) {
       fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
     }
+  }
+
+  if !(200..=599).contains(&status) {
+    return Err(throw_range_error(
+      vm,
+      scope,
+      host_hooks,
+      "Response status must be in range 200 to 599, inclusive",
+    ));
+  }
+  if !status_text.is_empty() && !is_reason_phrase_byte_string(&status_text) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host_hooks,
+      "Response statusText must be a valid reason phrase",
+    ));
+  }
+  if body_bytes.is_some() && matches!(status, 101 | 103 | 204 | 205 | 304) {
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host_hooks,
+      "Response cannot have a body with a null body status",
+    ));
   }
 
   let mut response = CoreResponse::new(status);
@@ -2788,6 +2863,190 @@ mod tests {
       matches!(err, VmError::TypeError("Response init must be an object")),
       "err={err}"
     );
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_rejects_status_out_of_range() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    set_data_prop(&mut scope, init_obj, "status", Value::Number(199.0), true)?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::Undefined, Value::Object(init_obj)],
+      Value::Object(response_ctor),
+    )
+    .expect_err("expected status range error");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown RangeError object, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected RangeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "RangeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_rejects_invalid_status_text() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    let invalid_status_text = scope.alloc_string("not allowed\n")?;
+    set_data_prop(
+      &mut scope,
+      init_obj,
+      "statusText",
+      Value::String(invalid_status_text),
+      true,
+    )?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::Undefined, Value::Object(init_obj)],
+      Value::Object(response_ctor),
+    )
+    .expect_err("expected invalid statusText error");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown TypeError object, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_ctor_rejects_body_with_null_body_status() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+
+    let init_obj = scope.alloc_object()?;
+    scope.push_root(Value::Object(init_obj))?;
+    set_data_prop(&mut scope, init_obj, "status", Value::Number(204.0), true)?;
+
+    let body = scope.alloc_string("hello")?;
+    scope.push_root(Value::String(body))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_ctor_construct(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      response_ctor,
+      &[Value::String(body), Value::Object(init_obj)],
+      Value::Object(response_ctor),
+    )
+    .expect_err("expected null body status error");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown TypeError object, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
 
     drop(scope);
     drop(bindings);
