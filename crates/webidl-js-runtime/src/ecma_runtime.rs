@@ -725,20 +725,11 @@ impl VmJsRuntime {
   }
 
   fn to_string_from_number(&mut self, n: f64) -> Result<GcString, VmError> {
-    if n.is_nan() {
-      return self.alloc_string_handle("NaN");
-    }
-    if n == 0.0 {
-      // Covers +0 and -0.
-      return self.alloc_string_handle("0");
-    }
-    if n == f64::INFINITY {
-      return self.alloc_string_handle("Infinity");
-    }
-    if n == f64::NEG_INFINITY {
-      return self.alloc_string_handle("-Infinity");
-    }
-    self.alloc_string_handle(&n.to_string())
+    // Use `vm-js`'s spec-shaped `Number::toString` implementation instead of Rust's float formatting.
+    // This matters for threshold behaviors like:
+    // - `1e21` → `"1e+21"` (not `"1000000000000000000000"`)
+    // - `1e-7` → `"1e-7"` (not `"0.0000001"`)
+    self.heap.to_string(Value::Number(n))
   }
 
   fn create_error_object(&mut self, name: &'static str, message: &str) -> Value {
@@ -1622,6 +1613,20 @@ mod tests {
     assert_eq!(as_utf8_lossy(&rt, s), "42");
     let s = rt.to_string(Value::Number(-0.0)).unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "0");
+    // `Number::toString` formatting differs from Rust's default float formatting in a few key
+    // threshold cases:
+    // - values >= 1e21 use exponential form
+    // - values < 1e-6 use exponential form
+    let s = rt.to_string(Value::Number(1e21)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "1e+21");
+    let s = rt.to_string(Value::Number(-1e21)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "-1e+21");
+    let s = rt.to_string(Value::Number(1e20)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "100000000000000000000");
+    let s = rt.to_string(Value::Number(1e-6)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "0.000001");
+    let s = rt.to_string(Value::Number(1e-7)).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "1e-7");
     let s = rt
       .to_string(Value::BigInt(JsBigInt::from_u128(42)))
       .unwrap();
