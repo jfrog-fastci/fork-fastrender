@@ -337,13 +337,11 @@ impl Url {
 
   /// Equivalent to the WHATWG `URL.search` getter.
   pub fn search(&self) -> String {
-    self
-      .inner
-      .borrow()
-      .url
-      .query()
-      .map(|q| format!("?{q}"))
-      .unwrap_or_default()
+    match self.inner.borrow().url.query() {
+      None => String::new(),
+      Some(q) if q.is_empty() => String::new(),
+      Some(q) => format!("?{q}"),
+    }
   }
 
   /// Equivalent to the WHATWG `URL.search` setter.
@@ -362,13 +360,11 @@ impl Url {
 
   /// Equivalent to the WHATWG `URL.hash` getter.
   pub fn hash(&self) -> String {
-    self
-      .inner
-      .borrow()
-      .url
-      .fragment()
-      .map(|f| format!("#{f}"))
-      .unwrap_or_default()
+    match self.inner.borrow().url.fragment() {
+      None => String::new(),
+      Some(f) if f.is_empty() => String::new(),
+      Some(f) => format!("#{f}"),
+    }
   }
 
   /// Equivalent to the WHATWG `URL.hash` setter.
@@ -803,6 +799,19 @@ mod tests {
     url.set_hash("");
     assert_eq!(url.hash(), "");
     assert_eq!(url.href(), "https://example.com/");
+  }
+
+  #[test]
+  fn url_search_and_hash_getters_hide_empty_components() {
+    let url = Url::parse("https://example.com/?", None).unwrap();
+    assert_eq!(url.href(), "https://example.com/?");
+    // Per WHATWG, `search` is the empty string when the query is null *or* the empty string.
+    assert_eq!(url.search(), "");
+
+    let url = Url::parse("https://example.com/#", None).unwrap();
+    assert_eq!(url.href(), "https://example.com/#");
+    // Per WHATWG, `hash` is the empty string when the fragment is null *or* the empty string.
+    assert_eq!(url.hash(), "");
   }
 
   #[test]
