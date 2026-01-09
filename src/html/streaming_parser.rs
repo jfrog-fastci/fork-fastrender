@@ -505,7 +505,7 @@ mod tests {
     parser.push_str(html);
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Finished { .. } => {}
       other => panic!("expected Finished, got {other:?}"),
     }
