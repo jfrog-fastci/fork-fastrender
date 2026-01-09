@@ -572,7 +572,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
           tab.document.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
           tab.document.set_device_pixel_ratio(tab.dpr);
           if tab.url.is_some() {
-            repaint_if_needed(tab_id, tab, &ui_tx);
+            // Viewport changes are externally visible and must always produce a fresh frame so the
+            // UI can update its swapchain/texture dimensions.
+            repaint_force(tab_id, tab, &ui_tx);
           }
         }
       }

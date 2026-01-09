@@ -27,7 +27,13 @@ fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8,
   (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha())
 }
 
-fn recv_until_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: Instant) -> RenderedFrame {
+fn recv_until_frame(
+  rx: &Receiver<WorkerToUi>,
+  tab_id: TabId,
+  wait_for_navigation_committed_url: Option<&str>,
+  deadline: Instant,
+) -> RenderedFrame {
+  let mut can_accept_frame = wait_for_navigation_committed_url.is_none();
   loop {
     let now = Instant::now();
     if now >= deadline {
@@ -36,7 +42,30 @@ fn recv_until_frame(rx: &Receiver<WorkerToUi>, tab_id: TabId, deadline: Instant)
     let remaining = deadline.saturating_duration_since(now);
     match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::FrameReady { tab_id: msg_tab, frame } if msg_tab == tab_id => return frame,
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_tab,
+          url,
+          ..
+        } if msg_tab == tab_id => {
+          if wait_for_navigation_committed_url.map_or(false, |expected| expected == url) {
+            can_accept_frame = true;
+          }
+        }
+        WorkerToUi::NavigationFailed {
+          tab_id: msg_tab,
+          url,
+          error,
+        } if msg_tab == tab_id => {
+          panic!("navigation failed for {url}: {error}");
+        }
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab,
+          frame,
+        } if msg_tab == tab_id => {
+          if can_accept_frame {
+            return frame;
+          }
+        }
         _ => {}
       },
       Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -55,7 +84,7 @@ fn recv_until_pixel(
   deadline: Instant,
 ) -> RenderedFrame {
   loop {
-    let frame = recv_until_frame(rx, tab_id, deadline);
+    let frame = recv_until_frame(rx, tab_id, None, deadline);
     let rgba = sample_rgba_at_css(&frame, css_pos.0, css_pos.1);
     if rgba == expected {
       return frame;
@@ -98,11 +127,11 @@ fn label_click_toggles_checkbox_and_repaints() {
     .send(viewport_changed_msg(tab_id, (128, 128), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
+    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let frame = recv_until_frame(&ui_rx, tab_id, deadline);
+  let frame = recv_until_frame(&ui_rx, tab_id, Some(file_url.as_str()), deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
   ui_tx
@@ -168,11 +197,11 @@ fn text_input_updates_focused_input_value_and_repaints() {
     .send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
+    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let frame = recv_until_frame(&ui_rx, tab_id, deadline);
+  let frame = recv_until_frame(&ui_rx, tab_id, Some(file_url.as_str()), deadline);
   assert_eq!(sample_rgba_at_css(&frame, 10, 10), (255, 0, 0, 255));
 
   // Focus input.
@@ -258,11 +287,11 @@ fn link_click_triggers_navigation_to_resolved_url() {
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, page1_url, NavigationReason::TypedUrl))
+    .send(navigate_msg(tab_id, page1_url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let _frame = recv_until_frame(&ui_rx, tab_id, deadline);
+  let _frame = recv_until_frame(&ui_rx, tab_id, Some(page1_url.as_str()), deadline);
 
   ui_tx
     .send(UiToWorker::PointerDown {
@@ -354,11 +383,11 @@ fn select_dropdown_click_emits_open_select_dropdown_message() {
     .send(viewport_changed_msg(tab_id, (200, 80), 1.0))
     .unwrap();
   ui_tx
-    .send(navigate_msg(tab_id, file_url, NavigationReason::TypedUrl))
+    .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
-  let _frame = recv_until_frame(&ui_rx, tab_id, deadline);
+  let _frame = recv_until_frame(&ui_rx, tab_id, Some(file_url.as_str()), deadline);
   while ui_rx.try_recv().is_ok() {}
 
   ui_tx

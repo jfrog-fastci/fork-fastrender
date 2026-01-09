@@ -37,6 +37,7 @@ mod ui_worker_title;
 mod ui_worker_dpr;
 mod ui_worker_tabs;
 mod ui_worker_robustness;
+mod ui_worker_viewport_changed;
 mod worker_harness;
 mod worker_runtime;
 
