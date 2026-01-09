@@ -1202,15 +1202,40 @@ pub(crate) fn scroll_bounds_for_fragment(
   viewport: Size,
   has_fixed_cb_ancestor: bool,
 ) -> ScrollBounds {
-  let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
-  collect_bounds(
-    container,
-    Point::ZERO,
-    &mut bounds,
-    ClipRect::unbounded(),
-    true,
-    has_fixed_cb_ancestor,
+  // Scroll bounds are defined over the scrollport (the viewport through which descendants are
+  // scrolled). `FragmentNode::bounds` describes the element's border box, which may include space
+  // reserved for classic scrollbars (`scrollbar_reservation`). That reserved gutter should not be
+  // treated as part of the scrollport; otherwise we would clamp scroll offsets too aggressively
+  // (e.g. nested scroll containers with `overflow: scroll` would report a larger viewport and a
+  // smaller max scroll range).
+  let scrollbar_reservation = container.scrollbar_reservation;
+  let viewport = Size::new(
+    (viewport.width - scrollbar_reservation.left - scrollbar_reservation.right).max(0.0),
+    (viewport.height - scrollbar_reservation.top - scrollbar_reservation.bottom).max(0.0),
   );
+
+  let mut bounds = Bounds::new(Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height));
+
+  // Collect descendant bounds without unioning the container's border box. The seed `bounds`
+  // already includes the scrollport rect; including a larger border box (e.g. due to reserved
+  // scrollbar gutters) would incorrectly allow scrolling even when the scrollable contents do not
+  // overflow.
+  let establishes_fixed_cb = container
+    .style
+    .as_deref()
+    .is_some_and(|style| style.establishes_fixed_containing_block());
+  let has_fixed_cb_ancestor_for_children = has_fixed_cb_ancestor || establishes_fixed_cb;
+  for child in container.children.iter() {
+    let child_origin = Point::new(child.bounds.x(), child.bounds.y());
+    collect_bounds(
+      child,
+      child_origin,
+      &mut bounds,
+      ClipRect::unbounded(),
+      false,
+      has_fixed_cb_ancestor_for_children,
+    );
+  }
 
   let min_x = bounds.min_x.min(0.0);
   let min_y = bounds.min_y.min(0.0);
