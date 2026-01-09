@@ -460,6 +460,64 @@ fn foreign_object_rasterization_accounts_for_svg_view_box_scale_legacy_backend()
 }
 
 #[test]
+fn foreign_object_rasterization_accounts_for_nested_svg_view_box_scale() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="160" height="160" viewBox="0 0 160 160">
+        <svg x="0" y="0" width="160" height="160" viewBox="0 0 16 16">
+          <foreignObject x="0" y="0" width="16" height="16">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;background:white;position:relative;">
+              <div style="position:absolute;left:8px;top:0;width:1px;height:16px;background:black;"></div>
+            </div>
+          </foreignObject>
+        </svg>
+      </svg>
+      "#;
+
+      for backend in ["display_list", "legacy"] {
+        let toggles = RuntimeToggles::from_map(HashMap::from([(
+          "FASTR_PAINT_BACKEND".to_string(),
+          backend.to_string(),
+        )]));
+        let options = RenderOptions::new()
+          .with_viewport(400, 200)
+          .with_runtime_toggles(toggles);
+        let pixmap = renderer
+          .render_html_with_options(html, options)
+          .expect("render svg");
+
+        let left = pixel(&pixmap, 79, 80);
+        let start = pixel(&pixmap, 80, 80);
+        let end = pixel(&pixmap, 89, 80);
+        let right = pixel(&pixmap, 90, 80);
+        assert!(
+          left[0] > 240 && left[1] > 240 && left[2] > 240,
+          "({backend}) expected crisp white pixel just outside the line, got {left:?}"
+        );
+        assert!(
+          start[0] < 20 && start[1] < 20 && start[2] < 20,
+          "({backend}) expected dark pixel inside the line, got {start:?}"
+        );
+        assert!(
+          end[0] < 20 && end[1] < 20 && end[2] < 20,
+          "({backend}) expected dark pixel inside the line, got {end:?}"
+        );
+        assert!(
+          right[0] > 240 && right[1] > 240 && right[2] > 240,
+          "({backend}) expected crisp white pixel just outside the line, got {right:?}"
+        );
+      }
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_rasterization_accounts_for_svg_transform_scale_display_list_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

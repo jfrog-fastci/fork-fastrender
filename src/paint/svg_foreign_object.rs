@@ -196,12 +196,45 @@ fn parse_svg_transform_attribute(value: &str) -> Option<Transform> {
   Some(combined)
 }
 
+fn parse_svg_px_or_unitless_number(value: &str) -> Option<f32> {
+  let trimmed = trim_xml_whitespace(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let mut end = 0usize;
+  for (idx, ch) in trimmed.char_indices() {
+    if matches!(ch, '0'..='9' | '+' | '-' | '.' | 'e' | 'E') {
+      end = idx + ch.len_utf8();
+    } else {
+      break;
+    }
+  }
+
+  if end == 0 {
+    return None;
+  }
+
+  let number = trimmed[..end].parse::<f32>().ok()?;
+  if !number.is_finite() {
+    return None;
+  }
+
+  let unit = trim_xml_whitespace(&trimmed[end..]);
+  if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+    Some(number)
+  } else {
+    None
+  }
+}
+
 fn foreign_object_transform_scale(
   svg_doc: Option<&roxmltree::Document<'_>>,
   placeholder: &str,
   attributes: &[(String, String)],
 ) -> f32 {
   let mut combined = Transform::identity();
+  let mut nested_view_box_scale = 1.0f32;
 
   if let Some(doc) = svg_doc {
     let placeholder_trimmed = trim_xml_whitespace(placeholder);
@@ -219,6 +252,38 @@ fn foreign_object_transform_scale(
         let mut current = comment.parent();
         while let Some(node) = current {
           if node.is_element() {
+            if node.tag_name().name().eq_ignore_ascii_case("svg")
+              && node.parent().is_some_and(|parent| parent.is_element())
+            {
+              if let Some(view_box) = node.attribute("viewBox").and_then(parse_svg_view_box) {
+                let viewport_width = node
+                  .attribute("width")
+                  .and_then(parse_svg_px_or_unitless_number);
+                let viewport_height = node
+                  .attribute("height")
+                  .and_then(parse_svg_px_or_unitless_number);
+                if let (Some(viewport_width), Some(viewport_height)) = (viewport_width, viewport_height) {
+                  let sx = viewport_width / view_box.width;
+                  let sy = viewport_height / view_box.height;
+                  if sx.is_finite() && sy.is_finite() && sx > 0.0 && sy > 0.0 {
+                    let preserve =
+                      SvgPreserveAspectRatio::parse(node.attribute("preserveAspectRatio"));
+                    let scale = if preserve.none {
+                      sx.max(sy)
+                    } else {
+                      match preserve.meet_or_slice {
+                        SvgMeetOrSlice::Meet => sx.min(sy),
+                        SvgMeetOrSlice::Slice => sx.max(sy),
+                      }
+                    };
+                    if scale.is_finite() && scale > 0.0 {
+                      nested_view_box_scale *= scale;
+                    }
+                  }
+                }
+              }
+            }
+
             for attr in node.attributes() {
               if attr.name().eq_ignore_ascii_case("transform") {
                 if let Some(t) = parse_svg_transform_attribute(attr.value()) {
@@ -243,7 +308,13 @@ fn foreign_object_transform_scale(
     }
   }
 
-  transform_scale_factor(combined).max(1.0)
+  let view_box_scale = if nested_view_box_scale.is_finite() && nested_view_box_scale > 0.0 {
+    nested_view_box_scale
+  } else {
+    1.0
+  };
+
+  (transform_scale_factor(combined) * view_box_scale).max(1.0)
 }
 
 fn replace_placeholder_or_insert(svg: &mut String, placeholder: &str, replacement: &str) -> Option<()> {
@@ -1057,6 +1128,15 @@ mod tests {
     assert!((scale - 6.0).abs() < 0.01, "expected scale ~6, got {scale}");
   }
 
+  #[test]
+  fn foreign_object_transform_scale_accounts_for_nested_svg_view_box_scale() {
+    let svg = r#"<svg width="160" height="160" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg"><svg width="80" height="80" viewBox="0 0 8 8"><!--FASTRENDER_FOREIGN_OBJECT_0--></svg></svg>"#;
+    let doc = roxmltree::Document::parse(svg).expect("parse svg");
+    let scale =
+      super::foreign_object_transform_scale(Some(&doc), "<!--FASTRENDER_FOREIGN_OBJECT_0-->", &[]);
+    assert!((scale - 10.0).abs() < 0.01, "expected scale ~10, got {scale}");
+  }
+
   fn clip_path_id_from_image_tag(tag: &str) -> &str {
     let prefix = "<clipPath id=\"";
     let start = tag.find(prefix).expect("clipPath start") + prefix.len();
@@ -1115,4 +1195,4 @@ mod tests {
     assert_eq!(tag.match_indices(&format!("<clipPath id=\"{id}\">")).count(), 1);
     assert_eq!(tag.match_indices(&format!("clip-path=\"url(#{id})\"")).count(), 1);
   }
-}  
+}
