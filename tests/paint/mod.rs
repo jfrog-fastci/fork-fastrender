@@ -9,6 +9,7 @@ mod backdrop_filter_filter_interaction_test;
 mod backdrop_filter_mask_image_test;
 mod backdrop_filter_parallel_test;
 mod backdrop_filter_through_blend_isolation;
+mod backdrop_filter_transform_semantics;
 mod backdrop_root_backdrop_filter_test;
 mod backdrop_root_clip_path_test;
 mod backdrop_root_demand_driven_layers_test;
