@@ -1038,70 +1038,28 @@ impl App {
       return;
     };
 
-    let mut options: Vec<(usize, bool)> = Vec::new(); // (item_idx, disabled)
-    for (idx, item) in control.items.iter().enumerate() {
-      if let SelectItem::Option { disabled, .. } = item {
-        options.push((idx, *disabled));
-      }
-    }
-
-    let is_target_disabled = matches!(
-      control.items.get(clicked_item_idx),
-      Some(SelectItem::Option { disabled: true, .. })
-    );
-    if is_target_disabled {
-      self.close_select_dropdown();
-      self.window.request_redraw();
-      return;
-    }
-
-    let mut current_item_idx = control
-      .selected
-      .iter()
-      .copied()
-      .filter(|idx| matches!(control.items.get(*idx), Some(SelectItem::Option { .. })))
-      .min();
-    if current_item_idx.is_none() {
-      current_item_idx = options.iter().find(|(_, disabled)| !*disabled).map(|(idx, _)| *idx);
-    }
-
-    let Some(current_item_idx) = current_item_idx else {
+    let Some(SelectItem::Option {
+      option_node_id,
+      disabled,
+      ..
+    }) = control.items.get(clicked_item_idx)
+    else {
       self.close_select_dropdown();
       self.window.request_redraw();
       return;
     };
 
-    let Some(current_pos) = options.iter().position(|(idx, _)| *idx == current_item_idx) else {
+    if *disabled {
       self.close_select_dropdown();
       self.window.request_redraw();
       return;
-    };
-    let Some(target_pos) = options.iter().position(|(idx, _)| *idx == clicked_item_idx) else {
-      self.close_select_dropdown();
-      self.window.request_redraw();
-      return;
-    };
-
-    if target_pos != current_pos {
-      let mut keys: Vec<fastrender::interaction::KeyAction> = Vec::new();
-      if target_pos > current_pos {
-        for i in (current_pos + 1)..=target_pos {
-          if !options[i].1 {
-            keys.push(fastrender::interaction::KeyAction::ArrowDown);
-          }
-        }
-      } else {
-        for i in target_pos..current_pos {
-          if !options[i].1 {
-            keys.push(fastrender::interaction::KeyAction::ArrowUp);
-          }
-        }
-      }
-
-      for key in keys {
-        self.send_worker_msg(UiToWorker::KeyAction { tab_id, key });
-      }
     }
+
+    self.send_worker_msg(UiToWorker::SelectDropdownChoose {
+      tab_id,
+      select_node_id,
+      option_node_id: *option_node_id,
+    });
 
     self.close_select_dropdown();
     self.window.request_redraw();
