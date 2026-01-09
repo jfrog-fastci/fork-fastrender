@@ -623,6 +623,42 @@ const DOM_SHIM: &str = r##"
     return makeNode(Text.prototype, id);
   };
 
+  Document.prototype.getElementById = function (elementId) {
+    if (this !== g.document) {
+      throw new TypeError("Illegal invocation");
+    }
+    var needle = String(elementId);
+    var root = g.document.documentElement;
+    if (!root) return null;
+    if (root.id === needle) return root;
+
+    var found = null;
+    traverseElementSubtree(root, function (el) {
+      if (found) return;
+      if (el.id === needle) found = el;
+    });
+    return found;
+  };
+
+  DocumentFragment.prototype.getElementById = function (elementId) {
+    nodeIdFromThis(this);
+    var needle = String(elementId);
+    var nodes = this.childNodes || [];
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      if (!(node instanceof Element)) continue;
+      if (node.id === needle) return node;
+
+      var found = null;
+      traverseElementSubtree(node, function (el) {
+        if (found) return;
+        if (el.id === needle) found = el;
+      });
+      if (found) return found;
+    }
+    return null;
+  };
+
   Object.defineProperty(Element.prototype, "innerHTML", {
     get: function () {
       return g.__fastrender_dom_get_inner_html(nodeIdFromThis(this));

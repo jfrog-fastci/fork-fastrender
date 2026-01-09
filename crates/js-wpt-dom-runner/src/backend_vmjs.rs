@@ -1283,11 +1283,14 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("createTextNode")?)
     };
-    self.define_data_prop(
-      document,
-      create_text_node_key,
-      Value::Object(create_text_node),
-    )?;
+    self.define_data_prop(document, create_text_node_key, Value::Object(create_text_node))?;
+
+    let get_element_by_id = self.alloc_native_function(native_document_get_element_by_id)?;
+    let get_element_by_id_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("getElementById")?)
+    };
+    self.define_data_prop(document, get_element_by_id_key, Value::Object(get_element_by_id))?;
 
     // Minimal document structure: <html><head></head><body></body></html>.
     //
@@ -3817,6 +3820,59 @@ fn native_document_create_text_node(
   let data = string_from_value(rt, data_value)?;
   let node = rt.alloc_dom_text_node(&data)?;
   Ok(Value::Object(node))
+}
+
+fn native_document_get_element_by_id(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(document) = this else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: getElementById called on non-object",
+    )?)));
+  };
+
+  let env_document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+        "TypeError: getElementById called without a document",
+      )?)));
+    }
+  };
+  if document != env_document {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
+      "TypeError: getElementById called on non-document",
+    )?)));
+  }
+
+  let needle_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let needle = string_from_value(rt, needle_value)?;
+
+  let Some(body) = rt.document_body else {
+    return Ok(Value::Null);
+  };
+  let root = rt
+    .dom_nodes
+    .get(&body)
+    .and_then(|state| state.parent)
+    .unwrap_or(body);
+
+  for node in dom_subtree_preorder(rt, root) {
+    let Some(state) = rt.dom_nodes.get(&node) else {
+      continue;
+    };
+    let Some(&id) = state.attributes.get("id") else {
+      continue;
+    };
+    let actual = rt.heap.get_string(id)?.to_utf8_lossy();
+    if actual == needle {
+      return Ok(Value::Object(node));
+    }
+  }
+
+  Ok(Value::Null)
 }
 
 fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {

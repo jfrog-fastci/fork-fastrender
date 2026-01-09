@@ -298,3 +298,8 @@ fn runs_event_loop_tests() {
   assert_wpt_pass("event_loop/settimeout_args.window.js");
   assert_wpt_pass("event_loop/setinterval_cancel.window.js");
 }
+
+#[test]
+fn runs_get_element_by_id_test() {
+  assert_wpt_pass("dom/document_get_element_by_id.window.js");
+}
