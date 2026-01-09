@@ -66,6 +66,28 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     self.eof = true;
   }
 
+  /// Whether the parser has finished and can no longer be pumped or inspected.
+  pub fn is_finished(&self) -> bool {
+    self.parser.is_none()
+  }
+
+  /// Execute `f` with mutable access to the underlying `TreeSink`.
+  ///
+  /// This can be used between [`pump`](Self::pump) calls to inspect or mutate the
+  /// live DOM / base-url state when html5ever yields `TokenizerResult::Script`.
+  ///
+  /// # Panics
+  ///
+  /// Panics if called after the parser has finished (after `pump()` returned
+  /// [`Html5everPump::Finished`]).
+  pub fn with_sink<R>(&mut self, f: impl FnOnce(&mut Sink) -> R) -> R {
+    let parser = self
+      .parser
+      .as_mut()
+      .expect("with_sink called after parser finished");
+    f(&mut parser.tokenizer.sink.sink)
+  }
+
   /// Run the tokenizer/tree-builder until it either needs a script, needs more
   /// input, or finishes.
   pub fn pump(&mut self) -> Html5everPump<Sink::Handle, Sink::Output> {
@@ -107,6 +129,20 @@ mod tests {
   use html5ever::ParseOpts;
   use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
+  // `RcDom::document` points at the root document node; walking the tree should
+  // find any handles inserted so far.
+  fn contains_handle(root: &Handle, needle: &Handle) -> bool {
+    if std::rc::Rc::ptr_eq(root, needle) {
+      return true;
+    }
+    for child in root.children.borrow().iter() {
+      if contains_handle(child, needle) {
+        return true;
+      }
+    }
+    false
+  }
+
   fn assert_script_element_with_text(handle: &Handle, expected_text: &str) {
     match &handle.data {
       NodeData::Element { name, .. } => assert_eq!(name.local.as_ref(), "script"),
@@ -143,6 +179,14 @@ mod tests {
       Html5everPump::Script(h) => h,
       _ => panic!("expected first pump to yield Script"),
     };
+
+    parser.with_sink(|sink| {
+      assert!(
+        contains_handle(&sink.document, &h1),
+        "expected yielded script handle to be present in the in-progress DOM"
+      );
+    });
+
     let h2 = match parser.pump() {
       Html5everPump::Script(h) => h,
       _ => panic!("expected second pump to yield Script"),
@@ -156,20 +200,6 @@ mod tests {
     assert_script_element_with_text(&h2, "b");
 
     // Ensure both handles are associated with the returned DOM.
-    // `RcDom::document` points at the root document node; walking the tree should
-    // find both script handles.
-    fn contains_handle(root: &Handle, needle: &Handle) -> bool {
-      if std::rc::Rc::ptr_eq(root, needle) {
-        return true;
-      }
-      for child in root.children.borrow().iter() {
-        if contains_handle(child, needle) {
-          return true;
-        }
-      }
-      false
-    }
-
     assert!(contains_handle(&dom.document, &h1));
     assert!(contains_handle(&dom.document, &h2));
   }
@@ -192,5 +222,28 @@ mod tests {
       Html5everPump::Finished(_) => {}
       _ => panic!("expected parser to finish without yielding Script"),
     };
+  }
+
+  #[test]
+  #[should_panic(expected = "with_sink called after parser finished")]
+  fn sink_accessor_panics_after_finished() {
+    let opts = ParseOpts {
+      tree_builder: TreeBuilderOpts {
+        scripting_enabled: true,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
+
+    let mut parser = PausableHtml5everParser::new_document(RcDom::default(), opts);
+    parser.push_str("<!doctype html><p>x</p>");
+    parser.set_eof();
+
+    match parser.pump() {
+      Html5everPump::Finished(_) => {}
+      _ => panic!("expected parser to finish without yielding Script"),
+    };
+
+    parser.with_sink(|_| {});
   }
 }
