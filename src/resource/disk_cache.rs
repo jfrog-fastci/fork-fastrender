@@ -869,18 +869,38 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     };
     let vary_key =
       super::compute_vary_key_for_request(&self.memory.inner, request, vary.as_deref())?;
+
+    let stored_at_for_key = |key: &str| -> Option<u64> {
+      let data_path = self.data_path_for_key(key);
+      let meta_path = self.meta_path_for_data(&data_path);
+      let meta_bytes = read_path_prefix_with_deadline(
+        &meta_path,
+        DISK_META_READ_STAGE,
+        DISK_META_READ_CHUNK_SIZE,
+        DISK_META_MAX_BYTES,
+      )
+      .ok()?;
+      let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
+      Some(meta.stored_at)
+    };
+
     let key = self.variant_key_for_base_key(&base_key, &vary_key);
-    let data_path = self.data_path_for_key(&key);
-    let meta_path = self.meta_path_for_data(&data_path);
-    let meta_bytes = read_path_prefix_with_deadline(
-      &meta_path,
-      DISK_META_READ_STAGE,
-      DISK_META_READ_CHUNK_SIZE,
-      DISK_META_MAX_BYTES,
-    )
-    .ok()?;
-    let meta: StoredMetadata = serde_json::from_slice(&meta_bytes).ok()?;
-    Some(meta.stored_at)
+    if let Some(stored_at) = stored_at_for_key(&key) {
+      return Some(stored_at);
+    }
+
+    // Back-compat: older disk cache entries used a legacy `Vary` hashing algorithm (raw casing +
+    // ordering), so the variant filename may not match the canonical key derived above.
+    let legacy_vary_key =
+      super::compute_vary_key_for_request_legacy(&self.memory.inner, request, vary.as_deref())?;
+    if legacy_vary_key != vary_key {
+      let legacy_key = self.variant_key_for_base_key(&base_key, &legacy_vary_key);
+      if let Some(stored_at) = stored_at_for_key(&legacy_key) {
+        return Some(stored_at);
+      }
+    }
+
+    None
   }
 
   fn stored_at_for_cached_artifact_entry(
@@ -4534,6 +4554,7 @@ mod tests {
 
     let body = b"cached";
     fs::write(&data_path, body).expect("write data");
+    let stored_at = now_seconds();
     let meta = StoredMetadata {
       url: url.to_string(),
       status: Some(200),
@@ -4548,13 +4569,24 @@ mod tests {
       access_control_allow_origin: None,
       timing_allow_origin: None,
       access_control_allow_credentials: false,
-      stored_at: now_seconds(),
+      stored_at,
       len: body.len(),
       cache: None,
       error: None,
     };
     fs::write(&meta_path, serde_json::to_vec(&meta).expect("serialize meta"))
       .expect("write meta");
+
+    // Ensure the stored-at lookup can find legacy variant filenames as well (used for aligning
+    // cached artifacts against their backing resources).
+    let stored_at_found = disk.stored_at_for_cached_entry(
+      TEST_KIND,
+      url,
+      request,
+      None,
+      super::super::CacheCredentialsPartition::for_request(&request),
+    );
+    assert_eq!(stored_at_found, Some(stored_at));
 
     // "Restart" by constructing a new disk cache instance that should hit the on-disk files
     // without calling the inner fetcher.
