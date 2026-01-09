@@ -33,8 +33,13 @@ unsafe impl<'js> rquickjs::JsLifetime<'js> for JsUrl {
 #[rquickjs::methods]
 impl JsUrl {
   #[qjs(constructor)]
-  pub fn new<'js>(ctx: Ctx<'js>, url: String, base: Opt<String>) -> Result<Self, Error> {
-    let inner = Url::parse(&url, base.0.as_deref())
+  pub fn new<'js>(ctx: Ctx<'js>, url: String, base: Opt<Value<'js>>) -> Result<Self, Error> {
+    let base = match base.0 {
+      None => None,
+      Some(v) if v.is_undefined() => None,
+      Some(v) => Some(v.get::<String>()?),
+    };
+    let inner = Url::parse(&url, base.as_deref())
       .map_err(|_| Exception::throw_type(&ctx, "Invalid URL"))?;
     Ok(Self { inner })
   }
@@ -153,6 +158,9 @@ impl JsUrlSearchParams {
     let Some(init) = init.0 else {
       return Ok(Self { inner: params });
     };
+    if init.is_undefined() {
+      return Ok(Self { inner: params });
+    }
 
     // sequence-of-pairs (array)
     if init.is_array() {
@@ -299,8 +307,27 @@ pub fn install_url_bindings<'js>(
         configurable: true,
       });
 
-      URLSearchParams.prototype[Symbol.iterator] = function () {
+      // Spec default iterator for URLSearchParams is `entries()`.
+      URLSearchParams.prototype.entries = function () {
         return this.__pairs()[Symbol.iterator]();
+      };
+      URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+
+      URLSearchParams.prototype.keys = function* () {
+        for (const [k] of this.__pairs()) yield k;
+      };
+
+      URLSearchParams.prototype.values = function* () {
+        for (const [, v] of this.__pairs()) yield v;
+      };
+
+      URLSearchParams.prototype.forEach = function (callback, thisArg) {
+        if (typeof callback !== "function") {
+          throw new TypeError("URLSearchParams.forEach callback is not a function");
+        }
+        for (const [k, v] of this.__pairs()) {
+          callback.call(thisArg, v, k, this);
+        }
       };
 
       // WHATWG `URLSearchParams.get()` returns `null` when the entry is missing. The Rust binding
@@ -312,9 +339,22 @@ pub fn install_url_bindings<'js>(
           return v === undefined ? null : v;
         };
       }
-     })();
-     "#,
-   )?;
+
+      // WHATWG URL defines `URL.parse(url, base?)` which returns null on failure, and
+      // `URL.canParse(url, base?)` which returns a boolean.
+      URL.parse = function (url, base) {
+        try {
+          return new URL(url, base);
+        } catch (_e) {
+          return null;
+        }
+      };
+      URL.canParse = function (url, base) {
+        return URL.parse(url, base) !== null;
+      };
+    })();
+    "#,
+  )?;
 
   Ok(())
 }

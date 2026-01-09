@@ -56,6 +56,24 @@ fn quickjs_url_and_urlsearchparams_bindings() {
         .unwrap();
       assert_eq!(stringifier, "https://example.com/a?b=c#d");
 
+      let parse_href: String = ctx
+        .eval("URL.parse('foo', 'https://example.com/base').href")
+        .unwrap();
+      assert_eq!(parse_href, "https://example.com/foo");
+
+      let parse_null: bool = ctx.eval("URL.parse('not a url') === null").unwrap();
+      assert!(parse_null);
+
+      let can_parse: bool = ctx
+        .eval("URL.canParse('foo', 'https://example.com/base') && !URL.canParse('not a url')")
+        .unwrap();
+      assert!(can_parse);
+
+      let undefined_base: String = ctx
+        .eval("new URL('https://example.com/', undefined).href")
+        .unwrap();
+      assert_eq!(undefined_base, "https://example.com/");
+
       let same_object: bool = ctx
         .eval(
           r#"
@@ -99,8 +117,130 @@ fn quickjs_url_and_urlsearchparams_bindings() {
       let get_null: bool = ctx.eval("new URLSearchParams('').get('missing') === null").unwrap();
       assert!(get_null);
 
+      let delete_value: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&a=2&b=3");
+            params.delete("a", "1");
+            return params.toString();
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(delete_value, "a=2&b=3");
+
+      let has_value: bool = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&a=2&b=3");
+            return params.has("a", "1") && params.has("a", "2") && !params.has("a", "3");
+          })()
+        "#,
+        )
+        .unwrap();
+      assert!(has_value);
+
       let size: i32 = ctx.eval("new URLSearchParams('a=1&a=2&b=3').size").unwrap();
       assert_eq!(size, 3);
+
+      let iterator_is_entries: bool = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1");
+            return params[Symbol.iterator] === params.entries;
+          })()
+        "#,
+        )
+        .unwrap();
+      assert!(iterator_is_entries);
+
+      let entries_joined: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&a=2&b=3");
+            return [...params.entries()].map(([k, v]) => k + "=" + v).join("&");
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(entries_joined, "a=1&a=2&b=3");
+
+      let keys_joined: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&a=2&b=3");
+            return [...params.keys()].join(",");
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(keys_joined, "a,a,b");
+
+      let values_joined: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&a=2&b=3");
+            return [...params.values()].join(",");
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(values_joined, "1,2,3");
+
+      let foreach_args: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1&b=2");
+            const out = [];
+            params.forEach((value, key, self) => {
+              out.push(key + "=" + value + ":" + (self === params));
+            });
+            return out.join("|");
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(foreach_args, "a=1:true|b=2:true");
+
+      let foreach_this_arg: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1");
+            const obj = { seen: null };
+            params.forEach(function (value, key) {
+              this.seen = key + "=" + value;
+            }, obj);
+            return obj.seen;
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(foreach_this_arg, "a=1");
+
+      let foreach_invalid_cb: String = ctx
+        .eval(
+          r#"
+          (() => {
+            const params = new URLSearchParams("a=1");
+            try {
+              params.forEach(null);
+              return "no-throw";
+            } catch (e) {
+              return e.name;
+            }
+          })()
+        "#,
+        )
+        .unwrap();
+      assert_eq!(foreach_invalid_cb, "TypeError");
 
       let iter_joined: String = ctx
         .eval(
