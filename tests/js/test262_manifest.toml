@@ -1,0 +1,14 @@
+# Expectations for the curated test262 *semantic* suite.
+#
+# This manifest is how FastRender tracks known JavaScript conformance gaps without hiding
+# regressions. Keep entries as narrow as possible (prefer exact `id` matches, then `glob`, then
+# `regex`).
+#
+# Example:
+#
+# [[expectations]]
+# id = "language/expressions/addition/S11.6.1_A2.1_T1.js"
+# status = "xfail"
+# reason = "known VM bug"
+# tracking_issue = "https://github.com/…"
+

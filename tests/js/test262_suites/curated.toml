@@ -1,0 +1,50 @@
+# Default curated suite used by `cargo xtask js test262`.
+#
+# This is intentionally *not* the full tc39/test262 corpus. The goal is a deterministic,
+# CI-friendly subset that still provides meaningful language semantics coverage.
+#
+# Test IDs are paths relative to `test/` in the tc39/test262 checkout.
+include = [
+  "language/expressions/addition/**/*.js",
+  "language/expressions/array/**/*.js",
+  "language/expressions/bitwise-and/**/*.js",
+  "language/expressions/bitwise-not/**/*.js",
+  "language/expressions/bitwise-or/**/*.js",
+  "language/expressions/bitwise-xor/**/*.js",
+  "language/expressions/comma/**/*.js",
+  "language/expressions/concatenation/**/*.js",
+  "language/expressions/division/**/*.js",
+  "language/expressions/does-not-equals/**/*.js",
+  "language/expressions/equals/**/*.js",
+  "language/expressions/greater-than/**/*.js",
+  "language/expressions/greater-than-or-equal/**/*.js",
+  "language/expressions/grouping/**/*.js",
+  "language/expressions/instanceof/**/*.js",
+  "language/expressions/left-shift/**/*.js",
+  "language/expressions/less-than/**/*.js",
+  "language/expressions/less-than-or-equal/**/*.js",
+  "language/expressions/logical-and/**/*.js",
+  "language/expressions/logical-not/**/*.js",
+  "language/expressions/logical-or/**/*.js",
+  "language/expressions/member-expression/**/*.js",
+  "language/expressions/modulus/**/*.js",
+  "language/expressions/multiplication/**/*.js",
+  "language/expressions/new/**/*.js",
+  "language/expressions/relational/**/*.js",
+  "language/expressions/right-shift/**/*.js",
+  "language/expressions/strict-does-not-equals/**/*.js",
+  "language/expressions/strict-equals/**/*.js",
+  "language/expressions/subtraction/**/*.js",
+  "language/expressions/super/**/*.js",
+  "language/expressions/tagged-template/**/*.js",
+  "language/expressions/typeof/**/*.js",
+  "language/expressions/unary-minus/**/*.js",
+  "language/expressions/unary-plus/**/*.js",
+  "language/expressions/unsigned-right-shift/**/*.js",
+  "language/expressions/void/**/*.js",
+]
+
+exclude = [
+  "**/*.module.js",
+]
+

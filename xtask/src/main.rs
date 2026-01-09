@@ -15,6 +15,7 @@ mod fixture_determinism;
 mod freeze_page_fixture_cmd;
 mod generate_emoji_tables;
 mod import_page_fixture;
+mod js;
 mod lint_no_panics;
 mod recapture_page_fixtures;
 mod sync_progress_accuracy;
@@ -58,6 +59,7 @@ fn main() -> Result<()> {
       validate_page_fixtures::run_validate_page_fixtures(args)
     }
     Commands::PerfSmoke(args) => run_perf_smoke(args),
+    Commands::Js(args) => js::run_js(args),
     Commands::LintNoPanics(args) => {
       let repo_root = repo_root();
       lint_no_panics::run_lint_no_panics(&repo_root, args)
@@ -123,6 +125,8 @@ enum Commands {
   ),
   /// Run the offline perf smoke harness (`perf_smoke` binary) over curated fixtures
   PerfSmoke(PerfSmokeArgs),
+  /// JavaScript workflows (conformance, harnesses, etc.)
+  Js(js::JsArgs),
   /// Ensure checked-in page fixtures do not reference network resources (offline invariant)
   ValidatePageFixtures(validate_page_fixtures::ValidatePageFixturesArgs),
   /// Regenerate the Unicode emoji property tables used by the renderer.
