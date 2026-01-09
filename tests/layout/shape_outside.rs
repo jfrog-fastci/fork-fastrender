@@ -208,6 +208,70 @@ fn image_shape_respects_threshold() {
 }
 
 #[test]
+fn image_shape_gradient_resolves_light_dark_using_used_color_scheme() {
+  let make_style = |is_dark: bool| {
+    let mut style = ComputedStyle::default();
+    style.used_dark_color_scheme = is_dark;
+    style.shape_image_threshold = 0.5;
+    let light_dark = Color::LightDark {
+      light: Box::new(Color::Rgba(Rgba::new(0, 0, 0, 0.0))),
+      dark: Box::new(Color::Rgba(Rgba::new(0, 0, 0, 1.0))),
+    };
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::LinearGradient {
+      angle: 0.0,
+      stops: vec![
+        ColorStop {
+          color: light_dark.clone(),
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(0.0)),
+        },
+        ColorStop {
+          color: light_dark,
+          position: Some(fastrender::css::types::ColorStopPosition::Fraction(1.0)),
+        },
+      ],
+    });
+    style
+  };
+
+  let margin_rect = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  let border_rect = margin_rect;
+  let containing_block = Size::new(10.0, 10.0);
+  let viewport = Size::new(100.0, 100.0);
+  let font_ctx = FontContext::new();
+  let image_cache = ImageCache::new();
+
+  let light_style = make_style(false);
+  let dark_style = make_style(true);
+
+  let light_shape = build_float_shape(
+    &light_style,
+    margin_rect,
+    border_rect,
+    containing_block,
+    viewport,
+    &font_ctx,
+    &image_cache,
+  )
+  .expect("light shape-outside resolution")
+  .expect("light shape-outside produced a shape");
+
+  let dark_shape = build_float_shape(
+    &dark_style,
+    margin_rect,
+    border_rect,
+    containing_block,
+    viewport,
+    &font_ctx,
+    &image_cache,
+  )
+  .expect("dark shape-outside resolution")
+  .expect("dark shape-outside produced a shape");
+
+  assert_eq!(light_shape.span_at(0.0), None);
+  assert_eq!(dark_shape.span_at(0.0), Some((0.0, 10.0)));
+}
+
+#[test]
 fn none_falls_back_to_margin_box() {
   let mut style = ComputedStyle::default();
   style.shape_margin = Length::px(20.0);

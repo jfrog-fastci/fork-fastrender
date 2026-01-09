@@ -543,6 +543,7 @@ fn image_mask(
         *angle,
         stops,
         style.color,
+        style.used_dark_color_scheme,
         width,
         height,
         style.font_size,
@@ -557,6 +558,7 @@ fn image_mask(
         *angle,
         stops,
         style.color,
+        style.used_dark_color_scheme,
         width,
         height,
         style.font_size,
@@ -738,6 +740,7 @@ fn render_linear_gradient(
   angle: f32,
   stops: &[ColorStop],
   current_color: Rgba,
+  is_dark: bool,
   width: u32,
   height: u32,
   font_size: f32,
@@ -751,6 +754,7 @@ fn render_linear_gradient(
   let resolved = normalize_color_stops(
     stops,
     current_color,
+    is_dark,
     rect.width() * dx.abs() + rect.height() * dy.abs(),
     font_size,
     root_font_size,
@@ -789,6 +793,7 @@ fn render_linear_gradient_repeat(
   angle: f32,
   stops: &[ColorStop],
   current_color: Rgba,
+  is_dark: bool,
   width: u32,
   height: u32,
   font_size: f32,
@@ -802,6 +807,7 @@ fn render_linear_gradient_repeat(
   let resolved = normalize_color_stops(
     stops,
     current_color,
+    is_dark,
     rect.width() * dx.abs() + rect.height() * dy.abs(),
     font_size,
     root_font_size,
@@ -871,6 +877,7 @@ fn render_radial_gradient_image(
   let resolved = normalize_color_stops(
     stops,
     style.color,
+    style.used_dark_color_scheme,
     radius_x.max(radius_y),
     style.font_size,
     style.root_font_size,
@@ -926,6 +933,7 @@ fn render_conic_gradient_alpha(
   let resolved = normalize_color_stops_unclamped(
     stops,
     style.color,
+    style.used_dark_color_scheme,
     1.0,
     style.font_size,
     style.root_font_size,
@@ -992,6 +1000,7 @@ fn render_conic_gradient_alpha(
 fn normalize_color_stops(
   stops: &[ColorStop],
   current_color: Rgba,
+  is_dark: bool,
   gradient_length: f32,
   font_size: f32,
   root_font_size: f32,
@@ -1026,13 +1035,21 @@ fn normalize_color_stops(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0].color.to_rgba_with_scheme(current_color, is_dark),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color.to_rgba_with_scheme(current_color, is_dark),
+        )
+      })
       .collect();
   }
 
@@ -1073,7 +1090,10 @@ fn normalize_color_stops(
     let pos = pos_opt.unwrap_or(prev);
     let clamped = pos.max(prev).clamp(0.0, 1.0);
     prev = clamped;
-    output.push((clamped, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      clamped,
+      stops[idx].color.to_rgba_with_scheme(current_color, is_dark),
+    ));
   }
   output
 }
@@ -1093,6 +1113,7 @@ fn gradient_stops(stops: &[(f32, Rgba)]) -> Vec<tiny_skia::GradientStop> {
 fn normalize_color_stops_unclamped(
   stops: &[ColorStop],
   current_color: Rgba,
+  is_dark: bool,
   gradient_length: f32,
   font_size: f32,
   root_font_size: f32,
@@ -1127,13 +1148,21 @@ fn normalize_color_stops_unclamped(
     .collect();
   if positions.iter().all(|p| p.is_none()) {
     if stops.len() == 1 {
-      return vec![(0.0, stops[0].color.to_rgba(current_color))];
+      return vec![(
+        0.0,
+        stops[0].color.to_rgba_with_scheme(current_color, is_dark),
+      )];
     }
     let denom = (stops.len() - 1) as f32;
     return stops
       .iter()
       .enumerate()
-      .map(|(i, s)| (i as f32 / denom, s.color.to_rgba(current_color)))
+      .map(|(i, s)| {
+        (
+          i as f32 / denom,
+          s.color.to_rgba_with_scheme(current_color, is_dark),
+        )
+      })
       .collect();
   }
 
@@ -1174,7 +1203,10 @@ fn normalize_color_stops_unclamped(
     let pos = pos_opt.unwrap_or(prev);
     let monotonic = pos.max(prev);
     prev = monotonic;
-    output.push((monotonic, stops[idx].color.to_rgba(current_color)));
+    output.push((
+      monotonic,
+      stops[idx].color.to_rgba_with_scheme(current_color, is_dark),
+    ));
   }
   output
 }
