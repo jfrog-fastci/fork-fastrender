@@ -89,8 +89,8 @@ use crate::paint::rasterize::{
 };
 use crate::paint::text_decoration::{dash_offset_for_segment, wavy_phase_for_segment};
 use crate::paint::text_rasterize::{
-  concat_transforms, shared_color_cache, shared_color_renderer, shared_glyph_cache,
-  ColorGlyphCache, GlyphCache, TextRasterizer, TextRenderState,
+  concat_transforms, rotation_transform, shared_color_cache, shared_color_renderer,
+  shared_glyph_cache, ColorGlyphCache, GlyphCache, TextRasterizer, TextRenderState,
 };
 use crate::paint::text_shadow::PathBounds;
 use crate::paint::transform3d::backface_is_hidden;
@@ -10279,15 +10279,14 @@ impl DisplayListRenderer {
         };
         temp.data_mut().fill(0);
         let filled = self
-          .fill_projected_preserve_3d_clip_mask(
-            temp,
-            clip,
-            transform,
-            parent_transform,
-            warp_enabled,
-          )
+          .fill_projected_preserve_3d_clip_mask(temp, clip, transform, parent_transform, warp_enabled)
           .map_err(Error::Render)?;
         if !filled {
+          if self.preserve_3d_debug {
+            eprintln!(
+              "preserve-3d clip override: falling back (unsupported clip shape or invalid projection)"
+            );
+          }
           return Ok(None);
         }
         multiply_masks_in_place(combined, temp).map_err(Error::Render)?;
@@ -10298,6 +10297,9 @@ impl DisplayListRenderer {
     })?;
 
     if let Some(result) = result {
+      if self.preserve_3d_debug {
+        eprintln!("preserve-3d clip override: using projected clip mask");
+      }
       return Ok(result);
     }
 
@@ -10361,7 +10363,13 @@ impl DisplayListRenderer {
           Ok(true)
         }
       }
-      ClipShape::Text { .. } => Ok(false),
+      ClipShape::Text { runs } => self.fill_projected_preserve_3d_text_clip_mask(
+        dest,
+        runs,
+        transform,
+        parent_transform,
+        warp_enabled,
+      ),
     }
   }
 
@@ -10610,6 +10618,237 @@ impl DisplayListRenderer {
     }
     builder.close();
     builder.finish()
+  }
+
+  fn fill_projected_preserve_3d_text_clip_mask(
+    &self,
+    dest: &mut Mask,
+    runs: &Arc<[TextItem]>,
+    transform: &Transform3D,
+    parent_transform: Transform,
+    warp_enabled: bool,
+  ) -> RenderResult<bool> {
+    if runs.is_empty() {
+      // An empty text clip means nothing is drawable. `dest` is expected to be cleared by the
+      // caller, so we're done.
+      return Ok(true);
+    }
+    if !(self.scale.is_finite() && self.scale > 0.0) {
+      return Ok(false);
+    }
+
+    // Conservative bounds for the text clip in CSS px (mirrors `Canvas::set_clip_text`).
+    let mut clip_bounds: Option<Rect> = None;
+    for run in runs.iter() {
+      let mut run_bounds = crate::paint::display_list::text_bounds(run);
+      let outline_size = run.font_size * run.scale;
+      let overhang = outline_size.abs() * 0.5;
+      let synthetic = run.synthetic_bold.abs() * 2.0;
+      let pad = (overhang + synthetic).max(0.0);
+      if pad > 0.0 {
+        run_bounds = run_bounds.inflate(pad);
+      }
+      if run.scale != 1.0 {
+        // Scale only affects glyph outlines, not positions. Inflate to keep bounds conservative.
+        let extra = (run.font_size * (run.scale - 1.0).abs()).max(0.0);
+        if extra > 0.0 {
+          run_bounds = run_bounds.inflate(extra);
+        }
+      }
+      let mapped = if let Some(rot) = rotation_transform(run.rotation, run.origin.x, run.origin.y) {
+        transform_rect(run_bounds, &rot)
+      } else {
+        run_bounds
+      };
+      clip_bounds = Some(match clip_bounds {
+        Some(prev) => prev.union(mapped),
+        None => mapped,
+      });
+    }
+
+    let clip_bounds = clip_bounds.unwrap_or(Rect::ZERO);
+    if clip_bounds.width() <= 0.0 || clip_bounds.height() <= 0.0 {
+      return Ok(true);
+    }
+    if !clip_bounds.x().is_finite()
+      || !clip_bounds.y().is_finite()
+      || !clip_bounds.width().is_finite()
+      || !clip_bounds.height().is_finite()
+    {
+      return Ok(false);
+    }
+
+    // Rasterize the clip text into an offscreen alpha surface in the clip's plane coordinates.
+    const TEXT_MASK_PADDING_PX: i64 = 32;
+    let bounds_px = Rect::from_xywh(
+      clip_bounds.x() * self.scale,
+      clip_bounds.y() * self.scale,
+      clip_bounds.width() * self.scale,
+      clip_bounds.height() * self.scale,
+    );
+    if !bounds_px.x().is_finite()
+      || !bounds_px.y().is_finite()
+      || !bounds_px.width().is_finite()
+      || !bounds_px.height().is_finite()
+    {
+      return Ok(false);
+    }
+
+    let x0 = bounds_px.min_x().floor() as i64 - TEXT_MASK_PADDING_PX;
+    let y0 = bounds_px.min_y().floor() as i64 - TEXT_MASK_PADDING_PX;
+    let x1 = bounds_px.max_x().ceil() as i64 + TEXT_MASK_PADDING_PX;
+    let y1 = bounds_px.max_y().ceil() as i64 + TEXT_MASK_PADDING_PX;
+    let width_i64 = x1 - x0;
+    let height_i64 = y1 - y0;
+    if width_i64 <= 0 || height_i64 <= 0 {
+      return Ok(true);
+    }
+    let Ok(width) = u32::try_from(width_i64) else {
+      return Ok(false);
+    };
+    let Ok(height) = u32::try_from(height_i64) else {
+      return Ok(false);
+    };
+    if width == 0 || height == 0 {
+      return Ok(true);
+    }
+
+    let Some(mut src_pixmap) = new_pixmap(width, height) else {
+      return Ok(false);
+    };
+    src_pixmap.data_mut().fill(0);
+
+    let scaled_runs: Vec<TextItem> = runs.iter().map(|run| self.scale_text_item(run)).collect();
+
+    let mut rasterizer = TextRasterizer::with_caches(
+      self.glyph_cache.clone(),
+      self.color_renderer.clone(),
+      self.color_cache.clone(),
+    );
+    let state = TextRenderState {
+      transform: Transform::from_translate(-(x0 as f32), -(y0 as f32)),
+      clip_mask: None,
+      opacity: 1.0,
+      blend_mode: SkiaBlendMode::SourceOver,
+    };
+
+    for run in &scaled_runs {
+      if run.glyphs.is_empty() {
+        continue;
+      }
+      let Some(font) = run.font.as_deref() else {
+        continue;
+      };
+
+      let hb_variations: Vec<Variation> = run
+        .variations
+        .iter()
+        .map(|v| Variation {
+          tag: v.tag,
+          value: v.value(),
+        })
+        .collect();
+      let positions: Vec<GlyphPosition> = run
+        .glyphs
+        .iter()
+        .map(|g| GlyphPosition {
+          glyph_id: g.glyph_id,
+          cluster: g.cluster,
+          x_offset: g.x_offset,
+          y_offset: g.y_offset,
+          x_advance: g.x_advance,
+          y_advance: g.y_advance,
+        })
+        .collect();
+      let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
+      rasterizer
+        .render_glyph_run(
+        &positions,
+        font,
+        run.font_size * run.scale,
+        run.synthetic_bold,
+        run.synthetic_oblique,
+        run.palette_index,
+        run.palette_overrides.as_slice(),
+        run.palette_override_hash,
+        &hb_variations,
+        rotation,
+        run.origin.x,
+        run.origin.y,
+        Rgba::WHITE,
+        state,
+        &mut src_pixmap,
+      )
+      .map_err(|err| match err {
+        Error::Render(render_err) => render_err,
+        other => RenderError::RasterizationFailed {
+          reason: other.to_string(),
+        },
+      })?;
+    }
+
+    // Projectively warp the alpha surface into canvas space.
+    let src_w = width as f32;
+    let src_h = height as f32;
+    let css_w = src_w / self.scale;
+    let css_h = src_h / self.scale;
+    if !css_w.is_finite() || !css_h.is_finite() {
+      return Ok(false);
+    }
+
+    let origin_css_x = x0 as f32 / self.scale;
+    let origin_css_y = y0 as f32 / self.scale;
+    let corners = [
+      (origin_css_x, origin_css_y),
+      (origin_css_x + css_w, origin_css_y),
+      (origin_css_x + css_w, origin_css_y + css_h),
+      (origin_css_x, origin_css_y + css_h),
+    ];
+
+    let mut dst_quad_points = [Point::ZERO; 4];
+    let mut dst_quad = [(0.0f32, 0.0f32); 4];
+    for (i, (x, y)) in corners.iter().enumerate() {
+      let Some((dx, dy)) =
+        self.project_preserve_3d_clip_point(transform, *x, *y, parent_transform, warp_enabled)
+      else {
+        return Ok(false);
+      };
+      dst_quad[i] = (dx, dy);
+      dst_quad_points[i] = Point::new(dx, dy);
+    }
+
+    let projected_bounds = crate::paint::homography::quad_bounds(&dst_quad_points);
+    let dest_bounds =
+      Rect::from_xywh(0.0, 0.0, dest.width() as f32, dest.height() as f32);
+    if projected_bounds.intersection(dest_bounds).is_none() {
+      return Ok(true);
+    }
+
+    let src_quad = [
+      Point::new(0.0, 0.0),
+      Point::new(src_w, 0.0),
+      Point::new(src_w, src_h),
+      Point::new(0.0, src_h),
+    ];
+    let Some(homography) = Homography::from_quad_to_quad(src_quad, dst_quad_points) else {
+      return Ok(false);
+    };
+
+    let target_size = (dest.width(), dest.height());
+    let Some(warped) = crate::paint::projective_warp::warp_pixmap(
+      &src_pixmap,
+      &homography,
+      &dst_quad,
+      target_size,
+      None,
+    )?
+    else {
+      return Ok(false);
+    };
+
+    copy_pixmap_alpha_into_mask(dest, &warped.pixmap, warped.offset)?;
+
+    Ok(true)
   }
 
   fn project_preserve_3d_clip_point(
