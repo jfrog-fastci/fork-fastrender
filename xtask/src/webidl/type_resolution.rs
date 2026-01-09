@@ -185,7 +185,7 @@ fn resolve_named_type_kinds_in_place(ty: &mut IdlType, world: &ResolvedWebIdlWor
   }
 }
 
-fn kind_for_name(world: &ResolvedWebIdlWorld, name: &str) -> NamedTypeKind {
+pub(crate) fn kind_for_name(world: &ResolvedWebIdlWorld, name: &str) -> NamedTypeKind {
   if let Some(iface) = world.interfaces.get(name) {
     if iface.callback {
       return NamedTypeKind::CallbackInterface;
@@ -207,7 +207,7 @@ fn kind_for_name(world: &ResolvedWebIdlWorld, name: &str) -> NamedTypeKind {
   NamedTypeKind::Unresolved
 }
 
-fn merge_extra_annotations(ty: IdlType, extra: &[ExtendedAttribute]) -> IdlType {
+pub(crate) fn merge_extra_annotations(ty: IdlType, extra: &[ExtendedAttribute]) -> IdlType {
   if extra.is_empty() {
     return ty;
   }

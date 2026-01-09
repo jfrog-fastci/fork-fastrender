@@ -1,6 +1,6 @@
 use crate::webidl::ExtendedAttribute;
 use anyhow::{bail, Context, Result};
-use webidl_ir::{DictionaryMemberSchema, IdlType, TypeAnnotation};
+use webidl_ir::DictionaryMemberSchema;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedDictionaryMember {
@@ -25,11 +25,7 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
     .map_err(|e| anyhow::Error::new(e))
     .context("parse dictionary member type")?;
 
-  let annotations = ext_attrs
-    .iter()
-    .filter_map(type_annotation_from_ext_attr)
-    .collect::<Vec<_>>();
-  ty = apply_type_annotations(ty, annotations);
+  ty = super::type_resolution::merge_extra_annotations(ty, &ext_attrs);
 
   let (name, rest_after_name) = super::parse_identifier_prefix(rest_after_type)
     .ok_or_else(|| anyhow::anyhow!("expected dictionary member name after type"))?;
@@ -62,39 +58,4 @@ pub fn parse_dictionary_member(input: &str) -> Result<ParsedDictionaryMember> {
       default,
     },
   })
-}
-
-fn type_annotation_from_ext_attr(attr: &ExtendedAttribute) -> Option<TypeAnnotation> {
-  match attr.name.as_str() {
-    "Clamp" => Some(TypeAnnotation::Clamp),
-    "EnforceRange" => Some(TypeAnnotation::EnforceRange),
-    "LegacyNullToEmptyString" => Some(TypeAnnotation::LegacyNullToEmptyString),
-    "LegacyTreatNonObjectAsNull" => Some(TypeAnnotation::LegacyTreatNonObjectAsNull),
-    "AllowShared" => Some(TypeAnnotation::AllowShared),
-    "AllowResizable" => Some(TypeAnnotation::AllowResizable),
-    _ => None,
-  }
-}
-
-fn apply_type_annotations(ty: IdlType, mut annotations: Vec<TypeAnnotation>) -> IdlType {
-  if annotations.is_empty() {
-    return ty;
-  }
-
-  match ty {
-    IdlType::Annotated {
-      annotations: existing,
-      inner,
-    } => {
-      annotations.extend(existing);
-      IdlType::Annotated {
-        annotations,
-        inner,
-      }
-    }
-    other => IdlType::Annotated {
-      annotations,
-      inner: Box::new(other),
-    },
-  }
 }

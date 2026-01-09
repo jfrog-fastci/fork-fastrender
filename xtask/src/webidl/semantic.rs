@@ -1,10 +1,15 @@
-use super::ast::{Argument as AstArgument, BuiltinType as AstBuiltinType, IdlLiteral, IdlType as AstIdlType, InterfaceMember as AstInterfaceMember, SpecialOperation};
+use super::ast::{
+  Argument as AstArgument, BuiltinType as AstBuiltinType, IdlLiteral, IdlType as AstIdlType,
+  InterfaceMember as AstInterfaceMember, SpecialOperation,
+};
 use super::parse_dictionary::parse_dictionary_member;
 use super::parse_interface_member;
 use super::resolve::{Exposure, ResolvedWebIdlWorld};
-use super::{ExtendedAttribute};
+use super::{type_resolution, ExtendedAttribute};
 use std::collections::{BTreeMap, BTreeSet};
-use webidl_ir::{DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeAnnotation, TypeContext};
+use webidl_ir::{
+  DictionaryMemberSchema, DictionarySchema, IdlType, NamedType, NamedTypeKind, TypeContext,
+};
 
 #[derive(Debug, Default, Clone)]
 pub struct SemanticWorld {
@@ -569,12 +574,7 @@ fn convert_argument(
     diagnostics,
     &format!("{context} argument {}", arg.name),
   );
-  let annotations = arg
-    .ext_attrs
-    .iter()
-    .filter_map(type_annotation_from_ext_attr)
-    .collect::<Vec<_>>();
-  ty = apply_type_annotations(ty, annotations);
+  ty = type_resolution::merge_extra_annotations(ty, &arg.ext_attrs);
   normalize_type(&mut ty);
 
   SemanticArgument {
@@ -680,23 +680,7 @@ fn classify_named_type(
   diagnostics: &mut Vec<SemanticDiagnostic>,
   context: &str,
 ) -> NamedTypeKind {
-  let kind = if let Some(iface) = resolved.interfaces.get(name) {
-    if iface.callback {
-      NamedTypeKind::CallbackInterface
-    } else {
-      NamedTypeKind::Interface
-    }
-  } else if resolved.dictionaries.contains_key(name) {
-    NamedTypeKind::Dictionary
-  } else if resolved.enums.contains_key(name) {
-    NamedTypeKind::Enum
-  } else if resolved.typedefs.contains_key(name) {
-    NamedTypeKind::Typedef
-  } else if resolved.callbacks.contains_key(name) {
-    NamedTypeKind::CallbackFunction
-  } else {
-    NamedTypeKind::Unresolved
-  };
+  let kind = type_resolution::kind_for_name(resolved, name);
 
   if kind == NamedTypeKind::Unresolved && unknown_named_types.insert(name.to_string()) {
     diagnostics.push(SemanticDiagnostic::UnknownNamedType {
@@ -747,48 +731,14 @@ fn resolve_named_types(
   }
 }
 
-fn type_annotation_from_ext_attr(attr: &ExtendedAttribute) -> Option<TypeAnnotation> {
-  match attr.name.as_str() {
-    "Clamp" => Some(TypeAnnotation::Clamp),
-    "EnforceRange" => Some(TypeAnnotation::EnforceRange),
-    "LegacyNullToEmptyString" => Some(TypeAnnotation::LegacyNullToEmptyString),
-    "LegacyTreatNonObjectAsNull" => Some(TypeAnnotation::LegacyTreatNonObjectAsNull),
-    "AllowShared" => Some(TypeAnnotation::AllowShared),
-    "AllowResizable" => Some(TypeAnnotation::AllowResizable),
-    _ => None,
-  }
-}
-
-fn apply_type_annotations(ty: IdlType, mut annotations: Vec<TypeAnnotation>) -> IdlType {
-  if annotations.is_empty() {
-    return ty;
-  }
-
-  match ty {
-    IdlType::Annotated {
-      annotations: existing,
-      inner,
-    } => {
-      annotations.extend(existing);
-      IdlType::Annotated {
-        annotations,
-        inner,
-      }
-    }
-    other => IdlType::Annotated {
-      annotations,
-      inner: Box::new(other),
-    },
-  }
-}
-
 fn normalize_type(ty: &mut IdlType) {
   // We only normalize named-type kinds in-place today, but having a dedicated hook keeps the
   // semantic layer deterministic if we later add canonicalization passes.
   //
   // Current invariants:
   // - No reordering of union members (preserve source order for deterministic codegen diffs).
-  // - Nested `Annotated` wrappers are flattened by merge logic in `apply_type_annotations`.
+  // - Nested `Annotated` wrappers are flattened by merge logic in
+  //   `webidl::type_resolution::merge_extra_annotations`.
   let _ = ty;
 }
 
