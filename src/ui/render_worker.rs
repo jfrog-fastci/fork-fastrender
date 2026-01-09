@@ -585,8 +585,29 @@ impl BrowserRuntime {
         }
       }
       UiToWorker::SetActiveTab { tab_id } => {
-        if self.tabs.contains_key(&tab_id) {
-          self.active_tab = Some(tab_id);
+        if !self.tabs.contains_key(&tab_id) {
+          return;
+        }
+
+        let prev_active = self.active_tab;
+        self.active_tab = Some(tab_id);
+        if prev_active == Some(tab_id) {
+          return;
+        }
+
+        let Some(tab) = self.tabs.get_mut(&tab_id) else {
+          return;
+        };
+
+        let dom_changed = if let Some(doc) = tab.document.as_mut() {
+          doc.mutate_dom(|dom| tab.interaction.clear_pointer_state(dom))
+        } else {
+          tab.interaction.clear_pointer_state_without_dom();
+          false
+        };
+        if dom_changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
         }
       }
       UiToWorker::Navigate { tab_id, url, reason } => {

@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{
-  NavigationReason, PointerButton, RenderedFrame, TabId, WorkerToUi,
+  NavigationReason, PointerButton, RepaintReason, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use fastrender::ui::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -259,6 +259,66 @@ fn scroll_with_pointer_updates_hover_target() {
   let frame = next_frame_ready(&worker.ui_rx, tab_id);
   // Box #b should now be under the cursor and hovered.
   expect_rgb_at_css(&frame, 10, 10, (255, 255, 0));
+
+  worker.join().unwrap();
+}
+
+#[test]
+fn activating_tab_clears_hover_state() {
+  let _lock = super::stage_listener_test_lock();
+  let (_site, url) = fixture();
+
+  let worker = spawn_ui_worker("fastr-ui-worker-hover-active-tab").expect("spawn ui worker");
+
+  let tab_a = TabId(1);
+  let tab_b = TabId(2);
+
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_a, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_b, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_a, (256, 256), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_b, (256, 256), 1.0))
+    .unwrap();
+
+  worker
+    .ui_tx
+    .send(support::navigate_msg(tab_a, url, NavigationReason::TypedUrl))
+    .unwrap();
+  let frame = next_frame_ready(&worker.ui_rx, tab_a);
+  expect_rgb_at_css(&frame, 10, 10, (255, 0, 0));
+
+  worker
+    .ui_tx
+    .send(support::pointer_move(tab_a, (10.0, 10.0), PointerButton::None))
+    .unwrap();
+  let frame = next_frame_ready(&worker.ui_rx, tab_a);
+  expect_rgb_at_css(&frame, 10, 10, (0, 255, 0));
+
+  worker
+    .ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id: tab_b })
+    .unwrap();
+  worker
+    .ui_tx
+    .send(UiToWorker::SetActiveTab { tab_id: tab_a })
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::request_repaint(tab_a, RepaintReason::Explicit))
+    .unwrap();
+
+  let frame = next_frame_ready(&worker.ui_rx, tab_a);
+  expect_rgb_at_css(&frame, 10, 10, (255, 0, 0));
 
   worker.join().unwrap();
 }

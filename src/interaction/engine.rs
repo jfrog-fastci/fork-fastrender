@@ -1470,6 +1470,26 @@ impl InteractionEngine {
     (changed, action)
   }
 
+  pub fn clear_pointer_state(&mut self, dom: &mut DomNode) -> bool {
+    let mut index = DomIndexMut::new(dom);
+    let hover_changed =
+      diff_flag_chain(&mut index, "data-fastr-hover", &self.hover_chain, &[]);
+    let active_changed =
+      diff_flag_chain(&mut index, "data-fastr-active", &self.active_chain, &[]);
+    self.hover_chain.clear();
+    self.active_chain.clear();
+    self.pointer_down_target = None;
+    self.range_drag = None;
+    hover_changed | active_changed
+  }
+
+  pub fn clear_pointer_state_without_dom(&mut self) {
+    self.hover_chain.clear();
+    self.active_chain.clear();
+    self.pointer_down_target = None;
+    self.range_drag = None;
+  }
+
   /// Update hover state (data-fastr-hover on target + ancestors).
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
   /// translating it by `scroll.viewport`.
