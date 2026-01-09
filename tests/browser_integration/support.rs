@@ -8,6 +8,7 @@
 //! - concise debug formatting for `WorkerToUi` messages
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 // Default per-wait timeout used by helpers/tests that don't define their own.
@@ -18,6 +19,20 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Keep this small enough that long waits are still responsive, but not so small we busy-loop.
 const RECV_SLICE: Duration = Duration::from_millis(25);
+
+/// Pre-initialize bundled font metadata for browser UI integration tests.
+///
+/// The first bundled-font render can be expensive (parsing/loading many fonts). When this work
+/// happens inside a worker thread, tests may time out waiting for `NavigationCommitted` /
+/// `FrameReady` messages on slower CI hosts. Pre-warming it here keeps the heavy one-time cost out
+/// of per-test UI worker deadlines.
+#[cfg(feature = "browser_ui")]
+pub(crate) fn ensure_bundled_fonts_loaded() {
+  static INIT: OnceLock<()> = OnceLock::new();
+  INIT.get_or_init(|| {
+    let _ = fastrender::text::font_db::FontDatabase::shared_bundled_db();
+  });
+}
 
 /// Create a deterministic `FastRender` instance for UI integration tests.
 ///
@@ -297,6 +312,7 @@ pub fn create_tab_msg_with_cancel(
   initial_url: Option<String>,
   cancel: fastrender::ui::cancel::CancelGens,
 ) -> UiToWorker {
+  ensure_bundled_fonts_loaded();
   UiToWorker::CreateTab {
     tab_id,
     initial_url,

@@ -12,7 +12,6 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use crate::{Pixmap, RenderOptions, Result};
-use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -205,11 +204,7 @@ fn same_document_fragment_navigation(
     return None;
   }
 
-  let fragment = target.fragment().map(|raw| {
-    percent_decode_str(raw)
-      .decode_utf8_lossy()
-      .into_owned()
-  });
+  let fragment = target.fragment().map(str::to_string);
   Some(SameDocumentFragmentNavigation {
     url_changed: current.fragment() != target.fragment(),
     target_url: target,
@@ -987,13 +982,12 @@ fn navigate_tab(
   doc.set_scroll_state(tab.scroll_state.clone());
   if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
     if let Some(fragment) = url_fragment(&final_url) {
-      let decoded_fragment = percent_decode_str(fragment).decode_utf8_lossy();
       let offset = doc.prepared().and_then(|prepared| {
         crate::interaction::scroll_offset_for_fragment_target(
           doc.dom(),
           prepared.box_tree(),
           prepared.fragment_tree(),
-          decoded_fragment.as_ref(),
+          fragment,
           prepared.layout_viewport(),
         )
       });

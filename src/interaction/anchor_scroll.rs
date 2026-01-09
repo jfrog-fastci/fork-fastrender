@@ -3,6 +3,7 @@ use crate::geometry::{Point, Size};
 use crate::scroll::build_scroll_chain;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
+use percent_encoding::percent_decode_str;
 use rustc_hash::FxHashSet;
 
 fn node_is_inert_like(node: &DomNode) -> bool {
@@ -85,8 +86,9 @@ pub fn scroll_offset_for_fragment_target(
   fragment: &str,
   viewport: Size,
 ) -> Option<Point> {
+  let decoded_fragment = percent_decode_str(fragment.trim_start_matches('#')).decode_utf8_lossy();
   let id_map = enumerate_dom_ids(dom);
-  let target_dom_id = find_target_dom_id(dom, fragment, &id_map)?;
+  let target_dom_id = find_target_dom_id(dom, decoded_fragment.as_ref(), &id_map)?;
 
   // BoxTree: find all boxes produced by the target styled node.
   let mut target_box_ids: FxHashSet<usize> = FxHashSet::default();

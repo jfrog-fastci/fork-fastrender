@@ -10,7 +10,6 @@ use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::{Error, PreparedDocument, PreparedPaintOptions, RenderOptions, Result};
-use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -186,7 +185,7 @@ impl BrowserWorker {
         parsed
           .fragment()
           .filter(|frag| !frag.is_empty())
-          .map(|frag| percent_decode_str(frag).decode_utf8_lossy().into_owned())
+          .map(str::to_string)
       });
  
     let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {

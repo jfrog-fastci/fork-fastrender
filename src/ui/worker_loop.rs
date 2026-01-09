@@ -12,7 +12,6 @@ use crate::ui::about_pages;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -202,11 +201,11 @@ fn navigate_fragment_in_place(
   });
 
   let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
-  let fragment = percent_decode_str(url.fragment().unwrap_or("")).decode_utf8_lossy();
+  let fragment = url.fragment().unwrap_or("");
 
   let target_offset = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
     let offset =
-      scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment.as_ref(), viewport);
+      scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
     (false, offset)
   }) {
     Ok(offset) => offset.unwrap_or(Point::ZERO),
@@ -256,7 +255,7 @@ fn non_empty_url_fragment(url: &str) -> Option<String> {
       parsed
         .fragment()
         .filter(|frag| !frag.is_empty())
-        .map(|frag| percent_decode_str(frag).decode_utf8_lossy().into_owned())
+        .map(str::to_string)
     })
 }
 

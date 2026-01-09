@@ -13595,6 +13595,18 @@ mod tests {
       assert!(!matches(&target, &[], &PseudoClass::Target));
     });
 
+    let unicode_target = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "café".to_string())],
+      },
+      children: vec![],
+    };
+    with_target_fragment(Some("#caf%C3%A9"), || {
+      assert!(matches(&unicode_target, &[], &PseudoClass::Target));
+    });
+
     let anchor = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "a".to_string(),

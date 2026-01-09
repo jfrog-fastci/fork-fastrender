@@ -43,6 +43,7 @@ mod ui_worker_anchor_scroll;
 mod ui_scrolling;
 mod ui_history_scroll_restore;
 mod ui_worker_stage_listener_scoping;
+mod ui_worker_anchor_scroll_percent_encoded;
 mod ui_worker_shutdown;
 mod ui_worker_tab_resource_isolation;
 mod ui_worker_title;
@@ -60,6 +61,9 @@ mod ui_worker_protocol_smoke;
 // runs deterministic under `cargo test`'s default parallelism.
 #[cfg(feature = "browser_ui")]
 pub(crate) fn stage_listener_test_lock() -> std::sync::MutexGuard<'static, ()> {
+  // Pre-warm bundled font metadata so the first navigation in a freshly spawned UI worker does not
+  // block on expensive font parsing while the test is waiting on UI messages.
+  support::ensure_bundled_fonts_loaded();
   static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
   LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

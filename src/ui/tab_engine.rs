@@ -8,7 +8,6 @@ use crate::ui::about_pages;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::ui::TabHistory;
 use crate::{PreparedPaintOptions, RenderOptions, Result};
-use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -370,7 +369,7 @@ fn navigate(
       parsed
         .fragment()
         .filter(|frag| !frag.is_empty())
-        .map(|frag| percent_decode_str(frag).decode_utf8_lossy().into_owned())
+        .map(str::to_string)
     });
 
   let _ = ui_tx.send(WorkerToUi::NavigationStarted {
