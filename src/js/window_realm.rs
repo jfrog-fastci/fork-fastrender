@@ -668,6 +668,7 @@ fn init_window_globals(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
 
   #[derive(Debug, Clone, PartialEq)]
   enum CapturedConsoleArg {
@@ -695,6 +696,11 @@ mod tests {
       .object_get_own_data_property_value(obj, &key)
       .unwrap()
       .unwrap()
+  }
+
+  fn console_sink_test_lock() -> &'static StdMutex<()> {
+    static LOCK: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
+    LOCK.get_or_init(|| StdMutex::new(()))
   }
 
   #[test]
@@ -762,6 +768,9 @@ mod tests {
 
   #[test]
   fn window_realm_init_error_does_not_leak_console_sink() {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
     let initial_len = console_sinks().lock().len();
     let sink: ConsoleSink = Arc::new(|_heap, _args| {});
 
@@ -841,6 +850,9 @@ mod tests {
 
   #[test]
   fn console_sink_receives_log_arguments() -> Result<(), VmError> {
+    let _lock = console_sink_test_lock()
+      .lock()
+      .expect("console sink test mutex should not be poisoned");
     let url = "https://example.com/path";
     let captured: Arc<Mutex<Vec<Vec<CapturedConsoleArg>>>> = Arc::new(Mutex::new(Vec::new()));
     let captured_for_sink = captured.clone();

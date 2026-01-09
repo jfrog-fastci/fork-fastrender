@@ -22,6 +22,8 @@ fn node_tag_name(dom: &Dom2Document, node_id: NodeId) -> String {
 fn get_text_content(dom: &Dom2Document, root: NodeId) -> String {
   match &dom.node(root).kind {
     NodeKind::Text { content } => return content.clone(),
+    NodeKind::Comment { content } => return content.clone(),
+    NodeKind::ProcessingInstruction { data, .. } => return data.clone(),
     _ => {}
   }
 
@@ -39,8 +41,27 @@ fn set_text_content(dom: &mut Dom2Document, node: NodeId, value: &str) -> Result
     return Err(DomError::NotFoundError);
   }
 
-  match &dom.node(node).kind {
-    NodeKind::Text { .. } => return dom.set_text_data(node, value),
+  match &mut dom.node_mut(node).kind {
+    NodeKind::Text { content } | NodeKind::Comment { content } => {
+      if content == value {
+        return Ok(false);
+      }
+      content.clear();
+      content.push_str(value);
+      return Ok(true);
+    }
+    NodeKind::ProcessingInstruction { data, .. } => {
+      if data == value {
+        return Ok(false);
+      }
+      data.clear();
+      data.push_str(value);
+      return Ok(true);
+    }
+    NodeKind::Doctype { .. } => {
+      // `DocumentType.textContent` is `null` in the DOM spec; setting it is a no-op.
+      return Ok(false);
+    }
     _ => {}
   }
 
@@ -167,6 +188,22 @@ where
         let mut dom = dom.borrow_mut();
         let id = dom.mutate_dom(|dom| {
           let id = dom.create_text(&data);
+          // Detached nodes do not affect rendered output.
+          (id, false)
+        });
+        Ok::<u32, rquickjs::Error>(id.index() as u32)
+      }
+    })?,
+  )?;
+
+  globals.set(
+    "__fastrender_dom_create_comment",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |data: String| {
+        let mut dom = dom.borrow_mut();
+        let id = dom.mutate_dom(|dom| {
+          let id = dom.create_comment(&data);
           // Detached nodes do not affect rendered output.
           (id, false)
         });
@@ -738,9 +775,11 @@ const DOM_BINDINGS_SHIM: &str = r##"
     g.__fastrender_node_by_id = nodeById;
   }
 
-  function ensureNodeBasics(obj, id) {
+  function ensureNodeBasics(obj, id, kind) {
     if (!obj) return obj;
     if (obj.__node_id == null) define(obj, "__node_id", id);
+    if (kind == null) kind = "element";
+    if (obj.__node_kind == null) define(obj, "__node_kind", String(kind));
     if (!("parentNode" in obj)) define(obj, "parentNode", null);
     ensureArrayProp(obj, "childNodes");
     if (!("ownerDocument" in obj)) define(obj, "ownerDocument", doc);
@@ -929,6 +968,43 @@ const DOM_BINDINGS_SHIM: &str = r##"
     });
   } catch (_e) {
     // Ignore; scripts can still call the host functions directly if needed.
+  }
+
+  try {
+    Object.defineProperty(Node.prototype, "nodeType", {
+      get: function () {
+        switch (String(this.__node_kind)) {
+          case "document":
+            return 9;
+          case "text":
+            return 3;
+          case "comment":
+            return 8;
+          default:
+            return 1;
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    Object.defineProperty(Node.prototype, "nodeName", {
+      get: function () {
+        switch (String(this.__node_kind)) {
+          case "document":
+            return "#document";
+          case "text":
+            return "#text";
+          case "comment":
+            return "#comment";
+          default:
+            return String(g.__fastrender_dom_get_tag_name(this.__node_id));
+        }
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
   }
 
   function Element() {}
@@ -1275,6 +1351,24 @@ const DOM_BINDINGS_SHIM: &str = r##"
     // Ignore.
   }
 
+  function Comment() {}
+  Comment.prototype = Object.create(Node.prototype);
+  Comment.prototype.constructor = Comment;
+  try {
+    Object.defineProperty(Comment.prototype, "data", {
+      get: function () {
+        return this.textContent;
+      },
+      set: function (value) {
+        this.textContent = value == null ? "" : String(value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  } catch (_e) {
+    // Ignore.
+  }
+
   function Document() {}
   Document.prototype = Object.create(Node.prototype);
   Document.prototype.constructor = Document;
@@ -1286,6 +1380,10 @@ const DOM_BINDINGS_SHIM: &str = r##"
   Document.prototype.createTextNode = function (data) {
     var id = g.__fastrender_dom_create_text_node(String(data));
     return g.__fastrender_wrap_node_id(id, "text");
+  };
+  Document.prototype.createComment = function (data) {
+    var id = g.__fastrender_dom_create_comment(String(data));
+    return g.__fastrender_wrap_node_id(id, "comment");
   };
   Document.prototype.querySelector = function (selectors) {
     // Pass an explicit `null` scope so the host binding can treat it as "no scope" even if the
@@ -1313,7 +1411,7 @@ const DOM_BINDINGS_SHIM: &str = r##"
   g.__fastrender_wrap_node_id = function (id, kind) {
     id = Number(id) >>> 0;
     if (id === 0) {
-      ensureNodeBasics(doc, 0);
+      ensureNodeBasics(doc, 0, "document");
       try {
         Object.setPrototypeOf(doc, Document.prototype);
       } catch (_e) {
@@ -1326,12 +1424,19 @@ const DOM_BINDINGS_SHIM: &str = r##"
     if (existing) return existing;
 
     var obj = {};
-    ensureNodeBasics(obj, id);
+    kind = kind == null ? "element" : String(kind);
+    ensureNodeBasics(obj, id, kind);
 
     // Default to an element wrapper; queries only expose elements today.
     if (kind === "text") {
       try {
         Object.setPrototypeOf(obj, Text.prototype);
+      } catch (_e) {
+        // Ignore.
+      }
+    } else if (kind === "comment") {
+      try {
+        Object.setPrototypeOf(obj, Comment.prototype);
       } catch (_e) {
         // Ignore.
       }
@@ -2107,6 +2212,60 @@ const DOM_BINDINGS_SHIM: &str = r##"
       "expected script.textContent to create a single text child"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn node_type_name_and_comment_creation_are_spec_shaped() -> Result<()> {
+    let renderer_dom =
+      fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
+    let dom = Rc::new(RefCell::new(TestDomHost {
+      dom: Dom2Document::from_renderer_dom(&renderer_dom),
+    }));
+    let script_state = CurrentScriptStateHandle::default();
+    let (_rt, ctx) = init_ctx(Rc::clone(&dom), script_state);
+
+    let outcome = ctx
+      .with(|ctx| {
+        ctx.eval::<String, _>(
+          r##"(function () {
+            try {
+              if (document.nodeType !== 9) return "bad_document_type:" + String(document.nodeType);
+              if (document.nodeName !== "#document") return "bad_document_name:" + String(document.nodeName);
+
+              var el = document.createElement("div");
+              if (el.nodeType !== 1) return "bad_element_type:" + String(el.nodeType);
+              if (el.nodeName !== "DIV") return "bad_element_name:" + String(el.nodeName);
+              if (el.tagName !== "DIV") return "bad_element_tag:" + String(el.tagName);
+
+              var t = document.createTextNode("x");
+              if (t.nodeType !== 3) return "bad_text_type:" + String(t.nodeType);
+              if (t.nodeName !== "#text") return "bad_text_name:" + String(t.nodeName);
+              if (t.textContent !== "x") return "bad_text_textContent:" + String(t.textContent);
+              if (t.data !== "x") return "bad_text_data:" + String(t.data);
+
+              var c = document.createComment("hello");
+              if (c.nodeType !== 8) return "bad_comment_type:" + String(c.nodeType);
+              if (c.nodeName !== "#comment") return "bad_comment_name:" + String(c.nodeName);
+              if (c.textContent !== "hello") return "bad_comment_textContent:" + String(c.textContent);
+              if (c.data !== "hello") return "bad_comment_data:" + String(c.data);
+              c.textContent = "bye";
+              if (c.textContent !== "bye") return "bad_comment_set:" + String(c.textContent);
+
+              document.body.appendChild(c);
+              document.body.appendChild(t);
+              // Comment nodes must not contribute to element textContent.
+              if (document.body.textContent !== "x") return "bad_body_textContent:" + String(document.body.textContent);
+              return "ok";
+            } catch (e) {
+              return String(e && e.name ? e.name : e);
+            }
+          })()"##,
+        )
+      })
+      .map_err(|e| Error::Other(e.to_string()))?;
+
+    assert_eq!(outcome, "ok");
     Ok(())
   }
 
