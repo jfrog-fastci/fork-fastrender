@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 /// Fail CI if `openssl-sys` (and thus system OpenSSL headers) are pulled into the default
@@ -28,6 +28,7 @@ struct CargoMetadata {
 #[derive(Debug, Deserialize)]
 struct CargoPackage {
   name: String,
+  version: String,
   id: String,
 }
 
@@ -97,39 +98,79 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
 
   // Traverse the resolved graph starting from `fastrender` so we only gate dependencies that
   // affect the core renderer (workspace members may have different constraints).
-  let mut stack = vec![fastrender_pkg.id.as_str()];
+  //
+  // Keep a parent map so we can print a useful dependency chain if `openssl-sys` shows up.
+  let root_id = fastrender_pkg.id.as_str();
+  let mut queue: VecDeque<&str> = VecDeque::new();
   let mut visited: HashSet<&str> = HashSet::new();
-  while let Some(id) = stack.pop() {
-    if !visited.insert(id) {
-      continue;
-    }
+  let mut parent: HashMap<&str, &str> = HashMap::new();
+
+  visited.insert(root_id);
+  queue.push_back(root_id);
+
+  while let Some(id) = queue.pop_front() {
     let Some(node) = nodes_by_id.get(id) else {
       continue;
     };
     for dep in &node.deps {
-      stack.push(dep.pkg.as_str());
+      let dep_id = dep.pkg.as_str();
+      if visited.insert(dep_id) {
+        parent.insert(dep_id, id);
+        queue.push_back(dep_id);
+      }
     }
   }
 
   let mut offenders: Vec<&str> = Vec::new();
-  for id in &visited {
+  for id in visited.iter().copied() {
     let Some(pkg) = packages_by_id.get(id) else {
       continue;
     };
     if pkg.name == "openssl-sys" {
-      offenders.push(pkg.name.as_str());
+      offenders.push(id);
     }
   }
 
   if !offenders.is_empty() {
+    let mut chains = Vec::new();
+    for offender_id in &offenders {
+      let mut chain_ids = Vec::new();
+      let mut cur = *offender_id;
+      chain_ids.push(cur);
+      while let Some(prev) = parent.get(cur).copied() {
+        chain_ids.push(prev);
+        cur = prev;
+      }
+      chain_ids.reverse();
+
+      let mut labels = Vec::new();
+      for id in chain_ids {
+        let label = packages_by_id
+          .get(id)
+          .map(|pkg| format!("{}@{}", pkg.name, pkg.version))
+          .unwrap_or_else(|| id.to_string());
+        labels.push(label);
+      }
+      chains.push(labels.join(" -> "));
+    }
+
     bail!(
       "lint-no-openssl ({label}): forbidden dependency `openssl-sys` found in the fastrender build graph.\n\
        \n\
        This makes builds depend on system OpenSSL development headers.\n\
        Prefer a Rust TLS backend (e.g. reqwest rustls) for hermetic CI/agent builds.\n\
        \n\
+       Dependency path(s):\n\
+       {}\n\
+       \n\
        To debug:\n\
          cargo tree -p fastrender | rg openssl"
+      ,
+      chains
+        .iter()
+        .map(|chain| format!("  - {chain}"))
+        .collect::<Vec<_>>()
+        .join("\n")
     );
   }
 
