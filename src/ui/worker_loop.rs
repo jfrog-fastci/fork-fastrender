@@ -551,7 +551,14 @@ fn spawn_ui_worker_inner(
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || {
       if let Some(delay) = test_render_delay_ms {
+        #[cfg(any(test, feature = "browser_ui"))]
         crate::render_control::set_test_render_delay_ms(Some(delay));
+        #[cfg(not(any(test, feature = "browser_ui")))]
+        {
+          // In non-test builds without the `browser_ui` feature, per-thread render delays can still
+          // be enabled via the `FASTR_TEST_RENDER_DELAY_MS` env var (see `RenderDeadline::check`).
+          let _ = delay;
+        }
       }
       run_worker_loop(to_worker_rx, to_ui_tx, cancel_gens_for_worker);
     })?;
