@@ -230,3 +230,141 @@ fn performance_now_is_deterministic_f64_milliseconds() -> Result<()> {
   assert_eq!(log[2].as_f64(), Some(11.5));
   Ok(())
 }
+
+#[test]
+fn performance_time_origin_reflects_web_time_origin() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock);
+  let mut host = JsVmHost::new(WebTime {
+    time_origin_unix_ms: 1234,
+  })?;
+
+  reset_log(&host)?;
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(event_loop, "__log.push(performance.timeOrigin);")
+  })?;
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  assert_eq!(
+    read_log(&host)?,
+    vec![serde_json::Value::Number(1234.into())]
+  );
+  Ok(())
+}
+
+#[test]
+fn queue_microtask_invokes_callback_with_undefined_this() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock);
+  let mut host = JsVmHost::new(WebTime::default())?;
+
+  reset_log(&host)?;
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(
+      event_loop,
+      r#"
+      queueMicrotask(function () {
+        "use strict";
+        __log.push(this === undefined);
+      });
+    "#,
+    )
+  })?;
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  assert_eq!(read_log(&host)?, vec![serde_json::Value::Bool(true)]);
+  Ok(())
+}
+
+#[test]
+fn clear_timeout_cancels_due_timer_before_it_executes() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock);
+  let mut host = JsVmHost::new(WebTime::default())?;
+
+  reset_log(&host)?;
+  // Enqueue two script tasks. The first schedules a 0ms timer; the second clears it.
+  // When the timer becomes due it will be queued as a Timer task *after* these Script tasks, so the
+  // clear runs after the timer is due but before the timer task executes.
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(
+      event_loop,
+      r#"
+      globalThis.__id = setTimeout(() => __log.push("timer"), 0);
+    "#,
+    )
+  })?;
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(event_loop, "clearTimeout(globalThis.__id);")
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(read_log(&host)?, Vec::<serde_json::Value>::new());
+  Ok(())
+}
+
+#[test]
+fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<JsVmHost>::with_clock(clock.clone());
+  let mut host = JsVmHost::new(WebTime::default())?;
+
+  reset_log(&host)?;
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    host.exec_script(
+      event_loop,
+      r#"
+      let count = 0;
+      function tick() {
+        __log.push(count);
+        count++;
+        if (count < 7) setTimeout(tick, 0);
+      }
+      setTimeout(tick, 0);
+    "#,
+    )
+  })?;
+
+  // The first 6 nested 0ms timeouts should run immediately. The 7th should be clamped to 4ms.
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    read_log(&host)?,
+    vec![
+      serde_json::Value::Number(0.into()),
+      serde_json::Value::Number(1.into()),
+      serde_json::Value::Number(2.into()),
+      serde_json::Value::Number(3.into()),
+      serde_json::Value::Number(4.into()),
+      serde_json::Value::Number(5.into()),
+    ]
+  );
+
+  // Not yet due.
+  clock.advance(Duration::from_millis(3));
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(read_log(&host)?.len(), 6);
+
+  // Now due.
+  clock.advance(Duration::from_millis(1));
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(read_log(&host)?.len(), 7);
+  Ok(())
+}

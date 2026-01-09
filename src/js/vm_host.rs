@@ -272,8 +272,15 @@ impl JsVmHost {
     if (typeof cb === "string") throw new TypeError("{queue_microtask_string}");
     if (typeof cb !== "function") throw new TypeError("{queue_microtask_not_callable}");
     var id = next_microtask++;
+    // Store the callback before queueing so `__fr_fire_microtask` can find it, but ensure we
+    // clean up if queueing fails (e.g. EventLoop microtask queue limit).
     microtasks.set(id, cb);
-    g.__fr_queue_microtask(id);
+    try {{
+      g.__fr_queue_microtask(id);
+    }} catch (e) {{
+      microtasks.delete(id);
+      throw e;
+    }}
   }};
 
   g.__fr_fire_timer = function (id) {{
@@ -287,7 +294,8 @@ impl JsVmHost {
     var cb = microtasks.get(id);
     if (!cb) return;
     microtasks.delete(id);
-    cb.call(g);
+    // HTML `queueMicrotask` invokes callbacks with an `undefined` callback-this value.
+    cb.call(undefined);
   }};
 
   // Time APIs.
@@ -332,6 +340,11 @@ impl JsVmHost {
       writable: true,
       configurable: true,
     }});
+    Object.defineProperty(PatchedPerf, "timeOrigin", {{
+      value: {time_origin},
+      writable: false,
+      configurable: true,
+    }});
     try {{
       g.performance = PatchedPerf;
     }} catch (e) {{
@@ -346,12 +359,13 @@ impl JsVmHost {
   }})();
  }})();"#,
             set_timeout_string = SET_TIMEOUT_STRING_HANDLER_ERROR,
-            set_timeout_not_callable = SET_TIMEOUT_NOT_CALLABLE_ERROR,
-            set_interval_string = SET_INTERVAL_STRING_HANDLER_ERROR,
-            set_interval_not_callable = SET_INTERVAL_NOT_CALLABLE_ERROR,
-            queue_microtask_string = QUEUE_MICROTASK_STRING_HANDLER_ERROR,
-            queue_microtask_not_callable = QUEUE_MICROTASK_NOT_CALLABLE_ERROR
-          );
+             set_timeout_not_callable = SET_TIMEOUT_NOT_CALLABLE_ERROR,
+             set_interval_string = SET_INTERVAL_STRING_HANDLER_ERROR,
+             set_interval_not_callable = SET_INTERVAL_NOT_CALLABLE_ERROR,
+             queue_microtask_string = QUEUE_MICROTASK_STRING_HANDLER_ERROR,
+             queue_microtask_not_callable = QUEUE_MICROTASK_NOT_CALLABLE_ERROR,
+             time_origin = state.web_time.time_origin_unix_ms
+           );
 
           ctx.eval::<(), _>(wrapper)?;
           Ok(())
