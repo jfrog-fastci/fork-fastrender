@@ -99,7 +99,7 @@ impl WindowRealm {
     &mut self.realm
   }
 
-  pub fn global_object(&self) -> vm_js::GcObject {
+  pub fn global_object(&self) -> GcObject {
     self.realm.global_object()
   }
 
@@ -343,7 +343,7 @@ mod tests {
     heap.get_string(s).unwrap().to_utf8_lossy()
   }
 
-  fn get_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str) -> Value {
+  fn get_prop(scope: &mut Scope<'_>, obj: GcObject, name: &str) -> Value {
     let key_s = scope.alloc_string(name).unwrap();
     let key = PropertyKey::from_string(key_s);
     scope

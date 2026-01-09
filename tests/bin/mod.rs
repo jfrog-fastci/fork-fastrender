@@ -22,6 +22,7 @@ mod fetch_and_render_dom_compat_test;
 mod fetch_and_render_animation_time_test;
 mod fetch_and_render_exit_test;
 mod fetch_and_render_help_test;
+mod fetch_and_render_js_test;
 mod fetch_and_render_layout_parallel_stack_size_test;
 mod fetch_and_render_output_paths;
 mod fetch_and_render_soft_timeout_test;

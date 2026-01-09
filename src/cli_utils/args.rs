@@ -531,17 +531,17 @@ pub struct JsExecutionArgs {
   pub max_pending_timers: Option<usize>,
 
   /// Maximum number of tasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
-  #[arg(long = "js-max-tasks-per-spin", value_name = "N")]
+  #[arg(long = "js-max-tasks", alias = "js-max-tasks-per-spin", value_name = "N")]
   pub max_tasks_per_spin: Option<usize>,
 
   /// Maximum number of microtasks executed per `EventLoop::run_until_idle`/`spin_until` "spin".
-  #[arg(long = "js-max-microtasks-per-spin", value_name = "N")]
+  #[arg(long = "js-max-microtasks", alias = "js-max-microtasks-per-spin", value_name = "N")]
   pub max_microtasks_per_spin: Option<usize>,
 
   /// Maximum wall-time per `EventLoop::run_until_idle`/`spin_until` "spin" in milliseconds.
   ///
   /// Use `0` to disable the wall-time spin limit (unbounded).
-  #[arg(long = "js-max-wall-time-per-spin-ms", value_name = "MS")]
+  #[arg(long = "js-max-wall-ms", alias = "js-max-wall-time-per-spin-ms", value_name = "MS")]
   pub max_wall_time_per_spin_ms: Option<u64>,
 
   /// Placeholder VM budget: maximum instruction count before VM interrupt.

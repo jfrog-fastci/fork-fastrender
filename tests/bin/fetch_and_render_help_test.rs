@@ -50,4 +50,30 @@ fn help_mentions_default_output_and_dirs() {
     "help should describe how --soft-timeout-ms interacts with --timeout; got:\n{}",
     help
   );
+
+  assert!(
+    help.contains("--js"),
+    "help should mention --js; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("--js-max-tasks"),
+    "help should mention --js-max-tasks; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("--js-max-microtasks"),
+    "help should mention --js-max-microtasks; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("--js-max-wall-ms"),
+    "help should mention --js-max-wall-ms; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("--js-max-script-bytes"),
+    "help should mention --js-max-script-bytes; got:\n{}",
+    help
+  );
 }
