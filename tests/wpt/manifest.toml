@@ -2133,7 +2133,7 @@ height = 200
 id = "transforms/transform-preserve3d-opacity-flattens-001"
 path = "transforms/transform-preserve3d-opacity-flattens-001.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
