@@ -11,8 +11,9 @@ members = [
   "xtask",
   "crates/webidl-ir",
   "crates/js-wpt-dom-runner",
-  "crates/webidl-js-runtime",
   "crates/js-dom-bindings",
+  "crates/js-dom-bindings-quickjs",
+  "crates/webidl-js-runtime",
 ]
 # `engines/ecma-rs` is a nested workspace (git submodule). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
