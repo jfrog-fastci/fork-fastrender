@@ -1,3 +1,27 @@
+//! Legacy, RcDom-based HTML parser pausing at parser-inserted `<script>` boundaries.
+//!
+//! # WARNING: legacy/testing utility
+//!
+//! This module exists primarily as a small, convenient harness for experiments and unit tests. It
+//! drives `html5ever` using `markup5ever_rcdom::RcDom` and exposes parser suspension points
+//! (`TokenizerResult::Script`) so callers can observe when a parser-inserted `<script>` element has
+//! finished parsing.
+//!
+//! ## Fundamental limitation
+//!
+//! The handler is given an **immutable [`crate::dom::DomNode`] snapshot** created by converting the
+//! current `RcDom` tree. Any mutation performed by script execution is therefore *not reflected* in
+//! the live parser state, so this code cannot implement spec-correct parse-time DOM mutation such
+//! as `document.write()` (or any other synchronous DOM changes that affect tokenization/tree
+//! building).
+//!
+//! ## Use instead
+//!
+//! New work should use the streaming parse+execute pipeline:
+//!
+//! - HTML streaming parser driver / `dom2` TreeSink: `src/html/streaming_parser.rs`
+//! - Parse-time script extraction helpers: [`crate::js::streaming`]
+//!
 use crate::error::{Error, ParseError, Result};
 use crate::js::{determine_script_type, ScriptType};
 
@@ -32,8 +56,16 @@ pub struct ScriptToken {
 
 /// Parse HTML with scripting enabled, pausing at parser-inserted script boundaries.
 ///
-/// This is an incremental HTML parser entrypoint used by the JavaScript integration workstream to
-/// implement the HTML `<script>` processing model.
+/// # WARNING: legacy/testing utility
+///
+/// This API snapshots the in-progress `RcDom` into an immutable [`crate::dom::DomNode`], so it
+/// cannot implement spec-correct parse-time DOM mutation (e.g. `document.write()`).
+#[cfg_attr(
+  not(test),
+  deprecated(
+    note = "Legacy RcDom snapshot-based scripting parser; cannot support parse-time DOM mutation (e.g. document.write). Use html::streaming_parser + js::streaming pipeline (dom2 streaming parser) instead (see src/html/streaming_parser.rs)."
+  )
+)]
 pub fn parse_html_with_scripting(
   html: &str,
   mut handler: impl FnMut(&crate::dom::DomNode, ScriptToken) -> Result<()>,
@@ -49,6 +81,17 @@ pub fn parse_html_with_scripting(
 }
 
 /// A pausable HTML parser that can stop at parser-inserted `<script>` end tags.
+///
+/// # WARNING: legacy/testing utility
+///
+/// Internally this uses `markup5ever_rcdom::RcDom` and only exposes the DOM via snapshot
+/// conversion, which is incompatible with spec-correct parse-time DOM mutation.
+#[cfg_attr(
+  not(test),
+  deprecated(
+    note = "Legacy RcDom snapshot-based scripting parser; cannot support parse-time DOM mutation (e.g. document.write). Use html::streaming_parser + js::streaming pipeline (dom2 streaming parser) instead (see src/html/streaming_parser.rs)."
+  )
+)]
 pub struct ScriptingHtmlParser {
   tokenizer: Tokenizer<TreeBuilder<Handle, RcDom>>,
   input: BufferQueue,

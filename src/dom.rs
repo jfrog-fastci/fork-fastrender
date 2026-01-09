@@ -136,6 +136,7 @@ impl DomParseOptions {
 }
 
 mod scripting_parser;
+#[allow(deprecated)]
 pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
 
 #[derive(Debug, Default, Clone)]
