@@ -79,7 +79,7 @@ Pragmatic default: **winit + wgpu + egui** (via `eframe` or direct integration).
 
 Communication:
 
-- UI → worker: “navigate to URL”, “scroll to (x,y)”, “viewport size changed”, “click at (x,y)”, “key press”.
+- UI → worker: “navigate to URL”, “go back/forward/reload”, “scroll to (x,y)”, “viewport size changed”, “click at (x,y)”, “key press”.
 - Worker → UI: “new frame ready”, “title/URL changed”, “load error”, “navigation state changed”.
 
 Keep this message-based even if everything is initially synchronous; it prevents the UI from blocking on slow pages.
@@ -91,12 +91,21 @@ Keep this message-based even if everything is initially synchronous; it prevents
   - `active_tab: usize`
   - `ui: ChromeState` (address bar text, focus, hover, etc.)
 - `Tab`
-  - `history: Vec<HistoryEntry>`
-  - `history_index: usize`
+  - `current_url: Option<String>` (driven by worker events)
+  - `title: Option<String>`
   - `loading: bool`
+  - `error: Option<String>`
+  - `can_go_back: bool`
+  - `can_go_forward: bool`
   - `viewport: ViewportState` (width/height, scroll_x/scroll_y)
   - `latest_frame: Option<RenderedFrame>` (RGBA + dimensions)
   - `page_state: PageInteractionState` (focused element id, caret, selection, etc. — evolves over time)
+
+Notes:
+
+- The **worker is the single source of truth for history** (back/forward/reload + scroll restoration). The UI should
+  request history actions via explicit messages (e.g. `UiToWorker::{GoBack, GoForward, Reload}`) and display navigation
+  affordances based on worker responses (e.g. `WorkerToUi::NavigationCommitted { can_go_back, can_go_forward }`).
 
 ## MVP milestone plan (what to implement first)
 
@@ -132,6 +141,8 @@ Keep this message-based even if everything is initially synchronous; it prevents
 
 - New tab / close tab / switch tab.
 - Back/forward/reload working per tab.
+  - The UI sends `UiToWorker::{GoBack, GoForward, Reload}` (no client-side URL computation).
+  - The worker restores scroll offsets from its history entries and emits updated `can_go_back/can_go_forward`.
 
 ## Input handling (event routing)
 
