@@ -149,8 +149,11 @@ fn suite_events_tests_pass() {
     "events suite should have no mismatches: {report:#?}"
   );
 
-  // We intentionally skip the DOM-dependent `events/eventtarget.window.js` test.
-  assert_eq!(report.summary.skipped, 1, "expected one skipped test");
+  assert_eq!(report.summary.skipped, 0, "events suite should not skip");
+  assert_eq!(
+    report.summary.total, report.summary.passed,
+    "all events tests should pass: {report:#?}"
+  );
 }
 
 #[test]
