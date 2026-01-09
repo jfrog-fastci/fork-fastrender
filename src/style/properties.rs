@@ -7486,7 +7486,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   use crate::style::types::FontVariantAlternateValue;
 
   let mut alt = FontVariantAlternates::default();
-  let mut seen_historical_forms = false;
   let mut seen_stylistic = false;
   let mut seen_historical_forms = false;
   let mut seen_stylesets = false;
@@ -7494,7 +7493,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   let mut seen_swash = false;
   let mut seen_ornaments = false;
   let mut seen_annotation = false;
-
 
   fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let prefix_len = prefix.len();
@@ -7540,10 +7538,10 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
         break;
       }
 
-      let had_comma = parser.try_parse(|p| p.expect_comma()).is_ok();
-      if had_comma {
-        parser.skip_whitespace();
-      }
+      // Per CSS Fonts 4, `<<feature-value-name>>#` uses comma-separated lists. A missing comma
+      // between values invalidates the entire function.
+      parser.expect_comma().ok()?;
+      parser.skip_whitespace();
 
       if parser.is_exhausted() {
         // `styleset(foo,)` is invalid; require another <feature-value-name> after a comma.
@@ -33892,7 +33890,7 @@ mod tests {
     let decl = Declaration {
       property: "font-variant".into(),
       value: PropertyValue::Keyword(
-        "small-caps styleset(AltG AltA AltB) swash(Swishy)".to_string(),
+        "small-caps styleset(AltG, AltA, AltB) swash(Swishy)".to_string(),
       ),
       contains_var: false,
       raw_value: String::new(),
@@ -34552,7 +34550,7 @@ mod tests {
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword(
-        "styleset(AltG AltA AltB) character-variant(Var1 Var2) swash(Swishy)".to_string(),
+        "styleset(AltG, AltA, AltB) character-variant(Var1, Var2) swash(Swishy)".to_string(),
       ),
       contains_var: false,
       raw_value: String::new(),
@@ -34581,6 +34579,37 @@ mod tests {
   }
 
   #[test]
+  fn font_variant_alternates_space_separated_lists_invalidates_declaration() {
+    let mut style = ComputedStyle::default();
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())];
+    style.font_variant_alternates.character_variants =
+      vec![FontVariantAlternateValue::Name("KeepCharacterVariant".to_string())];
+    let decl = Declaration {
+      property: "font-variant-alternates".into(),
+      // CSS Fonts 4 uses `<<feature-value-name>>#`, meaning comma-separated lists; whitespace-only
+      // separation should invalidate the declaration.
+      value: PropertyValue::Keyword(
+        "styleset(AltG AltA) character-variant(Var1 Var2)".to_string(),
+      ),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.font_variant_alternates.stylesets,
+      vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())]
+    );
+    assert_eq!(
+      style.font_variant_alternates.character_variants,
+      vec![FontVariantAlternateValue::Name(
+        "KeepCharacterVariant".to_string()
+      )]
+    );
+  }
+
+  #[test]
   fn font_variant_alternates_numeric_arguments_invalidates_declaration() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.historical_forms = true;
@@ -34599,7 +34628,7 @@ mod tests {
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword(
-        "stylistic(2) styleset(3, 4) character-variant(5 6) swash(7) ornaments(8) annotation(9)"
+        "stylistic(2) styleset(3, 4) character-variant(5, 6) swash(7) ornaments(8) annotation(9)"
           .to_string(),
       ),
       contains_var: false,
