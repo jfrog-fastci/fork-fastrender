@@ -1045,10 +1045,10 @@ impl CalcLength {
         Some(total)
       }
       CalcLengthKind::Min | CalcLengthKind::Max => {
-        let mut extremum = match self.kind {
-          CalcLengthKind::Min => f32::INFINITY,
-          CalcLengthKind::Max => f32::NEG_INFINITY,
-          _ => unreachable!(),
+        let mut extremum = if self.kind == CalcLengthKind::Min {
+          f32::INFINITY
+        } else {
+          f32::NEG_INFINITY
         };
         let mut current = 0.0;
         let mut saw_sep = false;

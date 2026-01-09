@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunAnimationFrameOutcome, RunLimits,
   RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
@@ -106,7 +106,7 @@ impl BrowserDocumentJs {
     let mut event_loop = self
       .event_loop
       .take()
-      .expect("BrowserDocumentJs should always have an event loop");
+      .ok_or_else(|| Error::Other("BrowserDocumentJs event loop is unavailable".to_string()))?;
 
     if event_loop.pending_microtask_count() > 0 {
       event_loop.perform_microtask_checkpoint(self)?;
@@ -215,7 +215,7 @@ impl BrowserDocumentJs {
       let mut event_loop = self
         .event_loop
         .take()
-        .expect("BrowserDocumentJs should always have an event loop");
+        .ok_or_else(|| Error::Other("BrowserDocumentJs event loop is unavailable".to_string()))?;
 
       let outcome = event_loop.run_until_idle(self, limits);
       match outcome? {

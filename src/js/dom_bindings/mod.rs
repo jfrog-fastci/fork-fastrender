@@ -1354,7 +1354,7 @@ fn install_constructors(
 
       let arr = rt.alloc_array()?;
       let Value::Object(arr_obj) = arr else {
-        unreachable!("alloc_array must return an object");
+        return Err(rt.throw_type_error("alloc_array must return an object"));
       };
       let mut scope = rt.heap_mut().scope();
       for (idx, value) in wrappers.into_iter().enumerate() {

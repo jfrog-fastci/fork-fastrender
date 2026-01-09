@@ -89,14 +89,17 @@ fn worker_loop<F: ResourceFetcher + 'static>(
   loop {
     let (handle, url) = {
       let (lock, cv) = &*state;
-      let mut st = lock.lock().expect("worker state mutex poisoned");
+      let mut st = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
       while st.queue.is_empty() && !st.shutdown {
-        st = cv.wait(st).expect("worker state mutex poisoned");
+        st = cv.wait(st).unwrap_or_else(|poisoned| poisoned.into_inner());
       }
       if st.shutdown && st.queue.is_empty() {
         return;
       }
-      st.queue.pop_front().expect("queue was checked to be non-empty")
+      let Some(entry) = st.queue.pop_front() else {
+        continue;
+      };
+      entry
     };
 
     let result = ResourceScriptLoader::<F>::fetch_and_decode(&fetcher, &url);
@@ -348,4 +351,3 @@ mod tests {
     }
   }
 }
-

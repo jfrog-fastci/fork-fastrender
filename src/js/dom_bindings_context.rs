@@ -150,7 +150,9 @@ impl DomBindingsContext {
     let proto = self.prototype_for_node(node_id)?;
     scope.heap_mut().object_set_prototype(obj, Some(proto))?;
 
-    let sym = self.node_id_symbol.expect("DomBindingsContext not initialized");
+    let sym = self
+      .node_id_symbol
+      .ok_or(VmError::Unimplemented("DomBindingsContext not initialized"))?;
     let key = PropertyKey::from_symbol(sym);
     let desc = PropertyDescriptor {
       enumerable: false,
