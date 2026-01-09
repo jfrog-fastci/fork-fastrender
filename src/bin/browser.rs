@@ -24,7 +24,64 @@ enum UserEvent {
 }
 
 #[cfg(feature = "browser_ui")]
+enum CliAction {
+  Run { initial_url: String },
+  ExitSuccess,
+}
+
+#[cfg(feature = "browser_ui")]
+fn print_help() {
+  println!(
+    "FastRender browser UI (experimental)\n\n\
+Usage:\n\
+  browser [<url>]\n\n\
+If <url> is omitted, the browser opens `about:newtab`.\n\
+The <url> value is normalized like the address bar (e.g. `example.com` → https)."
+  );
+}
+
+#[cfg(feature = "browser_ui")]
+fn parse_cli_args() -> CliAction {
+  let mut args = std::env::args().skip(1);
+  let mut raw_url: Option<String> = None;
+
+  while let Some(arg) = args.next() {
+    match arg.as_str() {
+      "-h" | "--help" => {
+        print_help();
+        return CliAction::ExitSuccess;
+      }
+      _ if raw_url.is_none() => raw_url = Some(arg),
+      other => {
+        eprintln!("unexpected argument: {other:?}\n");
+        eprintln!("Run `browser --help` for usage.");
+        std::process::exit(2);
+      }
+    }
+  }
+
+  let default_url = fastrender::ui::about_pages::ABOUT_NEWTAB.to_string();
+  let raw_url = raw_url.unwrap_or(default_url);
+  let initial_url = match fastrender::ui::normalize_user_url(&raw_url) {
+    Ok(url) => url,
+    Err(err) => {
+      eprintln!(
+        "invalid start URL {raw_url:?}: {err}; falling back to {}",
+        fastrender::ui::about_pages::ABOUT_NEWTAB
+      );
+      fastrender::ui::about_pages::ABOUT_NEWTAB.to_string()
+    }
+  };
+
+  CliAction::Run { initial_url }
+}
+
+#[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+  let CliAction::Run { initial_url } = parse_cli_args() else {
+    return Ok(());
+  };
+
   apply_address_space_limit_from_env();
 
   // Test/CI hook: allow integration tests to exercise startup behaviour (including mem-limit
@@ -42,7 +99,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   // Usage:
   //   FASTR_TEST_BROWSER_HEADLESS_SMOKE=1 cargo run --features browser_ui --bin browser
   if std::env::var_os("FASTR_TEST_BROWSER_HEADLESS_SMOKE").is_some() {
-    return run_headless_smoke_mode();
+    return run_headless_smoke_mode(initial_url);
   }
 
   use winit::event::Event;
@@ -67,7 +124,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui_to_worker_tx,
     worker_join,
   ))?;
-  app.startup();
+  app.startup(initial_url);
 
   let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
@@ -187,7 +244,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "browser_ui")]
-fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
+fn run_headless_smoke_mode(url: String) -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
   use std::sync::mpsc::RecvTimeoutError;
@@ -204,7 +261,6 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     std::env::set_var(RAYON_NUM_THREADS_ENV, "1");
   }
 
-  const URL: &str = "about:newtab";
   const VIEWPORT_CSS: (u32, u32) = (200, 120);
   // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
   const DPR: f32 = 2.0;
@@ -219,7 +275,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {
     tab_id,
-    initial_url: Some(URL.to_string()),
+    initial_url: Some(url.clone()),
     cancel: CancelGens::new(),
   })?;
   ui_to_worker_tx.send(UiToWorker::ViewportChanged {
@@ -304,7 +360,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   println!(
-    "HEADLESS_SMOKE_OK url={URL} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
+    "HEADLESS_SMOKE_OK url={url} viewport_css={}x{} dpr={:.1} pixmap_px={}x{}",
     viewport_css.0, viewport_css.1, dpr, pixmap_w, pixmap_h
   );
 
@@ -542,9 +598,8 @@ impl App {
     })
   }
 
-  fn startup(&mut self) {
+  fn startup(&mut self, initial_url: String) {
     let tab_id = fastrender::ui::TabId::new();
-    let initial_url = "about:newtab".to_string();
     let tab_state = fastrender::ui::BrowserTabState::new(tab_id, initial_url.clone());
     let cancel = tab_state.cancel.clone();
     self.tab_cancel.insert(tab_id, cancel.clone());

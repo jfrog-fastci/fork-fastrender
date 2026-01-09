@@ -1,6 +1,7 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
 
 mod browser_headless_smoke_test;
+mod browser_cli_help;
 mod browser_mem_limit_env;
 mod browser_worker_cancel_gens;
 mod browser_worker_cancellation;
