@@ -46,8 +46,9 @@ end-to-end:
 - **Pointer/keyboard routing**: basic input events are forwarded to the render worker.
 
 Note: the window currently starts by navigating to `about:newtab`, but `about:` URLs are not yet
-supported by the windowed UI’s current render worker, so you may see a navigation error on startup.
-Type a URL into the address bar and press Enter to navigate.
+supported by the windowed UI’s current render worker (it currently expects `http(s)://` or
+`file://` URLs), so you may see a navigation error on startup. Type a URL into the address bar and
+press Enter to navigate.
 
 **Not yet wired in the windowed UI (in progress):**
 
