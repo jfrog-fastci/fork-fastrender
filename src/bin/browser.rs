@@ -422,6 +422,15 @@ fn apply_address_space_limit_from_env() {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone)]
+struct OpenSelectDropdown {
+  tab_id: fastrender::ui::TabId,
+  select_node_id: usize,
+  control: fastrender::tree::box_tree::SelectControl,
+  anchor_points: egui::Pos2,
+}
+
+#[cfg(feature = "browser_ui")]
 struct App {
   window: winit::window::Window,
   window_title_cache: String,
@@ -452,6 +461,9 @@ struct App {
   pointer_captured: bool,
   captured_button: fastrender::ui::PointerButton,
   last_cursor_pos_points: Option<egui::Pos2>,
+
+  open_select_dropdown: Option<OpenSelectDropdown>,
+  open_select_dropdown_rect: Option<egui::Rect>,
 
   address_bar_id: Option<egui::Id>,
   address_bar_select_all_pending: bool,
@@ -547,6 +559,8 @@ impl App {
       pointer_captured: false,
       captured_button: fastrender::ui::PointerButton::None,
       last_cursor_pos_points: None,
+      open_select_dropdown: None,
+      open_select_dropdown_rect: None,
       address_bar_id: None,
       address_bar_select_all_pending: false,
     })
@@ -611,6 +625,11 @@ impl App {
     }
   }
 
+  fn close_select_dropdown(&mut self) {
+    self.open_select_dropdown = None;
+    self.open_select_dropdown_rect = None;
+  }
+
   fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) {
     match msg {
       fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
@@ -633,13 +652,38 @@ impl App {
           self.tab_textures.insert(tab_id, tex);
         }
       }
-      fastrender::ui::WorkerToUi::OpenSelectDropdown { .. } => {}
+      fastrender::ui::WorkerToUi::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+        control,
+      } => {
+        if self.browser_state.active_tab_id() != Some(tab_id) {
+          return;
+        }
+
+        let anchor_points = self.last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0));
+
+        self.open_select_dropdown = Some(OpenSelectDropdown {
+          tab_id,
+          select_node_id,
+          control,
+          anchor_points,
+        });
+        self.open_select_dropdown_rect = None;
+      }
       fastrender::ui::WorkerToUi::Stage { tab_id, stage } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.stage = Some(stage);
         }
       }
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
+        if self
+          .open_select_dropdown
+          .as_ref()
+          .is_some_and(|d| d.tab_id == tab_id)
+        {
+          self.close_select_dropdown();
+        }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
           tab.loading = true;
@@ -661,6 +705,13 @@ impl App {
         can_go_back,
         can_go_forward,
       } => {
+        if self
+          .open_select_dropdown
+          .as_ref()
+          .is_some_and(|d| d.tab_id == tab_id)
+        {
+          self.close_select_dropdown();
+        }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.current_url = Some(url.clone());
           tab.title = title;
@@ -678,6 +729,13 @@ impl App {
         }
       }
       fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {
+        if self
+          .open_select_dropdown
+          .as_ref()
+          .is_some_and(|d| d.tab_id == tab_id)
+        {
+          self.close_select_dropdown();
+        }
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.loading = false;
           tab.error = Some(error);
@@ -834,6 +892,170 @@ impl App {
     actions
   }
 
+  fn render_select_dropdown(&mut self, ctx: &egui::Context) {
+    use fastrender::tree::box_tree::SelectItem;
+    use fastrender::ui::UiToWorker;
+
+    let (tab_id, select_node_id, anchor, control) = match self.open_select_dropdown.as_ref() {
+      Some(dropdown) => (
+        dropdown.tab_id,
+        dropdown.select_node_id,
+        dropdown.anchor_points,
+        dropdown.control.clone(),
+      ),
+      None => {
+        self.open_select_dropdown_rect = None;
+        return;
+      }
+    };
+
+    if self.browser_state.active_tab_id() != Some(tab_id) {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    }
+
+    let popup = egui::Area::new(egui::Id::new((
+      "fastr_select_dropdown_popup",
+      tab_id.0,
+      select_node_id,
+    )))
+      .order(egui::Order::Foreground)
+      .fixed_pos(anchor)
+      .show(ctx, |ui| {
+        let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
+          ui.set_min_width(200.0);
+          egui::ScrollArea::vertical()
+            .max_height(240.0)
+            .show(ui, |ui| {
+              let mut clicked_item_idx: Option<usize> = None;
+
+              for (idx, item) in control.items.iter().enumerate() {
+                match item {
+                  SelectItem::OptGroupLabel { label, disabled } => {
+                    let text = egui::RichText::new(label).strong();
+                    if *disabled {
+                      ui.add_enabled(false, egui::Label::new(text));
+                    } else {
+                      ui.label(text);
+                    }
+                  }
+                  SelectItem::Option {
+                    label,
+                    value,
+                    selected,
+                    disabled,
+                    in_optgroup,
+                    ..
+                  } => {
+                    let base = if label.trim().is_empty() { value } else { label };
+                    let text = if *in_optgroup {
+                      format!("  {base}")
+                    } else {
+                      base.to_string()
+                    };
+
+                    let response = ui.add_enabled(
+                      !*disabled,
+                      egui::SelectableLabel::new(*selected, text),
+                    );
+                    if response.clicked() {
+                      clicked_item_idx = Some(idx);
+                    }
+                  }
+                }
+              }
+
+              clicked_item_idx
+            })
+            .inner
+        });
+
+        (frame.response.rect, frame.inner)
+      });
+
+    let (popup_rect, clicked_item_idx) = popup.inner;
+    self.open_select_dropdown_rect = Some(popup_rect);
+
+    let Some(clicked_item_idx) = clicked_item_idx else {
+      return;
+    };
+
+    let mut options: Vec<(usize, bool)> = Vec::new(); // (item_idx, disabled)
+    for (idx, item) in control.items.iter().enumerate() {
+      if let SelectItem::Option { disabled, .. } = item {
+        options.push((idx, *disabled));
+      }
+    }
+
+    let is_target_disabled = matches!(
+      control.items.get(clicked_item_idx),
+      Some(SelectItem::Option { disabled: true, .. })
+    );
+    if is_target_disabled {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    }
+
+    let mut current_item_idx = control
+      .selected
+      .iter()
+      .copied()
+      .filter(|idx| matches!(control.items.get(*idx), Some(SelectItem::Option { .. })))
+      .min();
+    if current_item_idx.is_none() {
+      current_item_idx = options.iter().find(|(_, disabled)| !*disabled).map(|(idx, _)| *idx);
+    }
+
+    let Some(current_item_idx) = current_item_idx else {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    };
+
+    let Some(current_pos) = options.iter().position(|(idx, _)| *idx == current_item_idx) else {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    };
+    let Some(target_pos) = options.iter().position(|(idx, _)| *idx == clicked_item_idx) else {
+      self.close_select_dropdown();
+      self.window.request_redraw();
+      return;
+    };
+
+    if target_pos != current_pos {
+      let mut keys: Vec<fastrender::interaction::KeyAction> = Vec::new();
+      if target_pos > current_pos {
+        for i in (current_pos + 1)..=target_pos {
+          if !options[i].1 {
+            keys.push(fastrender::interaction::KeyAction::ArrowDown);
+          }
+        }
+      } else {
+        for i in target_pos..current_pos {
+          if !options[i].1 {
+            keys.push(fastrender::interaction::KeyAction::ArrowUp);
+          }
+        }
+      }
+
+      for key in keys {
+        let _ = self.ui_to_worker_tx.send(UiToWorker::KeyAction { tab_id, key });
+      }
+    }
+
+    self.close_select_dropdown();
+    self.window.request_redraw();
+  }
+
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
     self.address_bar_select_all_pending = true;
@@ -856,6 +1078,13 @@ impl App {
           position.y as f32 / self.pixels_per_point,
         );
         self.last_cursor_pos_points = Some(pos_points);
+
+        if self
+          .open_select_dropdown_rect
+          .is_some_and(|rect| rect.contains(pos_points))
+        {
+          return;
+        }
 
         let Some(rect) = self.page_rect_points else {
           return;
@@ -910,6 +1139,17 @@ impl App {
         let Some(pos_points) = self.last_cursor_pos_points else {
           return;
         };
+
+        if matches!(state, ElementState::Pressed) && self.open_select_dropdown.is_some() {
+          if self
+            .open_select_dropdown_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          self.close_select_dropdown();
+          self.window.request_redraw();
+        }
 
         match state {
           ElementState::Pressed => {
@@ -972,6 +1212,18 @@ impl App {
         let Some(pos_points) = self.last_cursor_pos_points else {
           return;
         };
+
+        if self.open_select_dropdown.is_some() {
+          if self
+            .open_select_dropdown_rect
+            .is_some_and(|rect| rect.contains(pos_points))
+          {
+            return;
+          }
+          self.close_select_dropdown();
+          self.window.request_redraw();
+        }
+
         let Some(rect) = self.page_rect_points else {
           return;
         };
@@ -1009,6 +1261,16 @@ impl App {
 
         let mods = input.modifiers;
         let primary = mods.ctrl() || mods.logo();
+
+        if self.open_select_dropdown.is_some() {
+          if matches!(key, VirtualKeyCode::Escape) {
+            self.close_select_dropdown();
+            self.window.request_redraw();
+            return;
+          }
+          self.close_select_dropdown();
+          self.window.request_redraw();
+        }
 
         // Ctrl/Cmd+L: focus address bar and select all text (always allowed).
         if primary && matches!(key, VirtualKeyCode::L) {
@@ -1115,6 +1377,10 @@ impl App {
         if ch.is_control() {
           return;
         }
+        if self.open_select_dropdown.is_some() {
+          self.close_select_dropdown();
+          self.window.request_redraw();
+        }
         let Some(tab_id) = self.browser_state.active_tab_id() else {
           return;
         };
@@ -1133,6 +1399,10 @@ impl App {
     use fastrender::ui::ChromeAction;
     use fastrender::ui::RepaintReason;
     use fastrender::ui::UiToWorker;
+
+    if !actions.is_empty() {
+      self.close_select_dropdown();
+    }
 
     for action in actions {
       match action {
@@ -1355,6 +1625,8 @@ impl App {
         });
       }
     });
+
+    self.render_select_dropdown(&ctx);
 
     let full_output = self.egui_ctx.end_frame();
     self.egui_state.handle_platform_output(

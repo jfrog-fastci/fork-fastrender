@@ -4,6 +4,7 @@ mod browser_binary_headless_smoke;
 mod browser_headless_smoke_test;
 mod browser_mem_limit_env;
 mod browser_worker_fragment_navigation;
+mod browser_thread_select_dropdown;
 mod document;
 mod document2;
 mod history_navigation;

@@ -703,6 +703,20 @@ impl BrowserRuntime {
       InteractionAction::Navigate { href } => {
         self.schedule_navigation(tab_id, href, NavigationReason::LinkClick);
       }
+      InteractionAction::OpenSelectDropdown {
+        select_node_id,
+        control,
+      } => {
+        let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
+          tab_id,
+          select_node_id,
+          control,
+        });
+        if dom_changed {
+          tab.cancel.bump_paint();
+          tab.needs_repaint = true;
+        }
+      }
       _ => {
         if dom_changed {
           tab.cancel.bump_paint();
@@ -754,6 +768,20 @@ impl BrowserRuntime {
       match action {
         InteractionAction::Navigate { href } => {
           navigate_to = Some(href);
+        }
+        InteractionAction::OpenSelectDropdown {
+          select_node_id,
+          control,
+        } => {
+          let _ = self.ui_tx.send(WorkerToUi::OpenSelectDropdown {
+            tab_id,
+            select_node_id,
+            control,
+          });
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+          }
         }
         _ => {
           if changed {
