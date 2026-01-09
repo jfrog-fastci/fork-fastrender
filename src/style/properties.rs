@@ -13964,11 +13964,17 @@ fn apply_declaration_with_base_internal_with_order(
     "color" => {
       match resolved_value {
         PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => {
-          // `currentColor` in the `color` property resolves to the existing value (effectively a
-          // no-op), so do not reset the `color_is_system` / `color_is_inherited` flags.
+          // `currentColor` in the `color` property resolves against the inherited `color` (used by
+          // common resets like `a { color: currentColor; }` to cancel UA link coloring).
+          styles.color = parent_styles.color;
+          styles.color_is_inherited = true;
+          styles.color_is_system = parent_styles.color_is_system;
         }
         PropertyValue::Color(c) if c.is_current_color() => {
           // Same as the keyword case above.
+          styles.color = parent_styles.color;
+          styles.color_is_inherited = true;
+          styles.color_is_system = parent_styles.color_is_system;
         }
         PropertyValue::Color(c) => {
           styles.color_is_inherited = false;
@@ -13983,6 +13989,9 @@ fn apply_declaration_with_base_internal_with_order(
           if let Ok(color) = Color::parse(kw) {
             if color.is_current_color() {
               // Same as the keyword case above.
+              styles.color = parent_styles.color;
+              styles.color_is_inherited = true;
+              styles.color_is_system = parent_styles.color_is_system;
               return;
             }
             styles.color_is_inherited = false;
@@ -26485,6 +26494,36 @@ mod tests {
         only: false
       }
     );
+  }
+
+  #[test]
+  fn color_currentcolor_inherits_parent_color() {
+    let parent = ComputedStyle {
+      color: Rgba::new(12, 34, 56, 1.0),
+      ..ComputedStyle::default()
+    };
+    let mut style = ComputedStyle::default();
+    // Simulate UA link coloring (e.g. `a:link`) being applied before author `color: currentColor`.
+    style.color = Rgba::new(0, 0, 238, 1.0);
+    style.color_is_inherited = false;
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "color".into(),
+        value: PropertyValue::Keyword("currentColor".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &parent,
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(style.color, parent.color);
+    assert!(style.color_is_inherited);
+    assert_eq!(style.color_is_system, parent.color_is_system);
   }
 
   #[test]
