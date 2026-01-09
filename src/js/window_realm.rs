@@ -691,7 +691,6 @@ mod tests {
     Number(f64),
     BigInt(String),
     String(String),
-    BigInt,
     Object,
     Symbol,
   }
