@@ -151,17 +151,44 @@ pub(crate) fn intrinsic_content_size_for_form_control(
       let cols = size_attr.unwrap_or(default_cols as u32) as f32;
       Size::new(char_width * cols.max(1.0), line_height)
     }
-    FormControlKind::TextArea { value, rows, cols, .. } => {
+    FormControlKind::TextArea {
+      value,
+      placeholder,
+      placeholder_style,
+      rows,
+      cols,
+      ..
+    } => {
       if matches!(style.field_sizing, FieldSizing::Content) {
         let mut max_width = 0.0f32;
         let mut line_count = 0usize;
-        for line in value.split('\n') {
+        let mut measure_style = style;
+
+        let raw_text: &str = if !value.is_empty() {
+          value
+        } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+          if let Some(ph_style) = placeholder_style.as_deref() {
+            measure_style = ph_style;
+          }
+          ph
+        } else {
+          value
+        };
+
+        for line in raw_text.split('\n') {
           line_count += 1;
-          max_width = max_width.max(measure_text_width(line, style, font_context, shaper, char_width));
+          max_width = max_width.max(measure_text_width(line, measure_style, font_context, shaper, char_width));
         }
         if line_count == 0 {
           line_count = 1;
         }
+        if max_width == 0.0 {
+          // Avoid collapsing an empty textarea to 0px: keep the legacy `cols`-based inline size
+          // when there is no value/placeholder content to measure.
+          let col_count = cols.unwrap_or(20) as f32;
+          max_width = char_width * col_count.max(1.0);
+        }
+
         return Size::new(max_width, line_height * line_count as f32);
       }
 

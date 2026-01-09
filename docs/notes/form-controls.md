@@ -24,7 +24,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Applies only to form controls (replaced elements).
   - `field-sizing: fixed` (initial) keeps the existing HTML-like intrinsic sizing behavior.
   - `field-sizing: content` changes intrinsic sizing for:
-    - `<textarea>`: intrinsic inline size is the maximum shaped line width of the current value text; intrinsic block size is `line_count * used_line_height`.
+    - `<textarea>`: intrinsic inline size is the maximum shaped line width of the current value text (falling back to placeholder, then to the legacy `cols` width when empty); intrinsic block size is `line_count * used_line_height`.
       - Deterministic measurement rule: newlines are treated as hard line breaks and **no wrapping** is performed for intrinsic measurement.
     - Text-like `<input>` kinds (`text/search/url/tel/email/password/number`): intrinsic inline size is based on shaping the current value text (or placeholder when the value is empty) instead of the default ~`20ch` heuristic.
       - Empty value+placeholder keeps the existing fallback intrinsic width.

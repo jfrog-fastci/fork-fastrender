@@ -43,6 +43,28 @@ fn textarea_field_sizing_content_increases_intrinsic_height() {
 }
 
 #[test]
+fn textarea_field_sizing_content_empty_does_not_collapse_width() {
+  let html = "<style>textarea { padding: 0; border: 0; }</style>\
+    <div><textarea></textarea></div>\
+    <div><textarea style=\"field-sizing: content\"></textarea></div>";
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let dom = renderer.parse_html(html).expect("dom");
+  let tree = renderer.layout_document(&dom, 400, 200).expect("layout");
+
+  let mut bounds = Vec::new();
+  collect_form_control_bounds(&tree.root, &mut bounds);
+  assert_eq!(bounds.len(), 2, "expected exactly two textareas");
+
+  let fixed_width = bounds[0].width();
+  let content_width = bounds[1].width();
+  assert!(
+    (content_width - fixed_width).abs() <= 0.5,
+    "expected empty field-sizing: content textarea to keep the legacy cols-based width: fixed={fixed_width} content={content_width}",
+  );
+}
+
+#[test]
 fn input_field_sizing_content_shrinks_intrinsic_width() {
   let html = "<style>input { padding: 0; border: 0; }</style>\
     <div><input value=\"0\"></div>\
@@ -90,4 +112,3 @@ fn field_sizing_content_respects_min_max_width() {
     "expected max-width to clamp field-sizing width: got {max_width}",
   );
 }
-
