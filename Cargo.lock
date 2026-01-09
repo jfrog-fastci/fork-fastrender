@@ -1038,6 +1038,7 @@ dependencies = [
  "libc",
  "libwebp-sys",
  "lru",
+ "markup5ever",
  "markup5ever_rcdom",
  "memchr",
  "parking_lot",
