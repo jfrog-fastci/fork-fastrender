@@ -423,9 +423,34 @@ fn to_js_named<R: WebIdlJsRuntime>(
         "interface return values are not supported yet (expected platform object)",
       )),
     },
-    NamedTypeKind::CallbackFunction | NamedTypeKind::CallbackInterface => Err(rt.throw_type_error(
-      "callback types are not supported as return values yet",
-    )),
+    NamedTypeKind::CallbackFunction => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let js_value = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_callable(js_value) {
+          return Err(rt.throw_type_error("callback function return value is not callable"));
+        }
+        Ok(js_value)
+      }
+      _ => Err(rt.throw_type_error(
+        "callback function return values require a platform object handle",
+      )),
+    },
+    NamedTypeKind::CallbackInterface => match value {
+      WebIdlValue::PlatformObject(obj) => {
+        let js_value = rt
+          .platform_object_to_js_value(obj)
+          .ok_or_else(|| rt.throw_type_error("platform object does not belong to this runtime"))?;
+        if !rt.is_object(js_value) {
+          return Err(rt.throw_type_error("callback interface return value is not an object"));
+        }
+        Ok(js_value)
+      }
+      _ => Err(rt.throw_type_error(
+        "callback interface return values require a platform object handle",
+      )),
+    },
     NamedTypeKind::Unresolved => Err(rt.throw_type_error(
       "named type kind is unresolved (missing enum/dictionary/typedef schema)",
     )),
@@ -957,6 +982,101 @@ mod tests {
       "expected TypeError, got {msg:?}"
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn callback_function_return_allows_callable_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = IdlType::Named(NamedType {
+      name: "Callback".to_string(),
+      kind: NamedTypeKind::CallbackFunction,
+    });
+
+    let func = rt.alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(func));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert_eq!(out, func);
+    Ok(())
+  }
+
+  #[test]
+  fn callback_function_return_rejects_non_callable_platform_object(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = IdlType::Named(NamedType {
+      name: "Callback".to_string(),
+      kind: NamedTypeKind::CallbackFunction,
+    });
+
+    let obj = rt.alloc_object_value()?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("not callable"),
+      "expected not-callable message, got {msg:?}"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn callback_interface_return_allows_object_platform_object() -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = IdlType::Named(NamedType {
+      name: "Listener".to_string(),
+      kind: NamedTypeKind::CallbackInterface,
+    });
+
+    let obj = rt.alloc_object_value()?;
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(obj));
+    let out = to_js(&mut rt, &ctx, &ty, &value)?;
+    assert_eq!(out, obj);
+    Ok(())
+  }
+
+  #[test]
+  fn callback_interface_return_rejects_non_object_platform_object(
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut rt = VmJsRuntime::new();
+    let ctx = TypeContext::default();
+
+    let ty = IdlType::Named(NamedType {
+      name: "Listener".to_string(),
+      kind: NamedTypeKind::CallbackInterface,
+    });
+
+    let value = WebIdlValue::PlatformObject(PlatformObject::new(Value::Number(1.0)));
+    let err = to_js(&mut rt, &ctx, &ty, &value).unwrap_err();
+
+    let vm_js::VmError::Throw(thrown) = err else {
+      return Err(format!("expected VmError::Throw, got {err:?}").into());
+    };
+    let s = rt.to_string(thrown)?;
+    let Value::String(handle) = s else {
+      return Err("expected thrown error to stringify to a JS string".into());
+    };
+    let msg = rt.heap().get_string(handle)?.to_utf8_lossy();
+    assert!(msg.starts_with("TypeError:"), "expected TypeError, got {msg:?}");
+    assert!(
+      msg.contains("not an object"),
+      "expected not-an-object message, got {msg:?}"
+    );
     Ok(())
   }
 
