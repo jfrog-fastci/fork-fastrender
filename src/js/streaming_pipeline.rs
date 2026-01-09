@@ -544,6 +544,7 @@ mod tests {
     current_script: CurrentScriptStateHandle,
     started_fetches: Vec<(ScriptId, String)>,
     log: Vec<String>,
+    assert_dom_state_on_execute: Option<Box<dyn Fn(&Document)>>,
   }
 
   impl Default for Host {
@@ -553,6 +554,7 @@ mod tests {
         current_script: CurrentScriptStateHandle::default(),
         started_fetches: Vec::new(),
         log: Vec::new(),
+        assert_dom_state_on_execute: None,
       }
     }
   }
@@ -593,6 +595,9 @@ mod tests {
       _script_type: ScriptType,
       event_loop: &mut EventLoop<Self>,
     ) -> Result<()> {
+      if let Some(assert) = &self.assert_dom_state_on_execute {
+        assert(&self.dom);
+      }
       self.log.push(source_text.to_string());
       let micro = format!("m{source_text}");
       event_loop.queue_microtask(move |host, _| {
@@ -831,6 +836,81 @@ mod tests {
     // The classic pipeline only handles classic scripts; module scripts must be ignored.
     assert!(host.started_fetches.is_empty());
     assert_eq!(host.log, vec!["INLINE".to_string(), "mINLINE".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn parser_pause_point_executes_script_before_parsing_following_markup() -> Result<()> {
+    let mut host = Host::default();
+    host.assert_dom_state_on_execute = Some(Box::new(|dom| {
+      assert!(
+        dom.get_element_by_id("after").is_none(),
+        "markup after </script> must not be visible when the script executes"
+      );
+    }));
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str("<script>1</script><div id=after></div>")?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.log, vec!["1".to_string(), "m1".to_string()]);
+
+    let after_present_in_final_doc = {
+      let s = p.state.borrow();
+      let final_doc = s
+        .document
+        .as_ref()
+        .expect("expected parsing to finish");
+      final_doc.get_element_by_id("after").is_some()
+    };
+    assert!(
+      after_present_in_final_doc,
+      "expected parser to resume after executing the script"
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn blocking_external_script_blocks_parser_before_following_markup_is_inserted() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(r#"<script src="/a.js"></script><div id=after></div>"#)?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert_eq!(host.started_fetches.len(), 1);
+    let blocking_id = host.started_fetches[0].0;
+
+    let after_present_while_blocked = {
+      let s = p.state.borrow();
+      let dom = s.parser.document();
+      dom.get_element_by_id("after").is_some()
+    };
+    assert!(
+      !after_present_while_blocked,
+      "parser should not parse markup after a blocking external <script> before it executes"
+    );
+    assert!(
+      p.state.borrow().blocked_parser_on.is_some(),
+      "expected parser to be blocked on the external script fetch"
+    );
+    assert!(
+      !p.state.borrow().parsing_finished(),
+      "expected parsing not to complete until the blocking script executes"
+    );
+
+    p.on_fetch_completed(&mut host, blocking_id, "A_JS")?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    let after_present_in_final_doc = {
+      let s = p.state.borrow();
+      let final_doc = s
+        .document
+        .as_ref()
+        .expect("expected parsing to finish after fetch completion");
+      final_doc.get_element_by_id("after").is_some()
+    };
+    assert!(after_present_in_final_doc);
     Ok(())
   }
 }
