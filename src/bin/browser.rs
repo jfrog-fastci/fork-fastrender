@@ -1240,15 +1240,32 @@ impl App {
         };
 
         if matches!(state, ElementState::Pressed) && self.open_select_dropdown.is_some() {
+          // If the dropdown popup is open, clicks inside it are handled by egui (option selection).
           if self
             .open_select_dropdown_rect
             .is_some_and(|rect| rect.contains(pos_points))
           {
             return;
           }
+
+          // Close the dropdown before processing the click so we don't require a second click to
+          // interact with the underlying page/chrome.
+          //
+          // Special-case: clicking the `<select>` control itself should typically just toggle the
+          // popup closed (don't immediately reopen it by forwarding the click to the page).
+          let clicked_select_control = self.open_select_dropdown.as_ref().is_some_and(|dropdown| {
+            dropdown.anchor_css.is_some_and(|anchor_css| {
+              self.page_input_mapping
+                .and_then(|mapping| mapping.rect_css_to_rect_points_clamped(anchor_css))
+                .is_some_and(|rect_points| rect_points.contains(pos_points))
+            })
+          });
+
           self.cancel_select_dropdown();
           self.window.request_redraw();
-          return;
+          if clicked_select_control {
+            return;
+          }
         }
 
         match state {
