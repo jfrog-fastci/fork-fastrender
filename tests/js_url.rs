@@ -2,7 +2,7 @@ use fastrender::js::{
   install_url_bindings,
   webidl::{JsRuntime as _, VmJsRuntime},
 };
-use vm_js::{PropertyKey, Value};
+use vm_js::{HeapLimits, PropertyKey, Value};
 use webidl_js_runtime::runtime::JsPropertyKind;
 
 fn key(rt: &mut VmJsRuntime, name: &str) -> PropertyKey {
@@ -179,4 +179,48 @@ fn searchparams_get_all_returns_array_with_length_semantics() {
   rt.define_data_property(values, idx_key, x, true).unwrap();
   let length = get(&mut rt, values, "length");
   assert_eq!(length, Value::Number(6.0));
+}
+
+#[test]
+fn url_instance_initialization_survives_gc_pressure() {
+  // Force a GC cycle before essentially every heap allocation to ensure that instance
+  // initialization doesn't rely on Rust locals being traced.
+  let mut rt = VmJsRuntime::with_limits(HeapLimits::new(1024 * 1024, 0));
+
+  let global = rt.alloc_object_value().unwrap();
+  install_url_bindings(&mut rt, global).unwrap();
+
+  // Root values used across further allocations.
+  let global_root = rt.heap_mut().add_root(global).unwrap();
+
+  let url = new_url(&mut rt, global, "https://example.com/?x=1#hash", None);
+  let url_root = rt.heap_mut().add_root(url).unwrap();
+
+  let href = get(&mut rt, url, "href");
+  assert_eq!(as_rust_string(&rt, href), "https://example.com/?x=1#hash");
+
+  let json = call_method(&mut rt, url, "toJSON", &[]);
+  assert_eq!(as_rust_string(&rt, json), "https://example.com/?x=1#hash");
+
+  let search_params = get(&mut rt, url, "searchParams");
+  let x = str_val(&mut rt, "x");
+  // Root arguments across intermediate allocations (e.g. property key creation) so they survive
+  // the forced-GC regime.
+  let x_root = rt.heap_mut().add_root(x).unwrap();
+  let x_value = call_method(&mut rt, search_params, "get", &[x]);
+  rt.heap_mut().remove_root(x_root);
+  assert_eq!(as_rust_string(&rt, x_value), "1");
+
+  let a = str_val(&mut rt, "a");
+  let a_root = rt.heap_mut().add_root(a).unwrap();
+  let b = str_val(&mut rt, "b");
+  let b_root = rt.heap_mut().add_root(b).unwrap();
+  call_method(&mut rt, search_params, "append", &[a, b]);
+  rt.heap_mut().remove_root(b_root);
+  rt.heap_mut().remove_root(a_root);
+  let href = get(&mut rt, url, "href");
+  assert_eq!(as_rust_string(&rt, href), "https://example.com/?x=1&a=b#hash");
+
+  rt.heap_mut().remove_root(url_root);
+  rt.heap_mut().remove_root(global_root);
 }
