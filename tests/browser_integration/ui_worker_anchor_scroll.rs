@@ -5,7 +5,10 @@ use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+// UI worker startup + first paint can take several seconds under load when browser integration
+// tests run in parallel (default `cargo test` behavior). Keep this timeout generous to avoid
+// flakiness on busy CI hosts.
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 #[test]
 fn fragment_navigation_scrolls_viewport_to_target() {
