@@ -3542,6 +3542,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "semantic-js"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.10.0",
+ "derive-visitor",
+ "diagnostics",
+ "hir-js",
+ "parse-js",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4437,6 +4448,7 @@ dependencies = [
  "hir-js",
  "parse-js",
  "ryu",
+ "semantic-js",
  "thiserror 1.0.69",
 ]
 
