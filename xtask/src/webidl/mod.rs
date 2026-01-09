@@ -15,6 +15,7 @@ pub mod load;
 pub mod overload;
 pub mod parse;
 pub mod resolve;
+pub mod type_resolution;
 
 pub use analyze::{
   analyze_resolved_world, AnalyzedInterface, AnalyzedInterfaceMember, AnalyzedInterfaceMixin,

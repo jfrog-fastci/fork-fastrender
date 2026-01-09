@@ -5021,6 +5021,7 @@ dependencies = [
  "tempfile",
  "url",
  "walkdir",
+ "webidl-ir",
 ]
 
 [[package]]

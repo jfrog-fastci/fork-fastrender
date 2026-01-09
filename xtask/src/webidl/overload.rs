@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::resolve::ResolvedWebIdlWorld;
+use webidl_ir::{IdlType as IrIdlType, NamedType as IrNamedType, NamedTypeKind as IrNamedTypeKind};
 
 /// Minimal context required for interface-like distinguishability.
 ///
@@ -100,6 +101,7 @@ impl fmt::Display for NumericType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StringType {
   DOMString,
+  ByteString,
   USVString,
 }
 
@@ -107,6 +109,7 @@ impl fmt::Display for StringType {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       StringType::DOMString => f.write_str("DOMString"),
+      StringType::ByteString => f.write_str("ByteString"),
       StringType::USVString => f.write_str("USVString"),
     }
   }
@@ -149,6 +152,8 @@ pub enum IdlType {
   /// `callback interface Foo { ... }`
   CallbackInterface(String),
   Dictionary(String),
+  /// `enum Foo { ... }`
+  Enum(String),
   /// `record<K, V>` (dictionary-like for distinguishability purposes).
   Record(Box<IdlType>, Box<IdlType>),
 
@@ -238,6 +243,90 @@ impl IdlType {
   }
 }
 
+impl TryFrom<&IrIdlType> for IdlType {
+  type Error = String;
+
+  fn try_from(value: &IrIdlType) -> Result<Self, Self::Error> {
+    match value {
+      IrIdlType::Any => Ok(IdlType::Any),
+      IrIdlType::Undefined => Ok(IdlType::Undefined),
+      IrIdlType::Boolean => Ok(IdlType::Boolean),
+      IrIdlType::Numeric(_) => {
+        // The overload algorithm cares about the *category* (numeric), not the exact numeric type.
+        // Use `double` as a canonical representative.
+        Ok(IdlType::Numeric(NumericType::Double))
+      }
+      IrIdlType::BigInt => Ok(IdlType::BigInt),
+      IrIdlType::String(s) => match s {
+        webidl_ir::StringType::DomString => Ok(IdlType::String(StringType::DOMString)),
+        webidl_ir::StringType::ByteString => Ok(IdlType::String(StringType::ByteString)),
+        webidl_ir::StringType::UsvString => Ok(IdlType::String(StringType::USVString)),
+      },
+      IrIdlType::Object => Ok(IdlType::Object),
+      IrIdlType::Symbol => Ok(IdlType::Symbol),
+      IrIdlType::Named(IrNamedType { name, kind }) => match kind {
+        IrNamedTypeKind::Interface => Ok(IdlType::Interface(name.clone())),
+        IrNamedTypeKind::Unresolved => Err(format!(
+          "cannot convert unresolved named type `{name}` to overload type"
+        )),
+        IrNamedTypeKind::CallbackInterface => Ok(IdlType::CallbackInterface(name.clone())),
+        IrNamedTypeKind::Dictionary => Ok(IdlType::Dictionary(name.clone())),
+        IrNamedTypeKind::Enum => Ok(IdlType::Enum(name.clone())),
+        IrNamedTypeKind::CallbackFunction => Ok(IdlType::CallbackFunction {
+          legacy_treat_non_object_as_null: false,
+        }),
+        IrNamedTypeKind::Typedef => Err(format!(
+          "cannot convert unresolved typedef `{name}` to overload type; expand typedefs first"
+        )),
+      },
+
+      IrIdlType::Nullable(inner) => Ok(IdlType::Nullable(Box::new(IdlType::try_from(
+        inner.as_ref(),
+      )?))),
+      IrIdlType::Union(members) => {
+        let mut out = Vec::with_capacity(members.len());
+        for m in members {
+          out.push(IdlType::try_from(m)?);
+        }
+        Ok(IdlType::Union(out))
+      }
+      IrIdlType::Sequence(inner) => Ok(IdlType::Sequence(Box::new(IdlType::try_from(
+        inner.as_ref(),
+      )?))),
+      IrIdlType::FrozenArray(inner) => Ok(IdlType::FrozenArray(Box::new(IdlType::try_from(
+        inner.as_ref(),
+      )?))),
+      IrIdlType::AsyncSequence(inner) => Ok(IdlType::AsyncSequence(Box::new(IdlType::try_from(
+        inner.as_ref(),
+      )?))),
+      IrIdlType::Record(key, value) => Ok(IdlType::Record(
+        Box::new(IdlType::try_from(key.as_ref())?),
+        Box::new(IdlType::try_from(value.as_ref())?),
+      )),
+      IrIdlType::Promise(inner) => Ok(IdlType::Promise(Box::new(IdlType::try_from(
+        inner.as_ref(),
+      )?))),
+      IrIdlType::Annotated { annotations, inner } => {
+        let mut inner = IdlType::try_from(inner.as_ref())?;
+
+        let legacy_treat_non_object_as_null = annotations.iter().any(|a| {
+          matches!(a, webidl_ir::TypeAnnotation::LegacyTreatNonObjectAsNull)
+        });
+        if legacy_treat_non_object_as_null {
+          if let IdlType::CallbackFunction {
+            legacy_treat_non_object_as_null: flag,
+          } = &mut inner
+          {
+            *flag = true;
+          }
+        }
+
+        Ok(IdlType::Annotated(Box::new(inner)))
+      }
+    }
+  }
+}
+
 fn flatten_union_members<'a>(members: &'a [IdlType]) -> Vec<&'a IdlType> {
   fn rec<'a>(t: &'a IdlType, out: &mut Vec<&'a IdlType>) {
     match t.strip_annotated() {
@@ -275,6 +364,10 @@ impl fmt::Display for IdlType {
       IdlType::Dictionary(name) => {
         f.write_str(name)?;
         f.write_str(" (dictionary)")
+      }
+      IdlType::Enum(name) => {
+        f.write_str(name)?;
+        f.write_str(" (enum)")
       }
       IdlType::Record(key, value) => write!(f, "record<{}, {}>", key, value),
       IdlType::CallbackFunction {
@@ -539,6 +632,7 @@ fn category_of(t: &IdlType) -> Option<DistinguishabilityCategory> {
     IdlType::Numeric(_) => Some(Numeric),
     IdlType::BigInt => Some(BigInt),
     IdlType::String(_) => Some(String),
+    IdlType::Enum(_) => Some(String),
     IdlType::Object => Some(Object),
     IdlType::Symbol => Some(Symbol),
     IdlType::Interface(_) | IdlType::BufferSource(_) => Some(InterfaceLike),
