@@ -68,15 +68,3 @@ pub fn spawn_render_worker_thread<T: Send + 'static>(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Back-compat wrappers
-// ---------------------------------------------------------------------------
-//
-// Historically the browser integration tests imported the headless worker from `ui::worker`.
-// The canonical worker implementation now lives in `ui::render_worker`; re-export the spawn
-// helpers here so older call sites continue to compile without reintroducing a second worker loop.
-
-pub use crate::ui::render_worker::{
-  spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory, UiWorkerHandle,
-};
-

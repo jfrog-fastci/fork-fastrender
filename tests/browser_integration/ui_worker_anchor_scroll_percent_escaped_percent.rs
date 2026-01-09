@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::ui::worker::spawn_ui_worker;
+use fastrender::ui::spawn_ui_worker;
 use std::time::Duration;
 
 // Keep this generous since browser UI integration tests can run in parallel.
@@ -96,4 +96,3 @@ fn navigation_with_percent_encoded_percent_fragment_scrolls_to_target() {
 
   worker.join().expect("join ui worker");
 }
-
