@@ -90,8 +90,18 @@ fn is_cors_safelisted_response_header_name(name: &str) -> bool {
   // https://fetch.spec.whatwg.org/#cors-safelisted-response-header-name
   matches!(
     name,
-    "cache-control" | "content-language" | "content-type" | "expires" | "last-modified" | "pragma"
+    "cache-control"
+      | "content-language"
+      | "content-length"
+      | "content-type"
+      | "expires"
+      | "last-modified"
+      | "pragma"
   )
+}
+
+fn trim_http_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
 }
 
 fn resolve_request_url<'a>(
@@ -513,7 +523,16 @@ pub fn execute_web_fetch<'a>(
     ResponseType::OpaqueRedirect
   } else {
     match request.mode {
-      RequestMode::Cors => ResponseType::Cors,
+      RequestMode::Cors => match (client_origin, origin_from_url(response.url.as_str())) {
+        (Some(client_origin), Some(target_origin)) => {
+          if client_origin.same_origin(&target_origin) {
+            ResponseType::Basic
+          } else {
+            ResponseType::Cors
+          }
+        }
+        _ => ResponseType::Default,
+      },
       RequestMode::SameOrigin | RequestMode::Navigate => ResponseType::Basic,
       RequestMode::NoCors => ResponseType::Opaque,
     }
@@ -536,7 +555,7 @@ pub fn execute_web_fetch<'a>(
       .map_err(|err| Error::Other(err.to_string()))?
     {
       for token in expose_header.split(',') {
-        let token = token.trim();
+        let token = trim_http_whitespace(token);
         if token.is_empty() {
           continue;
         }
@@ -917,6 +936,19 @@ mod tests {
   }
 
   #[test]
+  fn response_headers_are_immutable() {
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+    let request = Request::new("GET", "https://example.com/a");
+    let mut response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+
+    let err = response.headers.set("x-test", "a").unwrap_err();
+    assert!(matches!(err, WebFetchError::HeadersImmutable));
+  }
+
+  #[test]
   fn redirect_status_excludes_300_for_redirect_manual() {
     struct Status300Fetcher;
 
@@ -945,6 +977,35 @@ mod tests {
     assert_eq!(response.status, 300);
     assert_eq!(response.url, "https://example.com/start");
     assert!(!response.redirected);
+  }
+
+  #[test]
+  fn response_type_basic_vs_cors() {
+    let origin = origin_from_url("https://example.com/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(b"ok".to_vec(), None),
+    };
+    let request = Request::new("GET", "https://example.com/a");
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Basic);
+
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("*".to_string());
+    let fetcher = StaticFetcher { resource };
+    let request = Request::new("GET", "https://other.example/res");
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Cors);
   }
 
   #[test]
@@ -1278,6 +1339,57 @@ mod tests {
   }
 
   #[test]
+  fn cors_response_filters_headers() {
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+
+    let mut exposed_resource = FetchedResource::new(b"ok".to_vec(), None);
+    exposed_resource.access_control_allow_origin = Some("*".to_string());
+    exposed_resource.response_headers = Some(vec![
+      ("Content-Type".to_string(), "text/plain".to_string()),
+      ("X-Test".to_string(), "a".to_string()),
+      (
+        "Access-Control-Expose-Headers".to_string(),
+        "X-Test".to_string(),
+      ),
+    ]);
+    let fetcher = StaticFetcher {
+      resource: exposed_resource,
+    };
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Cors);
+    assert_eq!(
+      response.headers.get("content-type").unwrap().as_deref(),
+      Some("text/plain")
+    );
+    assert_eq!(response.headers.get("x-test").unwrap().as_deref(), Some("a"));
+
+    let mut unexposed_resource = FetchedResource::new(b"ok".to_vec(), None);
+    unexposed_resource.access_control_allow_origin = Some("*".to_string());
+    unexposed_resource.response_headers = Some(vec![
+      ("Content-Type".to_string(), "text/plain".to_string()),
+      ("X-Test".to_string(), "a".to_string()),
+    ]);
+    let fetcher = StaticFetcher {
+      resource: unexposed_resource,
+    };
+    let mut request = Request::new("GET", "https://other.example/res");
+    request.credentials = RequestCredentials::Omit;
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Cors);
+    assert_eq!(
+      response.headers.get("content-type").unwrap().as_deref(),
+      Some("text/plain")
+    );
+    assert_eq!(response.headers.get("x-test").unwrap(), None);
+  }
+
+  #[test]
   fn cors_expose_headers_wildcard_exposes_all_only_for_anonymous() {
     let origin = origin_from_url("https://client.example/").expect("origin");
 
@@ -1476,7 +1588,9 @@ mod tests {
     let request = Request::new("GET", "https://example.com/a");
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
-    assert_eq!(response.r#type, ResponseType::Cors);
+    // Without a client origin, `fetch()` cannot determine same-origin / cross-origin semantics.
+    // Use `ResponseType::Default` as a conservative fallback.
+    assert_eq!(response.r#type, ResponseType::Default);
 
     let mut request = Request::new("GET", "https://example.com/a");
     request.set_mode(RequestMode::NoCors);
