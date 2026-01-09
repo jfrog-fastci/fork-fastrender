@@ -124,11 +124,16 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   }
 
   let script_type = match &doc.node(script).kind {
-    dom2::NodeKind::Element { tag_name, .. } => super::determine_script_type_from_attrs(
-      tag_name,
-      get_attribute(doc, script, "type"),
-      get_attribute(doc, script, "language"),
-    ),
+    dom2::NodeKind::Element { tag_name, .. } => {
+      if !tag_name.eq_ignore_ascii_case("script") {
+        super::ScriptType::Unknown
+      } else {
+        super::determine_script_type_from_attrs(
+          get_attribute(doc, script, "type"),
+          get_attribute(doc, script, "language"),
+        )
+      }
+    }
     _ => super::ScriptType::Unknown,
   };
 

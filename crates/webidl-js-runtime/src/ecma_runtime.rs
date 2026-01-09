@@ -53,6 +53,14 @@ pub struct VmJsRuntime {
   symbol_data_symbol: Option<GcSymbol>,
 
   last_swept_gc_runs: u64,
+
+  // A tiny, explicit intern table for values where host code relies on stable string identity.
+  //
+  // `vm-js` strings are not automatically interned, and `Value` equality compares string handles
+  // (not contents). Some host shims use strings as stand-ins for stable JS identity (until real
+  // platform objects exist), so keep those specific strings alive and re-use the same handle.
+  interned_window: Option<GcString>,
+  interned_document: Option<GcString>,
 }
 
 impl VmJsRuntime {
@@ -75,6 +83,8 @@ impl VmJsRuntime {
       number_data_symbol: None,
       symbol_data_symbol: None,
       last_swept_gc_runs: 0,
+      interned_window: None,
+      interned_document: None,
     }
   }
 
@@ -108,12 +118,12 @@ impl VmJsRuntime {
     roots: impl IntoIterator<Item = Value>,
     f: impl FnOnce(&mut Self) -> Result<R, VmError>,
   ) -> Result<R, VmError> {
-    // `vm-js` removed the old `Heap::{push_stack_root,truncate_stack_roots}` API in favour of
-    // `Scope`-based rooting. We can't hold a `Scope` across `f(self)` because `f` needs mutable
-    // access to the heap (and may create its own scopes).
+    // `vm-js` removed the old manual stack root APIs in favour of `Heap::scope()` (RAII) rooting.
+    // We can't hold a `Scope` across `f(self)` because `f` needs mutable access to the heap (and
+    // may create its own scopes).
     //
-    // Instead, emulate stack roots using persistent roots that we remove immediately after `f`
-    // returns.
+    // Instead, emulate the old temporary stack root behaviour by using persistent roots that are
+    // removed immediately after `f` returns.
     let mut root_ids = Vec::new();
     for v in roots {
       root_ids.push(self.heap.add_root(v));
@@ -128,6 +138,28 @@ impl VmJsRuntime {
   fn alloc_string_handle(&mut self, s: &str) -> Result<GcString, VmError> {
     let mut scope = self.heap.scope();
     scope.alloc_string(s)
+  }
+
+  fn intern_window_string(&mut self) -> Result<GcString, VmError> {
+    if let Some(handle) = self.interned_window {
+      return Ok(handle);
+    }
+    let handle = self.alloc_string_handle("window")?;
+    // Keep this handle alive for the lifetime of the runtime.
+    self.heap.add_root(Value::String(handle));
+    self.interned_window = Some(handle);
+    Ok(handle)
+  }
+
+  fn intern_document_string(&mut self) -> Result<GcString, VmError> {
+    if let Some(handle) = self.interned_document {
+      return Ok(handle);
+    }
+    let handle = self.alloc_string_handle("document")?;
+    // Keep this handle alive for the lifetime of the runtime.
+    self.heap.add_root(Value::String(handle));
+    self.interned_document = Some(handle);
+    Ok(handle)
   }
 
   /// Creates a string [`PropertyKey`] from a Rust `&str`.
@@ -178,7 +210,12 @@ impl VmJsRuntime {
   }
 
   pub fn alloc_string_value(&mut self, s: &str) -> Result<Value, VmError> {
-    Ok(Value::String(self.alloc_string_handle(s)?))
+    let handle = match s {
+      "window" => self.intern_window_string()?,
+      "document" => self.intern_document_string()?,
+      _ => self.alloc_string_handle(s)?,
+    };
+    Ok(Value::String(handle))
   }
 
   pub fn alloc_object_value(&mut self) -> Result<Value, VmError> {

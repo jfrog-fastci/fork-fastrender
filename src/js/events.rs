@@ -69,8 +69,35 @@ impl EventWrapper {
       prevent_default: Self::intern_key(rt, "preventDefault")?,
     };
 
+    // Keep key strings alive across GC.
+    //
+    // These `PropertyKey` handles are stored in Rust and are not traced by the `vm-js` heap.
+    // They must be explicitly rooted (or referenced by rooted JS objects) to avoid becoming
+    // dangling handles after a GC cycle.
+    for key in [
+      keys.event_id,
+      keys.type_,
+      keys.target,
+      keys.current_target,
+      keys.event_phase,
+      keys.default_prevented,
+      keys.stop_propagation,
+      keys.stop_immediate_propagation,
+      keys.prevent_default,
+    ] {
+      match key {
+        PropertyKey::String(s) => {
+          rt.heap_mut().add_root(Value::String(s));
+        }
+        PropertyKey::Symbol(sym) => {
+          rt.heap_mut().add_root(Value::Symbol(sym));
+        }
+      }
+    }
+
     // Prototype with methods/getters that mutate the active Rust `Event`.
     let prototype = rt.alloc_object_value()?;
+    rt.heap_mut().add_root(prototype);
 
     let stop_propagation = {
       let active = active_events.clone();
