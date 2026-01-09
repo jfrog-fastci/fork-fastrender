@@ -1800,6 +1800,10 @@ impl FragmentTree {
     self.viewport.is_some()
   }
 
+  pub(crate) fn set_viewport_size(&mut self, viewport: Size) {
+    self.viewport = Some(viewport);
+  }
+
   /// Computes the total bounding box of all content
   pub fn content_size(&self) -> Rect {
     let mut bbox = self.root.bounding_box();

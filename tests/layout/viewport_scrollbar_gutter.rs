@@ -178,6 +178,29 @@ fn viewport_does_not_double_reserve_when_root_overflow_auto() {
 }
 
 #[test]
+fn viewport_does_not_use_body_overflow_when_root_overflow_hidden() {
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html { overflow-y: hidden; }
+          body { margin: 0; overflow-y: auto; }
+          #marker { width: 100%; height: 1px; }
+          #spacer { height: 1000px; }
+        </style>
+      </head>
+      <body>
+        <div id="marker"></div>
+        <div id="spacer"></div>
+      </body>
+    </html>"#;
+
+  let viewport = (200, 100);
+  let width = marker_width(html, viewport);
+  assert_close(width, viewport.0 as f32, "marker width");
+}
+
+#[test]
 fn viewport_overflow_propagation_html_body_special_case() {
   let html = r#"<!doctype html>
     <html style="overflow: visible;">

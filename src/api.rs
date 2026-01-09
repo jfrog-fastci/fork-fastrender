@@ -5078,6 +5078,13 @@ fn paint_fragment_tree_with_state(
 ) -> Result<PaintedFrame> {
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
+  // The layout viewport (used for layout/scroll calculations) can differ from the paint viewport
+  // when reserving space for viewport scrollbars (CSS Overflow 3). The paint pipeline uses the
+  // fragment tree's stored viewport size to resolve viewport-relative paint units (vw/vh) and to
+  // extend the canvas background. Ensure that value reflects the paint viewport so the reserved
+  // gutter shows the correct canvas background (matching headless Chrome).
+  fragment_tree.set_viewport_size(paint_viewport);
+
   let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
   scroll_state = scroll_result.state;
   // Clamp/sanitize viewport scroll offsets even when they were set programmatically. This keeps the
@@ -6796,6 +6803,15 @@ impl FastRender {
         if store.request().fragment_tree {
           store.fragment_tree = Some(fragment_tree.clone());
         }
+      }
+
+      // The fragment tree stores the layout viewport size, which is used for viewport scrolling and
+      // sticky positioning. When reserving viewport scrollbar gutter space (CSS Overflow 3), we
+      // still want the *paint* viewport to represent the full canvas so the reserved gutter shows
+      // the correct canvas background (matching headless Chrome screenshots).
+      fragment_tree.set_viewport_size(paint_viewport);
+
+      if let Some(store) = artifacts.as_deref_mut() {
         if store.request().display_list {
           // Capture a paint-accurate display list: use the stacking-context-aware builder and
           // apply the same scroll offset/canvas bounds as the paint stage. This keeps snapshots
