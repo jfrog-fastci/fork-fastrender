@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptState, EventLoop, RunLimits, RunUntilIdleOutcome,
+  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, RunUntilIdleOutcome,
   RunUntilIdleStopReason, ScriptOrchestrator,
 };
 use crate::js::webidl::VmJsRuntime;
@@ -41,7 +41,7 @@ pub struct BrowserDocumentJs {
   js_runtime: VmJsRuntime,
   event_loop: Option<EventLoop<BrowserDocumentJs>>,
   script_orchestrator: ScriptOrchestrator,
-  current_script_state: CurrentScriptState,
+  current_script_state: CurrentScriptStateHandle,
 }
 
 impl BrowserDocumentJs {
@@ -55,7 +55,7 @@ impl BrowserDocumentJs {
       js_runtime: VmJsRuntime::new(),
       event_loop: Some(event_loop),
       script_orchestrator: ScriptOrchestrator::new(),
-      current_script_state: CurrentScriptState::default(),
+      current_script_state: CurrentScriptStateHandle::default(),
     }
   }
 
@@ -135,12 +135,8 @@ impl BrowserDocumentJs {
 }
 
 impl CurrentScriptHost for BrowserDocumentJs {
-  fn current_script_state(&self) -> &CurrentScriptState {
+  fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script_state
-  }
-
-  fn current_script_state_mut(&mut self) -> &mut CurrentScriptState {
-    &mut self.current_script_state
   }
 }
 
