@@ -537,6 +537,16 @@ pub fn spawn_ui_worker_for_test(
   spawn_ui_worker_inner(name.into(), test_render_delay_ms)
 }
 
+fn maybe_set_test_render_delay_ms(delay: Option<u64>) {
+  // `set_test_render_delay_ms` is only available for `browser_ui` builds and unit tests.
+  // Keep the headless UI worker loop compilable for core renderer builds that don't enable
+  // the desktop UI stack.
+  #[cfg(any(test, feature = "browser_ui"))]
+  crate::render_control::set_test_render_delay_ms(delay);
+  #[cfg(not(any(test, feature = "browser_ui")))]
+  let _ = delay;
+}
+
 fn spawn_ui_worker_inner(
   name: String,
   test_render_delay_ms: Option<u64>,
@@ -550,9 +560,7 @@ fn spawn_ui_worker_inner(
     .name(name)
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || {
-      if let Some(delay) = test_render_delay_ms {
-        crate::render_control::set_test_render_delay_ms(Some(delay));
-      }
+      maybe_set_test_render_delay_ms(test_render_delay_ms);
       run_worker_loop(to_worker_rx, to_ui_tx, cancel_gens_for_worker);
     })?;
 
