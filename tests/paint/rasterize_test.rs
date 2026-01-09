@@ -674,6 +674,24 @@ mod box_shadow_tests {
     let result = render_box_shadow(&mut pixmap, 30.0, 30.0, 40.0, 40.0, &radii, &shadow).unwrap();
     assert!(result);
   }
+
+  #[test]
+  fn outset_shadow_does_not_paint_inside_border_box() {
+    // Regression test: Outset (non-inset) shadows should only be visible outside the
+    // element's border box. This is relied on by patterns like:
+    // `box-shadow: -2px 0 0 var(--color-border-primary)` (MDN reference TOC links).
+    let mut pixmap = create_pixmap(80, 80);
+    let radii = BorderRadii::zero();
+    let shadow = BoxShadow::new(-2.0, 0.0, 0.0, 0.0, Rgba::rgb(255, 0, 0));
+
+    let result = render_box_shadow(&mut pixmap, 20.0, 20.0, 40.0, 40.0, &radii, &shadow).unwrap();
+    assert!(result);
+
+    // Shadow should appear just outside the left edge.
+    assert!(pixel_is_colored(&pixmap, 19, 40));
+    // But not inside the border box.
+    assert!(!pixel_is_colored(&pixmap, 21, 40));
+  }
 }
 
 // ============================================================================

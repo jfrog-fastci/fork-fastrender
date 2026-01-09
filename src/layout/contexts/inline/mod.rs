@@ -6974,28 +6974,9 @@ impl InlineFormattingContext {
       return;
     }
 
+    // Max-content should sum adjacent text items; forced breaks are modeled as `InlineItem::HardBreak`.
     let len = text_item.text.len();
-    let mut last_break = 0;
-
-    for brk in &text_item.break_opportunities {
-      if brk.byte_offset > len {
-        continue;
-      }
-      if brk.break_type == BreakType::Mandatory {
-        let segment_width = (text_item.advance_at_offset(brk.byte_offset)
-          - text_item.advance_at_offset(last_break))
-        .max(0.0);
-        tracker.add_width(segment_width);
-        tracker.break_segment();
-        last_break = brk.byte_offset;
-      }
-    }
-
-    if last_break < len {
-      let trailing =
-        (text_item.advance_at_offset(len) - text_item.advance_at_offset(last_break)).max(0.0);
-      tracker.add_width(trailing);
-    }
+    tracker.add_width(text_item.advance_at_offset(len).max(0.0));
   }
 }
 
@@ -16542,6 +16523,36 @@ mod tests {
 
     // "Hello" = 5 chars * 0.5 * 16px = 40px
     assert!(max_width > 0.0);
+  }
+
+  #[test]
+  fn max_content_width_sums_across_text_nodes() {
+    let ifc = InlineFormattingContext::new();
+
+    let width_a = ifc
+      .compute_intrinsic_inline_size(
+        &make_inline_container(vec![make_text_box("Hello")]),
+        IntrinsicSizingMode::MaxContent,
+      )
+      .unwrap();
+    let width_b = ifc
+      .compute_intrinsic_inline_size(
+        &make_inline_container(vec![make_text_box("World")]),
+        IntrinsicSizingMode::MaxContent,
+      )
+      .unwrap();
+
+    let combined = ifc
+      .compute_intrinsic_inline_size(
+        &make_inline_container(vec![make_text_box("Hello"), make_text_box("World")]),
+        IntrinsicSizingMode::MaxContent,
+      )
+      .unwrap();
+
+    assert!(
+      combined > width_a.max(width_b) + 0.5,
+      "expected max-content width to sum across adjacent text nodes; got combined={combined:.2} a={width_a:.2} b={width_b:.2}",
+    );
   }
 
   #[test]

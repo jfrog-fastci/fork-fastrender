@@ -17,9 +17,9 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 310738,
-    "diff_percent": 32.3685,
-    "perceptual": 0.8609,
+    "diff_pixels": 75138,
+    "diff_percent": 7.8269,
+    "perceptual": 0.8176,
     "tolerance": 0,
     "max_diff_percent": 0.0,
     "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"

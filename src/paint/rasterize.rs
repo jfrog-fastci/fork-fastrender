@@ -1267,12 +1267,9 @@ fn render_outset_shadow(
         );
       }
     } else if let Some(path) = build_rounded_rect_path(
-      cutout_x,
-      cutout_y,
-      cutout_w,
-      cutout_h,
-      &cutout_radii,
-    ) {
+    } else if let Some(path) =
+      build_rounded_rect_path(cutout_x, cutout_y, cutout_w, cutout_h, &cutout_radii)
+    {
       let mut paint = Paint::default();
       paint.blend_mode = tiny_skia::BlendMode::Clear;
       paint.anti_alias = true;
@@ -1285,6 +1282,7 @@ fn render_outset_shadow(
       );
     }
   }
+  crate::render_control::check_active(RenderStage::Paint)?;
 
   let mut paint = PixmapPaint::default();
   paint.blend_mode = tiny_skia::BlendMode::SourceOver;

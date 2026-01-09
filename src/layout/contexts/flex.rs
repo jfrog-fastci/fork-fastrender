@@ -4459,12 +4459,28 @@ impl FormattingContext for FlexFormattingContext {
     };
 
     let mut contribution = 0.0f32;
+    let mut in_flow_count = 0usize;
     for child_total in contributions.into_iter().flatten() {
       check_layout_deadline(&mut deadline_counter)?;
       if is_row_axis {
         contribution += child_total;
+        in_flow_count += 1;
       } else {
         contribution = contribution.max(child_total);
+      }
+    }
+
+    if is_row_axis && in_flow_count > 1 {
+      // Taffy's flexbox algorithm accounts for `gap` between items, but our intrinsic sizing fast
+      // path approximates the inline size by summing child contributions. Include the column-gap
+      // so that flex base-size resolution matches full layout and avoids spurious wrapping.
+      //
+      // Note: percentage gaps depend on the container size; resolve against 0px here to keep the
+      // intrinsic fast path deterministic. (Most real-world uses, including MDN, use absolute
+      // lengths like `rem`.)
+      let gap = self.resolve_length_for_width(style.grid_column_gap, 0.0, style);
+      if gap.is_finite() && gap > 0.0 {
+        contribution += gap * (in_flow_count as f32 - 1.0);
       }
     }
 

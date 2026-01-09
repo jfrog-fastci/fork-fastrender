@@ -7027,26 +7027,62 @@ impl GridFormattingContext {
     }
 
     let mut intrinsic_height: Option<f32> = None;
-    if !inline_is_horizontal && known_dimensions.height.is_none() {
+    if known_dimensions.height.is_none()
+      && matches!(
+        available_space.height,
+        taffy::style::AvailableSpace::MinContent | taffy::style::AvailableSpace::MaxContent
+      )
+    {
+      // CSS Grid track sizing uses intrinsic min/max-content contributions. When the item has a
+      // definite preferred block size (e.g. `height: 100px`), browsers use that size as the
+      // contribution even when the track is `min-content`/`max-content`. Taffy requests these
+      // contributions via `AvailableSpace::{MinContent,MaxContent}` probe calls; ensure we answer
+      // with the box's definite border-box size so fixed-size grid items don't collapse their
+      // tracks and overlap subsequent rows (MDN pageset: sticky header overlapping the top banner).
+      let percentage_base = match available_space.width {
+        taffy::style::AvailableSpace::Definite(w) => w,
+        _ => parent_inline_base.unwrap_or(0.0),
+      };
+      let (
+        _padding_left,
+        _padding_right,
+        padding_top,
+        padding_bottom,
+        _border_left,
+        _border_right,
+        border_top,
+        border_bottom,
+      ) = self.resolved_padding_border_for_measure(style, percentage_base);
+      let edges_h = padding_top + padding_bottom + border_top + border_bottom;
+
+      let definite_border_box_height = style
+        .height
+        .and_then(|len| self.resolve_length_px_with_base(len, None, style))
+        .map(|px| border_size_from_box_sizing(px.max(0.0), edges_h, style.box_sizing));
+
       intrinsic_height = match available_space.height {
-        taffy::style::AvailableSpace::MinContent => fit_border_box_height.or_else(|| {
-          Some(
-            match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
-              Ok(size) => size,
-              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-              Err(_) => 0.0,
-            },
-          )
-        }),
-        taffy::style::AvailableSpace::MaxContent => fit_border_box_height.or_else(|| {
-          Some(
-            match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
-              Ok(size) => size,
-              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-              Err(_) => 0.0,
-            },
-          )
-        }),
+        taffy::style::AvailableSpace::MinContent => {
+          fit_border_box_height.or(definite_border_box_height).or_else(|| {
+            (!inline_is_horizontal).then(|| {
+              match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              }
+            })
+          })
+        }
+        taffy::style::AvailableSpace::MaxContent => {
+          fit_border_box_height.or(definite_border_box_height).or_else(|| {
+            (!inline_is_horizontal).then(|| {
+              match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
+                Ok(size) => size,
+                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                Err(_) => 0.0,
+              }
+            })
+          })
+        }
         _ => None,
       };
     }

@@ -7,7 +7,9 @@ use fastrender::style::types::AspectRatio;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::style::types::WordBreak;
+use fastrender::style::values::CalcLength;
 use fastrender::style::values::Length;
+use fastrender::LengthUnit;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use std::sync::Arc;
@@ -28,7 +30,7 @@ fn grid_fit_content_track_clamps_to_argument() {
   container_style.width = Some(Length::px(200.0));
   container_style.height = Some(Length::px(40.0));
   container_style.grid_template_columns =
-    vec![GridTrack::FitContent(Length::px(100.0)), GridTrack::Fr(1.0)];
+    vec![GridTrack::FitContent(Length::calc(CalcLength::single(LengthUnit::Px, 100.0))), GridTrack::Fr(1.0)];
   container_style.grid_template_rows = vec![GridTrack::Auto];
   let container_style = Arc::new(container_style);
 
