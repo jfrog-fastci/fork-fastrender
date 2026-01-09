@@ -60,9 +60,9 @@ FastRender also has a small DOM interaction layer intended to support basic “n
 - built-in `about:*` pages (`about:newtab`, `about:blank`, `about:error`)
 
 These interactions are exercised by the headless UI worker integration tests; the windowed `browser`
-app uses the same `UiToWorker`/`WorkerToUi` message protocol via the browser UI worker thread
-([`spawn_browser_worker`](../src/ui/browser_thread.rs)), so link clicking and basic form interactions
-work in the GUI as well.
+app uses the same `UiToWorker`/`WorkerToUi` message protocol via
+[`worker_loop::spawn_ui_worker`](../src/ui/worker_loop.rs), so link clicking and basic form
+interactions work in the GUI as well.
 
 ### Still incomplete (non-exhaustive)
 

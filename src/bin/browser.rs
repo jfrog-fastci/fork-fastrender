@@ -1412,6 +1412,7 @@ impl App {
 
   fn handle_chrome_actions(&mut self, actions: Vec<fastrender::ui::ChromeAction>) {
     use fastrender::ui::ChromeAction;
+    use fastrender::ui::NavigationReason;
     use fastrender::ui::RepaintReason;
     use fastrender::ui::UiToWorker;
 
@@ -1588,7 +1589,11 @@ impl App {
           self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
           self.bump_nav(tab_id);
-          let _ = self.ui_to_worker_tx.send(UiToWorker::GoBack { tab_id });
+          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
+            tab_id,
+            url,
+            reason: NavigationReason::BackForward,
+          });
         }
         ChromeAction::Forward => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
@@ -1616,7 +1621,11 @@ impl App {
           self.browser_state.chrome.address_bar_text = url.clone();
           self.page_has_focus = false;
           self.bump_nav(tab_id);
-          let _ = self.ui_to_worker_tx.send(UiToWorker::GoForward { tab_id });
+          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
+            tab_id,
+            url,
+            reason: NavigationReason::BackForward,
+          });
         }
       }
     }

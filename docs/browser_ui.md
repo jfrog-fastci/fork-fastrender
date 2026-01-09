@@ -61,12 +61,16 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
   - Spawns the production browser UI worker thread via
-    [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs) (large stack; wrapper around
-    `spawn_browser_worker`), which handles navigation/history, scrolling, and DOM interaction and
+    [`worker_loop::spawn_ui_worker`](../src/ui/worker_loop.rs) (large stack; uses
+    `DEFAULT_RENDER_STACK_SIZE`), which handles navigation, scrolling, and DOM interaction and
     produces `WorkerToUi` updates.
+    - Note: `worker_loop` intentionally does **not** track per-tab history (`UiToWorker::GoBack` /
+      `GoForward` are ignored). The windowed UI maintains history itself and drives back/forward by
+      navigating to the desired URL.
   - Renders a small egui popup for `<select>` dropdowns. Workers can request a popup via:
     - `WorkerToUi::OpenSelectDropdown` (legacy cursor-anchored message)
     - `WorkerToUi::SelectDropdownOpened` (preferred; includes an explicit `anchor_css` rect)
+    - The current windowed UI handles `OpenSelectDropdown` and ignores `SelectDropdownOpened`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -84,17 +88,18 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
   - Address bar URL normalization: [`src/ui/url.rs`](../src/ui/url.rs)
-  - Browser worker thread (navigation/history + interaction + cancellation): [`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)
-    - `spawn_browser_worker` is the main worker used by the windowed `browser` app (via
-      `spawn_browser_ui_worker`).
+  - History-aware browser worker thread (navigation/history + interaction + cancellation): [`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)
+    - Exposes `spawn_browser_worker` / `spawn_browser_ui_worker` (large stack).
+    - Used by some integration tests and alternate harnesses; the windowed `browser` binary
+      currently uses `worker_loop::spawn_ui_worker`.
   - Message-driven UI worker loop used by some integration tests: [`src/ui/worker.rs`](../src/ui/worker.rs)
     - Exercised by `tests/browser_integration/ui_worker_fragment_navigation.rs`,
       `tests/browser_integration/ui_worker_navigation_messages.rs`, etc.
   - Synchronous “navigate + render a frame” helper (includes `about:*` support): [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
     - Mostly used by unit tests and small helpers.
   - Headless UI worker loop used by scroll-wheel integration tests (including overflow container
-    wheel scrolling) and most interaction/navigation protocol tests:
-    [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
+    wheel scrolling) and most interaction/navigation protocol tests (and currently also by the
+    windowed `browser` binary): [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
     - Exercised by `tests/browser_integration/ui_worker_scroll.rs`,
       `tests/browser_integration/ui_worker_interaction.rs`,
       `tests/browser_integration/ui_worker_tabs.rs`,
@@ -134,9 +139,8 @@ The browser UI should run rendering on a dedicated large-stack thread:
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - The windowed `browser` app spawns its worker via
-  [`spawn_browser_ui_worker`](../src/ui/browser_thread.rs), which ultimately uses
-  `std::thread::Builder`/`DEFAULT_RENDER_STACK_SIZE` (via `spawn_render_worker_thread`) to configure
-  the stack size.
+  [`worker_loop::spawn_ui_worker`](../src/ui/worker_loop.rs), which configures the thread stack via
+  `std::thread::Builder`/`DEFAULT_RENDER_STACK_SIZE`.
 - Headless UI worker loops used by integration tests also use dedicated large-stack threads (see
   [`spawn_render_worker_thread`](../src/ui/worker.rs) and the `DEFAULT_RENDER_STACK_SIZE` usage in
   [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)).
@@ -177,9 +181,10 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed `browser`
-app uses `spawn_browser_worker` and emits `FrameReady`, select dropdown open messages
-(`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading events. Stage heartbeats
-are only sent when a stage listener is installed by the worker.
+app currently uses `worker_loop::spawn_ui_worker` and emits `FrameReady`, select dropdown open
+messages (`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading events. The
+current GUI handles `OpenSelectDropdown` and ignores `SelectDropdownOpened`. Stage heartbeats are
+only sent when a stage listener is installed by the worker.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
