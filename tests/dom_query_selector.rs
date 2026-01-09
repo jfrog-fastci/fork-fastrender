@@ -113,3 +113,39 @@ fn query_selector_skips_inert_template_contents() {
     .collect();
   assert_eq!(ids, vec![Some("live")]);
 }
+
+#[test]
+fn scoped_query_selector_skips_inert_template_contents() {
+  let dom = parse_html(
+    r#"<!doctype html>
+    <html><body>
+      <template><div id="inert"></div></template>
+      <div id="live"></div>
+    </body></html>"#,
+  )
+  .unwrap();
+  let mut doc = Document::from_renderer_dom(&dom);
+
+  let body = doc
+    .query_selector("body", None)
+    .unwrap()
+    .expect("missing <body>");
+
+  assert_eq!(
+    doc.query_selector("#inert", Some(body)).unwrap(),
+    None,
+    "expected scoped queries to skip inert template contents"
+  );
+  assert!(
+    doc.query_selector("#live", Some(body)).unwrap().is_some(),
+    "expected scoped queries to find non-inert descendants"
+  );
+
+  let ids: Vec<Option<&str>> = doc
+    .query_selector_all("div", Some(body))
+    .unwrap()
+    .into_iter()
+    .map(|node| node_id_attribute(&doc, node, "id"))
+    .collect();
+  assert_eq!(ids, vec![Some("live")]);
+}

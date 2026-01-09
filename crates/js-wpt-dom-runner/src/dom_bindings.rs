@@ -15,7 +15,9 @@ pub fn install_dom_bindings<'js>(
   Ok(())
 }
 
-const DOM_BINDINGS_SHIM: &str = r#"
+// Note: use `r##"..."##` (double-hash) so the shim can contain `"#` sequences (e.g. CSS selectors
+// like `"#id"`), which would otherwise terminate a `r#"... "#` raw string literal.
+const DOM_BINDINGS_SHIM: &str = r##"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
 
@@ -60,11 +62,14 @@ const DOM_BINDINGS_SHIM: &str = r#"
     if (!("parentNode" in obj)) {
       define(obj, "parentNode", null);
     }
+    if (!("childNodes" in obj)) {
+      define(obj, "childNodes", []);
+    }
     return obj;
   }
 
   function ensureRemoveChild(obj) {
-    if (!obj || typeof obj.removeChild === "function") return;
+    if (!obj) return;
     obj.removeChild = function (child) {
       if (!child || (typeof child !== "object" && typeof child !== "function")) {
         throw domException("InvalidNodeType", "InvalidNodeType");
@@ -72,13 +77,17 @@ const DOM_BINDINGS_SHIM: &str = r#"
       if (child.parentNode !== this) {
         throw domException("NotFoundError", "NotFoundError");
       }
+      if (Array.isArray(this.childNodes)) {
+        var idx = this.childNodes.indexOf(child);
+        if (idx >= 0) this.childNodes.splice(idx, 1);
+      }
       child.parentNode = null;
       return child;
     };
   }
 
   function ensureAppendChild(obj) {
-    if (!obj || typeof obj.appendChild === "function") return;
+    if (!obj) return;
     obj.appendChild = function (child) {
       if (!child || (typeof child !== "object" && typeof child !== "function")) {
         throw domException("InvalidNodeType", "InvalidNodeType");
@@ -86,7 +95,17 @@ const DOM_BINDINGS_SHIM: &str = r#"
       if (this.__node_kind === "text") {
         throw domException("HierarchyRequestError", "HierarchyRequestError");
       }
+      if (child.parentNode && child.parentNode !== this) {
+        try {
+          child.parentNode.removeChild(child);
+        } catch (_e) {
+          // Ignore.
+        }
+      }
       child.parentNode = this;
+      if (Array.isArray(this.childNodes)) {
+        this.childNodes.push(child);
+      }
       return child;
     };
   }
@@ -144,17 +163,19 @@ const DOM_BINDINGS_SHIM: &str = r#"
     if (typeof g.Document === "function" && g.Document.prototype) {
       wrapAppendChild(g.Document.prototype);
       ensureRemoveChild(g.Document.prototype);
+      ensureAppendChild(g.Document.prototype);
     }
     if (typeof g.Element === "function" && g.Element.prototype) {
       wrapAppendChild(g.Element.prototype);
       ensureRemoveChild(g.Element.prototype);
+      ensureAppendChild(g.Element.prototype);
     }
   } catch (_e) {
     // Ignore; fallback nodes still have per-instance methods via `ensureNodeApis`.
   }
 
-  doc.querySelector = function (selectors) {
-    var sel = String(selectors);
+  function validateSelectors(sel) {
+    sel = String(sel);
     if (sel === "") throw new SyntaxError("SyntaxError");
     // Extremely small validity check: detect unbalanced []/() pairs. This is enough to ensure the
     // curated WPT subset sees deterministic `SyntaxError` for obviously-invalid selectors like "[".
@@ -170,10 +191,125 @@ const DOM_BINDINGS_SHIM: &str = r#"
       if (parens < 0) throw new SyntaxError("SyntaxError");
     }
     if (brackets !== 0 || parens !== 0) throw new SyntaxError("SyntaxError");
-    return null;
+    return sel;
+  }
+
+  function splitTokens(sel) {
+    var parts = String(sel).trim().split(/\s+/);
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i]) out.push(parts[i]);
+    }
+    return out;
+  }
+
+  function matchesSimple(node, token) {
+    if (!node || node.__node_kind !== "element") return false;
+    token = String(token);
+    if (token === "") return false;
+    var first = token[0];
+    if (first === "#") {
+      return String(node.id || "") === token.slice(1);
+    }
+    if (first === ".") {
+      var cls = String(node.className || "");
+      if (cls === "") return false;
+      var parts = cls.split(/\s+/);
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i] === token.slice(1)) return true;
+      }
+      return false;
+    }
+    // Tag name selector (ASCII case-insensitive).
+    return String(node.tagName || "").toLowerCase() === token.toLowerCase();
+  }
+
+  function matchesSelector(node, tokens, scopeRoot) {
+    if (!tokens || tokens.length === 0) return false;
+    var cur = node;
+    var ti = tokens.length - 1;
+    if (!matchesSimple(cur, tokens[ti])) return false;
+    ti--;
+    while (ti >= 0) {
+      var want = tokens[ti];
+      cur = cur.parentNode;
+      while (cur && cur !== scopeRoot && !matchesSimple(cur, want)) {
+        cur = cur.parentNode;
+      }
+      if (!cur) return false;
+      if (cur === scopeRoot && !matchesSimple(cur, want)) return false;
+      ti--;
+    }
+    return true;
+  }
+
+  function collectDescendants(root, out) {
+    if (!root || !Array.isArray(root.childNodes)) return;
+    for (var i = 0; i < root.childNodes.length; i++) {
+      var child = root.childNodes[i];
+      if (!child) continue;
+      if (child.__node_kind === "element") {
+        out.push(child);
+        // Skip inert <template> subtrees (template contents).
+        if (String(child.tagName || "").toLowerCase() === "template") {
+          continue;
+        }
+      }
+      collectDescendants(child, out);
+    }
+  }
+
+  function queryAll(scope, selectors) {
+    var sel = validateSelectors(selectors);
+    var tokens = splitTokens(sel);
+    var nodes = [];
+    collectDescendants(scope, nodes);
+    var matches = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (matchesSelector(nodes[i], tokens, scope)) {
+        matches.push(nodes[i]);
+      }
+    }
+    return matches;
+  }
+
+  function queryFirst(scope, selectors) {
+    var matches = queryAll(scope, selectors);
+    return matches.length > 0 ? matches[0] : null;
+  }
+
+  // Provide a default `document.body` so real-world patterns work in the test harness.
+  if (!("body" in doc) || doc.body == null) {
+    try {
+      var body = doc.createElement("body");
+      define(doc, "body", body);
+      doc.appendChild(body);
+    } catch (_e) {
+      // Ignore.
+    }
+  }
+
+  doc.querySelector = function (selectors) {
+    return queryFirst(this, selectors);
   };
- })();
- "#;
+  doc.querySelectorAll = function (selectors) {
+    return queryAll(this, selectors);
+  };
+
+  try {
+    if (typeof g.Element === "function" && g.Element.prototype) {
+      g.Element.prototype.querySelector = function (selectors) {
+        return queryFirst(this, selectors);
+      };
+      g.Element.prototype.querySelectorAll = function (selectors) {
+        return queryAll(this, selectors);
+      };
+    }
+  } catch (_e) {
+    // Ignore.
+  }
+  })();
+  "##;
 
 #[cfg(test)]
 mod tests {

@@ -192,6 +192,22 @@ fn curated_eventtarget_tests() {
 }
 
 #[test]
+fn element_query_selector_and_query_selector_all_work() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "dom/element_query_selector.window.js")
+    .expect("missing element_query_selector.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
+}
+
+#[test]
 fn discovers_worker_tests_but_skips_them() {
   for (backend, result) in
     run_test_id_all_backends("smoke/unsupported.worker.js", RunnerConfig::default())
