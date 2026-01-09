@@ -15,6 +15,11 @@ pub type ConsoleSink =
 pub struct WindowRealmConfig {
   pub document_url: String,
   pub console_sink: Option<ConsoleSink>,
+  /// Memory limits for the embedded `vm-js` heap.
+  ///
+  /// FastRender treats JavaScript as hostile input; keeping a hard heap limit is a foundational
+  /// safety invariant even before full script execution is wired up.
+  pub heap_limits: HeapLimits,
 }
 
 impl WindowRealmConfig {
@@ -22,7 +27,13 @@ impl WindowRealmConfig {
     Self {
       document_url: document_url.into(),
       console_sink: None,
+      heap_limits: default_heap_limits(),
     }
+  }
+
+  pub fn with_heap_limits(mut self, limits: HeapLimits) -> Self {
+    self.heap_limits = limits;
+    self
   }
 }
 
@@ -36,9 +47,18 @@ pub struct WindowRealm {
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let mut vm = Vm::new(VmOptions::default());
-    let mut heap = Heap::new(default_heap_limits());
-    let realm = Realm::new(&mut vm, &mut heap)?;
-    let console_sink_id = init_window_globals(&mut vm, &mut heap, &realm, &config)?;
+    let mut heap = Heap::new(config.heap_limits);
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let console_sink_id = match init_window_globals(&mut vm, &mut heap, &realm, &config) {
+      Ok(id) => id,
+      Err(err) => {
+        // `vm-js` realms own persistent roots registered with the heap. Even though we're about to
+        // drop the heap on this error path, `Realm` asserts (in debug builds) that embeddings call
+        // `teardown()` to make the contract explicit and avoid accidental leaks when a heap is reused.
+        realm.teardown(&mut heap);
+        return Err(err);
+      }
+    };
     Ok(Self {
       vm,
       heap,
@@ -167,6 +187,37 @@ fn unregister_console_sink(id: u64) {
   console_sinks().lock().remove(&id);
 }
 
+struct ConsoleSinkGuard {
+  id: u64,
+  active: bool,
+}
+
+impl ConsoleSinkGuard {
+  fn new(sink: ConsoleSink) -> Self {
+    Self {
+      id: register_console_sink(sink),
+      active: true,
+    }
+  }
+
+  fn id(&self) -> u64 {
+    self.id
+  }
+
+  fn disarm(mut self) -> u64 {
+    self.active = false;
+    self.id
+  }
+}
+
+impl Drop for ConsoleSinkGuard {
+  fn drop(&mut self) {
+    if self.active {
+      unregister_console_sink(self.id);
+    }
+  }
+}
+
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -248,10 +299,14 @@ fn init_window_globals(
   let error_key = alloc_key(&mut scope, "error")?;
   scope.define_property(console_obj, error_key, data_desc(Value::Object(log_func)))?;
 
-  let console_sink_id = config.console_sink.clone().map(register_console_sink);
-  if let Some(id) = console_sink_id {
+  let mut console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
+  if let Some(guard) = console_sink_guard.as_ref() {
     let sink_key = alloc_key(&mut scope, "__fastrender_console_sink_id")?;
-    scope.define_property(console_obj, sink_key, data_desc(Value::Number(id as f64)))?;
+    scope.define_property(
+      console_obj,
+      sink_key,
+      data_desc(Value::Number(guard.id() as f64)),
+    )?;
   }
 
   scope.define_property(global, global_this_key, data_desc(Value::Object(global)))?;
@@ -274,7 +329,7 @@ fn init_window_globals(
     data_desc(Value::Object(console_obj)),
   )?;
 
-  Ok(console_sink_id)
+  Ok(console_sink_guard.map(ConsoleSinkGuard::disarm))
 }
 
 #[cfg(test)]
@@ -342,5 +397,81 @@ mod tests {
     assert_eq!(call_result, Value::Undefined);
 
     Ok(())
+  }
+
+  #[test]
+  fn window_realm_init_error_does_not_leak_console_sink() {
+    let initial_len = console_sinks().lock().len();
+    let sink: ConsoleSink = Arc::new(|_heap, _args| {});
+
+    let probe = |max_bytes: usize| -> (bool, bool) {
+      let before_next = NEXT_CONSOLE_SINK_ID.load(Ordering::Relaxed);
+
+      let mut config = WindowRealmConfig::new("https://example.com/")
+        .with_heap_limits(HeapLimits::new(max_bytes, max_bytes));
+      config.console_sink = Some(sink.clone());
+
+      let res = WindowRealm::new(config);
+      let registered = NEXT_CONSOLE_SINK_ID.load(Ordering::Relaxed) != before_next;
+      let ok = res.is_ok();
+      drop(res);
+
+      assert_eq!(
+        console_sinks().lock().len(),
+        initial_len,
+        "console sink map should be leak-free (max_bytes={max_bytes}, registered={registered}, ok={ok})"
+      );
+      (ok, registered)
+    };
+
+    // Find the minimal heap limit that allows initialization to succeed.
+    let mut hi = 1024usize;
+    loop {
+      let (ok, _) = probe(hi);
+      if ok {
+        break;
+      }
+      hi = hi.saturating_mul(2);
+      assert!(
+        hi <= 64 * 1024 * 1024,
+        "failed to find a heap limit that allows WindowRealm initialization"
+      );
+    }
+
+    let mut lo = 0usize;
+    let mut high = hi;
+    while lo.saturating_add(1) < high {
+      let mid = (lo + high) / 2;
+      let (ok, _) = probe(mid);
+      if ok {
+        high = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    let succ_min = high;
+
+    // Find the minimal heap limit that gets far enough to register a console sink.
+    let mut lo = 0usize;
+    let mut high = succ_min;
+    while lo.saturating_add(1) < high {
+      let mid = (lo + high) / 2;
+      let (_, registered) = probe(mid);
+      if registered {
+        high = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    let reg_min = high;
+
+    assert!(
+      reg_min < succ_min,
+      "expected some heap limits to register a console sink but still fail (reg_min={reg_min}, succ_min={succ_min})"
+    );
+
+    let (ok, registered) = probe(succ_min.saturating_sub(1));
+    assert!(!ok, "expected init to fail just below succ_min");
+    assert!(registered, "expected init to register a console sink before failing");
   }
 }
