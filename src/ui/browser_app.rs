@@ -1,8 +1,9 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
-use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use crate::ui::cancel::CancelGens;
 use crate::ui::history::TabHistory;
+use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::ui::normalize_user_url;
 use std::collections::VecDeque;
 use url::Url;
@@ -64,6 +65,11 @@ impl std::fmt::Debug for FrameReadyUpdate {
 #[derive(Debug)]
 pub struct BrowserTabState {
   pub id: TabId,
+  /// Shared cancellation generations for this tab.
+  ///
+  /// The UI thread can bump these counters (without blocking on the worker) to cancel in-flight
+  /// navigation/paint work.
+  pub cancel: CancelGens,
   pub title: Option<String>,
   pub current_url: Option<String>,
   pub loading: bool,
@@ -98,6 +104,7 @@ impl BrowserTabState {
     let history = TabHistory::with_initial(initial_url.clone());
     let mut tab = Self {
       id: tab_id,
+      cancel: CancelGens::new(),
       title: None,
       current_url: Some(initial_url),
       loading: false,

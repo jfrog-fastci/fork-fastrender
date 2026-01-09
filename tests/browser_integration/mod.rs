@@ -7,6 +7,7 @@ mod browser_worker_cancel_gens;
 mod browser_worker_fragment_navigation;
 mod browser_worker_target_pseudoclass;
 mod browser_thread_select_dropdown;
+mod browser_thread_paint_cancellation;
 mod document;
 mod document2;
 mod history_navigation;

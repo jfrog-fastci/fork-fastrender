@@ -1081,39 +1081,17 @@ impl BrowserRuntime {
 
         doc.set_navigation_urls(reported_final_url.clone(), base_url.clone());
         doc.set_scroll_state(scroll_state.clone());
-        doc.set_cancel_callback(Some(paint_cancel_callback));
-
-        let painted = {
-          let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-          doc.render_if_needed_with_scroll_state()
-        };
-
-        let painted = match painted {
-          Ok(Some(frame)) => frame,
-          Ok(None) => {
-            // Unexpected (we just changed scroll/cancel callback), but keep going.
-            return None;
-          }
-          Err(err) => {
-            return self.run_navigation_error(
-              tab_id,
-              &original_url,
-              &format!("paint failed: {err}"),
-              snapshot,
-            );
-          }
-        };
-
-        tab.scroll_state = painted.scroll_state.clone();
-        tab.history
-          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
-        tab.document = Some(doc);
-        tab.interaction = InteractionEngine::new();
 
         // Update history and emit navigation state.
         let _ = tab
           .history
           .commit_navigation(&original_url, reported_final_url.as_deref());
+        tab.scroll_state = scroll_state;
+        tab.history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        tab.document = Some(doc);
+        tab.interaction = InteractionEngine::new();
+
         let title = tab
           .document
           .as_ref()
@@ -1130,24 +1108,61 @@ impl BrowserRuntime {
           can_go_forward: tab.history.can_go_forward(),
         });
 
-        msgs.push(WorkerToUi::FrameReady {
-          tab_id,
-          frame: RenderedFrame {
-            pixmap: painted.pixmap,
-            viewport_css,
-            dpr: tab
-              .document
-              .as_ref()
-              .and_then(|d| d.prepared())
-              .map(|p| p.device_pixel_ratio())
-              .unwrap_or(dpr),
-            scroll_state: tab.scroll_state.clone(),
-          },
-        });
-        msgs.push(WorkerToUi::ScrollStateUpdated {
-          tab_id,
-          scroll: tab.scroll_state.clone(),
-        });
+        let painted = {
+          let Some(doc) = tab.document.as_mut() else {
+            return None;
+          };
+          doc.set_cancel_callback(Some(paint_cancel_callback));
+          let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+          doc.render_if_needed_with_scroll_state()
+        };
+
+        match painted {
+          Ok(Some(frame)) => {
+            tab.scroll_state = frame.scroll_state.clone();
+            tab.history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+
+            msgs.push(WorkerToUi::FrameReady {
+              tab_id,
+              frame: RenderedFrame {
+                pixmap: frame.pixmap,
+                viewport_css,
+                dpr: tab
+                  .document
+                  .as_ref()
+                  .and_then(|d| d.prepared())
+                  .map(|p| p.device_pixel_ratio())
+                  .unwrap_or(dpr),
+                scroll_state: tab.scroll_state.clone(),
+              },
+            });
+            msgs.push(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            });
+          }
+          Ok(None) => {
+            // Unexpected (we just changed scroll/cancel callback). Schedule a repaint so the next
+            // paint job produces a frame.
+            tab.needs_repaint = true;
+          }
+          Err(err) => {
+            // Cancellation is signalled via the shared `CancelGens` (either by the UI thread or by
+            // subsequent messages). When cancelled, avoid surfacing a navigation error; instead
+            // schedule another paint so the latest state can be rendered.
+            if paint_snapshot != tab.cancel.snapshot_paint() {
+              tab.needs_repaint = true;
+            } else {
+              return self.run_navigation_error(
+                tab_id,
+                &original_url,
+                &format!("paint failed: {err}"),
+                snapshot,
+              );
+            }
+          }
+        }
 
         tab.loading = false;
         msgs.push(WorkerToUi::LoadingState {
@@ -1340,6 +1355,12 @@ impl BrowserRuntime {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
       Err(err) => {
+        // If this paint was cancelled (e.g. the UI bumped `CancelGens` due to a new scroll/resize),
+        // avoid spamming the debug log. Instead, schedule another paint attempt.
+        if snapshot != tab.cancel.snapshot_paint() {
+          tab.needs_repaint = true;
+          return None;
+        }
         let _ = self.ui_tx.send(WorkerToUi::DebugLog {
           tab_id,
           line: format!("paint error: {err}"),
