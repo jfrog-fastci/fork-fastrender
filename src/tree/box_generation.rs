@@ -5299,6 +5299,8 @@ fn create_replaced_box_from_styled(
         height_attr,
         view_box_attr,
         preserve_aspect_ratio_attr,
+        styled.styles.font_size,
+        styled.styles.root_font_size,
       );
 
       let size = match (svg_intrinsic.width, svg_intrinsic.height) {

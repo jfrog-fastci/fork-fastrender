@@ -1,3 +1,4 @@
+use fastrender::css::parser::parse_stylesheet;
 use fastrender::css::types::StyleSheet;
 use fastrender::dom;
 use fastrender::geometry::Size;
@@ -20,9 +21,13 @@ fn find_inline_svg(node: &BoxNode) -> Option<&ReplacedBox> {
 }
 
 fn svg_replaced_box(svg_markup: &str) -> ReplacedBox {
+  svg_replaced_box_with_stylesheet(svg_markup, &StyleSheet::new())
+}
+
+fn svg_replaced_box_with_stylesheet(svg_markup: &str, stylesheet: &StyleSheet) -> ReplacedBox {
   let html = format!("<html><body>{}</body></html>", svg_markup);
   let dom = dom::parse_html(&html).expect("parse html");
-  let styled = cascade::apply_styles(&dom, &StyleSheet::new());
+  let styled = cascade::apply_styles(&dom, stylesheet);
   let tree = generate_box_tree(&styled).expect("box tree");
   find_inline_svg(&tree.root)
     .cloned()
@@ -53,4 +58,22 @@ fn svg_viewbox_sets_aspect_ratio_with_default_dimensions() {
   let replaced = svg_replaced_box(r#"<svg viewBox="0 0 40 20"></svg>"#);
   assert_eq!(replaced.intrinsic_size, Some(Size::new(300.0, 150.0)));
   assert_eq!(replaced.aspect_ratio, Some(2.0));
+}
+
+#[test]
+fn svg_em_units_resolve_against_default_font_size() {
+  let replaced = svg_replaced_box(r#"<svg width="1em" height="2em"></svg>"#);
+  let size = replaced.intrinsic_size.expect("intrinsic size");
+  assert!((size.width - 16.0).abs() < 0.01);
+  assert!((size.height - 32.0).abs() < 0.01);
+}
+
+#[test]
+fn svg_em_units_resolve_against_css_font_size() {
+  let stylesheet = parse_stylesheet("svg{font-size:20px}").expect("parse css");
+  let replaced =
+    svg_replaced_box_with_stylesheet(r#"<svg width="1em" height="1em"></svg>"#, &stylesheet);
+  let size = replaced.intrinsic_size.expect("intrinsic size");
+  assert!((size.width - 20.0).abs() < 0.01);
+  assert!((size.height - 20.0).abs() < 0.01);
 }

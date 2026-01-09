@@ -4925,7 +4925,7 @@ impl ImageCache {
     let svg_content = svg_with_fragment.as_ref();
 
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
-      svg_intrinsic_metadata(svg_content).unwrap_or((None, None, None, false));
+      svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
 
     let ratio = meta_ratio.filter(|r| *r > 0.0);
     let (target_width, target_height) = match (
@@ -6300,7 +6300,7 @@ impl ImageCache {
 
     check_root(RenderStage::Paint).map_err(Error::Render)?;
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
-      svg_intrinsic_metadata(svg_content).unwrap_or((None, None, None, false));
+      svg_intrinsic_metadata(svg_content, 16.0, 16.0).unwrap_or((None, None, None, false));
 
     // Parse SVG
     let mut options = usvg::Options::default();
@@ -6443,10 +6443,13 @@ impl ImageCache {
 }
 
 /// Returns intrinsic metadata extracted from the SVG root element: explicit width/height when
-/// present (absolute units only), an intrinsic aspect ratio (if not disabled), and whether
-/// preserveAspectRatio="none" was specified.
+/// present (including common font-relative units when `font_size`/`root_font_size` are provided),
+/// an intrinsic aspect ratio (if not disabled), and whether preserveAspectRatio="none" was
+/// specified.
 fn svg_intrinsic_metadata(
   svg_content: &str,
+  font_size: f32,
+  root_font_size: f32,
 ) -> Option<(Option<f32>, Option<f32>, Option<f32>, bool)> {
   std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
     let doc = Document::parse(svg_content).ok()?;
@@ -6460,6 +6463,8 @@ fn svg_intrinsic_metadata(
       root.attribute("height"),
       root.attribute("viewBox"),
       root.attribute("preserveAspectRatio"),
+      font_size,
+      root_font_size,
     );
 
     Some((
@@ -9140,6 +9145,18 @@ mod tests {
       img.intrinsic_ratio(OrientationTransform::IDENTITY),
       Some(2.0)
     );
+  }
+
+  #[test]
+  fn svg_em_units_use_default_font_size_when_probing() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='1em' height='1em'></svg>";
+
+    let meta = cache
+      .probe_svg_content(svg, "inline em")
+      .expect("probe em svg");
+    assert_eq!(meta.width, 16);
+    assert_eq!(meta.height, 16);
   }
 
   #[test]

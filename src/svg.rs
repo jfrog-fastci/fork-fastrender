@@ -15,6 +15,64 @@ fn split_svg_whitespace(value: &str) -> impl Iterator<Item = &str> {
     .filter(|part| !part.is_empty())
 }
 
+fn parse_svg_number_and_unit(value: &str) -> Option<(f32, &str)> {
+  let trimmed = trim_svg_whitespace(value);
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let bytes = trimmed.as_bytes();
+  let mut idx = 0usize;
+  if bytes.get(idx).is_some_and(|b| *b == b'+' || *b == b'-') {
+    idx += 1;
+  }
+
+  let mut has_digit = false;
+  while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
+    idx += 1;
+    has_digit = true;
+  }
+
+  if bytes.get(idx).is_some_and(|b| *b == b'.') {
+    idx += 1;
+    while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
+      idx += 1;
+      has_digit = true;
+    }
+  }
+
+  if !has_digit {
+    return None;
+  }
+
+  if bytes.get(idx).is_some_and(|b| *b == b'e' || *b == b'E') {
+    let exp_start = idx;
+    let mut j = idx + 1;
+    if bytes.get(j).is_some_and(|b| *b == b'+' || *b == b'-') {
+      j += 1;
+    }
+    let mut has_exp_digit = false;
+    while bytes.get(j).is_some_and(|b| b.is_ascii_digit()) {
+      j += 1;
+      has_exp_digit = true;
+    }
+    if has_exp_digit {
+      idx = j;
+    } else {
+      // Treat `e`/`E` as the unit delimiter when it is not part of an exponent.
+      idx = exp_start;
+    }
+  }
+
+  let number = trimmed[..idx].parse::<f32>().ok()?;
+  if !number.is_finite() {
+    return None;
+  }
+
+  let unit = trim_svg_whitespace(&trimmed[idx..]);
+  Some((number, unit))
+}
+
 /// Utility helpers for working with SVG metadata.
 ///
 /// SVG length attributes accept a subset of CSS absolute units. Percentages are
@@ -37,55 +95,69 @@ impl SvgLength {
 }
 
 pub(crate) fn parse_svg_length(value: &str) -> Option<SvgLength> {
-  let trimmed = trim_svg_whitespace(value);
-  if trimmed.is_empty() {
-    return None;
-  }
-
-  let mut end = 0;
-  for (idx, ch) in trimmed.char_indices() {
-    if matches!(ch, '0'..='9' | '+' | '-' | '.' | 'e' | 'E') {
-      end = idx + ch.len_utf8();
-    } else {
-      break;
-    }
-  }
-
-  if end == 0 {
-    return None;
-  }
-
-  let number = trimmed[..end].parse::<f32>().ok()?;
-  if !number.is_finite() {
-    return None;
-  }
-
-  let unit = trim_svg_whitespace(&trimmed[end..]);
+  let (number, unit) = parse_svg_number_and_unit(value)?;
   if unit.eq_ignore_ascii_case("%") {
     return Some(SvgLength::Percentage(number));
   }
 
-  let px = if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
-    number
-  } else if unit.eq_ignore_ascii_case("in") {
-    number * 96.0
-  } else if unit.eq_ignore_ascii_case("cm") {
-    number * (96.0 / 2.54)
-  } else if unit.eq_ignore_ascii_case("mm") {
-    number * (96.0 / 25.4)
-  } else if unit.eq_ignore_ascii_case("pt") {
-    number * (96.0 / 72.0)
-  } else if unit.eq_ignore_ascii_case("pc") {
-    number * (96.0 / 6.0)
-  } else {
-    return None;
-  };
+  let px =
+    if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+      number
+    } else if unit.eq_ignore_ascii_case("in") {
+      number * 96.0
+    } else if unit.eq_ignore_ascii_case("cm") {
+      number * (96.0 / 2.54)
+    } else if unit.eq_ignore_ascii_case("mm") {
+      number * (96.0 / 25.4)
+    } else if unit.eq_ignore_ascii_case("pt") {
+      number * (96.0 / 72.0)
+    } else if unit.eq_ignore_ascii_case("pc") {
+      number * (96.0 / 6.0)
+    } else {
+      return None;
+    };
 
   px.is_finite().then_some(SvgLength::Px(px))
 }
 
 pub(crate) fn parse_svg_length_px(value: &str) -> Option<f32> {
   parse_svg_length(value)?.to_px()
+}
+
+pub(crate) fn parse_svg_length_px_with_font(
+  value: &str,
+  font_size: f32,
+  root_font_size: f32,
+) -> Option<f32> {
+  let (number, unit) = parse_svg_number_and_unit(value)?;
+  if unit.eq_ignore_ascii_case("%") {
+    return None;
+  }
+
+  let px =
+    if unit.is_empty() || unit.eq_ignore_ascii_case("px") {
+      number
+    } else if unit.eq_ignore_ascii_case("in") {
+      number * 96.0
+    } else if unit.eq_ignore_ascii_case("cm") {
+      number * (96.0 / 2.54)
+    } else if unit.eq_ignore_ascii_case("mm") {
+      number * (96.0 / 25.4)
+    } else if unit.eq_ignore_ascii_case("pt") {
+      number * (96.0 / 72.0)
+    } else if unit.eq_ignore_ascii_case("pc") {
+      number * (96.0 / 6.0)
+    } else if unit.eq_ignore_ascii_case("em") {
+      number * font_size
+    } else if unit.eq_ignore_ascii_case("rem") {
+      number * root_font_size
+    } else if unit.eq_ignore_ascii_case("ex") || unit.eq_ignore_ascii_case("ch") {
+      number * font_size * 0.5
+    } else {
+      return None;
+    };
+
+  px.is_finite().then_some(px)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -101,14 +173,14 @@ pub(crate) fn svg_intrinsic_dimensions_from_attributes(
   height: Option<&str>,
   view_box: Option<&str>,
   preserve_aspect_ratio: Option<&str>,
+  font_size: f32,
+  root_font_size: f32,
 ) -> SvgIntrinsicDimensions {
   let width_px = width
-    .and_then(parse_svg_length)
-    .and_then(SvgLength::to_px)
+    .and_then(|w| parse_svg_length_px_with_font(w, font_size, root_font_size))
     .filter(|v| v.is_finite());
   let height_px = height
-    .and_then(parse_svg_length)
-    .and_then(SvgLength::to_px)
+    .and_then(|h| parse_svg_length_px_with_font(h, font_size, root_font_size))
     .filter(|v| v.is_finite());
 
   let aspect_ratio_none = SvgPreserveAspectRatio::parse(preserve_aspect_ratio).none;
