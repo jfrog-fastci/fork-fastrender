@@ -2100,10 +2100,16 @@ impl FormattingContext for FlexFormattingContext {
                       let percentage_base = this.viewport_size.width.max(0.0);
                       let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
                         || (measure_style.scrollbar_gutter.stable
-                          && matches!(measure_style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll));
+                          && matches!(
+                            measure_style.overflow_x,
+                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                          ));
                       let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
                         || (measure_style.scrollbar_gutter.stable
-                          && matches!(measure_style.overflow_y, CssOverflow::Auto | CssOverflow::Scroll));
+                          && matches!(
+                            measure_style.overflow_y,
+                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                          ));
                       let scrollbar_width = resolve_scrollbar_width(measure_style);
 
                       let padding_left = this.resolve_length_for_width(
@@ -2422,19 +2428,19 @@ impl FormattingContext for FlexFormattingContext {
                           // `compute_intrinsic_inline_size` returns a border-box size. Convert to a
                           // content-box size because Taffy adds padding/border/scrollbars from the
                           // style when computing the used border-box size for the flex item.
-                          let percentage_base = this.viewport_size.width.max(0.0);
-                          let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
-                            || (measure_style.scrollbar_gutter.stable
-                              && matches!(
-                                measure_style.overflow_x,
-                                CssOverflow::Auto | CssOverflow::Scroll
-                              ));
-                          let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
-                            || (measure_style.scrollbar_gutter.stable
-                              && matches!(
-                                measure_style.overflow_y,
-                                CssOverflow::Auto | CssOverflow::Scroll
-                              ));
+                           let percentage_base = this.viewport_size.width.max(0.0);
+                           let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
+                             || (measure_style.scrollbar_gutter.stable
+                               && matches!(
+                                 measure_style.overflow_x,
+                                 CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                               ));
+                           let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
+                             || (measure_style.scrollbar_gutter.stable
+                               && matches!(
+                                 measure_style.overflow_y,
+                                 CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+                               ));
                           let scrollbar_width = resolve_scrollbar_width(measure_style);
 
                           // `compute_intrinsic_inline_size` and `compute_intrinsic_block_size`
@@ -2827,13 +2833,13 @@ impl FormattingContext for FlexFormattingContext {
                         || (measure_style.scrollbar_gutter.stable
                           && matches!(
                             measure_style.overflow_x,
-                            CssOverflow::Auto | CssOverflow::Scroll
+                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
                           ));
                       let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
                         || (measure_style.scrollbar_gutter.stable
                           && matches!(
                             measure_style.overflow_y,
-                            CssOverflow::Auto | CssOverflow::Scroll
+                            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
                           ));
                       let scrollbar_width = resolve_scrollbar_width(measure_style);
                       let padding_left = this.resolve_length_for_width(measure_style.padding_left, percentage_base, measure_style);
@@ -5335,18 +5341,24 @@ impl FlexFormattingContext {
     };
 
     let reserve_scroll_x = style.scrollbar_gutter.stable
-      && matches!(style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll);
+      && matches!(
+        style.overflow_x,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
     let reserve_scroll_y = style.scrollbar_gutter.stable
-      && matches!(style.overflow_y, CssOverflow::Auto | CssOverflow::Scroll);
+      && matches!(
+        style.overflow_y,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
     let map_overflow = |value: CssOverflow, reserve: bool| match value {
       // Taffy lacks a distinct `Auto` variant. CSS `overflow: auto` is still a scroll container
       // (automatic min size = 0), but it should only reserve scrollbar space when
-      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it.
+      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it. The same applies to
+      // `overflow: hidden` when stable gutters are requested.
       CssOverflow::Visible => TaffyOverflow::Visible,
       CssOverflow::Clip => TaffyOverflow::Clip,
-      CssOverflow::Hidden => TaffyOverflow::Hidden,
       CssOverflow::Scroll => TaffyOverflow::Scroll,
-      CssOverflow::Auto => {
+      CssOverflow::Hidden | CssOverflow::Auto => {
         if reserve {
           TaffyOverflow::Scroll
         } else {
@@ -6140,13 +6152,13 @@ impl FlexFormattingContext {
         || (container_style.scrollbar_gutter.stable
           && matches!(
             container_style.overflow_x,
-            CssOverflow::Auto | CssOverflow::Scroll
+            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
           ));
       let reserve_scroll_y = matches!(container_style.overflow_y, CssOverflow::Scroll)
         || (container_style.scrollbar_gutter.stable
           && matches!(
             container_style.overflow_y,
-            CssOverflow::Auto | CssOverflow::Scroll
+            CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
           ));
       let scrollbar_width = resolve_scrollbar_width(container_style);
 

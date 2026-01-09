@@ -641,7 +641,11 @@ pub fn compute_replaced_size(
   let border_bottom = resolve_for_width(style.used_border_bottom_width());
 
   let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+    || (style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -653,7 +657,11 @@ pub fn compute_replaced_size(
   }
 
   let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
-    || (style.scrollbar_gutter.stable && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+    || (style.scrollbar_gutter.stable
+      && matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_horizontal_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {

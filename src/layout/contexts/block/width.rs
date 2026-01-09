@@ -144,7 +144,10 @@ pub fn compute_block_width(
   // Reserve space for a vertical scrollbar when requested by overflow or scrollbar-gutter stability
   let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
     || (style.scrollbar_gutter.stable
-      && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+      && matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {

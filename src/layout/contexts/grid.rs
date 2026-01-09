@@ -1620,10 +1620,16 @@ impl GridFormattingContext {
 
     let reserve_vertical_gutter = matches!(style.overflow_y, CssOverflow::Scroll)
       || (style.scrollbar_gutter.stable
-        && matches!(style.overflow_y, CssOverflow::Auto | CssOverflow::Scroll));
+        && matches!(
+          style.overflow_y,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        ));
     let reserve_horizontal_gutter = matches!(style.overflow_x, CssOverflow::Scroll)
       || (style.scrollbar_gutter.stable
-        && matches!(style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll));
+        && matches!(
+          style.overflow_x,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        ));
     let gutter_width = if reserve_vertical_gutter || reserve_horizontal_gutter {
       resolve_scrollbar_width(style)
     } else {
@@ -2513,18 +2519,24 @@ impl GridFormattingContext {
     let inline_is_horizontal_container = container_axis_style.inline_is_horizontal();
 
     let reserve_scroll_x = style.scrollbar_gutter.stable
-      && matches!(style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll);
+      && matches!(
+        style.overflow_x,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
     let reserve_scroll_y = style.scrollbar_gutter.stable
-      && matches!(style.overflow_y, CssOverflow::Auto | CssOverflow::Scroll);
+      && matches!(
+        style.overflow_y,
+        CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+      );
     let map_overflow = |value: CssOverflow, reserve: bool| match value {
       // Taffy lacks a distinct `Auto` variant. CSS `overflow: auto` is still a scroll container
       // (automatic min size = 0), but it should only reserve scrollbar space when
-      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it.
+      // `scrollbar-gutter: stable` (or `overflow: scroll`) requests it. The same applies to
+      // `overflow: hidden` when stable gutters are requested.
       CssOverflow::Visible => TaffyOverflow::Visible,
       CssOverflow::Clip => TaffyOverflow::Clip,
-      CssOverflow::Hidden => TaffyOverflow::Hidden,
       CssOverflow::Scroll => TaffyOverflow::Scroll,
-      CssOverflow::Auto => {
+      CssOverflow::Hidden | CssOverflow::Auto => {
         if reserve {
           TaffyOverflow::Scroll
         } else {

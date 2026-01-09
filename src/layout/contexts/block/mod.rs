@@ -603,7 +603,10 @@ impl BlockFormattingContext {
     );
     let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
       || (style.scrollbar_gutter.stable
-        && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+        && matches!(
+          style.overflow_x,
+          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+        ));
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
       if style.scrollbar_gutter.both_edges {
@@ -5761,7 +5764,10 @@ impl FormattingContext for BlockFormattingContext {
     // Reserve space for a horizontal scrollbar when requested by overflow or scrollbar-gutter stability.
     let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
       || (style.scrollbar_gutter.stable
-        && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+        && matches!(
+          style.overflow_x,
+          Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+        ));
     if reserve_horizontal_gutter {
       let gutter = resolve_scrollbar_width(style);
       if style.scrollbar_gutter.both_edges {
@@ -7614,7 +7620,10 @@ fn horizontal_padding_and_borders(
 
   let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
     || (style.scrollbar_gutter.stable
-      && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+      && matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_vertical_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {
@@ -7662,7 +7671,10 @@ fn vertical_padding_and_borders(
 
   let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
     || (style.scrollbar_gutter.stable
-      && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+      && matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+      ));
   if reserve_horizontal_gutter {
     let gutter = resolve_scrollbar_width(style);
     if gutter > 0.0 {

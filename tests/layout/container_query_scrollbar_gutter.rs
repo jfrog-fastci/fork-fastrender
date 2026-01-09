@@ -95,3 +95,72 @@ fn container_query_accounts_for_reserved_scrollbar_gutter() {
   );
 }
 
+#[test]
+fn container_query_accounts_for_scrollbar_gutter_stable_with_overflow_hidden() {
+  let config = FastRenderConfig::default().with_font_sources(FontConfig::bundled_only());
+  let mut renderer = FastRender::with_config(config).expect("renderer");
+
+  let options = RenderOptions::default().with_viewport(200, 200);
+
+  // `scrollbar-gutter: stable` reserves space for classic scrollbars whenever `overflow` is
+  // `auto`, `scroll`, or `hidden` (CSS Overflow 3). With `overflow-y: hidden`, stable gutters
+  // should still reduce the container's inline-size by the default scrollbar width (16px), so the
+  // min-width query should NOT match.
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          .container {
+            width: 200px;
+            box-sizing: border-box;
+            overflow-y: hidden;
+            scrollbar-gutter: stable;
+            container-type: inline-size;
+          }
+          .target { display: flex; }
+          @container (min-width: 190px) {
+            .target { display: block; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="target">
+            <div>AAA</div>
+            <div>BBB</div>
+          </div>
+        </div>
+      </body>
+    </html>"#;
+
+  let report = renderer
+    .render_html_with_stylesheets_report(
+      html,
+      "https://example.test/",
+      options,
+      RenderArtifactRequest {
+        fragment_tree: true,
+        ..RenderArtifactRequest::default()
+      },
+    )
+    .expect("render with container query");
+
+  let fragment_tree = report
+    .artifacts
+    .fragment_tree
+    .as_ref()
+    .expect("expected fragment tree artifact");
+
+  let aaa = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "AAA")
+    .expect("expected text fragment containing AAA");
+  let bbb = find_text_fragment_bounds(&fragment_tree.root, Point::ZERO, "BBB")
+    .expect("expected text fragment containing BBB");
+
+  assert!(
+    bbb.y() <= aaa.y() + 1.0,
+    "expected container query to NOT match (BBB should be on the same row as AAA); aaa={:?} bbb={:?}",
+    aaa,
+    bbb
+  );
+}

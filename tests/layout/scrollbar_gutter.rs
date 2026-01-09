@@ -65,3 +65,25 @@ fn scrollbar_gutter_auto_does_not_reserve_space_without_scroll() {
   assert_eq!(gutter, resolve_scrollbar_width(&ComputedStyle::default()));
   assert!((child_width - 100.0).abs() < 1e-3);
 }
+
+#[test]
+fn scrollbar_gutter_stable_reserves_space_for_overflow_hidden() {
+  let mut style = ComputedStyle::default();
+  style.overflow_y = Overflow::Hidden;
+  style.scrollbar_gutter = ScrollbarGutter {
+    stable: true,
+    both_edges: false,
+  };
+
+  let (child_width, gutter) = layout_with_container(style);
+  assert!((child_width - (100.0 - gutter)).abs() < 1e-3);
+}
+
+#[test]
+fn scrollbar_gutter_auto_does_not_reserve_for_overflow_hidden() {
+  let mut style = ComputedStyle::default();
+  style.overflow_y = Overflow::Hidden;
+
+  let (child_width, _gutter) = layout_with_container(style);
+  assert!((child_width - 100.0).abs() < 1e-3);
+}

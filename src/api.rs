@@ -16928,7 +16928,10 @@ fn build_container_query_context(
       use crate::style::types::Overflow;
       let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
         || (style.scrollbar_gutter.stable
-          && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll));
+          && matches!(
+            style.overflow_y,
+            Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+          ));
       if reserve_vertical_gutter {
         let gutter = crate::layout::utils::resolve_scrollbar_width(style);
         if gutter > 0.0 {
@@ -16941,7 +16944,10 @@ fn build_container_query_context(
 
       let reserve_horizontal_gutter = matches!(style.overflow_x, Overflow::Scroll)
         || (style.scrollbar_gutter.stable
-          && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll));
+          && matches!(
+            style.overflow_x,
+            Overflow::Hidden | Overflow::Auto | Overflow::Scroll
+          ));
       if reserve_horizontal_gutter {
         let gutter = crate::layout::utils::resolve_scrollbar_width(style);
         if gutter > 0.0 {

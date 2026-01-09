@@ -4506,7 +4506,9 @@ impl InlineFormattingContext {
       || (style.scrollbar_gutter.stable
         && matches!(
           style.overflow_y,
-          crate::style::types::Overflow::Auto | crate::style::types::Overflow::Scroll
+          crate::style::types::Overflow::Hidden
+            | crate::style::types::Overflow::Auto
+            | crate::style::types::Overflow::Scroll
         ));
     if reserve_vertical_gutter {
       let gutter = crate::layout::utils::resolve_scrollbar_width(style);
@@ -4522,7 +4524,9 @@ impl InlineFormattingContext {
       || (style.scrollbar_gutter.stable
         && matches!(
           style.overflow_x,
-          crate::style::types::Overflow::Auto | crate::style::types::Overflow::Scroll
+          crate::style::types::Overflow::Hidden
+            | crate::style::types::Overflow::Auto
+            | crate::style::types::Overflow::Scroll
         ));
     if reserve_horizontal_gutter {
       let gutter = crate::layout::utils::resolve_scrollbar_width(style);
