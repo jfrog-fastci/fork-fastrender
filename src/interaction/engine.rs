@@ -4,6 +4,7 @@ use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
+use crate::resource::web_url::{WebUrlLimits, WebUrlSearchParams};
 use crate::scroll::ScrollState;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
@@ -16,7 +17,6 @@ use crate::tree::box_tree::SelectItem;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use std::sync::Arc;
-use url::form_urlencoded;
 use url::Url;
 
 use super::dom_mutation;
@@ -1184,7 +1184,8 @@ fn build_get_form_submission_url(
 
   // GET submissions set the query to the encoded form data.
   url.set_query(None);
-  let mut serializer = form_urlencoded::Serializer::new(String::new());
+  let limits = WebUrlLimits::default();
+  let params = WebUrlSearchParams::new(&limits);
 
   for id in 1..index.id_to_node.len() {
     let Some(node) = index.node(id) else {
@@ -1232,7 +1233,7 @@ fn build_get_form_submission_url(
             .get_attribute_ref("value")
             .map(str::to_string)
             .unwrap_or_else(|| collect_text_children_value(option));
-          serializer.append_pair(name, &value);
+          params.append(name, &value).ok()?;
         }
       } else {
         let mut chosen: Option<usize> = None;
@@ -1261,12 +1262,12 @@ fn build_get_form_submission_url(
               .get_attribute_ref("value")
               .map(str::to_string)
               .unwrap_or_else(|| collect_text_children_value(option));
-            serializer.append_pair(name, &value);
+            params.append(name, &value).ok()?;
           }
         }
       }
     } else if let Some((name, value)) = form_control_value(node) {
-      serializer.append_pair(&name, &value);
+      params.append(&name, &value).ok()?;
     }
   }
 
@@ -1280,13 +1281,13 @@ fn build_get_form_submission_url(
           .filter(|v| !v.is_empty())
         {
           let value = submitter.get_attribute_ref("value").unwrap_or("");
-          serializer.append_pair(name, value);
+          params.append(name, value).ok()?;
         }
       }
     }
   }
 
-  let query = serializer.finish();
+  let query = params.serialize().ok()?;
   if !query.is_empty() {
     url.set_query(Some(&query));
   }
