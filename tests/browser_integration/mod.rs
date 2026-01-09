@@ -8,6 +8,7 @@ mod browser_thread_select_dropdown;
 mod document;
 mod document2;
 mod history_navigation;
+mod select_dropdown_hidden_option_arrow_key;
 mod select_listbox_hidden_option_click;
 mod select_listbox_wheel_scroll;
 mod js_rendering;

@@ -527,11 +527,22 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         };
         let engine = &mut tab.interaction;
         let mut action = InteractionAction::None;
-        let _ = doc.mutate_dom(|dom| {
-          let (changed, a) = engine.key_activate(dom, key, &document_url, &base_url);
-          action = a;
-          changed
+        let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+          let (changed, a) =
+            engine.key_activate_with_box_tree(dom, Some(box_tree), key, &document_url, &base_url);
+          (changed, (changed, a))
         });
+        let changed = match result {
+          Ok((dom_changed, next_action)) => {
+            action = next_action;
+            dom_changed
+          }
+          Err(_) => doc.mutate_dom(|dom| {
+            let (dom_changed, next_action) = engine.key_activate(dom, key, &document_url, &base_url);
+            action = next_action;
+            dom_changed
+          }),
+        };
         match action {
           InteractionAction::Navigate { href } => {
             tab
@@ -548,9 +559,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
               select_node_id,
               control,
             });
-            repaint_if_needed(tab_id, tab, &tx);
+            if changed {
+              repaint_if_needed(tab_id, tab, &tx);
+            }
           }
-          _ => repaint_if_needed(tab_id, tab, &tx),
+          _ => {
+            if changed {
+              repaint_if_needed(tab_id, tab, &tx);
+            }
+          }
         }
       }
       UiToWorker::RequestRepaint { tab_id, .. } => {

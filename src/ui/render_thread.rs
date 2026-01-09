@@ -641,14 +641,30 @@ impl BrowserRenderThread {
         .unwrap_or("");
       let document_url = tab.url.as_deref().unwrap_or("");
 
-      let mut action = InteractionAction::None;
-      let changed = doc.mutate_dom(|dom| {
-        let (dom_changed, act) = tab
-          .interaction
-          .key_activate(dom, key, document_url, base_url);
-        action = act;
-        dom_changed
+      let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+        let (dom_changed, act) = tab.interaction.key_activate_with_box_tree(
+          dom,
+          Some(box_tree),
+          key,
+          document_url,
+          base_url,
+        );
+        (dom_changed, (dom_changed, act))
       });
+      let (changed, action) = match result {
+        Ok(result) => result,
+        Err(_) => {
+          let mut action = InteractionAction::None;
+          let changed = doc.mutate_dom(|dom| {
+            let (dom_changed, act) = tab
+              .interaction
+              .key_activate(dom, key, document_url, base_url);
+            action = act;
+            dom_changed
+          });
+          (changed, action)
+        }
+      };
 
       if let InteractionAction::Navigate { href } = action {
         navigate_to = Some(href);

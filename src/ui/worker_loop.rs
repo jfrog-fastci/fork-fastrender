@@ -810,11 +810,27 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let document_url = tab.url.clone().unwrap_or_default();
         let (doc, interaction) = (&mut tab.document, &mut tab.interaction);
         let mut action = InteractionAction::None;
-        let _ = doc.mutate_dom(|dom| {
-          let (changed, a) = interaction.key_activate(dom, key, &document_url, &base_url);
-          action = a;
-          changed
+        let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+          let (changed, a) = interaction.key_activate_with_box_tree(
+            dom,
+            Some(box_tree),
+            key,
+            &document_url,
+            &base_url,
+          );
+          (changed, (changed, a))
         });
+        let changed = match result {
+          Ok((dom_changed, next_action)) => {
+            action = next_action;
+            dom_changed
+          }
+          Err(_) => doc.mutate_dom(|dom| {
+            let (dom_changed, next_action) = interaction.key_activate(dom, key, &document_url, &base_url);
+            action = next_action;
+            dom_changed
+          }),
+        };
         match action {
           InteractionAction::Navigate { href } => {
             navigate_tab(
@@ -827,7 +843,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
             );
           }
           _ => {
-            repaint_if_needed(tab_id, tab, &ui_tx);
+            if changed {
+              repaint_if_needed(tab_id, tab, &ui_tx);
+            }
           }
         }
       }

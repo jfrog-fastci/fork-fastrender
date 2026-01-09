@@ -1525,6 +1525,20 @@ impl InteractionEngine {
   ///
   /// Element activation (links, form submission, etc.) is handled by [`InteractionEngine::key_activate`].
   pub fn key_action(&mut self, dom: &mut DomNode, key: KeyAction) -> bool {
+    self.key_action_with_box_tree(dom, None, key)
+  }
+
+  /// Like [`InteractionEngine::key_action`], but optionally supplies the cached [`BoxTree`].
+  ///
+  /// When a `box_tree` snapshot is available, `<select>` arrow-key navigation uses the painted
+  /// [`SelectControl`] rows (skipping `hidden`/`display:none` options) so keyboard selection stays
+  /// aligned with what the user can see.
+  pub fn key_action_with_box_tree(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    key: KeyAction,
+  ) -> bool {
     self.modality = InputModality::Keyboard;
 
     if key == KeyAction::Tab {
@@ -1649,6 +1663,67 @@ impl InteractionEngine {
             changed |= dom_mutation::step_range_value(node_mut, delta);
           }
         } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+          if let Some(box_tree) = box_tree {
+            if let Some((control, computed_disabled)) =
+              select_control_snapshot_from_box_tree(box_tree, focused)
+            {
+              if computed_disabled {
+                return changed;
+              }
+
+              let mut options: Vec<(usize, bool)> = Vec::new();
+              for item in control.items.iter() {
+                if let SelectItem::Option {
+                  node_id, disabled, ..
+                } = item
+                {
+                  options.push((*node_id, *disabled));
+                }
+              }
+
+              let mut current_idx = options.iter().position(|(id, _)| {
+                index
+                  .node(*id)
+                  .and_then(|node| node.get_attribute_ref("selected"))
+                  .is_some()
+              });
+              if current_idx.is_none() {
+                current_idx = options.iter().position(|(_, disabled)| !*disabled);
+              }
+
+              if let Some(current_idx) = current_idx {
+                let mut next_opt: Option<usize> = None;
+                match key {
+                  KeyAction::ArrowDown => {
+                    for (id, disabled) in options.iter().skip(current_idx + 1) {
+                      if !*disabled {
+                        next_opt = Some(*id);
+                        break;
+                      }
+                    }
+                  }
+                  KeyAction::ArrowUp => {
+                    for (id, disabled) in options.iter().take(current_idx).rev() {
+                      if !*disabled {
+                        next_opt = Some(*id);
+                        break;
+                      }
+                    }
+                  }
+                  _ => {}
+                }
+
+                if let Some(next_id) = next_opt {
+                  changed |= dom_mutation::activate_select_option(dom, focused, next_id, false);
+                }
+              }
+
+              return changed;
+            }
+          }
+
+          // Fallback: derive row ordering directly from the DOM when no box-tree snapshot is
+          // available (e.g. before the first render).
           let rows = collect_select_rows(&index, focused);
           let mut options = Vec::new();
           for row in rows {
@@ -1722,6 +1797,18 @@ impl InteractionEngine {
     document_url: &str,
     base_url: &str,
   ) -> (bool, InteractionAction) {
+    self.key_activate_with_box_tree(dom, None, key, document_url, base_url)
+  }
+
+  /// Like [`InteractionEngine::key_activate`], but optionally supplies the cached [`BoxTree`].
+  pub fn key_activate_with_box_tree(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: Option<&BoxTree>,
+    key: KeyAction,
+    document_url: &str,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
     let prev_focus = self.focused;
 
     self.modality = InputModality::Keyboard;
@@ -1729,10 +1816,13 @@ impl InteractionEngine {
     // Delegate text-editing keys to `key_action` so behaviour stays consistent.
     match key {
       KeyAction::Backspace => {
-        return (self.key_action(dom, KeyAction::Backspace), InteractionAction::None);
+        return (
+          self.key_action_with_box_tree(dom, box_tree, KeyAction::Backspace),
+          InteractionAction::None,
+        );
       }
       KeyAction::Tab => {
-        let dom_changed = self.key_action(dom, KeyAction::Tab);
+        let dom_changed = self.key_action_with_box_tree(dom, box_tree, KeyAction::Tab);
         let action = if self.focused != prev_focus {
           InteractionAction::FocusChanged {
             node_id: self.focused,
@@ -1743,7 +1833,10 @@ impl InteractionEngine {
         return (dom_changed, action);
       }
       KeyAction::ArrowUp | KeyAction::ArrowDown => {
-        return (self.key_action(dom, key), InteractionAction::None);
+        return (
+          self.key_action_with_box_tree(dom, box_tree, key),
+          InteractionAction::None,
+        );
       }
       KeyAction::Enter => {
         let Some(focused) = self.focused else {
@@ -1751,7 +1844,10 @@ impl InteractionEngine {
         };
         let index = DomIndexMut::new(dom);
         if index.node(focused).is_some_and(is_textarea) {
-          return (self.key_action(dom, KeyAction::Enter), InteractionAction::None);
+          return (
+            self.key_action_with_box_tree(dom, box_tree, KeyAction::Enter),
+            InteractionAction::None,
+          );
         }
       }
       KeyAction::Space => {}

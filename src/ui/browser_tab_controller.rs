@@ -310,15 +310,33 @@ impl BrowserTabController {
   }
 
   fn handle_key_action(&mut self, key: crate::interaction::KeyAction) -> Result<Vec<WorkerToUi>> {
-    let mut action = InteractionAction::None;
-    let changed = self.document.mutate_dom(|dom| {
-      let (dom_changed, next_action) =
-        self
-          .interaction
-          .key_activate(dom, key, &self.current_url, &self.base_url);
-      action = next_action;
-      dom_changed
-    });
+    let result = self
+      .document
+      .mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+        let (dom_changed, action) = self.interaction.key_activate_with_box_tree(
+          dom,
+          Some(box_tree),
+          key,
+          &self.current_url,
+          &self.base_url,
+        );
+        (dom_changed, (dom_changed, action))
+      });
+    let (changed, action) = match result {
+      Ok(result) => result,
+      Err(_) => {
+        let mut action = InteractionAction::None;
+        let changed = self.document.mutate_dom(|dom| {
+          let (dom_changed, next_action) =
+            self
+              .interaction
+              .key_activate(dom, key, &self.current_url, &self.base_url);
+          action = next_action;
+          dom_changed
+        });
+        (changed, action)
+      }
+    };
 
     if let InteractionAction::Navigate { href } = action {
       return self.handle_navigation_action(href, NavigationReason::LinkClick);

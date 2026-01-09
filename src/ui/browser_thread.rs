@@ -759,15 +759,29 @@ impl BrowserRuntime {
         return;
       };
 
-      let mut action = InteractionAction::None;
-      let changed = doc.mutate_dom(|dom| {
-        let (dom_changed, next_action) =
-          tab
-            .interaction
-            .key_activate(dom, key, &document_url, &base_url);
-        action = next_action;
-        dom_changed
+      let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
+        let (dom_changed, action) = tab.interaction.key_activate_with_box_tree(
+          dom,
+          Some(box_tree),
+          key,
+          &document_url,
+          &base_url,
+        );
+        (dom_changed, (dom_changed, action))
       });
+      let (changed, action) = match result {
+        Ok(result) => result,
+        Err(_) => {
+          let mut action = InteractionAction::None;
+          let changed = doc.mutate_dom(|dom| {
+            let (dom_changed, next_action) =
+              tab.interaction.key_activate(dom, key, &document_url, &base_url);
+            action = next_action;
+            dom_changed
+          });
+          (changed, action)
+        }
+      };
 
       match action {
         InteractionAction::Navigate { href } => {

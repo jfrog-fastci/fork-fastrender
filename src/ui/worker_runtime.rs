@@ -624,7 +624,11 @@ impl BrowserWorkerRuntime {
     let Some(dom) = tab.dom.as_mut() else {
       return;
     };
-    if tab.interaction.key_action(dom, key) {
+    let box_tree = tab.prepared.as_ref().map(|prepared| prepared.box_tree());
+    if tab
+      .interaction
+      .key_action_with_box_tree(dom, box_tree, key)
+    {
       tab.dirty = true;
       self.render_current(tab_id, RepaintReason::Input);
     }
