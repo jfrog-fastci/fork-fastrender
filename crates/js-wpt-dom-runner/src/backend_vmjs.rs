@@ -20,6 +20,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::time::Duration;
+use url::{form_urlencoded, Url};
 use crate::window_or_worker_global_scope::{
   forgiving_base64_decode, forgiving_base64_encode, is_secure_context_for_document_url,
   latin1_encode, serialized_origin_for_document_url,
@@ -370,6 +371,7 @@ enum Callable {
 #[derive(Debug)]
 struct UserFunction {
   params: Vec<String>,
+  is_async: bool,
   body: UserFunctionBody,
   source: Rc<str>,
   hoisted_functions: Vec<(String, GcObject)>,
@@ -625,6 +627,25 @@ struct PromiseJob {
   reaction: PromiseReaction,
 }
 
+#[derive(Debug, Clone)]
+struct UrlState {
+  url: Url,
+  /// Raw query string without the leading `?`.
+  ///
+  /// This is preserved for `URL.search` (which should not be rewritten just because
+  /// `URL.searchParams` is accessed).
+  raw_query: String,
+  /// Lazily-created `URLSearchParams` object associated with this `URL`.
+  search_params: Option<GcObject>,
+}
+
+#[derive(Debug, Clone)]
+struct UrlSearchParamsState {
+  /// Associated `URL` object if this `URLSearchParams` view is live.
+  url: Option<GcObject>,
+  pairs: Vec<(String, String)>,
+}
+
 #[derive(Default)]
 struct EventLoop {
   now: Duration,
@@ -779,15 +800,22 @@ struct JsWptRuntime {
   vm: Vm,
   heap: Heap,
   env: Env,
+  document_url: String,
   callables: HashMap<GcObject, Rc<Callable>>,
   arrays: HashMap<GcObject, Vec<Value>>,
   event_targets: HashMap<GcObject, EventTargetState>,
   events: HashMap<GcObject, EventState>,
   dom_nodes: HashMap<GcObject, DomNodeState>,
+  urls: HashMap<GcObject, UrlState>,
+  url_search_params: HashMap<GcObject, UrlSearchParamsState>,
   dom_element_proto: Option<GcObject>,
   document_fragment_proto: Option<GcObject>,
   text_proto: Option<GcObject>,
   document_body: Option<GcObject>,
+  url_proto: Option<GcObject>,
+  url_search_params_proto: Option<GcObject>,
+  request_proto: Option<GcObject>,
+  response_proto: Option<GcObject>,
   promises: HashMap<GcObject, PromiseState>,
   promise_jobs: HashMap<u64, PromiseJob>,
   next_promise_job_id: u64,
@@ -838,15 +866,22 @@ impl JsWptRuntime {
       vm,
       heap,
       env: Env::new(),
+      document_url: test_url.to_string(),
       callables: HashMap::new(),
       arrays: HashMap::new(),
       event_targets: HashMap::new(),
       events: HashMap::new(),
       dom_nodes: HashMap::new(),
+      urls: HashMap::new(),
+      url_search_params: HashMap::new(),
       dom_element_proto: None,
       document_fragment_proto: None,
       text_proto: None,
       document_body: None,
+      url_proto: None,
+      url_search_params_proto: None,
+      request_proto: None,
+      response_proto: None,
       promises: HashMap::new(),
       promise_jobs: HashMap::new(),
       next_promise_job_id: 1,
@@ -925,6 +960,9 @@ impl JsWptRuntime {
     rt
       .install_window_or_worker_global_scope_primitives(test_url)
       .expect("install WindowOrWorkerGlobalScope primitives");
+
+    rt.install_url_shims().expect("install URL/URLSearchParams");
+    rt.install_fetch_shims().expect("install fetch/Request/Response");
 
     rt
   }
@@ -1553,6 +1591,151 @@ impl JsWptRuntime {
     // `atob(...).length` and `.charCodeAt(...)`).
     let char_code_at = self.alloc_native_function(native_string_char_code_at)?;
     self.string_char_code_at = Some(char_code_at);
+    Ok(())
+  }
+
+  fn install_url_shims(&mut self) -> Result<(), JsError> {
+    // URLSearchParams prototype.
+    let params_proto = self.alloc_object()?;
+    let get_fn = self.alloc_native_function(native_urlsearchparams_get)?;
+    let append_fn = self.alloc_native_function(native_urlsearchparams_append)?;
+    let to_string_fn = self.alloc_native_function(native_urlsearchparams_to_string)?;
+    let get_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("get")?)
+    };
+    let append_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("append")?)
+    };
+    let to_string_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("toString")?)
+    };
+    self.define_data_prop(params_proto, get_key, Value::Object(get_fn))?;
+    self.define_data_prop(params_proto, append_key, Value::Object(append_fn))?;
+    self.define_data_prop(params_proto, to_string_key, Value::Object(to_string_fn))?;
+    self.url_search_params_proto = Some(params_proto);
+
+    // URLSearchParams constructor.
+    let params_ctor = self.alloc_native_function(native_urlsearchparams_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(params_ctor, prototype_key, Value::Object(params_proto))?;
+    self.env.set("URLSearchParams", Value::Object(params_ctor));
+    let params_global_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("URLSearchParams")?)
+    };
+    self.define_data_prop(self.global_object, params_global_key, Value::Object(params_ctor))?;
+
+    // URL prototype.
+    let url_proto = self.alloc_object()?;
+    let href_get = self.alloc_native_function(native_url_get_href)?;
+    let search_get = self.alloc_native_function(native_url_get_search)?;
+    let search_set = self.alloc_native_function(native_url_set_search)?;
+    let search_params_get = self.alloc_native_function(native_url_get_search_params)?;
+    let href_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("href")?)
+    };
+    let search_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("search")?)
+    };
+    let search_params_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("searchParams")?)
+    };
+    self.define_accessor_prop(url_proto, href_key, Value::Object(href_get), Value::Undefined)?;
+    self.define_accessor_prop(
+      url_proto,
+      search_key,
+      Value::Object(search_get),
+      Value::Object(search_set),
+    )?;
+    self.define_accessor_prop(
+      url_proto,
+      search_params_key,
+      Value::Object(search_params_get),
+      Value::Undefined,
+    )?;
+    self.url_proto = Some(url_proto);
+
+    // URL constructor.
+    let url_ctor = self.alloc_native_function(native_url_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(url_ctor, prototype_key, Value::Object(url_proto))?;
+    self.env.set("URL", Value::Object(url_ctor));
+    let url_global_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("URL")?)
+    };
+    self.define_data_prop(self.global_object, url_global_key, Value::Object(url_ctor))?;
+
+    Ok(())
+  }
+
+  fn install_fetch_shims(&mut self) -> Result<(), JsError> {
+    // __fastrender_resolve_url helper.
+    let resolve_fn = self.alloc_native_function(native_fastrender_resolve_url)?;
+    self.env.set("__fastrender_resolve_url", Value::Object(resolve_fn));
+    let resolve_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("__fastrender_resolve_url")?)
+    };
+    self.define_data_prop(self.global_object, resolve_key, Value::Object(resolve_fn))?;
+
+    // Request constructor.
+    let request_proto = self.alloc_object()?;
+    self.request_proto = Some(request_proto);
+    let request_ctor = self.alloc_native_function(native_request_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(request_ctor, prototype_key, Value::Object(request_proto))?;
+    self.env.set("Request", Value::Object(request_ctor));
+    let request_global_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Request")?)
+    };
+    self.define_data_prop(self.global_object, request_global_key, Value::Object(request_ctor))?;
+
+    // Response constructor.
+    let response_proto = self.alloc_object()?;
+    self.response_proto = Some(response_proto);
+    let response_ctor = self.alloc_native_function(native_response_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(response_ctor, prototype_key, Value::Object(response_proto))?;
+    self.env.set("Response", Value::Object(response_ctor));
+    let response_global_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Response")?)
+    };
+    self.define_data_prop(
+      self.global_object,
+      response_global_key,
+      Value::Object(response_ctor),
+    )?;
+
+    // fetch function.
+    let fetch_fn = self.alloc_native_function(native_fetch)?;
+    self.env.set("fetch", Value::Object(fetch_fn));
+    let fetch_global_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("fetch")?)
+    };
+    self.define_data_prop(self.global_object, fetch_global_key, Value::Object(fetch_fn))?;
+
     Ok(())
   }
 
@@ -2196,6 +2379,7 @@ impl JsWptRuntime {
       let hoisted_functions = self.hoist_function_decls(&mut body_stmts, source.clone())?;
       let func_obj = self.alloc_user_function(UserFunction {
         params,
+        is_async: func_decl.stx.function.stx.async_,
         body: UserFunctionBody::Block(body_stmts),
         source: source.clone(),
         hoisted_functions,
@@ -2244,6 +2428,7 @@ impl JsWptRuntime {
       let hoisted_functions = self.hoist_function_decls(&mut body_stmts, source.clone())?;
       let func_obj = self.alloc_user_function(UserFunction {
         params,
+        is_async: func_decl.stx.function.stx.async_,
         body: UserFunctionBody::Block(body_stmts),
         source: source.clone(),
         hoisted_functions,
@@ -2790,6 +2975,7 @@ impl JsWptRuntime {
     };
 
     let mut func = *arrow.stx.func.stx;
+    let is_async = func.async_;
     let params = func
       .parameters
       .iter()
@@ -2812,6 +2998,7 @@ impl JsWptRuntime {
 
     let func_obj = self.alloc_user_function(UserFunction {
       params,
+      is_async,
       body,
       source,
       hoisted_functions,
@@ -3048,6 +3235,18 @@ impl JsWptRuntime {
       }
     })();
 
+    let result = if func.is_async {
+      match result {
+        Ok(v) => Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Fulfilled, v)?)),
+        Err(JsError::Vm(VmError::Throw(v))) => {
+          Ok(Value::Object(self.alloc_promise_with_state(PromiseStatus::Rejected, v)?))
+        }
+        Err(other) => Err(other),
+      }
+    } else {
+      result
+    };
+
     self.this_binding = previous_this;
     self.current_source = previous_source;
     self.env.pop_frame();
@@ -3059,6 +3258,22 @@ impl JsWptRuntime {
       OperatorName::LogicalNot => {
         let arg = self.eval_expr(&expr.argument)?;
         Ok(Value::Bool(!to_boolean(&mut self.heap, arg)?))
+      }
+      OperatorName::Await => {
+        let arg = self.eval_expr(&expr.argument)?;
+        let Value::Object(promise) = arg else {
+          // `await` wraps non-Promise values with `Promise.resolve(...)` in real ECMAScript. Our
+          // mini-runtime only needs the "identity" behavior for values already available.
+          return Ok(arg);
+        };
+        let Some(state) = self.promises.get(&promise) else {
+          return Ok(arg);
+        };
+        match state.status {
+          PromiseStatus::Fulfilled => Ok(state.value),
+          PromiseStatus::Rejected => Err(JsError::Vm(VmError::Throw(state.value))),
+          PromiseStatus::Pending => Err(JsError::Vm(VmError::Unimplemented("await pending promise"))),
+        }
       }
       OperatorName::Typeof => {
         // `typeof` is special: it does not throw for unbound identifiers.
@@ -3178,6 +3393,20 @@ impl JsWptRuntime {
         let left = self.eval_expr(&expr.left)?;
         let right = self.eval_expr(&expr.right)?;
         Ok(Value::Bool(!strict_equal(&mut self.heap, left, right)?))
+      }
+      OperatorName::LogicalAnd => {
+        let left = self.eval_expr(&expr.left)?;
+        if !to_boolean(&mut self.heap, left)? {
+          return Ok(left);
+        }
+        self.eval_expr(&expr.right)
+      }
+      OperatorName::LogicalOr => {
+        let left = self.eval_expr(&expr.left)?;
+        if to_boolean(&mut self.heap, left)? {
+          return Ok(left);
+        }
+        self.eval_expr(&expr.right)
       }
       OperatorName::Instanceof => {
         let left = self.eval_expr(&expr.left)?;
@@ -3474,6 +3703,436 @@ fn native_report_error(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> R
   let msg = rt.value_to_string_lossy(value);
   eprintln!("[wpt][reportError] {msg}");
   Ok(Value::Undefined)
+}
+
+fn parse_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
+  form_urlencoded::parse(query.as_bytes()).into_owned().collect()
+}
+
+fn serialize_urlencoded_pairs(pairs: &[(String, String)]) -> String {
+  let mut serializer = form_urlencoded::Serializer::new(String::new());
+  for (k, v) in pairs {
+    serializer.append_pair(k, v);
+  }
+  serializer.finish()
+}
+
+fn native_url_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL constructor must be called with new");
+  };
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  if matches!(input_value, Value::Undefined) {
+    return dom_throw_named_error(rt, "TypeError", "URL constructor requires an input");
+  }
+  let input = rt.heap.to_string(input_value)?;
+  let input = rt.heap.get_string(input)?.to_utf8_lossy();
+
+  let url = match args.get(1).copied() {
+    None | Some(Value::Undefined) => Url::parse(&input),
+    Some(base_value) => {
+      let base_s = rt.heap.to_string(base_value)?;
+      let base_s = rt.heap.get_string(base_s)?.to_utf8_lossy();
+      let base = Url::parse(&base_s);
+      base.and_then(|b| b.join(&input))
+    }
+  };
+  let url = match url {
+    Ok(url) => url,
+    Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid URL"),
+  };
+
+  let raw_query = url.query().unwrap_or("").to_string();
+  rt.urls.insert(
+    url_obj,
+    UrlState {
+      url,
+      raw_query,
+      search_params: None,
+    },
+  );
+  Ok(Value::Undefined)
+}
+
+fn native_url_get_href(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.href getter called on non-object");
+  };
+  let Some(state) = rt.urls.get(&url_obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URL.href getter called on non-URL object");
+  };
+  let href = state.url.as_str().to_string();
+  Ok(rt.alloc_string_value(&href)?)
+}
+
+fn native_url_get_search(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.search getter called on non-object");
+  };
+  let Some(state) = rt.urls.get(&url_obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URL.search getter called on non-URL object");
+  };
+  let out = if state.raw_query.is_empty() {
+    String::new()
+  } else {
+    format!("?{}", state.raw_query)
+  };
+  Ok(rt.alloc_string_value(&out)?)
+}
+
+fn native_url_set_search(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.search setter called on non-object");
+  };
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut raw_query = if value == Value::Undefined {
+    String::new()
+  } else {
+    let s = rt.heap.to_string(value)?;
+    rt.heap.get_string(s)?.to_utf8_lossy()
+  };
+  if let Some(rest) = raw_query.strip_prefix('?') {
+    raw_query = rest.to_string();
+  }
+
+  let (params_obj, new_query_for_params) = {
+    let Some(state) = rt.urls.get_mut(&url_obj) else {
+      return dom_throw_named_error(rt, "TypeError", "URL.search setter called on non-URL object");
+    };
+
+    if raw_query.is_empty() {
+      state.raw_query.clear();
+      state.url.set_query(None);
+    } else {
+      state.raw_query = raw_query.clone();
+      state.url.set_query(Some(&raw_query));
+    }
+
+    (state.search_params, state.raw_query.clone())
+  };
+
+  if let Some(params_obj) = params_obj {
+    let pairs = parse_urlencoded_pairs(&new_query_for_params);
+    if let Some(params_state) = rt.url_search_params.get_mut(&params_obj) {
+      params_state.pairs = pairs;
+    } else {
+      rt.url_search_params.insert(
+        params_obj,
+        UrlSearchParamsState {
+          url: Some(url_obj),
+          pairs,
+        },
+      );
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn native_url_get_search_params(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(url_obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URL.searchParams getter called on non-object");
+  };
+
+  let raw_query;
+  let existing_params;
+  {
+    let Some(state) = rt.urls.get(&url_obj) else {
+      return dom_throw_named_error(rt, "TypeError", "URL.searchParams getter called on non-URL object");
+    };
+    raw_query = state.raw_query.clone();
+    existing_params = state.search_params;
+  }
+
+  if let Some(params) = existing_params {
+    return Ok(Value::Object(params));
+  }
+
+  let proto = rt
+    .url_search_params_proto
+    .ok_or_else(|| JsError::Vm(VmError::Unimplemented("URLSearchParams prototype")))?;
+  let params_obj = rt.alloc_object()?;
+  rt.heap.object_set_prototype(params_obj, Some(proto))?;
+
+  let pairs = parse_urlencoded_pairs(&raw_query);
+  rt.url_search_params.insert(
+    params_obj,
+    UrlSearchParamsState {
+      url: Some(url_obj),
+      pairs,
+    },
+  );
+  if let Some(state) = rt.urls.get_mut(&url_obj) {
+    state.search_params = Some(params_obj);
+  }
+
+  Ok(Value::Object(params_obj))
+}
+
+fn native_urlsearchparams_ctor(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(
+      rt,
+      "TypeError",
+      "URLSearchParams constructor must be called with new",
+    );
+  };
+
+  let init = args.get(0).copied().unwrap_or(Value::Undefined);
+  let mut input = if init == Value::Undefined {
+    String::new()
+  } else {
+    let s = rt.heap.to_string(init)?;
+    rt.heap.get_string(s)?.to_utf8_lossy()
+  };
+  if let Some(rest) = input.strip_prefix('?') {
+    input = rest.to_string();
+  }
+  let pairs = if input.is_empty() {
+    Vec::new()
+  } else {
+    parse_urlencoded_pairs(&input)
+  };
+
+  rt.url_search_params.insert(
+    obj,
+    UrlSearchParamsState {
+      url: None,
+      pairs,
+    },
+  );
+  Ok(Value::Undefined)
+}
+
+fn native_urlsearchparams_get(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.get called on non-object");
+  };
+  let Some(state) = rt.url_search_params.get(&obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.get called on invalid receiver");
+  };
+  let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let name = rt.heap.to_string(name_value)?;
+  let name = rt.heap.get_string(name)?.to_utf8_lossy();
+  let found = state
+    .pairs
+    .iter()
+    .find_map(|(k, v)| if k == &name { Some(v.clone()) } else { None });
+  match found {
+    Some(v) => Ok(rt.alloc_string_value(&v)?),
+    None => Ok(Value::Null),
+  }
+}
+
+fn native_urlsearchparams_append(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.append called on non-object");
+  };
+  let (linked_url, serialized) = {
+    let Some(state) = rt.url_search_params.get_mut(&obj) else {
+      return dom_throw_named_error(rt, "TypeError", "URLSearchParams.append called on invalid receiver");
+    };
+    let name_value = args.get(0).copied().unwrap_or(Value::Undefined);
+    let value_value = args.get(1).copied().unwrap_or(Value::Undefined);
+    let name = rt.heap.to_string(name_value)?;
+    let name = rt.heap.get_string(name)?.to_utf8_lossy();
+    let value = rt.heap.to_string(value_value)?;
+    let value = rt.heap.get_string(value)?.to_utf8_lossy();
+    state.pairs.push((name, value));
+    let serialized = serialize_urlencoded_pairs(&state.pairs);
+    (state.url, serialized)
+  };
+
+  if let Some(url_obj) = linked_url {
+    if let Some(url_state) = rt.urls.get_mut(&url_obj) {
+      url_state.raw_query = serialized.clone();
+      if serialized.is_empty() {
+        url_state.url.set_query(None);
+      } else {
+        url_state.url.set_query(Some(&serialized));
+      }
+    }
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn native_urlsearchparams_to_string(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.toString called on non-object");
+  };
+  let Some(state) = rt.url_search_params.get(&obj) else {
+    return dom_throw_named_error(rt, "TypeError", "URLSearchParams.toString called on invalid receiver");
+  };
+  let serialized = serialize_urlencoded_pairs(&state.pairs);
+  Ok(rt.alloc_string_value(&serialized)?)
+}
+
+fn native_fastrender_resolve_url(
+  rt: &mut JsWptRuntime,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, JsError> {
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let base_value = args.get(1).copied().unwrap_or(Value::Undefined);
+  if matches!(base_value, Value::Undefined | Value::Null) {
+    return dom_throw_named_error(rt, "TypeError", "relative URL without base");
+  }
+  let input = rt.heap.to_string(input_value)?;
+  let input = rt.heap.get_string(input)?.to_utf8_lossy();
+  let base = rt.heap.to_string(base_value)?;
+  let base = rt.heap.get_string(base)?.to_utf8_lossy();
+
+  let resolved = match Url::parse(&base).and_then(|b| b.join(&input)) {
+    Ok(url) => url,
+    Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid URL"),
+  };
+  Ok(rt.alloc_string_value(resolved.as_str())?)
+}
+
+fn native_request_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "Request constructor must be called with new");
+  };
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let url_string = match input_value {
+    Value::Object(input_obj) => {
+      let url_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("url")?)
+      };
+      if let Some(desc) = rt.heap.get_property(input_obj, &url_key)? {
+        if let PropertyKind::Data { value, .. } = desc.kind {
+          if let Value::String(s) = value {
+            Some(rt.heap.get_string(s)?.to_utf8_lossy())
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None,
+  };
+
+  let url_string = if let Some(u) = url_string {
+    u
+  } else {
+    let input = rt.heap.to_string(input_value)?;
+    let input = rt.heap.get_string(input)?.to_utf8_lossy();
+    let base = match Url::parse(&rt.document_url) {
+      Ok(base) => base,
+      Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid base URL"),
+    };
+    let resolved = match base.join(&input) {
+      Ok(url) => url,
+      Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid URL"),
+    };
+    resolved.to_string()
+  };
+
+  let url_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("url")?)
+  };
+  let url_value = rt.alloc_string_value(&url_string)?;
+  rt.define_data_prop(obj, url_key, url_value)?;
+  Ok(Value::Undefined)
+}
+
+fn native_response_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let Value::Object(obj) = this else {
+    return dom_throw_named_error(rt, "TypeError", "Response constructor must be called with new");
+  };
+  let url_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let url = rt.heap.to_string(url_value)?;
+  let url = rt.heap.get_string(url)?.to_utf8_lossy();
+  let url_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("url")?)
+  };
+  let url_value = rt.alloc_string_value(&url)?;
+  rt.define_data_prop(obj, url_key, url_value)?;
+  Ok(Value::Undefined)
+}
+
+fn native_fetch(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let input_value = args.get(0).copied().unwrap_or(Value::Undefined);
+
+  let maybe_url = match input_value {
+    Value::Object(obj) => {
+      let url_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("url")?)
+      };
+      if let Some(desc) = rt.heap.get_property(obj, &url_key)? {
+        if let PropertyKind::Data { value, .. } = desc.kind {
+          if let Value::String(s) = value {
+            Some(rt.heap.get_string(s)?.to_utf8_lossy())
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None,
+  };
+
+  let resolved_url = if let Some(url) = maybe_url {
+    url
+  } else {
+    let input = rt.heap.to_string(input_value)?;
+    let input = rt.heap.get_string(input)?.to_utf8_lossy();
+    let base = match Url::parse(&rt.document_url) {
+      Ok(base) => base,
+      Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid base URL"),
+    };
+    let resolved = match base.join(&input) {
+      Ok(url) => url,
+      Err(_) => return dom_throw_named_error(rt, "TypeError", "Invalid URL"),
+    };
+    resolved.to_string()
+  };
+
+  let response = rt.alloc_object()?;
+  let proto = rt
+    .response_proto
+    .ok_or_else(|| JsError::Vm(VmError::Unimplemented("Response prototype")))?;
+  rt.heap.object_set_prototype(response, Some(proto))?;
+
+  let url_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("url")?)
+  };
+  let url_value = rt.alloc_string_value(&resolved_url)?;
+  rt.define_data_prop(response, url_key, url_value)?;
+
+  let promise = rt.alloc_promise_with_state(PromiseStatus::Fulfilled, Value::Object(response))?;
+  Ok(Value::Object(promise))
 }
 
 fn native_btoa(rt: &mut JsWptRuntime, _this: Value, args: &[Value]) -> Result<Value, JsError> {
@@ -6789,6 +7448,108 @@ mod tests {
       rt.value_to_string_lossy(outer_html),
       r#"<div><span id="x" class="y">hi</span></div>"#
     );
+  }
+
+  #[test]
+  fn url_search_params_is_live_and_updates_search_and_href() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const url = new URL("https://example.com/?a=b%20~");
+        const params = url.searchParams;
+        const before = url.search;
+        const a = params.get("a");
+        const normalized = params.toString();
+        const still = url.search;
+        params.append("c", "d");
+        [before, a, normalized, still, url.search, url.href];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    let v0 = get_data_prop(&mut rt, arr, "0");
+    let v1 = get_data_prop(&mut rt, arr, "1");
+    let v2 = get_data_prop(&mut rt, arr, "2");
+    let v3 = get_data_prop(&mut rt, arr, "3");
+    let v4 = get_data_prop(&mut rt, arr, "4");
+    let v5 = get_data_prop(&mut rt, arr, "5");
+
+    assert_eq!(rt.value_to_string_lossy(v0), "?a=b%20~");
+    assert_eq!(rt.value_to_string_lossy(v1), "b ~");
+    assert_eq!(rt.value_to_string_lossy(v2), "a=b+%7E");
+    assert_eq!(rt.value_to_string_lossy(v3), "?a=b%20~");
+    assert_eq!(rt.value_to_string_lossy(v4), "?a=b+%7E&c=d");
+    assert_eq!(rt.value_to_string_lossy(v5), "https://example.com/?a=b+%7E&c=d");
+  }
+
+  #[test]
+  fn setting_url_search_updates_search_params_view() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const url = new URL("https://example.com/");
+        const params = url.searchParams;
+        url.search = "?q=a+b";
+        [url.search, params.get("q"), params.toString()];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    let v0 = get_data_prop(&mut rt, arr, "0");
+    let v1 = get_data_prop(&mut rt, arr, "1");
+    let v2 = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(v0), "?q=a+b");
+    assert_eq!(rt.value_to_string_lossy(v1), "a b");
+    assert_eq!(rt.value_to_string_lossy(v2), "q=a+b");
+  }
+
+  #[test]
+  fn fetch_resolves_relative_urls_and_supports_async_await() {
+    let mut rt = JsWptRuntime::new("https://web-platform.test/smoke/fetch_relative.window.js");
+
+    let Value::Object(promise) = rt
+      .exec_script(
+        r#"
+        const run = async () => {
+          const resp = await fetch("/x");
+          const rel = await fetch("foo");
+          const req = new Request("/y");
+          const resp2 = await fetch(req);
+          return [resp.url, rel.url, resp2.url];
+        };
+        run();
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected Promise return value");
+    };
+
+    let (status, value) = {
+      let state = rt.promises.get(&promise).expect("promise state");
+      (state.status, state.value)
+    };
+    assert_eq!(status, PromiseStatus::Fulfilled);
+    let Value::Object(arr) = value else {
+      panic!("expected fulfilled value to be an array object");
+    };
+
+    let v0 = get_data_prop(&mut rt, arr, "0");
+    let v1 = get_data_prop(&mut rt, arr, "1");
+    let v2 = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(v0), "https://web-platform.test/x");
+    assert_eq!(rt.value_to_string_lossy(v1), "https://web-platform.test/smoke/foo");
+    assert_eq!(rt.value_to_string_lossy(v2), "https://web-platform.test/y");
   }
 
   #[test]
