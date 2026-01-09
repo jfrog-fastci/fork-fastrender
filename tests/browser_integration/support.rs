@@ -151,6 +151,9 @@ fn worker_to_ui_tab_id(msg: &WorkerToUi) -> Option<TabId> {
   if let WorkerToUi::OpenSelectDropdown { tab_id, .. } = msg {
     return Some(*tab_id);
   }
+  if let WorkerToUi::SelectDropdownOpened { tab_id, .. } = msg {
+    return Some(*tab_id);
+  }
   if let WorkerToUi::NavigationStarted { tab_id, .. } = msg {
     return Some(*tab_id);
   }

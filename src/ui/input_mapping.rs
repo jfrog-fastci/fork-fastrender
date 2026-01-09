@@ -107,6 +107,31 @@ impl InputMapping {
     Some((pos_css.x, pos_css.y))
   }
 
+  /// Convert a position in viewport CSS pixels to an egui position (points).
+  ///
+  /// This is the inverse of [`Self::pos_points_to_pos_css_clamped`]. The input is clamped to the
+  /// viewport bounds.
+  pub fn pos_css_to_pos_points_clamped(&self, pos_css: (f32, f32)) -> Option<Pos2> {
+    let css_per_point = self.css_per_point()?;
+    let viewport_css = self.viewport_css_f32();
+    let mut css = Vec2::new(pos_css.0, pos_css.1);
+    css.x = css.x.clamp(0.0, viewport_css.x);
+    css.y = css.y.clamp(0.0, viewport_css.y);
+    Some(
+      self.image_rect_points.min + Vec2::new(css.x / css_per_point.x, css.y / css_per_point.y),
+    )
+  }
+
+  /// Convert a viewport-local CSS rect to an egui rect in points.
+  ///
+  /// This is useful for positioning native UI overlays (e.g. `<select>` dropdown popups) relative
+  /// to an element's viewport-local layout rect.
+  pub fn rect_css_to_rect_points_clamped(&self, rect_css: crate::geometry::Rect) -> Option<Rect> {
+    let min = self.pos_css_to_pos_points_clamped((rect_css.min_x(), rect_css.min_y()))?;
+    let max = self.pos_css_to_pos_points_clamped((rect_css.max_x(), rect_css.max_y()))?;
+    Some(Rect::from_min_max(min, max))
+  }
+
   /// Convert a wheel delta (from egui/winit) to a delta in viewport CSS pixels.
   ///
   /// Sign convention:
@@ -217,5 +242,32 @@ mod tests {
       .wheel_delta_to_delta_css(WheelDelta::Points(Vec2::new(0.0, -10.0)))
       .unwrap();
     assert_approx2(delta_css, (0.0, 20.0));
+  }
+
+  #[test]
+  fn css_to_points_inverts_points_to_css_at_identity_scale() {
+    let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let points = mapping
+      .pos_css_to_pos_points_clamped((100.0, 50.0))
+      .expect("pos_css_to_pos_points_clamped");
+    assert_approx2((points.x, points.y), (110.0, 70.0));
+  }
+
+  #[test]
+  fn css_rect_converts_to_points_rect_with_scale() {
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let rect_points = mapping
+      .rect_css_to_rect_points_clamped(crate::geometry::Rect::from_xywh(
+        100.0, 50.0, 200.0, 100.0,
+      ))
+      .expect("rect_css_to_rect_points_clamped");
+
+    // Drawn at 0.5 scale means 1 point = 2 CSS px.
+    assert_approx2((rect_points.min.x, rect_points.min.y), (50.0, 25.0));
+    assert_approx2((rect_points.width(), rect_points.height()), (100.0, 50.0));
   }
 }

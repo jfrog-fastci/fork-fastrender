@@ -377,6 +377,7 @@ struct OpenSelectDropdown {
   select_node_id: usize,
   control: fastrender::tree::box_tree::SelectControl,
   anchor_points: egui::Pos2,
+  anchor_width_points: Option<f32>,
 }
 
 #[cfg(feature = "browser_ui")]
@@ -717,6 +718,36 @@ impl App {
           select_node_id,
           control,
           anchor_points,
+          anchor_width_points: None,
+        });
+        self.open_select_dropdown_rect = None;
+      }
+      fastrender::ui::WorkerToUi::SelectDropdownOpened {
+        tab_id,
+        select_node_id,
+        control,
+        anchor_css,
+      } => {
+        if self.browser_state.active_tab_id() != Some(tab_id) {
+          return;
+        }
+
+        let mut anchor_points =
+          self.last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        let mut anchor_width_points = None;
+        if let Some(mapping) = self.page_input_mapping {
+          if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+            anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+            anchor_width_points = Some(rect_points.width());
+          }
+        }
+
+        self.open_select_dropdown = Some(OpenSelectDropdown {
+          tab_id,
+          select_node_id,
+          control,
+          anchor_points,
+          anchor_width_points,
         });
         self.open_select_dropdown_rect = None;
       }
@@ -850,7 +881,6 @@ impl App {
           self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
         }
       }
-      fastrender::ui::WorkerToUi::SelectDropdownOpened { .. } => {}
     }
   }
 
@@ -884,18 +914,20 @@ impl App {
     use fastrender::tree::box_tree::SelectItem;
     use fastrender::ui::UiToWorker;
 
-    let (tab_id, select_node_id, anchor, control) = match self.open_select_dropdown.as_ref() {
-      Some(dropdown) => (
-        dropdown.tab_id,
-        dropdown.select_node_id,
-        dropdown.anchor_points,
-        dropdown.control.clone(),
-      ),
-      None => {
-        self.open_select_dropdown_rect = None;
-        return;
-      }
-    };
+    let (tab_id, select_node_id, anchor, anchor_width_points, control) =
+      match self.open_select_dropdown.as_ref() {
+        Some(dropdown) => (
+          dropdown.tab_id,
+          dropdown.select_node_id,
+          dropdown.anchor_points,
+          dropdown.anchor_width_points,
+          dropdown.control.clone(),
+        ),
+        None => {
+          self.open_select_dropdown_rect = None;
+          return;
+        }
+      };
 
     if self.browser_state.active_tab_id() != Some(tab_id) {
       self.close_select_dropdown();
@@ -918,7 +950,11 @@ impl App {
       .fixed_pos(anchor)
       .show(ctx, |ui| {
         let frame = egui::Frame::popup(ui.style()).show(ui, |ui| {
-          ui.set_min_width(200.0);
+          if let Some(width) = anchor_width_points {
+            ui.set_min_width(width.max(1.0));
+          } else {
+            ui.set_min_width(200.0);
+          }
           egui::ScrollArea::vertical()
             .max_height(240.0)
             .show(ui, |ui| {

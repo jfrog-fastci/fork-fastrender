@@ -4,6 +4,7 @@ use std::process::Command;
 
 #[test]
 fn browser_headless_smoke_mode_runs_and_reports_success() {
+  let _lock = super::stage_listener_test_lock();
   let output = Command::new(env!("CARGO_BIN_EXE_browser"))
     // Keep the smoke test cheap/deterministic even if the parent environment has a larger Rayon
     // pool configured.
@@ -26,4 +27,3 @@ fn browser_headless_smoke_mode_runs_and_reports_success() {
     "expected headless smoke success marker, got stdout:\n{stdout}"
   );
 }
-

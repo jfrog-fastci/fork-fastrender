@@ -103,6 +103,43 @@ fn browser_thread_click_dropdown_select_emits_open_select_dropdown_message() {
     .collect();
   assert_eq!(labels, vec!["One", "Two", "Three"]);
 
+  let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::SelectDropdownOpened { .. })
+  })
+  .expect("expected SelectDropdownOpened message");
+
+  let WorkerToUi::SelectDropdownOpened {
+    tab_id: msg_tab,
+    select_node_id: anchored_select_node_id,
+    control: anchored_control,
+    anchor_css,
+  } = msg
+  else {
+    unreachable!("filtered above");
+  };
+
+  assert_eq!(msg_tab, tab_id);
+  assert_eq!(
+    anchored_select_node_id, select_node_id,
+    "expected SelectDropdownOpened select_node_id to match OpenSelectDropdown"
+  );
+  assert_eq!(
+    anchored_control.selected, control.selected,
+    "expected SelectDropdownOpened control to match OpenSelectDropdown"
+  );
+  assert!(
+    anchor_css.x().abs() < 1.0 && anchor_css.y().abs() < 1.0,
+    "expected anchor_css to be near the top-left of the viewport, got {anchor_css:?}"
+  );
+  assert!(
+    anchor_css.width() > 80.0 && anchor_css.width() < 200.0,
+    "expected anchor_css width to reflect the styled <select> width, got {anchor_css:?}"
+  );
+  assert!(
+    anchor_css.height() > 10.0 && anchor_css.height() < 80.0,
+    "expected anchor_css height to reflect the styled <select> height, got {anchor_css:?}"
+  );
+
   // Clean shutdown: dropping the sender allows the worker thread to exit its recv loop.
   drop(tx);
   drop(rx);
