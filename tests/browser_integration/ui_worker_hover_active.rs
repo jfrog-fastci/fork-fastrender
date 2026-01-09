@@ -8,7 +8,8 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+// Rendering + worker startup can take a few seconds under load when tests run in parallel.
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn fixture() -> (support::TempSite, String) {
   let site = support::TempSite::new();
@@ -201,4 +202,3 @@ fn pointer_down_sets_active_until_pointer_up() {
 
   worker.join().unwrap();
 }
-

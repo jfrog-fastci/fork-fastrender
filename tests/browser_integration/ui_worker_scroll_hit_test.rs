@@ -12,7 +12,8 @@ use url::Url;
 use super::support::rgba_at;
 use super::support::TempSite;
 
-const TIMEOUT: Duration = Duration::from_secs(5);
+// Rendering + worker startup can take a few seconds under load when tests run in parallel.
+const TIMEOUT: Duration = Duration::from_secs(15);
 
 fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> RenderedFrame {
   let deadline = Instant::now() + timeout;

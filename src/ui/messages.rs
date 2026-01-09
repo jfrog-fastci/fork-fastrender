@@ -117,20 +117,44 @@ pub enum UiToWorker {
   Scroll {
     tab_id: TabId,
     delta_css: (f32, f32),
+    /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    /// The worker is responsible for converting viewport-local coords to page coords by adding the
+    /// current scroll offset.
     pointer_css: Option<(f32, f32)>,
   },
   PointerMove {
     tab_id: TabId,
+    /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    /// The worker is responsible for converting viewport-local coords to page coords by adding the
+    /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
   },
   PointerDown {
     tab_id: TabId,
+    /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    /// The worker is responsible for converting viewport-local coords to page coords by adding the
+    /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
   },
   PointerUp {
     tab_id: TabId,
+    /// Pointer position in **viewport-local CSS pixels** (0,0 at the top-left of the rendered
+    /// viewport).
+    ///
+    /// This coordinate does **not** include the current scroll offset (`ScrollState.viewport`).
+    /// The worker is responsible for converting viewport-local coords to page coords by adding the
+    /// current scroll offset.
     pos_css: (f32, f32),
     button: PointerButton,
   },
