@@ -5368,6 +5368,67 @@ mod tests {
   }
 
   #[test]
+  fn table_dashed_lines_emit_segmented_rules() {
+    let style = ComputedStyle::default();
+    let make_table = |line_style| {
+      MathNode::Table(MathTable {
+        rows: vec![MathTableRow {
+          cells: vec![
+            MathTableCell {
+              content: MathNode::Identifier {
+                text: "a".into(),
+                variant: None,
+              },
+              row_align: None,
+              column_align: None,
+            },
+            MathTableCell {
+              content: MathNode::Identifier {
+                text: "b".into(),
+                variant: None,
+              },
+              row_align: None,
+              column_align: None,
+            },
+          ],
+          row_align: None,
+          column_aligns: Vec::new(),
+        }],
+        column_aligns: Vec::new(),
+        row_aligns: Vec::new(),
+        column_spacings: None,
+        row_spacings: None,
+        column_lines: Some(vec![line_style]),
+        row_lines: None,
+        frame: None,
+        frame_spacing: None,
+      })
+    };
+
+    let solid_layout = layout_mathml(&make_table(TableLineStyle::Solid), &style, &FontContext::empty());
+    let dashed_layout =
+      layout_mathml(&make_table(TableLineStyle::Dashed), &style, &FontContext::empty());
+
+    let solid_rules = solid_layout
+      .fragments
+      .iter()
+      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .count();
+    let dashed_rules = dashed_layout
+      .fragments
+      .iter()
+      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .count();
+
+    assert_eq!(solid_rules, 1, "solid table columnlines should emit one rule");
+    assert!(
+      dashed_rules > 1,
+      "dashed table columnlines should emit multiple rule segments, got {}",
+      dashed_rules
+    );
+  }
+
+  #[test]
   fn table_frame_emits_stroke_rect_fragment() {
     let style = ComputedStyle::default();
     let ctx = FontContext::with_config(FontConfig::bundled_only());

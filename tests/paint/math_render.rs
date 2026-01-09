@@ -289,6 +289,19 @@ fn math_table_spacing_matches_golden() {
 }
 
 #[test]
+fn math_table_lines_styles_match_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_table_lines_styles"))
+      .expect("load math_table_lines_styles");
+    let png = renderer
+      .render_to_png(&html, 360, 280)
+      .expect("render math table line styles");
+    compare_golden("math_table_lines_styles", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn inline_math_baseline_matches_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
