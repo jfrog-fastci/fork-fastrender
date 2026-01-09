@@ -77,7 +77,7 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
     - Used by the browser worker thread ([`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)),
       the headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the
-      synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
+      synchronous `BrowserWorker` helper (used by some unit tests/helpers).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
