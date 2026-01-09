@@ -512,6 +512,8 @@ pub enum MathNode {
     prescripts: Vec<(Option<MathNode>, Option<MathNode>)>,
     postscripts: Vec<(Option<MathNode>, Option<MathNode>)>,
   },
+  /// MathML `<mphantom>`: lays out its child but does not paint it.
+  Phantom(Box<MathNode>),
   Style {
     overrides: MathStyleOverrides,
     children: Vec<MathNode>,
@@ -1161,6 +1163,8 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
         }
         "none" => None,
         "mrow" => Some(MathNode::Row(parse_children(node))),
+        "mphantom" => wrap_row_or_single(parse_children(node))
+          .map(|child| MathNode::Phantom(Box::new(child))),
         "mi" => normalized_text(node, false).map(|text| MathNode::Identifier {
           text,
           variant: parse_mathvariant(node),
@@ -4233,6 +4237,11 @@ impl MathLayoutContext {
         style,
         base_style,
       ),
+      MathNode::Phantom(child) => {
+        let mut layout = self.layout_node(child, style, base_style);
+        layout.fragments.clear();
+        layout
+      }
       MathNode::Style {
         overrides,
         children,
@@ -4355,6 +4364,42 @@ mod tests {
       with_layout.baseline,
       without_layout.baseline
     );
+  }
+
+  #[test]
+  fn mphantom_preserves_layout_metrics_but_drops_fragments() {
+    let style = ComputedStyle::default();
+    let ctx = bundled_math_font_context();
+    let baseline = parse_math_from_html("<math><mrow><mi>a</mi><mi>b</mi><mi>c</mi></mrow></math>");
+    let with_phantom = parse_math_from_html(
+      "<math><mrow><mi>a</mi><mphantom><mi>b</mi></mphantom><mi>c</mi></mrow></math>",
+    );
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let phantom_layout = layout_mathml(&with_phantom, &style, &ctx);
+
+    let eps = 0.001;
+    assert!(
+      (baseline_layout.width - phantom_layout.width).abs() < eps,
+      "mphantom must preserve width: {} vs {}",
+      baseline_layout.width,
+      phantom_layout.width
+    );
+    assert!(
+      (baseline_layout.height - phantom_layout.height).abs() < eps,
+      "mphantom must preserve height: {} vs {}",
+      baseline_layout.height,
+      phantom_layout.height
+    );
+    assert!(
+      (baseline_layout.baseline - phantom_layout.baseline).abs() < eps,
+      "mphantom must preserve baseline: {} vs {}",
+      baseline_layout.baseline,
+      phantom_layout.baseline
+    );
+
+    assert_eq!(concat_glyph_text(&baseline_layout), "abc");
+    assert_eq!(concat_glyph_text(&phantom_layout), "ac");
   }
 
   #[test]
