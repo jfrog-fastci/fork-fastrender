@@ -2235,6 +2235,26 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.document, "createTextNode", create_text)?;
 
+    let dom_for_comment = dom.clone();
+    let platform_objects_for_comment = platform_objects.clone();
+    let node_wrapper_cache_for_comment = node_wrapper_cache.clone();
+    let create_comment = rt.alloc_function_value(move |rt, this, args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_comment, this)?;
+      let data = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+      let node_id = dom_for_comment.borrow_mut().create_comment(&data);
+      wrap_node(
+        rt,
+        &dom_for_comment,
+        &platform_objects_for_comment,
+        &node_wrapper_cache_for_comment,
+        document_node_id,
+        document,
+        prototypes,
+        node_id,
+      )
+    })?;
+    define_method(rt, prototypes.document, "createComment", create_comment)?;
+
     let dom_for_create_fragment = dom.clone();
     let platform_objects_for_create_fragment = platform_objects.clone();
     let node_wrapper_cache_for_create_fragment = node_wrapper_cache.clone();
@@ -2740,6 +2760,39 @@ mod tests {
     assert_eq!(dom.node(dom.root()).children.len(), 1);
     let child = dom.node(dom.root()).children[0];
     assert!(matches!(dom.node(child).kind, NodeKind::Element { .. } | NodeKind::Slot { .. }));
+  }
+
+  #[test]
+  fn document_create_comment_exposes_comment_node() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_comment_key = pk(&mut realm.rt, "createComment");
+    let create_comment = realm
+      .rt
+      .get(document, create_comment_key)
+      .expect("Document.createComment should exist");
+
+    let content = realm.rt.alloc_string_value("hello").unwrap();
+    let comment = realm
+      .rt
+      .call_function(create_comment, document, &[content])
+      .unwrap();
+
+    let node_type_key = pk(&mut realm.rt, "nodeType");
+    assert_eq!(realm.rt.get(comment, node_type_key).unwrap(), Value::Number(8.0));
+
+    let node_name_key = pk(&mut realm.rt, "nodeName");
+    let node_name = realm.rt.get(comment, node_name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, node_name), "#comment");
+
+    let comment_id = extract_node_id(&mut realm.rt, &realm.platform_objects, comment).unwrap();
+    let dom_ref = realm.dom.borrow();
+    match &dom_ref.node(comment_id).kind {
+      NodeKind::Comment { content } => assert_eq!(content, "hello"),
+      other => panic!("expected Comment node, got {other:?}"),
+    }
   }
 
   #[test]
