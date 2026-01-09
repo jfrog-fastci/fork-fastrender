@@ -677,6 +677,7 @@ mod tests {
     Bool(bool),
     Number(f64),
     String(String),
+    BigInt,
     Object,
     Symbol,
   }
@@ -872,6 +873,7 @@ mod tests {
               .expect("string handle should be valid")
               .to_utf8_lossy(),
           ),
+          Value::BigInt(_) => CapturedConsoleArg::BigInt,
           Value::Object(_) => CapturedConsoleArg::Object,
           Value::Symbol(_) => CapturedConsoleArg::Symbol,
         })

@@ -1005,7 +1005,12 @@ mod tests {
       styled_node_id: 1,
       pseudo: None,
     };
-    let record = state_ba
+    let old_record = state_ab
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("original transition record");
+    let new_record = state_ba
       .elements
       .get(&key)
       .and_then(|el| el.running.get("opacity"))
@@ -1015,21 +1020,30 @@ mod tests {
     let expected_duration = 1000.0 * expected_factor;
     let eps = 1e-4;
 
-    assert!((record.start_time_ms - 500.0).abs() < eps, "start_time={}", record.start_time_ms);
     assert!(
-      (record.duration_ms - expected_duration).abs() < eps,
-      "expected duration {expected_duration}, got {}",
-      record.duration_ms
+      (new_record.start_time_ms - 500.0).abs() < eps,
+      "start_time={}",
+      new_record.start_time_ms
     );
     assert!(
-      (record.reversing_shortening_factor - expected_factor).abs() < eps,
+      (new_record.duration_ms - expected_duration).abs() < eps,
+      "expected duration {expected_duration}, got {}",
+      new_record.duration_ms
+    );
+    assert!(
+      (new_record.reversing_shortening_factor - expected_factor).abs() < eps,
       "expected factor {expected_factor}, got {}",
-      record.reversing_shortening_factor
+      new_record.reversing_shortening_factor
     );
     assert_eq!(
-      record.reversing_adjusted_start_value,
+      new_record.reversing_adjusted_start_value,
       TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
     );
+
+    let ctx = default_update_context();
+    let old_value = old_record.sample(500.0, &ctx).expect("old sample").value;
+    let new_value = new_record.sample(500.0, &ctx).expect("new sample").value;
+    assert_eq!(old_value, new_value, "expected reversal to be continuous at t=500ms");
   }
 
   #[test]
@@ -1048,7 +1062,12 @@ mod tests {
       styled_node_id: 1,
       pseudo: None,
     };
-    let record = state_ab2
+    let old_record = state_ba
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("first reverse transition record");
+    let new_record = state_ab2
       .elements
       .get(&key)
       .and_then(|el| el.running.get("opacity"))
@@ -1059,16 +1078,32 @@ mod tests {
     // - second reversal happens 50ms into a 200ms transition => raw progress 0.25
     //   new factor = 0.25 * 0.2 + (1 - 0.2) = 0.85
     let eps = 1e-6;
-    assert!((record.start_time_ms - 250.0).abs() < eps, "start_time={}", record.start_time_ms);
     assert!(
-      (record.reversing_shortening_factor - 0.85).abs() < eps,
-      "factor={}",
-      record.reversing_shortening_factor
+      (new_record.start_time_ms - 250.0).abs() < eps,
+      "start_time={}",
+      new_record.start_time_ms
     );
-    assert!((record.duration_ms - 850.0).abs() < eps, "duration={}", record.duration_ms);
+    assert!(
+      (new_record.reversing_shortening_factor - 0.85).abs() < eps,
+      "factor={}",
+      new_record.reversing_shortening_factor
+    );
+    assert!(
+      (new_record.duration_ms - 850.0).abs() < eps,
+      "duration={}",
+      new_record.duration_ms
+    );
     assert_eq!(
-      record.reversing_adjusted_start_value,
+      new_record.reversing_adjusted_start_value,
       TransitionValue::Builtin(AnimatedValue::Opacity(0.0))
+    );
+
+    let ctx = default_update_context();
+    let old_value = old_record.sample(250.0, &ctx).expect("old sample").value;
+    let new_value = new_record.sample(250.0, &ctx).expect("new sample").value;
+    assert_eq!(
+      old_value, new_value,
+      "expected repeated reversal to be continuous at t=250ms"
     );
   }
 
