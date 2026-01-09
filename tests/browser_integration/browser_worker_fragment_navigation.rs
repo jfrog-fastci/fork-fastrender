@@ -42,23 +42,33 @@ fn next_frame_ready(
 ) -> fastrender::ui::messages::RenderedFrame {
   let deadline = Instant::now() + TIMEOUT;
   let mut captured: Vec<WorkerToUi> = Vec::new();
-  while Instant::now() < deadline {
-    match rx.recv_timeout(Duration::from_millis(200)) {
+  loop {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+      captured.extend(support::drain_for(rx, Duration::from_millis(200)));
+      panic!(
+        "timed out waiting for FrameReady for tab {tab_id:?}; messages:\n{}",
+        support::format_messages(&captured)
+      );
+    }
+
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => {
         match msg {
           WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => return frame,
           other => captured.push(other),
         }
       }
-      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+        captured.extend(support::drain_for(rx, Duration::from_millis(200)));
+        panic!(
+          "worker disconnected before FrameReady for tab {tab_id:?}; messages:\n{}",
+          support::format_messages(&captured)
+        );
+      }
     }
   }
-  captured.extend(support::drain_for(rx, Duration::from_millis(200)));
-  panic!(
-    "timed out waiting for FrameReady for tab {tab_id:?}; messages:\n{}",
-    support::format_messages(&captured)
-  );
 }
 
 #[test]

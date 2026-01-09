@@ -1,4 +1,47 @@
 //! Browser integration tests consolidated from tests/browser_*.rs
+ 
+// -----------------------------------------------------------------------------
+// Test process initialization
+// -----------------------------------------------------------------------------
+//
+// Many integration tests create `FastRender` instances (directly or indirectly via browser worker
+// runtimes). On minimal/agent hosts, scanning system fonts can be very slow and can cause per-test
+// timeouts and worker thread shutdown hangs.
+//
+// Prefer deterministic bundled fonts for the entire integration test process unless the caller
+// explicitly opted out by setting `FASTR_USE_BUNDLED_FONTS=0`.
+//
+// We want this to run before *any* test executes, so use a small cross-platform "init array"
+// constructor rather than relying on a particular test calling a helper first.
+#[used]
+#[cfg_attr(
+  any(target_os = "linux", target_os = "android", target_os = "freebsd"),
+  link_section = ".init_array"
+)]
+#[cfg_attr(any(target_os = "macos", target_os = "ios"), link_section = "__DATA,__mod_init_func")]
+#[cfg_attr(target_os = "windows", link_section = ".CRT$XCU")]
+static INIT_BROWSER_INTEGRATION_ENV: extern "C" fn() = {
+  extern "C" fn init() {
+    // The browser integration tests share global resources (stage listener, runtime toggles, font
+    // caches) and can spawn multiple worker threads per test. Running them with the default
+    // `cargo test` parallelism can cause lock contention and flakes (especially in CI).
+    //
+    // Default this integration-test binary to single-threaded execution unless the caller
+    // explicitly opted into a different setting via `-- --test-threads` or `RUST_TEST_THREADS`.
+    if std::env::var_os("RUST_TEST_THREADS").is_none() {
+      std::env::set_var("RUST_TEST_THREADS", "1");
+    }
+
+    // Respect an explicit opt-out (e.g. FASTR_USE_BUNDLED_FONTS=0).
+    if let Some(raw) = std::env::var_os("FASTR_USE_BUNDLED_FONTS") {
+      if raw == "0" || raw.eq_ignore_ascii_case("false") {
+        return;
+      }
+    }
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  }
+  init
+};
 
 mod browser_headless_smoke_test;
 mod browser_cli_help;

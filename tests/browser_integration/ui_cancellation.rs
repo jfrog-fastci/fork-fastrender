@@ -18,7 +18,7 @@ fn cancellation_on_new_navigation() {
   let tab_id = TabId::new();
 
   let worker = spawn_ui_worker("fastr-browser-worker-cancel-nav-test").expect("spawn worker");
-  let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
+  let fastrender::ui::UiThreadWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
     .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))
@@ -108,7 +108,7 @@ fn cancellation_on_scroll_drops_stale_frames() {
   let tab_id = TabId::new();
 
   let worker = spawn_ui_worker("fastr-browser-worker-cancel-scroll-test").expect("spawn worker");
-  let fastrender::ui::UiWorkerHandle { ui_tx, ui_rx, join } = worker;
+  let fastrender::ui::UiThreadWorkerHandle { ui_tx, ui_rx, join } = worker;
 
   ui_tx
     .send(support::create_tab_msg_with_cancel(tab_id, None, cancel.clone()))

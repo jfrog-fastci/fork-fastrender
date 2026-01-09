@@ -2,7 +2,7 @@
 
 use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::WorkerToUi;
-use fastrender::ui::{spawn_ui_worker, NavigationReason, RenderedFrame, TabId, UiToWorker};
+use fastrender::ui::{NavigationReason, RenderedFrame, TabId, UiToWorker};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -105,9 +105,8 @@ fn next_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> Scroll
 }
 
 fn spawn_worker() -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
-  spawn_ui_worker("fastr-ui-worker-history-test")
-    .expect("spawn ui worker")
-    .split()
+  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  (worker.tx, worker.rx, worker.join)
 }
 
 fn write_fixtures(dir: &std::path::Path) -> (String, String) {

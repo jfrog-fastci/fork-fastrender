@@ -3009,6 +3009,18 @@ thread_local! {
   static LAYOUT_STACK_THREAD_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Mark the current thread as having a sufficiently large stack for running layout directly.
+///
+/// In debug builds, FastRender may spawn a dedicated `fastr-layout` helper thread (with a larger
+/// stack) to avoid stack overflows on deeply nested documents. The browser UI worker threads already
+/// run on large-stack threads (`DEFAULT_RENDER_STACK_SIZE`), so spawning an additional layout thread
+/// adds overhead and can risk exhausting thread quotas in constrained environments.
+///
+/// This is an internal hook used by the UI worker thread entrypoints.
+pub(crate) fn mark_layout_stack_thread_active() {
+  LAYOUT_STACK_THREAD_ACTIVE.with(|flag| flag.set(true));
+}
+
 struct LayoutStackThreadGuard {
   previous: bool,
 }

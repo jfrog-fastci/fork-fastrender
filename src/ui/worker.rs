@@ -69,6 +69,9 @@ pub fn spawn_render_worker_thread<T: Send + 'static>(
     .name(name.into())
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || {
+      // This thread already has a large stack (`DEFAULT_RENDER_STACK_SIZE`), so avoid spawning yet
+      // another helper thread for layout in debug builds.
+      crate::api::mark_layout_stack_thread_active();
       let worker = RenderWorker::new(renderer, ui_tx);
       f(worker)
     })
@@ -83,10 +86,10 @@ pub fn spawn_render_worker_thread<T: Send + 'static>(
 // helpers here so older call sites continue to compile without reintroducing a second worker loop.
 
 pub use crate::ui::render_worker::{
-  spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory, UiWorkerHandle,
+  spawn_ui_worker, spawn_ui_worker_for_test, spawn_ui_worker_with_factory, UiThreadWorkerHandle,
 };
 
-impl UiWorkerHandle {
+impl UiThreadWorkerHandle {
   /// Shut down the worker loop and join its thread.
   ///
   /// Alias for [`Self::join`]; kept for backwards compatibility with older browser integration

@@ -45,6 +45,11 @@ Notes:
 - Some tests are feature-gated behind `--features browser_ui` (the `browser` binary and the
   UI↔worker protocol types are `browser_ui`-only). If a test needs to spawn `browser` or drive the
   headless worker loop via `UiToWorker`/`WorkerToUi`, run with `--features browser_ui`.
+- The `browser_integration_tests` binary defaults to `RUST_TEST_THREADS=1` for determinism (the
+  suite shares global resources and spawns many worker threads). Override with `-- --test-threads N`
+  or `RUST_TEST_THREADS` if you need parallelism.
+- The harness also prefers deterministic bundled fonts by default, setting `FASTR_USE_BUNDLED_FONTS=1`
+  unless explicitly opted out (`FASTR_USE_BUNDLED_FONTS=0`).
 
 ## Headless constraints (no winit/wgpu/egui)
 

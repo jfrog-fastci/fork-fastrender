@@ -52,13 +52,13 @@ pub fn reset_renderer_build_count_for_test() {
 ///
 /// The UI thread sends [`UiToWorker`] messages over `ui_tx`, and receives [`WorkerToUi`] updates on
 /// `ui_rx`.
-pub struct UiWorkerHandle {
+pub struct UiThreadWorkerHandle {
   pub ui_tx: Sender<UiToWorker>,
   pub ui_rx: Receiver<WorkerToUi>,
   pub join: std::thread::JoinHandle<()>,
 }
 
-impl UiWorkerHandle {
+impl UiThreadWorkerHandle {
   pub fn split(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
     (self.ui_tx, self.ui_rx, self.join)
   }
@@ -2262,7 +2262,7 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
 /// This worker consumes [`UiToWorker`] messages and emits [`WorkerToUi`] updates (frames,
 /// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
 /// usable from tests to exercise end-to-end interaction wiring.
-pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle> {
+pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiThreadWorkerHandle> {
   spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)
 }
 
@@ -2270,7 +2270,7 @@ pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle>
 pub fn spawn_ui_worker_for_test(
   name: impl Into<String>,
   test_render_delay_ms: Option<u64>,
-) -> crate::Result<UiWorkerHandle> {
+) -> crate::Result<UiThreadWorkerHandle> {
   spawn_worker_with_factory_inner(name.into(), test_render_delay_ms, default_ui_worker_factory()?)
 }
 
@@ -2280,7 +2280,7 @@ pub fn spawn_ui_worker_for_test(
 pub fn spawn_ui_worker_with_factory(
   name: impl Into<String>,
   factory: FastRenderFactory,
-) -> crate::Result<UiWorkerHandle> {
+) -> crate::Result<UiThreadWorkerHandle> {
   spawn_worker_with_factory_inner(name.into(), None, factory)
 }
 
@@ -2288,7 +2288,7 @@ fn spawn_worker_with_factory_inner(
   name: String,
   test_render_delay_ms: Option<u64>,
   factory: FastRenderFactory,
-) -> crate::Result<UiWorkerHandle> {
+) -> crate::Result<UiThreadWorkerHandle> {
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
 
@@ -2315,7 +2315,7 @@ fn spawn_worker_with_factory_inner(
       runtime.run();
     })?;
 
-  Ok(UiWorkerHandle {
+  Ok(UiThreadWorkerHandle {
     ui_tx: ui_to_worker_tx,
     ui_rx: worker_to_ui_rx,
     join,
