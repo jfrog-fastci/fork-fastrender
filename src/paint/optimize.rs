@@ -1182,6 +1182,22 @@ impl DisplayListOptimizer {
   ///
   /// Fills can be merged if they have the same color and share an edge.
   fn try_merge_fills(a: &FillRectItem, b: &FillRectItem) -> Option<FillRectItem> {
+    // Merging adjacent fills is only semantics-preserving when removing the shared edge does not
+    // change rasterization. In practice, tiny-skia (like many 2D rasterizers) can produce subtly
+    // different antialias coverage when two subpixel-aligned rectangles are drawn separately vs as
+    // one larger rectangle; the internal edge can show up as a seam.
+    //
+    // Restrict merging to cases where the shared edge lies exactly on the device pixel grid (in
+    // CSS px coordinates). This keeps `optimize_checked` pixel-equivalent with the unoptimized list
+    // for the default `scale=1` renderer configuration.
+    #[inline]
+    fn edge_is_pixel_aligned(coord: f32) -> bool {
+      if !coord.is_finite() {
+        return false;
+      }
+      (coord - coord.round()).abs() <= 1e-6
+    }
+
     // Must have same color
     if a.color != b.color {
       return None;
@@ -1193,6 +1209,9 @@ impl DisplayListOptimizer {
     {
       // a is to the left of b
       if (a.rect.max_x() - b.rect.min_x()).abs() < f32::EPSILON {
+        if !edge_is_pixel_aligned(a.rect.max_x()) {
+          return None;
+        }
         return Some(FillRectItem {
           rect: Rect::from_xywh(
             a.rect.min_x(),
@@ -1205,6 +1224,9 @@ impl DisplayListOptimizer {
       }
       // b is to the left of a
       if (b.rect.max_x() - a.rect.min_x()).abs() < f32::EPSILON {
+        if !edge_is_pixel_aligned(b.rect.max_x()) {
+          return None;
+        }
         return Some(FillRectItem {
           rect: Rect::from_xywh(
             b.rect.min_x(),
@@ -1223,6 +1245,9 @@ impl DisplayListOptimizer {
     {
       // a is above b
       if (a.rect.max_y() - b.rect.min_y()).abs() < f32::EPSILON {
+        if !edge_is_pixel_aligned(a.rect.max_y()) {
+          return None;
+        }
         return Some(FillRectItem {
           rect: Rect::from_xywh(
             a.rect.min_x(),
@@ -1235,6 +1260,9 @@ impl DisplayListOptimizer {
       }
       // b is above a
       if (b.rect.max_y() - a.rect.min_y()).abs() < f32::EPSILON {
+        if !edge_is_pixel_aligned(b.rect.max_y()) {
+          return None;
+        }
         return Some(FillRectItem {
           rect: Rect::from_xywh(
             a.rect.min_x(),

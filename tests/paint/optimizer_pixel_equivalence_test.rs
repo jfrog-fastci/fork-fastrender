@@ -410,3 +410,66 @@ fn optimizer_pixel_equivalence_noop_stacking_context() {
 
   assert_optimizer_preserves_pixels(list, width, height, "noop_stacking_context");
 }
+
+#[test]
+fn optimizer_pixel_equivalence_fill_merging_subpixel_edges() {
+  let (width, height) = (64, 64);
+  let canvas = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+
+  let mut list = DisplayList::new();
+  list.push(fill(canvas, Rgba::WHITE));
+
+  // Use subpixel-aligned rectangles to ensure the fill-merging pass doesn't introduce (or remove)
+  // seams due to antialiasing/coverage differences.
+  let y = 12.25;
+  let h = 19.5;
+  let x1 = 8.25;
+  let w = 17.5;
+  let x2 = x1 + w;
+  let color = Rgba::rgb(200, 60, 60);
+  list.push(fill(Rect::from_xywh(x1, y, w, h), color));
+  list.push(fill(Rect::from_xywh(x2, y, w, h), color));
+
+  let before = render_list(&list, width, height);
+  let viewport = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  let (optimized, stats) = DisplayListOptimizer::new()
+    .optimize_checked(&list, viewport)
+    .expect("optimize_checked");
+  assert_eq!(
+    stats.merged_count, 0,
+    "fill merging must not run for subpixel-aligned shared edges; stats={stats:?}"
+  );
+  let after = render_list(&optimized, width, height);
+  assert_pixmap_eq(&before, &after, "fill_merging_subpixel_edges");
+}
+
+#[test]
+fn optimizer_pixel_equivalence_fill_merging_pixel_aligned_edges() {
+  let (width, height) = (64, 64);
+  let canvas = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+
+  let mut list = DisplayList::new();
+  list.push(fill(canvas, Rgba::WHITE));
+
+  // Keep the shared edge pixel-aligned so merging is safe (no antialias seam at the join).
+  let y = 12.25;
+  let h = 19.5;
+  let x1 = 8.0;
+  let w = 18.0;
+  let x2 = x1 + w; // 26.0
+  let color = Rgba::rgb(200, 60, 60);
+  list.push(fill(Rect::from_xywh(x1, y, w, h), color));
+  list.push(fill(Rect::from_xywh(x2, y, w, h), color));
+
+  let before = render_list(&list, width, height);
+  let viewport = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  let (optimized, stats) = DisplayListOptimizer::new()
+    .optimize_checked(&list, viewport)
+    .expect("optimize_checked");
+  assert!(
+    stats.merged_count > 0,
+    "expected fill merging to run for pixel-aligned edges; stats={stats:?}"
+  );
+  let after = render_list(&optimized, width, height);
+  assert_pixmap_eq(&before, &after, "fill_merging_pixel_aligned_edges");
+}
