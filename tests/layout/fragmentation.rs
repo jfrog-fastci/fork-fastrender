@@ -210,6 +210,62 @@ fn flex_item_forced_break_does_not_force_sibling_breaks() {
 }
 
 #[test]
+fn flex_item_forced_column_break_does_not_force_sibling_breaks() {
+  let mut breaker_style = ComputedStyle::default();
+  breaker_style.break_after = BreakBetween::Column;
+  let breaker_style = Arc::new(breaker_style);
+
+  let mut breaker =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 40.0, 20.0), 1, vec![]);
+  breaker.style = Some(breaker_style);
+  let follower =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 20.0, 40.0, 20.0), 2, vec![]);
+
+  let item_a = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 40.0, 40.0),
+    10,
+    vec![breaker, follower],
+  );
+  let item_b = FragmentNode::new_block_with_id(Rect::from_xywh(50.0, 0.0, 40.0, 40.0), 20, vec![]);
+
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Row;
+  let flex = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, 40.0),
+    vec![item_a, item_b],
+    Arc::new(flex_style),
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 40.0), vec![flex]);
+
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(50.0).with_columns(2, 0.0)).unwrap();
+  assert_eq!(fragments.len(), 2, "expected content to fragment after blank insertion");
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert_eq!(
+    fragments_with_id(&fragments[0], 2).len(),
+    0,
+    "post-break content should not be in the first column"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[0], 20).len(),
+    1,
+    "sibling flex item should remain in the first column"
+  );
+
+  assert_eq!(
+    fragments_with_id(&fragments[1], 2).len(),
+    1,
+    "post-break content should appear in the next column"
+  );
+  assert_eq!(
+    fragments_with_id(&fragments[1], 20).len(),
+    0,
+    "sibling flex item must not be duplicated or split into the next column"
+  );
+}
+
+#[test]
 fn vertical_writing_fragment_tree_columns_use_inline_axis() {
   let mut style = ComputedStyle::default();
   style.display = Display::Block;

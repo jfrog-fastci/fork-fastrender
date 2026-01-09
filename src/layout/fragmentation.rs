@@ -520,9 +520,6 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
   fragmentainer_size: f32,
   context: FragmentationContext,
 ) {
-  if !matches!(context, FragmentationContext::Page) {
-    return;
-  }
   if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
     return;
   }
@@ -536,6 +533,7 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
     axis: &FragmentAxis,
     axes: FragmentAxes,
     fragmentainer_size: f32,
+    context: FragmentationContext,
     default_style: &ComputedStyle,
   ) {
     let style = node
@@ -543,6 +541,7 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
       .as_ref()
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
+    let node_writing_mode = style.writing_mode;
     let node_block_size = axis.block_size(&node.bounds);
 
     if is_row_flex_container(style) {
@@ -563,20 +562,47 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
         let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
         let child_abs_end = child_abs_start + child_block_size;
 
-        let mut boundaries =
-          collect_forced_boundaries_for_pagination_with_axes(child, child_abs_start, axes);
-        if boundaries.is_empty() {
-          continue;
-        }
-
-        let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
-        positions.retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
-        let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
-        else {
-          continue;
+        let mut positions: Vec<f32> = match context {
+          FragmentationContext::Page => collect_forced_boundaries_for_pagination_with_axes(
+            child,
+            child_abs_start,
+            axes,
+          )
+          .into_iter()
+          .map(|b| b.position)
+          .collect(),
+          FragmentationContext::Column => {
+            let child_writing_mode = child
+              .style
+              .as_ref()
+              .map(|s| s.writing_mode)
+              .unwrap_or(node_writing_mode);
+            let mut collection = BreakCollection::default();
+            collect_break_opportunities(
+              child,
+              child_abs_start,
+              &mut collection,
+              0,
+              0,
+              context,
+              axis,
+              child_writing_mode,
+              true,
+              false,
+            );
+            collection
+              .opportunities
+              .into_iter()
+              .filter(|o| matches!(o.strength, BreakStrength::Forced))
+              .map(|o| o.pos)
+              .collect()
+          }
         };
-
-        apply_parallel_flow_shifts_to_descendants(child, child_abs_start, 0.0, axis, &shifts);
+        positions
+          .retain(|p| *p > child_abs_start + BREAK_EPSILON && *p < child_abs_end - BREAK_EPSILON);
+        if let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size) {
+          apply_parallel_flow_shifts_to_descendants(child, child_abs_start, 0.0, axis, &shifts);
+        }
       }
     }
 
@@ -588,12 +614,13 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
         axis,
         axes,
         fragmentainer_size,
+        context,
         default_style,
       );
     }
   }
 
-  walk(root, 0.0, &axis, axes, fragmentainer_size, default_style);
+  walk(root, 0.0, &axis, axes, fragmentainer_size, context, default_style);
 }
 
 pub(crate) fn apply_float_parallel_flow_forced_break_shifts(
@@ -2846,8 +2873,7 @@ fn collect_break_opportunities(
   let node_block_size = axis.block_size(&node.bounds);
   let node_flow_start = abs_start;
   let abs_end = abs_start + node_block_size;
-  let is_row_flex_container_in_page = matches!(context, FragmentationContext::Page)
-    && is_row_flex_container(style);
+  let is_row_flex_container_in_context = is_row_flex_container(style);
 
   // When the fragment includes both grid track ranges and per-item placement metadata, break hints
   // on grid items apply to the corresponding grid line boundaries (CSS Grid 2 §Fragmenting Grid
@@ -3065,7 +3091,7 @@ fn collect_break_opportunities(
           child_writing_mode,
           suppress_parallel_flow_descendants,
           suppress_forced_breaks
-            || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
+            || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
         );
       }
       return;
@@ -3200,7 +3226,7 @@ fn collect_break_opportunities(
         child_writing_mode,
         suppress_parallel_flow_descendants,
         suppress_forced_breaks
-          || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
+          || (is_row_flex_container_in_context && child_style.position.is_in_flow()),
       );
     }
 
