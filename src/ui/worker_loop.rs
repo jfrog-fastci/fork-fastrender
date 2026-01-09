@@ -315,6 +315,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
       UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
         // This legacy worker loop does not implement history navigation.
       }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+        // History navigation is not implemented in this minimal worker loop.
+      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,

@@ -213,12 +213,13 @@ impl Url {
     }
 
     let (host, port) = split_host_and_port(value);
-    set_host_impl(&mut inner.url, host, "host", value)?;
+    // Build on a copy so failures don't partially update the URL.
+    let mut new_url = inner.url.clone();
+    set_host_impl(&mut new_url, host, "host", value)?;
 
     if let Some(port) = port {
       if port.is_empty() {
-        inner
-          .url
+        new_url
           .set_port(None)
           .map_err(|()| UrlError::SetterFailureOpaque {
             field: "host",
@@ -229,8 +230,7 @@ impl Url {
           field: "host",
           value: value.to_string(),
         })?;
-        inner
-          .url
+        new_url
           .set_port(Some(port_num))
           .map_err(|()| UrlError::SetterFailureOpaque {
             field: "host",
@@ -239,6 +239,7 @@ impl Url {
       }
     }
 
+    inner.url = new_url;
     Ok(())
   }
 
@@ -565,7 +566,9 @@ impl UrlSearchParams {
 
   /// Equivalent to the WHATWG `URLSearchParams.sort()` method.
   pub fn sort(&self) {
-    self.mutate_pairs(|pairs| pairs.sort_by(|(a, _), (b, _)| a.cmp(b)));
+    self.mutate_pairs(|pairs| {
+      pairs.sort_by(|(a, _), (b, _)| compare_utf16_code_units(a, b));
+    });
   }
 
   /// A sorted snapshot of the underlying list.
@@ -573,7 +576,7 @@ impl UrlSearchParams {
   /// This does not mutate the underlying storage; use [`UrlSearchParams::sort`] to mutate.
   pub fn entries_sorted(&self) -> Vec<(String, String)> {
     let mut pairs = self.pairs();
-    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    pairs.sort_by(|(a, _), (b, _)| compare_utf16_code_units(a, b));
     pairs
   }
 
@@ -625,6 +628,24 @@ fn serialize_urlencoded_pairs(pairs: &[(String, String)]) -> String {
     serializer.append_pair(name, value);
   }
   serializer.finish()
+}
+
+fn compare_utf16_code_units(a: &str, b: &str) -> std::cmp::Ordering {
+  // WHATWG defines URLSearchParams.sort() ordering in terms of Web IDL "code unit less than", which
+  // corresponds to lexicographic ordering on UTF-16 code units (i.e. JS string `<` comparison).
+  let mut a_units = a.encode_utf16();
+  let mut b_units = b.encode_utf16();
+  loop {
+    match (a_units.next(), b_units.next()) {
+      (Some(a), Some(b)) => match a.cmp(&b) {
+        std::cmp::Ordering::Equal => {}
+        ord => return ord,
+      },
+      (None, Some(_)) => return std::cmp::Ordering::Less,
+      (Some(_), None) => return std::cmp::Ordering::Greater,
+      (None, None) => return std::cmp::Ordering::Equal,
+    }
+  }
 }
 
 fn cannot_have_username_password_port(url: &::url::Url) -> bool {
@@ -852,5 +873,15 @@ mod tests {
     assert_eq!(params.to_string(), "a=1&a=0&b=2");
     assert_eq!(url.search(), "?a=1&a=0&b=2");
     assert_eq!(url.href(), "https://example.com/?a=1&a=0&b=2");
+  }
+
+  #[test]
+  fn urlsearchparams_sort_orders_by_utf16_code_units() {
+    // JS compares strings by UTF-16 code units; that differs from Unicode scalar value order for
+    // non-BMP characters. U+10000 encodes to the surrogate pair [0xD800, 0xDC00], which is less than
+    // U+E000 (0xE000) when comparing code units.
+    let params = UrlSearchParams::parse("\u{E000}=1&\u{10000}=2");
+    params.sort();
+    assert_eq!(params.to_string(), "%F0%90%80%80=2&%EE%80%80=1");
   }
 }
