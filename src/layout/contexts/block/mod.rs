@@ -201,6 +201,16 @@ pub struct BlockFormattingContext {
   /// equation). This is only meant for the flex-item root; descendants revert to normal block
   /// behavior.
   flex_item_mode: bool,
+  /// When set, treat the box with this id as establishing an independent formatting context for
+  /// margin-collapsing purposes.
+  ///
+  /// Flex items establish an independent formatting context (CSS Display 3), which prevents
+  /// parent/child margin collapsing with their in-flow children (CSS2.1 §8.3.1). In FastRender,
+  /// flex items are laid out by calling into the block formatting context with `flex_item_mode`
+  /// enabled. However, we intentionally disable `flex_item_mode` when laying out descendants so
+  /// width resolution follows normal block rules. This field preserves the root's "independent
+  /// formatting context" behavior while still letting descendants use normal block layout.
+  independent_context_root_id: Option<usize>,
   parallelism: LayoutParallelism,
 }
 
@@ -262,6 +272,7 @@ impl BlockFormattingContext {
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: false,
+      independent_context_root_id: None,
       parallelism,
     }
   }
@@ -297,6 +308,7 @@ impl BlockFormattingContext {
       nearest_positioned_cb,
       nearest_fixed_cb,
       flex_item_mode: true,
+      independent_context_root_id: None,
       parallelism,
     }
   }
@@ -2504,7 +2516,10 @@ impl BlockFormattingContext {
     }
 
     let trailing_margin = margin_ctx.pending_margin();
-    let allow_collapse_last = parent.id != 1 && should_collapse_with_last_child(&parent.style);
+    let parent_is_independent_context_root =
+      parent.id == 1 || self.independent_context_root_id == Some(parent.id);
+    let allow_collapse_last =
+      !parent_is_independent_context_root && should_collapse_with_last_child(&parent.style);
     let (_, parent_block_end) = block_axis_sides(&parent.style);
     let parent_has_bottom_separation = resolve_border_side(
       &parent.style,
@@ -2930,9 +2945,13 @@ impl BlockFormattingContext {
     let mut inline_buffer: Vec<BoxNode> = Vec::new();
     let mut positioned_children: Vec<PositionedCandidate> = Vec::new();
     // Root element margins never collapse with their children (CSS 2.1 §8.3.1).
-    let parent_is_root = parent.id == 1;
+    //
+    // Additionally, boxes that establish an independent formatting context (e.g. flex items) must
+    // not collapse margins with their children (CSS Display 3 + CSS2.1 §8.3.1).
+    let parent_is_independent_context_root =
+      parent.id == 1 || self.independent_context_root_id == Some(parent.id);
     let mut collapse_with_parent_top =
-      !parent_is_root && should_collapse_with_first_child(&parent.style);
+      !parent_is_independent_context_root && should_collapse_with_first_child(&parent.style);
     let establishes_absolute_cb = parent.style.establishes_abs_containing_block();
     let establishes_fixed_cb = parent.style.establishes_fixed_containing_block();
     if !collapse_with_parent_top {
@@ -4306,7 +4325,8 @@ impl BlockFormattingContext {
 
     // Resolve any trailing margins
     let trailing_margin = margin_ctx.pending_margin();
-    let allow_collapse_last = !parent_is_root && should_collapse_with_last_child(&parent.style);
+    let allow_collapse_last =
+      !parent_is_independent_context_root && should_collapse_with_last_child(&parent.style);
 
     // Check for bottom separation
     let (_, parent_block_end) = block_axis_sides(&parent.style);
@@ -6298,6 +6318,7 @@ impl FormattingContext for BlockFormattingContext {
 
     let mut child_ctx = self.clone();
     child_ctx.flex_item_mode = false;
+    child_ctx.independent_context_root_id = self.flex_item_mode.then_some(box_node.id);
     child_ctx.nearest_positioned_cb = nearest_cb;
     child_ctx.nearest_fixed_cb = nearest_fixed_cb;
     if nearest_cb != self.nearest_positioned_cb || nearest_fixed_cb != self.nearest_fixed_cb {

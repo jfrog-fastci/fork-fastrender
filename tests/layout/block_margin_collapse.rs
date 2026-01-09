@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
 use fastrender::layout::contexts::block::BlockFormattingContext;
+use fastrender::layout::contexts::factory::FormattingContextFactory;
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::float::{Clear, Float};
 use fastrender::style::types::{BorderStyle, LineHeight, Overflow, WritingMode};
@@ -90,6 +91,47 @@ fn root_bottom_margin_does_not_collapse_with_last_child() {
     fragment.bounds.height(),
     30.0,
     "expected root to include last child's bottom margin (no parent/child collapse at root)",
+  );
+}
+
+#[test]
+fn flex_item_margins_do_not_collapse_with_children() {
+  let mut inner_style = block_style_with_height(Some(10.0));
+  inner_style.margin_top = Some(Length::px(20.0));
+  inner_style.margin_bottom = Some(Length::px(20.0));
+  let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
+
+  let outer = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![inner],
+  );
+
+  // Assign stable ids so the flex item is not treated as the document root (root id == 1 has its
+  // own margin-collapsing rules).
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![outer],
+  );
+  let tree = BoxTree::new(root);
+  let flex_item = &tree.root.children[0];
+
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::for_flex_item_with_factory(FormattingContextFactory::new())
+    .layout(flex_item, &constraints)
+    .expect("layout");
+
+  let inner_fragment = &fragment.children[0];
+  assert_approx(
+    inner_fragment.bounds.y(),
+    20.0,
+    "expected a flex item to establish an independent formatting context (no parent/child margin collapse at top)",
+  );
+  assert_approx(
+    fragment.bounds.height(),
+    50.0,
+    "expected a flex item to include its last child's bottom margin (no parent/child margin collapse at bottom)",
   );
 }
 
