@@ -157,6 +157,7 @@ mod svg_filter_url_test;
 mod svg_foreign_object_css_limits_test;
 mod svg_inline_css_cdata_test;
 mod svg_inline_test;
+mod svg_clip_path_url_fragment_test;
 mod svg_mask_image_reference_test;
 mod system_color_keywords_test;
 mod text_cache_test;
