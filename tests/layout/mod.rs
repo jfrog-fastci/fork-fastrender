@@ -50,6 +50,7 @@ mod flex_fragmentation_order_and_oof;
 mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
 mod flex_wrap_writing_mode;
+mod flex_fragmentation_writing_modes;
 mod float_shrink_to_min;
 mod form_control_baseline;
 mod fragmentation;

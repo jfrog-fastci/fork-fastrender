@@ -545,20 +545,14 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
       .unwrap_or(default_style);
     let node_block_size = axis.block_size(&node.bounds);
 
-    let is_row_flex_container = matches!(style.display, Display::Flex | Display::InlineFlex)
-      && matches!(
-        style.flex_direction,
-        FlexDirection::Row | FlexDirection::RowReverse
-      );
-
-    if is_row_flex_container {
+    if is_row_flex_container(style) {
       for child in node.children_mut().iter_mut() {
         let child_style = child
           .style
           .as_ref()
           .map(|s| s.as_ref())
           .unwrap_or(default_style);
-        if !child_style.position.is_in_flow() {
+        if !is_in_flow_flex_child(&child.content, child_style) {
           continue;
         }
 
@@ -569,7 +563,8 @@ pub(crate) fn apply_flex_parallel_flow_forced_break_shifts(
         let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
         let child_abs_end = child_abs_start + child_block_size;
 
-        let mut boundaries = collect_forced_boundaries_with_axes(child, child_abs_start, axes);
+        let mut boundaries =
+          collect_forced_boundaries_for_pagination_with_axes(child, child_abs_start, axes);
         if boundaries.is_empty() {
           continue;
         }
@@ -2790,7 +2785,7 @@ fn collect_break_opportunities(
   context: FragmentationContext,
   axis: &FragmentAxis,
   inherited_writing_mode: WritingMode,
-  suppress_float_descendants: bool,
+  suppress_parallel_flow_descendants: bool,
   suppress_forced_breaks: bool,
 ) {
   let default_style = default_style();
@@ -2820,7 +2815,7 @@ fn collect_break_opportunities(
       FragmentContent::Line { .. } | FragmentContent::Inline { .. }
     ));
 
-  if suppress_float_descendants && style.float.is_floating() {
+  if suppress_parallel_flow_descendants && style.float.is_floating() {
     return;
   }
 
@@ -3011,7 +3006,15 @@ fn collect_break_opportunities(
         });
       }
 
-      for child in node.children.iter() {
+      for (child_idx, child) in node.children.iter().enumerate() {
+        if suppress_parallel_flow_descendants
+          && flex_lines
+            .line_for_child
+            .get(child_idx)
+            .is_some_and(|slot| slot.is_some())
+        {
+          continue;
+        }
         let child_style = child
           .style
           .as_ref()
@@ -3036,7 +3039,7 @@ fn collect_break_opportunities(
           context,
           &child_axis,
           child_writing_mode,
-          suppress_float_descendants,
+          suppress_parallel_flow_descendants,
           suppress_forced_breaks
             || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
         );
@@ -3171,7 +3174,7 @@ fn collect_break_opportunities(
         context,
         &child_axis,
         child_writing_mode,
-        suppress_float_descendants,
+        suppress_parallel_flow_descendants,
         suppress_forced_breaks
           || (is_row_flex_container_in_page && child_style.position.is_in_flow()),
       );

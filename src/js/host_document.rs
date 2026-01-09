@@ -15,6 +15,7 @@ impl std::fmt::Debug for DocumentHostState {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("DocumentHostState")
       .field("dom", &self.dom)
+      .field("events", &"<event listener registry>")
       .field("current_script", &self.current_script)
       .finish()
   }
