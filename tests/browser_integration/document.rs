@@ -1,13 +1,13 @@
-use fastrender::{
-  BrowserDocument, BrowserDocument2, Error, FastRender, FastRenderConfig, RenderOptions, Result,
-  Rgba,
-};
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::error::{RenderError, RenderStage};
 use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
 use fastrender::style::cascade::StyledNode;
+use fastrender::{
+  BrowserDocument, BrowserDocument2, Error, FastRender, FastRenderConfig, RenderOptions, Result,
+  Rgba,
+};
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -235,7 +235,10 @@ fn browser_document_document_url_is_used_for_referrer_when_base_href_overrides_r
     .find(|request| request.destination == FetchDestination::Style)
     .expect("stylesheet request");
   assert_eq!(stylesheet_request.url, stylesheet_url);
-  assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
+  assert_eq!(
+    stylesheet_request.referrer_url.as_deref(),
+    Some(document_url)
+  );
   Ok(())
 }
 

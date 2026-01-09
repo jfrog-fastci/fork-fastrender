@@ -18,7 +18,10 @@ fn wait_for_first_frame(
   loop {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match rx.recv_timeout(remaining) {
-      Ok(WorkerToUi::FrameReady { tab_id: msg_tab, frame }) if msg_tab == tab_id => return frame,
+      Ok(WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      }) if msg_tab == tab_id => return frame,
       Ok(_) => continue,
       Err(RecvTimeoutError::Timeout) => panic!("timed out waiting for FrameReady for {tab_id:?}"),
       Err(RecvTimeoutError::Disconnected) => panic!("worker disconnected while waiting for frame"),

@@ -201,12 +201,7 @@ pub fn rgba_at(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> [u8; 4] {
   );
   let idx = (y as usize * width as usize + x as usize) * 4;
   let data = pixmap.data();
-  [
-    data[idx],
-    data[idx + 1],
-    data[idx + 2],
-    data[idx + 3],
-  ]
+  [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
 }
 
 #[cfg(feature = "browser_ui")]
@@ -326,10 +321,7 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       let _ = writeln!(
         &mut out,
         "NavigationCommitted(tab={}, url={url}, title={:?}, back={}, forward={})",
-        tab_id.0,
-        title,
-        can_go_back,
-        can_go_forward
+        tab_id.0, title, can_go_back, can_go_forward
       );
       continue;
     }
@@ -351,11 +343,19 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       continue;
     }
     if let WorkerToUi::ScrollStateUpdated { tab_id, scroll } = msg {
-      let _ = writeln!(&mut out, "ScrollStateUpdated(tab={}, scroll={scroll:?})", tab_id.0);
+      let _ = writeln!(
+        &mut out,
+        "ScrollStateUpdated(tab={}, scroll={scroll:?})",
+        tab_id.0
+      );
       continue;
     }
     if let WorkerToUi::LoadingState { tab_id, loading } = msg {
-      let _ = writeln!(&mut out, "LoadingState(tab={}, loading={loading})", tab_id.0);
+      let _ = writeln!(
+        &mut out,
+        "LoadingState(tab={}, loading={loading})",
+        tab_id.0
+      );
       continue;
     }
     if let WorkerToUi::DebugLog { tab_id, line } = msg {

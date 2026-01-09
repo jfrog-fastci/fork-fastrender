@@ -67,6 +67,8 @@ struct NavigationRequest {
 struct TabState {
   history: TabHistory,
   loading: bool,
+  pending_history_entry: bool,
+  needs_default_newtab: bool,
   viewport_css: (u32, u32),
   dpr: f32,
   scroll_state: ScrollState,
@@ -86,6 +88,8 @@ impl TabState {
     Self {
       history: TabHistory::new(),
       loading: false,
+      pending_history_entry: false,
+      needs_default_newtab: false,
       viewport_css: (800, 600),
       dpr: 1.0,
       scroll_state: ScrollState::default(),
@@ -365,10 +369,63 @@ impl BrowserRuntime {
     loop {
       // If there is no pending work, block for the next message.
       if !self.has_pending_jobs() {
-        let Ok(msg) = self.ui_rx.recv() else {
-          break;
-        };
-        self.handle_message(msg);
+        // Newly-created tabs without an explicit initial URL should default to `about:newtab`.
+        //
+        // To avoid racing against callers that enqueue additional messages immediately after
+        // `CreateTab` (e.g. `ViewportChanged` + `Navigate`), wait briefly for any message before
+        // kicking off the default navigation. This keeps tests/UI deterministic and lets callers
+        // override the initial navigation without being forced to cancel an in-flight job.
+        let default_newtab_target = self
+          .active_tab
+          .and_then(|tab_id| {
+            self
+              .tabs
+              .get(&tab_id)
+              .is_some_and(|tab| tab.needs_default_newtab)
+              .then_some(tab_id)
+          })
+          .or_else(|| {
+            self
+              .tabs
+              .iter()
+              .find_map(|(tab_id, tab)| tab.needs_default_newtab.then_some(*tab_id))
+          });
+
+        if let Some(tab_id) = default_newtab_target {
+          let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+          loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.ui_rx.recv_timeout(remaining) {
+              Ok(msg) => {
+                self.handle_message(msg);
+
+                // If the tab was closed or we received an explicit navigation, stop waiting and
+                // resume the main event loop.
+                let still_needs_newtab = self
+                  .tabs
+                  .get(&tab_id)
+                  .is_some_and(|tab| tab.needs_default_newtab);
+                if !still_needs_newtab || self.has_pending_jobs() {
+                  break;
+                }
+              }
+              Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.schedule_navigation(
+                  tab_id,
+                  about_pages::ABOUT_NEWTAB.to_string(),
+                  NavigationReason::TypedUrl,
+                );
+                break;
+              }
+              Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+          }
+        } else {
+          let Ok(msg) = self.ui_rx.recv() else {
+            break;
+          };
+          self.handle_message(msg);
+        }
       }
 
       // If a navigation is pending, coalesce any queued messages (viewport changes, rapid scroll
@@ -461,13 +518,17 @@ impl BrowserRuntime {
         initial_url,
         cancel,
       } => {
-        self.tabs.insert(tab_id, TabState::new(cancel));
+        let mut tab = TabState::new(cancel);
+        tab.needs_default_newtab = initial_url.is_none();
+        self.tabs.insert(tab_id, tab);
         self.active_tab.get_or_insert(tab_id);
         let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
         self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
       }
       UiToWorker::NewTab { tab_id, initial_url } => {
-        self.tabs.insert(tab_id, TabState::new(CancelGens::new()));
+        let mut tab = TabState::new(CancelGens::new());
+        tab.needs_default_newtab = initial_url.is_none();
+        self.tabs.insert(tab_id, tab);
         self.active_tab.get_or_insert(tab_id);
         let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
         self.schedule_navigation(tab_id, url, NavigationReason::TypedUrl);
@@ -497,7 +558,7 @@ impl BrowserRuntime {
           // Only do this when we are not in the middle of a navigation: during an in-flight
           // navigation, the history index may already point at the pending entry while the UI is
           // still showing the previous document/scroll state.
-          if tab.pending_navigation.is_none() {
+          if !tab.loading {
             tab
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -513,7 +574,7 @@ impl BrowserRuntime {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
           };
-          if tab.pending_navigation.is_none() {
+          if !tab.loading {
             tab
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -529,7 +590,7 @@ impl BrowserRuntime {
           let Some(tab) = self.tabs.get_mut(&tab_id) else {
             return;
           };
-          if tab.pending_navigation.is_none() {
+          if !tab.loading {
             tab
               .history
               .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
@@ -738,6 +799,14 @@ impl BrowserRuntime {
       return;
     }
 
+    // Any explicit navigation request overrides the "default new tab" placeholder navigation.
+    {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
+      tab.needs_default_newtab = false;
+    }
+
     match reason {
       NavigationReason::TypedUrl => {
         // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
@@ -808,7 +877,9 @@ impl BrowserRuntime {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
-    let had_pending_navigation = tab.pending_navigation.is_some();
+    tab.needs_default_newtab = false;
+    let had_pending_navigation = tab.loading;
+    let had_pending_history_entry = tab.pending_history_entry;
 
     // Fragment-only navigation within the same document: update URL + scroll state in-place.
     //
@@ -817,7 +888,7 @@ impl BrowserRuntime {
     //
     // `Reload` must not take this path because callers expect a full reload.
     if reason != NavigationReason::Reload {
-      if tab.pending_navigation.is_none() {
+      if !tab.loading {
         if let (Some(current), Some(doc)) = (tab.last_committed_url.as_deref(), tab.document.as_mut()) {
           if let Some(target_url) = same_document_fragment_target(current, &url) {
             let url_string = target_url.to_string();
@@ -904,8 +975,27 @@ impl BrowserRuntime {
           .history
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
       }
-      tab.history.push(url.clone());
+      if had_pending_history_entry {
+        // If we already pushed a provisional history entry for an in-flight navigation, normally
+        // replace it in-place to avoid cancelled URLs showing up in the back/forward list.
+        //
+        // Exception: preserve `about:newtab` so that navigating away from a newly-created tab still
+        // leaves the new-tab page accessible via back navigation even when the initial navigation
+        // is superseded before it commits.
+        if tab
+          .history
+          .current()
+          .is_some_and(|entry| entry.url == about_pages::ABOUT_NEWTAB)
+        {
+          tab.history.push(url.clone());
+        } else {
+          tab.history.replace_current_url(url.clone());
+        }
+      } else {
+        tab.history.push(url.clone());
+      }
     }
+    tab.pending_history_entry = push_history;
 
     let _ = self.ui_tx.send(WorkerToUi::NavigationStarted { tab_id, url });
     let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -1346,6 +1436,7 @@ impl BrowserRuntime {
         // Unsupported URL schemes should fail fast without rendering an error page.
         if err.starts_with("unsupported URL scheme:") {
           tab.loading = false;
+          tab.pending_history_entry = false;
           return Some(JobOutput {
             tab_id,
             snapshot,
@@ -1492,6 +1583,7 @@ impl BrowserRuntime {
           });
 
           tab.loading = false;
+          tab.pending_history_entry = false;
           msgs.push(WorkerToUi::LoadingState {
             tab_id,
             loading: false,
@@ -1589,6 +1681,7 @@ impl BrowserRuntime {
     }
 
     tab.loading = false;
+    tab.pending_history_entry = false;
     msgs.push(WorkerToUi::LoadingState {
       tab_id,
       loading: false,
@@ -1644,6 +1737,7 @@ impl BrowserRuntime {
         }
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
           tab.loading = false;
+          tab.pending_history_entry = false;
         }
         return Some(JobOutput {
           tab_id,
@@ -1696,6 +1790,7 @@ impl BrowserRuntime {
           return None;
         }
         tab.loading = false;
+        tab.pending_history_entry = false;
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -1738,6 +1833,7 @@ impl BrowserRuntime {
           return None;
         }
         tab.loading = false;
+        tab.pending_history_entry = false;
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -1762,6 +1858,7 @@ impl BrowserRuntime {
           return None;
         }
         tab.loading = false;
+        tab.pending_history_entry = false;
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -1794,6 +1891,7 @@ impl BrowserRuntime {
     tab.last_base_url = base_url.or_else(|| Some(about_pages::ABOUT_BASE_URL.to_string()));
 
     tab.loading = false;
+    tab.pending_history_entry = false;
 
     Some(JobOutput {
       tab_id,

@@ -311,17 +311,26 @@ fn link_click_triggers_navigation_to_resolved_url() {
   while Instant::now() < deadline {
     match ui_rx.recv_timeout(Duration::from_millis(200)) {
       Ok(msg) => match msg {
-        WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
+        WorkerToUi::NavigationStarted {
+          tab_id: msg_tab,
+          url,
+        } if msg_tab == tab_id => {
           if url == page2_url {
             saw_started = true;
           }
         }
-        WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. } if msg_tab == tab_id => {
+        WorkerToUi::NavigationCommitted {
+          tab_id: msg_tab,
+          url,
+          ..
+        } if msg_tab == tab_id => {
           if url == page2_url {
             saw_committed = true;
           }
         }
-        WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        WorkerToUi::FrameReady {
+          tab_id: msg_tab, ..
+        } if msg_tab == tab_id => {
           if saw_committed {
             saw_frame = true;
             break;

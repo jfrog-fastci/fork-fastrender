@@ -76,6 +76,24 @@ impl TabHistory {
     }
   }
 
+  /// Replace the current history entry's URL.
+  ///
+  /// This is used when a navigation is superseded before it commits: the worker may have pushed a
+  /// provisional history entry for the in-flight navigation, and should update it in-place to avoid
+  /// leaving cancelled URLs in the back/forward list.
+  pub fn replace_current_url(&mut self, url: String) {
+    match self.index {
+      None => self.push(url),
+      Some(i) => {
+        let Some(entry) = self.entries.get_mut(i) else {
+          debug_assert!(false, "TabHistory invariant violated: index out of bounds");
+          return;
+        };
+        entry.url = url;
+      }
+    }
+  }
+
   pub fn update_scroll(&mut self, scroll_x: f32, scroll_y: f32) {
     let Some(i) = self.index else {
       return;

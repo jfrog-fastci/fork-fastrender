@@ -10788,16 +10788,25 @@ impl DisplayListBuilder {
         let is_listbox = select.multiple || select.size > 1;
 
         if is_listbox {
-          let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
-          let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
-          let row_height =
-            compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
+          let total_rows = select.items.len();
+          if total_rows == 0 {
+            return true;
+          }
+
+          let viewport_height = content_rect.height().max(0.0);
+          if viewport_height <= 0.0 || !viewport_height.is_finite() {
+            return true;
+          }
+
+          // Listbox selects paint `size` rows inside the control. When the author specifies an
+          // explicit `height`, stretch/shrink the row height so the visible rows always fill the
+          // content box.
+          let visible_rows = select.size.max(1) as f32;
+          let row_height = viewport_height / visible_rows;
           if row_height <= 0.0 || !row_height.is_finite() {
             return true;
           }
 
-          let total_rows = select.items.len();
-          let viewport_height = content_rect.height().max(0.0);
           let content_height = row_height * total_rows as f32;
           let mut scroll_y = self.element_scroll_offset(fragment).y;
           if !scroll_y.is_finite() {

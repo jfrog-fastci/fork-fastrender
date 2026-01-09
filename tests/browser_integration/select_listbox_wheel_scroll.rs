@@ -1,10 +1,9 @@
 use super::support::deterministic_renderer;
-use fastrender::interaction::absolute_bounds_for_box_id;
-use fastrender::interaction::content_rect_for_border_rect;
-use fastrender::interaction::InteractionEngine;
-use fastrender::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
+use fastrender::interaction::{
+  absolute_bounds_for_box_id, content_rect_for_border_rect, InteractionEngine,
+};
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
-use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
+use fastrender::{BoxType, BrowserDocument, Overflow, Point, RenderOptions, Result};
 
 fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
   let mut stack = vec![&box_tree.root];
@@ -69,9 +68,9 @@ fn select_listbox_wheel_scroll_updates_element_scroll_state() -> Result<()> {
 
   let select_is_scroll_container = prepared.fragment_tree().iter_fragments().any(|fragment| {
     fragment.box_id() == Some(select_box_id)
-      && fragment.get_style().is_some_and(|style| {
-        matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll)
-      })
+      && fragment
+        .get_style()
+        .is_some_and(|style| matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll))
   });
   assert!(
     select_is_scroll_container,
@@ -139,7 +138,8 @@ fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
 
   let viewport_size = prepared.fragment_tree().viewport_size();
   let content_rect = content_rect_for_border_rect(select_rect, select_style, viewport_size);
-  let row_height = compute_line_height_with_metrics_viewport(select_style, None, Some(viewport_size));
+  let viewport_height = content_rect.height().max(0.0);
+  let row_height = viewport_height / 3.0;
   assert!(
     row_height.is_finite() && row_height > 0.0,
     "expected non-zero row height"
