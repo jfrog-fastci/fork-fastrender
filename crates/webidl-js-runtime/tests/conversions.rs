@@ -229,11 +229,9 @@ fn bigint_conversion_uses_to_bigint() {
   let converted = convert_to_idl(&mut rt, bigint, &ty, &ctx).unwrap();
   assert_eq!(converted, ConvertedValue::Any(bigint));
 
-  let converted = convert_to_idl(&mut rt, Value::Number(5.0), &ty, &ctx).unwrap();
-  assert_eq!(
-    converted,
-    ConvertedValue::Any(Value::BigInt(JsBigInt::from_u128(5)))
-  );
+  // WebIDL `bigint` conversion uses ECMAScript `ToBigInt`, which rejects Numbers.
+  let err = convert_to_idl(&mut rt, Value::Number(5.0), &ty, &ctx).unwrap_err();
+  assert!(error_to_string(&mut rt, err).starts_with("TypeError"));
 }
 
 #[test]
