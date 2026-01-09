@@ -557,22 +557,10 @@ impl Evaluator<'_> {
         rhs_scope.push_root(left);
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
         rhs_scope.push_root(right);
-
-        match (left, right) {
-          (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-          // Minimal string concatenation for the common cases.
-          _ => {
-            let a = self
-              .value_to_string(rhs_scope.heap_mut(), left)
-              .map_err(vm_error_to_runtime)?;
-            let b = self
-              .value_to_string(rhs_scope.heap_mut(), right)
-              .map_err(vm_error_to_runtime)?;
-            let combined = format!("{a}{b}");
-            let handle = rhs_scope.alloc_string(&combined).map_err(vm_error_to_runtime)?;
-            Ok(Value::String(handle))
-          }
-        }
+        add_operator(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
+          message: err.to_string(),
+          stack_trace: self.stack_trace_at_loc(node.loc),
+        })
       }
       parse_js::operator::OperatorName::Assignment => {
         let name = match &*expr.left.stx {
@@ -687,6 +675,71 @@ fn to_boolean(heap: &Heap, value: Value) -> Result<bool, VmError> {
   })
 }
 
+fn to_primitive(scope: &mut Scope<'_>, value: Value) -> Result<Value, VmError> {
+  match value {
+    Value::Object(obj) => {
+      // Placeholder `ToPrimitive` implementation matching `vm-js`'s current `ops::to_primitive`:
+      // return the same value `Object.prototype.toString` would produce for ordinary objects.
+      //
+      // This keeps arithmetic/object conversions behaving in a JS-like way without requiring the
+      // full @@toPrimitive / valueOf / toString machinery yet.
+      let mut scope = scope.reborrow();
+      scope.push_root(Value::Object(obj));
+      let s = scope.alloc_string("[object Object]")?;
+      Ok(Value::String(s))
+    }
+    other => Ok(other),
+  }
+}
+
+fn to_number(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
+  match value {
+    Value::Symbol(_) => Err(VmError::TypeError("Cannot convert a Symbol value to a number")),
+    Value::Object(_) => {
+      // Per spec: ToPrimitive, then ToNumber.
+      let prim = to_primitive(scope, value)?;
+      to_number(scope, prim)
+    }
+    other => scope.heap_mut().to_number(other),
+  }
+}
+
+fn add_operator(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<Value, VmError> {
+  // Root inputs and any intermediate heap values for the duration of the operation: `+` may
+  // allocate (string concatenation) and thus trigger GC.
+  scope.push_root(a);
+  scope.push_root(b);
+
+  let a = to_primitive(scope, a)?;
+  scope.push_root(a);
+  let b = to_primitive(scope, b)?;
+  scope.push_root(b);
+
+  let should_concat = matches!(a, Value::String(_)) || matches!(b, Value::String(_));
+  if should_concat {
+    let a_str = scope.heap_mut().to_string(a)?;
+    scope.push_root(Value::String(a_str));
+    let b_str = scope.heap_mut().to_string(b)?;
+    scope.push_root(Value::String(b_str));
+
+    let a_units = scope.heap().get_string(a_str)?.as_code_units();
+    let b_units = scope.heap().get_string(b_str)?.as_code_units();
+    let mut combined: Vec<u16> = Vec::new();
+    combined
+      .try_reserve_exact(a_units.len() + b_units.len())
+      .map_err(|_| VmError::OutOfMemory)?;
+    combined.extend_from_slice(a_units);
+    combined.extend_from_slice(b_units);
+
+    let s = scope.alloc_string_from_code_units(&combined)?;
+    Ok(Value::String(s))
+  } else {
+    let an = to_number(scope, a)?;
+    let bn = to_number(scope, b)?;
+    Ok(Value::Number(an + bn))
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -781,6 +834,31 @@ mod tests {
 
     let value = realm.eval_script("num.js", "1e999 + ''").unwrap();
     assert_eq!(value, ScriptValue::String("Infinity".to_string()));
+  }
+
+  #[test]
+  fn addition_coerces_booleans_and_null_to_numbers() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    assert_eq!(
+      realm.eval_script("add.js", "1 + true").unwrap(),
+      ScriptValue::Number(2.0)
+    );
+    assert_eq!(
+      realm.eval_script("add.js", "1 + null").unwrap(),
+      ScriptValue::Number(1.0)
+    );
+    assert_eq!(
+      realm.eval_script("add.js", "'1' + true").unwrap(),
+      ScriptValue::String("1true".to_string())
+    );
   }
 
   #[test]
