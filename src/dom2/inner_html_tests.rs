@@ -293,6 +293,25 @@ fn inner_html_parses_noscript_children_when_scripting_disabled() {
 }
 
 #[test]
+fn inner_html_marks_script_elements_as_already_started() {
+  // In browsers, scripts created via `innerHTML` do not execute, even if later moved/reinserted.
+  // The HTML spec models this using the per-element "already started" flag.
+  let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "target");
+
+  doc
+    .set_inner_html(div, "<script id=s>console.log('no')</script>")
+    .unwrap();
+
+  let script = find_element_by_id(&doc, "s");
+  assert!(
+    doc.node(script).script_already_started,
+    "scripts inserted via innerHTML should be marked already started"
+  );
+}
+
+#[test]
 fn inner_html_skips_shadow_root_children() {
   let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
   let root = parse_html(html).unwrap();

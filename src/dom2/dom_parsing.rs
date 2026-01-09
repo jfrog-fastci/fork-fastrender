@@ -1,4 +1,4 @@
-use crate::dom::DomParseOptions;
+use crate::dom::{DomParseOptions, HTML_NAMESPACE};
 use selectors::context::QuirksMode;
 
 use super::import::import_domnodes_into_parent;
@@ -43,6 +43,33 @@ pub(super) fn parse_html_fragment_as_fragment(
       .map_err(|_| DomError::SyntaxError)?;
 
   let fragment = doc.create_document_fragment();
-  import_domnodes_into_parent(doc, fragment, &parsed);
+  let imported_roots = import_domnodes_into_parent(doc, fragment, &parsed);
+
+  // HTML: elements created by `innerHTML`/`outerHTML` parsing must not execute scripts when
+  // inserted into the document.
+  //
+  // The platform uses a per-script-element "already started" flag to ensure scripts created by
+  // dynamic markup insertion do not execute. FastRender mirrors this flag via
+  // `dom2::Node::script_already_started`.
+  let mut to_mark: Vec<NodeId> = Vec::new();
+  for root in imported_roots {
+    to_mark.extend(doc.subtree_preorder(root));
+  }
+  for node_id in to_mark {
+    let NodeKind::Element {
+      tag_name, namespace, ..
+    } = &doc.nodes[node_id.index()].kind
+    else {
+      continue;
+    };
+    if !tag_name.eq_ignore_ascii_case("script") {
+      continue;
+    }
+    if !(namespace.is_empty() || namespace == HTML_NAMESPACE) {
+      continue;
+    }
+    doc.nodes[node_id.index()].script_already_started = true;
+  }
+
   Ok(fragment)
 }
