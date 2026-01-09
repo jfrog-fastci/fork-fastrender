@@ -93,7 +93,7 @@ impl<Host: 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Host> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::js::event_loop::{RunUntilIdleOutcome, TaskSource};
+  use crate::js::event_loop::{RunLimits, RunUntilIdleOutcome, TaskSource};
   use std::sync::{Arc, Mutex};
   use vm_js::VmHostHooks as _;
 
