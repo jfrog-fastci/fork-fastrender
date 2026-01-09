@@ -61,6 +61,13 @@ fn define_enumerable_data_property(
   scope.define_property(obj, key, desc)
 }
 
+fn to_utf8_string(heap: &Heap, value: Value) -> String {
+  let Value::String(s) = value else {
+    panic!("expected string value");
+  };
+  heap.get_string(s).unwrap().to_utf8_lossy()
+}
+
 #[test]
 fn object_builtins_smoke() -> Result<(), VmError> {
   let mut rt = TestRealm::new()?;
@@ -104,11 +111,60 @@ fn object_builtins_smoke() -> Result<(), VmError> {
 
   let x_key = PropertyKey::from_string(x);
   assert_eq!(
-    scope
-      .heap()
-      .object_get_own_data_property_value(o, &x_key)?,
+    scope.heap().object_get_own_data_property_value(o, &x_key)?,
     Some(Value::Number(1.0))
   );
+
+  // Object.create + Object.getPrototypeOf
+  let create =
+    get_own_data_property(&mut scope, object, "create")?.expect("Object.create should exist");
+  let Value::Object(create) = create else {
+    panic!("Object.create should be a function object");
+  };
+
+  let get_proto = get_own_data_property(&mut scope, object, "getPrototypeOf")?
+    .expect("Object.getPrototypeOf should exist");
+  let Value::Object(get_proto) = get_proto else {
+    panic!("Object.getPrototypeOf should be a function object");
+  };
+
+  // { y: 2 }
+  let p = scope.alloc_object()?;
+  scope.push_root(Value::Object(p));
+  define_enumerable_data_property(&mut scope, p, "y", Value::Number(2.0))?;
+  let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
+
+  let args = [Value::Object(p)];
+  let created = rt.vm.call(
+    &mut scope,
+    Value::Object(create),
+    Value::Object(object),
+    &args,
+  )?;
+  let Value::Object(created) = created else {
+    panic!("Object.create should return an object");
+  };
+  scope.push_root(Value::Object(created));
+
+  // Inherited property lookup via prototype chain.
+  let desc = scope
+    .heap()
+    .get_property(created, &y_key)?
+    .expect("property should be found via prototype");
+  let PropertyKind::Data { value, .. } = desc.kind else {
+    panic!("expected data property");
+  };
+  assert_eq!(value, Value::Number(2.0));
+
+  // getPrototypeOf(created) === p
+  let args = [Value::Object(created)];
+  let proto = rt.vm.call(
+    &mut scope,
+    Value::Object(get_proto),
+    Value::Object(object),
+    &args,
+  )?;
+  assert_eq!(proto, Value::Object(p));
 
   // Object.keys
   let keys = get_own_data_property(&mut scope, object, "keys")?.expect("Object.keys should exist");
@@ -122,9 +178,12 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   define_enumerable_data_property(&mut scope, obj, "b", Value::Number(2.0))?;
 
   let args = [Value::Object(obj)];
-  let result = rt
-    .vm
-    .call(&mut scope, Value::Object(keys), Value::Object(object), &args)?;
+  let result = rt.vm.call(
+    &mut scope,
+    Value::Object(keys),
+    Value::Object(object),
+    &args,
+  )?;
   let Value::Object(arr) = result else {
     panic!("Object.keys should return an object");
   };
@@ -132,6 +191,69 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let length = get_own_data_property(&mut scope, arr, "length")?.expect("length should exist");
   assert_eq!(length, Value::Number(2.0));
 
+  // Keys are returned in insertion order for non-index string keys.
+  let first = get_own_data_property(&mut scope, arr, "0")?.expect("key 0 should exist");
+  let second = get_own_data_property(&mut scope, arr, "1")?.expect("key 1 should exist");
+  assert_eq!(to_utf8_string(scope.heap(), first), "a");
+  assert_eq!(to_utf8_string(scope.heap(), second), "b");
+
+  // Object.assign
+  let assign =
+    get_own_data_property(&mut scope, object, "assign")?.expect("Object.assign should exist");
+  let Value::Object(assign) = assign else {
+    panic!("Object.assign should be a function object");
+  };
+
+  let target = scope.alloc_object()?;
+  scope.push_root(Value::Object(target));
+  let source = scope.alloc_object()?;
+  scope.push_root(Value::Object(source));
+  define_enumerable_data_property(&mut scope, source, "a", Value::Number(1.0))?;
+  define_enumerable_data_property(&mut scope, source, "b", Value::Number(2.0))?;
+
+  let args = [Value::Object(target), Value::Object(source)];
+  let out = rt.vm.call(
+    &mut scope,
+    Value::Object(assign),
+    Value::Object(object),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(target));
+  assert_eq!(
+    get_own_data_property(&mut scope, target, "a")?,
+    Some(Value::Number(1.0))
+  );
+  assert_eq!(
+    get_own_data_property(&mut scope, target, "b")?,
+    Some(Value::Number(2.0))
+  );
+
+  // Object.setPrototypeOf
+  let set_proto = get_own_data_property(&mut scope, object, "setPrototypeOf")?
+    .expect("Object.setPrototypeOf should exist");
+  let Value::Object(set_proto) = set_proto else {
+    panic!("Object.setPrototypeOf should be a function object");
+  };
+
+  let obj = scope.alloc_object()?;
+  scope.push_root(Value::Object(obj));
+  let args = [Value::Object(obj), Value::Object(p)];
+  let out = rt.vm.call(
+    &mut scope,
+    Value::Object(set_proto),
+    Value::Object(object),
+    &args,
+  )?;
+  assert_eq!(out, Value::Object(obj));
+
+  let args = [Value::Object(obj)];
+  let proto = rt.vm.call(
+    &mut scope,
+    Value::Object(get_proto),
+    Value::Object(object),
+    &args,
+  )?;
+  assert_eq!(proto, Value::Object(p));
+
   Ok(())
 }
-
