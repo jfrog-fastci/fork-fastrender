@@ -1,6 +1,5 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
-use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, TabId, UiToWorker};
 use crate::ui::normalize_user_url;
 use url::Url;
@@ -16,6 +15,7 @@ pub struct LatestFrameMeta {
 pub struct BrowserTabState {
   pub id: TabId,
   pub title: Option<String>,
+  pub current_url: Option<String>,
   pub loading: bool,
   pub error: Option<String>,
   pub stage: Option<StageHeartbeat>,
@@ -23,7 +23,6 @@ pub struct BrowserTabState {
   pub can_go_forward: bool,
   pub scroll_state: ScrollState,
   pub latest_frame_meta: Option<LatestFrameMeta>,
-  pub history: TabHistory,
   /// The URL most recently sent to the worker for navigation.
   ///
   /// Used to associate `NavigationCommitted`/`NavigationFailed` messages with the initiating URL.
@@ -32,26 +31,23 @@ pub struct BrowserTabState {
 
 impl BrowserTabState {
   pub fn new(tab_id: TabId, initial_url: String) -> Self {
-    let history = TabHistory::with_initial(initial_url);
-    let can_go_back = history.can_go_back();
-    let can_go_forward = history.can_go_forward();
     Self {
       id: tab_id,
       title: None,
+      current_url: Some(initial_url),
       loading: false,
       error: None,
       stage: None,
-      can_go_back,
-      can_go_forward,
+      can_go_back: false,
+      can_go_forward: false,
       scroll_state: ScrollState::default(),
       latest_frame_meta: None,
-      history,
       pending_nav_url: None,
     }
   }
 
   pub fn current_url(&self) -> Option<&str> {
-    self.history.current().map(|entry| entry.url.as_str())
+    self.current_url.as_deref()
   }
 
   pub fn display_title(&self) -> String {
@@ -64,23 +60,18 @@ impl BrowserTabState {
       .unwrap_or_else(|| "New Tab".to_string())
   }
 
-  pub fn sync_nav_flags_from_history(&mut self) {
-    self.can_go_back = self.history.can_go_back();
-    self.can_go_forward = self.history.can_go_forward();
-  }
-
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///
-  /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting `javascript:`
-  /// and unknown schemes. On failure, the returned error is intended for user-facing display.
+  /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting
+  /// `javascript:` and unknown schemes. On failure, the returned error is intended for
+  /// user-facing display.
   ///
-  /// On success, this updates the tab's history/loading state and sets `pending_nav_url`.
+  /// On success, this marks the tab as loading, updates `current_url`, and sets `pending_nav_url`.
   pub fn navigate_typed(&mut self, raw: &str) -> Result<UiToWorker, String> {
     let normalized = normalize_user_url(raw)?;
     validate_typed_url_scheme(&normalized)?;
 
-    self.history.push(normalized.clone());
-    self.sync_nav_flags_from_history();
+    self.current_url = Some(normalized.clone());
     self.loading = true;
     self.error = None;
     self.pending_nav_url = Some(normalized.clone());
@@ -104,27 +95,29 @@ fn validate_typed_url_scheme(url: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod tab_tests {
   use super::BrowserTabState;
-  use crate::ui::messages::UiToWorker;
+  use crate::ui::messages::{NavigationReason, UiToWorker};
   use crate::ui::TabId;
 
   #[test]
   fn typed_javascript_url_is_rejected() {
     let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
-    let before = tab.history.len();
+    let before = tab.current_url.clone();
     assert!(tab.navigate_typed("javascript:alert(1)").is_err());
-    assert_eq!(tab.history.len(), before);
-    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert_eq!(tab.pending_nav_url, None);
+    assert!(!tab.loading);
+    assert_eq!(tab.current_url, before);
   }
 
   #[test]
   fn typed_unknown_scheme_is_rejected() {
     let mut tab = BrowserTabState::new(TabId(1), "about:newtab".to_string());
-    let before = tab.history.len();
+    let before = tab.current_url.clone();
     assert!(tab.navigate_typed("foo:bar").is_err());
-    assert_eq!(tab.history.len(), before);
-    assert_eq!(tab.current_url(), Some("about:newtab"));
+    assert_eq!(tab.pending_nav_url, None);
+    assert!(!tab.loading);
+    assert_eq!(tab.current_url, before);
   }
 
   #[test]
@@ -134,15 +127,21 @@ mod tests {
       .navigate_typed("about:blank")
       .expect("about URL should be allowed");
     match msg {
-      UiToWorker::Navigate { tab_id, url, .. } => {
+      UiToWorker::Navigate {
+        tab_id,
+        url,
+        reason,
+      } => {
         assert_eq!(tab_id, TabId(1));
         assert_eq!(url, "about:blank");
+        assert_eq!(reason, NavigationReason::TypedUrl);
       }
       other => panic!("expected Navigate, got {other:?}"),
     }
 
-    assert_eq!(tab.history.len(), 2);
     assert_eq!(tab.current_url(), Some("about:blank"));
+    assert_eq!(tab.pending_nav_url.as_deref(), Some("about:blank"));
+    assert!(tab.loading);
   }
 }
 
@@ -284,10 +283,7 @@ impl BrowserAppState {
       self.chrome.address_bar_text.clear();
       return;
     };
-    self.chrome.address_bar_text = active
-      .current_url()
-      .map(str::to_string)
-      .unwrap_or_default();
+    self.chrome.address_bar_text = active.current_url().map(str::to_string).unwrap_or_default();
   }
 }
 

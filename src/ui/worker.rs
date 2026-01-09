@@ -116,7 +116,11 @@ pub fn spawn_ui_worker(name: impl Into<String>) -> std::io::Result<UiWorkerHandl
     .stack_size(DEFAULT_RENDER_STACK_SIZE)
     .spawn(move || ui_worker_main(worker_rx, worker_tx))?;
 
-  Ok(UiWorkerHandle { ui_tx, ui_rx, handle })
+  Ok(UiWorkerHandle {
+    ui_tx,
+    ui_rx,
+    handle,
+  })
 }
 
 struct TabState {
@@ -184,7 +188,11 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
       UiToWorker::SetActiveTab { .. } => {
         // Headless worker tracks state per tab id; active-tab routing is handled by the UI.
       }
-      UiToWorker::Navigate { tab_id, url, reason } => {
+      UiToWorker::Navigate {
+        tab_id,
+        url,
+        reason,
+      } => {
         let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
         tab
           .history
@@ -320,7 +328,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
           .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
         repaint_if_needed(tab_id, tab, &tx);
       }
-      UiToWorker::PointerMove { tab_id, pos_css, .. } => {
+      UiToWorker::PointerMove {
+        tab_id, pos_css, ..
+      } => {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
@@ -636,16 +646,20 @@ fn navigate_tab(
     doc.set_scroll_state(tab.scroll_state.clone());
   }
 
-  // History bookkeeping (best-effort for MVP headless worker).
-  match reason {
-    NavigationReason::BackForward | NavigationReason::Reload => {}
-    NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(final_url.clone()),
-  }
-
   let title = tab
     .document
     .as_ref()
     .and_then(|doc| crate::html::title::find_document_title(doc.dom()));
+
+  // History bookkeeping (best-effort for MVP headless worker).
+  match reason {
+    NavigationReason::TypedUrl | NavigationReason::LinkClick => tab.history.push(final_url.clone()),
+    NavigationReason::BackForward | NavigationReason::Reload => {}
+  }
+  tab.history.commit_navigation(&url, Some(&final_url));
+  if let Some(title) = title.clone() {
+    tab.history.set_title(title);
+  }
 
   let _ = tx.send(WorkerToUi::NavigationCommitted {
     tab_id,

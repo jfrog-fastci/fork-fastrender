@@ -154,8 +154,63 @@ impl TabEngine {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           return;
         };
+        let viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
+        let dpr = if dpr.is_finite() && dpr > 0.0 {
+          dpr
+        } else {
+          1.0
+        };
+
+        let dpr_changed = (tab.dpr - dpr).abs() > f32::EPSILON;
         tab.viewport_css = viewport_css;
         tab.dpr = dpr;
+
+        if dpr_changed {
+          let Some(entry) = tab.history.current() else {
+            return;
+          };
+          let url = entry.url.clone();
+          tab.scroll_state = ScrollState::with_viewport(Point::new(entry.scroll_x, entry.scroll_y));
+          let _ = navigate(renderer, ui_tx, tab_id, tab, url);
+          return;
+        }
+
+        let Some(doc) = tab.prepared.as_ref() else {
+          return;
+        };
+        let _guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
+        match doc.paint_with_options_frame(
+          PreparedPaintOptions::new()
+            .with_scroll_state(tab.scroll_state.clone())
+            .with_viewport(viewport_css.0, viewport_css.1),
+        ) {
+          Ok(painted) => {
+            tab.scroll_state = painted.scroll_state.clone();
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+
+            let _ = ui_tx.send(WorkerToUi::FrameReady {
+              tab_id,
+              frame: RenderedFrame {
+                pixmap: painted.pixmap,
+                viewport_css: tab.viewport_css,
+                dpr: doc.device_pixel_ratio(),
+                scroll_state: tab.scroll_state.clone(),
+              },
+            });
+            let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            });
+          }
+          Err(err) => {
+            let _ = ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("viewport repaint failed: {err}"),
+            });
+          }
+        }
       }
       UiToWorker::Scroll {
         tab_id,
@@ -202,7 +257,9 @@ impl TabEngine {
 
         let _guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
         match doc.paint_with_options_frame(
-          PreparedPaintOptions::new().with_scroll_state(tab.scroll_state.clone()),
+          PreparedPaintOptions::new()
+            .with_scroll_state(tab.scroll_state.clone())
+            .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
         ) {
           Ok(painted) => {
             tab.scroll_state = painted.scroll_state.clone();
@@ -232,12 +289,53 @@ impl TabEngine {
           }
         }
       }
+      UiToWorker::RequestRepaint { tab_id, .. } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          return;
+        };
+        let Some(doc) = tab.prepared.as_ref() else {
+          return;
+        };
+
+        let _guard = forward_stage_heartbeats(tab_id, ui_tx.clone());
+        match doc.paint_with_options_frame(
+          PreparedPaintOptions::new()
+            .with_scroll_state(tab.scroll_state.clone())
+            .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
+        ) {
+          Ok(painted) => {
+            tab.scroll_state = painted.scroll_state.clone();
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+
+            let _ = ui_tx.send(WorkerToUi::FrameReady {
+              tab_id,
+              frame: RenderedFrame {
+                pixmap: painted.pixmap,
+                viewport_css: tab.viewport_css,
+                dpr: doc.device_pixel_ratio(),
+                scroll_state: tab.scroll_state.clone(),
+              },
+            });
+            let _ = ui_tx.send(WorkerToUi::ScrollStateUpdated {
+              tab_id,
+              scroll: tab.scroll_state.clone(),
+            });
+          }
+          Err(err) => {
+            let _ = ui_tx.send(WorkerToUi::DebugLog {
+              tab_id,
+              line: format!("repaint failed: {err}"),
+            });
+          }
+        }
+      }
       UiToWorker::PointerMove { .. }
       | UiToWorker::PointerDown { .. }
       | UiToWorker::PointerUp { .. }
       | UiToWorker::TextInput { .. }
-      | UiToWorker::KeyAction { .. }
-      | UiToWorker::RequestRepaint { .. } => {}
+      | UiToWorker::KeyAction { .. } => {}
     }
   }
 }
@@ -304,7 +402,11 @@ fn navigate(
   let dpr = document.device_pixel_ratio();
   let title = crate::html::find_document_title(document.dom());
 
-  let painted = document.paint_with_options_frame(PreparedPaintOptions::new())?;
+  let painted = document.paint_with_options_frame(
+    PreparedPaintOptions::new()
+      .with_scroll_state(tab.scroll_state.clone())
+      .with_viewport(tab.viewport_css.0, tab.viewport_css.1),
+  )?;
   tab.scroll_state = painted.scroll_state.clone();
   tab
     .history

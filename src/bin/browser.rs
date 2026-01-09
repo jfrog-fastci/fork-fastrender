@@ -577,7 +577,6 @@ impl App {
             viewport_css: frame.viewport_css,
             dpr: frame.dpr,
           });
-          tab.history.update_scroll(frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
         }
 
         let pixmap = frame.pixmap;
@@ -597,8 +596,7 @@ impl App {
       }
       fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          tab.history.push(url.clone());
-          tab.sync_nav_flags_from_history();
+          tab.current_url = Some(url.clone());
           tab.loading = true;
           tab.error = None;
           tab.stage = None;
@@ -614,21 +612,18 @@ impl App {
         tab_id,
         url,
         title,
-        can_go_back: _,
-        can_go_forward: _,
+        can_go_back,
+        can_go_forward,
       } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-          if let Some(original) = tab.pending_nav_url.take() {
-            tab.history.commit_navigation(&original, Some(&url));
-          }
-          if let Some(title) = title {
-            tab.title = Some(title.clone());
-            tab.history.set_title(title);
-          }
+          tab.current_url = Some(url.clone());
+          tab.title = title;
           tab.loading = false;
           tab.error = None;
           tab.stage = None;
-          tab.sync_nav_flags_from_history();
+          tab.pending_nav_url = None;
+          tab.can_go_back = can_go_back;
+          tab.can_go_forward = can_go_forward;
         }
         if self.browser_state.active_tab_id() == Some(tab_id) {
           if !self.browser_state.chrome.address_bar_editing {
@@ -646,7 +641,6 @@ impl App {
       fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.scroll_state = scroll.clone();
-          tab.history.update_scroll(scroll.viewport.x, scroll.viewport.y);
         }
       }
       fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
@@ -1088,7 +1082,6 @@ impl App {
 
   fn handle_chrome_actions(&mut self, actions: Vec<fastrender::ui::ChromeAction>) {
     use fastrender::ui::ChromeAction;
-    use fastrender::ui::NavigationReason;
     use fastrender::ui::RepaintReason;
     use fastrender::ui::UiToWorker;
 
@@ -1198,76 +1191,38 @@ impl App {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some(url) = self
-            .browser_state
-            .tab(tab_id)
-            .and_then(|t| t.current_url())
-            .map(str::to_string)
-          else {
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+            tab.loading = true;
+            tab.error = None;
+            tab.stage = None;
+            tab.pending_nav_url = tab.current_url.clone();
+          }
+
+          let _ = self.ui_to_worker_tx.send(UiToWorker::Reload { tab_id });
+        }
+        ChromeAction::Back => {
+          let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
           if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.pending_nav_url = Some(url.clone());
+            tab.pending_nav_url = None;
           }
-
-          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: NavigationReason::Reload,
-          });
-        }
-        ChromeAction::Back => {
-          let Some(tab_id) = self.browser_state.active_tab_id() else {
-            continue;
-          };
-          let Some(url) = (|| {
-            let tab = self.browser_state.tab_mut(tab_id)?;
-            let entry = tab.history.go_back()?;
-            let url = entry.url.clone();
-            tab.sync_nav_flags_from_history();
-            tab.loading = true;
-            tab.error = None;
-            tab.stage = None;
-            tab.pending_nav_url = Some(url.clone());
-            Some(url)
-          })() else {
-            continue;
-          };
-
-          self.browser_state.chrome.address_bar_text = url.clone();
-          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: NavigationReason::BackForward,
-          });
+          let _ = self.ui_to_worker_tx.send(UiToWorker::GoBack { tab_id });
         }
         ChromeAction::Forward => {
           let Some(tab_id) = self.browser_state.active_tab_id() else {
             continue;
           };
-          let Some(url) = (|| {
-            let tab = self.browser_state.tab_mut(tab_id)?;
-            let entry = tab.history.go_forward()?;
-            let url = entry.url.clone();
-            tab.sync_nav_flags_from_history();
+          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
             tab.loading = true;
             tab.error = None;
             tab.stage = None;
-            tab.pending_nav_url = Some(url.clone());
-            Some(url)
-          })() else {
-            continue;
-          };
-
-          self.browser_state.chrome.address_bar_text = url.clone();
-          let _ = self.ui_to_worker_tx.send(UiToWorker::Navigate {
-            tab_id,
-            url,
-            reason: NavigationReason::BackForward,
-          });
+            tab.pending_nav_url = None;
+          }
+          let _ = self.ui_to_worker_tx.send(UiToWorker::GoForward { tab_id });
         }
       }
     }

@@ -230,7 +230,9 @@ impl UiWorker {
       };
 
       let final_url = report.final_url.as_deref().unwrap_or(&nav_url).to_string();
-      tab.history.commit_navigation(&nav_url, report.final_url.as_deref());
+      tab
+        .history
+        .commit_navigation(&nav_url, report.final_url.as_deref());
       nav_url = final_url;
 
       tab.document = Some(report.document);

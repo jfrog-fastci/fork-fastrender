@@ -261,10 +261,7 @@ mod tests {
       event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
       RunUntilIdleOutcome::Idle
     );
-    assert_eq!(
-      &*log.lock().unwrap(),
-      &["task1", "job1", "job2", "task2"]
-    );
+    assert_eq!(&*log.lock().unwrap(), &["task1", "job1", "job2", "task2"]);
     Ok(())
   }
 
