@@ -1,13 +1,30 @@
 use crate::resource::web_url::error::{WebUrlError, WebUrlLimitKind};
 use crate::resource::web_url::limits::WebUrlLimits;
 use crate::resource::web_url::search_params::WebUrlSearchParams;
+use std::cell::RefCell;
+use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WebUrl {
+#[derive(Debug)]
+pub(crate) struct WebUrlInner {
   before_query: String,
   query: Option<String>,
   fragment: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct WebUrl {
+  inner: Rc<RefCell<WebUrlInner>>,
+}
+
+impl PartialEq for WebUrl {
+  fn eq(&self, other: &Self) -> bool {
+    let a = self.inner.borrow();
+    let b = other.inner.borrow();
+    a.before_query == b.before_query && a.query == b.query && a.fragment == b.fragment
+  }
+}
+
+impl Eq for WebUrl {}
 
 impl WebUrl {
   pub fn parse(input: &str, limits: &WebUrlLimits) -> Result<Self, WebUrlError> {
@@ -30,6 +47,7 @@ impl WebUrl {
     };
 
     Ok(Self {
+      inner: Rc::new(RefCell::new(WebUrlInner {
       before_query: try_clone_str(before_query)?,
       query: match query {
         Some(value) => Some(try_clone_str(value)?),
@@ -39,16 +57,23 @@ impl WebUrl {
         Some(value) => Some(try_clone_str(value)?),
         None => None,
       },
+    })),
     })
   }
 
-  pub fn query(&self) -> Option<&str> {
-    self.query.as_deref()
+  /// Return the raw query string (without a leading `?`), if present.
+  pub fn query(&self) -> Result<Option<String>, WebUrlError> {
+    let inner = self.inner.borrow();
+    match &inner.query {
+      Some(value) => Ok(Some(try_clone_str(value)?)),
+      None => Ok(None),
+    }
   }
 
   pub fn href(&self, limits: &WebUrlLimits) -> Result<String, WebUrlError> {
-    let mut total_len = self.before_query.len();
-    if let Some(query) = &self.query {
+    let inner = self.inner.borrow();
+    let mut total_len = inner.before_query.len();
+    if let Some(query) = &inner.query {
       total_len = total_len
         .checked_add(1)
         .and_then(|len| len.checked_add(query.len()))
@@ -58,7 +83,7 @@ impl WebUrl {
           attempted: usize::MAX,
         })?;
     }
-    if let Some(fragment) = &self.fragment {
+    if let Some(fragment) = &inner.fragment {
       total_len = total_len
         .checked_add(1)
         .and_then(|len| len.checked_add(fragment.len()))
@@ -79,26 +104,25 @@ impl WebUrl {
 
     let mut out = String::new();
     out.try_reserve_exact(total_len)?;
-    out.push_str(&self.before_query);
-    if let Some(query) = &self.query {
+    out.push_str(&inner.before_query);
+    if let Some(query) = &inner.query {
       out.push('?');
       out.push_str(query);
     }
-    if let Some(fragment) = &self.fragment {
+    if let Some(fragment) = &inner.fragment {
       out.push('#');
       out.push_str(fragment);
     }
     Ok(out)
   }
 
-  pub fn search_params(&self, limits: &WebUrlLimits) -> Result<WebUrlSearchParams, WebUrlError> {
-    match &self.query {
-      Some(query) => WebUrlSearchParams::parse(query, limits),
-      None => Ok(WebUrlSearchParams::new()),
-    }
+  /// Return a live `URLSearchParams` view over this URL's query.
+  pub fn search_params(&self) -> WebUrlSearchParams {
+    WebUrlSearchParams::associated(self.clone())
   }
 
-  pub fn set_search(&mut self, input: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
+  /// Parse `input` as a query string and replace this URL's query.
+  pub fn set_search(&self, input: &str, limits: &WebUrlLimits) -> Result<(), WebUrlError> {
     // Parse/serialize first so we can update state atomically.
     let params = WebUrlSearchParams::parse(input, limits)?;
     let serialized = params.serialize(limits)?;
@@ -112,7 +136,7 @@ impl WebUrl {
   }
 
   pub fn set_search_params(
-    &mut self,
+    &self,
     params: &WebUrlSearchParams,
     limits: &WebUrlLimits,
   ) -> Result<(), WebUrlError> {
@@ -126,11 +150,12 @@ impl WebUrl {
   }
 
   fn set_query_internal(
-    &mut self,
+    &self,
     new_query: Option<String>,
     limits: &WebUrlLimits,
   ) -> Result<(), WebUrlError> {
-    let mut total_len = self.before_query.len();
+    let mut inner = self.inner.borrow_mut();
+    let mut total_len = inner.before_query.len();
     if let Some(query) = &new_query {
       total_len = total_len
         .checked_add(1)
@@ -141,7 +166,7 @@ impl WebUrl {
           attempted: usize::MAX,
         })?;
     }
-    if let Some(fragment) = &self.fragment {
+    if let Some(fragment) = &inner.fragment {
       total_len = total_len
         .checked_add(1)
         .and_then(|len| len.checked_add(fragment.len()))
@@ -159,8 +184,19 @@ impl WebUrl {
       });
     }
 
-    self.query = new_query;
+    inner.query = new_query;
     Ok(())
+  }
+
+  pub(crate) fn search_params_snapshot(
+    &self,
+    limits: &WebUrlLimits,
+  ) -> Result<WebUrlSearchParams, WebUrlError> {
+    let inner = self.inner.borrow();
+    match &inner.query {
+      Some(query) => WebUrlSearchParams::parse(query, limits),
+      None => Ok(WebUrlSearchParams::new()),
+    }
   }
 }
 
@@ -170,4 +206,3 @@ fn try_clone_str(value: &str) -> Result<String, WebUrlError> {
   out.push_str(value);
   Ok(out)
 }
-
