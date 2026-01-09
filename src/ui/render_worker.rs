@@ -570,88 +570,105 @@ impl BrowserRuntime {
         delta_css,
         pointer_css,
       } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
+        let mut hover_update_pos_css: Option<(f32, f32)> = None;
 
-        // Ignore invalid/no-op scroll deltas.
-        let delta_x = delta_css.0;
-        let delta_y = delta_css.1;
-        if (!delta_x.is_finite() && !delta_y.is_finite()) || (delta_x == 0.0 && delta_y == 0.0) {
-          return;
-        }
-        let delta_x = if delta_x.is_finite() { delta_x } else { 0.0 };
-        let delta_y = if delta_y.is_finite() { delta_y } else { 0.0 };
-
-        let Some(doc) = tab.document.as_mut() else {
-          // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
-          // so it can be applied when the first frame is rendered.
-          let mut next = tab.scroll_state.clone();
-          next.viewport.x = (next.viewport.x + delta_x).max(0.0);
-          next.viewport.y = (next.viewport.y + delta_y).max(0.0);
-          if next != tab.scroll_state {
-            tab.scroll_state = next;
-            tab.cancel.bump_paint();
-            tab.needs_repaint = true;
-          }
-          return;
-        };
-
-        let current_scroll = doc.scroll_state();
-        let mut changed = false;
-        let mut wheel_handled = false;
-
-        if let Some(pointer_css) = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite()) {
-          // Apply scroll wheel deltas to the scroll container under the pointer (including element
-          // scroll offsets like `<select size>` listboxes).
-          match doc.wheel_scroll_at_viewport_point(Point::new(pointer_css.0, pointer_css.1), (delta_x, delta_y)) {
-            Ok(scrolled) => {
-              wheel_handled = true;
-              if scrolled {
-                tab.scroll_state = doc.scroll_state();
-                changed = true;
-              }
-            }
-            Err(_) => {
-              // No cached layout yet; fall back to basic viewport scrolling below.
-            }
-          }
-        }
-
-        // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
-        // this as a basic viewport scroll and clamp to the content bounds when possible.
-        if !wheel_handled {
-          let mut next = current_scroll.clone();
-
-          // Important: do not clamp to content bounds here. Paint-from-cache will clamp/snap the
-          // scroll offset, and we still want to produce a new frame for "overscroll" deltas that
-          // would otherwise appear as a no-op (e.g. scrolling past the end of the page while already
-          // at max scroll).
-          let apply_axis = |current: f32, delta: f32| {
-            if delta == 0.0 || !delta.is_finite() {
-              return current;
-            }
-            let value = current + delta;
-            if value.is_finite() { value.max(0.0) } else { current }
+        {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return;
           };
 
-          // Force evaluation of `doc.prepared()` so we keep layout alive and let paint apply
-          // scroll-snap/clamp logic, but do not use it for clamping here.
-          let _ = doc.prepared();
+          // Ignore invalid/no-op scroll deltas.
+          let delta_x = delta_css.0;
+          let delta_y = delta_css.1;
+          if (!delta_x.is_finite() && !delta_y.is_finite()) || (delta_x == 0.0 && delta_y == 0.0) {
+            return;
+          }
+          let delta_x = if delta_x.is_finite() { delta_x } else { 0.0 };
+          let delta_y = if delta_y.is_finite() { delta_y } else { 0.0 };
 
-          next.viewport.x = apply_axis(next.viewport.x, delta_x);
-          next.viewport.y = apply_axis(next.viewport.y, delta_y);
+          let Some(doc) = tab.document.as_mut() else {
+            // No document yet (e.g. scrolling during initial load). Still record the viewport scroll
+            // so it can be applied when the first frame is rendered.
+            let mut next = tab.scroll_state.clone();
+            next.viewport.x = (next.viewport.x + delta_x).max(0.0);
+            next.viewport.y = (next.viewport.y + delta_y).max(0.0);
+            if next != tab.scroll_state {
+              tab.scroll_state = next;
+              tab.cancel.bump_paint();
+              tab.needs_repaint = true;
+            }
+            return;
+          };
 
-          if next != current_scroll {
-            doc.set_scroll_state(next.clone());
-            tab.scroll_state = next;
-            changed = true;
+          // When scrolling with a stationary pointer, the hovered element can change as content
+          // moves under the cursor. Track the latest pointer position so we can re-run hover
+          // hit-testing after applying scroll offsets.
+          let pointer_pos_css = pointer_css.filter(|(x, y)| x.is_finite() && y.is_finite());
+
+          let current_scroll = doc.scroll_state();
+          let mut changed = false;
+          let mut wheel_handled = false;
+
+          if let Some(pointer_css) = pointer_pos_css {
+            // Apply scroll wheel deltas to the scroll container under the pointer (including element
+            // scroll offsets like `<select size>` listboxes).
+            match doc.wheel_scroll_at_viewport_point(
+              Point::new(pointer_css.0, pointer_css.1),
+              (delta_x, delta_y),
+            ) {
+              Ok(scrolled) => {
+                wheel_handled = true;
+                if scrolled {
+                  tab.scroll_state = doc.scroll_state();
+                  changed = true;
+                }
+              }
+              Err(_) => {
+                // No cached layout yet; fall back to basic viewport scrolling below.
+              }
+            }
+          }
+
+          // If no pointer position was provided (or we couldn't apply wheel scrolling at all), treat
+          // this as a basic viewport scroll and clamp to the content bounds when possible.
+          if !wheel_handled {
+            let mut next = current_scroll.clone();
+
+            // Important: do not clamp to content bounds here. Paint-from-cache will clamp/snap the
+            // scroll offset, and we still want to produce a new frame for "overscroll" deltas that
+            // would otherwise appear as a no-op (e.g. scrolling past the end of the page while already
+            // at max scroll).
+            let apply_axis = |current: f32, delta: f32| {
+              if delta == 0.0 || !delta.is_finite() {
+                return current;
+              }
+              let value = current + delta;
+              if value.is_finite() { value.max(0.0) } else { current }
+            };
+
+            // Force evaluation of `doc.prepared()` so we keep layout alive and let paint apply
+            // scroll-snap/clamp logic, but do not use it for clamping here.
+            let _ = doc.prepared();
+
+            next.viewport.x = apply_axis(next.viewport.x, delta_x);
+            next.viewport.y = apply_axis(next.viewport.y, delta_y);
+
+            if next != current_scroll {
+              doc.set_scroll_state(next.clone());
+              tab.scroll_state = next;
+              changed = true;
+            }
+          }
+
+          if changed {
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+            hover_update_pos_css = pointer_pos_css;
           }
         }
 
-        if changed {
-          tab.cancel.bump_paint();
-          tab.needs_repaint = true;
+        if let Some(pos_css) = hover_update_pos_css {
+          self.handle_pointer_move(tab_id, pos_css);
         }
       }
       UiToWorker::PointerMove {

@@ -421,6 +421,12 @@ struct App {
   captured_button: fastrender::ui::PointerButton,
   last_cursor_pos_points: Option<egui::Pos2>,
   cursor_in_page: bool,
+  /// Latest pending pointer-move message.
+  ///
+  /// Pointer move events can arrive at very high frequency. We coalesce them so the UI worker sees
+  /// at most one `UiToWorker::PointerMove` per rendered frame (and before pointer up/down when
+  /// needed).
+  pending_pointer_move: Option<fastrender::ui::UiToWorker>,
 
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
@@ -532,6 +538,7 @@ impl App {
       captured_button: fastrender::ui::PointerButton::None,
       last_cursor_pos_points: None,
       cursor_in_page: false,
+      pending_pointer_move: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
       debug_log: std::collections::VecDeque::new(),
@@ -657,6 +664,19 @@ impl App {
   fn close_select_dropdown(&mut self) {
     self.open_select_dropdown = None;
     self.open_select_dropdown_rect = None;
+  }
+
+  fn flush_pending_pointer_move(&mut self) {
+    let Some(msg) = self.pending_pointer_move.take() else {
+      return;
+    };
+    if let (Some(rect), Some(pos)) = (self.open_select_dropdown_rect, self.last_cursor_pos_points) {
+      if rect.contains(pos) {
+        // Avoid updating page hover state while the pointer is interacting with the dropdown popup.
+        return;
+      }
+    }
+    self.send_worker_msg(msg);
   }
 
   fn update_open_select_dropdown_selection_for_key(&mut self, key: fastrender::interaction::KeyAction) {
@@ -1173,7 +1193,7 @@ impl App {
         } else {
           fastrender::ui::PointerButton::None
         };
-        self.send_worker_msg(fastrender::ui::UiToWorker::PointerMove {
+        self.pending_pointer_move = Some(fastrender::ui::UiToWorker::PointerMove {
           tab_id,
           pos_css,
           button,
@@ -1217,6 +1237,8 @@ impl App {
 
         match state {
           ElementState::Pressed => {
+            // Ensure any pending hover update is applied before we start a new pointer interaction.
+            self.flush_pending_pointer_move();
             let Some(rect) = self.page_rect_points else {
               return;
             };
@@ -1249,6 +1271,9 @@ impl App {
             if !self.pointer_captured {
               return;
             }
+            // Flush any coalesced pointer moves so interactions (e.g. range drags) see the latest
+            // pointer position before the release.
+            self.flush_pending_pointer_move();
             self.pointer_captured = false;
             self.captured_button = fastrender::ui::PointerButton::None;
 
@@ -1361,6 +1386,13 @@ impl App {
       }
       WindowEvent::ReceivedCharacter(ch) => {
         if !self.page_has_focus || self.egui_ctx.wants_keyboard_input() {
+          return;
+        }
+        // Avoid forwarding browser-chrome shortcuts (e.g. Ctrl/Cmd+L) as text input to the page.
+        //
+        // We intentionally still forward Ctrl+Alt combinations to avoid breaking AltGr-based text
+        // entry on some keyboard layouts.
+        if self.modifiers.logo() || (self.modifiers.ctrl() && !self.modifiers.alt()) {
           return;
         }
         if ch.is_control() {
@@ -1717,6 +1749,8 @@ impl App {
     });
 
     self.render_select_dropdown(&ctx);
+    // Coalesce pointer-move bursts to at most one message per rendered frame.
+    self.flush_pending_pointer_move();
 
     let full_output = self.egui_ctx.end_frame();
     self.egui_state.handle_platform_output(
