@@ -9558,30 +9558,84 @@ fn apply_declaration_with_base_internal_with_order(
       let mut input = ParserInput::new(raw);
       let mut parser = Parser::new(&mut input);
       parser.skip_whitespace();
+      if parser.is_exhausted() {
+        return;
+      }
 
-      let parsed = match parser.parse_comma_separated(|p| {
-        p.skip_whitespace();
-        let ident = p.expect_ident()?;
+      let mut parsed: Vec<String> = Vec::new();
+
+      loop {
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          break;
+        }
+
+        let ident = match parser.expect_ident() {
+          Ok(ident) => ident,
+          Err(_) => return,
+        };
         let name = ident.as_ref();
 
-        if name.eq_ignore_ascii_case("flip-inline") {
-          return Ok("flip-inline".to_string());
-        }
-        if name.eq_ignore_ascii_case("flip-block") {
-          return Ok("flip-block".to_string());
-        }
         if name.starts_with("--") && name.len() > 2 {
-          return Ok(name.to_string());
+          // A named `@position-try` set reference. Must consume the full item.
+          let item = name.to_string();
+          parser.skip_whitespace();
+          if parser.is_exhausted() {
+            parsed.push(item);
+            break;
+          }
+          if parser.try_parse(|p| p.expect_comma()).is_ok() {
+            parser.skip_whitespace();
+            if parser.is_exhausted() {
+              return;
+            }
+            parsed.push(item);
+            continue;
+          }
+          return;
         }
 
-        Err(p.new_custom_error::<(), ()>(() ))
-      }) {
-        Ok(values) => values,
-        Err(_) => return,
-      };
+        let mut tactics: Vec<&'static str> = Vec::new();
+        if name.eq_ignore_ascii_case("flip-inline") {
+          tactics.push("flip-inline");
+        } else if name.eq_ignore_ascii_case("flip-block") {
+          tactics.push("flip-block");
+        } else {
+          return;
+        }
 
-      parser.skip_whitespace();
-      if !parser.is_exhausted() || parsed.is_empty() {
+        loop {
+          parser.skip_whitespace();
+          if parser.is_exhausted() {
+            parsed.push(tactics.join(" "));
+            break;
+          }
+
+          if parser.try_parse(|p| p.expect_comma()).is_ok() {
+            parser.skip_whitespace();
+            if parser.is_exhausted() {
+              return;
+            }
+            parsed.push(tactics.join(" "));
+            break;
+          }
+
+          let ident = match parser.expect_ident() {
+            Ok(ident) => ident,
+            Err(_) => return,
+          };
+          let name = ident.as_ref();
+          if name.eq_ignore_ascii_case("flip-inline") {
+            tactics.push("flip-inline");
+          } else if name.eq_ignore_ascii_case("flip-block") {
+            tactics.push("flip-block");
+          } else {
+            return;
+          }
+        }
+      }
+
+      if parsed.is_empty() {
         return;
       }
 

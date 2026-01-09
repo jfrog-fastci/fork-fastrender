@@ -82,6 +82,22 @@ fn supports_position_try_fallbacks_builtin_flip_block() {
 }
 
 #[test]
+fn supports_position_try_fallbacks_multiple_tactics() {
+  let target = styled_target(
+    r#"
+      @supports (position-try-fallbacks: flip-inline flip-block) {
+        #t { color: rgb(21, 22, 23); }
+      }
+      @supports not (position-try-fallbacks: flip-inline flip-block) {
+        #t { color: rgb(1, 1, 1); }
+      }
+    "#,
+  );
+
+  assert_eq!(target.styles.color, Rgba::rgb(21, 22, 23));
+}
+
+#[test]
 fn position_try_fallbacks_parses_and_skips_comments() {
   let target = styled_target(
     r#"
@@ -92,6 +108,20 @@ fn position_try_fallbacks_parses_and_skips_comments() {
   assert_eq!(
     target.styles.position_try_fallbacks,
     vec!["flip-inline".to_string(), "--foo".to_string()]
+  );
+}
+
+#[test]
+fn position_try_fallbacks_parses_multiple_tactics_per_fallback() {
+  let target = styled_target(
+    r#"
+      #t { position-try-fallbacks: flip-inline/*comment*/flip-block; }
+    "#,
+  );
+
+  assert_eq!(
+    target.styles.position_try_fallbacks,
+    vec!["flip-inline flip-block".to_string()]
   );
 }
 

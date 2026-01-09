@@ -2718,14 +2718,23 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
     FlipBlock,
   }
 
-  fn parse_builtin_try(name: &str) -> Option<BuiltinTryKeyword> {
-    if name.eq_ignore_ascii_case("flip-inline") {
-      return Some(BuiltinTryKeyword::FlipInline);
+  fn parse_builtin_try_tactics(name: &str) -> Option<Vec<BuiltinTryKeyword>> {
+    let name = name.trim();
+    if name.is_empty() || name.starts_with("--") {
+      return None;
     }
-    if name.eq_ignore_ascii_case("flip-block") {
-      return Some(BuiltinTryKeyword::FlipBlock);
+
+    let mut tactics = Vec::new();
+    for token in name.split_ascii_whitespace() {
+      if token.eq_ignore_ascii_case("flip-inline") {
+        tactics.push(BuiltinTryKeyword::FlipInline);
+      } else if token.eq_ignore_ascii_case("flip-block") {
+        tactics.push(BuiltinTryKeyword::FlipBlock);
+      } else {
+        return None;
+      }
     }
-    None
+    (!tactics.is_empty()).then_some(tactics)
   }
 
   fn border_box_rect(result: &AbsoluteLayoutResult, style: &PositionedStyle) -> Rect {
@@ -2892,8 +2901,10 @@ pub(crate) fn layout_absolute_with_position_try_fallbacks(
 
   for name in base_style.position_try_fallbacks.iter() {
     let mut trial_style = base_style.clone();
-    if let Some(keyword) = parse_builtin_try(name.as_str()) {
-      apply_builtin_try(&mut trial_style, keyword);
+    if let Some(tactics) = parse_builtin_try_tactics(name.as_str()) {
+      for keyword in tactics {
+        apply_builtin_try(&mut trial_style, keyword);
+      }
     } else {
       let Some(decls) = base_style.position_try_registry.get(name.as_str()) else {
         continue;

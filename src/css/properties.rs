@@ -2254,32 +2254,75 @@ fn supports_position_try_fallbacks_value(raw_value: &str) -> bool {
   let mut input = ParserInput::new(raw_value);
   let mut parser = Parser::new(&mut input);
   parser.skip_whitespace();
-  let fallbacks = match parser.parse_comma_separated(|p| {
-    p.skip_whitespace();
-    let token = p.next()?;
-    match token {
-      Token::Ident(ident) => {
-        let name = ident.as_ref();
-        if name.eq_ignore_ascii_case("flip-inline") || name.eq_ignore_ascii_case("flip-block") {
-          Ok(())
-        } else if name.starts_with("--") && name.len() > 2 {
-          Ok(())
-        } else {
-          Err(p.new_custom_error::<(), ()>(() ))
-        }
-      }
-      _ => Err(p.new_custom_error::<(), ()>(() )),
-    }
-  }) {
-    Ok(items) => items,
-    Err(_) => return false,
-  };
-  parser.skip_whitespace();
-  if !parser.is_exhausted() {
+  if parser.is_exhausted() {
     return false;
   }
 
-  !fallbacks.is_empty()
+  let mut count: usize = 0;
+
+  loop {
+    parser.skip_whitespace();
+    if parser.is_exhausted() {
+      break;
+    }
+
+    let first = match parser.expect_ident() {
+      Ok(ident) => ident,
+      Err(_) => return false,
+    };
+    let name = first.as_ref();
+
+    // Named `@position-try` references are `<dashed-ident>` and must consume the full item.
+    if name.starts_with("--") && name.len() > 2 {
+      parser.skip_whitespace();
+      if parser.is_exhausted() {
+        count += 1;
+        break;
+      }
+      if parser.try_parse(|p| p.expect_comma()).is_ok() {
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          return false;
+        }
+        count += 1;
+        continue;
+      }
+      return false;
+    }
+
+    let is_builtin = |name: &str| {
+      name.eq_ignore_ascii_case("flip-inline") || name.eq_ignore_ascii_case("flip-block")
+    };
+    if !is_builtin(name) {
+      return false;
+    }
+
+    loop {
+      parser.skip_whitespace();
+      if parser.is_exhausted() {
+        count += 1;
+        break;
+      }
+      if parser.try_parse(|p| p.expect_comma()).is_ok() {
+        parser.skip_whitespace();
+        if parser.is_exhausted() {
+          return false;
+        }
+        count += 1;
+        break;
+      }
+
+      let ident = match parser.expect_ident() {
+        Ok(ident) => ident,
+        Err(_) => return false,
+      };
+      if !is_builtin(ident.as_ref()) {
+        return false;
+      }
+    }
+  }
+
+  count > 0
 }
 
 fn supports_scroll_timeline_function<'i, 't>(
