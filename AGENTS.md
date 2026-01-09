@@ -50,17 +50,35 @@ Prefer in-process guardrails when a CLI supports them (e.g. `--mem-limit-mb`, st
 
 See: `docs/resource-limits.md`
 
-### Cargo builds/tests (avoid stampedes)
+### Cargo builds/tests — NEVER run unscoped
 
-Many agents running Cargo concurrently can spawn thousands of `rustc`/linker processes and blow up RAM.
+**This is critical. Violating these rules spawns hundreds of rustc/linker processes, exhausts RAM, and kills the host.**
 
-- **Do not run `cargo …` directly**; use `scripts/cargo_agent.sh` to throttle concurrent cargo invocations.
-- **Do not run unscoped `cargo test`**; always scope the target(s) you need.
+**FORBIDDEN (no exceptions):**
+- `cargo build` / `cargo test` / `cargo check` without wrapper scripts
+- `cargo test` without `-p <crate>`, `--test <name>`, or `--lib`
+- `cargo test --all-features` or `cargo check --all-features --tests`
+- `cargo build --all-targets` or `cargo test --all-targets`
+- ANY command that compiles all 100+ targets
+
+**MANDATORY:**
+- **Always use `scripts/cargo_agent.sh`** for all cargo commands
+- **Always scope test runs**: `-p <crate>`, `--test <name>`, `--lib`, or `--bin <name>`
 
 ```bash
+# CORRECT:
 scripts/cargo_agent.sh build --release
 scripts/cargo_agent.sh test --quiet --lib
+scripts/cargo_agent.sh test --test layout_tests
+scripts/cargo_agent.sh check -p fastrender
+
+# WRONG — WILL DESTROY HOST:
+cargo test
+cargo build --all-targets
+cargo check --all-features --tests
 ```
+
+If you run unscoped cargo commands, you will compile 100+ binaries with LTO, spawn hundreds of parallel rustc/mold processes, exhaust all RAM, and render the machine unusable. **There are no exceptions.**
 
 ### Disk hygiene (`target/`)
 
