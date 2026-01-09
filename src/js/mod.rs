@@ -65,10 +65,8 @@ pub use script_scheduler::{
 };
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlSearchParams};
-pub use window_timers::{
-  clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
-};
-pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig};
+pub use window_timers::install_window_timers_bindings;
+pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 
 /// The script processing mode for a `<script>` element.

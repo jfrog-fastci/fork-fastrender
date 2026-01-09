@@ -278,6 +278,10 @@ impl<Host: 'static> EventLoop<Host> {
     Ok(())
   }
 
+  pub(crate) fn pending_microtask_count(&self) -> usize {
+    self.microtask_queue.len()
+  }
+
   pub fn set_timeout<F>(&mut self, delay: Duration, callback: F) -> Result<TimerId>
   where
     F: FnOnce(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static,

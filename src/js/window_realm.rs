@@ -67,6 +67,10 @@ impl WindowRealm {
     (&mut self.vm, &mut self.heap)
   }
 
+  pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
+    (&mut self.vm, &self.realm, &mut self.heap)
+  }
+
   pub fn realm(&self) -> &Realm {
     &self.realm
   }
@@ -85,6 +89,10 @@ impl WindowRealm {
     }
     self.realm.teardown(&mut self.heap);
   }
+}
+
+pub trait WindowRealmHost {
+  fn window_realm(&mut self) -> &mut WindowRealm;
 }
 
 impl Drop for WindowRealm {
