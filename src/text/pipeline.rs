@@ -5677,6 +5677,13 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
     .hash(&mut hasher);
   style.font_variant_alternates.stylistic.hash(&mut hasher);
   style.font_variant_alternates.stylesets.hash(&mut hasher);
+  style
+    .font_variant_alternates
+    .character_variants
+    .hash(&mut hasher);
+  style.font_variant_alternates.swash.hash(&mut hasher);
+  style.font_variant_alternates.ornaments.hash(&mut hasher);
+  style.font_variant_alternates.annotation.hash(&mut hasher);
 
   match style.font_variant_east_asian.variant {
     Some(var) => {
@@ -7849,6 +7856,127 @@ mod tests {
     assert_eq!(stats_after_second.misses, 2);
     assert_eq!(stats_after_second.hits, 0);
     assert_eq!(pipeline.cache_len(), 2);
+  }
+
+  #[test]
+  fn shaping_style_hash_includes_font_variant_alternates_fields() {
+    let base = ComputedStyle::default();
+    let base_hash = shaping_style_hash(&base);
+
+    let mut with_character_variants = base.clone();
+    with_character_variants.font_variant_alternates.character_variants = vec![1];
+    assert_ne!(
+      base_hash,
+      shaping_style_hash(&with_character_variants),
+      "character-variant() should affect shaping cache key"
+    );
+
+    let mut with_swash = base.clone();
+    with_swash.font_variant_alternates.swash = Some(1);
+    assert_ne!(
+      base_hash,
+      shaping_style_hash(&with_swash),
+      "swash() should affect shaping cache key"
+    );
+
+    let mut with_ornaments = base.clone();
+    with_ornaments.font_variant_alternates.ornaments = Some(1);
+    assert_ne!(
+      base_hash,
+      shaping_style_hash(&with_ornaments),
+      "ornaments() should affect shaping cache key"
+    );
+
+    let mut with_annotation = base.clone();
+    with_annotation.font_variant_alternates.annotation = Some("test".to_string());
+    assert_ne!(
+      base_hash,
+      shaping_style_hash(&with_annotation),
+      "annotation() should affect shaping cache key"
+    );
+  }
+
+  #[test]
+  fn shaping_cache_misses_when_font_variant_alternates_change() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::new();
+    let pipeline = ShapingPipeline::with_cache_capacity_for_test(8);
+    let text = "Cached alternates";
+
+    fn assert_cache_miss_for_variant<F>(
+      pipeline: &ShapingPipeline,
+      ctx: &FontContext,
+      text: &str,
+      base_style: &ComputedStyle,
+      label: &'static str,
+      mutate: F,
+    ) where
+      F: FnOnce(&mut ComputedStyle),
+    {
+      pipeline.clear_cache();
+      SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.set(0));
+
+      pipeline
+        .shape(text, base_style, ctx)
+        .expect("initial shape should succeed");
+      let first_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+      assert!(
+        first_calls > 0,
+        "{label}: initial shape should call shape_font_run"
+      );
+      let stats_after_first = pipeline.cache_stats();
+      assert_eq!(stats_after_first.misses, 1, "{label}: expected miss for first shape");
+      assert_eq!(stats_after_first.hits, 0, "{label}: expected no hits for first shape");
+
+      let mut variant_style = base_style.clone();
+      mutate(&mut variant_style);
+      pipeline
+        .shape(text, &variant_style, ctx)
+        .expect("variant shape should succeed");
+      let second_calls = SHAPE_FONT_RUN_INVOCATIONS.with(|calls| calls.get());
+      assert!(
+        second_calls > first_calls,
+        "{label}: shaping cache should miss when style differs"
+      );
+
+      let stats_after_second = pipeline.cache_stats();
+      assert_eq!(
+        stats_after_second.misses, 2,
+        "{label}: expected miss for variant style"
+      );
+      assert_eq!(
+        stats_after_second.hits, 0,
+        "{label}: expected no hits when style differs"
+      );
+      assert_eq!(
+        pipeline.cache_len(),
+        2,
+        "{label}: expected both style variants to populate shaping cache"
+      );
+    }
+
+    assert_cache_miss_for_variant(
+      &pipeline,
+      &ctx,
+      text,
+      &style,
+      "character_variants",
+      |style| style.font_variant_alternates.character_variants = vec![1],
+    );
+    assert_cache_miss_for_variant(&pipeline, &ctx, text, &style, "swash", |style| {
+      style.font_variant_alternates.swash = Some(1);
+    });
+    assert_cache_miss_for_variant(&pipeline, &ctx, text, &style, "ornaments", |style| {
+      style.font_variant_alternates.ornaments = Some(1);
+    });
+    assert_cache_miss_for_variant(
+      &pipeline,
+      &ctx,
+      text,
+      &style,
+      "annotation",
+      |style| style.font_variant_alternates.annotation = Some("test".to_string()),
+    );
   }
 
   #[test]
