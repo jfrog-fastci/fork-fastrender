@@ -3027,7 +3027,7 @@ fn compute_collapsed_borders(
     //
     // Rule 1: `hidden` suppresses all other borders at that edge.
     // Rule 2: `none` is lowest priority.
-    // Rule 3: widest border wins; styles break ties.
+    // Rule 3: styles win; widths break ties when the styles are equal.
     // Rule 4: if only color differs, prefer origin; then left/right (LTR/RTL) and top.
 
     match (a.style, b.style) {
@@ -3044,15 +3044,15 @@ fn compute_collapsed_borders(
       _ => {}
     }
 
-    let width_epsilon = 1e-6f32;
-    if (a.width - b.width).abs() > width_epsilon {
-      return a.width > b.width;
-    }
-
     let a_style = style_rank(a.style);
     let b_style = style_rank(b.style);
     if a_style != b_style {
       return a_style > b_style;
+    }
+
+    let width_epsilon = 1e-6f32;
+    if (a.width - b.width).abs() > width_epsilon {
+      return a.width > b.width;
     }
 
     let a_origin = origin_priority(a.origin);

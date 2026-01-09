@@ -699,6 +699,24 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
     if item.is_empty() {
       continue;
     }
+    // The HTML spec defines whitespace for these attributes as ASCII whitespace only. If an entry
+    // has leading/trailing non-ASCII whitespace (e.g. NBSP), it must not be silently trimmed.
+    // Treat such entries as invalid.
+    fn is_ascii_whitespace(c: char) -> bool {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    }
+    fn has_non_ascii_whitespace_edges(s: &str) -> bool {
+      let mut chars = s.chars();
+      let Some(first) = chars.next() else {
+        return false;
+      };
+      let last = chars.last().unwrap_or(first);
+      let is_non_ascii_ws = |c: char| c.is_whitespace() && !is_ascii_whitespace(c);
+      is_non_ascii_ws(first) || is_non_ascii_ws(last)
+    }
+    if has_non_ascii_whitespace_edges(item) {
+      continue;
+    }
 
     let (media_part, length_part) = split_media_and_length(item);
     let length = match parse_sizes_length(length_part) {
@@ -707,7 +725,19 @@ pub fn parse_sizes(attr: &str) -> Option<SizesList> {
     };
 
     let media = match media_part {
-      Some(cond) if !cond.is_empty() => MediaQuery::parse_list(cond).ok(),
+      Some(cond) if !cond.is_empty() => {
+        let list = match MediaQuery::parse_list(cond) {
+          Ok(list) => list,
+          Err(_) => continue,
+        };
+        // The media query parser uses Media Queries' error handling: invalid queries become
+        // `not all`. For `sizes`, treat those entries as invalid and ignore them (HTML spec "parse
+        // a sizes attribute").
+        if list.iter().all(|q| *q == MediaQuery::not_all()) {
+          continue;
+        }
+        Some(list)
+      }
       _ => None,
     };
 
@@ -1332,6 +1362,19 @@ mod tests {
     assert!(parsed.entries[1].media.is_none());
     assert_eq!(
       parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
+  }
+
+  #[test]
+  fn parse_sizes_skips_invalid_media_conditions() {
+    // Invalid media conditions should cause the entire entry to be ignored, not treated as
+    // unconditional.
+    let parsed = parse_sizes("(max-width:) 50vw, 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 1);
+    assert!(parsed.entries[0].media.is_none());
+    assert_eq!(
+      parsed.entries[0].length,
       Length::new(100.0, LengthUnit::Vw).into()
     );
   }

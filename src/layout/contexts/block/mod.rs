@@ -7908,6 +7908,9 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     // Replaced elements fall back to their intrinsic content size plus padding/borders.
+    //
+    // Intrinsic *inline* sizing must follow the box's writing mode: in vertical writing modes the
+    // inline axis maps to the physical height, not width.
     if let BoxType::Replaced(replaced_box) = &box_node.box_type {
       let size = compute_replaced_size(style, replaced_box, None, self.viewport_size);
       let inline_size = if inline_is_horizontal {
@@ -12205,16 +12208,24 @@ mod tests {
     let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
 
     let spacer_style = {
-      let mut style = (*block_style_with_height(viewport.width + 10.0)).clone();
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
       style.writing_mode = WritingMode::VerticalLr;
+      // In vertical writing modes, the block axis is horizontal (physical width), so set `width`
+      // to push subsequent siblings beyond the viewport block axis.
+      style.width = Some(Length::px(viewport.width + 10.0));
+      style.width_keyword = None;
       Arc::new(style)
     };
     let mut spacer = BoxNode::new_block(spacer_style, FormattingContextType::Block, vec![]);
     spacer.id = 2;
 
     let leaf_style = {
-      let mut style = (*block_style_with_height(10.0)).clone();
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
       style.writing_mode = WritingMode::VerticalLr;
+      style.width = Some(Length::px(10.0));
+      style.width_keyword = None;
       Arc::new(style)
     };
     let mut leaf = BoxNode::new_block(leaf_style, FormattingContextType::Block, vec![]);
@@ -12224,8 +12235,8 @@ mod tests {
     auto_style.display = Display::Block;
     auto_style.writing_mode = WritingMode::VerticalLr;
     auto_style.content_visibility = ContentVisibility::Auto;
-    auto_style.height = Some(Length::px(10.0));
-    auto_style.height_keyword = None;
+    auto_style.width = Some(Length::px(10.0));
+    auto_style.width_keyword = None;
     let mut auto_box = BoxNode::new_block(
       Arc::new(auto_style),
       FormattingContextType::Block,

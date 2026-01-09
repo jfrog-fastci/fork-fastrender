@@ -11031,6 +11031,17 @@ impl InlineFormattingContext {
             }
           }
           InlineItem::InlineBox(b) => {
+            // Empty inline boxes can be kept purely to establish containing blocks for positioned
+            // descendants. When they have non-zero border/padding in either axis, they participate
+            // in the inline flow and must build real line boxes so their offsets contribute to
+            // descendant static positions.
+            if b.start_edge.abs() > f32::EPSILON
+              || b.end_edge.abs() > f32::EPSILON
+              || b.content_offset_y.abs() > f32::EPSILON
+              || b.bottom_inset.abs() > f32::EPSILON
+            {
+              *has_flow_content = true;
+            }
             for child in &b.children {
               scan_item(child, anchor_ids, has_flow_content, has_non_bookkeeping_anchor);
             }
