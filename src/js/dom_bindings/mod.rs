@@ -37,6 +37,7 @@ struct Prototypes {
   element: Value,
   document: Value,
   event: Value,
+  dom_exception: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +113,8 @@ impl DomJsRealm {
     let _ = rt.heap_mut().add_root(document_proto)?;
     let event_proto = rt.alloc_object_value()?;
     let _ = rt.heap_mut().add_root(event_proto)?;
+    let dom_exception_proto = rt.alloc_object_value()?;
+    let _ = rt.heap_mut().add_root(dom_exception_proto)?;
 
     rt.set_prototype(object_proto, None)?;
     rt.set_prototype(event_target_proto, Some(object_proto))?;
@@ -119,6 +122,7 @@ impl DomJsRealm {
     rt.set_prototype(element_proto, Some(node_proto))?;
     rt.set_prototype(document_proto, Some(node_proto))?;
     rt.set_prototype(event_proto, Some(object_proto))?;
+    rt.set_prototype(dom_exception_proto, Some(object_proto))?;
 
     let prototypes = Prototypes {
       object: object_proto,
@@ -127,6 +131,7 @@ impl DomJsRealm {
       element: element_proto,
       document: document_proto,
       event: event_proto,
+      dom_exception: dom_exception_proto,
     };
 
     // Window is an EventTarget.
@@ -205,6 +210,10 @@ impl DomJsRealm {
 
   pub fn document(&self) -> Value {
     self.document
+  }
+
+  pub fn dom_exception_prototype(&self) -> Value {
+    self.prototypes.dom_exception
   }
 
   pub fn dom(&self) -> Rc<RefCell<dom2::Document>> {
@@ -427,6 +436,52 @@ fn set_text_content(dom: &mut dom2::Document, node: NodeId, value: &str) -> Resu
   }
 
   Ok(())
+}
+
+fn create_dom_exception_object(
+  rt: &mut VmJsRuntime,
+  dom_exception_proto: Value,
+  name: &str,
+  message: &str,
+) -> Value {
+  let obj = match rt.alloc_object_value() {
+    Ok(v) => v,
+    Err(_) => return Value::Undefined,
+  };
+
+  let _ = rt.set_prototype(obj, Some(dom_exception_proto));
+
+  if let Ok(name_value) = rt.alloc_string_value(name) {
+    let _ = define_data_property_str(rt, obj, "name", name_value, false);
+  }
+  if let Ok(message_value) = rt.alloc_string_value(message) {
+    let _ = define_data_property_str(rt, obj, "message", message_value, false);
+  }
+
+  obj
+}
+
+pub(crate) fn throw_dom_exception(
+  rt: &mut VmJsRuntime,
+  dom_exception_proto: Value,
+  name: &str,
+  message: &str,
+) -> VmError {
+  VmError::Throw(create_dom_exception_object(
+    rt,
+    dom_exception_proto,
+    name,
+    message,
+  ))
+}
+
+pub(crate) fn throw_dom_error(
+  rt: &mut VmJsRuntime,
+  dom_exception_proto: Value,
+  err: dom2::DomError,
+) -> VmError {
+  let name = err.code();
+  throw_dom_exception(rt, dom_exception_proto, name, name)
 }
 
 fn parse_add_event_listener_options(rt: &mut VmJsRuntime, options: Value) -> Result<events::AddEventListenerOptions, VmError> {
@@ -1032,6 +1087,8 @@ fn install_constructors(
 
   // Node.prototype
   {
+    let dom_exception_proto = prototypes.dom_exception;
+
     // appendChild
     let dom_for_append = dom.clone();
     let platform_objects_for_append = platform_objects.clone();
@@ -1047,7 +1104,7 @@ fn install_constructors(
       dom_for_append
         .borrow_mut()
         .append_child(parent_id, child_id)
-        .map_err(|e| rt.throw_type_error(&format!("appendChild: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1097,7 +1154,7 @@ fn install_constructors(
       dom_for_insert
         .borrow_mut()
         .insert_before(parent_id, child_id, reference_id)
-        .map_err(|e| rt.throw_type_error(&format!("insertBefore: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1141,7 +1198,7 @@ fn install_constructors(
       dom_for_remove
         .borrow_mut()
         .remove_child(parent_id, child_id)
-        .map_err(|e| rt.throw_type_error(&format!("removeChild: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1169,7 +1226,7 @@ fn install_constructors(
       dom_for_remove_self
         .borrow_mut()
         .remove_child(parent_id, node_id)
-        .map_err(|e| rt.throw_type_error(&format!("remove: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1205,7 +1262,7 @@ fn install_constructors(
       dom_for_replace
         .borrow_mut()
         .replace_child(parent_id, new_child_id, old_child_id)
-        .map_err(|e| rt.throw_type_error(&format!("replaceChild: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1690,7 +1747,7 @@ fn install_constructors(
         to_rust_string(rt, v)?
       };
       set_text_content(&mut dom_for_text_content_set.borrow_mut(), node_id, &text)
-        .map_err(|e| rt.throw_type_error(&format!("textContent: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
 
       maybe_refresh_cached_child_nodes(
         rt,
@@ -1745,6 +1802,8 @@ fn install_constructors(
 
   // Element.prototype
   {
+    let dom_exception_proto = prototypes.dom_exception;
+
     let dom_for_get_attribute = dom.clone();
     let platform_objects_for_get_attribute = platform_objects.clone();
     let get_attribute = rt.alloc_function_value(move |rt, this, args| {
@@ -1757,7 +1816,7 @@ fn install_constructors(
       }
       match dom_ref
         .get_attribute(node_id, &name)
-        .map_err(|e| rt.throw_type_error(&format!("getAttribute: {e}")))? {
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))? {
         Some(v) => rt.alloc_string_value(v),
         None => Ok(Value::Null),
       }
@@ -1777,7 +1836,7 @@ fn install_constructors(
       dom_for_set
         .borrow_mut()
         .set_attribute(node_id, &name, &value)
-        .map_err(|e| rt.throw_type_error(&format!("setAttribute: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
       Ok(Value::Undefined)
     })?;
     define_method(rt, prototypes.element, "setAttribute", set_attribute)?;
@@ -1794,7 +1853,7 @@ fn install_constructors(
       dom_for_remove
         .borrow_mut()
         .remove_attribute(node_id, &name)
-        .map_err(|e| rt.throw_type_error(&format!("removeAttribute: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
       Ok(Value::Undefined)
     })?;
     define_method(rt, prototypes.element, "removeAttribute", remove_attribute)?;
@@ -1810,7 +1869,7 @@ fn install_constructors(
       }
       let v = dom_ref
         .get_attribute(node_id, "id")
-        .map_err(|e| rt.throw_type_error(&format!("id: {e}")))?
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?
         .unwrap_or("");
       rt.alloc_string_value(v)
     })?;
@@ -1826,7 +1885,7 @@ fn install_constructors(
       dom_for_id_set
         .borrow_mut()
         .set_attribute(node_id, "id", &value)
-        .map_err(|e| rt.throw_type_error(&format!("id: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
       Ok(Value::Undefined)
     })?;
     define_accessor(rt, prototypes.element, "id", id_get, id_set)?;
@@ -1842,7 +1901,7 @@ fn install_constructors(
       }
       let v = dom_ref
         .get_attribute(node_id, "class")
-        .map_err(|e| rt.throw_type_error(&format!("className: {e}")))?
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?
         .unwrap_or("");
       rt.alloc_string_value(v)
     })?;
@@ -1858,7 +1917,7 @@ fn install_constructors(
       dom_for_class_set
         .borrow_mut()
         .set_attribute(node_id, "class", &value)
-        .map_err(|e| rt.throw_type_error(&format!("className: {e}")))?;
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
       Ok(Value::Undefined)
     })?;
     define_accessor(rt, prototypes.element, "className", class_get, class_set)?;
@@ -2667,6 +2726,53 @@ mod tests {
     let dom_ref = realm.dom.borrow();
     assert_eq!(dom_ref.children(div_id).unwrap(), &[p_id]);
     assert_eq!(dom_ref.parent(span_id).unwrap(), None);
+  }
+
+  #[test]
+  fn append_child_throws_hierarchy_request_error_domexception() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    let marker_value = realm.rt.alloc_string_value("marker").unwrap();
+    let dom_exception_proto = realm.dom_exception_prototype();
+    define_data_property_str(
+      &mut realm.rt,
+      dom_exception_proto,
+      "__dom_exception_marker",
+      marker_value,
+      false,
+    )
+    .unwrap();
+
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(div, append_child_key).unwrap();
+    let err = realm
+      .rt
+      .call_function(append_child, div, &[document])
+      .expect_err("expected HierarchyRequestError");
+
+    let thrown = match err {
+      VmError::Throw(value) => value,
+      other => panic!("expected VmError::Throw, got {other:?}"),
+    };
+
+    let name_key = pk(&mut realm.rt, "name");
+    let name = realm.rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, name), "HierarchyRequestError");
+
+    let marker_key = pk(&mut realm.rt, "__dom_exception_marker");
+    let marker = realm.rt.get(thrown, marker_key).unwrap();
+    assert_eq!(as_str(&realm.rt, marker), "marker");
   }
 
   #[test]
