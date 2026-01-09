@@ -109,6 +109,55 @@ fn comment_nodes_support_text_content() {
 }
 
 #[test]
+fn node_type_and_name_are_spec_shaped() {
+  let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            if (document.nodeType !== 9) return "bad_document_nodeType:" + document.nodeType;
+            if (document.nodeName !== "#document") return "bad_document_nodeName:" + document.nodeName;
+
+            const body = document.body;
+            if (!body) return "missing_body";
+            if (body.nodeType !== 1) return "bad_body_nodeType:" + body.nodeType;
+            if (body.nodeName !== "BODY") return "bad_body_nodeName:" + body.nodeName;
+            if (body.tagName !== "BODY") return "bad_body_tagName:" + body.tagName;
+
+            const div = document.createElement("div");
+            if (div.nodeType !== 1) return "bad_div_nodeType:" + div.nodeType;
+            if (div.nodeName !== "DIV") return "bad_div_nodeName:" + div.nodeName;
+            if (div.tagName !== "DIV") return "bad_div_tagName:" + div.tagName;
+
+            const t = document.createTextNode("x");
+            if (t.nodeType !== 3) return "bad_text_nodeType:" + t.nodeType;
+            if (t.nodeName !== "#text") return "bad_text_nodeName:" + t.nodeName;
+
+            const c = document.createComment("x");
+            if (c.nodeType !== 8) return "bad_comment_nodeType:" + c.nodeType;
+            if (c.nodeName !== "#comment") return "bad_comment_nodeName:" + c.nodeName;
+
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "nodeType/nodeName JS threw: {outcome}");
+  });
+}
+
+#[test]
 fn class_list_add_remove_toggle() {
   let dom = make_dom(r#"<!doctype html><html><body><div id="x" class="a b"></div></body></html>"#);
 

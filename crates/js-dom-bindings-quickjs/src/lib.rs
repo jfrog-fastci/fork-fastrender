@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::ffi::CString;
 use std::rc::Rc;
 
+use fastrender::dom::HTML_NAMESPACE;
 use fastrender::dom2::{DomError, Document, NodeId, NodeKind};
 use fastrender::web::dom::DomException;
 use rquickjs::class::{Trace, Tracer};
@@ -99,6 +100,18 @@ impl Node {
   // ===========================================================================
   // Node traversal
   // ===========================================================================
+
+  #[qjs(get, rename = "nodeType")]
+  fn node_type<'js>(&self, _ctx: Ctx<'js>) -> JsResult<i32> {
+    let dom = self.state.dom.borrow();
+    Ok(node_type(&dom, self.node_id))
+  }
+
+  #[qjs(get, rename = "nodeName")]
+  fn node_name<'js>(&self, _ctx: Ctx<'js>) -> JsResult<String> {
+    let dom = self.state.dom.borrow();
+    Ok(node_name(&dom, self.node_id))
+  }
 
   #[qjs(get, rename = "parentNode")]
   fn parent_node<'js>(&self, ctx: Ctx<'js>) -> JsResult<Option<Object<'js>>> {
@@ -348,8 +361,16 @@ impl Node {
     self.ensure_element(ctx.clone())?;
     let dom = self.state.dom.borrow();
     match &dom.node(self.node_id).kind {
-      NodeKind::Element { tag_name, .. } => Ok(tag_name.clone()),
-      NodeKind::Slot { .. } => Ok("slot".to_string()),
+      NodeKind::Element {
+        tag_name,
+        namespace,
+        ..
+      } => Ok(if namespace.is_empty() || namespace == HTML_NAMESPACE {
+        tag_name.to_ascii_uppercase()
+      } else {
+        tag_name.clone()
+      }),
+      NodeKind::Slot { .. } => Ok("SLOT".to_string()),
       _ => Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
     }
   }
@@ -663,6 +684,41 @@ fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
 fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Error {
   match err {
     DomException::SyntaxError { message } => throw_syntax_error(ctx, &message),
+  }
+}
+
+fn node_type(dom: &Document, node_id: NodeId) -> i32 {
+  match &dom.node(node_id).kind {
+    NodeKind::Element { .. } | NodeKind::Slot { .. } => 1,
+    NodeKind::Text { .. } => 3,
+    NodeKind::ProcessingInstruction { .. } => 7,
+    NodeKind::Comment { .. } => 8,
+    NodeKind::Document { .. } => 9,
+    NodeKind::Doctype { .. } => 10,
+    NodeKind::ShadowRoot { .. } => 11,
+  }
+}
+
+fn node_name(dom: &Document, node_id: NodeId) -> String {
+  match &dom.node(node_id).kind {
+    NodeKind::Element {
+      tag_name,
+      namespace,
+      ..
+    } => {
+      if namespace.is_empty() || namespace == HTML_NAMESPACE {
+        tag_name.to_ascii_uppercase()
+      } else {
+        tag_name.clone()
+      }
+    }
+    NodeKind::Slot { .. } => "SLOT".to_string(),
+    NodeKind::Text { .. } => "#text".to_string(),
+    NodeKind::Comment { .. } => "#comment".to_string(),
+    NodeKind::ProcessingInstruction { target, .. } => target.clone(),
+    NodeKind::Document { .. } => "#document".to_string(),
+    NodeKind::Doctype { name, .. } => name.clone(),
+    NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
   }
 }
 
