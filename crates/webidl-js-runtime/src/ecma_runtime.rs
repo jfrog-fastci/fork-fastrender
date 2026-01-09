@@ -302,6 +302,10 @@ impl VmJsRuntime {
     }
   }
 
+  pub fn implements_interface(&self, v: Value, interface: &str) -> bool {
+    <Self as WebIdlJsRuntime>::implements_interface(self, v, interface)
+  }
+
   pub fn set_prototype(&mut self, obj: Value, proto: Option<Value>) -> Result<(), VmError> {
     let Value::Object(obj) = obj else {
       return Err(self.throw_type_error("set_prototype: receiver is not an object"));
