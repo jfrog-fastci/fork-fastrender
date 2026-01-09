@@ -553,25 +553,25 @@ impl FastRenderJobContext {
 impl VmJobContext for FastRenderJobContext {
   fn call(
     &mut self,
-    _host: &mut dyn VmHostHooks,
+    host: &mut dyn VmHostHooks,
     callee: Value,
     this: Value,
     args: &[Value],
   ) -> std::result::Result<Value, VmError> {
     // SAFETY: `FastRenderJobContext` is only used while `EcmaVmRuntime` is alive. This uses raw
-    // pointers so the VM can be passed as both a `VmJobContext` and `VmHostHooks` implementation in
-    // `Job::run`.
+    // pointers so the VM/heap can be borrowed mutably while also passing a `&mut dyn VmHostHooks`
+    // reference into `vm-js` (which is required for promise job scheduling).
     unsafe {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;
       let mut scope = heap.scope();
-      vm.call(&mut scope, callee, this, args)
+      vm.call_with_host(&mut scope, host, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
-    _host: &mut dyn VmHostHooks,
+    host: &mut dyn VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
@@ -580,7 +580,7 @@ impl VmJobContext for FastRenderJobContext {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;
       let mut scope = heap.scope();
-      vm.construct(&mut scope, callee, args, new_target)
+      vm.construct_with_host(&mut scope, host, callee, args, new_target)
     }
   }
 
