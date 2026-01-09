@@ -131,7 +131,7 @@ fn viewport_does_not_propagate_body_scrollbar_gutter() {
 }
 
 #[test]
-fn viewport_auto_gutter_reserves_when_overflowing() {
+fn viewport_auto_gutter_does_not_reserve_when_overflowing() {
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -148,13 +148,12 @@ fn viewport_auto_gutter_reserves_when_overflowing() {
     </html>"#;
 
   let viewport = (200, 100);
-  let gutter = resolve_scrollbar_width(&ComputedStyle::default());
   let width = marker_width(html, viewport);
-  assert_close(width, viewport.0 as f32 - gutter, "marker width");
+  assert_close(width, viewport.0 as f32, "marker width");
 }
 
 #[test]
-fn viewport_does_not_double_reserve_when_root_overflow_auto() {
+fn viewport_auto_gutter_does_not_reserve_when_root_overflow_auto() {
   let html = r#"<!doctype html>
     <html>
       <head>
@@ -172,9 +171,8 @@ fn viewport_does_not_double_reserve_when_root_overflow_auto() {
     </html>"#;
 
   let viewport = (200, 100);
-  let gutter = resolve_scrollbar_width(&ComputedStyle::default());
   let width = marker_width(html, viewport);
-  assert_close(width, viewport.0 as f32 - gutter, "marker width");
+  assert_close(width, viewport.0 as f32, "marker width");
 }
 
 #[test]

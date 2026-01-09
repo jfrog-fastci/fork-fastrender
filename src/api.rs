@@ -4655,13 +4655,19 @@ fn viewport_should_reserve_gutter(
 ) -> bool {
   use crate::style::types::Overflow;
   if gutter.stable {
+    // `scrollbar-gutter: stable` requests classic (non-overlay) scrollbar gutters (CSS Overflow 3).
+    // Reserve space whenever the viewport overflow is a scrollbar-bearing value.
     matches!(overflow, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
   } else {
-    match overflow {
-      Overflow::Scroll => true,
-      Overflow::Auto => overflowing,
-      _ => false,
-    }
+    // FastRender does not paint native scrollbars (matching the `--hide-scrollbars` behavior used
+    // for our Chrome fixture baselines). Modern headless Chrome also uses overlay scrollbars in
+    // this configuration, meaning viewport scrollbars do not reduce the layout viewport size even
+    // when overflow is `auto`/`scroll` and content overflows.
+    //
+    // Treat the default `scrollbar-gutter: auto` behavior as overlay for viewport scrollbars so
+    // the layout viewport matches Chrome screenshots.
+    let _ = (overflowing, overflow);
+    false
   }
 }
 
@@ -5079,10 +5085,11 @@ fn paint_fragment_tree_with_state(
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
   // The layout viewport (used for layout/scroll calculations) can differ from the paint viewport
-  // when reserving space for viewport scrollbars (CSS Overflow 3). The paint pipeline uses the
-  // fragment tree's stored viewport size to resolve viewport-relative paint units (vw/vh) and to
-  // extend the canvas background. Ensure that value reflects the paint viewport so the reserved
-  // gutter shows the correct canvas background (matching headless Chrome).
+  // when reserving space for viewport scrollbar gutters (e.g. `scrollbar-gutter: stable`). The
+  // paint pipeline uses the fragment tree's stored viewport size to resolve viewport-relative paint
+  // units (vw/vh) and to extend the canvas background. Ensure that value reflects the paint
+  // viewport so the canvas background fills the full output surface (including any reserved gutter
+  // area).
   fragment_tree.set_viewport_size(paint_viewport);
 
   let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
@@ -6806,9 +6813,9 @@ impl FastRender {
       }
 
       // The fragment tree stores the layout viewport size, which is used for viewport scrolling and
-      // sticky positioning. When reserving viewport scrollbar gutter space (CSS Overflow 3), we
-      // still want the *paint* viewport to represent the full canvas so the reserved gutter shows
-      // the correct canvas background (matching headless Chrome screenshots).
+      // sticky positioning. When reserving viewport scrollbar gutter space (e.g.
+      // `scrollbar-gutter: stable`), we still want the *paint* viewport to represent the full
+      // canvas so the canvas background fills the output surface.
       fragment_tree.set_viewport_size(paint_viewport);
 
       if let Some(store) = artifacts.as_deref_mut() {
