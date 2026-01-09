@@ -1878,7 +1878,7 @@ impl FontContext {
       });
       if let Some(origin) = request_origin.as_ref() {
         if let Err(message) =
-          validate_cors_allow_origin(&resource, resolved_url, origin, CorsMode::Anonymous)
+          validate_cors_allow_origin(origin, &resource, resolved_url, CorsMode::Anonymous)
         {
           let blocked = Error::Font(FontError::LoadFailed {
             family: family.to_string(),

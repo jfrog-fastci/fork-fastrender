@@ -2633,83 +2633,21 @@ pub fn ensure_http_success(resource: &FetchedResource, requested_url: &str) -> R
   ))
 }
 
-/// Enforce Chromium-like CORS checks based on the `Access-Control-Allow-Origin` response header.
+/// Enforce Chromium-like CORS checks based on the response CORS headers.
 ///
-/// This helper is intentionally small and reusable: callers supply the initiating document origin,
-/// the fetched resource (including any final URL after redirects), and the originally requested URL.
-///
-/// Behavior summary:
-/// - If the request origin is missing/unparseable: allow (skip enforcement).
-/// - If the response is same-origin: allow.
-/// - If the response is cross-origin:
-///   - allow `Access-Control-Allow-Origin: *`
-///   - allow an `Access-Control-Allow-Origin` origin that matches the request origin
-///   - otherwise reject with the caller-provided error mapping.
-///
-/// Note: CORS enforcement only applies to HTTP(S) origins; non-HTTP schemes (e.g. `data:`) are
-/// always allowed because there is no response header surface to validate.
+/// This is a thin wrapper around [`validate_cors_allow_origin`] that lets callsites skip CORS
+/// enforcement when the initiating origin is unknown (`request_origin: None`).
 pub fn ensure_cors_allows_origin_with<E>(
   request_origin: Option<&DocumentOrigin>,
   resource: &FetchedResource,
   requested_url: &str,
+  mode: CorsMode,
   map_error: impl FnOnce(String) -> E,
 ) -> std::result::Result<(), E> {
   let Some(request_origin) = request_origin else {
     return Ok(());
   };
-  if !request_origin.is_http_like() {
-    return Ok(());
-  }
-
-  let response_url = resource.final_url.as_deref().unwrap_or(requested_url);
-  let parsed_response_url = match Url::parse(response_url) {
-    Ok(parsed) => parsed,
-    Err(_) => return Ok(()),
-  };
-  let response_origin = DocumentOrigin::from_parsed_url(&parsed_response_url);
-  if !response_origin.is_http_like() {
-    return Ok(());
-  }
-
-  if request_origin.same_origin(&response_origin) {
-    return Ok(());
-  }
-
-  let header_value = resource
-    .access_control_allow_origin
-    .as_deref()
-    .unwrap_or_default();
-  let header_value = header_value
-    .split(',')
-    .map(trim_http_whitespace)
-    .find(|v| !v.is_empty())
-    .unwrap_or_default();
-
-  if header_value == "*" {
-    return Ok(());
-  }
-
-  let parsed_allowed_origin = match Url::parse(header_value) {
-    Ok(parsed) => parsed,
-    Err(_) => {
-      let message = if header_value.is_empty() {
-        "blocked by CORS: missing Access-Control-Allow-Origin header".to_string()
-      } else {
-        format!(
-          "blocked by CORS: invalid Access-Control-Allow-Origin header value {header_value:?}"
-        )
-      };
-      return Err(map_error(message));
-    }
-  };
-  let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_allowed_origin);
-  if request_origin.same_origin(&allowed_origin) {
-    return Ok(());
-  }
-
-  Err(map_error(format!(
-    "blocked by CORS: Access-Control-Allow-Origin {header_value:?} does not match request origin {request_origin}"
-  )))
+  validate_cors_allow_origin(request_origin, resource, requested_url, mode).map_err(map_error)
 }
 
 /// Enforce Chromium-like CORS checks for cross-origin resources.
@@ -2720,8 +2658,9 @@ pub fn ensure_cors_allows_origin(
   request_origin: Option<&DocumentOrigin>,
   resource: &FetchedResource,
   requested_url: &str,
+  mode: CorsMode,
 ) -> Result<()> {
-  ensure_cors_allows_origin_with(request_origin, resource, requested_url, |message| {
+  ensure_cors_allows_origin_with(request_origin, resource, requested_url, mode, |message| {
     response_resource_error(resource, requested_url, message)
   })
 }
@@ -10094,6 +10033,7 @@ mod tests {
       Some(&request_origin),
       &resource,
       "https://other.com/",
+      CorsMode::Anonymous,
       |message| message,
     )
     .expect_err("CORS should reject NBSP-prefixed allow-origin");

@@ -3660,7 +3660,7 @@ impl ImageCache {
       CrossOriginAttribute::None => return Ok(()),
     };
     if let Err(reason) =
-      crate::resource::validate_cors_allow_origin(resource, requested_url, document_origin, mode)
+      crate::resource::validate_cors_allow_origin(document_origin, resource, requested_url, mode)
     {
       return Err(Error::Image(ImageError::LoadFailed {
         url: requested_url.to_string(),

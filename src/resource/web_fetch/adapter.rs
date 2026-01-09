@@ -5,7 +5,9 @@ use crate::resource::{
   FetchRequest, FetchedResource, ResourceFetcher,
 };
 
-use super::{Body, Headers, HeadersGuard, Request, RequestMode, Response, ResponseType};
+use super::{
+  Body, Headers, HeadersGuard, Request, RequestCredentials, RequestMode, Response, ResponseType,
+};
 
 fn cors_error(resource: &FetchedResource, requested_url: &str, message: String) -> Error {
   let mut err = ResourceError::new(requested_url.to_string(), message)
@@ -75,13 +77,15 @@ pub fn execute_web_fetch(
   let mut resource = fetcher.fetch_with_request(fetch_request)?;
 
   if request.mode == RequestMode::Cors {
-    if let Some(client_origin) = ctx.client_origin.filter(|origin| origin.is_http_like()) {
-      let cors_mode = match ctx.credentials_mode {
-        FetchCredentialsMode::Include => CorsMode::UseCredentials,
-        FetchCredentialsMode::Omit | FetchCredentialsMode::SameOrigin => CorsMode::Anonymous,
+    if let Some(client_origin) = ctx.client_origin {
+      // Unlike subresource CORS enforcement (gated by `FASTR_FETCH_ENFORCE_CORS`), Fetch API
+      // `mode: "cors"` requests always run CORS validation.
+      let cors_mode = match request.credentials {
+        RequestCredentials::Include => CorsMode::UseCredentials,
+        RequestCredentials::Omit | RequestCredentials::SameOrigin => CorsMode::Anonymous,
       };
 
-      validate_cors_allow_origin(&resource, requested_url, client_origin, cors_mode)
+      validate_cors_allow_origin(client_origin, &resource, requested_url, cors_mode)
         .map_err(|message| cors_error(&resource, requested_url, message))?;
     }
   }

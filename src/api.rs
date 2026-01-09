@@ -8194,7 +8194,7 @@ impl FastRender {
                   .as_ref()
                   .and_then(|ctx| ctx.policy.document_origin.as_ref()),
               ) {
-                if let Err(reason) = validate_cors_allow_origin(&resource, &url, origin, mode) {
+                if let Err(reason) = validate_cors_allow_origin(origin, &resource, &url, mode) {
                   let err = Error::Resource(ResourceError::new(url.clone(), reason));
                   if let Some(diag) = diagnostics.as_ref() {
                     if let Ok(mut guard) = diag.lock() {
@@ -8566,7 +8566,7 @@ impl FastRender {
                   (cors_mode, resource_context.and_then(|ctx| ctx.policy.document_origin.as_ref()))
                 {
                   if let Err(reason) =
-                    validate_cors_allow_origin(&resource, &stylesheet_url, origin, mode)
+                    validate_cors_allow_origin(origin, &resource, &stylesheet_url, mode)
                   {
                     let err = Error::Resource(ResourceError::new(stylesheet_url.clone(), reason));
                     if let Some(diag) = &self.diagnostics {
@@ -11379,7 +11379,7 @@ impl FastRender {
           }
           if cors_enforcement_enabled() {
             if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-              if let Err(reason) = validate_cors_allow_origin(&res, &css_url, origin, mode) {
+              if let Err(reason) = validate_cors_allow_origin(origin, &res, &css_url, mode) {
                 let err = Error::Resource(ResourceError::new(css_url.clone(), reason));
                 diagnostics.record_error(ResourceKind::Stylesheet, &css_url, &err);
                 continue;
@@ -11463,7 +11463,7 @@ impl FastRender {
                     }
                     if cors_enforcement_enabled() {
                       if let (Some(mode), Some(origin)) = (cors_mode, client_origin) {
-                        if let Err(reason) = validate_cors_allow_origin(&res, u, origin, mode) {
+                        if let Err(reason) = validate_cors_allow_origin(origin, &res, u, mode) {
                           let err = Error::Resource(ResourceError::new(u.to_string(), reason));
                           diagnostics.record_error(ResourceKind::Stylesheet, u, &err);
                           return Err(err);
@@ -13423,7 +13423,7 @@ impl CssImportLoader for CssImportFetcher {
           .as_ref()
           .and_then(|ctx| ctx.policy.document_origin.as_ref()),
       ) {
-        if let Err(reason) = validate_cors_allow_origin(&resource, &resolved, origin, mode) {
+        if let Err(reason) = validate_cors_allow_origin(origin, &resource, &resolved, mode) {
           let err = Error::Resource(ResourceError::new(resolved.clone(), reason));
           if let Some(ctx) = &self.resource_context {
             if let Some(diag) = &ctx.diagnostics {
