@@ -24380,6 +24380,20 @@ mod tests {
   }
 
   #[test]
+  fn parses_clip_path_url_keyword_value() {
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Keyword("url(#clip)".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(style.clip_path, ClipPath::Url("#clip".into()));
+  }
+
+  #[test]
   fn clip_path_empty_url_is_invalid() {
     let mut style = ComputedStyle::default();
     style.clip_path = ClipPath::Box(ReferenceBox::ContentBox);
