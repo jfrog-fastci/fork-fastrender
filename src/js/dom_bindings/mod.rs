@@ -377,19 +377,46 @@ fn parse_event_listener_capture(rt: &mut VmJsRuntime, options: Value) -> Result<
   }
 }
 
-fn listener_id_from_callback(rt: &mut VmJsRuntime, callback: Value) -> Result<Option<events::ListenerId>, VmError> {
+fn listener_id_from_callback(
+  rt: &mut VmJsRuntime,
+  callback: Value,
+) -> Result<Option<events::ListenerId>, VmError> {
+  match callback {
+    Value::Undefined | Value::Null => Ok(None),
+    Value::Object(obj) => {
+      let id = (obj.id().index() as u64) | ((obj.id().generation() as u64) << 32);
+      Ok(Some(events::ListenerId::new(id)))
+    }
+    _ => Err(rt.throw_type_error(
+      "EventTarget listener callback must be a callable or an object with handleEvent",
+    )),
+  }
+}
+
+fn validate_event_listener_callback(rt: &mut VmJsRuntime, callback: Value) -> Result<(), VmError> {
   if matches!(callback, Value::Undefined | Value::Null) {
-    return Ok(None);
+    return Ok(());
   }
-  if !rt.is_callable(callback) {
-    return Err(rt.throw_type_error("EventTarget listener callback is not callable"));
+
+  if rt.is_callable(callback) {
+    return Ok(());
   }
-  let Value::Object(obj) = callback else {
-    return Err(rt.throw_type_error("EventTarget listener callback is not an object"));
+
+  let Value::Object(_) = callback else {
+    return Err(rt.throw_type_error(
+      "EventTarget listener callback must be a callable or an object with handleEvent",
+    ));
   };
 
-  let id = (obj.id().index() as u64) | ((obj.id().generation() as u64) << 32);
-  Ok(Some(events::ListenerId::new(id)))
+  let handle_event_key = prop_key_str(rt, "handleEvent")?;
+  let handle_event = rt.get(callback, handle_event_key)?;
+  if rt.is_callable(handle_event) {
+    return Ok(());
+  }
+
+  Err(rt.throw_type_error(
+    "EventTarget listener callback is not callable and has no callable handleEvent",
+  ))
 }
 
 fn extract_event_target_id(
@@ -649,6 +676,7 @@ fn install_constructors(
       let type_ = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
 
       let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+      validate_event_listener_callback(rt, callback)?;
       let Some(listener_id) = listener_id_from_callback(rt, callback)? else {
         return Ok(Value::Undefined);
       };
@@ -681,6 +709,7 @@ fn install_constructors(
       let type_ = to_rust_string(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
 
       let callback = args.get(1).copied().unwrap_or(Value::Undefined);
+      validate_event_listener_callback(rt, callback)?;
       let Some(listener_id) = listener_id_from_callback(rt, callback)? else {
         return Ok(Value::Undefined);
       };
@@ -770,9 +799,26 @@ fn install_constructors(
           )
           .map_err(|e| events::DomError::new(format!("{e:?}")))?;
 
-          rt
-            .call_function(callback, current_target_wrapper, &[self.event_value])
-            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          if rt.is_callable(callback) {
+            rt
+              .call_function(callback, current_target_wrapper, &[self.event_value])
+              .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          } else {
+            // Support callback objects with a `handleEvent` method.
+            let handle_event_key = prop_key_str(rt, "handleEvent")
+              .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+            let handle_event = rt
+              .get(callback, handle_event_key)
+              .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+            if !rt.is_callable(handle_event) {
+              return Err(events::DomError::new(
+                "EventTarget listener callback has no callable handleEvent",
+              ));
+            }
+            rt
+              .call_function(handle_event, callback, &[self.event_value])
+              .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          }
           Ok(())
         }
       }
@@ -1881,6 +1927,77 @@ mod tests {
 
     assert_eq!(capture_phase_seen.get(), 1, "capturing listener should observe phase=1");
     assert_eq!(bubble_phase_seen.get(), 3, "bubbling listener should observe phase=3");
+  }
+
+  #[test]
+  fn event_target_dispatch_invokes_handle_event_object_with_object_this() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+
+    // Create a target element and attach it to the document so events build a path.
+    let document = realm.document();
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let target = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(append_child, document, &[target])
+      .unwrap();
+
+    // Create a callback object with a callable `handleEvent` method.
+    let callback_obj = realm.rt.alloc_object_value().unwrap();
+    let called = Rc::new(Cell::new(0u32));
+    let called_for_cb = called.clone();
+    let expected_this = callback_obj;
+    let expected_target = target;
+    let handle_event = realm
+      .rt
+      .alloc_function_value(move |rt, this, args| {
+        assert_eq!(this, expected_this, "handleEvent must be invoked with this=callback object");
+        assert_eq!(args.len(), 1, "handleEvent must receive the Event argument");
+        let event = args[0];
+        let current_target_key = pk(rt, "currentTarget");
+        let current_target = rt.get(event, current_target_key)?;
+        assert_eq!(
+          current_target, expected_target,
+          "event.currentTarget must be the dispatch currentTarget, not the listener object"
+        );
+        called_for_cb.set(called_for_cb.get() + 1);
+        Ok(Value::Undefined)
+      })
+      .unwrap();
+    define_data_property_str(&mut realm.rt, callback_obj, "handleEvent", handle_event, true).unwrap();
+
+    let add_key = pk(&mut realm.rt, "addEventListener");
+    let add = realm.rt.get(target, add_key).unwrap();
+    let x_type = realm.rt.alloc_string_value("x").unwrap();
+    realm
+      .rt
+      .call_function(add, target, &[x_type, callback_obj, Value::Undefined])
+      .unwrap();
+
+    let event_key = pk(&mut realm.rt, "Event");
+    let event_ctor = realm.rt.get(realm.window(), event_key).unwrap();
+    let x_type2 = realm.rt.alloc_string_value("x").unwrap();
+    let event = realm
+      .rt
+      .call_function(event_ctor, Value::Undefined, &[x_type2])
+      .unwrap();
+
+    let dispatch_key = pk(&mut realm.rt, "dispatchEvent");
+    let dispatch = realm.rt.get(target, dispatch_key).unwrap();
+    let dispatched = realm
+      .rt
+      .call_function(dispatch, target, &[event])
+      .unwrap();
+    assert_eq!(dispatched, Value::Bool(true));
+    assert_eq!(called.get(), 1);
   }
 
   #[test]
