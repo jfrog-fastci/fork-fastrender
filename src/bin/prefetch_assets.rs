@@ -199,6 +199,12 @@ mod disk_cache_main {
 
   const DEFAULT_ASSET_DIR: &str = "fetches/assets";
 
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| {
+      matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' ')
+    })
+  }
+
   #[derive(Parser, Debug)]
   #[command(name = "prefetch_assets", version, about)]
   struct Args {
@@ -582,7 +588,7 @@ mod disk_cache_main {
   }
 
   fn normalize_prefetch_url(url: &str) -> Option<String> {
-    let trimmed = url.trim();
+    let trimmed = trim_ascii_whitespace(url);
     if trimmed.is_empty() || trimmed.starts_with('#') {
       return None;
     }
@@ -592,7 +598,7 @@ mod disk_cache_main {
 
     // Fetchers treat URLs with different fragments as distinct; strip fragments so we only cache
     // the underlying resource once (e.g. `sprite.svg#icon`).
-    let trimmed = trimmed.split('#').next().unwrap_or("").trim();
+    let trimmed = trim_ascii_whitespace(trimmed.split('#').next().unwrap_or(""));
     if trimmed.is_empty() {
       return None;
     }
@@ -798,9 +804,9 @@ mod disk_cache_main {
       if let Some(tag) = node.tag_name() {
         if tag.eq_ignore_ascii_case("link") {
           let href = node.get_attribute_ref("href").unwrap_or("");
-          if !href.trim().is_empty() {
+          if !trim_ascii_whitespace(href).is_empty() {
             let rel_attr = node.get_attribute_ref("rel").unwrap_or("");
-            if !rel_attr.trim().is_empty() {
+            if !trim_ascii_whitespace(rel_attr).is_empty() {
               let rel_tokens = tokenize_rel_list(rel_attr);
               if !rel_tokens.is_empty() && link_rel_is_manifest_candidate(&rel_tokens) {
                 if let Some(resolved) = resolve_href(base_url, href) {
@@ -899,7 +905,7 @@ mod disk_cache_main {
         .or_else(|| caps.get(3))
         .map(|m| m.as_str())
         .unwrap_or("");
-      if raw.trim().is_empty() {
+      if trim_ascii_whitespace(raw).is_empty() {
         continue;
       }
       if let Some(resolved) = resolve_href(base_url, raw) {
@@ -958,7 +964,7 @@ mod disk_cache_main {
         .and_then(|c| c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)))
         .map(|m| m.as_str())
         .unwrap_or("");
-      if rel_value.trim().is_empty() {
+      if trim_ascii_whitespace(rel_value).is_empty() {
         continue;
       }
       let rel_tokens = tokenize_rel_list(rel_value);
@@ -971,7 +977,7 @@ mod disk_cache_main {
         .and_then(|c| c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3)))
         .map(|m| m.as_str())
         .unwrap_or("");
-      if href_value.trim().is_empty() {
+      if trim_ascii_whitespace(href_value).is_empty() {
         continue;
       }
       if let Some(resolved) = resolve_href(base_url, href_value) {
@@ -1008,9 +1014,9 @@ mod disk_cache_main {
       if let Some(tag) = node.tag_name() {
         if tag.eq_ignore_ascii_case("link") {
           let href = node.get_attribute_ref("href").unwrap_or("");
-          if !href.trim().is_empty() {
+          if !trim_ascii_whitespace(href).is_empty() {
             let rel_attr = node.get_attribute_ref("rel").unwrap_or("");
-            if !rel_attr.trim().is_empty() {
+            if !trim_ascii_whitespace(rel_attr).is_empty() {
               let rel_tokens = tokenize_rel_list(rel_attr);
               if !rel_tokens.is_empty() && link_rel_is_icon_candidate(&rel_tokens) {
                 if let Some(resolved) = resolve_href(base_url, href) {
@@ -1082,7 +1088,7 @@ mod disk_cache_main {
               .or_else(|| caps.get(3))
               .map(|m| m.as_str())
           })
-          .map(str::trim)
+          .map(trim_ascii_whitespace)
           .filter(|raw| !raw.is_empty())
       };
 
@@ -1126,11 +1132,11 @@ mod disk_cache_main {
         if tag.eq_ignore_ascii_case("video") {
           let poster = node
             .get_attribute_ref("poster")
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value| !trim_ascii_whitespace(value).is_empty())
             .or_else(|| {
               node
                 .get_attribute_ref("gnt-gl-ps")
-                .filter(|value| !value.trim().is_empty())
+                .filter(|value| !trim_ascii_whitespace(value).is_empty())
             });
           if let Some(poster) = poster {
             if let Some(resolved) = resolve_href(base_url, poster) {
@@ -1192,7 +1198,7 @@ mod disk_cache_main {
         .or_else(|| caps.get(6))
         .map(|m| m.as_str())
         .unwrap_or("");
-      if raw.trim().is_empty() {
+      if trim_ascii_whitespace(raw).is_empty() {
         continue;
       }
       if let Some(resolved) = resolve_href(base_url, raw) {
@@ -1229,7 +1235,7 @@ mod disk_cache_main {
       if let Some(tag) = node.tag_name() {
         if tag.eq_ignore_ascii_case("object") {
           if let Some(data) = node.get_attribute_ref("data") {
-            if !data.trim().is_empty() {
+            if !trim_ascii_whitespace(data).is_empty() {
               if let Some(resolved) = resolve_href(base_url, data) {
                 let before = out.len();
                 record_document_candidate(all, out, &resolved, max_total, max_total);
@@ -1241,7 +1247,7 @@ mod disk_cache_main {
           }
         } else if tag.eq_ignore_ascii_case("embed") {
           if let Some(src) = node.get_attribute_ref("src") {
-            if !src.trim().is_empty() {
+            if !trim_ascii_whitespace(src).is_empty() {
               if let Some(resolved) = resolve_href(base_url, src) {
                 let before = out.len();
                 record_document_candidate(all, out, &resolved, max_total, max_total);
@@ -1538,7 +1544,11 @@ mod disk_cache_main {
     match type_attr {
       None => true,
       Some(value) => {
-        let mime = value.split(';').next().map(str::trim).unwrap_or("");
+        let mime = value
+          .split(';')
+          .next()
+          .map(trim_ascii_whitespace)
+          .unwrap_or("");
         mime.is_empty() || mime.eq_ignore_ascii_case("text/css")
       }
     }
@@ -1552,7 +1562,7 @@ mod disk_cache_main {
     match media_attr {
       None => true,
       Some(media) => {
-        let trimmed = media.trim();
+        let trimmed = trim_ascii_whitespace(media);
         if trimmed.is_empty() {
           return true;
         }
@@ -1592,7 +1602,7 @@ mod disk_cache_main {
         if !media_attr_allows(inline.media.as_deref(), media_ctx, media_query_cache) {
           return;
         }
-        if inline.css.trim().is_empty() {
+        if trim_ascii_whitespace(&inline.css).is_empty() {
           return;
         }
         tasks.push(StylesheetTask::Inline(inline.css.clone()));
@@ -1616,7 +1626,7 @@ mod disk_cache_main {
         if !media_attr_allows(link.media.as_deref(), media_ctx, media_query_cache) {
           return;
         }
-        if link.href.trim().is_empty() {
+        if trim_ascii_whitespace(&link.href).is_empty() {
           return;
         }
 
@@ -1720,7 +1730,7 @@ mod disk_cache_main {
         .split_once(',')
         .map(|(m, _)| m)
         .unwrap_or(after_prefix);
-      let mime = meta.split(';').next().unwrap_or("").trim();
+      let mime = trim_ascii_whitespace(meta.split(';').next().unwrap_or(""));
       if !mime.is_empty() {
         let mime = mime.to_ascii_lowercase();
         if mime.contains("woff2") {
@@ -2736,6 +2746,24 @@ mod disk_cache_main {
           "capabilities should include boolean key flags.{key}"
         );
       }
+    }
+
+    #[test]
+    fn non_ascii_whitespace_prefetch_assets_does_not_trim_nbsp_in_urls() {
+      let nbsp = "\u{00A0}";
+      let url_with_nbsp = format!("{nbsp}https://example.com/{nbsp}");
+      assert!(
+        normalize_prefetch_url(&url_with_nbsp).is_none(),
+        "NBSP should not be treated as ASCII whitespace when normalizing URLs"
+      );
+
+      assert_eq!(
+        normalize_prefetch_url(" https://example.com "),
+        Some("https://example.com/".to_string())
+      );
+
+      let wrapped = format!("{nbsp}x{nbsp}");
+      assert_eq!(trim_ascii_whitespace(&wrapped), wrapped.as_str());
     }
 
     #[test]
@@ -4538,7 +4566,7 @@ body { background-image: url(/bg.png); }
               let path = req
                 .lines()
                 .next()
-                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
                 .unwrap_or("/");
               let path = path.split('?').next().unwrap_or(path);
 
@@ -4669,7 +4697,7 @@ body { background-image: url(/bg.png); }
               let path = req
                 .lines()
                 .next()
-                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
                 .unwrap_or("/");
               let path = path.split('?').next().unwrap_or(path);
 
@@ -4853,7 +4881,7 @@ body { background-image: url(/bg.png); }
               let path = req
                 .lines()
                 .next()
-                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|line| line.split_ascii_whitespace().nth(1))
                 .unwrap_or("/");
               let path = path.split('?').next().unwrap_or(path);
 
