@@ -107,7 +107,6 @@ use crate::paint::painter::{
 use crate::paint::stacking::ClipChainLink;
 use crate::paint::stacking::Layer6Item;
 use crate::paint::stacking::StackingContext;
-use crate::paint::stacking::StackingContextReason;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
 use crate::paint::text_shadow::resolve_text_shadows_with_viewport;
@@ -3159,7 +3158,7 @@ impl DisplayListBuilder {
       .list
       .push(DisplayItem::PushStackingContext(StackingContextItem {
         z_index: context.z_index,
-        creates_stacking_context: context.reason != StackingContextReason::BackfaceVisibility,
+        creates_stacking_context: true,
         is_root,
         establishes_backdrop_root,
         has_backdrop_sensitive_descendants: false,

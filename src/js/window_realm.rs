@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
   Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmHostHooks, VmOptions,
+  VmError, VmOptions,
 };
 
 pub type ConsoleSink =
@@ -133,7 +133,6 @@ fn unregister_console_sink(id: u64) {
 
 fn console_log_native(
   _vm: &mut Vm,
-  _host: &mut dyn VmHostHooks,
   scope: &mut Scope<'_>,
   this: Value,
   args: &[Value],
