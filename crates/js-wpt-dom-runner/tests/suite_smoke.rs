@@ -154,6 +154,7 @@ fn suite_events_tests_pass() {
 }
 
 #[test]
+#[cfg(feature = "vmjs")]
 fn suite_dom_tests_pass() {
   let corpus_root = corpus_root();
 
