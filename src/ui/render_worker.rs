@@ -1827,10 +1827,15 @@ impl BrowserRuntime {
     let cancel_callback = snapshot.cancel_callback_for_paint(&tab.cancel);
     doc.set_cancel_callback(Some(cancel_callback.clone()));
 
-    let painted = if force {
-      doc.render_frame_with_scroll_state().map(Some)
-    } else {
-      doc.render_if_needed_with_scroll_state()
+    // Forward stage heartbeats for all paints (including scroll-driven repaints) so UI callers and
+    // integration tests can observe progress and deterministically cancel in-flight work.
+    let painted = {
+      let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+      if force {
+        doc.render_frame_with_scroll_state().map(Some)
+      } else {
+        doc.render_if_needed_with_scroll_state()
+      }
     };
 
     let mut msgs = Vec::new();

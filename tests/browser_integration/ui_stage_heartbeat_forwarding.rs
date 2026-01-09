@@ -222,8 +222,9 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     "expected stage heartbeats for worker loop tab, got none"
   );
 
-  // Stage forwarding must be scoped to the navigation job. Pointer moves trigger a repaint without
-  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
+  // Stage forwarding must be scoped to each render job. Pointer moves trigger a repaint, and the
+  // worker should forward stage heartbeats for that paint so callers can observe progress (and
+  // cancel in-flight work if needed).
   while ui_rx.try_recv().is_ok() {}
   ui_tx
     .send(UiToWorker::PointerMove {
@@ -254,8 +255,8 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
   }
   assert!(saw_frame_after_input, "expected FrameReady after PointerMove");
   assert!(
-    !saw_stage_after_input,
-    "unexpected stage heartbeats during PointerMove repaint (stage listener leaked?)"
+    saw_stage_after_input,
+    "expected stage heartbeats during PointerMove repaint"
   );
 
   drop(ui_tx);
@@ -371,8 +372,9 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   ];
   assert_stage_order(&stages, &expected);
 
-  // Stage forwarding must be scoped to the navigation job. Scrolling triggers a repaint without
-  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
+  // Stage forwarding must be scoped to each render job. Scrolling triggers a repaint, and the
+  // worker should forward stage heartbeats for that paint so callers can observe progress (and
+  // cancel in-flight work if needed).
   while ui_rx.try_recv().is_ok() {}
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
@@ -401,8 +403,8 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    !saw_stage_after_scroll,
-    "unexpected stage heartbeats during scroll repaint (stage listener leaked?)"
+    saw_stage_after_scroll,
+    "expected stage heartbeats during scroll repaint"
   );
 
   drop(ui_tx);

@@ -161,7 +161,7 @@ fn create_tab_triggers_initial_navigation_and_frame() {
     .tx()
     .send(UiToWorker::CreateTab {
       tab_id,
-      initial_url: None,
+      initial_url: Some("about:newtab".to_string()),
       cancel: CancelGens::new(),
     })
     .expect("CreateTab");
@@ -171,23 +171,23 @@ fn create_tab_triggers_initial_navigation_and_frame() {
     .recv_timeout(TIMEOUT)
     .unwrap_or_else(|err| panic!("timed out waiting for initial WorkerToUi message: {err}"));
   match msg1 {
-    WorkerToUi::LoadingState { tab_id: got, loading } => {
+    WorkerToUi::NavigationStarted { tab_id: got, url } => {
       assert_eq!(got, tab_id);
-      assert!(loading, "expected LoadingState(true)");
+      assert_eq!(url, "about:newtab");
     }
-    other => panic!("expected LoadingState(true) first, got {other:?}"),
+    other => panic!("expected NavigationStarted first, got {other:?}"),
   }
 
   let msg2 = worker
     .rx
     .recv_timeout(TIMEOUT)
-    .unwrap_or_else(|err| panic!("timed out waiting for NavigationStarted: {err}"));
+    .unwrap_or_else(|err| panic!("timed out waiting for LoadingState(true): {err}"));
   match msg2 {
-    WorkerToUi::NavigationStarted { tab_id: got, url } => {
+    WorkerToUi::LoadingState { tab_id: got, loading } => {
       assert_eq!(got, tab_id);
-      assert_eq!(url, "about:newtab");
+      assert!(loading, "expected LoadingState(true)");
     }
-    other => panic!("expected NavigationStarted second, got {other:?}"),
+    other => panic!("expected LoadingState(true) second, got {other:?}"),
   }
 
   let committed_url = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
@@ -281,7 +281,7 @@ fn cancellation_drops_stale_output() {
     .tx()
     .send(UiToWorker::CreateTab {
       tab_id,
-      initial_url: None,
+      initial_url: Some("about:newtab".to_string()),
       cancel: cancel.clone(),
     })
     .expect("CreateTab");

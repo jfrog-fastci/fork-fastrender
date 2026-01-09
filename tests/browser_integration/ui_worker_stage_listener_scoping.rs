@@ -92,8 +92,10 @@ fn stage_listener_is_cleared_after_navigation_job() {
   // Drain any pending messages (including stage heartbeats emitted during the navigation job).
   while ui_rx.try_recv().is_ok() {}
 
-  // Stage forwarding must be scoped to the navigation job. Scrolling triggers a repaint without
-  // installing a stage listener, so we should not receive any new `WorkerToUi::Stage` messages.
+  // Stage forwarding must be scoped to the navigation job (guard drops before LoadingState(false)),
+  // but paints should still forward stage heartbeats. Scrolling triggers a repaint, and the worker
+  // should emit stage messages for that paint without "leaking" stage forwarding outside the render
+  // call.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 80.0), None))
     .expect("Scroll");
@@ -121,8 +123,8 @@ fn stage_listener_is_cleared_after_navigation_job() {
   }
   assert!(saw_scroll_frame, "expected FrameReady after scroll");
   assert!(
-    !saw_stage_after_scroll,
-    "unexpected stage heartbeats during scroll repaint (stage listener leaked?)"
+    saw_stage_after_scroll,
+    "expected stage heartbeats during scroll repaint"
   );
 
   drop(ui_tx);
