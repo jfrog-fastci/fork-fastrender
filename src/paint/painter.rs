@@ -4676,6 +4676,38 @@ impl Painter {
           let Some(svg) = &image.svg_content else {
             return;
           };
+          fn contains_foreign_object_tag(svg: &str) -> bool {
+            const NEEDLE: &[u8] = b"foreignobject";
+            let bytes = svg.as_bytes();
+            bytes
+              .windows(NEEDLE.len())
+              .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+          }
+
+          let svg = svg.as_ref();
+          let resolved_svg = if contains_foreign_object_tag(svg) {
+            let foreign_object_dpr =
+              crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+                svg,
+                self.scale,
+                tile_w,
+                tile_h,
+                img_w,
+                img_h,
+              );
+            crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+              svg,
+              "",
+              &self.font_ctx,
+              &self.image_cache,
+              foreign_object_dpr,
+              self.max_iframe_depth,
+            )
+          } else {
+            None
+          };
+          let svg = resolved_svg.as_deref().unwrap_or(svg);
+
           let render_w = target_w;
           let render_h = target_h;
           match self.image_cache.render_svg_pixmap_at_size(
@@ -10109,6 +10141,38 @@ impl Painter {
 
     if image.is_vector {
       if let Some(svg) = &image.svg_content {
+        fn contains_foreign_object_tag(svg: &str) -> bool {
+          const NEEDLE: &[u8] = b"foreignobject";
+          let bytes = svg.as_bytes();
+          bytes
+            .windows(NEEDLE.len())
+            .any(|window| window.eq_ignore_ascii_case(NEEDLE))
+        }
+
+        let svg = svg.as_ref();
+        let resolved_svg = if contains_foreign_object_tag(svg) {
+          let foreign_object_dpr =
+            crate::paint::svg_foreign_object::foreign_object_html_device_pixel_ratio(
+              svg,
+              self.scale,
+              dest_w,
+              dest_h,
+              img_w_css,
+              img_h_css,
+            );
+          crate::paint::svg_foreign_object::inline_svg_foreign_objects_from_markup(
+            svg,
+            "",
+            &self.font_ctx,
+            &self.image_cache,
+            foreign_object_dpr,
+            self.max_iframe_depth,
+          )
+        } else {
+          None
+        };
+        let svg = resolved_svg.as_deref().unwrap_or(svg);
+
         let render_w = dest_w_device.ceil().max(1.0) as u32;
         let render_h = dest_h_device.ceil().max(1.0) as u32;
         if render_w > 0 && render_h > 0 {
