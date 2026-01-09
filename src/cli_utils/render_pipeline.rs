@@ -171,8 +171,12 @@ fn disk_cache_namespace_for_browser_headers(
   accept_language: &str,
   browser_headers_enabled: bool,
 ) -> String {
-  let ua = crate::resource::normalize_user_agent_for_log(user_agent).trim();
-  let lang = accept_language.trim();
+  fn trim_http_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
+  }
+
+  let ua = trim_http_whitespace(crate::resource::normalize_user_agent_for_log(user_agent));
+  let lang = trim_http_whitespace(accept_language);
   if browser_headers_enabled {
     format!("{DISK_CACHE_FETCH_PROFILE_NAMESPACE_MARKER}\nuser-agent:{ua}\naccept-language:{lang}")
   } else {
@@ -249,6 +253,22 @@ mod disk_cache_namespace_tests {
         "opt-out namespace should include the legacy marker: {from_env}"
       );
     }
+  }
+
+  #[test]
+  fn non_ascii_whitespace_disk_cache_namespace_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let ua = format!("{nbsp}Foo/1.0{nbsp}");
+    let lang = format!("{nbsp}en-US{nbsp}");
+    let namespace = disk_cache_namespace_for_browser_headers(&ua, &lang, true);
+    assert!(
+      namespace.contains(&format!("user-agent:{nbsp}Foo/1.0{nbsp}")),
+      "NBSP must not be treated as HTTP OWS when computing the disk cache namespace: {namespace}"
+    );
+    assert!(
+      namespace.contains(&format!("accept-language:{nbsp}en-US{nbsp}")),
+      "NBSP must not be treated as HTTP OWS when computing the disk cache namespace: {namespace}"
+    );
   }
 }
 
