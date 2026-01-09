@@ -257,6 +257,25 @@ run_cargo() {
   return $?
 }
 
+# Nested invocation support:
+#
+# Many local workflows run `xtask` via this wrapper:
+#   bash scripts/cargo_agent.sh xtask <subcommand>
+#
+# The xtask binary itself often needs to run additional scoped cargo commands (also via this
+# wrapper). If we try to acquire another slot lock while the parent `cargo_agent.sh` invocation is
+# still holding the only available slot (common on small machines where the default slot count is
+# 1), the nested invocation will deadlock.
+#
+# Detect when we are already running under a cargo_agent slot and skip slot acquisition in that
+# case. We still enforce the per-command RLIMIT_AS cap and optional `-j` throttling.
+if [[ -n "${FASTR_CARGO_SLOT:-}" ]]; then
+  jobs_label="${jobs:-auto}"
+  echo "cargo_agent: nested slot=${FASTR_CARGO_SLOT} jobs=${jobs_label} as=${limit_as}" >&2
+  run_cargo "$@"
+  exit $?
+fi
+
 if ! command -v flock >/dev/null 2>&1; then
   echo "warning: flock not available; running cargo without slot throttling" >&2
   run_cargo "$@"
