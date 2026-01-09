@@ -6,7 +6,7 @@
 //! backend could be swapped in later.
 
 use crate::render_control::RenderDeadline;
-use parse_js::ast::expr::lit::{LitNumExpr, LitStrExpr};
+use parse_js::ast::expr::lit::{LitBigIntExpr, LitNumExpr, LitStrExpr};
 use parse_js::ast::expr::{BinaryExpr, CallExpr, Expr, IdExpr};
 use parse_js::ast::node::{literal_string_code_units, Node};
 use parse_js::ast::stmt::{BlockStmt, Stmt, ThrowStmt, WhileStmt};
@@ -657,6 +657,12 @@ impl Evaluator<'_> {
 
   fn eval_expr(&mut self, scope: &mut Scope<'_>, expr: &Node<Expr>) -> Result<Value, ScriptError> {
     match &*expr.stx {
+      Expr::LitBigInt(node) => self
+        .eval_lit_bigint(&node.stx)
+        .map_err(|msg| ScriptError::Runtime {
+          message: msg,
+          stack_trace: self.stack_trace_at_loc(expr.loc),
+        }),
       Expr::LitNum(node) => self.eval_lit_num(&node.stx),
       Expr::LitBool(node) => Ok(Value::Bool(node.stx.value)),
       Expr::LitNull(_) => Ok(Value::Null),
@@ -678,6 +684,14 @@ impl Evaluator<'_> {
 
   fn eval_lit_num(&self, expr: &LitNumExpr) -> Result<Value, ScriptError> {
     Ok(Value::Number(expr.value.0))
+  }
+
+  fn eval_lit_bigint(&self, expr: &LitBigIntExpr) -> Result<Value, String> {
+    let magnitude: u128 = expr
+      .value
+      .parse()
+      .map_err(|_| format!("BigInt literal out of supported range: {:?}", expr.value))?;
+    Ok(Value::BigInt(vm_js::JsBigInt::from_u128(magnitude)))
   }
 
   fn eval_lit_str(
@@ -1153,6 +1167,39 @@ mod tests {
     .unwrap();
     let value = realm.eval_script("test.js", "1+2").unwrap();
     assert_eq!(value, ScriptValue::Number(3.0));
+  }
+
+  #[test]
+  fn bigint_literals_and_host_roundtrip_work() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+    realm
+      .register_host_function(
+        "id",
+        Box::new(|args| match args {
+          [value] => Ok(value.clone()),
+          other => Err(ScriptError::Runtime {
+            message: format!("unexpected args: {other:?}"),
+            stack_trace: String::new(),
+          }),
+        }),
+      )
+      .unwrap();
+
+    assert_eq!(
+      realm.eval_script("bigint.js", "42n").unwrap(),
+      ScriptValue::BigInt("42".to_string())
+    );
+    assert_eq!(
+      realm.eval_script("bigint.js", "id(123n)").unwrap(),
+      ScriptValue::BigInt("123".to_string())
+    );
   }
 
   #[test]
