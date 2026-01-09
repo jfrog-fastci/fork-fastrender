@@ -2195,16 +2195,17 @@ impl SupportsCondition {
 ///   OpenType/TrueType parsing via `ttf-parser`).
 /// - Tech support reflects shaping (`rustybuzz`) and color font rasterization in
 ///   `src/text/color_fonts/*`.
-fn supports_font_format_keyword(format: &FontSourceFormat) -> bool {
+fn supports_font_format_keyword(format: &FontFormatKeyword) -> bool {
   match format {
-    FontSourceFormat::Woff2
-    | FontSourceFormat::Woff
-    | FontSourceFormat::Opentype
-    | FontSourceFormat::Truetype
-    | FontSourceFormat::Collection => true,
-    FontSourceFormat::EmbeddedOpenType | FontSourceFormat::Svg | FontSourceFormat::Unknown(_) => {
-      false
-    }
+    FontFormatKeyword::Woff2
+    | FontFormatKeyword::Woff
+    | FontFormatKeyword::Opentype
+    | FontFormatKeyword::Truetype
+    | FontFormatKeyword::Collection => true,
+    FontFormatKeyword::EmbeddedOpenType
+    | FontFormatKeyword::Svg
+    | FontFormatKeyword::String(_)
+    | FontFormatKeyword::Unknown(_) => false,
   }
 }
 
@@ -3405,7 +3406,7 @@ pub enum SupportsCondition {
   /// `font-format(<font-format>#)` feature query (CSS Conditional 5 / CSS Fonts 4).
   ///
   /// When a comma-separated list is provided, any supported format makes the query true.
-  FontFormat(Vec<FontSourceFormat>),
+  FontFormat(Vec<FontFormatKeyword>),
   /// Logical negation
   Not(Box<SupportsCondition>),
   /// Logical conjunction
@@ -3690,6 +3691,39 @@ impl FontTechKeyword {
       "color-svg" => Self::ColorSvg,
       "color-sbix" => Self::ColorSbix,
       "color-cbdt" => Self::ColorCbdt,
+      other => Self::Unknown(other.to_string()),
+    }
+  }
+}
+
+/// Supported `font-format()` keyword values used by `@supports font-format(...)`.
+///
+/// Note: Unlike `@font-face src: ... format("woff2")`, the CSS Conditional Rules definition of
+/// `font-format()` intentionally treats string arguments as unsupported (see CSS Conditional 5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FontFormatKeyword {
+  Woff2,
+  Woff,
+  Opentype,
+  Truetype,
+  Collection,
+  EmbeddedOpenType,
+  Svg,
+  /// A quoted-string argument (always unsupported for `font-format()`).
+  String(String),
+  Unknown(String),
+}
+
+impl FontFormatKeyword {
+  pub fn from_ident(ident: &str) -> Self {
+    match trim_ascii_whitespace_css(ident).to_ascii_lowercase().as_str() {
+      "woff2" => Self::Woff2,
+      "woff" => Self::Woff,
+      "opentype" => Self::Opentype,
+      "truetype" => Self::Truetype,
+      "collection" => Self::Collection,
+      "embedded-opentype" => Self::EmbeddedOpenType,
+      "svg" => Self::Svg,
       other => Self::Unknown(other.to_string()),
     }
   }

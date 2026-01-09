@@ -148,3 +148,25 @@ fn supports_unknown_font_keywords_are_false() {
   let css = r"@supports font-tech(color-zebra) { div { display: inline; } }";
   assert_eq!(render_div_display(css), "block");
 }
+
+#[test]
+fn supports_font_format_string_arguments_are_unsupported() {
+  // CSS Conditional 5 defines font-format() as supported only for keyword arguments; string
+  // arguments should always evaluate false.
+  let css = r#"@supports font-format("woff2") { div { display: inline; } }"#;
+  assert_eq!(render_div_display(css), "block");
+
+  let css = r#"@supports not font-format("woff2") { div { display: inline; } }"#;
+  assert_eq!(render_div_display(css), "inline");
+}
+
+#[test]
+fn supports_font_tech_string_arguments_do_not_match_keywords() {
+  // `font-tech()` does not accept string arguments. We parse it forgivingly but treat it as
+  // unsupported so `not font-tech(\"...\")` can still match.
+  let css = r#"@supports font-tech("variations") { div { display: inline; } }"#;
+  assert_eq!(render_div_display(css), "block");
+
+  let css = r#"@supports not font-tech("variations") { div { display: inline; } }"#;
+  assert_eq!(render_div_display(css), "inline");
+}

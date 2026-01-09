@@ -32,6 +32,7 @@ use super::types::FontPaletteBase;
 use super::types::FontPaletteOverride;
 use super::types::FontPaletteValuesRule;
 use super::types::FontSourceFormat;
+use super::types::FontFormatKeyword;
 use super::types::FontTechKeyword;
 use super::types::ImportLayer;
 use super::types::ImportRule;
@@ -2259,8 +2260,14 @@ fn parse_supports_font_tech_arguments<'i, 't>(
       }
       nested.skip_whitespace();
       match nested.next_including_whitespace() {
-        Ok(Token::Ident(kw)) | Ok(Token::QuotedString(kw)) => {
+        Ok(Token::Ident(kw)) => {
           techs.push(FontTechKeyword::from_ident(kw.as_ref()));
+          let _ = nested.try_parse(|p| p.expect_comma());
+        }
+        Ok(Token::QuotedString(kw)) => {
+          // `font-tech()` does not accept string arguments per the CSS Fonts grammar, but parse
+          // them forgivingly so `not font-tech("...")` can still match.
+          techs.push(FontTechKeyword::Unknown(kw.as_ref().to_ascii_lowercase()));
           let _ = nested.try_parse(|p| p.expect_comma());
         }
         Ok(Token::Comma) => {}
@@ -2313,8 +2320,14 @@ fn parse_supports_font_format_arguments<'i, 't>(
       }
       nested.skip_whitespace();
       match nested.next_including_whitespace() {
-        Ok(Token::Ident(kw)) | Ok(Token::QuotedString(kw)) => {
-          formats.push(FontSourceFormat::from_hint(kw.as_ref()));
+        Ok(Token::Ident(kw)) => {
+          formats.push(FontFormatKeyword::from_ident(kw.as_ref()));
+          let _ = nested.try_parse(|p| p.expect_comma());
+        }
+        Ok(Token::QuotedString(kw)) => {
+          // CSS Conditional 5 defines `font-format()` as supported only for keyword arguments; a
+          // string argument must evaluate false.
+          formats.push(FontFormatKeyword::String(kw.as_ref().to_string()));
           let _ = nested.try_parse(|p| p.expect_comma());
         }
         Ok(Token::Comma) => {}
