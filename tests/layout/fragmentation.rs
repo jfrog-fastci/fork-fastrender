@@ -445,6 +445,48 @@ fn break_inside_avoid_prefers_unbroken_but_splits_when_needed() {
 }
 
 #[test]
+fn forced_break_inside_avoid_still_splits_pages() {
+  let mut avoid_style = ComputedStyle::default();
+  avoid_style.break_inside = BreakInside::Avoid;
+  let avoid_style = Arc::new(avoid_style);
+
+  let mut breaker_style = ComputedStyle::default();
+  breaker_style.break_after = BreakBetween::Always;
+  let breaker_style = Arc::new(breaker_style);
+
+  let mut first =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 50.0, 30.0), 1, vec![]);
+  first.style = Some(breaker_style);
+  let second = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 30.0, 50.0, 60.0),
+    2,
+    vec![],
+  );
+
+  let mut outer = FragmentNode::new_block_with_id(
+    Rect::from_xywh(0.0, 0.0, 50.0, 90.0),
+    3,
+    vec![first, second],
+  );
+  outer.style = Some(avoid_style);
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 50.0, 90.0), vec![outer]);
+
+  // The outer avoid-inside block fits within a single fragmentainer; without special handling the
+  // atomic range for `break-inside: avoid` would suppress the forced break.
+  let fragments = fragment_tree(&root, &FragmentationOptions::new(100.0)).unwrap();
+  assert_eq!(
+    fragments.len(),
+    2,
+    "forced break inside avoid range should still create a new fragment"
+  );
+
+  assert_eq!(fragments_with_id(&fragments[0], 1).len(), 1);
+  assert!(fragments_with_id(&fragments[0], 2).is_empty());
+  assert!(fragments_with_id(&fragments[1], 1).is_empty());
+  assert_eq!(fragments_with_id(&fragments[1], 2).len(), 1);
+}
+
+#[test]
 fn forced_break_overrides_natural_flow() {
   let mut breaker_style = ComputedStyle::default();
   breaker_style.break_after = BreakBetween::Always;

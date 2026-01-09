@@ -130,3 +130,65 @@ fn vertical_writing_mode_break_before_column_forces_new_manual_column() {
     "second block should start at the column origin in vertical writing mode"
   );
 }
+
+#[test]
+fn break_before_column_inside_avoid_column_still_forces_new_column() {
+  let mut renderer = FastRender::builder()
+    .columns(2, 20.0, 200.0)
+    .build()
+    .unwrap();
+
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          #outer { break-inside: avoid-column; }
+          #first { height: 50px; background: rgb(180, 80, 80); }
+          #second { height: 130px; background: rgb(80, 180, 120); break-before: column; }
+        </style>
+      </head>
+      <body>
+        <div id="outer">
+          <div id="first"></div>
+          <div id="second"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let dom = renderer.parse_html(html).expect("parse HTML");
+  let fragments = renderer
+    .layout_document(&dom, 400, 200)
+    .expect("layout with manual columns");
+
+  let first_color = Rgba::rgb(180, 80, 80);
+  let second_color = Rgba::rgb(80, 180, 120);
+
+  assert_eq!(
+    fragments.additional_fragments.len(),
+    1,
+    "break-before: column should still create a new column even inside an avoid-column atomic range"
+  );
+
+  assert!(
+    find_fragment_with_background(&fragments.root, first_color).is_some(),
+    "first block should remain in the first column fragment"
+  );
+  assert!(
+    find_fragment_with_background(&fragments.root, second_color).is_none(),
+    "second block should not remain in the first column when a column break is requested"
+  );
+
+  let second_column = &fragments.additional_fragments[0];
+  assert!(
+    find_fragment_with_background(second_column, first_color).is_none(),
+    "first block should not be duplicated into the second column fragment"
+  );
+  let second_fragment = find_fragment_with_background(second_column, second_color)
+    .expect("second block should appear in the second column fragment");
+  assert!(
+    second_fragment.bounds.y().abs() < 0.1,
+    "second block should start at the top of the second column"
+  );
+}

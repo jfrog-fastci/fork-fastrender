@@ -956,6 +956,11 @@ impl FragmentationAnalyzer {
       (a.pos - b.pos).abs() < BREAK_EPSILON && a.kind == b.kind && a.strength == b.strength
     });
 
+    // Forced breaks override `break-inside: avoid-*` semantics. Atomic ranges represent avoid-inside
+    // (and similar indivisible) content, so ensure they never span across forced break opportunity
+    // positions; otherwise forced breaks can be incorrectly suppressed by `pos_is_inside_atomic`.
+    split_atomic_ranges_at_forced_break_opportunities(&mut atomic, &collection.opportunities);
+
     let content_extent = parallel_flow_content_extent(root, axes, fragmentainer_size_hint, context);
     let line_containers = collection.line_containers;
     let line_starts = vec![0; line_containers.len()];
@@ -3481,6 +3486,64 @@ pub(crate) fn normalize_atomic_ranges(ranges: &mut Vec<AtomicRange>) {
 
   ranges.clear();
   ranges.extend(merged);
+}
+
+fn split_atomic_ranges_at_forced_break_opportunities(
+  atomic_ranges: &mut Vec<AtomicRange>,
+  opportunities: &[BreakOpportunity],
+) {
+  if atomic_ranges.is_empty() {
+    return;
+  }
+
+  let mut points: Vec<f32> = opportunities
+    .iter()
+    .filter(|o| matches!(o.strength, BreakStrength::Forced))
+    .map(|o| o.pos)
+    .collect();
+  if points.is_empty() {
+    return;
+  }
+  points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+  points.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
+
+  // Atomic ranges treat their endpoints as break-safe (see `atomic_containing`). Split ranges at
+  // forced break positions so the forced boundary becomes an endpoint and is therefore never
+  // considered "inside atomic".
+  let mut split: Vec<AtomicRange> = Vec::with_capacity(atomic_ranges.len());
+  let mut point_idx = 0usize;
+  for range in atomic_ranges.iter().copied() {
+    let mut start = range.start;
+
+    while point_idx < points.len() && points[point_idx] <= start + BREAK_EPSILON {
+      point_idx += 1;
+    }
+
+    let mut local_idx = point_idx;
+    while local_idx < points.len() {
+      let pos = points[local_idx];
+      if pos >= range.end - BREAK_EPSILON {
+        break;
+      }
+      if pos <= start + BREAK_EPSILON {
+        local_idx += 1;
+        continue;
+      }
+      split.push(AtomicRange { start, end: pos });
+      start = pos;
+      local_idx += 1;
+    }
+    split.push(AtomicRange {
+      start,
+      end: range.end,
+    });
+
+    point_idx = local_idx;
+  }
+
+  atomic_ranges.clear();
+  atomic_ranges.extend(split);
+  normalize_atomic_ranges(atomic_ranges);
 }
 
 fn combine_breaks(
