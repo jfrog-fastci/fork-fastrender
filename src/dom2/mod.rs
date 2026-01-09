@@ -1,3 +1,4 @@
+use crate::css::selectors::FastRenderSelectorImpl;
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::dom::DocumentReadyState;
@@ -7,6 +8,7 @@ use crate::web::events as web_events;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
 use selectors::OpaqueElement;
+use selectors::parser::SelectorList;
 
 mod attrs;
 mod class_list;
@@ -1252,12 +1254,20 @@ impl Document {
     selectors: &str,
   ) -> Result<bool, DomException> {
     let selector_list = parse_selector_list(selectors)?;
+    Ok(self.matches_selector_list(element, &selector_list))
+  }
+
+  fn matches_selector_list(
+    &mut self,
+    element: NodeId,
+    selector_list: &SelectorList<FastRenderSelectorImpl>,
+  ) -> bool {
     if element.index() >= self.nodes.len() {
-      return Ok(false);
+      return false;
     }
     match &self.node(element).kind {
       NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
-      _ => return Ok(false),
+      _ => return false,
     }
 
     let quirks_mode = match &self.node(self.root()).kind {
@@ -1287,16 +1297,16 @@ impl Document {
       }
 
       let Some(dom) = self.to_renderer_dom_subtree(root) else {
-        return Ok(false);
+        return false;
       };
       let Some(mapping) = self.build_selector_preorder_mapping_from(root) else {
-        return Ok(false);
+        return false;
       };
       (dom, mapping)
     };
 
     let Some(target_preorder) = mapping.preorder_for_node_id(element) else {
-      return Ok(false);
+      return false;
     };
 
     struct StackItem<'a> {
@@ -1334,18 +1344,18 @@ impl Document {
           let matched = node_matches_selector_list(
             item.node,
             &ancestors[..ancestors.len().saturating_sub(1)],
-            &selector_list,
+            selector_list,
             &mut selector_caches,
             quirks_mode,
             anchor,
           );
-          return Ok(matched);
+          return matched;
         }
 
         if preorder_id >= target_preorder {
           // If we've passed the target preorder id without finding it, the mapping/traversal is out
           // of sync; bail out defensively.
-          return Ok(false);
+          return false;
         }
       }
 
@@ -1364,7 +1374,7 @@ impl Document {
       }
     }
 
-    Ok(false)
+    false
   }
 
   /// `Element.closest(selectors)` for a `dom2` element.
@@ -1388,9 +1398,11 @@ impl Document {
       _ => return Ok(None),
     }
 
+    let selector_list = parse_selector_list(selectors)?;
+
     let mut current = element;
     loop {
-      if self.matches_selector(current, selectors)? {
+      if self.matches_selector_list(current, &selector_list) {
         return Ok(Some(current));
       }
 
@@ -1589,6 +1601,30 @@ mod template_inert_tests {
       !doc.matches_selector(inside, "body #inside").unwrap(),
       "matches_selector must not cross inert <template> boundaries into the document tree"
     );
+  }
+
+  #[test]
+  fn closest_stops_at_inert_template_boundary() {
+    let root = crate::dom::parse_html(
+      "<!doctype html><html><body>\
+       <template><div id=inside></div></template>\
+       </body></html>",
+    )
+    .unwrap();
+    let mut doc = Document::from_renderer_dom(&root);
+
+    let inside = find_node_by_id_attribute(&doc, "inside").expect("expected inside node in tree");
+    assert!(
+      doc.is_descendant_of_inert_template(inside),
+      "inside node should be inside inert template subtree"
+    );
+
+    // `closest()` is inclusive and should match the node itself.
+    assert_eq!(doc.closest(inside, "#inside").unwrap(), Some(inside));
+
+    // Inert `<template>` contents are disconnected from the light DOM; traversal must not reach
+    // ancestors outside the template's `.content` subtree.
+    assert_eq!(doc.closest(inside, "body").unwrap(), None);
   }
 
   #[test]
