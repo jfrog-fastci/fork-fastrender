@@ -205,17 +205,17 @@ pub fn execute_web_fetch<'a>(
   if request.mode == RequestMode::SameOrigin {
     let Some(client_origin) = client_origin else {
       return Err(Error::Other(
-        "web fetch same-origin request requires a client origin".to_string(),
+        "web fetch same-origin mode requires a client origin; blocking request".to_string(),
       ));
     };
     let Some(target_origin) = origin_from_url(requested_url) else {
       return Err(Error::Other(format!(
-        "web fetch same-origin request requires a valid URL (got {requested_url:?})"
+        "web fetch same-origin mode requires a parseable URL origin; blocking request to {requested_url:?}"
       )));
     };
     if !client_origin.same_origin(&target_origin) {
       return Err(Error::Other(format!(
-        "web fetch blocked cross-origin URL for same-origin mode (client origin {client_origin}, target origin {target_origin})"
+        "web fetch same-origin mode blocked cross-origin request from {client_origin} to {requested_url}"
       )));
     }
   }
@@ -266,6 +266,27 @@ pub fn execute_web_fetch<'a>(
     fetcher.fetch_http_request(http_req)?
   };
 
+  let status = resource.status.unwrap_or(200);
+  let final_url = resource.final_url.as_deref().unwrap_or(requested_url);
+  let redirect_status = matches!(status, 300 | 301 | 302 | 303 | 307 | 308);
+  let redirect_detected = final_url != requested_url || redirect_status;
+
+  match request.redirect {
+    RequestRedirect::Follow => {}
+    RequestRedirect::Error => {
+      if redirect_detected {
+        return Err(Error::Other(format!(
+          "web fetch redirect mode is \"error\" but a redirect was detected ({requested_url} -> {final_url})"
+        )));
+      }
+    }
+    RequestRedirect::Manual => {
+      if redirect_detected {
+        return Ok(opaque_response(ResponseType::OpaqueRedirect));
+      }
+    }
+  }
+
   if request.mode == RequestMode::Cors {
     // Fetch API `mode: "cors"` requests always validate CORS headers when we know the initiating
     // client origin. (Subresource CORS enforcement can be disabled via `FASTR_FETCH_ENFORCE_CORS`,
@@ -294,8 +315,6 @@ pub fn execute_web_fetch<'a>(
   if method_is_head {
     resource.bytes.clear();
   }
-
-  let status = resource.status.unwrap_or(200);
   let url = resource
     .final_url
     .take()
@@ -380,23 +399,7 @@ pub fn execute_web_fetch<'a>(
   };
 
   if matches!(response_type, ResponseType::Opaque | ResponseType::OpaqueRedirect) {
-    // Opaque response: hide status, headers, body, and URL.
-    //
-    // Note: This is a spec-shaped approximation of Fetch's filtered response types. The renderer
-    // resource loader does not currently consume this API (it uses `ResourceFetcher` directly), so
-    // returning an inaccessible body here matches browser-visible `fetch()` behavior without
-    // impacting rendering.
-    return Ok(Response {
-      r#type: response_type,
-      url: String::new(),
-      // Per Fetch, opaque/opaqueredirect filtered responses have an empty URL list; `redirected`
-      // must therefore always be `false` (and must not leak redirect information to callers).
-      redirected: false,
-      status: 0,
-      status_text: String::new(),
-      headers: Headers::new_with_guard(HeadersGuard::Immutable),
-      body: None,
-    });
+    return Ok(opaque_response(response_type));
   }
 
   response.r#type = response_type;
@@ -445,6 +448,20 @@ pub fn execute_web_fetch<'a>(
   response.headers.set_guard(HeadersGuard::Immutable);
 
   Ok(response)
+}
+
+fn opaque_response(r#type: ResponseType) -> Response {
+  // Opaque / opaque-redirect responses have an empty URL list in the Fetch spec, so `url` and
+  // `redirected` are not observable by callers.
+  Response {
+    r#type,
+    url: String::new(),
+    redirected: false,
+    status: 0,
+    status_text: String::new(),
+    headers: Headers::new_with_guard(HeadersGuard::Immutable),
+    body: None,
+  }
 }
 
 #[cfg(test)]
@@ -541,8 +558,25 @@ mod tests {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 1024];
     let header_end;
+    let start = std::time::Instant::now();
     loop {
-      let read = stream.read(&mut tmp).expect("read request");
+      let read = loop {
+        match stream.read(&mut tmp) {
+          Ok(read) => break read,
+          Err(err)
+            if matches!(
+              err.kind(),
+              std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+          {
+            if start.elapsed() > Duration::from_secs(2) {
+              panic!("timed out while reading request headers: {err}");
+            }
+            continue;
+          }
+          Err(err) => panic!("read request: {err}"),
+        }
+      };
       if read == 0 {
         panic!("unexpected EOF while reading request headers");
       }
@@ -566,7 +600,23 @@ mod tests {
     {
       let len = len_line["content-length:".len()..].trim().parse::<usize>().unwrap();
       while body.len() < len {
-        let read = stream.read(&mut tmp).expect("read request body");
+        let read = loop {
+          match stream.read(&mut tmp) {
+            Ok(read) => break read,
+            Err(err)
+              if matches!(
+                err.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+              ) =>
+            {
+              if start.elapsed() > Duration::from_secs(2) {
+                panic!("timed out while reading request body: {err}");
+              }
+              continue;
+            }
+            Err(err) => panic!("read request body: {err}"),
+          }
+        };
         if read == 0 {
           break;
         }
@@ -581,7 +631,23 @@ mod tests {
         if let Some(decoded) = decode_chunked_body(&body) {
           return (header_str, decoded);
         }
-        let read = stream.read(&mut tmp).expect("read chunked body");
+        let read = loop {
+          match stream.read(&mut tmp) {
+            Ok(read) => break read,
+            Err(err)
+              if matches!(
+                err.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+              ) =>
+            {
+              if start.elapsed() > Duration::from_secs(2) {
+                panic!("timed out while reading chunked request body: {err}");
+              }
+              continue;
+            }
+            Err(err) => panic!("read chunked body: {err}"),
+          }
+        };
         if read == 0 {
           break;
         }
@@ -992,13 +1058,11 @@ mod tests {
       }
     }
 
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("*".to_string());
     let fetcher = ReferrerAssertingFetcher {
       expected_referrer_url: Some("https://override.example/referrer"),
-      resource: {
-        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
-        resource.access_control_allow_origin = Some("https://override.example".to_string());
-        resource
-      },
+      resource,
     };
 
     let mut request = Request::new("GET", "https://example.com/a");
@@ -1062,13 +1126,11 @@ mod tests {
       }
     }
 
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.access_control_allow_origin = Some("*".to_string());
     let fetcher = ReferrerAssertingFetcher {
       expected_referrer_url: Some("https://ctx.example/page"),
-      resource: {
-        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
-        resource.access_control_allow_origin = Some("https://ctx.example".to_string());
-        resource
-      },
+      resource,
     };
 
     let request = Request::new("GET", "https://example.com/a");
@@ -1144,7 +1206,7 @@ mod tests {
     assert_eq!(response.r#type, ResponseType::Cors);
 
     let mut request = Request::new("GET", "https://example.com/a");
-    request.mode = RequestMode::NoCors;
+    request.set_mode(RequestMode::NoCors);
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.r#type, ResponseType::Opaque);
@@ -1162,7 +1224,7 @@ mod tests {
     };
 
     let mut request = Request::new("GET", "https://client.example/res");
-    request.mode = RequestMode::SameOrigin;
+    request.set_mode(RequestMode::SameOrigin);
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
@@ -1433,16 +1495,18 @@ mod tests {
     request.redirect = crate::resource::web_fetch::RequestRedirect::Error;
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected redirect error");
-    assert!(matches!(err, Error::Resource(_)));
+    assert!(matches!(err, Error::Resource(_) | Error::Other(_)));
     handle.join().unwrap();
   }
 
   #[test]
-  fn redirect_manual_returns_302_without_following() {
-    if skip_if_curl_backend_missing("redirect_manual_returns_302_without_following") {
+  fn redirect_manual_returns_opaque_redirect_without_following() {
+    if skip_if_curl_backend_missing("redirect_manual_returns_opaque_redirect_without_following") {
       return;
     }
-    let Some(listener) = try_bind_localhost("redirect_manual_returns_302_without_following") else {
+    let Some(listener) =
+      try_bind_localhost("redirect_manual_returns_opaque_redirect_without_following")
+    else {
       return;
     };
     let addr = listener.local_addr().unwrap();
@@ -1475,12 +1539,15 @@ mod tests {
     let url = format!("http://{addr}/start");
     let mut request = Request::new("GET", &url);
     request.redirect = crate::resource::web_fetch::RequestRedirect::Manual;
-    let mut response =
+    let response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.r#type, ResponseType::OpaqueRedirect);
     assert_eq!(response.status, 0);
-    assert!(!response.redirected);
+    assert_eq!(response.status_text, "");
     assert_eq!(response.url, "");
+    assert!(!response.redirected);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
+    assert!(response.headers.sort_and_combine().is_empty());
     assert!(response.body.is_none());
     handle.join().unwrap();
   }
@@ -1526,7 +1593,7 @@ mod tests {
   fn same_origin_blocks_cross_origin_before_fetching() {
     let fetcher = PanicFetcher;
     let mut request = Request::new("GET", "https://other.example/res");
-    request.mode = RequestMode::SameOrigin;
+    request.set_mode(RequestMode::SameOrigin);
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
@@ -1561,7 +1628,7 @@ mod tests {
 
     let fetcher = UrlAssertingFetcher;
     let mut request = Request::new("GET", "sub");
-    request.mode = RequestMode::NoCors;
+    request.set_mode(RequestMode::NoCors);
     let ctx = WebFetchExecutionContext {
       referrer_url: Some("https://example.com/dir/page"),
       ..WebFetchExecutionContext::default()
@@ -1595,7 +1662,7 @@ mod tests {
     // URLs still resolve against the full path instead of falling back to the origin root.
     let fetcher = UrlAssertingFetcher;
     let mut request = Request::new("GET", "sub");
-    request.mode = RequestMode::SameOrigin;
+    request.set_mode(RequestMode::SameOrigin);
     let ctx = WebFetchExecutionContext {
       referrer_url: Some("https://example.com/dir/page?x=1|2"),
       ..WebFetchExecutionContext::default()
@@ -1627,7 +1694,7 @@ mod tests {
     let origin = origin_from_url("https://client.example/").expect("origin");
     let fetcher = UrlAssertingFetcher;
     let mut request = Request::new("GET", "/res");
-    request.mode = RequestMode::NoCors;
+    request.set_mode(RequestMode::NoCors);
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
@@ -1641,7 +1708,7 @@ mod tests {
   fn web_fetch_relative_url_without_base_errors_before_fetching() {
     let fetcher = PanicFetcher;
     let mut request = Request::new("GET", "/res");
-    request.mode = RequestMode::NoCors;
+    request.set_mode(RequestMode::NoCors);
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
     assert!(matches!(err, Error::Other(_)));
@@ -1695,24 +1762,118 @@ mod tests {
 
   #[test]
   fn no_cors_skips_cors_validation_and_returns_opaque() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingFetcher {
+      hits: AtomicUsize,
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for CountingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.resource.clone())
+      }
+
+      fn fetch_with_request(&self, _req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.resource.clone())
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self.resource.clone())
+      }
+    }
+
     // Ensure `Response.redirected` does not leak redirect information for opaque responses.
     let mut resource = FetchedResource::new(b"ok".to_vec(), None);
     resource.final_url = Some("https://other.example/final".to_string());
-    let fetcher = StaticFetcher { resource };
+    let fetcher = CountingFetcher {
+      hits: AtomicUsize::new(0),
+      resource,
+    };
     let mut request = Request::new("GET", "https://other.example/res");
-    request.mode = RequestMode::NoCors;
+    request.set_mode(RequestMode::NoCors);
     let origin = origin_from_url("https://client.example/").expect("origin");
     let ctx = WebFetchExecutionContext {
       client_origin: Some(&origin),
       ..WebFetchExecutionContext::default()
     };
-    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    let response =
+      execute_web_fetch(&fetcher, &request, ctx).expect("expected opaque response");
+    assert_eq!(fetcher.hits.load(Ordering::SeqCst), 1);
     assert_eq!(response.r#type, ResponseType::Opaque);
     assert_eq!(response.status, 0);
+    assert_eq!(response.status_text, "");
     assert_eq!(response.url, "");
     assert!(!response.redirected);
     assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
-    assert!(response.body.is_none());
     assert!(response.headers.sort_and_combine().is_empty());
+    assert!(response.body.is_none());
+  }
+
+  #[test]
+  fn redirect_error_rejects_when_final_url_differs() {
+    struct FollowedRedirectFetcher {
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for FollowedRedirectFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        Ok(self.resource.clone())
+      }
+    }
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://example.com/b".to_string());
+    resource.status = Some(200);
+    let fetcher = FollowedRedirectFetcher { resource };
+
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.redirect = RequestRedirect::Error;
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected redirect error");
+    assert!(matches!(err, Error::Other(_)));
+  }
+
+  #[test]
+  fn redirect_manual_returns_opaque_redirect_when_redirected() {
+    struct FollowedRedirectFetcher {
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for FollowedRedirectFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, _req: HttpRequest<'_>) -> Result<FetchedResource> {
+        Ok(self.resource.clone())
+      }
+    }
+
+    let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+    resource.final_url = Some("https://example.com/b".to_string());
+    resource.status = Some(200);
+    let fetcher = FollowedRedirectFetcher { resource };
+
+    let mut request = Request::new("GET", "https://example.com/a");
+    request.redirect = RequestRedirect::Manual;
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+
+    assert_eq!(response.r#type, ResponseType::OpaqueRedirect);
+    assert_eq!(response.status, 0);
+    assert_eq!(response.status_text, "");
+    assert_eq!(response.url, "");
+    assert!(!response.redirected);
+    assert_eq!(response.headers.guard(), HeadersGuard::Immutable);
+    assert!(response.headers.sort_and_combine().is_empty());
+    assert!(response.body.is_none());
   }
 }

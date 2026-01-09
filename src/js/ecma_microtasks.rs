@@ -802,8 +802,8 @@ mod tests {
         handler: Some(job_callback),
       };
 
-      let job = vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument)
-        .map_err(vm_err)?;
+      let job =
+        vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument).map_err(vm_err)?;
       hooks.host_enqueue_promise_job(job, None);
       drop(scope);
       assert!(hooks.finish(&mut host).is_none());

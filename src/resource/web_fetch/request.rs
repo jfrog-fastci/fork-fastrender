@@ -77,23 +77,27 @@ impl Request {
     url: impl Into<String>,
     limits: &WebFetchLimits,
   ) -> Self {
-    let mode = RequestMode::Cors;
-    let headers_guard = match mode {
-      RequestMode::NoCors => HeadersGuard::RequestNoCors,
-      _ => HeadersGuard::Request,
-    };
-
-    Self {
+    let mut request = Self {
       method: method.into(),
       url: url.into(),
-      headers: Headers::new_with_guard_and_limits(headers_guard, limits),
-      mode,
+      headers: Headers::new_with_guard_and_limits(HeadersGuard::Request, limits),
+      mode: RequestMode::Cors,
       credentials: RequestCredentials::SameOrigin,
       redirect: RequestRedirect::Follow,
       referrer: String::new(),
       referrer_policy: ReferrerPolicy::EmptyString,
       body: None,
-    }
+    };
+    request.set_mode(RequestMode::Cors);
+    request
+  }
+
+  pub fn set_mode(&mut self, mode: RequestMode) {
+    self.mode = mode;
+    self.headers.set_guard(match mode {
+      RequestMode::NoCors => HeadersGuard::RequestNoCors,
+      _ => HeadersGuard::Request,
+    });
   }
 }
 
