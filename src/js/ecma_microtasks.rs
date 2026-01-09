@@ -23,6 +23,10 @@ use std::rc::Rc;
 /// `vm-js` jobs need access to a [`vm_js::Vm`] + [`vm_js::Heap`] so they can call/construct
 /// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
+  fn vm_js_heap(&self) -> &vm_js::Heap;
+
+  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap;
+
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
@@ -95,13 +99,11 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   }
 
   fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
-    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.add_root(value)
+    self.host.vm_js_heap_mut().add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
-    heap.remove_root(id);
+    self.host.vm_js_heap_mut().remove_root(id);
   }
 }
 
@@ -226,6 +228,14 @@ mod tests {
     }
 
     impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap
+      }
+
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
@@ -294,6 +304,14 @@ mod tests {
     }
 
     impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap
+      }
+
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
@@ -392,6 +410,14 @@ mod tests {
     }
 
     impl VmJsEngineHost for Host {
+      fn vm_js_heap(&self) -> &vm_js::Heap {
+        &self.heap
+      }
+
+      fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+        &mut self.heap
+      }
+
       fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
         (&mut self.vm, &mut self.heap)
       }
