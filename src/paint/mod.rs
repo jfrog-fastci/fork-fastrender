@@ -107,6 +107,11 @@ pub(crate) mod paint_bounds;
 mod paint_thread_pool;
 pub mod painter;
 pub mod pixmap;
+/// Legacy preserve-3d test helpers.
+///
+/// Runtime preserve-3d behavior lives in [`depth_sort`], [`transform3d`], and
+/// [`display_list_renderer`]/[`preserve_3d`]. This module is a thin wrapper so
+/// tests can exercise the same primitives without pulling in the full renderer.
 pub mod preserve3d;
 pub mod preserve_3d;
 pub mod projective_warp;
