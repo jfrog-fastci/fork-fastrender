@@ -90,31 +90,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |input: String, base: Option<String>| -> bool {
         let limits = &state.borrow().limits;
-        if input.len() > limits.max_input_bytes {
-          return false;
-        }
-        let parsed = match base.as_deref() {
-          Some(base) => {
-            if base.len() > limits.max_input_bytes {
-              return false;
-            }
-            let Ok(base_url) = ::url::Url::parse(base) else {
-              return false;
-            };
-            let Ok(url) =
-              ::url::Url::options().base_url(Some(&base_url)).parse(&input) else {
-              return false;
-            };
-            url
-          }
-          None => {
-            let Ok(url) = ::url::Url::parse(&input) else {
-              return false;
-            };
-            url
-          }
-        };
-        parsed.as_str().len() <= limits.max_input_bytes
+        WebUrl::can_parse(&input, base.as_deref(), limits)
       }
     })?,
   )?;
