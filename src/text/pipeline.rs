@@ -2455,6 +2455,27 @@ fn collect_opentype_features(style: &ComputedStyle) -> Vec<Feature> {
       end: u32::MAX,
     });
   }
+  if let Some(annotation) = alternates.annotation.as_deref() {
+    // CSS `annotation()` maps to the OpenType `nalt` feature.
+    //
+    // The argument can be a numeric value or a named feature-value from `@font-feature-values`.
+    // We don't support named lookups yet, so fall back to enabling `nalt` with value 1.
+    let tag = Tag::from_bytes(b"nalt");
+    features.retain(|f| f.tag != tag);
+    let value = annotation
+      .trim()
+      .parse::<u8>()
+      .ok()
+      .filter(|n| *n > 0 && *n <= 99)
+      .map(|n| n as u32)
+      .unwrap_or(1);
+    features.push(Feature {
+      tag,
+      value,
+      start: 0,
+      end: u32::MAX,
+    });
+  }
 
   match style.font_kerning {
     FontKerning::Auto => {}
@@ -9960,6 +9981,7 @@ mod tests {
     style.font_variant_alternates.character_variants = vec![4];
     style.font_variant_alternates.swash = Some(1);
     style.font_variant_alternates.ornaments = Some(2);
+    style.font_variant_alternates.annotation = Some("note".to_string());
 
     let feats = collect_opentype_features(&style);
     let mut seen: std::collections::HashMap<[u8; 4], u32> = std::collections::HashMap::new();
@@ -9973,6 +9995,11 @@ mod tests {
     assert_eq!(seen.get(b"cv04"), Some(&1));
     assert_eq!(seen.get(b"swsh"), Some(&1));
     assert_eq!(seen.get(b"ornm"), Some(&2));
+    assert_eq!(
+      seen.get(b"nalt"),
+      Some(&1),
+      "annotation() should map to OpenType nalt"
+    );
   }
 
   #[test]
