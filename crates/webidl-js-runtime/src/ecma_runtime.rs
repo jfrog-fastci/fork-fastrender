@@ -940,6 +940,9 @@ impl JsRuntime for VmJsRuntime {
   fn to_number(&mut self, value: Value) -> Result<f64, VmError> {
     Ok(match value {
       Value::Number(n) => n,
+      Value::BigInt(_) => {
+        return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
+      }
       Value::Bool(b) => {
         if b {
           1.0
@@ -950,9 +953,6 @@ impl JsRuntime for VmJsRuntime {
       Value::Null => 0.0,
       Value::Undefined => f64::NAN,
       Value::String(s) => self.to_number_from_string(s)?,
-      Value::BigInt(_) => {
-        return Err(self.throw_type_error("Cannot convert a BigInt value to a number"));
-      }
       Value::Symbol(_) => {
         return Err(self.throw_type_error("Cannot convert a Symbol value to a number"));
       }
