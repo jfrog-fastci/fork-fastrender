@@ -49,11 +49,13 @@ impl TransitionRecord {
   fn raw_progress(&self, now_ms: f32) -> f32 {
     let duration_ms = self.duration_ms.max(0.0);
     let elapsed = now_ms - self.start_time_ms - self.delay_ms;
+    if duration_ms == 0.0 {
+      // A 0-duration transition can still be "active" due to a positive delay: the property holds
+      // the start value until the start time and then snaps to the end value.
+      return if elapsed <= 0.0 { 0.0 } else { 1.0 };
+    }
     if elapsed <= 0.0 {
       return 0.0;
-    }
-    if duration_ms <= 0.0 {
-      return 1.0;
     }
     if elapsed >= duration_ms {
       return 1.0;
@@ -206,15 +208,57 @@ impl TransitionRecord {
   pub(super) fn sample(&self, now_ms: f32, ctx: &AnimationResolveContext) -> Option<SampledTransition> {
     let duration_ms = self.duration_ms.max(0.0);
     let elapsed = now_ms - self.start_time_ms - self.delay_ms;
+
+    // CSS Transitions 1: A transition with a 0s duration can still be active due to a positive
+    // delay. During that delay, the property value holds the start value and then snaps to the end
+    // value when the start time is reached.
+    if duration_ms == 0.0 {
+      if elapsed >= 0.0 {
+        return None;
+      }
+      // During the delay, always use the start value regardless of the timing function.
+      let progress = 0.0;
+
+      let value = if self.property.starts_with("--") {
+        let value = self.sample_custom(ctx, progress)?;
+        TransitionValue::Custom(value)
+      } else {
+        let value = self.sample_builtin(now_ms, ctx, progress)?;
+        TransitionValue::Builtin(value)
+      };
+
+      return Some(SampledTransition {
+        value,
+        progress,
+        delay_ms: self.delay_ms,
+        duration_ms,
+      });
+    }
     if elapsed >= duration_ms {
       return None;
     }
 
-    let raw_progress = if elapsed <= 0.0 || duration_ms <= 0.0 {
-      0.0
-    } else {
-      (elapsed / duration_ms).clamp(0.0, 1.0)
-    };
+    if elapsed < 0.0 {
+      // During the delay, always use the start value regardless of the timing function.
+      let progress = 0.0;
+
+      let value = if self.property.starts_with("--") {
+        let value = self.sample_custom(ctx, progress)?;
+        TransitionValue::Custom(value)
+      } else {
+        let value = self.sample_builtin(now_ms, ctx, progress)?;
+        TransitionValue::Builtin(value)
+      };
+
+      return Some(SampledTransition {
+        value,
+        progress,
+        delay_ms: self.delay_ms,
+        duration_ms,
+      });
+    }
+
+    let raw_progress = (elapsed / duration_ms).clamp(0.0, 1.0);
     let progress = self.timing_function.value_at(raw_progress);
 
     let value = if self.property.starts_with("--") {
@@ -934,6 +978,76 @@ mod tests {
       (style.opacity - 0.35).abs() < 1e-6,
       "expected opacity=0.35 at 700ms, got {}",
       style.opacity
+    );
+  }
+
+  #[test]
+  fn transition_state_zero_duration_with_positive_delay_holds_start_value_until_delay_elapses() {
+    let before_style = make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      0.0,
+      1000.0,
+      TransitionTimingFunction::Linear,
+    );
+    let after_style = make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      0.0,
+      1000.0,
+      TransitionTimingFunction::Linear,
+    );
+    let before_tree = make_box_tree(before_style);
+    let after_tree = make_box_tree(after_style);
+
+    let state0 = TransitionState::update_for_style_change(None, Some(&before_tree), &after_tree, 0.0);
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record0 = state0
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("expected a running transition with delay only");
+    assert_eq!(record0.delay_ms, 1000.0);
+    assert_eq!(record0.duration_ms, 0.0);
+
+    let base = make_fragment_tree(after_tree.root.style.clone(), state0.clone());
+    let viewport = Size::new(100.0, 100.0);
+
+    let mut t0 = base.clone();
+    super::super::apply_transitions(&mut t0, 0.0, viewport);
+    let style = t0.root.style.as_deref().expect("style");
+    assert!((style.opacity - 0.0).abs() < 1e-6, "t=0 opacity={}", style.opacity);
+
+    let mut t500 = base.clone();
+    super::super::apply_transitions(&mut t500, 500.0, viewport);
+    let style = t500.root.style.as_deref().expect("style");
+    assert!((style.opacity - 0.0).abs() < 1e-6, "t=500 opacity={}", style.opacity);
+
+    let mut t1000 = base.clone();
+    super::super::apply_transitions(&mut t1000, 1000.0, viewport);
+    let style = t1000.root.style.as_deref().expect("style");
+    assert!((style.opacity - 1.0).abs() < 1e-6, "t=1000 opacity={}", style.opacity);
+
+    // Ensure the record stays running during the delay and is moved to completed once the start
+    // time is reached.
+    let state500 =
+      TransitionState::update_for_style_change(Some(&state0), Some(&after_tree), &after_tree, 500.0);
+    let el500 = state500.elements.get(&key).expect("element state at 500ms");
+    assert!(el500.running.contains_key("opacity"), "expected running transition during delay");
+
+    let state1000 =
+      TransitionState::update_for_style_change(Some(&state500), Some(&after_tree), &after_tree, 1000.0);
+    let el1000 = state1000.elements.get(&key).expect("element state at 1000ms");
+    assert!(
+      !el1000.running.contains_key("opacity"),
+      "expected delay-only transition to finish at its start time"
+    );
+    assert!(
+      el1000.completed.contains_key("opacity"),
+      "expected delay-only transition to be recorded as completed"
     );
   }
 
