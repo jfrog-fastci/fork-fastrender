@@ -343,3 +343,129 @@ pub fn backspace_textarea(node: &mut DomNode) -> bool {
   false
 }
 
+/// Activate/select an `<option>` descendant of a `<select>` element.
+///
+/// Returns `true` iff any DOM attributes were changed.
+pub fn activate_select_option(
+  root: &mut DomNode,
+  select_node_id: usize,
+  option_node_id: usize,
+  toggle_for_multiple: bool,
+) -> bool {
+  let mut index = DomIndex::build(root);
+
+  let Some((select_ok, select_multiple)) = index.with_node_mut(select_node_id, |node| {
+    let is_select = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("select") && is_html_element(node));
+    if !is_select {
+      return (false, false);
+    }
+    if is_disabled_or_inert(node) {
+      return (false, false);
+    }
+    (true, node.get_attribute_ref("multiple").is_some())
+  }) else {
+    return false;
+  };
+  if !select_ok {
+    return false;
+  }
+
+  let Some((option_ok, option_selected, option_ptr)) = index.with_node_mut(option_node_id, |node| {
+    let is_option = node
+      .tag_name()
+      .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(node));
+    if !is_option {
+      return (false, false, std::ptr::null_mut());
+    }
+    if node.get_attribute_ref("disabled").is_some() {
+      return (false, false, std::ptr::null_mut());
+    }
+    (true, node.get_attribute_ref("selected").is_some(), node as *mut DomNode)
+  }) else {
+    return false;
+  };
+  if !option_ok {
+    return false;
+  }
+
+  // Verify `option` is a descendant of `select` and that no disabled `<optgroup>` exists between
+  // them.
+  let mut parent = index.parent.get(option_node_id).copied().unwrap_or(0);
+  let mut found_select = false;
+  while parent != 0 {
+    if parent == select_node_id {
+      found_select = true;
+      break;
+    }
+
+    let disabled_optgroup = index
+      .with_node_mut(parent, |node| {
+        node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("optgroup") && is_html_element(node))
+          && node.get_attribute_ref("disabled").is_some()
+      })
+      .unwrap_or(false);
+    if disabled_optgroup {
+      return false;
+    }
+
+    parent = index.parent.get(parent).copied().unwrap_or(0);
+  }
+  if !found_select {
+    return false;
+  }
+
+  if select_multiple && toggle_for_multiple {
+    // Multiple-select toggle.
+    return index
+      .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", !option_selected))
+      .unwrap_or(false);
+  }
+
+  // Replacement selection (single-select and non-toggle multiple-select).
+  if !select_multiple && option_selected {
+    // Spec-ish: activating an already-selected option in single-select is a no-op.
+    return false;
+  }
+
+  // Clear selected state from all other `<option>` descendants of this `<select>` (including under
+  // optgroups).
+  let mut changed = index
+    .with_node_mut(select_node_id, |select| {
+      // Avoid recursion for deeply nested `<optgroup>` trees.
+      let mut changed = false;
+      let mut stack: Vec<*mut DomNode> = vec![select as *mut DomNode];
+      while let Some(ptr) = stack.pop() {
+        // Safety: `select` is mutably borrowed for the duration of this traversal, and we never
+        // mutate `children` vectors (only element attributes), so raw pointers remain stable.
+        let current = unsafe { &mut *ptr };
+
+        if current.is_template_element() {
+          continue;
+        }
+        if ptr != option_ptr
+          && current
+            .tag_name()
+            .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(current))
+        {
+          changed |= remove_attr(current, "selected");
+        }
+
+        for child in current.children.iter_mut().rev() {
+          stack.push(child as *mut DomNode);
+        }
+      }
+      changed
+    })
+    .unwrap_or(false);
+
+  // Ensure the activated option is selected.
+  changed |= index
+    .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", true))
+    .unwrap_or(false);
+
+  changed
+}
