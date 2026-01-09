@@ -22,6 +22,7 @@ use url::Url;
 
 use super::dom_mutation;
 use super::hit_test::hit_test_dom;
+use super::image_maps;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModality {
@@ -1752,7 +1753,53 @@ impl InteractionEngine {
             .filter(|node| is_anchor_with_href(node))
             .and_then(|node| node.get_attribute_ref("href"))
           {
-            if let Some(resolved) = resolve_url(base_url, href) {
+            let mut href_for_resolution = trim_ascii_whitespace(href).to_string();
+
+            // Server-side image maps: `<img ismap>` inside `<a href>` appends `?x,y` to the anchor
+            // URL before resolution.
+            //
+            // Precedence: If a client-side image map `<img usemap>` resolves to an `<area>`, the
+            // click target becomes the `<area>` (not the `<a>`), so we only apply `ismap` when the
+            // semantic target is an `<a>`.
+            let target_is_a = index
+              .node(target_id)
+              .and_then(|node| node.tag_name())
+              .is_some_and(|tag| tag.eq_ignore_ascii_case("a"));
+
+            if target_is_a {
+              if let Some(hit) = up_hit.as_ref() {
+                let event_target = nearest_element_ancestor(&index, hit.styled_node_id);
+                let event_target_is_img_ismap = event_target
+                  .and_then(|id| index.node(id))
+                  .is_some_and(|node| {
+                    node
+                      .tag_name()
+                      .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+                      && node.get_attribute_ref("ismap").is_some()
+                  });
+
+                if let Some(img_id) = event_target.filter(|_| event_target_is_img_ismap) {
+                  if is_ancestor_or_self(&index, target_id, img_id) {
+                    let img_fragment = fragment_tree
+                      .hit_test(page_point)
+                      .into_iter()
+                      .find(|fragment| fragment.box_id() == Some(hit.box_id));
+                    if let Some(img_fragment) = img_fragment {
+                      if let Some(img_point) =
+                        image_maps::local_point_in_fragment(fragment_tree, img_fragment, page_point)
+                      {
+                        let x = img_point.x.max(0.0).floor() as i32;
+                        let y = img_point.y.max(0.0).floor() as i32;
+                        href_for_resolution.push('?');
+                        href_for_resolution.push_str(&format!("{x},{y}"));
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
+            if let Some(resolved) = resolve_url(base_url, &href_for_resolution) {
               dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
               action = InteractionAction::Navigate { href: resolved };
             }

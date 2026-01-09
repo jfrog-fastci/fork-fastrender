@@ -7,6 +7,8 @@ use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
 use std::ptr;
 
+use super::image_maps;
+
 fn trim_ascii_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}'))
 }
@@ -119,6 +121,16 @@ impl DomIndex {
 
   fn node_ids(&self) -> impl Iterator<Item = usize> + '_ {
     (1..self.id_to_ptr.len()).filter(|&id| !self.id_to_ptr[id].is_null())
+  }
+
+  fn id_for_ptr(&self, ptr: *const DomNode) -> Option<usize> {
+    if ptr.is_null() {
+      return None;
+    }
+    self
+      .id_to_ptr
+      .iter()
+      .position(|&candidate| candidate == ptr)
   }
 
   fn is_ancestor(&self, ancestor: usize, mut node_id: usize) -> bool {
@@ -279,8 +291,7 @@ pub fn hit_test_dom(
     // MVP: styled node ids are the cascade DOM pre-order ids.
     let dom_node_id = styled_node_id;
 
-    let (semantic_dom_node_id, kind, href) = match resolve_semantic_target(&dom_index, dom_node_id)
-    {
+    let (semantic_dom_node_id, mut kind, mut href) = match resolve_semantic_target(&dom_index, dom_node_id) {
       SemanticResolveResult::Hit {
         node_id,
         kind,
@@ -293,10 +304,39 @@ pub fn hit_test_dom(
       SemanticResolveResult::Invalid => continue,
     };
 
+    let mut resolved_dom_node_id = semantic_dom_node_id;
+
+    // Client-side image maps: `<img usemap>` hit-testing resolves to the associated `<area>`.
+    if dom_index
+      .node(dom_node_id)
+      .and_then(|node| node.tag_name())
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("img"))
+    {
+      if let Some(usemap) = dom_index
+        .node(dom_node_id)
+        .and_then(|node| node.get_attribute_ref("usemap"))
+      {
+        if let Some(image_point) = image_maps::local_point_in_fragment(fragment_tree, fragment, point) {
+          if let Some(area) = image_maps::hit_test_image_map(dom, usemap, image_point) {
+            if let Some(area_id) = dom_index.id_for_ptr(area as *const DomNode) {
+              resolved_dom_node_id = area_id;
+              if let Some(area_href) = area.get_attribute_ref("href") {
+                kind = HitTestKind::Link;
+                href = Some(area_href.to_string());
+              } else {
+                kind = HitTestKind::Other;
+                href = None;
+              }
+            }
+          }
+        }
+      }
+    }
+
     return Some(HitTestResult {
       box_id,
       styled_node_id,
-      dom_node_id: semantic_dom_node_id,
+      dom_node_id: resolved_dom_node_id,
       kind,
       href,
     });

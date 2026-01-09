@@ -6,6 +6,7 @@ pub mod form_submit;
 pub mod fragment_geometry;
 pub mod hit_test;
 pub mod hit_testing;
+mod image_maps;
 pub mod scroll_wheel;
 
 pub use anchor_scroll::scroll_offset_for_fragment_target;

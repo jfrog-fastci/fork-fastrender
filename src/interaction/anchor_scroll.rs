@@ -6,6 +6,8 @@ use crate::tree::fragment_tree::FragmentTree;
 use percent_encoding::percent_decode_str;
 use rustc_hash::FxHashSet;
 
+use super::image_maps;
+
 fn node_is_inert_like(node: &DomNode) -> bool {
   matches!(
     node.node_type,
@@ -35,11 +37,7 @@ fn node_matches_name_anchor(node: &DomNode, fragment: &str) -> bool {
     .is_some_and(|name| name == fragment)
 }
 
-fn find_target_dom_id(
-  dom: &DomNode,
-  fragment: &str,
-  id_map: &std::collections::HashMap<*const DomNode, usize>,
-) -> Option<usize> {
+fn find_target_dom_node<'a>(dom: &'a DomNode, fragment: &str) -> Option<&'a DomNode> {
   if fragment.is_empty() {
     return None;
   }
@@ -55,7 +53,7 @@ fn find_target_dom_id(
         node_matches_name_anchor(node, fragment)
       };
       if matches {
-        return id_map.get(&(node as *const DomNode)).copied();
+        return Some(node);
       }
 
       // Ignore nodes inside `<template>` contents, inert subtrees, and shadow roots.
@@ -75,6 +73,34 @@ fn find_target_dom_id(
   None
 }
 
+fn nearest_map_ancestor<'a>(dom: &'a DomNode, target: *const DomNode) -> Option<&'a DomNode> {
+  let mut stack: Vec<(&DomNode, Option<&DomNode>)> = vec![(dom, None)];
+  while let Some((node, mut nearest)) = stack.pop() {
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("map"))
+    {
+      nearest = Some(node);
+    }
+    if std::ptr::eq(node as *const DomNode, target) {
+      return nearest;
+    }
+
+    // Keep traversal semantics consistent with `find_target_dom_node`.
+    if node.is_template_element()
+      || node_is_inert_like(node)
+      || matches!(node.node_type, DomNodeType::ShadowRoot { .. })
+    {
+      continue;
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push((child, nearest));
+    }
+  }
+  None
+}
+
 /// Compute a suggested viewport scroll offset for a same-document fragment navigation target.
 ///
 /// The returned point aligns the top edge of the target's first fragment to the top edge of the
@@ -88,7 +114,20 @@ pub fn scroll_offset_for_fragment_target(
 ) -> Option<Point> {
   let decoded_fragment = percent_decode_str(fragment.trim_start_matches('#')).decode_utf8_lossy();
   let id_map = enumerate_dom_ids(dom);
-  let target_dom_id = find_target_dom_id(dom, decoded_fragment.as_ref(), &id_map)?;
+  let target_node = find_target_dom_node(dom, decoded_fragment.as_ref())?;
+
+  let mut target_dom_id = *id_map.get(&(target_node as *const DomNode))?;
+
+  // `<area>` fragment navigations target a location on the associated `<img usemap>`, since `<area>`
+  // itself has no layout boxes.
+  if target_node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("area"))
+  {
+    let map = nearest_map_ancestor(dom, target_node as *const DomNode)?;
+    let img = image_maps::first_img_referencing_map(dom, map as *const DomNode)?;
+    target_dom_id = *id_map.get(&(img as *const DomNode))?;
+  }
 
   // BoxTree: find all boxes produced by the target styled node.
   let mut target_box_ids: FxHashSet<usize> = FxHashSet::default();

@@ -461,6 +461,155 @@ fn link_click_emits_navigation_with_resolved_url() {
 }
 
 #[test]
+fn img_usemap_area_click_emits_navigation_and_sets_area_visited() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("img", vec![("id", "img"), ("usemap", "#m")], vec![]),
+        el(
+          "map",
+          vec![("id", "m")],
+          vec![el(
+            "area",
+            vec![
+              ("id", "area"),
+              ("href", "foo"),
+              ("shape", "rect"),
+              ("coords", "0,0,10,10"),
+            ],
+            vec![],
+          )],
+        ),
+      ],
+    )],
+  )]);
+
+  let body_dom_id = node_id(&dom, "body");
+  let img_dom_id = node_id(&dom, "img");
+
+  let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  img_box.styled_node_id = Some(img_dom_id);
+  let mut body_box = BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![img_box],
+  );
+  body_box.styled_node_id = Some(body_dom_id);
+  let box_tree = BoxTree::new(body_box);
+
+  let img_box_id = find_box_id_for_styled_node(&box_tree, img_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block_with_id(
+    Rect::from_xywh(50.0, 50.0, 200.0, 200.0),
+    box_tree.root.id,
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(10.0, 10.0, 100.0, 100.0),
+      img_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(65.0, 65.0),
+  );
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(65.0, 65.0),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/base/foo".to_string()
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "area", "data-fastr-visited").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn anchor_activation_appends_ismap_coordinates() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "a",
+        vec![("id", "link"), ("href", "foo")],
+        vec![el("img", vec![("id", "img"), ("ismap", "")], vec![])],
+      )],
+    )],
+  )]);
+
+  let link_dom_id = node_id(&dom, "link");
+  let img_dom_id = node_id(&dom, "img");
+
+  let mut img_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  img_box.styled_node_id = Some(img_dom_id);
+  let mut link_box = BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![img_box],
+  );
+  link_box.styled_node_id = Some(link_dom_id);
+  let box_tree = BoxTree::new(link_box);
+
+  let img_box_id = find_box_id_for_styled_node(&box_tree, img_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block_with_id(
+    Rect::from_xywh(50.0, 50.0, 200.0, 200.0),
+    box_tree.root.id,
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(10.0, 10.0, 100.0, 100.0),
+      img_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  // Image absolute origin: (50+10, 50+10) = (60, 60). Click at (75, 95) => local (15, 35).
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(75.0, 95.0),
+  );
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(75.0, 95.0),
+    "https://example.com/base/",
+    "https://example.com/base/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/base/foo?15,35".to_string()
+    }
+  );
+  assert_eq!(
+    attr_value(&dom, "link", "data-fastr-visited").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
 fn link_click_trims_ascii_whitespace_but_preserves_nbsp() {
   let mut dom = doc(vec![el(
     "html",
@@ -3174,7 +3323,6 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -3183,7 +3331,6 @@ fn listbox_select_click_uses_painted_row_list_not_dom_options() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o2_dom_id,
       },
     ]),
     selected: vec![0],
@@ -4128,7 +4275,6 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
         selected: false,
         disabled: true,
         in_optgroup: false,
-        option_node_id: o0_dom_id,
       },
       SelectItem::Option {
         node_id: o1_dom_id,
@@ -4137,7 +4283,6 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -4146,7 +4291,6 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o2_dom_id,
       },
       SelectItem::OptGroupLabel {
         label: "Disabled group".to_string(),
@@ -4160,7 +4304,6 @@ fn select_home_end_keys_jump_to_first_and_last_enabled_option_box_tree_snapshot(
         // Disabled via optgroup.
         disabled: true,
         in_optgroup: true,
-        option_node_id: o3_dom_id,
       },
     ]),
     selected: vec![2],
@@ -4721,7 +4864,6 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: node_id(&dom, "o1"),
       },
       SelectItem::Option {
         node_id: node_id(&dom, "o2"),
@@ -4730,7 +4872,6 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
         selected: false,
         disabled: true,
         in_optgroup: false,
-        option_node_id: node_id(&dom, "o2"),
       },
       SelectItem::Option {
         node_id: node_id(&dom, "o3"),
@@ -4739,7 +4880,6 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: node_id(&dom, "o3"),
       },
       SelectItem::OptGroupLabel {
         label: "Group".to_string(),
@@ -4752,7 +4892,6 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
         selected: false,
         disabled: true,
         in_optgroup: true,
-        option_node_id: node_id(&dom, "o4"),
       },
       SelectItem::Option {
         node_id: node_id(&dom, "o5"),
@@ -4761,7 +4900,6 @@ fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: node_id(&dom, "o5"),
       },
     ]),
     selected: vec![0],
