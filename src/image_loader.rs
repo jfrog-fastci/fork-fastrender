@@ -3865,7 +3865,14 @@ impl ImageCache {
         }));
       }
 
-      let resolved = resolve_against_base(base, href).unwrap_or_else(|| href.to_string());
+      let resolved = resolve_against_base(base, href)
+        .or_else(|| {
+          ctx
+            .document_url
+            .as_deref()
+            .and_then(|doc_url| resolve_against_base(doc_url, href))
+        })
+        .unwrap_or_else(|| href.to_string());
       if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved) {
         return Err(Error::Image(ImageError::LoadFailed {
           url: resolved,
@@ -6786,6 +6793,38 @@ mod tests {
     match err {
       Error::Image(ImageError::LoadFailed { url, reason }) => {
         assert_eq!(url, "https://cross.test/f.svg#f");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_scheme_relative_href_in_inline_svg() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><image href="//cross.test/a.png"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "inline-svg")
+      .expect_err("expected SVG subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.png");
+        assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn svg_policy_blocks_scheme_relative_css_url_in_inline_svg() {
+    let cache = svg_policy_cache_same_origin_only("https://doc.test/");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><style>rect{fill:url(//cross.test/a.png)}</style><rect width="10" height="10"/></svg>"#;
+    let err = cache
+      .probe_svg_content(svg, "inline-svg")
+      .expect_err("expected SVG CSS subresource policy failure");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, "https://cross.test/a.png");
         assert!(reason.contains("Blocked cross-origin subresource"), "{reason}");
       }
       other => panic!("expected ImageError::LoadFailed, got {other:?}"),
