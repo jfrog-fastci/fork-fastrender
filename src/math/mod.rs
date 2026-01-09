@@ -2253,18 +2253,19 @@ impl MathLayoutContext {
     base_style: &ComputedStyle,
   ) -> MathLayout {
     let metrics = self.base_font_metrics(base_style, style.font_size);
-    let w = self.resolve_length(width, style, &metrics);
-    let h = self.resolve_length(height, style, &metrics);
-    let d = self.resolve_length(depth, style, &metrics);
+    let w = self.resolve_length(width, style, &metrics).max(0.0);
+    let h = self.resolve_length(height, style, &metrics).max(0.0);
+    let d = self.resolve_length(depth, style, &metrics).max(0.0);
+
     let total_h = h + d;
-    let (height, baseline) = if total_h > 0.0 {
-      (total_h, h)
+    let (height, baseline) = if total_h == 0.0 {
+      (0.0, 0.0)
     } else {
-      (metrics.line_height, metrics.ascent)
+      (total_h, h)
     };
     MathLayout {
-      width: w.max(0.0),
-      height: height.max(0.0),
+      width: w,
+      height,
       baseline,
       fragments: Vec::new(),
       annotations: MathLayoutAnnotations::default(),
@@ -3549,6 +3550,46 @@ mod tests {
         _ => None,
       })
       .expect("expected at least one glyph fragment")
+  }
+
+  #[test]
+  fn mspace_zero_height_produces_zero_height_layout() {
+    let style = ComputedStyle::default();
+    let node = MathNode::Space {
+      width: MathLength::Em(1.0),
+      height: MathLength::Em(0.0),
+      depth: MathLength::Em(0.0),
+    };
+    let layout = layout_mathml(&node, &style, &FontContext::empty());
+    assert_eq!(layout.height, 0.0);
+    assert_eq!(layout.baseline, 0.0);
+  }
+
+  #[test]
+  fn mspace_width_only_does_not_affect_row_vertical_metrics() {
+    let style = ComputedStyle::default();
+    let ctx = FontContext::with_config(crate::text::font_db::FontConfig::bundled_only());
+
+    let with_space =
+      parse_math_from_html("<math><mrow><mi>x</mi><mspace width=\"2em\"/><mi>y</mi></mrow></math>");
+    let without_space = parse_math_from_html("<math><mrow><mi>x</mi><mi>y</mi></mrow></math>");
+
+    let with_layout = layout_mathml(&with_space, &style, &ctx);
+    let without_layout = layout_mathml(&without_space, &style, &ctx);
+
+    let eps = 0.001;
+    assert!(
+      (with_layout.height - without_layout.height).abs() < eps,
+      "mspace must not affect row height: {} vs {}",
+      with_layout.height,
+      without_layout.height
+    );
+    assert!(
+      (with_layout.baseline - without_layout.baseline).abs() < eps,
+      "mspace must not affect row baseline: {} vs {}",
+      with_layout.baseline,
+      without_layout.baseline
+    );
   }
 
   #[test]
