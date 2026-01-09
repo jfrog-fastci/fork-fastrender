@@ -35,6 +35,7 @@ pub mod script_scheduler;
 pub mod runtime;
 pub mod time;
 pub mod url;
+pub mod url_bindings;
 pub mod window_timers;
 pub mod streaming;
 pub mod streaming_dom2;
@@ -74,6 +75,7 @@ pub use page_load::{
 };
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
+pub use url_bindings::install_url_bindings;
 pub use window_timers::install_window_timers_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;

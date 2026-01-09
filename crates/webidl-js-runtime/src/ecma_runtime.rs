@@ -1377,7 +1377,6 @@ mod tests {
     assert!(got.is_some());
     assert_eq!(calls.get(), 1);
   }
-
   #[test]
   fn call_function_invokes_host_function_with_this_and_args() {
     let mut rt = VmJsRuntime::new();
