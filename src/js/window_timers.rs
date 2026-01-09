@@ -762,8 +762,9 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
 
 /// Install `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`/`queueMicrotask` on the JS global.
 ///
-/// This should be installed on a `Window`-like realm (i.e. where `this` in these host functions
-/// corresponds to the global object).
+/// This should be installed on a `Window`-like realm. The native implementations capture the
+/// global object via native slots so identifier calls (`setTimeout(cb, 0)`) work even though
+/// `vm-js` supplies `this = undefined` in that case.
 pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   realm: &vm_js::Realm,
@@ -1206,7 +1207,7 @@ mod tests {
         _ => Value::Number(0.0),
       };
       let clear_interval = get_prop(scope, global, "clearInterval");
-      let _ = vm.call_with_host(scope, host, clear_interval, Value::Object(global), &[id])?;
+      let _ = vm.call_with_host(scope, host, clear_interval, Value::Undefined, &[id])?;
     }
 
     Ok(Value::Undefined)
@@ -1241,7 +1242,7 @@ mod tests {
       call,
       Value::Object(set_timeout_func),
       &[
-        Value::Object(global),
+        Value::Undefined,
         Value::Object(not_a_function),
         Value::Number(0.0),
       ],
@@ -1329,7 +1330,7 @@ mod tests {
     let err = vm.call(
       &mut scope,
       set_timeout,
-      Value::Object(global),
+      Value::Undefined,
       &[Value::Object(timeout_cb), Value::Symbol(sym)],
     );
 
@@ -1358,7 +1359,7 @@ mod tests {
     let err = vm.call(
       &mut scope,
       clear_timeout,
-      Value::Object(global),
+      Value::Undefined,
       &[Value::Symbol(sym)],
     );
 
@@ -1427,14 +1428,14 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(timeout_cb), Value::Number(0.0)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         vm.call(
           &mut scope,
           queue_microtask,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(micro_cb)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1535,7 +1536,7 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(timeout_cb), Value::String(delay_s)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1607,7 +1608,7 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(timeout_cb), Value::Number(0.0)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1615,7 +1616,7 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(next_cb), Value::Number(0.0)],
         )
         .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1661,12 +1662,12 @@ mod tests {
           .call(
             &mut scope,
             set_timeout,
-            Value::Object(global),
+            Value::Undefined,
             &[Value::Object(timeout_cb), Value::Number(0.0)],
           )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         let _ = vm
-          .call(&mut scope, clear_timeout, Value::Object(global), &[id])
+          .call(&mut scope, clear_timeout, Value::Undefined, &[id])
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
       })
@@ -1712,7 +1713,7 @@ mod tests {
           .call(
             &mut scope,
             set_interval,
-            Value::Object(global),
+            Value::Undefined,
             &[Value::Object(interval_cb), Value::Number(0.0)],
           )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1775,7 +1776,7 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[
             Value::Object(cb),
             Value::Number(0.0),
@@ -1838,7 +1839,7 @@ mod tests {
         vm.call(
           &mut scope,
           set_timeout,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::String(handler_s), Value::Number(0.0)],
         )
       })
@@ -1879,7 +1880,7 @@ mod tests {
         vm.call(
           &mut scope,
           queue_microtask,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::String(handler_s)],
         )
       })
@@ -1952,7 +1953,7 @@ mod tests {
         vm.call(
           &mut scope,
           queue_microtask,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(cb)],
         )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
@@ -1999,7 +2000,7 @@ mod tests {
         vm.call(
           &mut scope,
           queue_microtask,
-          Value::Object(global),
+          Value::Undefined,
           &[Value::Object(handler_obj)],
         )
       })
@@ -2038,7 +2039,7 @@ mod tests {
           .call(
             &mut scope,
             set_timeout,
-            Value::Object(global),
+            Value::Undefined,
             &[Value::Object(timeout_cb), Value::Number(0.0)],
           )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;

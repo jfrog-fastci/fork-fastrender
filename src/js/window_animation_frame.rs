@@ -507,8 +507,9 @@ fn cancel_animation_frame_native<Host: WindowRealmHost + 'static>(
 
 /// Install `requestAnimationFrame` / `cancelAnimationFrame` on the JS global.
 ///
-/// This should be installed on a `Window`-like realm (i.e. where `this` in these host functions
-/// corresponds to the global object).
+/// This should be installed on a `Window`-like realm. The native implementations capture the
+/// global object via native slots so identifier calls (`requestAnimationFrame(cb)`) work even
+/// though `vm-js` supplies `this = undefined` in that case.
 pub fn install_window_animation_frame_bindings<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   realm: &vm_js::Realm,
@@ -796,7 +797,7 @@ mod tests {
         let mut scope = heap.scope();
         let raf = get_prop(&mut scope, global, "requestAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
-        vm.call(&mut scope, raf, Value::Object(global), &[Value::Object(cb)])
+        vm.call(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
@@ -911,9 +912,9 @@ mod tests {
         let cancel = get_prop(&mut scope, global, "cancelAnimationFrame");
         let cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf);
         let id = vm
-          .call(&mut scope, raf, Value::Object(global), &[Value::Object(cb)])
+          .call(&mut scope, raf, Value::Undefined, &[Value::Object(cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
-        vm.call(&mut scope, cancel, Value::Object(global), &[id])
+        vm.call(&mut scope, cancel, Value::Undefined, &[id])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
@@ -960,7 +961,7 @@ mod tests {
         let job_cb = make_callback(vm, &mut scope, realm, global, "job_cb", cb_job);
         let raf_cb = make_callback(vm, &mut scope, realm, global, "raf_cb", cb_raf_enqueue_job);
         set_prop(&mut scope, raf_cb, CALLBACK_JOB_KEY, Value::Object(job_cb));
-        vm.call(&mut scope, raf, Value::Object(global), &[Value::Object(raf_cb)])
+        vm.call(&mut scope, raf, Value::Undefined, &[Value::Object(raf_cb)])
           .map_err(|e| Error::Other(e.to_string()))?;
         push_log(&mut scope, global, "sync");
         Ok(())
