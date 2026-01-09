@@ -194,11 +194,11 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         dpr,
       } => {
         let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
-        tab.viewport_css = viewport_css;
-        tab.dpr = dpr;
+        tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
+        tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
         if let Some(doc) = tab.document.as_mut() {
-          doc.set_viewport(viewport_css.0, viewport_css.1);
-          doc.set_device_pixel_ratio(dpr);
+          doc.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
+          doc.set_device_pixel_ratio(tab.dpr);
           repaint_if_needed(tab_id, tab, &tx);
         }
       }

@@ -300,6 +300,10 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
           tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
           tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
           tab.document.set_viewport(tab.viewport_css.0, tab.viewport_css.1);
+          tab.document.set_device_pixel_ratio(tab.dpr);
+          if tab.url.is_some() {
+            repaint_if_needed(tab_id, tab, &ui_tx);
+          }
         }
       }
       UiToWorker::Navigate {
