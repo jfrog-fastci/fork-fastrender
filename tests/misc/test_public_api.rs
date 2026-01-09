@@ -483,6 +483,7 @@ mod test_public_api {
     let html = r#"
         <html>
             <head>
+                <style>body { margin: 0; }</style>
                 <link rel="stylesheet" href="https://example.com/blocked.css">
             </head>
             <body>
@@ -850,16 +851,9 @@ mod test_public_api {
       }
     }
 
-    let html = r#"
-        <html>
-            <head>
-                <link rel="stylesheet" href="https://example.com/blocked.css">
-            </head>
-            <body>
-                <div>OK</div>
-            </body>
-        </html>
-    "#;
+    // Keep the markup compact to avoid incidental whitespace text nodes affecting layout in the
+    // tiny 32×32 viewport used by this test.
+    let html = r#"<!doctype html><html><head><style>body{margin:0;font-size:10px;line-height:10px}</style><link rel="stylesheet" href="https://example.com/blocked.css"></head><body><div>OK</div></body></html>"#;
 
     let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
     let config = deterministic_config()
@@ -1067,7 +1061,11 @@ mod test_public_api {
     assert!(result.is_ok(), "Complex layout should succeed");
     let fragment_tree = result.unwrap();
     assert!(fragment_tree.fragment_count() > 0);
-    assert_eq!(fragment_tree.viewport_size().width, 240.0);
+    // Viewport scrollbars are modeled as consuming layout space (CSS Overflow 3). The test document
+    // is intentionally taller than the viewport, so the layout viewport shrinks by the default
+    // scrollbar gutter width.
+    let gutter = fastrender::layout::utils::resolve_scrollbar_width(&fastrender::ComputedStyle::default());
+    assert_eq!(fragment_tree.viewport_size().width, 240.0 - gutter);
     assert_eq!(fragment_tree.viewport_size().height, 180.0);
   }
 

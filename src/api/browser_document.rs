@@ -838,6 +838,7 @@ pub(super) fn prepare_dom_inner(
   let artifacts = artifacts_result?;
 
   let layout_viewport = artifacts.fragment_tree.viewport_size();
+  let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
   Ok(PreparedDocument {
     dom: artifacts.dom,
     stylesheet: artifacts.stylesheet,
@@ -845,6 +846,7 @@ pub(super) fn prepare_dom_inner(
     box_tree: artifacts.box_tree,
     fragment_tree: artifacts.fragment_tree,
     layout_viewport,
+    paint_viewport,
     visual_viewport: resolved_viewport.visual_viewport,
     device_pixel_ratio: resolved_viewport.device_pixel_ratio,
     page_zoom: resolved_viewport.zoom,

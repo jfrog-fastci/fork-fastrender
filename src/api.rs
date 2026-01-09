@@ -2155,6 +2155,7 @@ pub struct PreparedDocument {
   box_tree: BoxTree,
   fragment_tree: FragmentTree,
   layout_viewport: Size,
+  paint_viewport: Size,
   visual_viewport: Size,
   device_pixel_ratio: f32,
   page_zoom: f32,
@@ -2304,7 +2305,7 @@ impl PreparedDocument {
         }
       }
 
-      let viewport = options.viewport.map(|(w, h)| Size::new(w as f32, h as f32));
+      let viewport_override = options.viewport.map(|(w, h)| Size::new(w as f32, h as f32));
       let paint_scale =
         (self.device_pixel_ratio / self.page_zoom.max(f32::EPSILON)).max(f32::EPSILON);
       let scroll_state = options
@@ -2312,11 +2313,14 @@ impl PreparedDocument {
         .clone()
         .unwrap_or_else(|| self.default_scroll.clone());
       let animation_time = options.animation_time.or(self.animation_time);
+      let scrollport_viewport = viewport_override.unwrap_or(self.layout_viewport);
+      let paint_viewport = viewport_override.unwrap_or(self.paint_viewport);
       let mut animation_state_store = animation_state_store;
       paint_fragment_tree_with_state(
         self.fragment_tree.clone(),
         scroll_state,
-        viewport,
+        scrollport_viewport,
+        paint_viewport,
         options.background.unwrap_or(self.background_color),
         &self.font_context,
         &self.image_cache,
@@ -4545,6 +4549,132 @@ mod viewport_resolution_tests {
   }
 }
 
+const MAX_VIEWPORT_GUTTER_ITERATIONS: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+struct ViewportScrollbarParams {
+  overflow_x: crate::style::types::Overflow,
+  overflow_y: crate::style::types::Overflow,
+  scrollbar_gutter: crate::style::types::ScrollbarGutter,
+  scrollbar_width_px: f32,
+  /// Styled node id for the `<body>` element when the HTML/body overflow propagation special case
+  /// applies. In that case, the viewport uses the body's overflow values, while the body's own
+  /// used overflow should be treated as `visible` (so the body does not become an additional
+  /// scroll container).
+  propagated_body_styled_node_id: Option<usize>,
+}
+
+fn styled_node_matches_html_tag(node: &StyledNode, tag: &str) -> bool {
+  match &node.node.node_type {
+    DomNodeType::Element { tag_name, namespace, .. } => {
+      tag_name.eq_ignore_ascii_case(tag)
+        && (namespace.is_empty() || namespace == crate::dom::HTML_NAMESPACE)
+    }
+    _ => false,
+  }
+}
+
+fn find_document_element_node<'a>(node: &'a StyledNode) -> Option<&'a StyledNode> {
+  if matches!(node.node.node_type, DomNodeType::Element { .. }) {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_document_element_node(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_direct_child_element<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
+  node
+    .children
+    .iter()
+    .find(|child| styled_node_matches_html_tag(child, tag))
+}
+
+fn viewport_used_overflow(mut overflow: crate::style::types::Overflow) -> crate::style::types::Overflow {
+  // CSS Overflow Module Level 3: when applying overflow values to the viewport:
+  // - `visible` computes to `auto`
+  // - `clip` computes to `hidden`
+  if overflow == crate::style::types::Overflow::Visible {
+    overflow = crate::style::types::Overflow::Auto;
+  } else if overflow == crate::style::types::Overflow::Clip {
+    overflow = crate::style::types::Overflow::Hidden;
+  }
+  overflow
+}
+
+fn resolve_viewport_scrollbar_params(styled_tree: &StyledNode) -> ViewportScrollbarParams {
+  let root_element = find_document_element_node(styled_tree).unwrap_or(styled_tree);
+  let root_style = root_element.styles.as_ref();
+  let scrollbar_gutter = root_style.scrollbar_gutter;
+
+  let mut overflow_style = root_style;
+  let mut overflow_x = root_style.overflow_x;
+  let mut overflow_y = root_style.overflow_y;
+  let mut propagated_body_styled_node_id = None;
+
+  // CSS Overflow Module Level 3: overflow viewport propagation.
+  //
+  // When the root element is `<html>` and its overflow is `visible` in both axes, propagate the
+  // body's overflow to the viewport (while treating the body's own used overflow as `visible`).
+  if styled_node_matches_html_tag(root_element, "html")
+    && overflow_x == crate::style::types::Overflow::Visible
+    && overflow_y == crate::style::types::Overflow::Visible
+  {
+    if let Some(body) = find_direct_child_element(root_element, "body") {
+      if body.styles.display != crate::style::display::Display::None {
+        overflow_style = body.styles.as_ref();
+        overflow_x = overflow_style.overflow_x;
+        overflow_y = overflow_style.overflow_y;
+        propagated_body_styled_node_id = Some(body.node_id);
+      }
+    }
+  }
+
+  ViewportScrollbarParams {
+    overflow_x: viewport_used_overflow(overflow_x),
+    overflow_y: viewport_used_overflow(overflow_y),
+    scrollbar_gutter,
+    scrollbar_width_px: crate::layout::utils::resolve_scrollbar_width(overflow_style),
+    propagated_body_styled_node_id,
+  }
+}
+
+fn viewport_should_reserve_gutter(
+  overflow: crate::style::types::Overflow,
+  gutter: crate::style::types::ScrollbarGutter,
+  overflowing: bool,
+) -> bool {
+  use crate::style::types::Overflow;
+  if gutter.stable {
+    matches!(overflow, Overflow::Auto | Overflow::Scroll | Overflow::Hidden)
+  } else {
+    match overflow {
+      Overflow::Scroll => true,
+      Overflow::Auto => overflowing,
+      _ => false,
+    }
+  }
+}
+
+fn force_box_overflow_visible(node: &mut BoxNode, styled_node_id: usize) {
+  if node.generated_pseudo.is_none() && node.styled_node_id == Some(styled_node_id) {
+    let mut style = (*node.style).clone();
+    style.overflow_x = crate::style::types::Overflow::Visible;
+    style.overflow_y = crate::style::types::Overflow::Visible;
+    node.style = Arc::new(style);
+  }
+
+  for child in node.children.iter_mut() {
+    force_box_overflow_visible(child, styled_node_id);
+  }
+  if let Some(footnote_body) = node.footnote_body.as_deref_mut() {
+    force_box_overflow_visible(footnote_body, styled_node_id);
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StickyScrollport {
   rect: Rect,
@@ -4929,7 +5059,8 @@ fn sanitize_animation_time_ms(animation_time: Option<f32>) -> Option<f32> {
 fn paint_fragment_tree_with_state(
   mut fragment_tree: FragmentTree,
   mut scroll_state: ScrollState,
-  viewport_override: Option<Size>,
+  scrollport_viewport: Size,
+  paint_viewport: Size,
   background: Rgba,
   font_context: &FontContext,
   image_cache: &ImageCache,
@@ -4941,7 +5072,6 @@ fn paint_fragment_tree_with_state(
 ) -> Result<PaintedFrame> {
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
-  let viewport_size = viewport_override.unwrap_or_else(|| fragment_tree.viewport_size());
   let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
   scroll_state = scroll_result.state;
   // Clamp/sanitize viewport scroll offsets even when they were set programmatically. This keeps the
@@ -4959,7 +5089,8 @@ fn paint_fragment_tree_with_state(
       0.0
     },
   );
-  if let Some(bounds) = crate::scroll::build_scroll_chain(&fragment_tree.root, viewport_size, &[])
+  if let Some(bounds) =
+    crate::scroll::build_scroll_chain(&fragment_tree.root, scrollport_viewport, &[])
     .first()
     .map(|state| state.bounds)
   {
@@ -4970,13 +5101,14 @@ fn paint_fragment_tree_with_state(
   // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before
   // sampling scroll-driven animations so view timeline progress reflects the element's sticky
   // position (matching Chrome for `position: sticky` + `view-timeline`).
-  let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport_size.width, viewport_size.height);
+  let viewport_rect =
+    Rect::from_xywh(0.0, 0.0, scrollport_viewport.width, scrollport_viewport.height);
   apply_sticky_offsets_to_root(
     font_context,
     &mut fragment_tree.root,
     viewport_rect,
     &scroll_state,
-    viewport_size,
+    scrollport_viewport,
   );
   for root in &mut fragment_tree.additional_fragments {
     apply_sticky_offsets_to_root(
@@ -4984,13 +5116,13 @@ fn paint_fragment_tree_with_state(
       root,
       viewport_rect,
       &scroll_state,
-      viewport_size,
+      scrollport_viewport,
     );
   }
 
   let animation_time = sanitize_animation_time_ms(animation_time);
   if let Some(time_ms) = animation_time {
-    animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
+    animation::apply_transitions(&mut fragment_tree, time_ms, scrollport_viewport);
   }
   let animation_duration = animation_time_ms_to_duration(animation_time);
   if let (Some(duration), Some(store)) =
@@ -5001,8 +5133,8 @@ fn paint_fragment_tree_with_state(
     animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
   }
 
-  let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
-  let viewport_height_px = viewport_size.height.max(1.0).ceil() as u32;
+  let viewport_width_px = paint_viewport.width.max(1.0).ceil() as u32;
+  let viewport_height_px = paint_viewport.height.max(1.0).ceil() as u32;
 
   let (target_width, target_height) = if expand_full_page {
     let content_bounds = fragment_tree.content_size();
@@ -6004,6 +6136,7 @@ impl FastRender {
         let artifacts = artifacts_result?;
 
         let layout_viewport = artifacts.fragment_tree.viewport_size();
+        let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
 
         let document = PreparedDocument {
           dom: artifacts.dom,
@@ -6012,6 +6145,7 @@ impl FastRender {
           box_tree: artifacts.box_tree,
           fragment_tree: artifacts.fragment_tree,
           layout_viewport,
+          paint_viewport,
           visual_viewport: resolved_viewport.visual_viewport,
           device_pixel_ratio: resolved_viewport.device_pixel_ratio,
           page_zoom: resolved_viewport.zoom,
@@ -6547,6 +6681,7 @@ impl FastRender {
       let fit_canvas = fit_canvas_to_content || env_fit_canvas;
       let element_scrolls = element_scroll_offsets;
       let viewport_size = layout_viewport;
+      let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
       let mut scroll_state =
         crate::scroll::ScrollState::from_parts(Point::new(scroll_x, scroll_y), element_scrolls);
       let scroll_result = crate::scroll::apply_scroll_snap(&mut fragment_tree, &scroll_state);
@@ -6564,8 +6699,8 @@ impl FastRender {
       let animation_duration = animation_time_ms_to_duration(animation_time);
       animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
 
-      let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
-      let viewport_height_px = viewport_size.height.max(1.0).ceil() as u32;
+      let viewport_width_px = paint_viewport.width.max(1.0).ceil() as u32;
+      let viewport_height_px = paint_viewport.height.max(1.0).ceil() as u32;
 
       let (target_width, target_height) = self.resolve_canvas_size(
         &fragment_tree,
@@ -6589,7 +6724,8 @@ impl FastRender {
           let svg_filter_defs = fragment_tree.svg_filter_defs.clone();
           let svg_id_defs = fragment_tree.svg_id_defs.clone();
           let base_url = self.base_url.clone();
-          let build_display_list_for_root = |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
+          let build_display_list_for_root =
+            |root: &FragmentNode| -> crate::paint::display_list::DisplayList {
             let mut builder = DisplayListBuilder::with_image_cache(self.image_cache.clone())
               .with_font_context(self.font_context.clone())
               .with_svg_filter_defs(svg_filter_defs.clone())
@@ -6967,6 +7103,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
+    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
     if std::env::var("FASTR_LOG_FRAG_BOUNDS")
       .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
       .unwrap_or(false)
@@ -7134,6 +7271,7 @@ impl FastRender {
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
+      paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
@@ -7256,6 +7394,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
+    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
     if std::env::var("FASTR_LOG_FRAG_BOUNDS")
       .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
       .unwrap_or(false)
@@ -7423,6 +7562,7 @@ impl FastRender {
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
+      paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
@@ -7549,6 +7689,7 @@ impl FastRender {
     let artifacts = artifacts_result?;
 
     let layout_viewport = artifacts.fragment_tree.viewport_size();
+    let paint_viewport = Size::new(layout_width as f32, layout_height as f32);
     if let Some(start) = stage_start {
       let now = Instant::now();
       eprintln!("timing:layout_document {:?}", now - start);
@@ -7561,6 +7702,7 @@ impl FastRender {
       box_tree: artifacts.box_tree,
       fragment_tree: artifacts.fragment_tree,
       layout_viewport,
+      paint_viewport,
       visual_viewport: resolved_viewport.visual_viewport,
       device_pixel_ratio: resolved_viewport.device_pixel_ratio,
       page_zoom: resolved_viewport.zoom,
@@ -10246,8 +10388,113 @@ impl FastRender {
     })
   }
 
-  #[allow(clippy::cognitive_complexity)]
   fn layout_document_for_media_with_artifacts_owned(
+    &mut self,
+    mut dom_with_state: DomNode,
+    mut needs_top_layer_state: bool,
+    width: u32,
+    height: u32,
+    media_type: MediaType,
+    options: LayoutDocumentOptions,
+    viewport_scroll: Point,
+    deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
+    trace: &TraceHandle,
+    layout_parallelism: LayoutParallelism,
+    mut stats: Option<&mut RenderStatsRecorder>,
+  ) -> Result<LayoutArtifacts> {
+    let preserved_device_size = self.pending_device_size;
+    let base_width = width;
+    let base_height = height;
+
+    // Viewport scrollbars are not relevant in paged media.
+    if media_type == MediaType::Print {
+      self.pending_device_size = preserved_device_size;
+      return self.layout_document_for_media_with_artifacts_owned_single_pass(
+        dom_with_state,
+        needs_top_layer_state,
+        width,
+        height,
+        media_type,
+        options,
+        viewport_scroll,
+        deadline,
+        stage_mem_budget_bytes,
+        trace,
+        layout_parallelism,
+        stats.as_deref_mut(),
+      );
+    }
+
+    let mut candidate_width = width;
+    let mut candidate_height = height;
+    for iter_idx in 0..MAX_VIEWPORT_GUTTER_ITERATIONS {
+      // The layout pipeline consumes `pending_device_size` via `take()`; restore it so each pass
+      // sees the same device dimensions (e.g. when `<meta name="viewport">` is enabled).
+      self.pending_device_size = preserved_device_size;
+      let artifacts = self.layout_document_for_media_with_artifacts_owned_single_pass(
+        dom_with_state,
+        needs_top_layer_state,
+        candidate_width,
+        candidate_height,
+        media_type,
+        options,
+        viewport_scroll,
+        deadline,
+        stage_mem_budget_bytes,
+        trace,
+        layout_parallelism,
+        stats.as_deref_mut(),
+      )?;
+
+      needs_top_layer_state = false;
+
+      let params = resolve_viewport_scrollbar_params(&artifacts.styled_tree);
+      let viewport = artifacts.fragment_tree.viewport_size();
+      let bounds = artifacts.fragment_tree.content_size();
+      let epsilon = 0.01;
+      let overflows_x = bounds.min_x() < -epsilon || bounds.max_x() > viewport.width + epsilon;
+      let overflows_y = bounds.min_y() < -epsilon || bounds.max_y() > viewport.height + epsilon;
+
+      let scrollbar_width_px = params.scrollbar_width_px.max(0.0);
+      let gutter_multiplier = if params.scrollbar_gutter.both_edges { 2.0 } else { 1.0 };
+      let reserve_vertical = scrollbar_width_px > 0.0
+        && viewport_should_reserve_gutter(params.overflow_y, params.scrollbar_gutter, overflows_y);
+      let reserve_horizontal = scrollbar_width_px > 0.0
+        && viewport_should_reserve_gutter(params.overflow_x, params.scrollbar_gutter, overflows_x);
+
+      let new_width = (base_width as f32
+        - if reserve_vertical {
+          scrollbar_width_px * gutter_multiplier
+        } else {
+          0.0
+        })
+      .round()
+      .max(1.0) as u32;
+      let new_height = (base_height as f32
+        - if reserve_horizontal {
+          scrollbar_width_px * gutter_multiplier
+        } else {
+          0.0
+        })
+      .round()
+      .max(1.0) as u32;
+
+      let converged = new_width == candidate_width && new_height == candidate_height;
+      if converged || iter_idx + 1 == MAX_VIEWPORT_GUTTER_ITERATIONS {
+        return Ok(artifacts);
+      }
+
+      candidate_width = new_width;
+      candidate_height = new_height;
+      dom_with_state = artifacts.dom;
+    }
+
+    unreachable!("viewport gutter iteration should always return within bounds");
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  fn layout_document_for_media_with_artifacts_owned_single_pass(
     &mut self,
     mut dom_with_state: DomNode,
     needs_top_layer_state: bool,
@@ -10631,6 +10878,14 @@ impl FastRender {
     };
     if let Some(start) = box_gen_start {
       eprintln!("timing:box_gen {:?}", start.elapsed());
+    }
+    if let Some(body_node_id) =
+      resolve_viewport_scrollbar_params(&styled_tree).propagated_body_styled_node_id
+    {
+      // CSS Overflow Module Level 3: when the body's overflow is propagated to the viewport, the
+      // body's own used overflow becomes `visible` so it does not establish its own scroll
+      // container.
+      force_box_overflow_visible(&mut box_tree.root, body_node_id);
     }
 
     // Resolve intrinsic sizes for replaced elements using the image cache
