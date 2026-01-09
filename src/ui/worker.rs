@@ -186,12 +186,73 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
       }
       UiToWorker::Navigate { tab_id, url, reason } => {
         let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
         navigate_tab(tab_id, tab, url, reason, &tx);
       }
-      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
-        // `TabEngine` owns the navigation history state machine for the real browser UI.
-        // This headless worker loop is primarily used for interaction wiring tests and expects the
-        // UI to issue explicit `Navigate` commands.
+      UiToWorker::GoBack { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        let Some((url, scroll_x, scroll_y)) = tab
+          .history
+          .go_back()
+          .map(|entry| (entry.url.clone(), entry.scroll_x, entry.scroll_y))
+        else {
+          let _ = tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: "cannot go back: no history entry".to_string(),
+          });
+          continue;
+        };
+        tab.scroll_state = ScrollState::with_viewport(Point::new(scroll_x, scroll_y));
+        navigate_tab(tab_id, tab, url, NavigationReason::BackForward, &tx);
+      }
+      UiToWorker::GoForward { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        let Some((url, scroll_x, scroll_y)) = tab
+          .history
+          .go_forward()
+          .map(|entry| (entry.url.clone(), entry.scroll_x, entry.scroll_y))
+        else {
+          let _ = tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: "cannot go forward: no history entry".to_string(),
+          });
+          continue;
+        };
+        tab.scroll_state = ScrollState::with_viewport(Point::new(scroll_x, scroll_y));
+        navigate_tab(tab_id, tab, url, NavigationReason::BackForward, &tx);
+      }
+      UiToWorker::Reload { tab_id } => {
+        let Some(tab) = tabs.get_mut(&tab_id) else {
+          continue;
+        };
+        tab
+          .history
+          .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+        let Some(url) = tab
+          .history
+          .reload_target()
+          .map(|entry| entry.url.clone())
+          .or_else(|| tab.current_url.clone())
+        else {
+          let _ = tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: "cannot reload: no active URL".to_string(),
+          });
+          continue;
+        };
+        navigate_tab(tab_id, tab, url, NavigationReason::Reload, &tx);
       }
       UiToWorker::ViewportChanged {
         tab_id,
@@ -300,6 +361,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
 
         match action {
           InteractionAction::Navigate { href } => {
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
             navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
           }
           _ => {
@@ -337,6 +401,9 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         });
         match action {
           InteractionAction::Navigate { href } => {
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
             navigate_tab(tab_id, tab, href, NavigationReason::LinkClick, &tx);
           }
           _ => repaint_if_needed(tab_id, tab, &tx),
@@ -379,7 +446,13 @@ fn navigate_tab(
   tx: &Sender<WorkerToUi>,
 ) {
   if let (Some(current), Some(doc)) = (tab.current_url.as_deref(), tab.document.as_mut()) {
-    if urls_match_except_fragment(current, &url) {
+    // Fragment-only navigation within the same document. This is intentionally treated as a
+    // scroll-only update (no full navigation messages) so callers can use `Navigate` for
+    // same-document `#hash` links.
+    //
+    // `Reload` must not take this path because the caller expects a full reload with
+    // `NavigationStarted`/`NavigationCommitted`.
+    if reason != NavigationReason::Reload && current != url && urls_match_except_fragment(current, &url) {
       tab.current_url = Some(url.clone());
       match reason {
         NavigationReason::BackForward | NavigationReason::Reload => {}
@@ -388,26 +461,28 @@ fn navigate_tab(
       doc.set_document_url_without_invalidation(Some(url.clone()));
 
       if let Some(fragment) = url_fragment(&url) {
-        let offset = doc
-          .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-            let viewport = fragment_tree.viewport_size();
-            let offset = crate::interaction::scroll_offset_for_fragment_target(
-              dom,
-              box_tree,
-              fragment_tree,
-              fragment,
-              viewport,
-            );
-            (false, offset)
-          })
-          .ok()
-          .flatten();
-        if let Some(offset) = offset {
-          tab.scroll_state.viewport = offset;
-          doc.set_scroll_state(tab.scroll_state.clone());
+        if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+          let offset = doc
+            .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+              let viewport = fragment_tree.viewport_size();
+              let offset = crate::interaction::scroll_offset_for_fragment_target(
+                dom,
+                box_tree,
+                fragment_tree,
+                fragment,
+                viewport,
+              );
+              (false, offset)
+            })
+            .ok()
+            .flatten();
+          if let Some(offset) = offset {
+            tab.scroll_state.viewport = offset;
+          }
         }
       }
 
+      doc.set_scroll_state(tab.scroll_state.clone());
       repaint_force(tab_id, tab, tx);
       return;
     }
@@ -425,7 +500,12 @@ fn navigate_tab(
     NavigationReason::TypedUrl | NavigationReason::LinkClick => {
       tab.scroll_state = ScrollState::default();
     }
-    NavigationReason::BackForward | NavigationReason::Reload => {}
+    NavigationReason::BackForward => {
+      // Preserve viewport scroll across history navigations, but clear element offsets since they
+      // belong to the old fragment tree.
+      tab.scroll_state = ScrollState::with_viewport(tab.scroll_state.viewport);
+    }
+    NavigationReason::Reload => {}
   }
 
   let options = RenderOptions::new()
@@ -473,22 +553,24 @@ fn navigate_tab(
   };
 
   let mut doc = doc;
-  if let Some(fragment) = url_fragment(&final_url) {
-    let offset = doc.prepared().and_then(|prepared| {
-      crate::interaction::scroll_offset_for_fragment_target(
-        doc.dom(),
-        prepared.box_tree(),
-        prepared.fragment_tree(),
-        fragment,
-        prepared.layout_viewport(),
-      )
-    });
-    if let Some(offset) = offset {
-      tab.scroll_state.viewport = offset;
-      doc.set_scroll_state(tab.scroll_state.clone());
+  doc.set_scroll_state(tab.scroll_state.clone());
+  if matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick) {
+    if let Some(fragment) = url_fragment(&final_url) {
+      let offset = doc.prepared().and_then(|prepared| {
+        crate::interaction::scroll_offset_for_fragment_target(
+          doc.dom(),
+          prepared.box_tree(),
+          prepared.fragment_tree(),
+          fragment,
+          prepared.layout_viewport(),
+        )
+      });
+      if let Some(offset) = offset {
+        tab.scroll_state.viewport = offset;
+        doc.set_scroll_state(tab.scroll_state.clone());
+      }
     }
   }
-
   tab.current_url = Some(final_url.clone());
   tab.document = Some(doc);
 

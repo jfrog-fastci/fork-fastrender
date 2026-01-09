@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
-  Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value, Vm,
-  VmError, VmOptions,
+  GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
+  Vm, VmError, VmOptions,
 };
 
 pub type ConsoleSink =
@@ -162,6 +162,7 @@ fn unregister_console_sink(id: u64) {
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _callee: GcObject,
   this: Value,
   args: &[Value],
 ) -> Result<Value, VmError> {
