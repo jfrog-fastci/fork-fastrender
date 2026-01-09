@@ -1,3 +1,4 @@
+use crate::animation::TransitionState;
 use crate::dom::DomNode;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
@@ -335,23 +336,25 @@ impl BrowserDocument {
     }
   }
 
+  /// Updates (or clears) the animation/transition sampling timestamp.
+  ///
+  /// When set to `None`, time-based animations resolve to a deterministic settled state.
+  ///
+  /// When the value changes, this marks paint dirty (but does not invalidate style/layout).
+  pub fn set_animation_time(&mut self, time_ms: Option<f32>) {
+    let sanitized = super::sanitize_animation_time_ms(time_ms);
+    if sanitized != self.options.animation_time {
+      self.options.animation_time = sanitized;
+      self.paint_dirty = true;
+    }
+  }
+
   /// Updates the animation/transition sampling timestamp in milliseconds since load.
   ///
   /// Unlike DOM mutations, updating time only marks the paint stage dirty. This allows callers to
   /// advance the animation clock and request a new frame without rerunning cascade/layout.
   pub fn set_animation_time_ms(&mut self, time_ms: f32) {
     self.set_animation_time(Some(time_ms));
-  }
-
-  /// Updates (or clears) the animation/transition sampling timestamp.
-  ///
-  /// When set to `None`, time-based animations resolve to a deterministic settled state.
-  pub fn set_animation_time(&mut self, time_ms: Option<f32>) {
-    let sanitized = time_ms.map(|time_ms| if time_ms.is_finite() { time_ms.max(0.0) } else { 0.0 });
-    if sanitized != self.options.animation_time {
-      self.options.animation_time = sanitized;
-      self.paint_dirty = true;
-    }
   }
 
   /// Updates the full scroll state (viewport + element scroll offsets), marking paint dirty.
@@ -470,7 +473,36 @@ impl BrowserDocument {
 
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
-      let prepared = self.prepare_dom_with_options()?;
+      let prev_prepared = self.prepared.take();
+      let mut prepared = match self.prepare_dom_with_options() {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
+
+      let now_ms = super::sanitize_animation_time_ms(self.options.animation_time);
+      match now_ms {
+        None => {
+          prepared.fragment_tree.transition_state = None;
+        }
+        Some(now_ms) => {
+          let prev_state = prev_prepared
+            .as_ref()
+            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+          let mut transition_state = TransitionState::update_for_style_change(
+            prev_state,
+            prev_box_tree,
+            prepared.box_tree(),
+            now_ms,
+          );
+          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+          prepared.fragment_tree.transition_state = Some(Box::new(transition_state));
+        }
+      }
+
       self.prepared = Some(prepared);
     }
 

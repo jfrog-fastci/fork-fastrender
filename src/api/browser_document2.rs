@@ -4,6 +4,7 @@ use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
+use crate::animation::TransitionState;
 
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
 
@@ -96,6 +97,22 @@ impl BrowserDocument2 {
     changed
   }
 
+  /// Updates the animation/transition sampling timestamp in milliseconds since document load.
+  ///
+  /// When the value changes, this marks paint dirty (but does not invalidate style/layout).
+  pub fn set_animation_time(&mut self, time_ms: Option<f32>) {
+    let sanitized = super::sanitize_animation_time_ms(time_ms);
+    if sanitized != self.options.animation_time {
+      self.options.animation_time = sanitized;
+      self.paint_dirty = true;
+    }
+  }
+
+  /// Convenience wrapper for [`BrowserDocument2::set_animation_time`] with a concrete timestamp.
+  pub fn set_animation_time_ms(&mut self, time_ms: f32) {
+    self.set_animation_time(Some(time_ms));
+  }
+
   /// Returns the mapping produced for the most recently rendered snapshot, if available.
   pub fn last_dom_mapping(&self) -> Option<&RendererDomSnapshot> {
     self.last_dom_mapping.as_ref()
@@ -124,8 +141,38 @@ impl BrowserDocument2 {
 
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
+      let prev_prepared = self.prepared.take();
+
       let snapshot = self.dom.to_renderer_dom_with_mapping();
-      let prepared = self.prepare_dom_with_options(&snapshot.dom)?;
+      let mut prepared = match self.prepare_dom_with_options(&snapshot.dom) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+          self.prepared = prev_prepared;
+          return Err(err);
+        }
+      };
+
+      let now_ms = super::sanitize_animation_time_ms(self.options.animation_time);
+      match now_ms {
+        None => {
+          prepared.fragment_tree.transition_state = None;
+        }
+        Some(now_ms) => {
+          let prev_state = prev_prepared
+            .as_ref()
+            .and_then(|prepared| prepared.fragment_tree.transition_state.as_deref());
+          let prev_box_tree = prev_prepared.as_ref().map(|prepared| prepared.box_tree());
+          let mut transition_state = TransitionState::update_for_style_change(
+            prev_state,
+            prev_box_tree,
+            prepared.box_tree(),
+            now_ms,
+          );
+          transition_state.capture_layout_from_fragment_tree(&prepared.fragment_tree);
+          prepared.fragment_tree.transition_state = Some(Box::new(transition_state));
+        }
+      }
+
       self.prepared = Some(prepared);
       self.last_dom_mapping = Some(snapshot);
     }

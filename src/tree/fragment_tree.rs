@@ -1590,6 +1590,12 @@ pub struct FragmentTree {
   /// Collected @keyframes rules active for this tree.
   pub keyframes: HashMap<String, KeyframesRule>,
 
+  /// Persistent CSS transition state carried across layout/style recomputations.
+  ///
+  /// When present, paint-time transition sampling (`animation::apply_transitions`) uses this state
+  /// to animate between previous and current computed styles across multi-frame renders.
+  pub transition_state: Option<Box<crate::animation::TransitionState>>,
+
   /// SVG filter definitions serialized from the DOM (document-level registry).
   pub svg_filter_defs: Option<Arc<HashMap<String, String>>>,
 
@@ -1609,6 +1615,7 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: Vec::new(),
+      transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: None,
@@ -1625,6 +1632,7 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: Vec::new(),
+      transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: Some(viewport),
@@ -1645,6 +1653,7 @@ impl FragmentTree {
     Self {
       root,
       additional_fragments: roots,
+      transition_state: None,
       svg_filter_defs: None,
       svg_id_defs: None,
       viewport: Some(viewport),

@@ -75,6 +75,7 @@ use crate::style::values::{
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
+use crate::tree::box_tree::{BoxNode, BoxTree, GeneratedPseudoElement};
 use rustc_hash::FxHashSet;
 use std::mem::discriminant;
 use std::sync::{Arc, OnceLock};
@@ -6978,11 +6979,19 @@ fn apply_transitions_to_fragment(
   viewport: Size,
   log_enabled: bool,
   parent_styles: Option<&ComputedStyle>,
+  transition_state: Option<&TransitionState>,
 ) {
   let Some(style_arc) = fragment.style.clone() else {
     // Still traverse for running anchors/children.
     for child in fragment.children_mut() {
-      apply_transitions_to_fragment(child, time_ms, viewport, log_enabled, parent_styles);
+      apply_transitions_to_fragment(
+        child,
+        time_ms,
+        viewport,
+        log_enabled,
+        parent_styles,
+        transition_state,
+      );
     }
     if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
       apply_transitions_to_fragment(
@@ -6991,11 +7000,23 @@ fn apply_transitions_to_fragment(
         viewport,
         log_enabled,
         parent_styles,
+        transition_state,
       );
     }
     return;
   };
-  if let Some(start_arc) = fragment.starting_style.clone() {
+
+  let mut start_arc = fragment.starting_style.clone();
+  let mut start_time_ms = 0.0;
+  if let (Some(state), Some(box_id)) = (transition_state, fragment.box_id()) {
+    if let Some(entry) = state.entries.get(&box_id) {
+      start_arc = Some(Arc::clone(&entry.start_style));
+      start_time_ms = entry.start_time_ms;
+    }
+  }
+
+  if let Some(start_arc) = start_arc {
+    let time_ms = (time_ms - start_time_ms).max(0.0);
     if let Some(pairs) = transition_pairs(&style_arc.transition_properties, &start_arc, &style_arc)
     {
       let ctx = AnimationResolveContext::new(
@@ -7111,6 +7132,7 @@ fn apply_transitions_to_fragment(
       viewport,
       log_enabled,
       Some(parent_for_children),
+      transition_state,
     );
   }
   if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
@@ -7126,6 +7148,7 @@ fn apply_transitions_to_fragment(
       viewport,
       log_enabled,
       Some(parent_for_children),
+      transition_state,
     );
   }
 }
@@ -7139,9 +7162,294 @@ pub fn apply_transitions(tree: &mut FragmentTree, time_ms: f32, viewport: Size) 
     return;
   }
   let log_enabled = runtime::runtime_toggles().truthy("FASTR_LOG_TRANSITIONS");
-  apply_transitions_to_fragment(&mut tree.root, time_ms, viewport, log_enabled, None);
+  let transition_state = tree.transition_state.as_deref();
+  apply_transitions_to_fragment(
+    &mut tree.root,
+    time_ms,
+    viewport,
+    log_enabled,
+    None,
+    transition_state,
+  );
   for root in &mut tree.additional_fragments {
-    apply_transitions_to_fragment(root, time_ms, viewport, log_enabled, None);
+    apply_transitions_to_fragment(root, time_ms, viewport, log_enabled, None, transition_state);
+  }
+}
+
+/// Persistent CSS transition bookkeeping used by multi-frame renderers.
+///
+/// `TransitionState` captures the "before change" styles for elements that should animate when
+/// computed styles change (e.g. due to class flips, hover state, or other DOM mutations). The state
+/// is stored on [`FragmentTree`](crate::tree::fragment_tree::FragmentTree) so it can be reused for
+/// paint-only updates (time progression / scroll changes) without re-running style/layout.
+#[derive(Debug, Clone)]
+pub struct TransitionState {
+  entries: HashMap<usize, TransitionEntry>,
+  viewport: Size,
+  box_sizes: HashMap<usize, Size>,
+}
+
+impl Default for TransitionState {
+  fn default() -> Self {
+    Self {
+      entries: HashMap::new(),
+      viewport: Size::ZERO,
+      box_sizes: HashMap::new(),
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+struct TransitionEntry {
+  stable_key: TransitionStableKey,
+  start_time_ms: f32,
+  start_style: Arc<ComputedStyle>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TransitionStableKey {
+  styled_node_id: usize,
+  generated_pseudo: Option<GeneratedPseudoElement>,
+}
+
+impl TransitionStableKey {
+  fn for_box(node: &BoxNode) -> Option<Self> {
+    let styled_node_id = node.styled_node_id?;
+    Some(Self {
+      styled_node_id,
+      generated_pseudo: node.generated_pseudo,
+    })
+  }
+}
+
+impl TransitionState {
+  /// Captures viewport size and per-box sizes from the supplied fragment tree.
+  ///
+  /// The stored sizes are only used when we need to sample the current value of an in-flight
+  /// transition at the moment a new style change occurs (to avoid jumping back to the last
+  /// recomputed end style).
+  pub fn capture_layout_from_fragment_tree(&mut self, tree: &FragmentTree) {
+    self.viewport = tree.viewport_size();
+    self.box_sizes.clear();
+
+    fn record(map: &mut HashMap<usize, Size>, box_id: usize, size: Size) {
+      match map.entry(box_id) {
+        std::collections::hash_map::Entry::Occupied(mut entry) => {
+          let existing = entry.get_mut();
+          existing.width = existing.width.max(size.width);
+          existing.height = existing.height.max(size.height);
+        }
+        std::collections::hash_map::Entry::Vacant(entry) => {
+          entry.insert(size);
+        }
+      }
+    }
+
+    let mut stack: Vec<&FragmentNode> = Vec::new();
+    stack.push(&tree.root);
+    for root in &tree.additional_fragments {
+      stack.push(root);
+    }
+    while let Some(node) = stack.pop() {
+      if let Some(box_id) = node.box_id() {
+        record(
+          &mut self.box_sizes,
+          box_id,
+          Size::new(node.bounds.width(), node.bounds.height()),
+        );
+      }
+      for child in node.children.iter() {
+        stack.push(child);
+      }
+      match &node.content {
+        FragmentContent::RunningAnchor { snapshot, .. }
+        | FragmentContent::FootnoteAnchor { snapshot } => {
+          stack.push(snapshot.as_ref());
+        }
+        _ => {}
+      }
+    }
+  }
+
+  fn map_boxes_by_stable_key(tree: &BoxTree) -> HashMap<TransitionStableKey, (usize, Arc<ComputedStyle>)> {
+    let mut out = HashMap::new();
+    let mut stack: Vec<&BoxNode> = vec![&tree.root];
+    while let Some(node) = stack.pop() {
+      if let Some(key) = TransitionStableKey::for_box(node) {
+        out.entry(key).or_insert((node.id, Arc::clone(&node.style)));
+      }
+      if let Some(body) = node.footnote_body.as_deref() {
+        stack.push(body);
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    out
+  }
+
+  fn sample_style_for_interruption(
+    prev_state: &TransitionState,
+    prev_box_id: usize,
+    prev_entry: &TransitionEntry,
+    end_style: &ComputedStyle,
+    now_ms: f32,
+  ) -> Arc<ComputedStyle> {
+    let elapsed = (now_ms - prev_entry.start_time_ms).max(0.0);
+    let viewport = prev_state.viewport;
+    let element_size = prev_state
+      .box_sizes
+      .get(&prev_box_id)
+      .copied()
+      .unwrap_or(Size::ZERO);
+    let ctx = AnimationResolveContext::new(viewport, element_size);
+
+    let start_style = &prev_entry.start_style;
+    let Some(pairs) = transition_pairs(&end_style.transition_properties, start_style, end_style) else {
+      return Arc::new(end_style.clone());
+    };
+
+    let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
+    let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
+
+    for (name, idx) in pairs {
+      let behavior = pick(&end_style.transition_behaviors, idx, TransitionBehavior::Normal);
+      let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
+      if name.starts_with("--") {
+        if let Some((sampled, _progress, _delay, _duration)) = transition_value_for_custom_property(
+          name,
+          idx,
+          allow_discrete,
+          end_style,
+          start_style,
+          &end_style.transition_durations,
+          &end_style.transition_delays,
+          &end_style.transition_timing_functions,
+          elapsed,
+          &ctx,
+        ) {
+          custom_updates.push((Arc::from(name), sampled));
+        }
+        continue;
+      }
+
+      if let Some((animated, _progress, _delay, _duration)) = transition_value_for_property(
+        name,
+        idx,
+        allow_discrete,
+        end_style,
+        start_style,
+        &end_style.transition_durations,
+        &end_style.transition_delays,
+        &end_style.transition_timing_functions,
+        elapsed,
+        &ctx,
+      ) {
+        updates.insert(name.to_string(), animated);
+      }
+    }
+
+    if updates.is_empty() && custom_updates.is_empty() {
+      return Arc::new(end_style.clone());
+    }
+
+    let mut updated_style = end_style.clone();
+    apply_animated_properties(&mut updated_style, &updates);
+    let mut custom_properties_changed = false;
+    for (name, value) in custom_updates {
+      let needs_update = updated_style
+        .custom_properties
+        .get(name.as_ref())
+        .map(|existing| existing != &value)
+        .unwrap_or(true);
+      if needs_update {
+        updated_style.custom_properties.insert(name, value);
+        custom_properties_changed = true;
+      }
+    }
+
+    if custom_properties_changed {
+      let parent_styles = default_parent_style();
+      updated_style.recompute_var_dependent_properties(parent_styles, viewport);
+      apply_animated_properties(&mut updated_style, &updates);
+    }
+    Arc::new(updated_style)
+  }
+
+  /// Updates (or seeds) transition bookkeeping in response to a computed style change.
+  ///
+  /// The caller is responsible for subsequently calling
+  /// [`TransitionState::capture_layout_from_fragment_tree`] with the newly laid out fragment tree.
+  pub fn update_for_style_change(
+    prev_state: Option<&TransitionState>,
+    prev_box_tree: Option<&BoxTree>,
+    new_box_tree: &BoxTree,
+    now_ms: f32,
+  ) -> Self {
+    let mut out = TransitionState::default();
+    // Layout capture will overwrite these with real values.
+    out.viewport = Size::ZERO;
+
+    let Some(prev_box_tree) = prev_box_tree else {
+      return out;
+    };
+
+    let prev_boxes = Self::map_boxes_by_stable_key(prev_box_tree);
+    let new_boxes = Self::map_boxes_by_stable_key(new_box_tree);
+
+    let mut prev_entries_by_key: HashMap<TransitionStableKey, (usize, &TransitionEntry)> = HashMap::new();
+    if let Some(prev_state) = prev_state {
+      for (box_id, entry) in prev_state.entries.iter() {
+        prev_entries_by_key.insert(entry.stable_key, (*box_id, entry));
+      }
+    }
+
+    for (stable_key, (new_box_id, new_style)) in new_boxes {
+      let Some((_prev_box_id, prev_style)) = prev_boxes.get(&stable_key) else {
+        continue;
+      };
+
+      // If the computed style didn't change, preserve any existing transition entry so in-flight
+      // transitions aren't cancelled by unrelated restyles.
+      if prev_style == &new_style {
+        if let Some((_prev_entry_box_id, prev_entry)) = prev_entries_by_key.get(&stable_key) {
+          out.entries.insert(
+            new_box_id,
+            TransitionEntry {
+              stable_key,
+              start_time_ms: prev_entry.start_time_ms,
+              start_style: Arc::clone(&prev_entry.start_style),
+            },
+          );
+        }
+        continue;
+      }
+
+      let start_style = if let (Some(prev_state), Some((prev_entry_box_id, prev_entry))) =
+        (prev_state, prev_entries_by_key.get(&stable_key).copied())
+      {
+        Self::sample_style_for_interruption(
+          prev_state,
+          prev_entry_box_id,
+          prev_entry,
+          prev_style.as_ref(),
+          now_ms,
+        )
+      } else {
+        Arc::clone(prev_style)
+      };
+
+      out.entries.insert(
+        new_box_id,
+        TransitionEntry {
+          stable_key,
+          start_time_ms: now_ms,
+          start_style,
+        },
+      );
+    }
+
+    out
   }
 }
 
