@@ -3,6 +3,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use vm_js::{Heap, PropertyKey, Realm, Value, Vm, VmOptions};
 
+#[derive(Default)]
+struct NoopHostHooks;
+
+impl vm_js::VmHostHooks for NoopHostHooks {
+  fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+    panic!("unexpected Promise job enqueued during js_time_determinism test");
+  }
+}
+
 fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
   let mut scope = heap.scope();
   let key_s = scope.alloc_string(name).expect("alloc key string");
@@ -34,8 +43,9 @@ fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Val
 
 fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
   let mut scope = heap.scope();
+  let mut host_hooks = NoopHostHooks::default();
   vm
-    .call(&mut scope, callee, this, &[])
+    .call_with_host(&mut scope, &mut host_hooks, callee, this, &[])
     .expect("call should succeed")
 }
 

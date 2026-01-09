@@ -86,6 +86,16 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let object = rt.realm.intrinsics().object_constructor();
 
   let mut scope = rt.heap.scope();
+  #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl vm_js::VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+      panic!("unexpected Promise job enqueued during Object builtins smoke test");
+    }
+  }
+
+  let mut host_hooks = NoopHostHooks::default();
 
   // Global binding exists and is callable.
   assert_eq!(
@@ -94,7 +104,7 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   );
   let _ = rt
     .vm
-    .call(&mut scope, Value::Object(object), Value::Undefined, &[])?;
+    .call_with_host(&mut scope, &mut host_hooks, Value::Object(object), Value::Undefined, &[])?;
 
   // Object.defineProperty
   let define_property = get_own_data_property(&mut scope, object, "defineProperty")?
@@ -113,8 +123,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
 
   let x = scope.alloc_string("x")?;
   let args = [Value::Object(o), Value::String(x), Value::Object(desc)];
-  let _ = rt.vm.call(
+  let _ = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(define_property),
     Value::Object(object),
     &args,
@@ -146,8 +157,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let y_key = PropertyKey::from_string(scope.alloc_string("y")?);
 
   let args = [Value::Object(p)];
-  let created = rt.vm.call(
+  let created = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(create),
     Value::Object(object),
     &args,
@@ -169,8 +181,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
 
   // getPrototypeOf(created) === p
   let args = [Value::Object(created)];
-  let proto = rt.vm.call(
+  let proto = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(get_proto),
     Value::Object(object),
     &args,
@@ -189,8 +202,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   define_enumerable_data_property(&mut scope, obj, "b", Value::Number(2.0))?;
 
   let args = [Value::Object(obj)];
-  let result = rt.vm.call(
+  let result = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(keys),
     Value::Object(object),
     &args,
@@ -241,8 +255,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   )?;
 
   let args = [Value::Object(target), Value::Object(source)];
-  let out = rt.vm.call(
+  let out = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(assign),
     Value::Object(object),
     &args,
@@ -281,8 +296,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let args = [Value::Object(ro_target), Value::Object(ro_source)];
   let err = rt
     .vm
-    .call(
+    .call_with_host(
       &mut scope,
+      &mut host_hooks,
       Value::Object(assign),
       Value::Object(object),
       &args,
@@ -300,8 +316,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   let obj = scope.alloc_object()?;
   scope.push_root(Value::Object(obj))?;
   let args = [Value::Object(obj), Value::Object(p)];
-  let out = rt.vm.call(
+  let out = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(set_proto),
     Value::Object(object),
     &args,
@@ -309,8 +326,9 @@ fn object_builtins_smoke() -> Result<(), VmError> {
   assert_eq!(out, Value::Object(obj));
 
   let args = [Value::Object(obj)];
-  let proto = rt.vm.call(
+  let proto = rt.vm.call_with_host(
     &mut scope,
+    &mut host_hooks,
     Value::Object(get_proto),
     Value::Object(object),
     &args,

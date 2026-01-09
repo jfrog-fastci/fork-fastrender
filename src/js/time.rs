@@ -317,6 +317,16 @@ mod tests {
   }
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
+    #[derive(Default)]
+    struct NoopHostHooks;
+
+    impl vm_js::VmHostHooks for NoopHostHooks {
+      fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
+        panic!("unexpected Promise job enqueued during time bindings test");
+      }
+    }
+
+    let mut host_hooks = NoopHostHooks::default();
     let mut scope = heap.scope();
     scope.push_root(callee).unwrap();
     scope.push_root(this).unwrap();
@@ -331,7 +341,7 @@ mod tests {
     let call = vm.get(&mut scope, func, call_key).expect("get call");
     scope.push_root(call).unwrap();
 
-    vm.call(&mut scope, call, callee, &[this])
+    vm.call_with_host(&mut scope, &mut host_hooks, call, callee, &[this])
       .expect("call should succeed")
   }
 

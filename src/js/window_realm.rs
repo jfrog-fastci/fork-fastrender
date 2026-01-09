@@ -696,6 +696,13 @@ mod tests {
     Symbol,
   }
 
+  #[derive(Default)]
+  struct NoopHostHooks;
+
+  impl vm_js::VmHostHooks for NoopHostHooks {
+    fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {}
+  }
+
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string value");
@@ -766,12 +773,14 @@ mod tests {
 
     // `console.log` is a host-created native function; ensure it inherits from `Function.prototype`
     // by calling it through `Function.prototype.call`.
+    let mut host_hooks = NoopHostHooks::default();
     let call_key_s = scope.alloc_string("call")?;
     scope.push_root(Value::String(call_key_s))?;
     let call_key = PropertyKey::from_string(call_key_s);
     let call = vm.get(&mut scope, log_func, call_key)?;
-    let call_result = vm.call(
+    let call_result = vm.call_with_host(
       &mut scope,
+      &mut host_hooks,
       call,
       Value::Object(log_func),
       &[Value::Object(console_obj), Value::Number(1.0), Value::Null],
@@ -909,8 +918,10 @@ mod tests {
     };
     let log = get_prop(&mut scope, console_obj, "log");
 
-    let call_result = vm.call(
+    let mut host_hooks = NoopHostHooks::default();
+    let call_result = vm.call_with_host(
       &mut scope,
+      &mut host_hooks,
       log,
       Value::Object(console_obj),
       &[Value::Number(1.0), Value::Null],
