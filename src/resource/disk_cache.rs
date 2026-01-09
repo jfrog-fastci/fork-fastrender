@@ -1506,6 +1506,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           stored_at: stored_time,
           max_age: None,
           expires: None,
+          date: None,
+          age: None,
+          stale_if_error: None,
+          last_modified: None,
           no_cache: false,
           no_store: true,
           must_revalidate: false,
@@ -1562,6 +1566,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         stored_at: stored_time,
         max_age: Some(max_age),
         expires: None,
+        date: None,
+        age: None,
+        stale_if_error: None,
+        last_modified: None,
         no_cache: false,
         no_store: false,
         must_revalidate: false,
@@ -2163,6 +2171,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       stored_at: stored_time,
       max_age: None,
       expires: None,
+      date: None,
+      age: None,
+      stale_if_error: None,
+      last_modified: None,
       no_cache: false,
       no_store: true,
       must_revalidate: false,
@@ -3142,6 +3154,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
                         stored_at,
                         max_age: None,
                         expires: None,
+                        date: None,
+                        age: None,
+                        stale_if_error: None,
+                        last_modified: None,
                         no_cache: false,
                         no_store: true,
                         must_revalidate: false,
@@ -3367,13 +3383,28 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       }
       Err(err) => {
         if let Some(snapshot) = plan.cached.as_ref() {
-          super::record_cache_stale_hit();
-          let fallback = snapshot.value.as_result();
-          if let Ok(ref ok) = fallback {
-            super::record_resource_cache_bytes(ok.bytes.len());
+          let allow_fallback = if super::error_is_networkish(&err) {
+            snapshot
+              .http_cache
+              .as_ref()
+              .map(|meta| meta.allows_stale_on_error(SystemTime::now(), self.disk_config.max_age))
+              .unwrap_or(true)
+          } else {
+            true
+          };
+
+          if allow_fallback {
+            super::record_cache_stale_hit();
+            let fallback = snapshot.value.as_result();
+            if let Ok(ref ok) = fallback {
+              super::record_resource_cache_bytes(ok.bytes.len());
+            }
+            let is_ok = fallback.is_ok();
+            (fallback, is_ok)
+          } else {
+            super::record_cache_miss();
+            (Err(err), false)
           }
-          let is_ok = fallback.is_ok();
-          (fallback, is_ok)
         } else {
           if self.memory.config.cache_errors {
             let has_bucket = self
@@ -3937,6 +3968,14 @@ pub(super) struct StoredCacheMetadata {
   stored_at: u64,
   max_age: Option<u64>,
   expires: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  date: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  age: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  stale_if_error: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  last_modified: Option<u64>,
   no_cache: bool,
   no_store: bool,
   must_revalidate: bool,
@@ -3948,6 +3987,10 @@ impl StoredCacheMetadata {
       stored_at: system_time_to_secs(meta.stored_at)?,
       max_age: meta.max_age.map(|d| d.as_secs()),
       expires: meta.expires.and_then(system_time_to_secs),
+      date: meta.date.and_then(system_time_to_secs),
+      age: meta.age.map(|d| d.as_secs()),
+      stale_if_error: meta.stale_if_error.map(|d| d.as_secs()),
+      last_modified: meta.last_modified.and_then(system_time_to_secs),
       no_cache: meta.no_cache,
       no_store: meta.no_store,
       must_revalidate: meta.must_revalidate,
@@ -3960,6 +4003,10 @@ impl StoredCacheMetadata {
       stored_at,
       max_age: self.max_age.map(Duration::from_secs),
       expires: self.expires.and_then(secs_to_system_time),
+      date: self.date.and_then(secs_to_system_time),
+      age: self.age.map(Duration::from_secs),
+      stale_if_error: self.stale_if_error.map(Duration::from_secs),
+      last_modified: self.last_modified.and_then(secs_to_system_time),
       no_cache: self.no_cache,
       no_store: self.no_store,
       must_revalidate: self.must_revalidate,
@@ -3973,6 +4020,10 @@ impl StoredCacheMetadata {
       no_store: self.no_store,
       must_revalidate: self.must_revalidate,
       expires: self.expires.and_then(secs_to_system_time),
+      date: self.date.and_then(secs_to_system_time),
+      age: self.age,
+      stale_if_error: self.stale_if_error,
+      last_modified: self.last_modified.and_then(secs_to_system_time),
     }
   }
 }
@@ -6590,6 +6641,78 @@ mod tests {
   }
 
   #[test]
+  fn disk_cache_honors_age_and_stale_if_error_on_network_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let disk = DiskCachingFetcher::with_configs(
+      FailingFetcher {
+        count: Arc::clone(&calls),
+      },
+      tmp.path(),
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+      DiskCacheConfig {
+        max_bytes: 0,
+        ..DiskCacheConfig::default()
+      },
+    );
+ 
+    let url = "https://example.com/stale-if-error-disk";
+    let cached_bytes = b"cached".to_vec();
+    let data_path = disk.data_path(TEST_KIND, url);
+    let meta_path = disk.meta_path_for_data(&data_path);
+    fs::write(&data_path, &cached_bytes).unwrap();
+ 
+    let stored_at = now_seconds();
+    let stored_time = UNIX_EPOCH
+      .checked_add(Duration::from_secs(stored_at))
+      .unwrap_or(SystemTime::now());
+    let cache_meta = CachedHttpMetadata {
+      stored_at: stored_time,
+      max_age: Some(Duration::from_secs(120)),
+      expires: None,
+      date: None,
+      age: Some(Duration::from_secs(200)),
+      stale_if_error: Some(Duration::from_secs(300)),
+      last_modified: None,
+      no_cache: false,
+      no_store: false,
+      must_revalidate: true,
+    };
+ 
+    let meta = StoredMetadata {
+      url: url.to_string(),
+      status: None,
+      content_type: Some("text/plain".to_string()),
+      nosniff: false,
+      content_encoding: None,
+      etag: None,
+      last_modified: None,
+      response_referrer_policy: None,
+      final_url: Some(url.to_string()),
+      vary: None,
+      access_control_allow_origin: None,
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+      stored_at,
+      len: cached_bytes.len(),
+      cache: StoredCacheMetadata::from_http(&cache_meta),
+      error: None,
+    };
+    fs::write(&meta_path, serde_json::to_vec(&meta).unwrap()).unwrap();
+ 
+    let res = disk.fetch(url).expect("should fall back within stale-if-error window");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      1,
+      "network fetch should be attempted"
+    );
+    assert_eq!(res.bytes, cached_bytes);
+  }
+
+  #[test]
   fn disk_max_age_causes_staleness_planning_without_deleting() {
     let tmp = tempfile::tempdir().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -8755,6 +8878,10 @@ mod tests {
             no_cache: false,
             no_store: true,
             must_revalidate: false,
+            date: None,
+            age: None,
+            stale_if_error: None,
+            last_modified: None,
           }),
           error: Some("boom".to_string()),
         };

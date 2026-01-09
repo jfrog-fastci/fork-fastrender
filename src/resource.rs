@@ -2180,6 +2180,17 @@ pub struct HttpCachePolicy {
   pub no_store: bool,
   pub must_revalidate: bool,
   pub expires: Option<SystemTime>,
+  /// Parsed `Date` response header (RFC 9110 HTTP-date), when present.
+  pub date: Option<SystemTime>,
+  /// Parsed `Age` response header value (seconds), when present.
+  pub age: Option<u64>,
+  /// Parsed `Cache-Control: stale-if-error=<seconds>` directive, when present.
+  pub stale_if_error: Option<u64>,
+  /// Parsed `Last-Modified` response header (RFC 9110 HTTP-date), when present.
+  ///
+  /// Stored separately from [`FetchedResource::last_modified`], which preserves the raw header
+  /// string for validator revalidation.
+  pub last_modified: Option<SystemTime>,
 }
 
 impl HttpCachePolicy {
@@ -2189,6 +2200,8 @@ impl HttpCachePolicy {
       && !self.no_store
       && !self.must_revalidate
       && self.expires.is_none()
+      && self.stale_if_error.is_none()
+      && self.last_modified.is_none()
   }
 }
 
@@ -2197,6 +2210,10 @@ struct CachedHttpMetadata {
   stored_at: SystemTime,
   max_age: Option<Duration>,
   expires: Option<SystemTime>,
+  date: Option<SystemTime>,
+  age: Option<Duration>,
+  stale_if_error: Option<Duration>,
+  last_modified: Option<SystemTime>,
   no_cache: bool,
   no_store: bool,
   must_revalidate: bool,
@@ -2211,6 +2228,10 @@ impl CachedHttpMetadata {
       stored_at,
       max_age: policy.max_age.map(Duration::from_secs),
       expires: policy.expires,
+      date: policy.date,
+      age: policy.age.map(Duration::from_secs),
+      stale_if_error: policy.stale_if_error.map(Duration::from_secs),
+      last_modified: policy.last_modified,
       no_cache: policy.no_cache,
       no_store: policy.no_store,
       must_revalidate: policy.must_revalidate,
@@ -2233,27 +2254,94 @@ impl CachedHttpMetadata {
   }
 
   fn requires_revalidation(&self) -> bool {
-    self.no_cache || self.must_revalidate
+    // `no-cache` requires revalidation before reuse even when the response is still fresh.
+    // `must-revalidate` only changes behavior once the response becomes stale.
+    self.no_cache
   }
 
-  fn expires_at(&self) -> Option<SystemTime> {
+  fn date_value(&self) -> SystemTime {
+    self.date.unwrap_or(self.stored_at)
+  }
+
+  fn apparent_age(&self) -> Duration {
+    // RFC 9111 §4.2.3: apparent_age = max(0, response_time - date_value)
+    // Use `stored_at` as `response_time`.
+    self
+      .stored_at
+      .duration_since(self.date_value())
+      .unwrap_or(Duration::ZERO)
+  }
+
+  fn corrected_age_value(&self) -> Duration {
+    // RFC 9111 §4.2.3: corrected_age_value = max(apparent_age, age_value)
+    self.apparent_age().max(self.age.unwrap_or(Duration::ZERO))
+  }
+
+  fn current_age(&self, now: SystemTime) -> Duration {
+    // RFC 9111 §4.2.3 current_age = corrected_initial_age + resident_time.
+    //
+    // We intentionally omit `response_delay` (requires request_time) and instead use the cached
+    // monotonic approximation: max(apparent_age, age_value) + (now - stored_at).
+    let resident = now.duration_since(self.stored_at).unwrap_or(Duration::ZERO);
+    self.corrected_age_value().saturating_add(resident)
+  }
+
+  fn freshness_lifetime(&self) -> Option<Duration> {
+    // RFC 9111 §4.2.1.
     if let Some(max_age) = self.max_age {
-      return self.stored_at.checked_add(max_age);
+      return Some(max_age);
     }
-    self.expires
+
+    if let Some(expires) = self.expires {
+      let date = self.date_value();
+      return Some(expires.duration_since(date).unwrap_or(Duration::ZERO));
+    }
+
+    // Heuristic freshness (RFC 9111 §4.2.2):
+    // 10% of (date - last_modified), capped.
+    let last_modified = self.last_modified?;
+    let date = self.date_value();
+    let delta = date.duration_since(last_modified).ok()?;
+    let heuristic = delta / 10;
+    Some(heuristic.min(Duration::from_secs(60 * 60 * 24)))
   }
 
   fn is_fresh(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
-    let mut expires_at = self.expires_at();
+    let Some(mut lifetime) = self.freshness_lifetime() else {
+      return false;
+    };
     if let Some(cap) = freshness_cap {
-      if let Some(capped) = self.stored_at.checked_add(cap) {
-        expires_at = match expires_at {
-          Some(exp) if exp < capped => Some(exp),
-          _ => Some(capped),
-        };
-      }
+      lifetime = lifetime.min(cap);
     }
-    expires_at.map(|t| t > now).unwrap_or(false)
+    self.current_age(now) < lifetime
+  }
+
+  fn within_stale_if_error(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
+    let Some(window) = self.stale_if_error else {
+      return false;
+    };
+    let lifetime = self
+      .freshness_lifetime()
+      .unwrap_or(Duration::ZERO)
+      .min(freshness_cap.unwrap_or(Duration::MAX));
+    let age = self.current_age(now);
+    age <= lifetime.saturating_add(window)
+  }
+
+  fn allows_stale_on_error(&self, now: SystemTime, freshness_cap: Option<Duration>) -> bool {
+    // Tooling can opt into caching `no-store` responses; when present we treat them as always
+    // eligible for stale fallback on network errors.
+    if self.no_store {
+      return true;
+    }
+
+    if self.stale_if_error.is_some() {
+      return self.within_stale_if_error(now, freshness_cap);
+    }
+
+    // When the origin explicitly requires revalidation (`no-cache` or `must-revalidate`), only
+    // allow stale fallback on errors when the server opted into it via `stale-if-error`.
+    !(self.no_cache || self.must_revalidate)
   }
 }
 
@@ -6893,6 +6981,14 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
             }
           }
         }
+        "stale-if-error" => {
+          if let Some(raw) = value {
+            let raw = raw.trim_matches('"');
+            if let Ok(parsed) = raw.parse::<u64>() {
+              policy.stale_if_error = Some(parsed);
+            }
+          }
+        }
         "no-cache" => policy.no_cache = true,
         "no-store" => policy.no_store = true,
         "must-revalidate" => policy.must_revalidate = true,
@@ -6907,6 +7003,30 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
     .and_then(|v| parse_http_date(v).ok())
   {
     policy.expires = Some(expires);
+  }
+
+  if let Some(date) = headers
+    .get("date")
+    .and_then(|h| h.to_str().ok())
+    .and_then(|v| parse_http_date(v).ok())
+  {
+    policy.date = Some(date);
+  }
+
+  if let Some(age) = headers
+    .get("age")
+    .and_then(|h| h.to_str().ok())
+    .and_then(|v| trim_http_whitespace(v).parse::<u64>().ok())
+  {
+    policy.age = Some(age);
+  }
+
+  if let Some(last_modified) = headers
+    .get("last-modified")
+    .and_then(|h| h.to_str().ok())
+    .and_then(|v| parse_http_date(v).ok())
+  {
+    policy.last_modified = Some(last_modified);
   }
 
   if policy.is_empty() {
@@ -6958,6 +7078,16 @@ fn vary_is_cacheable(vary: &str, _kind: FetchContextKind, _origin_key: Option<&s
     }
   }
   true
+}
+
+fn error_is_networkish(err: &Error) -> bool {
+  match err {
+    Error::Resource(resource) => resource.status.is_none(),
+    Error::Navigation(_) => true,
+    Error::Io(_) => true,
+    Error::Other(_) => true,
+    _ => false,
+  }
 }
 
 // ============================================================================
@@ -8742,6 +8872,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
                         stored_at,
                         max_age: None,
                         expires: None,
+                        date: None,
+                        age: None,
+                        stale_if_error: None,
+                        last_modified: None,
                         no_cache: false,
                         no_store: true,
                         must_revalidate: false,
@@ -8795,13 +8929,28 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       }
       Err(err) => {
         if let Some(snapshot) = plan.cached.as_ref() {
-          record_cache_stale_hit();
-          let fallback = snapshot.value.as_result();
-          if let Ok(ref ok) = fallback {
-            record_resource_cache_bytes(ok.bytes.len());
+          let allow_fallback = if error_is_networkish(&err) {
+            snapshot
+              .http_cache
+              .as_ref()
+              .map(|meta| meta.allows_stale_on_error(SystemTime::now(), None))
+              .unwrap_or(true)
+          } else {
+            true
+          };
+
+          if allow_fallback {
+            record_cache_stale_hit();
+            let fallback = snapshot.value.as_result();
+            if let Ok(ref ok) = fallback {
+              record_resource_cache_bytes(ok.bytes.len());
+            }
+            let is_ok = fallback.is_ok();
+            (fallback, is_ok)
+          } else {
+            record_cache_miss();
+            (Err(err), false)
           }
-          let is_ok = fallback.is_ok();
-          (fallback, is_ok)
         } else {
           let has_bucket = self
             .state
@@ -9077,13 +9226,28 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       }
       Err(err) => {
         if let Some(snapshot) = plan.cached.as_ref() {
-          record_cache_stale_hit();
-          let fallback = snapshot.value.as_result();
-          if let Ok(ref ok) = fallback {
-            record_resource_cache_bytes(ok.bytes.len());
+          let allow_fallback = if error_is_networkish(&err) {
+            snapshot
+              .http_cache
+              .as_ref()
+              .map(|meta| meta.allows_stale_on_error(SystemTime::now(), None))
+              .unwrap_or(true)
+          } else {
+            true
+          };
+
+          if allow_fallback {
+            record_cache_stale_hit();
+            let fallback = snapshot.value.as_result();
+            if let Ok(ref ok) = fallback {
+              record_resource_cache_bytes(ok.bytes.len());
+            }
+            let is_ok = fallback.is_ok();
+            (fallback, is_ok)
+          } else {
+            record_cache_miss();
+            (Err(err), false)
           }
-          let is_ok = fallback.is_ok();
-          (fallback, is_ok)
         } else {
           let has_bucket = self
             .state
@@ -19508,6 +19672,10 @@ mod tests {
       stored_at,
       max_age: Some(Duration::from_secs(3600)),
       expires: None,
+      date: None,
+      age: None,
+      stale_if_error: None,
+      last_modified: None,
       no_cache: false,
       no_store: false,
       must_revalidate: false,
@@ -19531,6 +19699,243 @@ mod tests {
     assert!(
       matches!(plan.action, CacheAction::Validate { .. }),
       "freshness cap should force validation even when HTTP max-age is longer"
+    );
+  }
+
+  #[test]
+  fn age_header_reduces_remaining_freshness() {
+    let stored_at = UNIX_EPOCH
+      .checked_add(Duration::from_secs(1_000_000))
+      .unwrap();
+    let now = stored_at.checked_add(Duration::from_secs(1)).unwrap();
+
+    let base = CachedHttpMetadata {
+      stored_at,
+      max_age: Some(Duration::from_secs(20)),
+      expires: None,
+      date: Some(stored_at),
+      age: None,
+      stale_if_error: None,
+      last_modified: None,
+      no_cache: false,
+      no_store: false,
+      must_revalidate: false,
+    };
+    assert!(
+      base.is_fresh(now, None),
+      "entry without Age should remain fresh"
+    );
+
+    let with_age = CachedHttpMetadata {
+      age: Some(Duration::from_secs(25)),
+      ..base
+    };
+    assert!(
+      !with_age.is_fresh(now, None),
+      "Age header should reduce remaining freshness"
+    );
+  }
+
+  #[test]
+  fn expires_uses_date_value_for_freshness() {
+    let date = UNIX_EPOCH.checked_add(Duration::from_secs(1_000_000)).unwrap();
+    let expires = date.checked_add(Duration::from_secs(10)).unwrap();
+    let stored_at = date.checked_add(Duration::from_secs(5)).unwrap();
+
+    let meta = CachedHttpMetadata {
+      stored_at,
+      max_age: None,
+      expires: Some(expires),
+      date: Some(date),
+      age: None,
+      stale_if_error: None,
+      last_modified: None,
+      no_cache: false,
+      no_store: false,
+      must_revalidate: false,
+    };
+
+    assert!(
+      meta.is_fresh(stored_at, None),
+      "should still be fresh when Expires-Date is greater than current_age"
+    );
+
+    let stale_now = stored_at.checked_add(Duration::from_secs(6)).unwrap();
+    assert!(
+      !meta.is_fresh(stale_now, None),
+      "should become stale once current_age exceeds Expires-Date lifetime"
+    );
+  }
+
+  #[test]
+  fn heuristic_freshness_uses_last_modified_when_no_explicit_lifetime() {
+    let last_modified = UNIX_EPOCH
+      .checked_add(Duration::from_secs(1_000_000))
+      .unwrap();
+    let date = last_modified.checked_add(Duration::from_secs(1000)).unwrap();
+    let stored_at = date;
+
+    let meta = CachedHttpMetadata {
+      stored_at,
+      max_age: None,
+      expires: None,
+      date: Some(date),
+      age: None,
+      stale_if_error: None,
+      last_modified: Some(last_modified),
+      no_cache: false,
+      no_store: false,
+      must_revalidate: false,
+    };
+
+    let almost_expired = stored_at.checked_add(Duration::from_secs(99)).unwrap();
+    assert!(
+      meta.is_fresh(almost_expired, None),
+      "heuristic lifetime should keep the entry fresh for 10% of (Date-Last-Modified)"
+    );
+
+    let expired = stored_at.checked_add(Duration::from_secs(100)).unwrap();
+    assert!(
+      !meta.is_fresh(expired, None),
+      "heuristic lifetime should expire at 10% of (Date-Last-Modified)"
+    );
+  }
+
+  #[test]
+  fn stale_if_error_allows_fallback_on_network_error() {
+    #[derive(Clone)]
+    struct QueueFetcher {
+      calls: Arc<AtomicUsize>,
+      queue: Arc<Mutex<VecDeque<Result<FetchedResource>>>>,
+    }
+
+    impl ResourceFetcher for QueueFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self
+          .queue
+          .lock()
+          .unwrap()
+          .pop_front()
+          .expect("expected queued fetch result")
+      }
+
+      fn fetch_with_validation(
+        &self,
+        _url: &str,
+        _etag: Option<&str>,
+        _last_modified: Option<&str>,
+      ) -> Result<FetchedResource> {
+        self.fetch("unused")
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut cached = FetchedResource::new(b"cached".to_vec(), Some("text/plain".to_string()));
+    cached.status = Some(200);
+    cached.etag = Some("etag1".to_string());
+    cached.cache_policy = Some(HttpCachePolicy {
+      max_age: Some(0),
+      must_revalidate: true,
+      stale_if_error: Some(60),
+      ..Default::default()
+    });
+
+    let mut queue = VecDeque::new();
+    queue.push_back(Ok(cached));
+    queue.push_back(Err(Error::Other("network error".to_string())));
+
+    let fetcher = QueueFetcher {
+      calls: Arc::clone(&calls),
+      queue: Arc::new(Mutex::new(queue)),
+    };
+
+    let cache = CachingFetcher::with_config(
+      fetcher,
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+    );
+    let url = "http://example.com/stale-if-error";
+
+    cache.fetch(url).expect("seed fetch");
+    let fallback = cache.fetch(url).expect("stale-if-error fallback");
+    assert_eq!(fallback.bytes, b"cached");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "should attempt refresh but fall back within stale-if-error window"
+    );
+  }
+
+  #[test]
+  fn must_revalidate_without_stale_if_error_propagates_network_error() {
+    #[derive(Clone)]
+    struct QueueFetcher {
+      calls: Arc<AtomicUsize>,
+      queue: Arc<Mutex<VecDeque<Result<FetchedResource>>>>,
+    }
+
+    impl ResourceFetcher for QueueFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self
+          .queue
+          .lock()
+          .unwrap()
+          .pop_front()
+          .expect("expected queued fetch result")
+      }
+
+      fn fetch_with_validation(
+        &self,
+        _url: &str,
+        _etag: Option<&str>,
+        _last_modified: Option<&str>,
+      ) -> Result<FetchedResource> {
+        self.fetch("unused")
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut cached = FetchedResource::new(b"cached".to_vec(), Some("text/plain".to_string()));
+    cached.status = Some(200);
+    cached.etag = Some("etag1".to_string());
+    cached.cache_policy = Some(HttpCachePolicy {
+      max_age: Some(0),
+      must_revalidate: true,
+      ..Default::default()
+    });
+
+    let mut queue = VecDeque::new();
+    queue.push_back(Ok(cached));
+    queue.push_back(Err(Error::Other("network error".to_string())));
+
+    let fetcher = QueueFetcher {
+      calls: Arc::clone(&calls),
+      queue: Arc::new(Mutex::new(queue)),
+    };
+
+    let cache = CachingFetcher::with_config(
+      fetcher,
+      CachingFetcherConfig {
+        honor_http_cache_freshness: true,
+        ..CachingFetcherConfig::default()
+      },
+    );
+    let url = "http://example.com/must-revalidate-no-stale-if-error";
+
+    cache.fetch(url).expect("seed fetch");
+    let err = cache.fetch(url).expect_err("expected refresh to fail without stale-if-error");
+    assert!(
+      matches!(err, Error::Other(_)),
+      "expected the underlying network error to be surfaced"
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "should attempt refresh when entry is stale"
     );
   }
 
