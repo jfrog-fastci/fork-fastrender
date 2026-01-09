@@ -36,6 +36,7 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
       selected: true,
       disabled: false,
       in_optgroup: false,
+      option_node_id: 1,
     }]),
     selected: vec![0],
   };
@@ -131,6 +132,7 @@ fn form_control_overflow_clip_uses_padding_box_radii() {
       selected: true,
       disabled: false,
       in_optgroup: false,
+      option_node_id: 1,
     }]),
     selected: vec![0],
   };

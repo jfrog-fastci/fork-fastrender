@@ -368,6 +368,7 @@ pub enum SelectItem {
     selected: bool,
     disabled: bool,
     in_optgroup: bool,
+    option_node_id: usize,
   },
 }
 
@@ -1615,6 +1616,7 @@ mod tests {
         selected: true,
         disabled: false,
         in_optgroup: false,
+        option_node_id: 1,
       }]),
       selected: vec![0],
     });

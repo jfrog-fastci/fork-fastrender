@@ -176,6 +176,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
           selected: true,
           disabled: false,
           in_optgroup: false,
+          option_node_id: 1,
         }]),
         selected: vec![0],
       }),

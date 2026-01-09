@@ -4580,6 +4580,7 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
           selected: node.node.get_attribute_ref("selected").is_some(),
           disabled,
           in_optgroup,
+          option_node_id: node.node_id,
         });
         option_item_indices.push(idx);
         continue;

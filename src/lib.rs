@@ -215,6 +215,9 @@ pub mod process_limits;
 pub(crate) mod rayon_global;
 pub mod system;
 pub mod cli_utils;
+#[path = "ui/select_dropdown.rs"]
+pub mod select_dropdown;
+
 #[cfg(feature = "browser_ui")]
 pub mod ui;
 // ============================================================================
