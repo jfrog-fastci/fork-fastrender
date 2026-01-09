@@ -4,6 +4,8 @@ use vm_js::Heap;
 use vm_js::HeapLimits;
 use vm_js::Job;
 use vm_js::JobCallback;
+use vm_js::PromiseReactionRecord;
+use vm_js::PromiseReactionType;
 use vm_js::RootId;
 use vm_js::Scope;
 use vm_js::Value;
@@ -14,6 +16,7 @@ use vm_js::VmHostHooks;
 use vm_js::VmJobContext;
 use vm_js::VmOptions;
 use vm_js::WeakGcObject;
+use vm_js::new_promise_reaction_job;
 
 fn noop(
   _vm: &mut Vm,
@@ -207,6 +210,103 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
   assert!(weak_thenable.upgrade(&*ctx.heap).is_none());
   assert!(weak_resolve.upgrade(&*ctx.heap).is_none());
   assert!(weak_reject.upgrade(&*ctx.heap).is_none());
+
+  Ok(())
+}
+
+#[test]
+fn promise_reaction_job_discard_releases_roots() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+
+  let call_id = vm.register_native_call(noop)?;
+
+  let callback;
+  let argument;
+  let job;
+  {
+    let mut scope = heap.scope();
+
+    let name = scope.alloc_string("onFulfilled")?;
+    callback = scope.alloc_native_function(call_id, None, name, 1)?;
+    argument = scope.alloc_object()?;
+
+    let mut host = TestHost {
+      call_result: Ok(Value::Undefined),
+    };
+
+    let reaction = PromiseReactionRecord {
+      reaction_type: PromiseReactionType::Fulfill,
+      handler: Some(host.host_make_job_callback(callback)),
+    };
+    let (created, _) =
+      new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument), None)?;
+    job = created;
+  }
+
+  let weak_callback = WeakGcObject::from(callback);
+  let weak_argument = WeakGcObject::from(argument);
+
+  heap.collect_garbage();
+  assert!(weak_callback.upgrade(&heap).is_some());
+  assert!(weak_argument.upgrade(&heap).is_some());
+
+  let mut ctx = RootingContext { heap: &mut heap };
+  job.discard(&mut ctx);
+
+  ctx.heap.collect_garbage();
+  assert!(weak_callback.upgrade(&*ctx.heap).is_none());
+  assert!(weak_argument.upgrade(&*ctx.heap).is_none());
+
+  Ok(())
+}
+
+#[test]
+fn promise_reaction_job_error_still_releases_roots() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+  let mut vm = Vm::new(VmOptions::default());
+
+  let call_id = vm.register_native_call(noop)?;
+
+  let callback;
+  let argument;
+  let job;
+  let mut host = TestHost {
+    call_result: Err(VmError::Unimplemented("host_call_job_callback failed")),
+  };
+  {
+    let mut scope = heap.scope();
+
+    let name = scope.alloc_string("onFulfilled")?;
+    callback = scope.alloc_native_function(call_id, None, name, 1)?;
+    argument = scope.alloc_object()?;
+
+    let reaction = PromiseReactionRecord {
+      reaction_type: PromiseReactionType::Fulfill,
+      handler: Some(host.host_make_job_callback(callback)),
+    };
+    let (created, _) =
+      new_promise_reaction_job(scope.heap_mut(), reaction, Value::Object(argument), None)?;
+    job = created;
+  }
+
+  let weak_callback = WeakGcObject::from(callback);
+  let weak_argument = WeakGcObject::from(argument);
+
+  heap.collect_garbage();
+  assert!(weak_callback.upgrade(&heap).is_some());
+  assert!(weak_argument.upgrade(&heap).is_some());
+
+  let mut ctx = RootingContext { heap: &mut heap };
+  let err = job.run(&mut ctx, &mut host).expect_err("host should return error");
+  assert!(matches!(
+    err,
+    VmError::Unimplemented("host_call_job_callback failed")
+  ));
+
+  ctx.heap.collect_garbage();
+  assert!(weak_callback.upgrade(&*ctx.heap).is_none());
+  assert!(weak_argument.upgrade(&*ctx.heap).is_none());
 
   Ok(())
 }
