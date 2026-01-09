@@ -50,6 +50,9 @@ end-to-end:
 - hit-testing / link clicking (`<a href=...>`)
 - basic non-JS form interactions (text inputs, checkboxes, radios)
 
+These interactions are implemented in the browser UI interaction engine and exercised by integration
+tests, but are not yet hooked up in the windowed app.
+
 See [browser_ui.md](browser_ui.md) for implementation details and current status.
 
 ## Environment variables / resource limits
