@@ -4799,6 +4799,24 @@ impl DisplayListRenderer {
   }
 
   #[inline]
+  fn push_layer_with_blend_initialized_from_backdrop_tracked(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    self
+      .canvas
+      .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+        opacity,
+        blend,
+        is_backdrop_root,
+      )?;
+    self.push_layer_mutation_state();
+    Ok(())
+  }
+
+  #[inline]
   fn push_layer_bounded_tracked(
     &mut self,
     opacity: f32,
@@ -9231,6 +9249,10 @@ impl DisplayListRenderer {
       return Ok(end_idx);
     }
 
+    let root_opacity = node.context.opacity.clamp(0.0, 1.0);
+    let root_mix_blend_mode = node.context.mix_blend_mode;
+    let root_manual_blend = is_manual_blend(root_mix_blend_mode).then_some(root_mix_blend_mode);
+
     // Preserve-3d scenes still respect stacking-context compositing/sampling boundaries:
     //
     // - `is_isolated` (Compositing & Blending): render the full scene into a transparent group
@@ -9242,8 +9264,26 @@ impl DisplayListRenderer {
     let root_backdrop_root_layer = !node.context.is_root
       && node.context.establishes_backdrop_root
       && node.context.has_backdrop_sensitive_descendants;
-    let push_root_layer = node.context.is_isolated || root_backdrop_root_layer;
-    let root_is_backdrop_root = root_backdrop_root_layer;
+    let needs_root_layer = node.context.is_isolated
+      || root_backdrop_root_layer
+      || root_opacity < 1.0 - f32::EPSILON
+      || !matches!(root_mix_blend_mode, BlendMode::Normal);
+    let root_is_backdrop_root = node.context.establishes_backdrop_root
+      || root_opacity < 1.0 - f32::EPSILON
+      || !matches!(root_mix_blend_mode, BlendMode::Normal);
+
+    // Non-isolated compositing groups need descendant blend operations to see the already-painted
+    // backdrop. When we allocate an offscreen surface for a preserve-3d root (opacity /
+    // mix-blend-mode), seed it from the parent surface only when the subtree actually contains
+    // backdrop-sensitive effects, and only when the root is not acting as a backdrop-root
+    // boundary for blending (mirrors `maybe_init_non_isolated_group_backdrop`).
+    let init_from_backdrop = needs_root_layer
+      && !node.context.is_isolated
+      && node.context.has_backdrop_sensitive_descendants
+      && !(root_is_backdrop_root && matches!(root_mix_blend_mode, BlendMode::Normal));
+    let root_composite_blend =
+      (!matches!(root_mix_blend_mode, BlendMode::Normal) && root_manual_blend.is_none())
+        .then(|| map_blend_mode(root_mix_blend_mode));
 
     let mut order = 0;
     let mut backdrop_root_chain: Vec<usize> = Vec::new();
@@ -9297,8 +9337,22 @@ impl DisplayListRenderer {
       })
       .transpose()?;
 
-    if push_root_layer {
-      self.push_layer_tracked(1.0, root_is_backdrop_root)?;
+    if needs_root_layer {
+      if init_from_backdrop {
+        self.push_layer_with_blend_initialized_from_backdrop_tracked(
+          root_opacity,
+          root_composite_blend,
+          root_is_backdrop_root,
+        )?;
+      } else if root_composite_blend.is_some() {
+        self.push_layer_with_blend_tracked(
+          root_opacity,
+          root_composite_blend,
+          root_is_backdrop_root,
+        )?;
+      } else {
+        self.push_layer_tracked(root_opacity, root_is_backdrop_root)?;
+      }
       self.record_layer_allocation(self.canvas.width(), self.canvas.height());
     }
 
@@ -9741,9 +9795,12 @@ impl DisplayListRenderer {
       Ok(())
     })();
 
-    if push_root_layer {
+    if needs_root_layer {
       if paint_result.is_err() {
         let _ = self.pop_layer_raw_tracked();
+      } else if let Some(mode) = root_manual_blend {
+        let (layer, origin, opacity, _blend) = self.pop_layer_raw_tracked()?;
+        self.composite_manual_layer(&layer, opacity, mode, origin, None)?;
       } else {
         self.pop_layer_tracked()?;
       }
