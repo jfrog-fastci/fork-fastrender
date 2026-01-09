@@ -764,7 +764,12 @@ fn inline_svg_use_references<'a>(
         continue;
       }
 
-      let sprite_text = {
+      let sprite_base_url = res
+        .final_url
+        .clone()
+        .unwrap_or_else(|| resolved_url.clone());
+
+      let mut sprite_text = {
         let bytes = res.bytes;
         if bytes.len() >= 2 && bytes[0] == 0x1F && bytes[1] == 0x8B {
           let mut decoder = GzDecoder::new(bytes.as_slice());
@@ -811,6 +816,17 @@ fn inline_svg_use_references<'a>(
           }
         }
       };
+
+      // Inline any external raster images referenced by the sprite itself so that when we later
+      // embed a single `<symbol>`/`<g>` fragment into the parent document, nested `<image>`
+      // references continue to resolve relative to the sprite URL (not the parent document URL).
+      sprite_text = inline_svg_image_references(
+        &sprite_text,
+        &sprite_base_url,
+        fetcher,
+        ctx,
+      )?
+      .into_owned();
 
       let sprite_doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         roxmltree::Document::parse(&sprite_text)
@@ -9681,6 +9697,65 @@ mod tests {
         .iter()
         .any(|(url, dest)| url == sprite_url && *dest == FetchDestination::Image),
       "expected fetch for xml:base sprite href {sprite_url}, got: {requests:?}"
+    );
+
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn inline_svg_external_use_sprite_inlines_sprite_images_with_sprite_base() {
+    let doc_url = "https://example.test/page.html";
+    let sprite_url = "https://example.test/assets/sprite.svg";
+    let img_url = "https://example.test/assets/img.png";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><image href="img.png" width="1" height="1"/></symbol></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><use href="/assets/sprite.svg#icon"/></svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (sprite_url.to_string(), sprite_res),
+      (img_url.to_string(), img_res),
+    ]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(main_svg, 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == sprite_url && *dest == FetchDestination::Image),
+      "expected fetch for sprite URL {sprite_url}, got: {requests:?}"
+    );
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+      "expected fetch for sprite-nested image URL {img_url}, got: {requests:?}"
     );
 
     let pixel = pixmap.pixel(0, 0).expect("pixel");
