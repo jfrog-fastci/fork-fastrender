@@ -2112,11 +2112,7 @@ impl Length {
     let resolved =
       self.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
 
-    // Always preserve percentage terms, but resolve all other units into px.
-    let mut pct_total: f32 = 0.0;
-    let mut px_total: f32 = 0.0;
-
-    let mut add_non_percent_term = |unit: LengthUnit, value: f32| -> Option<()> {
+    let resolve_non_percent_term_to_px = |unit: LengthUnit, value: f32| -> Option<f32> {
       if !value.is_finite() {
         return None;
       }
@@ -2142,60 +2138,117 @@ impl Length {
       if !px.is_finite() {
         return None;
       }
-      px_total += px;
-      Some(())
+      Some(px)
     };
 
+    let build_length_from_px_and_percent = |mut px_total: f32, mut pct_total: f32| -> Option<Length> {
+      // Normalize tiny floating point noise to deterministic zeros.
+      if px_total.abs() <= 1e-6 {
+        px_total = 0.0;
+      }
+      if pct_total.abs() <= 1e-6 {
+        pct_total = 0.0;
+      }
+
+      if pct_total == 0.0 {
+        return Some(Length::px(px_total));
+      }
+      if px_total == 0.0 {
+        return Some(Length::percent(pct_total));
+      }
+
+      let mut calc = CalcLength::empty();
+      calc.push(LengthUnit::Px, px_total).ok()?;
+      calc.push(LengthUnit::Percent, pct_total).ok()?;
+      if calc.is_zero() {
+        return Some(Length::px(0.0));
+      }
+      if let Some(term) = calc.single_term() {
+        return Some(Length::new(term.value, term.unit));
+      }
+      Some(Length::calc(calc))
+    };
+
+    // For function-encoded calcs (`min()`/`max()`/`clamp()`), preserve the argument structure.
+    // Each argument is itself a linear `<length-percentage>` sum, so we can canonicalize them
+    // independently and then rebuild the function.
     if let Some(calc) = resolved.calc {
-      for term in calc.terms() {
-        if term.value == 0.0 {
-          continue;
+      match calc.kind() {
+        CalcLengthKind::Linear => {
+          let mut pct_total: f32 = 0.0;
+          let mut px_total: f32 = 0.0;
+
+          for term in calc.terms() {
+            if term.value == 0.0 {
+              continue;
+            }
+            if term.unit == LengthUnit::Percent {
+              pct_total += term.value;
+              continue;
+            }
+            let Some(px) = resolve_non_percent_term_to_px(term.unit, term.value) else {
+              return resolved;
+            };
+            px_total += px;
+          }
+
+          return build_length_from_px_and_percent(px_total, pct_total).unwrap_or(resolved);
         }
-        if term.unit == LengthUnit::Percent {
-          pct_total += term.value;
-          continue;
-        }
-        if add_non_percent_term(term.unit, term.value).is_none() {
-          return resolved;
+        kind @ (CalcLengthKind::Min | CalcLengthKind::Max | CalcLengthKind::Clamp) => {
+          let mapped = calc.map_linear_args(kind, |arg| {
+            let mut pct_total: f32 = 0.0;
+            let mut px_total: f32 = 0.0;
+
+            for term in arg.terms() {
+              if term.value == 0.0 {
+                continue;
+              }
+              if term.unit == LengthUnit::Percent {
+                pct_total += term.value;
+                continue;
+              }
+              px_total += resolve_non_percent_term_to_px(term.unit, term.value)?;
+            }
+
+            // Collapse to a canonical linear calc (px + %), leaving `%` components intact.
+            let mut out = CalcLength::empty();
+            out.push(LengthUnit::Px, px_total).ok()?;
+            out.push(LengthUnit::Percent, pct_total).ok()?;
+            Some(out)
+          });
+
+          let Some(mapped) = mapped else {
+            return resolved;
+          };
+
+          // If the entire expression is absolute, collapse to px for a deterministic computed value.
+          if !mapped.has_percentage() {
+            if let Some(abs) = mapped.absolute_sum() {
+              return Length::px(abs);
+            }
+          }
+
+          if mapped.is_zero() {
+            return Length::px(0.0);
+          }
+          return Length::calc(mapped);
         }
       }
-    } else {
-      if resolved.unit == LengthUnit::Percent {
-        pct_total += resolved.value;
-      } else if resolved.value != 0.0 {
-        if add_non_percent_term(resolved.unit, resolved.value).is_none() {
-          return resolved;
-        }
-      }
     }
 
-    // Normalize tiny floating point noise to deterministic zeros.
-    if px_total.abs() <= 1e-6 {
-      px_total = 0.0;
-    }
-    if pct_total.abs() <= 1e-6 {
-      pct_total = 0.0;
-    }
-
-    if pct_total == 0.0 {
-      return Length::px(px_total);
-    }
-    if px_total == 0.0 {
-      return Length::percent(pct_total);
+    // Non-calc (single unit) value.
+    let mut pct_total: f32 = 0.0;
+    let mut px_total: f32 = 0.0;
+    if resolved.unit == LengthUnit::Percent {
+      pct_total += resolved.value;
+    } else if resolved.value != 0.0 {
+      let Some(px) = resolve_non_percent_term_to_px(resolved.unit, resolved.value) else {
+        return resolved;
+      };
+      px_total += px;
     }
 
-    let calc = CalcLength::single(LengthUnit::Px, px_total)
-      .add_scaled(&CalcLength::single(LengthUnit::Percent, pct_total), 1.0);
-    let Some(calc) = calc else {
-      return resolved;
-    };
-    if calc.is_zero() {
-      return Length::px(0.0);
-    }
-    if let Some(term) = calc.single_term() {
-      return Length::new(term.value, term.unit);
-    }
-    Length::calc(calc)
+    build_length_from_px_and_percent(px_total, pct_total).unwrap_or(resolved)
   }
 
   /// Returns true if this length (or any calc term) uses a percentage component.

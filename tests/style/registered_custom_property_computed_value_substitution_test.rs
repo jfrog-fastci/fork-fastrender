@@ -1,4 +1,5 @@
 use fastrender::css::parser::parse_stylesheet;
+use fastrender::css::properties::parse_length;
 use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::style::cascade::apply_styles;
 use fastrender::style::color::Rgba;
@@ -57,6 +58,45 @@ fn registered_custom_property_length_substitutes_computed_value_on_same_element(
   let styled = apply_styles(&dom, &sheet);
 
   assert_eq!(styled.styles.margin_left, Some(Length::px(10.0)));
+}
+
+#[test]
+fn registered_custom_property_length_max_is_not_flattened_across_arguments() {
+  let css = r#"
+    @property --len {
+      syntax: "<length>";
+      inherits: true;
+      initial-value: 0px;
+    }
+    #root { font-size: 10px; --len: max(1em, 5px); }
+    #child { font-size: 20px; margin-left: var(--len); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+
+  assert_eq!(child.styles.margin_left, Some(Length::px(10.0)));
+}
+
+#[test]
+fn registered_custom_property_length_percentage_max_preserves_percent_terms() {
+  let css = r#"
+    @property --len {
+      syntax: "<length-percentage>";
+      inherits: true;
+      initial-value: 0px;
+    }
+    #root { font-size: 10px; --len: max(50%, 1em); }
+    #child { font-size: 20px; margin-left: var(--len); }
+  "#;
+  let sheet = parse_stylesheet(css).unwrap();
+  let dom = dom_with_child();
+  let styled = apply_styles(&dom, &sheet);
+  let child = styled.children.first().expect("child");
+
+  let expected = parse_length("max(50%, 10px)").expect("parse expected max()");
+  assert_eq!(child.styles.margin_left, Some(expected));
 }
 
 #[test]
