@@ -18,7 +18,7 @@ use parse_js::{parse_with_options, Dialect, ParseOptions, SourceType};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use vm_js::{
   GcObject, GcString, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Value, Vm,
   VmError, VmOptions,
@@ -30,7 +30,7 @@ pub(crate) fn is_available() -> bool {
 
 pub struct VmJsBackend {
   rt: Option<JsWptRuntime>,
-  deadline: Option<Instant>,
+  deadline: Option<Duration>,
   timed_out: bool,
   max_tasks: usize,
   max_microtasks: usize,
@@ -109,15 +109,17 @@ impl VmJsBackend {
 
 impl Backend for VmJsBackend {
   fn init_realm(&mut self, init: BackendInit) -> Result<(), RunError> {
-    let deadline = Instant::now() + init.timeout;
-    self.deadline = Some(deadline);
+    // Use a virtual deadline derived from the configured timeout. The backend advances its own
+    // virtual clock deterministically when idle (see `idle_wait`) rather than sleeping in real
+    // time.
+    self.deadline = Some(init.timeout);
     self.timed_out = false;
     self.max_tasks = init.max_tasks;
     self.max_microtasks = init.max_microtasks;
     self.tasks_executed = 0;
     self.microtasks_executed = 0;
 
-    self.rt = Some(JsWptRuntime::new(&init.test_url, deadline));
+    self.rt = Some(JsWptRuntime::new(&init.test_url));
     Ok(())
   }
 
@@ -241,11 +243,47 @@ impl Backend for VmJsBackend {
     let Some(deadline) = self.deadline else {
       return true;
     };
-    Instant::now() >= deadline
+    let Some(rt) = self.rt.as_ref() else {
+      return true;
+    };
+    rt.event_loop.now >= deadline
   }
 
   fn idle_wait(&mut self) {
-    std::thread::sleep(Duration::from_millis(1));
+    // Deterministic virtual time advancement:
+    // - If a timer is scheduled in the future, fast-forward to its due time (or the deadline).
+    // - If no timers remain, fast-forward to the deadline so the run terminates deterministically.
+    if self.timed_out {
+      return;
+    }
+    let Some(deadline) = self.deadline else {
+      self.timed_out = true;
+      return;
+    };
+    let Some(rt) = self.rt.as_mut() else {
+      self.timed_out = true;
+      return;
+    };
+
+    let now = rt.event_loop.now;
+    let next_due = rt.event_loop.next_timer_due_time();
+    let target = match next_due {
+      Some(due) if due > now => due.min(deadline),
+      Some(_due) => now,
+      None => deadline,
+    };
+
+    if target > now {
+      rt.event_loop.now = target;
+    } else if now < deadline {
+      // Nothing runnable and nothing to advance to: force progress to the deadline so we don't
+      // spin forever.
+      rt.event_loop.now = deadline;
+    }
+
+    if rt.event_loop.now >= deadline {
+      self.timed_out = true;
+    }
   }
 }
 
@@ -477,10 +515,11 @@ struct PromiseJob {
 
 #[derive(Default)]
 struct EventLoop {
+  now: Duration,
   next_timer_id: i32,
   next_timer_seq: u64,
   timers: HashMap<i32, TimerState>,
-  timer_queue: BinaryHeap<Reverse<(Instant, u64, i32)>>,
+  timer_queue: BinaryHeap<Reverse<(Duration, u64, i32)>>,
   task_queue: VecDeque<(Value, Value, Vec<Value>)>,
   microtask_queue: VecDeque<(Value, Value, Vec<Value>)>,
 }
@@ -488,6 +527,7 @@ struct EventLoop {
 impl EventLoop {
   fn new() -> Self {
     Self {
+      now: Duration::ZERO,
       next_timer_id: 1,
       next_timer_seq: 0,
       timers: HashMap::new(),
@@ -529,7 +569,7 @@ impl EventLoop {
   ) -> i32 {
     let id = self.next_timer_id;
     self.next_timer_id = self.next_timer_id.wrapping_add(1);
-    let due = Instant::now() + delay;
+    let due = self.now.saturating_add(delay);
     let schedule_seq = self.next_timer_seq;
     self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
 
@@ -565,7 +605,7 @@ impl EventLoop {
   }
 
   fn enqueue_due_timers(&mut self) {
-    let now = Instant::now();
+    let now = self.now;
     while let Some(Reverse((due, schedule_seq, id))) = self.timer_queue.peek().copied() {
       if due > now {
         break;
@@ -608,6 +648,19 @@ impl EventLoop {
       }
     }
   }
+
+  fn next_timer_due_time(&mut self) -> Option<Duration> {
+    while let Some(Reverse((due, schedule_seq, id))) = self.timer_queue.peek().copied() {
+      match self.timers.get(&id) {
+        Some(timer) if timer.schedule_seq == schedule_seq => return Some(due),
+        _ => {
+          // Stale queue entry (cleared timer or rescheduled id).
+          let _ = self.timer_queue.pop();
+        }
+      }
+    }
+    None
+  }
 }
 
 struct JsWptRuntime {
@@ -628,7 +681,7 @@ struct JsWptRuntime {
 }
 
 impl JsWptRuntime {
-  fn new(test_url: &str, deadline: Instant) -> Self {
+  fn new(test_url: &str) -> Self {
     let mut vm = Vm::new(VmOptions {
       max_stack_depth: 1024,
       default_fuel: None,
@@ -638,7 +691,9 @@ impl JsWptRuntime {
     });
     vm.set_budget(vm_js::Budget {
       fuel: Some(50_000_000),
-      deadline: Some(deadline),
+      // The offline runner enforces per-test timeouts using a deterministic virtual clock. We keep
+      // vm-js's time-based deadlines disabled to avoid depending on wall-clock time.
+      deadline: None,
       check_time_every: 1,
     });
 

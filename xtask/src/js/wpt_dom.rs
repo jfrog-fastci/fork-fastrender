@@ -17,7 +17,7 @@ const DEFAULT_LONG_TIMEOUT_MS: u64 = 30_000;
 pub enum WptDomBackend {
   /// Prefer the best backend available in the current build (vm-js when enabled).
   Auto,
-  /// vm-js backend (FastRender in-tree JS runtime; currently feature-gated).
+  /// vm-js backend (FastRender in-tree JS runtime).
   VmJs,
 }
 

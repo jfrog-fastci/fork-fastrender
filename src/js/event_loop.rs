@@ -269,6 +269,26 @@ impl<Host: 'static> EventLoop<Host> {
     self.clock.now()
   }
 
+  /// Returns the due time of the next scheduled timer, if any.
+  ///
+  /// This is primarily intended for deterministic hosts (like the offline WPT runner) that want
+  /// to "fast-forward" a virtual clock to the next timer rather than sleeping in real time.
+  ///
+  /// The timer priority queue can contain stale entries (e.g. cleared timers, or intervals that
+  /// have since been rescheduled). This method discards those stale entries before returning.
+  pub fn next_timer_due_time(&mut self) -> Option<Duration> {
+    while let Some(Reverse((due, schedule_seq, id))) = self.timer_queue.peek().copied() {
+      match self.timers.get(&id) {
+        Some(timer) if timer.schedule_seq == schedule_seq => return Some(due),
+        _ => {
+          // Stale queue entry: timer was cleared or rescheduled since it was pushed.
+          let _ = self.timer_queue.pop();
+        }
+      }
+    }
+    None
+  }
+
   pub fn queue_limits(&self) -> QueueLimits {
     self.queue_limits
   }

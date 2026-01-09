@@ -142,6 +142,42 @@ fn js_wpt_dom_help_mentions_flags() {
 }
 
 #[test]
+fn js_wpt_dom_smoke_sync_pass_reports_pass() {
+  let dir = tempfile::TempDir::new().expect("tempdir");
+  let report_path = dir.path().join("wpt_dom_report.json");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args([
+      "js",
+      "wpt-dom",
+      "--filter",
+      "smoke/sync-pass.html",
+      "--report",
+    ])
+    .arg(&report_path)
+    .output()
+    .expect("run cargo xtask js wpt-dom");
+
+  assert!(
+    output.status.success(),
+    "xtask js wpt-dom should exit successfully; stderr:\n{}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let raw = std::fs::read_to_string(&report_path).expect("read report");
+  let json: serde_json::Value = serde_json::from_str(&raw).expect("parse report JSON");
+
+  let results = json["results"].as_array().expect("results should be an array");
+  assert_eq!(results.len(), 1, "expected exactly one filtered result");
+  assert_eq!(results[0]["id"], "smoke/sync-pass.html");
+  assert_eq!(results[0]["outcome"], "passed");
+  assert_eq!(json["summary"]["passed"], 1);
+  assert_eq!(json["summary"]["failed"], 0);
+  assert_eq!(json["summary"]["errored"], 0);
+  assert_eq!(json["summary"]["timed_out"], 0);
+}
+
+#[test]
 fn chrome_baseline_fixtures_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["chrome-baseline-fixtures", "--help"])

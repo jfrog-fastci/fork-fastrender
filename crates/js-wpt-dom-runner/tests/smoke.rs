@@ -28,7 +28,9 @@ fn run_test_id_all_backends(
   let mut out = Vec::new();
   for backend in BackendKind::all_available() {
     let mut config = config.clone();
-    config.backend = js_wpt_dom_runner::BackendSelection::VmJs;
+    config.backend = match backend {
+      BackendKind::VmJs => js_wpt_dom_runner::BackendSelection::VmJs,
+    };
 
     let fs = WptFs::new(&corpus_root).expect("wpt fs");
     let runner = Runner::new(fs, config);
@@ -60,6 +62,22 @@ fn runs_window_js_smoke_test() {
 #[test]
 fn runs_any_js_in_window_realm() {
   assert_wpt_pass("smoke/any_promise.any.js");
+}
+
+#[test]
+fn runs_html_smoke_test() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/sync-pass.html")
+    .expect("missing sync-pass.html");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  assert_eq!(result.outcome, RunOutcome::Pass);
 }
 
 #[test]
