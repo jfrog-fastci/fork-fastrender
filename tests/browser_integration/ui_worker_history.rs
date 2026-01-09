@@ -17,7 +17,6 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 fn assert_frame_has_color(frame: &RenderedFrame, expected: (u8, u8, u8, u8)) {
   let pixmap = &frame.pixmap;
   assert!(pixmap.width() > 0 && pixmap.height() > 0, "expected non-empty pixmap");
-
   // Avoid sampling the right/bottom edges: viewport scrollbars may reserve/paint over them.
   let x1 = if pixmap.width() > 1 { 1 } else { 0 };
   let y1 = if pixmap.height() > 1 { 1 } else { 0 };

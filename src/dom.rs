@@ -14155,6 +14155,27 @@ mod tests {
     with_target_fragment(Some("anchor"), || {
       assert!(matches(&anchor, &[], &PseudoClass::Target));
     });
+
+    let cafe_target = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "café".to_string())],
+      },
+      children: vec![],
+    };
+    with_target_fragment(Some("#caf%C3%A9"), || {
+      assert!(
+        matches(&cafe_target, &[], &PseudoClass::Target),
+        "expected percent-encoded fragment to match decoded id"
+      );
+    });
+    with_target_fragment(Some("#caf%25C3%25A9"), || {
+      assert!(
+        !matches(&cafe_target, &[], &PseudoClass::Target),
+        "expected fragment decoding to occur exactly once (double-encoded fragment must not match)"
+      );
+    });
   }
 
   #[test]
