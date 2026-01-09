@@ -19,6 +19,8 @@ pub mod history;
 pub mod messages;
 pub mod shortcuts;
 pub mod worker;
+/// Compatibility module re-exporting the canonical UI worker entrypoints.
+pub mod worker_loop;
 pub mod url;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
