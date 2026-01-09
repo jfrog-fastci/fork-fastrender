@@ -3,6 +3,7 @@ pub const ABOUT_NEWTAB: &str = "about:newtab";
 pub const ABOUT_ERROR: &str = "about:error";
 pub const ABOUT_TEST_SCROLL: &str = "about:test-scroll";
 pub const ABOUT_TEST_HEAVY: &str = "about:test-heavy";
+pub const ABOUT_TEST_FORM: &str = "about:test-form";
 
 /// Base URL hint used for all `about:` pages.
 ///
@@ -16,6 +17,12 @@ pub fn is_about_url(url: &str) -> bool {
 
 pub fn html_for_about_url(url: &str) -> Option<String> {
   let normalized = url.trim();
+  // `about:` pages may be used with query strings (e.g. form submissions) or fragments.
+  // Only the base `about:*` identifier selects the template.
+  let normalized = normalized
+    .split(|c| matches!(c, '?' | '#'))
+    .next()
+    .unwrap_or(normalized);
   let lower = normalized.to_ascii_lowercase();
   match lower.as_str() {
     ABOUT_BLANK => Some(blank_html().to_string()),
@@ -23,6 +30,7 @@ pub fn html_for_about_url(url: &str) -> Option<String> {
     ABOUT_ERROR => Some(error_html("Navigation error", None)),
     ABOUT_TEST_SCROLL => Some(test_scroll_html()),
     ABOUT_TEST_HEAVY => Some(test_heavy_html()),
+    ABOUT_TEST_FORM => Some(test_form_html()),
     _ => None,
   }
 }
@@ -142,6 +150,27 @@ fn test_heavy_html() -> String {
   }
   out.push_str("</body></html>");
   out
+}
+
+fn test_form_html() -> String {
+  // Offline form used by browser UI interaction tests.
+  "<!doctype html>
+<html>
+  <head>
+    <meta charset=\"utf-8\">
+    <title>Form Test</title>
+    <style>
+      body { margin: 0; font: 14px/1.3 system-ui, -apple-system, Segoe UI, sans-serif; }
+      input { display: block; width: 180px; height: 28px; }
+    </style>
+  </head>
+  <body>
+    <form>
+      <input name=\"q\">
+    </form>
+  </body>
+</html>"
+    .to_string()
 }
 
 fn escape_html(text: &str) -> String {

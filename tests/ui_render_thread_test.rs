@@ -1,10 +1,13 @@
 #![cfg(feature = "browser_ui")]
 
+use fastrender::interaction::KeyAction;
 use fastrender::api::{FastRenderConfig, FastRenderFactory, FastRenderPoolConfig};
 use fastrender::render_control::StageHeartbeat;
 use fastrender::text::font_db::FontConfig;
 use fastrender::ui::cancel::CancelGens;
-use fastrender::ui::{spawn_browser_render_thread, NavigationReason, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::{
+  spawn_browser_render_thread, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
+};
 use std::ffi::OsString;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
@@ -249,5 +252,84 @@ fn navigation_cancellation_drops_stale_frame() {
   assert!(
     !saw_first_frame,
     "expected no FrameReady for the cancelled first navigation"
+  );
+}
+
+#[test]
+fn enter_submits_focused_text_input_form() {
+  let _lock = test_lock();
+
+  let factory = factory_for_tests();
+  let (tx, rx, handle) = spawn_browser_render_thread(factory).unwrap();
+
+  let tab_id = TabId(1);
+  let cancel = CancelGens::new();
+  tx.send(UiToWorker::CreateTab {
+    tab_id,
+    initial_url: None,
+    cancel,
+  })
+  .unwrap();
+  tx.send(UiToWorker::ViewportChanged {
+    tab_id,
+    viewport_css: (200, 120),
+    dpr: 1.0,
+  })
+  .unwrap();
+  tx.send(UiToWorker::Navigate {
+    tab_id,
+    url: "about:test-form".to_string(),
+    reason: NavigationReason::TypedUrl,
+  })
+  .unwrap();
+
+  // Wait for the initial frame so the document has cached layout for hit-testing.
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(2)) {
+    if matches!(msg, WorkerToUi::FrameReady { .. }) {
+      break;
+    }
+  }
+
+  let pos_css = (5.0, 5.0);
+  tx.send(UiToWorker::PointerDown {
+    tab_id,
+    pos_css,
+    button: PointerButton::Primary,
+  })
+  .unwrap();
+  tx.send(UiToWorker::PointerUp {
+    tab_id,
+    pos_css,
+    button: PointerButton::Primary,
+  })
+  .unwrap();
+  tx.send(UiToWorker::TextInput {
+    tab_id,
+    text: "a".to_string(),
+  })
+  .unwrap();
+  tx.send(UiToWorker::KeyAction {
+    tab_id,
+    key: KeyAction::Enter,
+  })
+  .unwrap();
+
+  let expected_url = "about:test-form?q=a";
+  let mut saw_commit = false;
+  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(5)) {
+    if let WorkerToUi::NavigationCommitted { url, .. } = msg {
+      if url == expected_url {
+        saw_commit = true;
+        break;
+      }
+    }
+  }
+
+  drop(tx);
+  handle.join().unwrap();
+
+  assert!(
+    saw_commit,
+    "expected NavigationCommitted for {expected_url} (keyboard submit)"
   );
 }

@@ -592,17 +592,42 @@ impl BrowserRenderThread {
   }
 
   fn key_action(&mut self, tab_id: TabId, key: crate::interaction::KeyAction) {
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return;
-    };
-    let Some(doc) = tab.document.as_mut() else {
-      return;
-    };
+    let mut navigate_to: Option<String> = None;
 
-    let changed = doc.mutate_dom(|dom| tab.interaction.key_action(dom, key));
-    if changed {
-      tab.cancel.bump_paint();
-      repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
+    {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
+      let Some(doc) = tab.document.as_mut() else {
+        return;
+      };
+
+      let base_url = tab
+        .base_url
+        .as_deref()
+        .or_else(|| tab.url.as_deref())
+        .unwrap_or("");
+      let document_url = tab.url.as_deref().unwrap_or("");
+
+      let mut action = InteractionAction::None;
+      let changed = doc.mutate_dom(|dom| {
+        let (dom_changed, act) = tab
+          .interaction
+          .key_activate(dom, key, document_url, base_url);
+        action = act;
+        dom_changed
+      });
+
+      if let InteractionAction::Navigate { href } = action {
+        navigate_to = Some(href);
+      } else if changed {
+        tab.cancel.bump_paint();
+        repaint_tab(tab_id, tab, self.ui_tx.clone(), RepaintReason::Input);
+      }
+    }
+
+    if let Some(href) = navigate_to {
+      self.navigate(tab_id, href, NavigationReason::LinkClick);
     }
   }
 }
