@@ -113,6 +113,32 @@ fn set_class(doc: &mut BrowserDocument, element_id: &str, class: &str) -> bool {
   })
 }
 
+fn set_attr(doc: &mut BrowserDocument, element_id: &str, name: &str, value: &str) -> bool {
+  doc.mutate_dom(|dom| {
+    let mut index = DomIndex::build(dom);
+    let node_id = *index
+      .id_by_element_id
+      .get(element_id)
+      .unwrap_or_else(|| panic!("expected #{element_id} element"));
+    index
+      .with_node_mut(node_id, |node| dom_mutation::set_attr(node, name, value))
+      .unwrap_or(false)
+  })
+}
+
+fn remove_attr(doc: &mut BrowserDocument, element_id: &str, name: &str) -> bool {
+  doc.mutate_dom(|dom| {
+    let mut index = DomIndex::build(dom);
+    let node_id = *index
+      .id_by_element_id
+      .get(element_id)
+      .unwrap_or_else(|| panic!("expected #{element_id} element"));
+    index
+      .with_node_mut(node_id, |node| dom_mutation::remove_attr(node, name))
+      .unwrap_or(false)
+  })
+}
+
 #[test]
 fn class_flip_triggers_transition_opacity() -> Result<()> {
   ensure_test_env();
@@ -459,8 +485,19 @@ fn assert_mid_grey(px: (u8, u8, u8, u8)) {
   assert_eq!(a, 255, "expected opaque output, got rgba=({r},{g},{b},{a})");
 }
 
+fn assert_grey_range(px: (u8, u8, u8, u8), range: std::ops::RangeInclusive<u8>) {
+  let (r, g, b, a) = px;
+  assert!(
+    range.contains(&r),
+    "expected grey in {range:?}, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!(g, r, "expected grey, got rgba=({r},{g},{b},{a})");
+  assert_eq!(b, r, "expected grey, got rgba=({r},{g},{b},{a})");
+  assert_eq!(a, 255, "expected opaque output, got rgba=({r},{g},{b},{a})");
+}
+
 #[test]
-fn removing_transition_property_cancels_running_transition() -> Result<()> {
+fn removing_transition_property_does_not_cancel_running_transition() -> Result<()> {
   ensure_test_env();
 
   let html = r#"
@@ -493,22 +530,26 @@ fn removing_transition_property_cancels_running_transition() -> Result<()> {
   let mid = doc.render_frame()?;
   assert_mid_grey(pixel(&mid, 50, 50));
 
-  // Disable transitions at the same timestamp; the running transition must cancel and snap to the
-  // after-change style.
+  // Disable transitions at the same timestamp. Transition parameters must be frozen, so the
+  // running transition continues unaffected.
   assert!(set_class(&mut doc, "box", "b no"));
-  let snapped = doc.render_frame()?;
-  assert_eq!(pixel(&snapped, 50, 50), (0, 0, 0, 255));
+  let still_mid = doc.render_frame()?;
+  assert_mid_grey(pixel(&still_mid, 50, 50));
 
-  // Verify the old transition does not continue running after being cancelled.
+  // Verify the transition continues running after the parameter change.
   doc.set_animation_time_ms(600.0);
   let after = doc.render_frame()?;
-  assert_eq!(pixel(&after, 50, 50), (0, 0, 0, 255));
+  assert_grey_range(pixel(&after, 50, 50), 95..=110);
+
+  doc.set_animation_time_ms(1000.0);
+  let end = doc.render_frame()?;
+  assert_eq!(pixel(&end, 50, 50), (0, 0, 0, 255));
 
   Ok(())
 }
 
 #[test]
-fn setting_duration_to_zero_cancels_running_transition() -> Result<()> {
+fn setting_duration_to_zero_does_not_cancel_running_transition() -> Result<()> {
   ensure_test_env();
 
   let html = r#"
@@ -548,15 +589,137 @@ fn setting_duration_to_zero_cancels_running_transition() -> Result<()> {
   let mid = doc.render_frame()?;
   assert_mid_grey(pixel(&mid, 50, 50));
 
-  // Set the duration to 0ms at t=500ms; combined duration <= 0 should cancel the running
-  // transition.
+  // Set the duration to 0ms at t=500ms. Transition parameters are frozen, so the already running
+  // transition continues with the 1000ms duration captured at start.
   assert!(set_class(&mut doc, "box", "b no"));
-  let snapped = doc.render_frame()?;
-  assert_eq!(pixel(&snapped, 50, 50), (0, 0, 0, 255));
+  let still_mid = doc.render_frame()?;
+  assert_mid_grey(pixel(&still_mid, 50, 50));
 
   doc.set_animation_time_ms(600.0);
   let after = doc.render_frame()?;
-  assert_eq!(pixel(&after, 50, 50), (0, 0, 0, 255));
+  assert_grey_range(pixel(&after, 50, 50), 95..=110);
+
+  doc.set_animation_time_ms(1000.0);
+  let end = doc.render_frame()?;
+  assert_eq!(pixel(&end, 50, 50), (0, 0, 0, 255));
+
+  Ok(())
+}
+
+#[test]
+fn transition_parameters_from_after_change_style_control_started_transition() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box { width: 100px; height: 100px; background: black; opacity: 0; transition: opacity 1000ms linear; }
+      #box:hover { opacity: 1; transition-duration: 2000ms; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+  assert!(set_attr(&mut doc, "box", "data-fastr-hover", "true"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let eps = 1e-3;
+  let cases = [(1000.0, 0.5), (2000.0, 1.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  // Start the reverse transition at t=2000ms.
+  doc.set_animation_time_ms(2000.0);
+  assert!(remove_attr(&mut doc, "box", "data-fastr-hover"));
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let cases = [(2500.0, 0.5), (3000.0, 0.0)];
+  for (time, expected) in cases {
+    let mut sampled = base_tree.clone();
+    let viewport = sampled.viewport_size();
+    animation::apply_transitions(&mut sampled, time, viewport);
+    let opacity = fragment_opacity(&sampled, box_id);
+    assert!(
+      (opacity - expected).abs() < eps,
+      "t={time} expected {expected}, got {opacity}"
+    );
+  }
+
+  Ok(())
+}
+
+#[test]
+fn transition_parameters_are_frozen_while_running() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box {
+        width: 100px;
+        height: 100px;
+        background: black;
+        opacity: 0;
+        transition-property: opacity;
+        transition-timing-function: linear;
+        transition-delay: 0s;
+      }
+      #box.state1 { opacity: 1; transition-duration: 2000ms; }
+      #box.state2 { opacity: 1; transition-duration: 100ms; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 200)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+  assert!(set_class(&mut doc, "box", "state1"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  doc.set_animation_time_ms(500.0);
+  assert!(set_class(&mut doc, "box", "state2"));
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let base_tree = prepared.fragment_tree().clone();
+
+  let mut sampled = base_tree.clone();
+  let viewport = sampled.viewport_size();
+  animation::apply_transitions(&mut sampled, 1000.0, viewport);
+  let opacity = fragment_opacity(&sampled, box_id);
+  assert!(
+    (opacity - 0.5).abs() < 1e-3,
+    "expected opacity ~0.5 at 1000ms of 2000ms transition, got {opacity}"
+  );
 
   Ok(())
 }
