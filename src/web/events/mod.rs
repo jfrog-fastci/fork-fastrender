@@ -116,6 +116,17 @@ impl ListenerId {
     Self(id)
   }
 
+  /// Derives a stable listener identity from a `vm-js` GC object handle.
+  ///
+  /// `vm-js` GC handles are generation-checked: an `{index, generation}` pair uniquely identifies a
+  /// currently-live heap allocation, and the generation changes when a slot is reused. Packing
+  /// these parts into a `u64` gives us a deterministic, host-stable identifier for JS callback
+  /// identity.
+  pub fn from_gc_object(obj: vm_js::GcObject) -> Self {
+    // `vm_js::HeapId`'s raw packed `u64` is crate-private; reconstruct the packing here.
+    Self::new((obj.index() as u64) | ((obj.generation() as u64) << 32))
+  }
+
   pub fn get(self) -> u64 {
     self.0
   }

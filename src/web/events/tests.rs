@@ -6,6 +6,12 @@ use crate::dom2::{Document, NodeId};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
 
+#[test]
+fn listener_id_new_roundtrips_through_get() {
+  let id = ListenerId::new(42);
+  assert_eq!(id.get(), 42);
+}
+
 fn element(tag_name: &str, children: Vec<DomNode>) -> DomNode {
   DomNode {
     node_type: DomNodeType::Element {
