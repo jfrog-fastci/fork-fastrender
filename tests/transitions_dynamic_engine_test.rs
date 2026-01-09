@@ -442,3 +442,121 @@ fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
 
   Ok(())
 }
+
+fn pixel(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+  let px = pixmap.pixel(x, y).unwrap();
+  (px.red(), px.green(), px.blue(), px.alpha())
+}
+
+fn assert_mid_grey(px: (u8, u8, u8, u8)) {
+  let (r, g, b, a) = px;
+  assert!(
+    (120..=135).contains(&r),
+    "expected ~50% blended grey, got rgba=({r},{g},{b},{a})"
+  );
+  assert_eq!(g, r, "expected grey, got rgba=({r},{g},{b},{a})");
+  assert_eq!(b, r, "expected grey, got rgba=({r},{g},{b},{a})");
+  assert_eq!(a, 255, "expected opaque output, got rgba=({r},{g},{b},{a})");
+}
+
+#[test]
+fn removing_transition_property_cancels_running_transition() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      #box { width: 100px; height: 100px; background: black; opacity: 0; transition: opacity 1000ms linear; }
+      #box.b { opacity: 1; }
+      /* Same target value, but disable transitions */
+      #box.no { opacity: 1; transition-property: none; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(100, 100)
+      .with_animation_time(0.0),
+  )?;
+
+  // First frame initializes the pipeline and establishes the baseline style.
+  doc.render_frame()?;
+
+  // Start the transition at t=0.
+  assert!(set_class(&mut doc, "box", "b"));
+  doc.render_frame()?;
+
+  // Sample mid-transition at t=500ms.
+  doc.set_animation_time_ms(500.0);
+  let mid = doc.render_frame()?;
+  assert_mid_grey(pixel(&mid, 50, 50));
+
+  // Disable transitions at the same timestamp; the running transition must cancel and snap to the
+  // after-change style.
+  assert!(set_class(&mut doc, "box", "b no"));
+  let snapped = doc.render_frame()?;
+  assert_eq!(pixel(&snapped, 50, 50), (0, 0, 0, 255));
+
+  // Verify the old transition does not continue running after being cancelled.
+  doc.set_animation_time_ms(600.0);
+  let after = doc.render_frame()?;
+  assert_eq!(pixel(&after, 50, 50), (0, 0, 0, 255));
+
+  Ok(())
+}
+
+#[test]
+fn setting_duration_to_zero_cancels_running_transition() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      #box {
+        width: 100px;
+        height: 100px;
+        background: black;
+        opacity: 0;
+        transition-property: opacity;
+        transition-timing-function: linear;
+        transition-delay: 0ms;
+        transition-duration: 1000ms;
+      }
+      #box.b { opacity: 1; transition-duration: 1000ms; }
+      #box.no { opacity: 1; transition-duration: 0ms; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(100, 100)
+      .with_animation_time(0.0),
+  )?;
+
+  doc.render_frame()?;
+
+  // Start the transition at t=0.
+  assert!(set_class(&mut doc, "box", "b"));
+  doc.render_frame()?;
+
+  // Sample mid-transition at t=500ms.
+  doc.set_animation_time_ms(500.0);
+  let mid = doc.render_frame()?;
+  assert_mid_grey(pixel(&mid, 50, 50));
+
+  // Set the duration to 0ms at t=500ms; combined duration <= 0 should cancel the running
+  // transition.
+  assert!(set_class(&mut doc, "box", "b no"));
+  let snapped = doc.render_frame()?;
+  assert_eq!(pixel(&snapped, 50, 50), (0, 0, 0, 255));
+
+  doc.set_animation_time_ms(600.0);
+  let after = doc.render_frame()?;
+  assert_eq!(pixel(&after, 50, 50), (0, 0, 0, 255));
+
+  Ok(())
+}
