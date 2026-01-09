@@ -1143,6 +1143,49 @@ fn document_body_get_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn document_get_element_by_id_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_ref() };
+
+  let query_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let query_value = scope.heap_mut().to_string(query_value)?;
+  let query = scope
+    .heap()
+    .get_string(query_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let Some(node_id) = dom.get_element_by_id(&query) else {
+    return Ok(Value::Null);
+  };
+  get_or_create_node_wrapper(scope, document_obj, node_id)
+}
+
 fn element_class_name_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -1748,6 +1791,26 @@ fn init_window_globals(
         set: Value::Undefined,
       },
     },
+  )?;
+
+  // document.getElementById
+  let get_element_by_id_key = alloc_key(&mut scope, "getElementById")?;
+  let get_element_by_id_call_id = vm.register_native_call(document_get_element_by_id_native)?;
+  let get_element_by_id_name = scope.alloc_string("getElementById")?;
+  scope.push_root(Value::String(get_element_by_id_name))?;
+  let get_element_by_id_func =
+    scope.alloc_native_function(get_element_by_id_call_id, None, get_element_by_id_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      get_element_by_id_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(get_element_by_id_func))?;
+  scope.define_property(
+    document_obj,
+    get_element_by_id_key,
+    data_desc(Value::Object(get_element_by_id_func)),
   )?;
 
   // Store shared Element.className getter/setter functions on `document` so wrappers can reuse them.

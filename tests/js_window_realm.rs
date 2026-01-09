@@ -400,6 +400,76 @@ fn document_head_and_body_reflect_dom_ids() -> Result<()> {
 }
 
 #[test]
+fn document_get_element_by_id_returns_stable_wrapper() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body><div id=x></div></body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r#"
+  globalThis.__missing = document.getElementById("missing") === null;
+  globalThis.__empty = document.getElementById("") === null;
+  const el = document.getElementById("x");
+  globalThis.__same = el === document.getElementById("x");
+  globalThis.__id_before = el.id;
+  el.id = "y";
+  globalThis.__old_missing = document.getElementById("x") === null;
+  const el2 = document.getElementById("y");
+  globalThis.__same_after = el === el2;
+  globalThis.__id_after = el2.id;
+  "#,
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+  }
+
+  let (missing, empty, same, old_missing, same_after, id_before, id_after) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let missing = get_data_prop(&mut scope, global, "__missing");
+    let empty = get_data_prop(&mut scope, global, "__empty");
+    let same = get_data_prop(&mut scope, global, "__same");
+    let old_missing = get_data_prop(&mut scope, global, "__old_missing");
+    let same_after = get_data_prop(&mut scope, global, "__same_after");
+    let id_before_v = get_data_prop(&mut scope, global, "__id_before");
+    let id_after_v = get_data_prop(&mut scope, global, "__id_after");
+    (
+      missing,
+      empty,
+      same,
+      old_missing,
+      same_after,
+      get_string(scope.heap(), id_before_v),
+      get_string(scope.heap(), id_after_v),
+    )
+  };
+
+  assert_eq!(missing, Value::Bool(true));
+  assert_eq!(empty, Value::Bool(true));
+  assert_eq!(same, Value::Bool(true));
+  assert_eq!(old_missing, Value::Bool(true));
+  assert_eq!(same_after, Value::Bool(true));
+  assert_eq!(id_before, "x");
+  assert_eq!(id_after, "y");
+
+  assert!(host.dom().get_element_by_id("x").is_none());
+  let node = host
+    .dom()
+    .get_element_by_id("y")
+    .expect("expected DOM to reflect updated id");
+  assert_eq!(host.dom().element_id(node), "y");
+
+  Ok(())
+}
+
+#[test]
 fn document_current_script_is_visible_to_js_execution() -> Result<()> {
   #[derive(Default)]
   struct JsExecutor {
