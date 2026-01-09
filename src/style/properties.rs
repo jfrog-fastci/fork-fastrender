@@ -6993,6 +6993,51 @@ fn apply_registered_custom_property_global_keyword(
   }
 }
 
+fn apply_unregistered_custom_property_global_keyword(
+  custom_properties: &mut CustomPropertyStore,
+  parent_custom_properties: &CustomPropertyStore,
+  revert_base_custom_properties: &CustomPropertyStore,
+  revert_layer_custom_properties: Option<&CustomPropertyStore>,
+  name: &Arc<str>,
+  keyword: GlobalKeyword,
+) {
+  fn clone_untyped(value: &CustomPropertyValue) -> CustomPropertyValue {
+    if value.typed.is_none() {
+      value.clone()
+    } else {
+      CustomPropertyValue::new(value.value.clone(), None)
+    }
+  }
+
+  fn set_from_store(
+    custom_properties: &mut CustomPropertyStore,
+    name: &Arc<str>,
+    store: &CustomPropertyStore,
+  ) {
+    if let Some(value) = store.get(name.as_ref()) {
+      custom_properties.insert(Arc::clone(name), clone_untyped(value));
+    } else {
+      custom_properties.remove(name.as_ref());
+    }
+  }
+
+  match keyword {
+    GlobalKeyword::Inherit | GlobalKeyword::Unset => {
+      set_from_store(custom_properties, name, parent_custom_properties);
+    }
+    GlobalKeyword::Initial => {
+      custom_properties.remove(name.as_ref());
+    }
+    GlobalKeyword::Revert => {
+      set_from_store(custom_properties, name, revert_base_custom_properties);
+    }
+    GlobalKeyword::RevertLayer => {
+      let base = revert_layer_custom_properties.unwrap_or(revert_base_custom_properties);
+      set_from_store(custom_properties, name, base);
+    }
+  }
+}
+
 fn parse_font_variant_caps_tokens(
   tokens: &[&str],
   base_variant: FontVariant,
@@ -7974,6 +8019,35 @@ mod light_dark_resolution_tests {
   }
 }
 
+#[cfg(test)]
+mod custom_property_global_keyword_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn unregistered_custom_property_initial_causes_var_fallback_to_apply() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls = parse_declarations("--x: initial; background-color: var(--x, rgb(0, 255, 0));");
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        false,
+      );
+    }
+
+    assert_eq!(styles.background_color, Rgba::GREEN);
+  }
+}
+
 fn apply_custom_property_declaration(
   styles: &mut ComputedStyle,
   decl: &Declaration,
@@ -7987,11 +8061,22 @@ fn apply_custom_property_declaration(
   let raw_text = decl_raw_text(decl);
   let raw_trimmed = trim_ascii_whitespace(&raw_text);
 
-  // Unregistered custom properties behave like token streams: keep the authored value verbatim and
-  // do not interpret CSS-wide keywords at computed-value time.
+  // Unregistered custom properties behave like token streams (untyped), but they still accept
+  // CSS-wide keywords like `initial` / `inherit` / `revert`.
   let rule = match styles.custom_property_registry.get(decl.property.as_str()).cloned() {
     Some(rule) => rule,
     None => {
+      if let Some(global) = global_keyword_text(raw_trimmed) {
+        apply_unregistered_custom_property_global_keyword(
+          &mut styles.custom_properties,
+          &parent_styles.custom_properties,
+          revert_base_custom_properties,
+          revert_layer_custom_properties,
+          custom_name,
+          global,
+        );
+        return true;
+      }
       if styles
         .custom_properties
         .get(custom_name.as_ref())
@@ -23373,7 +23458,7 @@ mod tests {
   }
 
   #[test]
-  fn unregistered_custom_property_initial_keyword_is_literal() {
+  fn unregistered_custom_property_initial_keyword_resets_to_guaranteed_invalid() {
     let mut styles = ComputedStyle::default();
     let parent = ComputedStyle::default();
 
@@ -23391,11 +23476,10 @@ mod tests {
       16.0,
     );
 
-    let value = styles
-      .custom_properties
-      .get("--x")
-      .expect("custom property");
-    assert_eq!(value.value, "initial");
+    assert!(
+      styles.custom_properties.get("--x").is_none(),
+      "unregistered `--x: initial` should compute to the guaranteed-invalid value"
+    );
   }
 
   #[test]

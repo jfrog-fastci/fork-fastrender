@@ -67,6 +67,7 @@ mod grid_auto_placement_dense;
 mod grid_auto_min_size_compressible_replaced;
 mod grid_baseline_column_sizing;
 mod grid_baseline_row_sizing;
+mod grid_calc_length_rem;
 mod grid_box_sizing_test;
 mod grid_calc_length_font_relative;
 mod grid_forced_breaks;

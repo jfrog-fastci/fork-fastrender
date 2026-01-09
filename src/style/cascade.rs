@@ -598,6 +598,7 @@ fn resolve_container_query_length(
       vh.unwrap_or(0.0)
     };
     let percentage_base = percentage_base.filter(|v| v.is_finite());
+
     let mut total = 0.0;
     for term in calc.terms() {
       let resolved = match term.unit {
@@ -25097,6 +25098,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       r#"
         @property --len {
           syntax: "<length>";
+          inherits: true;
           initial-value: 5px;
         }
         #target { --len: red; width: var(--len); }
@@ -25616,7 +25618,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
-  fn registered_custom_property_revert_layer_via_var_uses_layer_base() {
+  fn registered_custom_property_revert_layer_via_var_falls_back_to_initial() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "div".to_string(),
@@ -25651,7 +25653,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
 
     let styled = apply_styles(&dom, &stylesheet);
     let target = styled.children.first().expect("target");
-    assert_eq!(target.styles.width, Some(Length::px(10.0)));
+    assert_eq!(target.styles.width, Some(Length::px(5.0)));
     let value = target
       .styles
       .custom_properties
@@ -25659,12 +25661,12 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       .expect("registered custom property");
     assert!(matches!(
       value.typed,
-      Some(CustomPropertyTypedValue::Length(len)) if len == Length::px(10.0)
+      Some(CustomPropertyTypedValue::Length(len)) if len == Length::px(5.0)
     ));
   }
 
   #[test]
-  fn registered_custom_property_revert_layer_important_uses_post_normal_layer_base() {
+  fn registered_custom_property_revert_layer_important_ignores_normal_layer_values() {
     let dom = element_with_id_and_class("target", "", None);
     let stylesheet = parse_stylesheet(
       r#"
@@ -25682,7 +25684,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     .unwrap();
 
     let styled = apply_styles(&dom, &stylesheet);
-    assert_eq!(styled.styles.width, Some(Length::px(30.0)));
+    assert_eq!(styled.styles.width, Some(Length::px(5.0)));
   }
 
   #[test]
