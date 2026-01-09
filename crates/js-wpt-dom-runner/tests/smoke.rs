@@ -202,7 +202,14 @@ fn element_query_selector_and_query_selector_all_work() {
     .expect("missing element_query_selector.window.js");
 
   let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(fs, RunnerConfig::default());
+  // Use an explicit backend so local env var overrides don't affect integration test results.
+  let runner = Runner::new(
+    fs,
+    RunnerConfig {
+      backend: BackendSelection::QuickJs,
+      ..RunnerConfig::default()
+    },
+  );
   let result = runner.run_test(test).expect("run test");
   assert_eq!(result.outcome, RunOutcome::Pass);
 }
@@ -218,7 +225,14 @@ fn provides_document_head_and_body_shims() {
     .expect("missing document_head_body.window.js");
 
   let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(fs, RunnerConfig::default());
+  // Use an explicit backend so local env var overrides don't affect integration test results.
+  let runner = Runner::new(
+    fs,
+    RunnerConfig {
+      backend: BackendSelection::QuickJs,
+      ..RunnerConfig::default()
+    },
+  );
   let result = runner.run_test(test).expect("run test");
   assert_eq!(result.outcome, RunOutcome::Pass);
 }

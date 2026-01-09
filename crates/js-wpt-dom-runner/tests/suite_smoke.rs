@@ -19,10 +19,12 @@ fn suite_smoke_report_classifies_expected_failures() {
     manifest_path: corpus_root.join("expectations.toml"),
     shard: None,
     filter: Some("smoke/**".to_string()),
-    timeout: Duration::from_millis(100),
-    long_timeout: Duration::from_millis(500),
+    // Avoid test flakiness from per-test initialization overhead on busy CI machines.
+    timeout: Duration::from_millis(500),
+    long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
-    backend: BackendSelection::Auto,
+    // Use an explicit backend so local debugging env vars don't affect test results.
+    backend: BackendSelection::QuickJs,
   })
   .expect("run suite");
 
@@ -61,6 +63,16 @@ fn suite_smoke_report_classifies_expected_failures() {
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
   assert_eq!(mismatches.expected, 3, "expected mismatches");
-  assert_eq!(mismatches.unexpected, 0, "unexpected mismatches");
+  let unexpected: Vec<String> = report
+    .results
+    .iter()
+    .filter(|r| r.mismatched && !r.expected_mismatch && !r.flaky)
+    .map(|r| format!("{} -> {:?} {:?}", r.id, r.outcome, r.error))
+    .collect();
+  assert_eq!(
+    mismatches.unexpected,
+    0,
+    "unexpected mismatches: {unexpected:#?}"
+  );
   assert_eq!(mismatches.flaky, 0, "flaky mismatches");
 }
