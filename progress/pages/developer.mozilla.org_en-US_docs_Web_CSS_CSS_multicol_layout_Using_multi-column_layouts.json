@@ -17,12 +17,11 @@
   "notes": "",
   "accuracy": {
     "baseline": "chrome",
-    "diff_pixels": 288641,
-    "diff_percent": 30.0668,
-    "perceptual": 0.902,
+    "diff_pixels": 125945,
+    "diff_percent": 13.1193,
+    "perceptual": 0.8149,
     "tolerance": 0,
-    "max_diff_percent": 0.0,
-    "computed_at_commit": "b2c0f9405a458cbfa537bd9430906dcc46516aed"
+    "max_diff_percent": 0.0
   },
   "hotspot": "cascade",
   "failure_stage": null,

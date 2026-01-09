@@ -54,6 +54,70 @@ fn trim_css_whitespace(value: &str) -> &str {
   value.trim_matches(is_css_whitespace_char)
 }
 
+/// Returns true when the token stream starts with a CSS-wide keyword and contains additional
+/// non-whitespace/comment tokens.
+///
+/// CSS-wide keywords (`initial`, `inherit`, `unset`, `revert`, `revert-layer`) are only valid as
+/// the *entire* property value. When a custom property resolves to `initial <other tokens>` it is
+/// guaranteed to be invalid for any non-custom property, so `var(--x, fallback)` must select the
+/// fallback instead.
+///
+/// This pattern is relied upon by tooling such as the csstools `light-dark()` polyfill.
+fn starts_with_css_wide_keyword_with_trailing_tokens(value: &str) -> bool {
+  let trimmed = trim_css_whitespace(value);
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  const KEYWORDS: [&str; 5] = ["initial", "inherit", "unset", "revert", "revert-layer"];
+  for keyword in KEYWORDS {
+    if trimmed.len() < keyword.len() {
+      continue;
+    }
+
+    let head = &trimmed[..keyword.len()];
+    if !head.eq_ignore_ascii_case(keyword) {
+      continue;
+    }
+
+    // Ensure the keyword matches a full ident token, not a longer identifier like `initial-value`.
+    if trimmed
+      .as_bytes()
+      .get(keyword.len())
+      .is_some_and(|&b| is_ident_byte(b))
+    {
+      continue;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut idx = keyword.len();
+    loop {
+      while idx < bytes.len() && is_css_whitespace_byte(bytes[idx]) {
+        idx += 1;
+      }
+
+      if idx + 1 < bytes.len() && bytes[idx] == b'/' && bytes[idx + 1] == b'*' {
+        // Skip comment blocks, which act like whitespace.
+        idx += 2;
+        while idx + 1 < bytes.len() {
+          if bytes[idx] == b'*' && bytes[idx + 1] == b'/' {
+            idx += 2;
+            break;
+          }
+          idx += 1;
+        }
+        continue;
+      }
+
+      break;
+    }
+
+    return idx < bytes.len();
+  }
+
+  false
+}
+
 #[inline]
 fn needs_token_splice_separator(prev: u8, next: u8, next_next: Option<u8>) -> bool {
   if is_css_whitespace_byte(prev) || is_css_whitespace_byte(next) {
@@ -747,7 +811,29 @@ fn resolve_variable_reference<'a>(
     return Err(VarResolutionResult::RecursionLimitExceeded);
   }
 
+  let resolve_fallback = |fallback_value: Cow<'a, str>,
+                          stack: &mut Vec<String>|
+   -> Result<Cow<'a, str>, VarResolutionResult<'a>> {
+    // Same fast-path as below for literal fallback tokens.
+    if !contains_ascii_case_insensitive_var_call(fallback_value.as_ref())
+      && (!fallback_value.as_ref().as_bytes().contains(&b'\\')
+        || !fallback_value.as_ref().as_bytes().contains(&b'('))
+    {
+      return Ok(fallback_value);
+    }
+
+    resolve_value_tokens(fallback_value.as_ref(), custom_properties, stack, depth + 1)
+      .map(Cow::Owned)
+      .map_err(|err| match err {
+        VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
+        other => other,
+      })
+  };
+
   if stack.iter().any(|n| n == name) {
+    if let Some(fallback_value) = fallback {
+      return resolve_fallback(fallback_value, stack);
+    }
     return Err(VarResolutionResult::RecursionLimitExceeded);
   }
 
@@ -758,11 +844,18 @@ fn resolve_variable_reference<'a>(
     if !contains_ascii_case_insensitive_var_call(raw)
       && (!raw.as_bytes().contains(&b'\\') || !raw.as_bytes().contains(&b'('))
     {
-      return Ok(Cow::Borrowed(raw));
+      let resolved = Cow::Borrowed(raw);
+      if starts_with_css_wide_keyword_with_trailing_tokens(resolved.as_ref()) {
+        if let Some(fallback_value) = fallback {
+          return resolve_fallback(fallback_value, stack);
+        }
+        return Err(VarResolutionResult::NotFound(name.to_string()));
+      }
+      return Ok(resolved);
     }
 
     stack.push(name.to_string());
-    let result = if !raw.as_bytes().contains(&b'\\') {
+    let resolved = if !raw.as_bytes().contains(&b'\\') {
       if let Some((nested_name, nested_fallback)) = parse_simple_var_call(raw) {
         resolve_variable_reference(
           nested_name,
@@ -778,23 +871,31 @@ fn resolve_variable_reference<'a>(
       resolve_value_tokens(raw, custom_properties, stack, depth + 1).map(Cow::Owned)
     };
     stack.pop();
-    return result;
+
+    match resolved {
+      Ok(resolved) => {
+        if starts_with_css_wide_keyword_with_trailing_tokens(resolved.as_ref()) {
+          if let Some(fallback_value) = fallback {
+            return resolve_fallback(fallback_value, stack);
+          }
+          return Err(VarResolutionResult::NotFound(name.to_string()));
+        }
+        return Ok(resolved);
+      }
+      Err(err) => {
+        if let Some(fallback_value) = fallback {
+          return resolve_fallback(fallback_value, stack);
+        }
+        return Err(match err {
+          VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
+          other => other,
+        });
+      }
+    }
   }
 
   if let Some(fallback_value) = fallback {
-    // Same fast-path as above for literal fallback tokens.
-    if !contains_ascii_case_insensitive_var_call(fallback_value.as_ref())
-      && (!fallback_value.as_bytes().contains(&b'\\') || !fallback_value.as_bytes().contains(&b'('))
-    {
-      return Ok(fallback_value);
-    }
-
-    return resolve_value_tokens(fallback_value.as_ref(), custom_properties, stack, depth + 1)
-      .map(Cow::Owned)
-      .map_err(|err| match err {
-        VarResolutionResult::NotFound(_) => VarResolutionResult::NotFound(name.to_string()),
-        other => other,
-      });
+    return resolve_fallback(fallback_value, stack);
   }
 
   Err(VarResolutionResult::NotFound(name.to_string()))
@@ -1130,6 +1231,7 @@ pub fn is_valid_custom_property_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::color::Color;
   use crate::style::values::CustomPropertyValue;
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
@@ -1325,6 +1427,45 @@ mod tests {
     let value = PropertyValue::Keyword("var(--missing, var(--fallback))".to_string());
     let resolved = resolve_var_for_property(&value, &props, "color");
     assert!(matches!(resolved, VarResolutionResult::NotFound(_)));
+  }
+
+  #[test]
+  fn fallback_used_when_resolved_custom_property_starts_with_css_wide_keyword_sentinel() {
+    let props = make_props(&[("--x", "initial #000")]);
+    let value = PropertyValue::Keyword("var(--x, blue)".to_string());
+    let resolved = resolve_var_for_property(&value, &props, "color");
+    let VarResolutionResult::Resolved { value, css_text } = resolved else {
+      panic!("expected fallback resolution to succeed, got {resolved:?}");
+    };
+    let expected = Color::parse("blue").unwrap();
+    assert_eq!(css_text.as_ref(), "blue");
+    assert!(
+      matches!(value.as_ref(), PropertyValue::Color(c) if c == &expected),
+      "expected parsed color 'blue', got {:?}",
+      value.as_ref()
+    );
+  }
+
+  #[test]
+  fn fallback_used_when_resolving_existing_custom_property_fails_due_to_missing_dependency() {
+    let props = make_props(&[("--a", "var(--b)")]);
+    let value = PropertyValue::Keyword("var(--a, red)".to_string());
+    let resolved = resolve_var_for_property(&value, &props, "color");
+    let VarResolutionResult::Resolved { css_text, .. } = resolved else {
+      panic!("expected fallback resolution to succeed, got {resolved:?}");
+    };
+    assert_eq!(css_text.as_ref(), "red");
+  }
+
+  #[test]
+  fn fallback_used_when_resolving_existing_custom_property_hits_cycle() {
+    let props = make_props(&[("--a", "var(--a)")]);
+    let value = PropertyValue::Keyword("var(--a, red)".to_string());
+    let resolved = resolve_var_for_property(&value, &props, "color");
+    let VarResolutionResult::Resolved { css_text, .. } = resolved else {
+      panic!("expected fallback resolution to succeed, got {resolved:?}");
+    };
+    assert_eq!(css_text.as_ref(), "red");
   }
 
   #[test]

@@ -3225,20 +3225,9 @@ impl GridFormattingContext {
   }
 
   fn resolve_length_px(&self, len: &Length, style: &ComputedStyle) -> Option<f32> {
-    use crate::style::values::LengthUnit::Calc;
-    use crate::style::values::LengthUnit::Ch;
-    use crate::style::values::LengthUnit::Cm;
-    use crate::style::values::LengthUnit::Em;
-    use crate::style::values::LengthUnit::Ex;
-    use crate::style::values::LengthUnit::In;
-    use crate::style::values::LengthUnit::Mm;
-    use crate::style::values::LengthUnit::Pc;
-    use crate::style::values::LengthUnit::Percent;
-    use crate::style::values::LengthUnit::Pt;
-    use crate::style::values::LengthUnit::Px;
-    use crate::style::values::LengthUnit::Rem;
+    use crate::style::values::LengthUnit;
     match len.unit {
-      Calc => {
+      LengthUnit::Calc => {
         if len.has_percentage() {
           return None;
         }
@@ -3252,15 +3241,15 @@ impl GridFormattingContext {
           Some(&self.font_context),
         )
       }
-      Percent => None,
-      Px | Pt | In | Cm | Mm | Pc => Some(len.to_px()),
-      Rem => Some(len.value * style.root_font_size),
-      Em => Some(len.value * style.font_size),
-      Ex => Some(len.value * style.font_size * 0.5),
-      Ch => Some(len.value * style.font_size * 0.5),
+      LengthUnit::Percent => None,
+      _ if len.unit.is_absolute() => Some(len.to_px()),
       unit if unit.is_viewport_relative() => {
         len.resolve_with_viewport(self.viewport_size.width, self.viewport_size.height)
       }
+      LengthUnit::Rem => Some(len.value * style.root_font_size),
+      LengthUnit::Em => Some(len.value * style.font_size),
+      LengthUnit::Ex => Some(len.value * style.font_size * 0.5),
+      LengthUnit::Ch => Some(len.value * style.font_size * 0.5),
       _ => None,
     }
   }

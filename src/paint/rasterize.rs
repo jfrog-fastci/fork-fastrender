@@ -1154,28 +1154,29 @@ fn render_outset_shadow(
   crate::render_control::check_active(RenderStage::Paint)?;
   let sigma = shadow.blur_radius.max(0.0);
   let spread = shadow.spread_radius;
+  let box_radii = *radii;
   let shadow_rect = Rect::from_xywh(
     x + shadow.offset_x - spread,
     y + shadow.offset_y - spread,
     width + spread * 2.0,
     height + spread * 2.0,
   );
-  let radii = BorderRadii {
+  let shadow_radii = BorderRadii {
     top_left: BorderRadius {
-      x: (radii.top_left.x + spread).max(0.0),
-      y: (radii.top_left.y + spread).max(0.0),
+      x: (box_radii.top_left.x + spread).max(0.0),
+      y: (box_radii.top_left.y + spread).max(0.0),
     },
     top_right: BorderRadius {
-      x: (radii.top_right.x + spread).max(0.0),
-      y: (radii.top_right.y + spread).max(0.0),
+      x: (box_radii.top_right.x + spread).max(0.0),
+      y: (box_radii.top_right.y + spread).max(0.0),
     },
     bottom_right: BorderRadius {
-      x: (radii.bottom_right.x + spread).max(0.0),
-      y: (radii.bottom_right.y + spread).max(0.0),
+      x: (box_radii.bottom_right.x + spread).max(0.0),
+      y: (box_radii.bottom_right.y + spread).max(0.0),
     },
     bottom_left: BorderRadius {
-      x: (radii.bottom_left.x + spread).max(0.0),
-      y: (radii.bottom_left.y + spread).max(0.0),
+      x: (box_radii.bottom_left.x + spread).max(0.0),
+      y: (box_radii.bottom_left.y + spread).max(0.0),
     },
   };
 
@@ -1231,7 +1232,7 @@ fn render_outset_shadow(
     draw_y,
     shadow_rect.width(),
     shadow_rect.height(),
-    &radii,
+    &shadow_radii,
     shadow.color,
   );
   crate::render_control::check_active(RenderStage::Paint)?;
@@ -1240,6 +1241,50 @@ fn render_outset_shadow(
     apply_gaussian_blur_cached(&mut tmp, sigma, sigma, cache, 1.0)?;
   }
   crate::render_control::check_active(RenderStage::Paint)?;
+
+  // Outset shadows are only visible outside the element's border box. The element itself paints
+  // over any overlapping shadow pixels, even when its background is transparent. Many MDN styles
+  // rely on `box-shadow: -2px 0 0 <color>` to draw a left border stripe; if we don't clear the
+  // box interior, the shadow fill shows through and floods the element background.
+  let cutout_w = width.max(0.0);
+  let cutout_h = height.max(0.0);
+  if cutout_w > 0.0 && cutout_h > 0.0 {
+    let cutout_x = x - min_x;
+    let cutout_y = y - min_y;
+    let cutout_radii = box_radii.clamped(cutout_w, cutout_h);
+    if cutout_radii.is_zero() {
+      if let Some(rect) = tiny_skia::Rect::from_xywh(cutout_x, cutout_y, cutout_w, cutout_h) {
+        let path = PathBuilder::from_rect(rect);
+        let mut paint = Paint::default();
+        paint.blend_mode = tiny_skia::BlendMode::Clear;
+        paint.anti_alias = true;
+        tmp.fill_path(
+          &path,
+          &paint,
+          FillRule::Winding,
+          Transform::identity(),
+          None,
+        );
+      }
+    } else if let Some(path) = build_rounded_rect_path(
+      cutout_x,
+      cutout_y,
+      cutout_w,
+      cutout_h,
+      &cutout_radii,
+    ) {
+      let mut paint = Paint::default();
+      paint.blend_mode = tiny_skia::BlendMode::Clear;
+      paint.anti_alias = true;
+      tmp.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+      );
+    }
+  }
 
   let mut paint = PixmapPaint::default();
   paint.blend_mode = tiny_skia::BlendMode::SourceOver;
