@@ -95,6 +95,12 @@ impl std::fmt::Debug for RenderedFrame {
 pub enum UiToWorker {
   CreateTab {
     tab_id: TabId,
+    /// Optional URL to navigate immediately after creating the tab.
+    ///
+    /// When `None`, the tab is created in an "empty" state and will not produce any navigation or
+    /// frame messages until the UI sends an explicit [`UiToWorker::Navigate`].
+    ///
+    /// UIs that want a default page (for example `about:newtab`) should provide it explicitly.
     initial_url: Option<String>,
     /// Per-tab cancellation generations shared with the UI thread.
     ///
@@ -108,6 +114,9 @@ pub enum UiToWorker {
   /// Kept for protocol flexibility as the browser UI evolves.
   NewTab {
     tab_id: TabId,
+    /// Optional URL to navigate immediately after creating the tab.
+    ///
+    /// See [`UiToWorker::CreateTab`] for semantics.
     initial_url: Option<String>,
   },
   CloseTab {
