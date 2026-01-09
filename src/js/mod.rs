@@ -19,6 +19,7 @@
 pub mod dom_scripts;
 pub mod clock;
 pub mod events;
+pub mod ecma_embed;
 pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod html_scripting;
@@ -42,6 +43,10 @@ pub use event_loop::{
   TaskSource, TimerId,
 };
 pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext};
+pub use ecma_embed::{
+  HostFunction, ScriptBudgetOverride, ScriptError, ScriptRealm, ScriptRealmOptions,
+  ScriptTerminationReason, ScriptValue, VmJsScriptRealm,
+};
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
   ScriptOrchestrator,

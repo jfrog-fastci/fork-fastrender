@@ -311,9 +311,14 @@ mod tests {
       panic!("expected object");
     };
     let log = get_prop(&mut scope, console_obj, "log");
-    let mut host_hooks = NoopHostHooks::default();
-    let call_result =
-      vm.call(&mut host_hooks, &mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
+    let mut hooks = NoopHostHooks::default();
+    let call_result = vm.call(
+      &mut hooks,
+      &mut scope,
+      log,
+      Value::Object(console_obj),
+      &[Value::Number(1.0), Value::Null],
+    )?;
     assert_eq!(call_result, Value::Undefined);
 
     Ok(())

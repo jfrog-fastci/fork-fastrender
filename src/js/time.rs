@@ -277,9 +277,9 @@ mod tests {
 
   fn call0(vm: &mut Vm, heap: &mut Heap, callee: Value, this: Value) -> Value {
     let mut scope = heap.scope();
-    let mut host = NoopHostHooks::default();
+    let mut hooks = NoopHostHooks::default();
     vm
-      .call(&mut host, &mut scope, callee, this, &[])
+      .call(&mut hooks, &mut scope, callee, this, &[])
       .expect("call should succeed")
   }
 
