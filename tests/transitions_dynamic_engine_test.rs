@@ -3,7 +3,7 @@ use fastrender::interaction::dom_index::DomIndex;
 use fastrender::interaction::dom_mutation;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::BorderStyle;
-use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::{BoxNode, GeneratedPseudoElement};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use fastrender::{BrowserDocument, PreparedDocument, RenderOptions, Result};
 use std::sync::Once;
@@ -37,11 +37,24 @@ fn styled_node_id_by_id(styled: &StyledNode, target_id: &str) -> Option<usize> {
 }
 
 fn box_id_for_styled(box_node: &BoxNode, styled_id: usize) -> Option<usize> {
-  if box_node.styled_node_id == Some(styled_id) {
+  box_id_for_styled_and_pseudo(box_node, styled_id, None)
+}
+
+fn box_id_for_styled_and_pseudo(
+  box_node: &BoxNode,
+  styled_id: usize,
+  pseudo: Option<GeneratedPseudoElement>,
+) -> Option<usize> {
+  if box_node.styled_node_id == Some(styled_id) && box_node.generated_pseudo == pseudo {
     return Some(box_node.id);
   }
   for child in &box_node.children {
-    if let Some(id) = box_id_for_styled(child, styled_id) {
+    if let Some(id) = box_id_for_styled_and_pseudo(child, styled_id, pseudo) {
+      return Some(id);
+    }
+  }
+  if let Some(body) = box_node.footnote_body.as_deref() {
+    if let Some(id) = box_id_for_styled_and_pseudo(body, styled_id, pseudo) {
       return Some(id);
     }
   }
@@ -275,6 +288,69 @@ fn transition_behavior_allow_discrete_gates_discrete_transitions() -> Result<()>
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
   assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+
+  Ok(())
+}
+
+#[test]
+fn transitions_are_keyed_by_pseudo_element() -> Result<()> {
+  ensure_test_env();
+
+  let html = r#"
+    <style>
+      #box { width: 10px; height: 10px; background: black; opacity: 1; transition: opacity 1000ms linear; }
+      #box::before {
+        content: "";
+        display: block;
+        width: 10px; height: 10px;
+        background: black;
+        opacity: 0;
+        transition: opacity 2000ms linear;
+      }
+      #box.b { opacity: 0; }
+      #box.b::before { opacity: 1; }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(32, 32)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+  assert!(set_class(&mut doc, "box", "b"));
+  // Render again at t=0 to seed the transition start snapshots.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let styled_id = styled_node_id_by_id(prepared.styled_tree(), "box").expect("styled id");
+  let main_box_id = box_id_for_styled_and_pseudo(&prepared.box_tree().root, styled_id, None)
+    .expect("main box id");
+  let before_box_id = box_id_for_styled_and_pseudo(
+    &prepared.box_tree().root,
+    styled_id,
+    Some(GeneratedPseudoElement::Before),
+  )
+  .expect("before box id");
+
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let main_opacity = fragment_opacity(&sampled, main_box_id);
+  let before_opacity = fragment_opacity(&sampled, before_box_id);
+
+  let eps = 1e-3;
+  assert!(
+    (main_opacity - 0.5).abs() < eps,
+    "expected main opacity ~0.5 at 500ms of 1000ms transition, got {main_opacity} (before={before_opacity})"
+  );
+  assert!(
+    (before_opacity - 0.25).abs() < eps,
+    "expected ::before opacity ~0.25 at 500ms of 2000ms transition, got {before_opacity} (main={main_opacity})"
+  );
 
   Ok(())
 }
