@@ -7362,26 +7362,6 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
   let mut seen_ornaments = false;
   let mut seen_annotation = false;
 
-  let parse_num = |s: &str| {
-    trim_ascii_whitespace(s)
-      .parse::<u8>()
-      .ok()
-      .filter(|n| *n > 0 && *n <= 99)
-  };
-
-  let parse_value = |s: &str| {
-    if let Some(n) = parse_num(s) {
-      Some(FontVariantAlternateValue::Number(n))
-    } else {
-      let name = trim_ascii_whitespace(s);
-      if name.is_empty() {
-        None
-      } else {
-        Some(FontVariantAlternateValue::Name(name.to_string()))
-      }
-    }
-  };
-
   fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let prefix_len = prefix.len();
     let head = s.get(..prefix_len)?;
@@ -7390,6 +7370,62 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     } else {
       None
     }
+  }
+
+  fn parse_feature_value_name(raw: &str) -> Option<FontVariantAlternateValue> {
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+    parser.skip_whitespace();
+    let tok = parser.next_including_whitespace().ok()?;
+    let value = match tok {
+      Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      _ => return None,
+    };
+    parser.skip_whitespace();
+    if !parser.is_exhausted() {
+      return None;
+    }
+    Some(value)
+  }
+
+  fn parse_feature_value_name_list(raw: &str) -> Option<Vec<FontVariantAlternateValue>> {
+    let mut input = ParserInput::new(raw);
+    let mut parser = Parser::new(&mut input);
+
+    parser.skip_whitespace();
+    let tok = parser.next_including_whitespace().ok()?;
+    let first = match tok {
+      Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      _ => return None,
+    };
+
+    let mut names = vec![first];
+    loop {
+      parser.skip_whitespace();
+      if parser.is_exhausted() {
+        break;
+      }
+
+      let had_comma = parser.try_parse(|p| p.expect_comma()).is_ok();
+      if had_comma {
+        parser.skip_whitespace();
+      }
+
+      if parser.is_exhausted() {
+        // `styleset(foo,)` is invalid; require another <ident> after a comma (or any other
+        // separator token).
+        return None;
+      }
+
+      let tok = parser.next_including_whitespace().ok()?;
+      let name = match tok {
+        Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+        _ => return None,
+      };
+      names.push(name);
+    }
+
+    Some(names)
   }
 
   for token in tokens {
@@ -7404,58 +7440,35 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       if seen_stylistic {
         return None;
       }
-      if let Some(value) = parse_value(inner) {
-        alt.stylistic = Some(value);
-        seen_stylistic = true;
-        continue;
-      }
-      return None;
+      alt.stylistic = Some(parse_feature_value_name(inner)?);
+      seen_stylistic = true;
+      continue;
     }
 
     if let Some(inner) =
       strip_prefix_ignore_ascii_case(token, "styleset(").and_then(|s| s.strip_suffix(')'))
     {
-      for part in inner
-        .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
-        .filter(|s| !s.is_empty())
-      {
-        if let Some(value) = parse_value(part) {
-          alt.stylesets.push(value);
-        } else {
-          return None;
-        }
-      }
+      alt.stylesets.extend(parse_feature_value_name_list(inner)?);
       continue;
     }
 
     if let Some(inner) =
       strip_prefix_ignore_ascii_case(token, "character-variant(").and_then(|s| s.strip_suffix(')'))
     {
-      for part in inner
-        .split(|c: char| c == ',' || is_ascii_whitespace_html_css(c))
-        .filter(|s| !s.is_empty())
-      {
-        if let Some(value) = parse_value(part) {
-          alt.character_variants.push(value);
-        } else {
-          return None;
-        }
-      }
+      alt
+        .character_variants
+        .extend(parse_feature_value_name_list(inner)?);
       continue;
     }
-
     if let Some(inner) =
       strip_prefix_ignore_ascii_case(token, "swash(").and_then(|s| s.strip_suffix(')'))
     {
       if seen_swash {
         return None;
       }
-      if let Some(value) = parse_value(inner) {
-        alt.swash = Some(value);
-        seen_swash = true;
-        continue;
-      }
-      return None;
+      alt.swash = Some(parse_feature_value_name(inner)?);
+      seen_swash = true;
+      continue;
     }
 
     if let Some(inner) =
@@ -7464,26 +7477,20 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       if seen_ornaments {
         return None;
       }
-      if let Some(value) = parse_value(inner) {
-        alt.ornaments = Some(value);
-        seen_ornaments = true;
-        continue;
-      }
-      return None;
+      alt.ornaments = Some(parse_feature_value_name(inner)?);
+      seen_ornaments = true;
+      continue;
     }
 
-    if let Some(inner) =
-      strip_prefix_ignore_ascii_case(token, "annotation(").and_then(|s| s.strip_suffix(')'))
+    if let Some(inner) = strip_prefix_ignore_ascii_case(token, "annotation(")
+      .and_then(|s| s.strip_suffix(')'))
     {
       if seen_annotation {
         return None;
       }
-      if let Some(value) = parse_value(inner) {
-        alt.annotation = Some(value);
-        seen_annotation = true;
-        continue;
-      }
-      return None;
+      alt.annotation = Some(parse_feature_value_name(inner)?);
+      seen_annotation = true;
+      continue;
     }
 
     return None;
@@ -32976,7 +32983,7 @@ mod tests {
       value: PropertyValue::Keyword(
         "small-caps oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero \
                  jis90 proportional-width ruby no-common-ligatures discretionary-ligatures \
-                 historical-forms styleset(1,2) swash(3) annotation(note) sub"
+                 historical-forms styleset(AltG,AltA) swash(Swishy) annotation(Note) sub"
           .to_string(),
       ),
       contains_var: false,
@@ -33020,17 +33027,17 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.stylesets,
       vec![
-        FontVariantAlternateValue::Number(1),
-        FontVariantAlternateValue::Number(2),
+        FontVariantAlternateValue::Name("AltG".to_string()),
+        FontVariantAlternateValue::Name("AltA".to_string()),
       ]
     );
     assert_eq!(
       style.font_variant_alternates.swash,
-      Some(FontVariantAlternateValue::Number(3))
+      Some(FontVariantAlternateValue::Name("Swishy".to_string()))
     );
     assert_eq!(
       style.font_variant_alternates.annotation,
-      Some(FontVariantAlternateValue::Name("note".to_string()))
+      Some(FontVariantAlternateValue::Name("Note".to_string()))
     );
     assert!(matches!(
       style.font_variant_position,
@@ -33043,7 +33050,9 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "font-variant".into(),
-      value: PropertyValue::Keyword("small-caps styleset(1 2 3) swash(4)".to_string()),
+      value: PropertyValue::Keyword(
+        "small-caps styleset(AltG AltA AltB) swash(Swishy)".to_string(),
+      ),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -33054,14 +33063,14 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.stylesets,
       vec![
-        FontVariantAlternateValue::Number(1),
-        FontVariantAlternateValue::Number(2),
-        FontVariantAlternateValue::Number(3),
+        FontVariantAlternateValue::Name("AltG".to_string()),
+        FontVariantAlternateValue::Name("AltA".to_string()),
+        FontVariantAlternateValue::Name("AltB".to_string()),
       ]
     );
     assert_eq!(
       style.font_variant_alternates.swash,
-      Some(FontVariantAlternateValue::Number(4))
+      Some(FontVariantAlternateValue::Name("Swishy".to_string()))
     );
     assert!(matches!(
       style.font_variant_caps,
@@ -33620,10 +33629,11 @@ mod tests {
   #[test]
   fn font_variant_alternates_conflict_invalidates_declaration() {
     let mut style = ComputedStyle::default();
-    style.font_variant_alternates.stylistic = Some(FontVariantAlternateValue::Number(1));
+    style.font_variant_alternates.stylistic =
+      Some(FontVariantAlternateValue::Name("Fancy".to_string()));
     let decl = Declaration {
       property: "font-variant-alternates".into(),
-      value: PropertyValue::Keyword("stylistic(1) stylistic(2)".to_string()),
+      value: PropertyValue::Keyword("stylistic(Fancy) stylistic(Other)".to_string()),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -33631,7 +33641,7 @@ mod tests {
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
     assert_eq!(
       style.font_variant_alternates.stylistic,
-      Some(FontVariantAlternateValue::Number(1))
+      Some(FontVariantAlternateValue::Name("Fancy".to_string()))
     );
   }
 
@@ -33640,7 +33650,9 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "font-variant-alternates".into(),
-      value: PropertyValue::Keyword("styleset(1 2 3) character-variant(4 5) swash(6)".to_string()),
+      value: PropertyValue::Keyword(
+        "styleset(AltG AltA AltB) character-variant(Var1 Var2) swash(Swishy)".to_string(),
+      ),
       contains_var: false,
       raw_value: String::new(),
       important: false,
@@ -33649,21 +33661,21 @@ mod tests {
     assert_eq!(
       style.font_variant_alternates.stylesets,
       vec![
-        FontVariantAlternateValue::Number(1),
-        FontVariantAlternateValue::Number(2),
-        FontVariantAlternateValue::Number(3),
+        FontVariantAlternateValue::Name("AltG".to_string()),
+        FontVariantAlternateValue::Name("AltA".to_string()),
+        FontVariantAlternateValue::Name("AltB".to_string()),
       ]
     );
     assert_eq!(
       style.font_variant_alternates.character_variants,
       vec![
-        FontVariantAlternateValue::Number(4),
-        FontVariantAlternateValue::Number(5),
+        FontVariantAlternateValue::Name("Var1".to_string()),
+        FontVariantAlternateValue::Name("Var2".to_string()),
       ]
     );
     assert_eq!(
       style.font_variant_alternates.swash,
-      Some(FontVariantAlternateValue::Number(6))
+      Some(FontVariantAlternateValue::Name("Swishy".to_string()))
     );
   }
 

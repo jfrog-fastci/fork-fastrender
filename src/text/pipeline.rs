@@ -2422,7 +2422,6 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
   if alternates.historical_forms {
     push_toggle(&mut features, *b"hist", true);
   }
-
   let resolve_list = |ty: FontFeatureValueType, name: &str| {
     style
       .font_feature_values

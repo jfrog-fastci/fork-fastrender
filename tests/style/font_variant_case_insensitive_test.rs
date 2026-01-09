@@ -46,9 +46,9 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
   let stylesheet = parse_stylesheet(
     r#"
       #variant {
-        font-variant: SMALL-CAPS OLDSTYLE-NUMS TABULAR-NUMS STACKED-FRACTIONS ORDINAL SLASHED-ZERO
-          JIS90 PROPORTIONAL-WIDTH RUBY NO-COMMON-LIGATURES DISCRETIONARY-LIGATURES
-          HISTORICAL-FORMS STYLESET(1,2) SWASH(3) ANNOTATION(Note) SUB;
+         font-variant: SMALL-CAPS OLDSTYLE-NUMS TABULAR-NUMS STACKED-FRACTIONS ORDINAL SLASHED-ZERO
+           JIS90 PROPORTIONAL-WIDTH RUBY NO-COMMON-LIGATURES DISCRETIONARY-LIGATURES
+          HISTORICAL-FORMS STYLESET(AltG,AltA) SWASH(Swishy) ANNOTATION(Note) SUB;
       }
 
       #longhand {
@@ -57,7 +57,7 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
         font-variant-numeric: LINING-NUMS;
         font-variant-east-asian: JIS04 FULL-WIDTH;
         font-variant-position: SUPER;
-        font-variant-alternates: STYLISTIC(4) ANNOTATION(FooBar);
+        font-variant-alternates: STYLISTIC(Fancy) ANNOTATION(FooBar);
       }
 
       #font { font: ITALIC BOLD SMALL-CAPS CONDENSED 16px/20px serif; }
@@ -103,11 +103,11 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
       historical_forms: true,
       stylistic: None,
       stylesets: vec![
-        FontVariantAlternateValue::Number(1),
-        FontVariantAlternateValue::Number(2),
+        FontVariantAlternateValue::Name("AltG".to_string()),
+        FontVariantAlternateValue::Name("AltA".to_string()),
       ],
       character_variants: vec![],
-      swash: Some(FontVariantAlternateValue::Number(3)),
+      swash: Some(FontVariantAlternateValue::Name("Swishy".to_string())),
       ornaments: None,
       annotation: Some(FontVariantAlternateValue::Name("Note".to_string())),
     }
@@ -155,7 +155,7 @@ fn font_variant_keywords_are_ascii_case_insensitive() {
     longhand.styles.font_variant_alternates,
     FontVariantAlternates {
       historical_forms: false,
-      stylistic: Some(FontVariantAlternateValue::Number(4)),
+      stylistic: Some(FontVariantAlternateValue::Name("Fancy".to_string())),
       stylesets: vec![],
       character_variants: vec![],
       swash: None,
