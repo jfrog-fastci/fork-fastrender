@@ -16,8 +16,7 @@ struct UrlBindingsState {
 
 fn error_to_js(err: &WebUrlError) -> (&'static str, String) {
   match err {
-    WebUrlError::LimitExceeded { .. } => ("RangeError", err.to_string()),
-    WebUrlError::OutOfMemory => ("RangeError", err.to_string()),
+    WebUrlError::LimitExceeded { .. } | WebUrlError::OutOfMemory => ("RangeError", err.to_string()),
     WebUrlError::InvalidUtf8 => ("TypeError", err.to_string()),
     WebUrlError::ParseError
     | WebUrlError::InvalidBase { .. }
@@ -222,6 +221,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
             return make_err_from_core(ctx, &err);
           }
         }
+
         let handle = state.next_sp_handle;
         state.next_sp_handle = state.next_sp_handle.wrapping_add(1);
         state.search_params.insert(handle, params);
@@ -395,7 +395,6 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
-
         let params = url.search_params();
         match params.append(&name, &value) {
           Ok(()) => make_ok(ctx),
@@ -414,7 +413,6 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
-
         let params = url.search_params();
         match params.delete(&name, value.as_deref()) {
           Ok(()) => make_ok(ctx),
@@ -476,7 +474,6 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
         let Some(url) = state.urls.get(&url_handle) else {
           return make_err(ctx, "TypeError", "Invalid URL handle");
         };
-
         let params = url.search_params();
         match params.set(&name, &value) {
           Ok(()) => make_ok(ctx),

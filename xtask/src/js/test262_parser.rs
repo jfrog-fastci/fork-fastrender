@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::fs;
 use std::path::{Path, PathBuf};
+
 use super::test262::FailOn;
 
 const DEFAULT_TEST262_DIR: &str = "engines/ecma-rs/test262/data";
