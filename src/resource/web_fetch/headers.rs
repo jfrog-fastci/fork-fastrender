@@ -206,9 +206,13 @@ impl Headers {
     Ok(())
   }
 
-  /// Return this header list as raw `(name, value)` pairs in insertion order.
+  /// Return the underlying header list as raw `(name, value)` pairs.
   ///
-  /// Duplicates are preserved (unlike [`Headers::sort_and_combine`]).
+  /// - Preserves insertion order and duplicates (unlike [`Headers::sort_and_combine`]).
+  /// - Names are returned in their normalized (lowercased) form.
+  ///
+  /// This is primarily intended for bridging from Fetch core types to the renderer's HTTP
+  /// networking stack (`ResourceFetcher::fetch_http_request`).
   pub fn raw_pairs(&self) -> Vec<(String, String)> {
     self
       .header_list
