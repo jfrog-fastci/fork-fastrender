@@ -401,6 +401,9 @@ fn throw_web_dom_exception<'a, T>(
 ) -> Result<T, VmError> {
   match err {
     DomException::SyntaxError { message } => throw_dom_exception(scope, host, "SyntaxError", &message),
+    DomException::NoModificationAllowedError { message } => {
+      throw_dom_exception(scope, host, "NoModificationAllowedError", &message)
+    }
   }
 }
 

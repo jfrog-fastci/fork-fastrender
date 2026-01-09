@@ -8,11 +8,19 @@ use thiserror::Error;
 pub enum DomException {
   #[error("SyntaxError: {message}")]
   SyntaxError { message: String },
+  #[error("NoModificationAllowedError: {message}")]
+  NoModificationAllowedError { message: String },
 }
 
 impl DomException {
   pub fn syntax_error(message: impl Into<String>) -> Self {
     Self::SyntaxError {
+      message: message.into(),
+    }
+  }
+
+  pub fn no_modification_allowed_error(message: impl Into<String>) -> Self {
+    Self::NoModificationAllowedError {
       message: message.into(),
     }
   }

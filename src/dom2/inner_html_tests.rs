@@ -1,4 +1,6 @@
 use crate::dom::parse_html;
+use crate::dom::HTML_NAMESPACE;
+use crate::web::dom::DomException;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -73,6 +75,78 @@ fn outer_html_setter_replaces_node_in_parent_children() {
 
   assert_eq!(doc.get_inner_html(div).unwrap(), "<p>one</p><p>two</p>");
   assert_eq!(doc.node(span).parent, None, "replaced node must be detached");
+}
+
+#[test]
+fn outer_html_setter_is_noop_when_node_is_detached() {
+  let root = parse_html("<!doctype html><html><body><div id=root><span id=child>hi</span></div></body></html>")
+    .unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let div = find_element_by_id(&doc, "root");
+  let span = find_element_by_id(&doc, "child");
+
+  // Detach `span` from the tree.
+  doc.remove_child(div, span).unwrap();
+  assert_eq!(doc.node(span).parent, None);
+
+  let nodes_before = doc.nodes_len();
+  doc
+    .set_outer_html(span, "<p>should-not-appear</p>")
+    .unwrap();
+  assert_eq!(
+    doc.nodes_len(),
+    nodes_before,
+    "outerHTML on detached nodes should not allocate/parse anything"
+  );
+
+  assert_eq!(
+    doc.get_inner_html(div).unwrap(),
+    "",
+    "detached node should not affect its former parent"
+  );
+}
+
+#[test]
+fn outer_html_setter_throws_when_parent_is_document() {
+  let root = parse_html("<!doctype html><html><body>hi</body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+  let html = find_first_element_by_tag(&doc, "html");
+
+  let err = doc
+    .set_outer_html(html, "<html><body>nope</body></html>")
+    .expect_err("expected outerHTML on document child to error");
+  assert!(
+    matches!(err, DomException::NoModificationAllowedError { .. }),
+    "expected NoModificationAllowedError, got {err:?}"
+  );
+}
+
+#[test]
+fn outer_html_setter_parses_in_body_context_when_parent_is_document_fragment() {
+  let root = parse_html("<!doctype html><html><body></body></html>").unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let frag = doc.create_document_fragment();
+  let table = doc.create_element("table", HTML_NAMESPACE);
+  doc.append_child(frag, table).unwrap();
+
+  // Spec: if the parent is a DocumentFragment, outerHTML uses a synthetic `<body>` element for
+  // fragment parsing context. In the HTML "in body" insertion mode, table-row tags like `<tr>` and
+  // `<td>` are parse errors and are ignored, leaving only their text contents.
+  //
+  // (In contrast, parsing the same string in a `<table>` context would yield a `<tbody>`/`<tr>`
+  // structure.)
+  doc
+    .set_outer_html(table, "<tr><td>x</td></tr>")
+    .unwrap();
+
+  let children = doc.node(frag).children.clone();
+  assert_eq!(children.len(), 1);
+  assert!(
+    matches!(&doc.node(children[0]).kind, NodeKind::Text { content } if content == "x"),
+    "expected <tr>/<td> tags to be ignored in body context, got {:#?}",
+    doc.node(children[0]).kind,
+  );
 }
 
 #[test]

@@ -100,6 +100,9 @@ impl DomExceptionClass {
   pub fn from_dom_exception(&self, rt: &mut VmJsRuntime, err: &DomException) -> Result<Value, VmError> {
     match err {
       DomException::SyntaxError { message } => self.new_instance(rt, message, "SyntaxError"),
+      DomException::NoModificationAllowedError { message } => {
+        self.new_instance(rt, message, "NoModificationAllowedError")
+      }
     }
   }
 }

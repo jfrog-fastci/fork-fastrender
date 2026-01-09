@@ -1,4 +1,5 @@
 use crate::web::dom::DomException;
+use crate::dom::HTML_NAMESPACE;
 
 use super::{Document, NodeId, NodeKind};
 
@@ -49,10 +50,31 @@ impl Document {
   pub fn set_outer_html(&mut self, element: NodeId, html: &str) -> Result<(), DomException> {
     validate_element_like(self, element)?;
 
-    let parent = self.nodes[element.index()]
-      .parent
-      .ok_or_else(|| DomException::syntax_error("Cannot set outerHTML on a detached node"))?;
-    validate_element_like(self, parent)?;
+    let Some(parent) = self.nodes[element.index()].parent else {
+      // Spec: if the element has no parent, there is nowhere to insert the parsed nodes, so the
+      // setter is a no-op.
+      //
+      // https://html.spec.whatwg.org/multipage/dynamic-markup-insertion.html#dom-element-outerhtml
+      return Ok(());
+    };
+
+    let parse_context = match &self.nodes[parent.index()].kind {
+      NodeKind::Document { .. } => {
+        return Err(DomException::no_modification_allowed_error(
+          "Cannot set outerHTML when the parent is a Document",
+        ));
+      }
+      // ShadowRoot inherits from DocumentFragment; use the same fragment parsing context.
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => {
+        // Spec: when the parent is a DocumentFragment, fragment parsing uses a synthetic `<body>`
+        // element as the context.
+        self.create_element("body", HTML_NAMESPACE)
+      }
+      _ => {
+        validate_element_like(self, parent)?;
+        parent
+      }
+    };
 
     let idx = self.nodes[parent.index()]
       .children
@@ -60,7 +82,7 @@ impl Document {
       .position(|&child| child == element)
       .ok_or_else(|| DomException::syntax_error("Node is not a child of its parent"))?;
 
-    let new_nodes = super::dom_parsing::parse_html_fragment(self, parent, html)?;
+    let new_nodes = super::dom_parsing::parse_html_fragment(self, parse_context, html)?;
 
     // Detach the replaced element.
     self.nodes[element.index()].parent = None;
