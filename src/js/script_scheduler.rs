@@ -135,20 +135,28 @@ where
     // async by default; defer is only meaningful for parser-inserted scripts.
     if spec.async_attr || !spec.parser_inserted {
       let handle = host.start_load(src_url)?;
-      let prev = self.async_pending.insert(handle, spec);
-      debug_assert!(prev.is_none(), "script loader returned a duplicate handle");
+      if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
+        return Err(Error::Other(format!(
+          "Script loader returned a duplicate handle: {handle:?}"
+        )));
+      }
+      self.async_pending.insert(handle, spec);
       return Ok(());
     }
 
     if spec.defer_attr {
       let handle = host.start_load(src_url)?;
+      if self.async_pending.contains_key(&handle) || self.defer_by_handle.contains_key(&handle) {
+        return Err(Error::Other(format!(
+          "Script loader returned a duplicate handle: {handle:?}"
+        )));
+      }
       let idx = self.defer_scripts.len();
       self.defer_scripts.push(DeferredScript {
         spec: Some(spec),
         source: None,
       });
-      let prev = self.defer_by_handle.insert(handle, idx);
-      debug_assert!(prev.is_none(), "script loader returned a duplicate handle");
+      self.defer_by_handle.insert(handle, idx);
       return Ok(());
     }
 
@@ -177,6 +185,9 @@ where
         entry.source = Some(source);
         continue;
       }
+      return Err(Error::Other(format!(
+        "Script loader returned completion for unknown handle: {handle:?}"
+      )));
     }
 
     self.queue_ready_deferred(event_loop)?;
