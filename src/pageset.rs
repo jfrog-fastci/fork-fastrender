@@ -28,6 +28,7 @@ pub const PAGESET_URLS: &[&str] = &[
   "https://google.com",
   "https://duckduckgo.com",
   "https://wikipedia.org",
+  "https://en.wikipedia.org",
   "https://www.w3.org",
   // Tier 4: Complex
   "https://github.com",
