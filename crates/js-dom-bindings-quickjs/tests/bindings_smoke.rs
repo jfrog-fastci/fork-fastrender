@@ -553,6 +553,54 @@ fn document_fragment_create_and_query_selector() {
 }
 
 #[test]
+fn document_fragment_insertion_empties_cached_child_nodes() {
+  let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const frag = document.createDocumentFragment();
+            const el = document.createElement("div");
+            el.id = "in-fragment";
+            frag.appendChild(el);
+
+            // Cache the fragment's `childNodes` array (live NodeList emulation).
+            const cached = frag.childNodes;
+            if (!Array.isArray(cached)) return "not_array";
+            if (cached.length !== 1 || cached[0] !== el) return "bad_before";
+            if (frag.childNodes !== cached) return "not_live";
+
+            document.body.appendChild(frag);
+
+            // The fragment should be emptied, and the cached NodeList should update in-place.
+            if (frag.childNodes !== cached) return "not_live_after";
+            if (cached.length !== 0) return "bad_after_len:" + String(cached.length);
+            if (frag.childNodes.length !== 0) return "bad_after_getter";
+
+            if (document.getElementById("in-fragment") !== el) return "bad_wrapper_identity";
+            if (el.parentNode !== document.body) return "bad_parent";
+            if (document.body.childNodes.length !== 1 || document.body.childNodes[0] !== el) return "bad_body_children";
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "DocumentFragment insertion failed: {outcome}");
+  });
+}
+
+#[test]
 fn wrapper_cache_installs_finalizer_when_supported() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 

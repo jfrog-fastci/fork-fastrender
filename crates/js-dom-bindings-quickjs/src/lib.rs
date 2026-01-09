@@ -584,6 +584,12 @@ impl Node {
           .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
       }
     }
+    // DocumentFragment insertion is transparent: dom2 splices its children into the parent and
+    // empties the fragment. If `fragment.childNodes` has been cached (live NodeList emulation),
+    // keep it in sync so scripts observe `fragment.childNodes.length === 0` after insertion.
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), child.node_id)?;
     self.state.wrap_node(ctx, child.node_id)
   }
 
@@ -615,6 +621,9 @@ impl Node {
           .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
       }
     }
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), new_child.node_id)?;
     self.state.wrap_node(ctx, new_child.node_id)
   }
 
@@ -672,6 +681,9 @@ impl Node {
           .maybe_sync_cached_child_nodes(ctx.clone(), old_parent)?;
       }
     }
+    self
+      .state
+      .maybe_sync_cached_child_nodes(ctx.clone(), new_child.node_id)?;
     self.state.wrap_node(ctx, old_child.node_id)
   }
 
