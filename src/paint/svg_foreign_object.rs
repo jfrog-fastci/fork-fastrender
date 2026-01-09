@@ -22,6 +22,7 @@ use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::fragment_tree::FragmentTree;
 use crate::{Point, Rect};
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::sync::Arc;
@@ -47,6 +48,29 @@ fn is_ascii_whitespace_html_css(ch: char) -> bool {
 
 fn trim_ascii_whitespace_html_css(value: &str) -> &str {
   value.trim_matches(is_ascii_whitespace_html_css)
+}
+
+#[inline]
+fn stable_hash64(bytes: &[u8]) -> u64 {
+  // Deterministic FNV-1a hash so generated ids are stable across processes/targets.
+  const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+  const PRIME: u64 = 0x100000001b3;
+  let mut hash = OFFSET_BASIS;
+  for &b in bytes {
+    hash ^= u64::from(b);
+    hash = hash.wrapping_mul(PRIME);
+  }
+  hash
+}
+
+fn foreign_object_clip_path_id(info: &ForeignObjectInfo, idx: usize) -> String {
+  let placeholder: Cow<'_, str> = if info.placeholder.is_empty() {
+    Cow::Owned(format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx))
+  } else {
+    Cow::Borrowed(info.placeholder.as_str())
+  };
+  let hash = stable_hash64(placeholder.as_bytes());
+  format!("fastr-fo-{idx}-{hash:016x}")
 }
 
 // ForeignObject rendering constructs a synthetic HTML document containing the serialized subtree
@@ -399,6 +423,11 @@ pub(crate) fn foreign_object_image_tag(
   if let Some(value) = clip_path {
     max_bytes = max_bytes.saturating_add(escape_upper_bound(value));
   }
+  let clip_path_id =
+    (info.overflow_x != Overflow::Visible || info.overflow_y != Overflow::Visible).then(|| foreign_object_clip_path_id(info, idx));
+  if let Some(id) = clip_path_id.as_ref() {
+    max_bytes = max_bytes.saturating_add(id.len().saturating_mul(2));
+  }
 
   let mut out = FallibleVecWriter::new(max_bytes, "foreignObject svg image");
 
@@ -472,13 +501,14 @@ pub(crate) fn foreign_object_image_tag(
     }
   }
 
+  let clip_path_id = clip_path_id.as_deref()?;
   write!(
     out,
-    "<clipPath id=\"fastr-fo-{idx}\"><rect x=\"{clip_x:.6}\" y=\"{clip_y:.6}\" width=\"{clip_width:.6}\" height=\"{clip_height:.6}\"/></clipPath>",
+    "<clipPath id=\"{clip_path_id}\"><rect x=\"{clip_x:.6}\" y=\"{clip_y:.6}\" width=\"{clip_width:.6}\" height=\"{clip_height:.6}\"/></clipPath>",
   )
   .ok()?;
 
-  write!(out, "<image clip-path=\"url(#fastr-fo-{idx})\"").ok()?;
+  write!(out, "<image clip-path=\"url(#{clip_path_id})\"").ok()?;
   write!(
     out,
     " x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"",
@@ -818,7 +848,9 @@ fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-  use super::{foreign_object_html_device_pixel_ratio, pixmap_to_data_url, replace_placeholder_or_insert};
+  use super::{
+    foreign_object_html_device_pixel_ratio, foreign_object_image_tag, pixmap_to_data_url, replace_placeholder_or_insert,
+  };
   use base64::Engine;
 
   #[test]
@@ -1023,5 +1055,64 @@ mod tests {
     let scale =
       super::foreign_object_transform_scale(Some(&doc), "<!--FASTRENDER_FOREIGN_OBJECT_0-->", &attrs);
     assert!((scale - 6.0).abs() < 0.01, "expected scale ~6, got {scale}");
+  }
+
+  fn clip_path_id_from_image_tag(tag: &str) -> &str {
+    let prefix = "<clipPath id=\"";
+    let start = tag.find(prefix).expect("clipPath start") + prefix.len();
+    let end = start + tag[start..].find('"').expect("clipPath id end");
+    &tag[start..end]
+  }
+
+  fn default_foreign_object(placeholder: &str) -> crate::tree::box_tree::ForeignObjectInfo {
+    use crate::ComputedStyle;
+    use crate::Overflow;
+    use std::sync::Arc;
+
+    crate::tree::box_tree::ForeignObjectInfo {
+      placeholder: placeholder.to_string(),
+      attributes: Vec::new(),
+      x: 0.0,
+      y: 0.0,
+      width: 10.0,
+      height: 10.0,
+      opacity: 1.0,
+      background: None,
+      html: "<div xmlns=\"http://www.w3.org/1999/xhtml\"></div>".to_string(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Hidden,
+      overflow_y: Overflow::Hidden,
+    }
+  }
+
+  #[test]
+  fn foreign_object_clip_path_id_changes_with_placeholder() {
+    let image_bounds = crate::Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let first = default_foreign_object("<!--P1-->");
+    let second = default_foreign_object("<!--P2-->");
+
+    let first_tag = foreign_object_image_tag(&first, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+    let second_tag = foreign_object_image_tag(&second, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+
+    let first_id = clip_path_id_from_image_tag(&first_tag);
+    let second_id = clip_path_id_from_image_tag(&second_tag);
+    assert_ne!(first_id, second_id);
+  }
+
+  #[test]
+  fn foreign_object_clip_path_id_is_unique_and_consistently_applied() {
+    let image_bounds = crate::Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let foreign = default_foreign_object("<!--P1-->");
+
+    let tag = foreign_object_image_tag(&foreign, "data:image/png;base64,AAAA", 0, image_bounds).expect("tag");
+    let id = clip_path_id_from_image_tag(&tag);
+
+    assert!(
+      id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+      "expected svg-safe id, got {id:?}"
+    );
+
+    assert_eq!(tag.match_indices(&format!("<clipPath id=\"{id}\">")).count(), 1);
+    assert_eq!(tag.match_indices(&format!("clip-path=\"url(#{id})\"")).count(), 1);
   }
 }  
