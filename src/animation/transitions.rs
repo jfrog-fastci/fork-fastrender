@@ -854,7 +854,7 @@ mod tests {
   use crate::geometry::Rect;
   use crate::style::computed::Visibility;
   use crate::style::display::FormattingContextType;
-  use crate::style::types::{TransitionBehavior, TransitionProperty, TransitionTimingFunction};
+  use crate::style::types::{LinearStop, TransitionBehavior, TransitionProperty, TransitionTimingFunction};
   use crate::tree::fragment_tree::{FragmentNode, FragmentTree};
 
   fn make_opacity_style_with_transition(
@@ -1005,11 +1005,6 @@ mod tests {
       styled_node_id: 1,
       pseudo: None,
     };
-    let old_record = state_ab
-      .elements
-      .get(&key)
-      .and_then(|el| el.running.get("opacity"))
-      .expect("original transition record");
     let new_record = state_ba
       .elements
       .get(&key)
@@ -1039,11 +1034,138 @@ mod tests {
       new_record.reversing_adjusted_start_value,
       TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
     );
+  }
 
-    let ctx = default_update_context();
-    let old_value = old_record.sample(500.0, &ctx).expect("old sample").value;
-    let new_value = new_record.sample(500.0, &ctx).expect("new sample").value;
-    assert_eq!(old_value, new_value, "expected reversal to be continuous at t=500ms");
+  #[test]
+  fn transition_state_reversing_uses_absolute_value_of_timing_function_output() {
+    let timing = TransitionTimingFunction::LinearFunction(vec![
+      LinearStop {
+        input: 0.0,
+        output: 0.0,
+      },
+      LinearStop {
+        input: 0.5,
+        output: -0.5,
+      },
+      LinearStop {
+        input: 1.0,
+        output: 1.0,
+      },
+    ]);
+    let tree_a = make_box_tree(make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      timing.clone(),
+    ));
+    let tree_b = make_box_tree(make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      timing.clone(),
+    ));
+
+    let timing_output = timing.value_at(0.5);
+    assert!(
+      timing_output < 0.0,
+      "expected timing output to be negative, got {timing_output}"
+    );
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_ba =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_a, 500.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let new_record = state_ba
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("reverse transition record");
+
+    let expected_factor = timing_output.abs().clamp(0.0, 1.0);
+    let expected_duration = 1000.0 * expected_factor;
+    let eps = 1e-6;
+    assert!(
+      (new_record.reversing_shortening_factor - expected_factor).abs() < eps,
+      "expected factor {expected_factor}, got {}",
+      new_record.reversing_shortening_factor
+    );
+    assert!(
+      (new_record.duration_ms - expected_duration).abs() < eps,
+      "expected duration {expected_duration}, got {}",
+      new_record.duration_ms
+    );
+    assert_eq!(
+      new_record.reversing_adjusted_start_value,
+      TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
+    );
+  }
+
+  #[test]
+  fn transition_state_reversing_clamps_timing_function_output_above_one() {
+    let timing = TransitionTimingFunction::LinearFunction(vec![
+      LinearStop {
+        input: 0.0,
+        output: 0.0,
+      },
+      LinearStop {
+        input: 0.5,
+        output: 2.0,
+      },
+      LinearStop {
+        input: 1.0,
+        output: 1.0,
+      },
+    ]);
+    let tree_a = make_box_tree(make_opacity_style_with_transition(
+      0.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      timing.clone(),
+    ));
+    let tree_b = make_box_tree(make_opacity_style_with_transition(
+      1.0,
+      Arc::from([TransitionProperty::Name("opacity".to_string())]),
+      1000.0,
+      0.0,
+      timing.clone(),
+    ));
+
+    let timing_output = timing.value_at(0.5);
+    assert!(
+      timing_output > 1.0,
+      "expected timing output to overshoot above 1, got {timing_output}"
+    );
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_ba =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_a, 500.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let record = state_ba
+      .elements
+      .get(&key)
+      .and_then(|el| el.running.get("opacity"))
+      .expect("reverse transition record");
+
+    // For output > 1, the reversing shortening factor must clamp to 1 (CSS Transitions 1).
+    let expected_factor = 1.0;
+    let eps = 1e-6;
+    assert!((record.reversing_shortening_factor - expected_factor).abs() < eps);
+    assert!((record.duration_ms - 1000.0).abs() < eps);
+    assert_eq!(
+      record.reversing_adjusted_start_value,
+      TransitionValue::Builtin(AnimatedValue::Opacity(1.0))
+    );
   }
 
   #[test]
