@@ -1,8 +1,11 @@
 // META: script=/resources/testharness.js
 
 test(() => {
+  assert_equals(typeof document.createElement, "function");
   const el = document.createElement("div");
   assert_equals(el.tagName, "DIV");
+  assert_true(el instanceof Element, "createElement should return an Element");
+  assert_true(el instanceof Node, "Element should inherit from Node");
 
   el.innerHTML = '<span id="x" class="y">hi</span>';
   assert_equals(el.innerHTML, '<span id="x" class="y">hi</span>');
@@ -10,7 +13,13 @@ test(() => {
 }, "createElement + Element.innerHTML/outerHTML");
 
 test(() => {
+  assert_equals(typeof document.createDocumentFragment, "function");
   const frag = document.createDocumentFragment();
+  assert_true(
+    frag instanceof DocumentFragment,
+    "createDocumentFragment should return a DocumentFragment"
+  );
+  assert_true(frag instanceof Node, "DocumentFragment should inherit from Node");
   const child = document.createElement("div");
   const returned = frag.appendChild(child);
   assert_equals(returned, child, "appendChild should return the inserted node");
