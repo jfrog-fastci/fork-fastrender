@@ -1409,7 +1409,7 @@ mod tests {
     let key = rt.property_key_from_str("x")?;
     rt.define_data_property(obj, key, value, true)?;
 
-    let root = rt.heap_mut().add_root(Value::Object(obj_handle))?;
+    let root = rt.heap_mut().add_root(Value::Object(obj_handle));
     rt.heap_mut().collect_garbage();
 
     assert_eq!(weak.upgrade(rt.heap()), Some(obj_handle));

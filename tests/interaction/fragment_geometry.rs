@@ -48,3 +48,23 @@ fn absolute_bounds_for_box_id_searches_additional_fragments() {
     absolute_bounds_for_box_id(&tree, target_box_id).expect("expected box id to resolve");
   assert_eq!(bounds, Rect::from_xywh(103.0, 204.0, 5.0, 6.0));
 }
+
+#[test]
+fn absolute_bounds_for_box_id_unions_multiple_fragments() {
+  let target_box_id = 3;
+
+  let fragment_a =
+    FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), target_box_id, vec![]);
+  let fragment_b =
+    FragmentNode::new_block_with_id(Rect::from_xywh(20.0, 5.0, 10.0, 10.0), target_box_id, vec![]);
+
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+    vec![fragment_a, fragment_b],
+  );
+  let tree = FragmentTree::new(root);
+
+  let bounds =
+    absolute_bounds_for_box_id(&tree, target_box_id).expect("expected box id to resolve");
+  assert_eq!(bounds, Rect::from_xywh(0.0, 0.0, 30.0, 15.0));
+}

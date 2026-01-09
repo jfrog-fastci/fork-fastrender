@@ -9,6 +9,8 @@ pub fn absolute_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<
     parent_offset: Point,
   }
 
+  let mut bounds: Option<Rect> = None;
+
   let mut stack: Vec<Frame<'_>> = Vec::new();
   for root in tree.additional_fragments.iter().rev() {
     stack.push(Frame {
@@ -24,7 +26,10 @@ pub fn absolute_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<
   while let Some(frame) = stack.pop() {
     let absolute_bounds = frame.node.bounds.translate(frame.parent_offset);
     if frame.node.box_id() == Some(box_id) {
-      return Some(absolute_bounds);
+      bounds = Some(match bounds {
+        Some(existing) => existing.union(absolute_bounds),
+        None => absolute_bounds,
+      });
     }
 
     let child_parent_offset = absolute_bounds.origin;
@@ -36,5 +41,5 @@ pub fn absolute_bounds_for_box_id(tree: &FragmentTree, box_id: usize) -> Option<
     }
   }
 
-  None
+  bounds
 }
