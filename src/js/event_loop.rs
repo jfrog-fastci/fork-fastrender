@@ -837,7 +837,9 @@ impl<Host: 'static> EventLoop<Host> {
 
   fn clamp_timer_delay(&self, requested: Duration) -> Duration {
     const MIN_NESTED_DELAY: Duration = Duration::from_millis(4);
-    if self.timer_nesting_level > 5 {
+    // HTML timer nesting clamping: once a chain of nested timers reaches depth 5, further timers
+    // are clamped to a minimum delay of 4ms.
+    if self.timer_nesting_level >= 5 {
       requested.max(MIN_NESTED_DELAY)
     } else {
       requested
@@ -888,7 +890,7 @@ impl<Host: 'static> EventLoop<Host> {
 
     // Update nesting level for the duration of this task (including the microtask checkpoint that
     // `run_next_task` performs after this task returns).
-    self.timer_nesting_level = (nesting_level + 1).min(6);
+    self.timer_nesting_level = (nesting_level + 1).min(5);
 
     let callback_err = match (callback)(host, self) {
       Ok(()) => None,

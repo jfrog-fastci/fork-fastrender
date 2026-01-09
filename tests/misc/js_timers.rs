@@ -327,14 +327,14 @@ fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
       function tick() {
         __log.push(count);
         count++;
-        if (count < 7) setTimeout(tick, 0);
+        if (count < 6) setTimeout(tick, 0);
       }
       setTimeout(tick, 0);
     "#,
     )
   })?;
 
-  // The first 6 nested 0ms timeouts should run immediately. The 7th should be clamped to 4ms.
+  // The first 5 nested 0ms timeouts should run immediately. The 6th should be clamped to 4ms.
   assert_eq!(
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
@@ -347,7 +347,6 @@ fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
       serde_json::Value::Number(2.into()),
       serde_json::Value::Number(3.into()),
       serde_json::Value::Number(4.into()),
-      serde_json::Value::Number(5.into()),
     ]
   );
 
@@ -357,7 +356,7 @@ fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
-  assert_eq!(read_log(&host)?.len(), 6);
+  assert_eq!(read_log(&host)?.len(), 5);
 
   // Now due.
   clock.advance(Duration::from_millis(1));
@@ -365,7 +364,7 @@ fn nested_timeouts_are_clamped_after_five_nesting_levels() -> Result<()> {
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
     RunUntilIdleOutcome::Idle
   );
-  assert_eq!(read_log(&host)?.len(), 7);
+  assert_eq!(read_log(&host)?.len(), 6);
   Ok(())
 }
 
