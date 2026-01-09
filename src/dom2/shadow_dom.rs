@@ -84,11 +84,15 @@ impl Document {
         let first_declarative_shadow_template = {
           let node = self.node(id);
           let eligible_host = is_element(&node.kind) && !is_template_element(&node.kind);
-          if eligible_host && !node.children.iter().any(|&child| is_shadow_root(&self.node(child).kind)) {
-            node
-              .children
-              .iter()
-              .position(|&child| parse_shadow_root_definition(self, child).is_some())
+          if eligible_host
+            && !node.children.iter().any(|&child| {
+              self.node(child).parent == Some(id) && is_shadow_root(&self.node(child).kind)
+            })
+          {
+            node.children.iter().position(|&child| {
+              self.node(child).parent == Some(id)
+                && parse_shadow_root_definition(self, child).is_some()
+            })
           } else {
             None
           }
@@ -97,6 +101,9 @@ impl Document {
         let children_len = self.node(id).children.len();
         for idx in (0..children_len).rev() {
           let child_id = self.node(id).children[idx];
+          if self.node(child_id).parent != Some(id) {
+            continue;
+          }
           let child_kind = &self.node(child_id).kind;
           if is_template_element(child_kind) && first_declarative_shadow_template != Some(idx) {
             continue;
@@ -118,13 +125,16 @@ impl Document {
         .node(id)
         .children
         .iter()
-        .any(|&child| is_shadow_root(&self.node(child).kind))
+        .any(|&child| self.node(child).parent == Some(id) && is_shadow_root(&self.node(child).kind))
       {
         continue;
       }
 
       let mut shadow_template = None;
       for (idx, &child) in self.node(id).children.iter().enumerate() {
+        if self.node(child).parent != Some(id) {
+          continue;
+        }
         if let Some((mode, delegates_focus)) = parse_shadow_root_definition(self, child) {
           shadow_template = Some((idx, child, mode, delegates_focus));
           break;
@@ -351,5 +361,47 @@ mod tests {
 
     let roundtrip = doc.to_renderer_dom();
     assert_eq!(snapshot_dom(&legacy), snapshot_dom(&roundtrip));
+  }
+
+  #[test]
+  fn attach_shadow_roots_ignores_detached_shadow_templates() {
+    // Declarative shadow DOM should only consider children that are actually connected to their
+    // parent via the `parent` pointer. If a tree is partially detached (stale entry in `children`
+    // list), promotion must not treat it as a live shadow root template.
+    let mut doc = Document::new(QuirksMode::NoQuirks);
+    let root = doc.root();
+
+    let host = push_element(
+      &mut doc,
+      root,
+      "div",
+      vec![("id".to_string(), "host".to_string())],
+      false,
+    );
+    let template = push_template(
+      &mut doc,
+      host,
+      vec![("shadowroot".to_string(), "open".to_string())],
+    );
+    let span = push_element(&mut doc, template, "span", Vec::new(), false);
+    push_text(&mut doc, span, "shadow");
+
+    // Detach the template by severing the parent pointer, but leave it in the host's children list.
+    doc.node_mut(template).parent = None;
+
+    doc.attach_shadow_roots();
+
+    assert!(
+      doc
+        .node(host)
+        .children
+        .iter()
+        .all(|&child| !matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. })),
+      "detached shadowroot template must not be promoted"
+    );
+    assert!(
+      doc.node(host).children.contains(&template),
+      "detached template should remain untouched"
+    );
   }
 }
