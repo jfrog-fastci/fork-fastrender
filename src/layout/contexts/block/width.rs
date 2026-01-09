@@ -34,6 +34,7 @@ use crate::layout::utils::content_size_from_box_sizing;
 use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::style::types::Overflow;
+use crate::style::types::BoxSizing;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::style::PhysicalSide;
@@ -140,6 +141,7 @@ pub fn compute_block_width(
   // Resolve padding (percentages relative to containing width)
   let mut padding_left = resolve_padding_for_side(style, start_side, containing_width, viewport);
   let mut padding_right = resolve_padding_for_side(style, end_side, containing_width, viewport);
+  let mut reserved_scrollbar_gutter = 0.0;
 
   // Reserve space for a vertical scrollbar when requested by overflow or scrollbar-gutter stability
   let reserve_vertical_gutter = matches!(style.overflow_y, Overflow::Scroll)
@@ -154,8 +156,10 @@ pub fn compute_block_width(
       if style.scrollbar_gutter.both_edges {
         padding_left += gutter;
         padding_right += gutter;
+        reserved_scrollbar_gutter += gutter * 2.0;
       } else {
         padding_right += gutter;
+        reserved_scrollbar_gutter += gutter;
       }
     }
   }
@@ -184,6 +188,17 @@ pub fn compute_block_width(
     .as_ref()
     .map(|len| resolve_length(*len, containing_width, style, viewport))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
+  // Scrollbars are rendered inside the scrollport, consuming space without affecting the border box
+  // size. We model this by treating reserved scrollbar gutters like extra padding while also
+  // shrinking the used content size when `box-sizing: content-box` and a definite size is set.
+  //
+  // For `box-sizing: border-box`, `content_size_from_box_sizing` already accounts for padding (and
+  // thus scrollbar gutters) so no adjustment is necessary.
+  let width_value = if reserved_scrollbar_gutter > 0.0 && style.box_sizing == BoxSizing::ContentBox {
+    width_value.map(|w| (w - reserved_scrollbar_gutter).max(0.0))
+  } else {
+    width_value
+  };
 
   // Compute the resolved values using the constraint equation
   let (final_margin_left, final_width, final_margin_right) = resolve_constraint(
