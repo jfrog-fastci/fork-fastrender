@@ -1851,6 +1851,153 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
 }
 
 #[test]
+fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "s"), ("size", "3"), ("multiple", "")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2")], vec![]),
+          el("option", vec![("id", "o3")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "s");
+  let o1_dom_id = node_id(&dom, "o1");
+  let o2_dom_id = node_id(&dom, "o2");
+  let o3_dom_id = node_id(&dom, "o3");
+
+  let control = FormControlKind::Select(SelectControl {
+    multiple: true,
+    size: 3,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        node_id: o1_dom_id,
+        label: "One".to_string(),
+        value: "1".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o1_dom_id,
+      },
+      SelectItem::Option {
+        node_id: o2_dom_id,
+        label: "Two".to_string(),
+        value: "2".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o2_dom_id,
+      },
+      SelectItem::Option {
+        node_id: o3_dom_id,
+        label: "Three".to_string(),
+        value: "3".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: o3_dom_id,
+      },
+    ]),
+    selected: vec![0],
+  });
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(FormControl {
+      control,
+      appearance: Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    }),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+
+  // Height=30px, size=3 => 10px per row. Y=15 selects row index 1 (<option id=o2>).
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Toggle <option id=o2> on.
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 15.0),
+  );
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 15.0),
+    "https://x/",
+  );
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged {
+      node_id: Some(select_dom_id)
+    }
+  );
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+
+  // Toggle <option id=o2> off (multiple-select should not clear other selections).
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 15.0),
+  );
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 15.0),
+    "https://x/",
+  );
+  assert_eq!(action, InteractionAction::None);
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+}
+
+#[test]
 fn listbox_select_click_accounts_for_element_scroll_offset() {
   let option_ids = [
     "o0", "o1", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o9",
@@ -1940,7 +2087,13 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
   let scroll = ScrollState::from_parts(Point::ZERO, elements);
 
   let mut engine = InteractionEngine::new();
-  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+  );
   engine.pointer_up(
     &mut dom,
     &box_tree,
