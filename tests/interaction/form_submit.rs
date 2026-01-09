@@ -121,6 +121,31 @@ fn action_query_is_replaced() {
 }
 
 #[test]
+fn action_fragment_is_stripped() {
+  let dom = parse_html(
+    r#"
+    <html><body>
+      <form action="/search#frag">
+        <input name="q" value="hi">
+        <button id="submit" type="submit">Go</button>
+      </form>
+    </body></html>
+    "#,
+  )
+  .unwrap();
+  let submitter_id = node_id(&dom, "submit");
+
+  let got =
+    form_submission_get_url(&dom, submitter_id, "https://example.com/doc", "https://example.com/")
+      .unwrap();
+  assert_eq!(
+    got,
+    "https://example.com/search?q=hi",
+    "form submission should discard fragments from the action URL"
+  );
+}
+
+#[test]
 fn includes_form_associated_controls_outside_form_subtree() {
   let dom = parse_html(
     r#"

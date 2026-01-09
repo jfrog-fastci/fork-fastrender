@@ -544,6 +544,8 @@ pub fn form_submission_get_url(
   };
 
   let mut url = Url::parse(&action_url).ok()?;
+  // Form submission discards fragments.
+  url.set_fragment(None);
 
   let limits = WebUrlLimits::default();
   let params = WebUrlSearchParams::new(&limits);
