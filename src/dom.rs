@@ -9552,16 +9552,43 @@ mod tests {
   }
 
   #[test]
-  fn number_input_is_invalid_for_non_finite_value() {
-    let nan_input = element_with_attrs("input", vec![("type", "number"), ("value", "NaN")], vec![]);
-    assert!(!ElementRef::new(&nan_input).is_valid_control());
+  fn number_value_attribute_non_finite_sets_bad_input() {
+    for raw in ["NaN", "Infinity"] {
+      let input = element_with_attrs("input", vec![("type", "number"), ("value", raw)], vec![]);
+      assert_eq!(
+        input_number_value_string(&input).as_deref(),
+        Some(raw),
+        "non-finite number values are preserved by value sanitization (raw={raw})"
+      );
+      assert_eq!(ElementRef::new(&input).control_value().as_deref(), Some(raw));
 
-    let inf_input = element_with_attrs(
-      "input",
-      vec![("type", "number"), ("value", "Infinity")],
-      vec![],
-    );
-    assert!(!ElementRef::new(&inf_input).is_valid_control());
+      let state =
+        forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
+      assert!(
+        !state.valid && state.bad_input,
+        "non-finite number values should set badInput and invalidate the control (raw={raw})"
+      );
+      assert!(
+        !state.value_missing,
+        "badInput should not be reported as a missing value (raw={raw})"
+      );
+
+      let required = element_with_attrs(
+        "input",
+        vec![("type", "number"), ("value", raw), ("required", "")],
+        vec![],
+      );
+      let state =
+        forms_validation::validity_state(&ElementRef::new(&required)).expect("validity state");
+      assert!(
+        !state.valid && state.bad_input,
+        "non-finite required number values should still set badInput (raw={raw})"
+      );
+      assert!(
+        !state.value_missing,
+        "non-finite required number values are invalid due to badInput, not valueMissing (raw={raw})"
+      );
+    }
   }
 
   #[test]

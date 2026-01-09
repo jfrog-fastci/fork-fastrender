@@ -20014,7 +20014,7 @@ mod tests {
     let pixmap = paint_tree(&tree, 40, 40, Rgba::WHITE).expect("paint");
     assert_eq!(color_at(&pixmap, 10, 10), (255, 0, 0, 255));
     // Horizontal overflow should clip; vertical overflow should remain visible.
-    assert_eq!(color_at(&pixmap, 22, 2), (255, 255, 255, 255));
+    assert_eq!(color_at(&pixmap, 22, 2), (0, 0, 255, 255));
     assert_eq!(color_at(&pixmap, 10, 25), (255, 0, 0, 255));
   }
 
@@ -20044,7 +20044,7 @@ mod tests {
     let pixmap = paint_tree(&tree, 40, 40, Rgba::WHITE).expect("paint");
     // Vertical overflow clipped; horizontal overflow visible.
     assert_eq!(color_at(&pixmap, 10, 10), (255, 0, 0, 255));
-    assert_eq!(color_at(&pixmap, 10, 25), (255, 255, 255, 255));
+    assert_eq!(color_at(&pixmap, 10, 25), (0, 0, 255, 255));
     assert_eq!(color_at(&pixmap, 22, 10), (255, 0, 0, 255));
   }
 

@@ -280,6 +280,14 @@ struct BackgroundRects {
 #[derive(Clone)]
 struct RootBackground {
   paint_rect: Rect,
+  /// The source element's border box rect used for computing background tiling metrics (repeat,
+  /// default background-size, etc.).
+  ///
+  /// When HTML canvas background propagation expands the paint area (e.g. the viewport is larger
+  /// than the root stacking context bounds), we must still size the background image/gradient tiles
+  /// relative to the original element bounds. Browsers keep the tile size stable and simply repeat
+  /// it across the expanded canvas.
+  origin_rect: Rect,
   style: Arc<ComputedStyle>,
   paint_border: bool,
 }
@@ -2858,6 +2866,7 @@ impl DisplayListBuilder {
         }
         Some(RootBackground {
           paint_rect: target_rect,
+          origin_rect: source_rect,
           style,
           paint_border,
         })
@@ -6583,11 +6592,12 @@ impl DisplayListBuilder {
 
     if Self::get_box_id(html).is_none() {
       if fragment.children.len() == 1 {
+        let child = fragment.children.first().unwrap_or(fragment);
         // Some unit tests construct a synthetic viewport fragment with a single child representing
         // the root element. Renderer-produced fragment trees always use the root element itself as
         // the fragment tree root (even when it only has one child), so only treat a single-child
-        // root as a wrapper when there is no originating box.
-        let child = fragment.children.first().unwrap_or(fragment);
+        // root as a wrapper when the root is *clearly* synthetic (no style or default inline style
+        // with no paintable background/border).
         // Pagination can also create a single-child synthetic page root, where the lone child is a
         // "document wrapper" fragment (no `box_id`) that contains the real `<html>` element. In
         // that case, still apply normal HTML canvas background propagation by finding the first
@@ -6614,8 +6624,15 @@ impl DisplayListBuilder {
             return None;
           }
         } else {
-          html = child;
-          html_origin = origin.translate(child.bounds.origin);
+          let root_is_synthetic_wrapper = fragment.style.as_deref().map_or(true, |style| {
+            matches!(style.display, crate::style::display::Display::Inline)
+              && !Self::has_paintable_background(style)
+              && !Self::has_paintable_border(style)
+          });
+          if root_is_synthetic_wrapper {
+            html = child;
+            html_origin = origin.translate(child.bounds.origin);
+          }
         }
       } else if !fragment.children.is_empty() {
         let doc_root = fragment
@@ -7193,7 +7210,8 @@ impl DisplayListBuilder {
 
   fn emit_root_background(&mut self, root: &RootBackground) {
     let rects = Self::background_rects(root.paint_rect, &root.style, self.viewport);
-    self.emit_background_from_style_with_rects(&rects, &root.style);
+    let origin_rects = Self::background_rects(root.origin_rect, &root.style, self.viewport);
+    self.emit_background_from_style_with_rects_and_origin(&rects, &origin_rects, &root.style);
     if root.paint_border {
       self.emit_border_from_style(root.paint_rect, &root.style, None);
     }
