@@ -139,10 +139,7 @@ impl Document {
   }
 
   pub fn set_text_data(&mut self, node: NodeId, data: &str) -> Result<bool, DomError> {
-    let node = self
-      .nodes
-      .get_mut(node.index())
-      .ok_or(DomError::NotFoundError)?;
+    let node = self.node_checked_mut(node)?;
     match &mut node.kind {
       NodeKind::Text { content } => {
         if content == data {

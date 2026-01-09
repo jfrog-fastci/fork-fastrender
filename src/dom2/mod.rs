@@ -1132,7 +1132,6 @@ impl Document {
     struct StackItem<'a> {
       node: &'a DomNode,
       exiting: bool,
-      node_id: Option<NodeId>,
     }
 
     let mut ancestors: Vec<&DomNode> = Vec::new();
@@ -1140,7 +1139,6 @@ impl Document {
     stack.push(StackItem {
       node: &snapshot_dom,
       exiting: false,
-      node_id: None,
     });
     let mut next_preorder_id = 1usize;
 
@@ -1157,7 +1155,6 @@ impl Document {
       stack.push(StackItem {
         node: item.node,
         exiting: true,
-        node_id: dom2_id,
       });
       ancestors.push(item.node);
 
@@ -1192,7 +1189,6 @@ impl Document {
           stack.push(StackItem {
             node: child,
             exiting: false,
-            node_id: None,
           });
         }
       }

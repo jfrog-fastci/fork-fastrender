@@ -50,7 +50,7 @@ fn attrs_and_is_html_mut(kind: &mut NodeKind) -> Option<(&mut Vec<(String, Strin
 
 impl Document {
   pub fn get_attribute(&self, node: NodeId, name: &str) -> Result<Option<&str>, DomError> {
-    let node = self.nodes.get(node.index()).ok_or(DomError::NotFoundError)?;
+    let node = self.node_checked(node)?;
     let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -63,7 +63,7 @@ impl Document {
   }
 
   pub fn has_attribute(&self, node: NodeId, name: &str) -> Result<bool, DomError> {
-    let node = self.nodes.get(node.index()).ok_or(DomError::NotFoundError)?;
+    let node = self.node_checked(node)?;
     let Some((attrs, is_html)) = attrs_and_is_html(&node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -80,10 +80,7 @@ impl Document {
     name: &str,
     value: &str,
   ) -> Result<bool, DomError> {
-    let node = self
-      .nodes
-      .get_mut(node.index())
-      .ok_or(DomError::NotFoundError)?;
+    let node = self.node_checked_mut(node)?;
     let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -105,10 +102,7 @@ impl Document {
   }
 
   pub fn remove_attribute(&mut self, node: NodeId, name: &str) -> Result<bool, DomError> {
-    let node = self
-      .nodes
-      .get_mut(node.index())
-      .ok_or(DomError::NotFoundError)?;
+    let node = self.node_checked_mut(node)?;
     let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
       return Err(DomError::InvalidNodeType);
     };
@@ -131,10 +125,7 @@ impl Document {
     present: bool,
   ) -> Result<bool, DomError> {
     if present {
-      let node = self
-        .nodes
-        .get_mut(node.index())
-        .ok_or(DomError::NotFoundError)?;
+      let node = self.node_checked_mut(node)?;
       let Some((attrs, is_html)) = attrs_and_is_html_mut(&mut node.kind) else {
         return Err(DomError::InvalidNodeType);
       };
