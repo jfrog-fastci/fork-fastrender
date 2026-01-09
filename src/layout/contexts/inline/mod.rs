@@ -5663,38 +5663,104 @@ impl InlineFormattingContext {
     };
     let total_width: f32 = items.iter().map(|p| p.item.width()).sum();
     let hanging_end_width = {
-      // CSS Text: preserved trailing spaces (e.g. `white-space: pre-wrap`) are "hanging" and must
-      // not affect alignment/justification calculations, even though they still paint.
+      // CSS Text: trailing preserved whitespace can be *hanging* at the end of a line, meaning it
+      // is not considered for alignment/justification calculations even though it still paints.
       //
-      // We currently only handle ASCII space hanging for `pre`/`pre-wrap`. This matches the most
-      // common cases and avoids treating `break-spaces` (which intentionally keeps spaces in flow)
-      // as hanging.
-      let mut hanging = 0.0f32;
+      // For now we implement the most common case: `white-space: pre-wrap` trailing ASCII spaces
+      // and tabs. This intentionally excludes `break-spaces`, where spaces/tabs must stay in-flow.
+      //
+      // Spec detail: non-zero inline-axis border/padding between a hangable glyph and the line edge
+      // prevents hanging. We approximate this by refusing to hang whitespace inside an inline box
+      // that has a non-zero `end_edge` (border/padding).
+      fn can_hang_pre_wrap(style: &ComputedStyle) -> bool {
+        matches!(style.white_space, WhiteSpace::PreWrap) && !matches!(style.text_wrap, TextWrap::NoWrap)
+      }
+
+      fn trailing_hanging_in_item(item: &InlineItem) -> Option<(f32, bool)> {
+        match item {
+          InlineItem::Text(t) => {
+            if t.is_marker || !can_hang_pre_wrap(t.style.as_ref()) {
+              return None;
+            }
+            let trimmed_len = t.text.trim_end_matches(' ').len();
+            if trimmed_len == t.text.len() {
+              return None;
+            }
+            let before = t.advance_at_offset(trimmed_len);
+            let trailing = (t.advance - before).max(0.0);
+            Some((trailing, trimmed_len == 0))
+          }
+          InlineItem::Tab(tab) => {
+            let style = tab.style();
+            if !can_hang_pre_wrap(style.as_ref()) {
+              return None;
+            }
+            Some((tab.width(), true))
+          }
+          InlineItem::InlineBox(b) => {
+            if b.end_edge > 0.0 {
+              // Padding/border between the trailing whitespace and the line edge prevents hanging.
+              return None;
+            }
+            if b.children.is_empty() {
+              // Zero-width inline boxes should not prevent trailing whitespace from hanging.
+              // However, an empty inline box with non-zero start padding/border does occupy space
+              // at the end of the line, so it terminates the trailing-whitespace sequence.
+              return if b.start_edge == 0.0 { Some((0.0, true)) } else { None };
+            }
+
+            let mut hanging = 0.0f32;
+            let mut saw_non_ignorable_child = false;
+            for child in b.children.iter().rev() {
+              match child {
+                InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => continue,
+                _ => {
+                  saw_non_ignorable_child = true;
+                  let (child_hanging, child_all_whitespace) =
+                    trailing_hanging_in_item(child)?;
+                  hanging += child_hanging;
+                  if !child_all_whitespace {
+                    return Some((hanging, false));
+                  }
+                }
+              }
+            }
+            if !saw_non_ignorable_child {
+              // Only zero-width placeholders inside this inline box. Treat the box as a terminator
+              // only if it contributes its own border/padding.
+              return if b.start_edge == 0.0 { Some((0.0, true)) } else { None };
+            }
+            Some((hanging, true))
+          }
+          _ => None,
+        }
+      }
+
+      let mut trailing = 0.0f32;
       for positioned in items.iter().rev() {
         match &positioned.item {
           InlineItem::StaticPositionAnchor(_) => continue,
           InlineItem::Floating(_) => continue,
-          InlineItem::Text(t) => {
-            if t.is_marker {
+          item => {
+            let Some((item_hanging, item_all_whitespace)) = trailing_hanging_in_item(item) else {
               break;
-            }
-            if !matches!(t.style.white_space, WhiteSpace::Pre | WhiteSpace::PreWrap) {
-              break;
-            }
-            let trimmed_len = t.text.trim_end_matches(' ').len();
-            if trimmed_len == t.text.len() {
-              break;
-            }
-            let before = t.advance_at_offset(trimmed_len);
-            hanging += (t.advance - before).max(0.0);
-            if trimmed_len > 0 {
+            };
+            trailing += item_hanging;
+            if !item_all_whitespace {
               break;
             }
           }
-          _ => break,
         }
       }
-      hanging.min(total_width)
+
+      // `pre-wrap` whitespace before a forced line break is only conditionally hangable: any portion
+      // that would overflow the line hangs, but any portion that fits remains in-flow.
+      if line.ends_with_hard_break && trailing > 0.0 {
+        let overflow = (total_width - usable_width).max(0.0);
+        trailing = trailing.min(overflow);
+      }
+
+      trailing.min(total_width)
     };
     let measured_width = (total_width - hanging_end_width).max(0.0);
     let extra_space = (usable_width - measured_width).max(0.0);
@@ -21767,6 +21833,150 @@ mod tests {
     assert!(
       (right_edge - line.bounds.width()).abs() < 1.0,
       "expected right-aligned non-space text to end at the line edge; right_edge={right_edge:.2} line_width={:.2} child_x={:.2}",
+      line.bounds.width(),
+      child.bounds.x()
+    );
+  }
+
+  #[test]
+  fn text_align_right_ignores_trailing_spaces_in_inline_box_when_pre_wrap() {
+    let mut root_style = ComputedStyle::default();
+    root_style.font_size = 16.0;
+    root_style.text_align = TextAlign::Right;
+    root_style.white_space = WhiteSpace::PreWrap;
+
+    let mut span_style = ComputedStyle::default();
+    span_style.font_size = 16.0;
+    span_style.white_space = WhiteSpace::PreWrap;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    text_style.white_space = WhiteSpace::PreWrap;
+
+    let span = BoxNode::new_inline(
+      Arc::new(span_style),
+      vec![BoxNode::new_text(Arc::new(text_style), "hi   ".to_string())],
+    );
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![span],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(fragment.children.len(), 1, "single line expected");
+    let line = fragment.children.first().expect("line fragment");
+
+    let (child, child_x_in_line) = {
+      let mut stack: Vec<(&FragmentNode, f32)> = vec![(line, 0.0)];
+      let mut found = None;
+      while let Some((node, offset)) = stack.pop() {
+        if let FragmentContent::Text { text, .. } = &node.content {
+          if text.as_ref() == "hi   " {
+            found = Some((node, offset));
+            break;
+          }
+        }
+        for child in node.children.iter() {
+          stack.push((child, offset + child.bounds.x()));
+        }
+      }
+      found.expect("text fragment")
+    };
+
+    let width_hi = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          "hi",
+          child
+            .style
+            .as_ref()
+            .expect("child style")
+            .as_ref(),
+          &ifc.font_context,
+          pipeline_direction(crate::style::types::Direction::Ltr),
+        )
+        .expect("shape");
+      let style = child.style.as_ref().expect("child style").as_ref();
+      TextItem::apply_spacing_to_runs(&mut runs, "hi", style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+
+    let right_edge = child_x_in_line + width_hi;
+    assert!(
+      (right_edge - line.bounds.width()).abs() < 1.0,
+      "expected right-aligned non-space text in inline box to end at the line edge; right_edge={right_edge:.2} line_width={:.2} child_x={:.2}",
+      line.bounds.width(),
+      child_x_in_line
+    );
+  }
+
+  #[test]
+  fn text_align_right_ignores_trailing_tab_when_pre_wrap() {
+    let mut root_style = ComputedStyle::default();
+    root_style.font_size = 16.0;
+    root_style.text_align = TextAlign::Right;
+    root_style.white_space = WhiteSpace::PreWrap;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    text_style.white_space = WhiteSpace::PreWrap;
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(Arc::new(text_style), "hi\t".to_string())],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(fragment.children.len(), 1, "single line expected");
+    let line = fragment.children.first().expect("line fragment");
+
+    let child = {
+      let mut stack = vec![line];
+      let mut found = None;
+      while let Some(node) = stack.pop() {
+        if let FragmentContent::Text { text, .. } = &node.content {
+          if text.as_ref() == "hi" {
+            found = Some(node);
+            break;
+          }
+        }
+        for child in node.children.iter() {
+          stack.push(child);
+        }
+      }
+      found.expect("text fragment")
+    };
+
+    let width_hi = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          "hi",
+          child
+            .style
+            .as_ref()
+            .expect("child style")
+            .as_ref(),
+          &ifc.font_context,
+          pipeline_direction(crate::style::types::Direction::Ltr),
+        )
+        .expect("shape");
+      let style = child.style.as_ref().expect("child style").as_ref();
+      TextItem::apply_spacing_to_runs(&mut runs, "hi", style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+
+    let right_edge = child.bounds.x() + width_hi;
+    assert!(
+      (right_edge - line.bounds.width()).abs() < 1.0,
+      "expected right-aligned non-tab text to end at the line edge; right_edge={right_edge:.2} line_width={:.2} child_x={:.2}",
       line.bounds.width(),
       child.bounds.x()
     );
