@@ -11,6 +11,7 @@
 
 mod discover;
 mod meta;
+mod timer_event_loop;
 mod runner;
 mod suite;
 pub mod wpt_fs;

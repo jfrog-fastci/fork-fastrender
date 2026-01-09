@@ -1,9 +1,12 @@
 use crate::discover::TestCase;
 use crate::meta::parse_leading_meta;
+use crate::timer_event_loop::{QueueLimits, TimerEventLoop, TimerExecution};
 use crate::wpt_fs::{WptFs, WptFsError};
 use crate::wpt_report::WptReport;
 use regex::Regex;
-use rquickjs::{Context, Object, Runtime};
+use rquickjs::{Context, Function, Object, Runtime};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -12,6 +15,8 @@ use thiserror::Error;
 pub struct RunnerConfig {
   pub default_timeout: Duration,
   pub long_timeout: Duration,
+  pub max_tasks: usize,
+  pub max_microtasks: usize,
 }
 
 impl Default for RunnerConfig {
@@ -19,6 +24,8 @@ impl Default for RunnerConfig {
     Self {
       default_timeout: Duration::from_secs(5),
       long_timeout: Duration::from_secs(30),
+      max_tasks: 100_000,
+      max_microtasks: 100_000,
     }
   }
 }
@@ -167,6 +174,7 @@ impl Runner {
     scripts: Vec<ScriptToRun>,
     timeout: Duration,
   ) -> RunResultResult {
+    let timer_loop = Rc::new(RefCell::new(TimerEventLoop::new(QueueLimits::default())));
     let rt = Runtime::new().map_err(|e| RunError::Js(e.to_string()))?;
 
     // Interrupt handler for per-test wall-time.
@@ -186,14 +194,11 @@ impl Runner {
       let globals = ctx.globals();
       install_window_shims(ctx.clone(), &globals, &test_url)?;
 
-      // Minimal DOM Events shims: `Event`, `addEventListener`, `dispatchEvent`, etc.
-      ctx
-        .eval::<(), _>(EVENT_TARGET_SHIM)
-        .map_err(|e| RunError::Js(e.to_string()))?;
+      install_timer_host_fns(ctx.clone(), &globals, Rc::clone(&timer_loop))?;
 
-      // Provide basic timer shims required by our vendored `testharness.js` subset.
+      // Install JS shims for timers + EventTarget.
       ctx
-        .eval::<(), _>(TIMER_SHIM)
+        .eval::<(), _>(HOST_SHIMS)
         .map_err(|e| RunError::Js(e.to_string()))?;
 
       // Define the host hook used by `fastrender_testharness_report.js` to emit a result payload.
@@ -250,6 +255,9 @@ impl Runner {
       });
     }
 
+    let mut tasks_executed: usize = 0;
+    let mut microtasks_executed: usize = 0;
+
     // Drive the minimal event loop until the reporter hook is called or we time out.
     let (outcome, wpt_report) = loop {
       if Instant::now() >= *deadline {
@@ -257,28 +265,31 @@ impl Runner {
       }
 
       // Run any queued Promise jobs (microtasks).
-      if let Err(msg) = drain_promise_jobs(&rt) {
-        if msg.contains("interrupted") || msg.contains("Interrupt") {
-          break (RunOutcome::Timeout, None);
+      match drain_promise_jobs_limited(&rt, &mut microtasks_executed, self.config.max_microtasks) {
+        Ok(()) => {}
+        Err(PromiseDrainError::MaxMicrotasks) => break (RunOutcome::Timeout, None),
+        Err(PromiseDrainError::Js(msg)) => {
+          if is_interrupt_error(&msg) {
+            break (RunOutcome::Timeout, None);
+          }
+          break (RunOutcome::Error(msg), None);
         }
-        break (RunOutcome::Error(msg), None);
       }
 
-      let poll = ctx.with(|ctx| -> Result<(bool, i32), RunError> {
+      if tasks_executed >= self.config.max_tasks {
+        break (RunOutcome::Timeout, None);
+      }
+
+      let did_report = ctx.with(|ctx| -> Result<bool, RunError> {
         let globals = ctx.globals();
-        let ran_timers: i32 = ctx
-          .eval("__fastrender_poll_timers()")
-          .map_err(|e| RunError::Js(e.to_string()))?;
         let did_report: Option<bool> = globals
           .get("__fastrender_wpt_report_called")
           .map_err(|e| RunError::Js(e.to_string()))?;
-        Ok((did_report.unwrap_or(false), ran_timers))
+        Ok(did_report.unwrap_or(false))
       });
-      let (did_report, ran_timers) = match poll {
+      let did_report = match did_report {
         Ok(v) => v,
-        Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
-          break (RunOutcome::Timeout, None)
-        }
+        Err(RunError::Js(msg)) if is_interrupt_error(&msg) => break (RunOutcome::Timeout, None),
         Err(RunError::Js(msg)) => break (RunOutcome::Error(msg), None),
         Err(other) => return Err(other),
       };
@@ -335,10 +346,66 @@ impl Runner {
         break (outcome, Some(parsed));
       }
 
-      if ran_timers == 0 {
-        // Avoid busy-looping; timers use wall clock time (Date.now()) so sleeping advances them.
-        std::thread::sleep(Duration::from_millis(1));
+      let task = {
+        let mut loop_state = timer_loop.borrow_mut();
+        loop_state
+          .queue_due_timers()
+          .map_err(|e| RunError::Js(e.to_string()))?;
+
+        if let Some(task) = loop_state.pop_task() {
+          task
+        } else if let Some(due) = loop_state.next_timer_due() {
+          if due > loop_state.now() {
+            loop_state.advance_to(due);
+          }
+          continue;
+        } else {
+          break (RunOutcome::Timeout, None);
+        }
+      };
+
+      tasks_executed += 1;
+
+      let exec: Option<TimerExecution> = timer_loop.borrow_mut().begin_timer_task(task);
+      let Some(exec) = exec else {
+        continue;
+      };
+      let prev_timer_nesting_level = exec.prev_timer_nesting_level;
+
+      // Invoke the callback in JS, then (for intervals) reschedule.
+      let invoke_res = ctx.with(|ctx| -> Result<(), RunError> {
+        let globals = ctx.globals();
+        let invoke: Function = globals
+          .get("__fastrender_invoke_timer")
+          .map_err(|e| RunError::Js(e.to_string()))?;
+        invoke
+          .call::<(i32,), ()>((exec.id,))
+          .map_err(|e| RunError::Js(e.to_string()))?;
+        Ok(())
+      });
+      match invoke_res {
+        Ok(()) => {}
+        Err(RunError::Js(msg)) if is_interrupt_error(&msg) => break (RunOutcome::Timeout, None),
+        Err(RunError::Js(msg)) => break (RunOutcome::Error(msg), None),
+        Err(other) => return Err(other),
       }
+
+      timer_loop.borrow_mut().finish_timer_task(exec);
+
+      match drain_promise_jobs_limited(&rt, &mut microtasks_executed, self.config.max_microtasks) {
+        Ok(()) => {}
+        Err(PromiseDrainError::MaxMicrotasks) => break (RunOutcome::Timeout, None),
+        Err(PromiseDrainError::Js(msg)) => {
+          if is_interrupt_error(&msg) {
+            break (RunOutcome::Timeout, None);
+          }
+          break (RunOutcome::Error(msg), None);
+        }
+      }
+
+      timer_loop
+        .borrow_mut()
+        .set_timer_nesting_level(prev_timer_nesting_level);
     };
 
     // If the interrupt handler fired, QuickJS surfaces it as an eval error. Map it to Timeout.
@@ -406,348 +473,464 @@ fn install_window_shims<'js>(
   Ok(())
 }
 
-fn drain_promise_jobs(rt: &Runtime) -> Result<(), String> {
-  // rquickjs exposes QuickJS's `JS_ExecutePendingJob`. The API is intentionally a bit low-level;
-  // we loop until no more jobs are queued.
+#[derive(Debug)]
+enum PromiseDrainError {
+  MaxMicrotasks,
+  Js(String),
+}
+
+fn drain_promise_jobs_limited(
+  rt: &Runtime,
+  microtasks_executed: &mut usize,
+  max_microtasks: usize,
+) -> Result<(), PromiseDrainError> {
   loop {
+    if *microtasks_executed >= max_microtasks {
+      return Err(PromiseDrainError::MaxMicrotasks);
+    }
     match rt.execute_pending_job() {
-      Ok(true) => continue,
+      Ok(true) => {
+        *microtasks_executed += 1;
+        continue;
+      }
       Ok(false) => return Ok(()),
-      Err(err) => return Err(err.to_string()),
+      Err(err) => return Err(PromiseDrainError::Js(err.to_string())),
     }
   }
 }
 
-const TIMER_SHIM: &str = r#"
-// Minimal timer/event-loop shims used by the offline WPT harness.
-//
-// Notes:
-// - Timers are tracked in JS (so we don't need Rust-side persistent handles).
-// - We only implement `setTimeout`/`clearTimeout`/`queueMicrotask` for now.
-// - `queueMicrotask` is implemented in terms of a 0ms timeout; QuickJS's native Promise job queue
-//   is still drained from Rust via `Runtime::execute_pending_job`.
+fn is_interrupt_error(msg: &str) -> bool {
+  msg.contains("interrupted") || msg.contains("Interrupt")
+}
+
+fn normalize_delay_ms(ms: f64) -> Duration {
+  let ms = if ms.is_finite() && ms > 0.0 { ms } else { 0.0 };
+  let millis = ms.trunc() as u64;
+  Duration::from_millis(millis)
+}
+
+fn install_timer_host_fns<'js>(
+  ctx: rquickjs::Ctx<'js>,
+  globals: &Object<'js>,
+  timer_loop: Rc<RefCell<TimerEventLoop>>,
+) -> Result<(), RunError> {
+  let set_timeout = Function::new(ctx.clone(), {
+    let timer_loop = Rc::clone(&timer_loop);
+    move |ms: f64| -> rquickjs::Result<i32> {
+      let delay = normalize_delay_ms(ms);
+      let mut timer_loop = timer_loop.borrow_mut();
+      timer_loop
+        .set_timeout(delay)
+        .map_err(|e| rquickjs::Error::new_from_js_message("TimerEventLoop", "TimerId", e.to_string()))
+    }
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_set_timeout", set_timeout)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let set_interval = Function::new(ctx.clone(), {
+    let timer_loop = Rc::clone(&timer_loop);
+    move |ms: f64| -> rquickjs::Result<i32> {
+      let interval = normalize_delay_ms(ms);
+      let mut timer_loop = timer_loop.borrow_mut();
+      timer_loop
+        .set_interval(interval)
+        .map_err(|e| rquickjs::Error::new_from_js_message("TimerEventLoop", "TimerId", e.to_string()))
+    }
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_set_interval", set_interval)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let clear_timeout = Function::new(ctx.clone(), {
+    let timer_loop = Rc::clone(&timer_loop);
+    move |id: i32| {
+      timer_loop.borrow_mut().clear_timer(id);
+    }
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_clear_timeout", clear_timeout)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  let clear_interval = Function::new(ctx, {
+    let timer_loop = Rc::clone(&timer_loop);
+    move |id: i32| {
+      timer_loop.borrow_mut().clear_timer(id);
+    }
+  })
+  .map_err(|e| RunError::Js(e.to_string()))?;
+  globals
+    .set("__fastrender_clear_interval", clear_interval)
+    .map_err(|e| RunError::Js(e.to_string()))?;
+
+  Ok(())
+}
+
+const HOST_SHIMS: &str = r#"
 (function () {
   var g = typeof globalThis !== "undefined" ? globalThis : this;
-  if (typeof g.__fastrender_poll_timers === "function") return;
+  if (g.__fastrender_host_shims_installed) return;
+  g.__fastrender_host_shims_installed = true;
 
-  var next_id = 1;
-  var timers = new Map(); // id -> { cb, args, due }
-
-  function nowMs() {
-    return Date.now();
+  function requireHostFn(name) {
+    if (typeof g[name] !== "function") {
+      throw new Error("missing host function: " + name);
+    }
+    return g[name];
   }
+
+  var hostSetTimeout = requireHostFn("__fastrender_set_timeout");
+  var hostSetInterval = requireHostFn("__fastrender_set_interval");
+  var hostClearTimeout = requireHostFn("__fastrender_clear_timeout");
+  var hostClearInterval = requireHostFn("__fastrender_clear_interval");
+
+  var timers = new Map(); // id -> { kind, cb, args }
+  g.__fastrender_invoke_timer = function (id) {
+    id = Number(id) | 0;
+    var entry = timers.get(id);
+    if (!entry) return;
+    if (entry.kind === "timeout") {
+      timers.delete(id);
+    }
+    var cb = entry.cb;
+    if (typeof cb === "function") {
+      cb.apply(g, entry.args);
+      return;
+    }
+    if (typeof cb === "string") {
+      throw new Error("timer string handler is not supported");
+    }
+    throw new Error("timer callback is not callable");
+  };
 
   function normalizeDelay(ms) {
     var n = Number(ms);
-    if (!isFinite(n) || isNaN(n)) n = 0;
-    if (n < 0) n = 0;
-    return n;
+    if (!isFinite(n) || isNaN(n) || n < 0) n = 0;
+    return Math.floor(n);
   }
 
   g.setTimeout = function (cb, ms /*, ...args */) {
-    var id = next_id++;
-    var delay = normalizeDelay(ms);
     var args = [];
     for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
-    timers.set(id, { cb: cb, args: args, due: nowMs() + delay });
+    if (typeof cb !== "function") {
+      if (typeof cb === "string") {
+        throw new Error("setTimeout string handler is not supported");
+      }
+      throw new Error("setTimeout callback is not callable");
+    }
+    var id = hostSetTimeout(normalizeDelay(ms));
+    timers.set(id, { kind: "timeout", cb: cb, args: args });
     return id;
   };
 
   g.clearTimeout = function (id) {
-    timers.delete(Number(id));
+    id = Number(id) | 0;
+    timers.delete(id);
+    hostClearTimeout(id);
+  };
+
+  g.setInterval = function (cb, ms /*, ...args */) {
+    var args = [];
+    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+    if (typeof cb !== "function") {
+      if (typeof cb === "string") {
+        throw new Error("setInterval string handler is not supported");
+      }
+      throw new Error("setInterval callback is not callable");
+    }
+    var id = hostSetInterval(normalizeDelay(ms));
+    timers.set(id, { kind: "interval", cb: cb, args: args });
+    return id;
+  };
+
+  g.clearInterval = function (id) {
+    id = Number(id) | 0;
+    timers.delete(id);
+    hostClearInterval(id);
   };
 
   g.queueMicrotask = function (cb) {
-    // HTML queueMicrotask semantics are not modeled precisely yet; for the harness it is sufficient
-    // that the callback runs after the current job.
-    g.setTimeout(cb, 0);
+    if (typeof cb !== "function") {
+      throw new TypeError("queueMicrotask callback must be a function");
+    }
+    Promise.resolve().then(cb);
   };
 
-  g.__fastrender_poll_timers = function () {
-    var now = nowMs();
-    var due_ids = [];
-    timers.forEach(function (entry, id) {
-      if (entry.due <= now) due_ids.push(id);
-    });
-    due_ids.sort(function (a, b) { return a - b; });
-    for (var i = 0; i < due_ids.length; i++) {
-      var id = due_ids[i];
-      var entry = timers.get(id);
-      if (!entry) continue;
-      timers.delete(id);
-      if (typeof entry.cb === "function") {
-        entry.cb.apply(g, entry.args);
-      } else if (typeof entry.cb === "string") {
-        // String handlers are legacy and intentionally unsupported in FastRender's harness.
-        throw new Error("setTimeout string handler is not supported");
-      } else {
-        throw new Error("setTimeout callback is not callable");
-      }
+  var NONE = 0;
+  var CAPTURING_PHASE = 1;
+  var AT_TARGET = 2;
+  var BUBBLING_PHASE = 3;
+
+  class Event {
+    constructor(type, init) {
+      this.type = String(type);
+      var opts = init && typeof init === "object" ? init : {};
+      this.bubbles = Boolean(opts.bubbles);
+      this.cancelable = Boolean(opts.cancelable);
+      this.defaultPrevented = false;
+      this.eventPhase = NONE;
+      this.target = null;
+      this.currentTarget = null;
+      this.__stopPropagation = false;
+      this.__stopImmediatePropagation = false;
+      this.__inPassiveListener = false;
     }
-    return due_ids.length;
-  };
-})();
-"#;
 
-const EVENT_TARGET_SHIM: &str = r#"
-// Minimal DOM Events (`EventTarget` + `Event`) shims for the QuickJS-based DOM WPT runner.
-//
-// Why this exists:
-// - Many real-world scripts (and WPT harness code) unconditionally call
-//   `window.addEventListener(...)` / `document.addEventListener(...)`.
-// - FastRender's JS workstream only needs a spec-shaped subset for bootstrap scripts to run.
-//
-// Intentional limitations:
-// - No Shadow DOM composed paths / retargeting.
-// - No `stopPropagation`/`stopImmediatePropagation` yet.
-// - No `once`/`passive` semantics.
-// - Only bubbling over a simple parent chain: Window → Document → Node ancestors → target.
-(function () {
-  "use strict";
-
-  var g = typeof globalThis !== "undefined" ? globalThis : this;
-
-  function normalizeCapture(options) {
-    if (typeof options === "boolean") return options;
-    if (options && typeof options === "object" && "capture" in options) {
-      return !!options.capture;
+    stopPropagation() {
+      this.__stopPropagation = true;
     }
-    return false;
+
+    stopImmediatePropagation() {
+      this.__stopPropagation = true;
+      this.__stopImmediatePropagation = true;
+    }
+
+    preventDefault() {
+      if (!this.cancelable) return;
+      if (this.__inPassiveListener) return;
+      this.defaultPrevented = true;
+    }
   }
 
-  // Basic `Event` constructor (spec-shaped subset).
-  function Event(type, init) {
-    if (!(this instanceof Event)) {
-      throw new TypeError("Event constructor must be called with 'new'");
+  Event.NONE = NONE;
+  Event.CAPTURING_PHASE = CAPTURING_PHASE;
+  Event.AT_TARGET = AT_TARGET;
+  Event.BUBBLING_PHASE = BUBBLING_PHASE;
+
+  function parseListenerOptions(options) {
+    if (options === true || options === false) {
+      return { capture: Boolean(options), once: false, passive: false };
     }
-    this.type = String(type);
-
-    var bubbles = false;
-    var cancelable = false;
-    if (init && typeof init === "object") {
-      if ("bubbles" in init) bubbles = !!init.bubbles;
-      if ("cancelable" in init) cancelable = !!init.cancelable;
+    if (options && typeof options === "object") {
+      return {
+        capture: Boolean(options.capture),
+        once: Boolean(options.once),
+        passive: Boolean(options.passive),
+      };
     }
-
-    this.bubbles = bubbles;
-    this.cancelable = cancelable;
-    this.target = null;
-    this.currentTarget = null;
-    this.defaultPrevented = false;
-  }
-
-  Event.prototype.preventDefault = function () {
-    if (!this.cancelable) return;
-    this.defaultPrevented = true;
-  };
-
-  // Listener storage:
-  // target -> type -> [{ callback, capture }]
-  //
-  // Prefer WeakMap so listeners do not keep arbitrary targets alive in longer runs.
-  var TargetMap = typeof WeakMap === "function" ? WeakMap : Map;
-  var listenersByTarget = new TargetMap();
-
-  function getOrCreateByType(target) {
-    var byType = listenersByTarget.get(target);
-    if (!byType) {
-      byType = new Map();
-      listenersByTarget.set(target, byType);
-    }
-    return byType;
-  }
-
-  function getListeners(target, type) {
-    var byType = listenersByTarget.get(target);
-    if (!byType) return null;
-    return byType.get(type) || null;
-  }
-
-  function snapshotPhaseListeners(target, type, capture) {
-    var list = getListeners(target, type);
-    if (!list) return [];
-    var out = [];
-    for (var i = 0; i < list.length; i++) {
-      var entry = list[i];
-      if (!!entry.capture === !!capture) out.push(entry);
-    }
-    return out;
-  }
-
-  function invokeCallback(cb, event, currentTarget) {
-    if (typeof cb === "function") {
-      cb.call(currentTarget, event);
-      return;
-    }
-    // Callback objects (`{ handleEvent() {} }`).
-    if (cb && typeof cb === "object" && typeof cb.handleEvent === "function") {
-      cb.handleEvent.call(cb, event);
-    }
+    return { capture: false, once: false, passive: false };
   }
 
   function getParentTarget(target) {
     if (!target) return null;
-    if (target === g) return null;
-    if (typeof target !== "object" && typeof target !== "function") return null;
-
-    // Nodes/Elements use `parentNode`; Document uses `__eventTargetParent` to point to Window.
-    if ("parentNode" in target && target.parentNode) return target.parentNode;
-    if ("__eventTargetParent" in target && target.__eventTargetParent) {
-      return target.__eventTargetParent;
-    }
+    if (target.parent) return target.parent;
+    if (target.parentNode) return target.parentNode;
     return null;
   }
 
-  function invokeTargetListeners(target, event, capture) {
-    var type = String(event.type);
-    var snapshot = snapshotPhaseListeners(target, type, capture);
-    for (var i = 0; i < snapshot.length; i++) {
-      event.currentTarget = target;
-      invokeCallback(snapshot[i].callback, event, target);
-    }
-  }
-
-  function EventTarget() {}
-
-  EventTarget.prototype.addEventListener = function (type, callback, options) {
-    if (callback === null || callback === undefined) return;
-    type = String(type);
-    var capture = normalizeCapture(options);
-
-    var byType = getOrCreateByType(this);
-    var list = byType.get(type);
-    if (!list) {
-      list = [];
-      byType.set(type, list);
+  class EventTarget {
+    constructor(parent) {
+      this.parent = parent || null;
+      this.__listeners = new Map(); // type -> [{ callback, capture, once, passive }]
     }
 
-    // No duplicates: same (type, callback, capture).
-    for (var i = 0; i < list.length; i++) {
-      var entry = list[i];
-      if (entry.callback === callback && !!entry.capture === !!capture) return;
-    }
-
-    list.push({ callback: callback, capture: capture });
-  };
-
-  EventTarget.prototype.removeEventListener = function (type, callback, options) {
-    if (callback === null || callback === undefined) return;
-    type = String(type);
-    var capture = normalizeCapture(options);
-
-    var list = getListeners(this, type);
-    if (!list) return;
-    for (var i = 0; i < list.length; i++) {
-      var entry = list[i];
-      if (entry.callback === callback && !!entry.capture === !!capture) {
-        list.splice(i, 1);
-        return;
+    addEventListener(type, callback, options) {
+      if (callback === null || callback === undefined) return;
+      var typeStr = String(type);
+      var opts = parseListenerOptions(options);
+      var list = this.__listeners.get(typeStr);
+      if (!list) {
+        list = [];
+        this.__listeners.set(typeStr, list);
       }
-    }
-  };
-
-  EventTarget.prototype.dispatchEvent = function (event) {
-    if (!event || (typeof event !== "object" && typeof event !== "function")) {
-      throw new TypeError("dispatchEvent expects an Event object");
-    }
-    if (!("type" in event)) {
-      throw new TypeError("Event object missing 'type'");
-    }
-
-    // Build the event path (root -> ... -> target).
-    var path = [];
-    var current = this;
-    while (current) {
-      path.push(current);
-      current = getParentTarget(current);
-    }
-    path.reverse();
-
-    var targetIndex = path.length - 1;
-    event.target = this;
-
-    // Capturing phase: Window -> ... -> parent
-    for (var i = 0; i < targetIndex; i++) {
-      invokeTargetListeners(path[i], event, /* capture */ true);
+      for (var i = 0; i < list.length; i++) {
+        var l = list[i];
+        if (l.callback === callback && l.capture === opts.capture) {
+          return;
+        }
+      }
+      list.push({
+        callback: callback,
+        capture: opts.capture,
+        once: opts.once,
+        passive: opts.passive,
+      });
     }
 
-    // At-target: capture listeners then bubble listeners.
-    invokeTargetListeners(this, event, /* capture */ true);
-    invokeTargetListeners(this, event, /* capture */ false);
-
-    // Bubbling phase: parent -> ... -> Window (only if bubbles)
-    if (event.bubbles) {
-      for (var i = targetIndex - 1; i >= 0; i--) {
-        invokeTargetListeners(path[i], event, /* capture */ false);
+    removeEventListener(type, callback, options) {
+      var typeStr = String(type);
+      var opts = parseListenerOptions(options);
+      var list = this.__listeners.get(typeStr);
+      if (!list) return;
+      for (var i = 0; i < list.length; i++) {
+        var l = list[i];
+        if (l.callback === callback && l.capture === opts.capture) {
+          list.splice(i, 1);
+          break;
+        }
+      }
+      if (list.length === 0) {
+        this.__listeners.delete(typeStr);
       }
     }
 
-    event.currentTarget = null;
-    return !event.defaultPrevented;
-  };
+    dispatchEvent(event) {
+      if (!(event instanceof Event)) {
+        throw new TypeError("dispatchEvent expects an Event");
+      }
 
-  function Document() {}
-  Document.prototype = Object.create(EventTarget.prototype);
-  Document.prototype.constructor = Document;
-  Document.prototype.createElement = function (tagName) {
-    var el = new Element(tagName);
-    el.ownerDocument = this;
-    return el;
-  };
-  Document.prototype.appendChild = function (child) {
-    if (child && (typeof child === "object" || typeof child === "function")) {
-      child.parentNode = this;
+      event.target = this;
+      event.currentTarget = null;
+      event.eventPhase = NONE;
+      event.__stopPropagation = false;
+      event.__stopImmediatePropagation = false;
+      event.__inPassiveListener = false;
+
+      var path = [];
+      var current = this;
+      while (current) {
+        path.push(current);
+        current = getParentTarget(current);
+      }
+
+      var typeStr = String(event.type);
+
+      function isRegistered(target, callback, capture) {
+        var list = target.__listeners.get(typeStr);
+        if (!list) return false;
+        for (var i = 0; i < list.length; i++) {
+          var l = list[i];
+          if (l.callback === callback && l.capture === capture) return true;
+        }
+        return false;
+      }
+
+      function invoke(target, capture) {
+        var list = target.__listeners.get(typeStr);
+        if (!list) return;
+        var snapshot = list.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+          if (event.__stopImmediatePropagation) break;
+          var listener = snapshot[i];
+          if (listener.capture !== capture) continue;
+          if (!isRegistered(target, listener.callback, listener.capture)) continue;
+
+          if (listener.once) {
+            target.removeEventListener(typeStr, listener.callback, {
+              capture: listener.capture,
+            });
+          }
+
+          var prevPassive = event.__inPassiveListener;
+          event.__inPassiveListener = listener.passive;
+          try {
+            if (typeof listener.callback === "function") {
+              listener.callback.call(target, event);
+            } else if (
+              listener.callback &&
+              typeof listener.callback.handleEvent === "function"
+            ) {
+              listener.callback.handleEvent(event);
+            }
+          } finally {
+            event.__inPassiveListener = prevPassive;
+          }
+        }
+      }
+
+      // Capturing: root -> parent of target
+      if (path.length > 1) {
+        event.eventPhase = CAPTURING_PHASE;
+        for (var i = path.length - 1; i >= 1; i--) {
+          event.currentTarget = path[i];
+          invoke(path[i], /* capture */ true);
+          if (event.__stopPropagation) break;
+        }
+      }
+
+      if (event.__stopPropagation) {
+        event.eventPhase = NONE;
+        event.currentTarget = null;
+        return !event.defaultPrevented;
+      }
+
+      // At target: capture listeners then bubble listeners.
+      event.eventPhase = AT_TARGET;
+      event.currentTarget = this;
+      invoke(this, /* capture */ true);
+      if (!event.__stopPropagation && !event.__stopImmediatePropagation) {
+        invoke(this, /* capture */ false);
+      }
+
+      // Bubbling: parent -> root
+      if (event.bubbles && !event.__stopPropagation && path.length > 1) {
+        event.eventPhase = BUBBLING_PHASE;
+        for (var i = 1; i < path.length; i++) {
+          event.currentTarget = path[i];
+          invoke(path[i], /* capture */ false);
+          if (event.__stopPropagation) break;
+        }
+      }
+
+      event.eventPhase = NONE;
+      event.currentTarget = null;
+      return !event.defaultPrevented;
     }
-    return child;
-  };
-
-  function Element(tagName) {
-    this.tagName = tagName ? String(tagName) : "";
-    this.parentNode = null;
-    this.ownerDocument = null;
   }
-  Element.prototype = Object.create(EventTarget.prototype);
-  Element.prototype.constructor = Element;
-  Element.prototype.appendChild = function (child) {
-    if (child && (typeof child === "object" || typeof child === "function")) {
-      child.parentNode = this;
-    }
-    return child;
-  };
 
-  // Expose constructors (but don't overwrite if a host already provided them).
   if (typeof g.Event !== "function") g.Event = Event;
   if (typeof g.EventTarget !== "function") g.EventTarget = EventTarget;
+
+  class Document extends EventTarget {
+    constructor() {
+      super(null);
+    }
+
+    createElement(tagName) {
+      var el = new Element(tagName);
+      el.ownerDocument = this;
+      return el;
+    }
+
+    appendChild(child) {
+      if (child && (typeof child === "object" || typeof child === "function")) {
+        child.parentNode = this;
+      }
+      return child;
+    }
+  }
+
+  class Element extends EventTarget {
+    constructor(tagName) {
+      super(null);
+      this.tagName = tagName ? String(tagName) : "";
+      this.parentNode = null;
+      this.ownerDocument = null;
+    }
+
+    appendChild(child) {
+      if (child && (typeof child === "object" || typeof child === "function")) {
+        child.parentNode = this;
+      }
+      return child;
+    }
+  }
+
   if (typeof g.Document !== "function") g.Document = Document;
   if (typeof g.Element !== "function") g.Element = Element;
 
-  // Patch the host-provided `document` object.
   if (!g.document) {
     g.document = new Document();
+  }
+  if (!g.document.__listeners) {
+    g.document.__listeners = new Map();
+  }
+  if (!("parent" in g.document)) {
+    g.document.parent = null;
   }
   try {
     Object.setPrototypeOf(g.document, Document.prototype);
   } catch (_e) {
-    // Ignore; we'll still attach methods directly below.
+    // Ignore.
   }
   if (typeof g.document.createElement !== "function") {
     g.document.createElement = Document.prototype.createElement;
   }
   if (typeof g.document.appendChild !== "function") {
     g.document.appendChild = Document.prototype.appendChild;
-  }
-  // DOM event path expects Window -> Document -> ...
-  g.document.__eventTargetParent = g;
-
-  // Treat the global object as `Window` for our `.window.js` realm.
-  if (typeof g.addEventListener !== "function") {
-    g.addEventListener = EventTarget.prototype.addEventListener;
-  }
-  if (typeof g.removeEventListener !== "function") {
-    g.removeEventListener = EventTarget.prototype.removeEventListener;
-  }
-  if (typeof g.dispatchEvent !== "function") {
-    g.dispatchEvent = EventTarget.prototype.dispatchEvent;
   }
 })();
 "#;

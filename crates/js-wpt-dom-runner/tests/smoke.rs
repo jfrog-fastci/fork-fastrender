@@ -13,15 +13,14 @@ fn tests_root() -> PathBuf {
   corpus_root().join("tests")
 }
 
-#[test]
-fn runs_window_js_smoke_test() {
+fn assert_wpt_pass(id: &str) {
   let corpus_root = corpus_root();
   let tests_root = tests_root();
   let tests = discover_tests(&tests_root).expect("discover tests");
   let test = tests
     .iter()
-    .find(|t| t.id == "smoke/meta_script.window.js")
-    .expect("missing meta_script.window.js");
+    .find(|t| t.id == id)
+    .unwrap_or_else(|| panic!("missing test {id}"));
 
   let fs = WptFs::new(&corpus_root).expect("wpt fs");
   let runner = Runner::new(fs, RunnerConfig::default());
@@ -30,19 +29,38 @@ fn runs_window_js_smoke_test() {
 }
 
 #[test]
-fn runs_any_js_in_window_realm() {
-  let corpus_root = corpus_root();
-  let tests_root = tests_root();
-  let tests = discover_tests(&tests_root).expect("discover tests");
-  let test = tests
-    .iter()
-    .find(|t| t.id == "smoke/any_promise.any.js")
-    .expect("missing any_promise.any.js");
+fn runs_window_js_smoke_test() {
+  assert_wpt_pass("smoke/meta_script.window.js");
+}
 
-  let fs = WptFs::new(&corpus_root).expect("wpt fs");
-  let runner = Runner::new(fs, RunnerConfig::default());
-  let result = runner.run_test(test).expect("run test");
-  assert_eq!(result.outcome, RunOutcome::Pass);
+#[test]
+fn runs_any_js_in_window_realm() {
+  assert_wpt_pass("smoke/any_promise.any.js");
+}
+
+#[test]
+fn queue_microtask_orders_before_timeout() {
+  assert_wpt_pass("event_loop/queue_microtask_order.window.js");
+}
+
+#[test]
+fn settimeout_supports_extra_args() {
+  assert_wpt_pass("event_loop/settimeout_args.window.js");
+}
+
+#[test]
+fn setinterval_can_be_canceled() {
+  assert_wpt_pass("event_loop/setinterval_cancel.window.js");
+}
+
+#[test]
+fn eventtarget_dispatch_order_and_stop_propagation() {
+  assert_wpt_pass("events/eventtarget_order.window.js");
+}
+
+#[test]
+fn passive_listeners_do_not_set_default_prevented() {
+  assert_wpt_pass("events/passive_listener.window.js");
 }
 
 #[test]
@@ -77,6 +95,7 @@ fn meta_timeout_long_overrides_runner_default_timeout() {
     RunnerConfig {
       default_timeout: Duration::from_millis(10),
       long_timeout: Duration::from_millis(250),
+      ..RunnerConfig::default()
     },
   );
   let result = runner.run_test(test).expect("run test");

@@ -194,6 +194,7 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     RunnerConfig {
       default_timeout: config.timeout,
       long_timeout: config.long_timeout,
+      ..RunnerConfig::default()
     },
   );
 
