@@ -181,6 +181,9 @@ pub(super) fn parse_time_value(value: &str) -> Option<i64> {
   //   HH:MM:SS
   //   HH:MM:SS.sss (fractional seconds)
   let (h, rest) = value.split_once(':')?;
+  if h.len() != 2 || !h.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
   let hour: u32 = h.parse().ok()?;
   if hour > 23 {
     return None;
@@ -190,6 +193,9 @@ pub(super) fn parse_time_value(value: &str) -> Option<i64> {
     Some((m, rest)) => (m, Some(rest)),
     None => (rest, None),
   };
+  if m.len() != 2 || !m.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
   let minute: u32 = m.parse().ok()?;
   if minute > 59 {
     return None;
@@ -203,6 +209,9 @@ pub(super) fn parse_time_value(value: &str) -> Option<i64> {
       Some((s, frac)) => (s, Some(frac)),
       None => (rest, None),
     };
+    if s.len() != 2 || !s.bytes().all(|b| b.is_ascii_digit()) {
+      return None;
+    }
     second = s.parse().ok()?;
     if second > 59 {
       return None;
@@ -227,7 +236,21 @@ pub(super) fn parse_time_value(value: &str) -> Option<i64> {
 }
 
 pub(super) fn parse_date_value(value: &str) -> Option<i32> {
-  let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
+  let (year, rest) = value.split_once('-')?;
+  let (month, day) = rest.split_once('-')?;
+  if year.len() < 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  if month.len() != 2 || !month.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  if day.len() != 2 || !day.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  let year: i32 = year.parse().ok()?;
+  let month: u32 = month.parse().ok()?;
+  let day: u32 = day.parse().ok()?;
+  let date = NaiveDate::from_ymd_opt(year, month, day)?;
   Some(date.num_days_from_ce())
 }
 
@@ -240,6 +263,12 @@ pub(super) fn parse_datetime_local_value(value: &str) -> Option<i64> {
 
 pub(super) fn parse_month_value(value: &str) -> Option<i32> {
   let (year, month) = value.split_once('-')?;
+  if year.len() < 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  if month.len() != 2 || !month.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
   let year: i32 = year.parse().ok()?;
   let month: u32 = month.parse().ok()?;
   if !(1..=12).contains(&month) {
@@ -250,6 +279,12 @@ pub(super) fn parse_month_value(value: &str) -> Option<i32> {
 
 pub(super) fn parse_week_value(value: &str) -> Option<i32> {
   let (year, week) = value.split_once("-W")?;
+  if year.len() < 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
+  if week.len() != 2 || !week.bytes().all(|b| b.is_ascii_digit()) {
+    return None;
+  }
   let year: i32 = year.parse().ok()?;
   let week: u32 = week.parse().ok()?;
   // Use Monday of the given ISO week for comparisons.

@@ -9540,6 +9540,14 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
+    let date_unpadded =
+      element_with_attrs("input", vec![("type", "date"), ("value", "2020-1-01")], vec![]);
+    assert_eq!(
+      input_date_value_string(&date_unpadded),
+      Some(String::new()),
+      "date inputs should require zero-padded month/day components"
+    );
+
     let time = element_with_attrs("input", vec![("type", "time"), ("value", "25:00")], vec![]);
     assert_eq!(input_time_value_string(&time), Some(String::new()));
     assert_eq!(ElementRef::new(&time).control_value(), Some(String::new()));
@@ -9547,6 +9555,14 @@ mod tests {
     assert!(!state.bad_input);
     assert!(state.valid);
     assert!(!state.value_missing);
+
+    let time_unpadded =
+      element_with_attrs("input", vec![("type", "time"), ("value", "1:02")], vec![]);
+    assert_eq!(
+      input_time_value_string(&time_unpadded),
+      Some(String::new()),
+      "time inputs should require zero-padded hour/minute components"
+    );
 
     let datetime_local = element_with_attrs(
       "input",
@@ -9564,6 +9580,17 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
+    let datetime_local_unpadded = element_with_attrs(
+      "input",
+      vec![("type", "datetime-local"), ("value", "2020-01-01T1:02")],
+      vec![],
+    );
+    assert_eq!(
+      input_datetime_local_value_string(&datetime_local_unpadded),
+      Some(String::new()),
+      "datetime-local inputs should require properly formatted date/time values"
+    );
+
     let month = element_with_attrs("input", vec![("type", "month"), ("value", "2020-13")], vec![]);
     assert_eq!(input_month_value_string(&month), Some(String::new()));
     assert_eq!(ElementRef::new(&month).control_value(), Some(String::new()));
@@ -9572,6 +9599,14 @@ mod tests {
     assert!(state.valid);
     assert!(!state.value_missing);
 
+    let month_unpadded =
+      element_with_attrs("input", vec![("type", "month"), ("value", "2020-1")], vec![]);
+    assert_eq!(
+      input_month_value_string(&month_unpadded),
+      Some(String::new()),
+      "month inputs should require zero-padded month components"
+    );
+
     let week = element_with_attrs("input", vec![("type", "week"), ("value", "2020-W99")], vec![]);
     assert_eq!(input_week_value_string(&week), Some(String::new()));
     assert_eq!(ElementRef::new(&week).control_value(), Some(String::new()));
@@ -9579,6 +9614,14 @@ mod tests {
     assert!(!state.bad_input);
     assert!(state.valid);
     assert!(!state.value_missing);
+
+    let week_unpadded =
+      element_with_attrs("input", vec![("type", "week"), ("value", "2020-W1")], vec![]);
+    assert_eq!(
+      input_week_value_string(&week_unpadded),
+      Some(String::new()),
+      "week inputs should require zero-padded week numbers"
+    );
 
     let required_date = element_with_attrs(
       "input",
