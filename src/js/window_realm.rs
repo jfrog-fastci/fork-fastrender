@@ -93,6 +93,34 @@ impl Drop for WindowRealm {
   }
 }
 
+impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
+  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+    self.vm_and_heap_mut()
+  }
+}
+
+impl vm_js::VmJobContext for WindowRealm {
+  fn call(&mut self, callee: Value, this: Value, args: &[Value]) -> Result<Value, VmError> {
+    let (vm, heap) = self.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    vm.call(&mut scope, callee, this, args)
+  }
+
+  fn construct(&mut self, callee: Value, args: &[Value], new_target: Value) -> Result<Value, VmError> {
+    let (vm, heap) = self.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    vm.construct(&mut scope, callee, args, new_target)
+  }
+
+  fn add_root(&mut self, value: Value) -> vm_js::RootId {
+    self.heap.add_root(value)
+  }
+
+  fn remove_root(&mut self, id: vm_js::RootId) {
+    self.heap.remove_root(id);
+  }
+}
+
 fn default_heap_limits() -> HeapLimits {
   HeapLimits::new(32 * 1024 * 1024, 32 * 1024 * 1024)
 }

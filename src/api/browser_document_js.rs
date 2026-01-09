@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptOrchestrator,
+  RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
 };
 use crate::js::webidl::VmJsRuntime;
 
@@ -42,6 +42,7 @@ pub struct BrowserDocumentJs {
   event_loop: Option<EventLoop<BrowserDocumentJs>>,
   script_orchestrator: ScriptOrchestrator,
   current_script_state: CurrentScriptStateHandle,
+  script_execution_log: Option<ScriptExecutionLog>,
 }
 
 impl BrowserDocumentJs {
@@ -56,6 +57,7 @@ impl BrowserDocumentJs {
       event_loop: Some(event_loop),
       script_orchestrator: ScriptOrchestrator::new(),
       current_script_state: CurrentScriptStateHandle::default(),
+      script_execution_log: None,
     }
   }
 
@@ -77,6 +79,16 @@ impl BrowserDocumentJs {
 
   pub fn script_orchestrator_mut(&mut self) -> &mut ScriptOrchestrator {
     &mut self.script_orchestrator
+  }
+
+  /// Enable a bounded FIFO log of executed scripts for debugging.
+  pub fn enable_script_execution_log(&mut self, capacity: usize) {
+    self.script_execution_log = Some(ScriptExecutionLog::new(capacity));
+  }
+
+  /// Returns the script execution log if enabled.
+  pub fn script_execution_log(&self) -> Option<&ScriptExecutionLog> {
+    self.script_execution_log.as_ref()
   }
 
   /// Mutable access to the underlying event loop, intended for seeding initial tasks (e.g. HTML
@@ -138,13 +150,22 @@ impl CurrentScriptHost for BrowserDocumentJs {
   fn current_script_state(&self) -> &CurrentScriptStateHandle {
     &self.current_script_state
   }
+
+  fn script_execution_log(&self) -> Option<&ScriptExecutionLog> {
+    self.script_execution_log.as_ref()
+  }
+
+  fn script_execution_log_mut(&mut self) -> Option<&mut ScriptExecutionLog> {
+    self.script_execution_log.as_mut()
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use crate::dom2::NodeKind;
-  use crate::js::{Clock, RunLimits, RunUntilIdleStopReason, TaskSource};
+  use crate::dom2::{Document as Dom2Document, NodeId};
+  use crate::js::{Clock, CurrentScriptHost, ScriptBlockExecutor, ScriptExecutionLogEntry, ScriptSourceSnapshot, ScriptType, TaskSource};
   use std::cell::RefCell;
   use std::rc::Rc;
   use std::sync::atomic::{AtomicU64, Ordering};
@@ -182,6 +203,23 @@ mod tests {
     };
     content.clear();
     content.push_str(new_text);
+  }
+
+  fn find_script_elements(dom: &Dom2Document) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut stack = vec![dom.root()];
+    while let Some(id) = stack.pop() {
+      let node = dom.node(id);
+      if let NodeKind::Element { tag_name, .. } = &node.kind {
+        if tag_name.eq_ignore_ascii_case("script") {
+          out.push(id);
+        }
+      }
+      for &child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    out
   }
 
   #[test]
@@ -268,6 +306,85 @@ mod tests {
       ),
       "unexpected outcome: {outcome:?}"
     );
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct LoggingExecutor;
+
+  impl ScriptBlockExecutor<BrowserDocumentJs> for LoggingExecutor {
+    fn execute_script(
+      &mut self,
+      host: &mut BrowserDocumentJs,
+      _orchestrator: &mut ScriptOrchestrator,
+      _dom: &Dom2Document,
+      _script: NodeId,
+      _script_type: ScriptType,
+    ) -> Result<()> {
+      assert!(
+        host.current_script().is_some(),
+        "expected currentScript to be set while classic script executes"
+      );
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn records_script_execution_log_on_browser_document_js() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let mut runtime = BrowserDocumentJs::new(BrowserDocumentDom2::new(
+      renderer,
+      "<!doctype html><html><body>host</body></html>",
+      super::super::RenderOptions::new().with_viewport(32, 32),
+    )?);
+    runtime.enable_script_execution_log(16);
+
+    let renderer_dom = crate::dom::parse_html(
+      "<!doctype html><script src=\"https://example.com/a.js\"></script><script></script>",
+    )
+    .unwrap();
+    let dom = Dom2Document::from_renderer_dom(&renderer_dom);
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 2);
+
+    let mut executor = LoggingExecutor::default();
+    let mut orchestrator = ScriptOrchestrator::new();
+    orchestrator.execute_script_element(
+      &mut runtime,
+      &dom,
+      scripts[0],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+    orchestrator.execute_script_element(
+      &mut runtime,
+      &dom,
+      scripts[1],
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+
+    let log = runtime
+      .script_execution_log()
+      .expect("script execution log enabled");
+    assert_eq!(
+      log.entries().iter().cloned().collect::<Vec<_>>(),
+      vec![
+        ScriptExecutionLogEntry {
+          script_id: scripts[0].index(),
+          source: ScriptSourceSnapshot::Url {
+            url: "https://example.com/a.js".to_string()
+          },
+          current_script_node_id: Some(scripts[0].index()),
+        },
+        ScriptExecutionLogEntry {
+          script_id: scripts[1].index(),
+          source: ScriptSourceSnapshot::Inline,
+          current_script_node_id: Some(scripts[1].index()),
+        },
+      ]
+    );
+
     Ok(())
   }
 }
