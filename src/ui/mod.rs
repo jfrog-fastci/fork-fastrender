@@ -4,6 +4,7 @@ pub mod cancel;
 pub mod history;
 pub mod messages;
 pub mod worker;
+pub mod worker_loop;
 
 pub use messages::{
   NavigationReason, PointerButton, RenderedFrame, RepaintReason, TabId, UiToWorker, WorkerToUi,
