@@ -417,6 +417,7 @@ impl BrowserDocument {
     let next = crate::interaction::scroll_wheel::apply_wheel_scroll_at_point(
       prepared.fragment_tree(),
       &current_scroll_state,
+      prepared.layout_viewport(),
       page_point_css,
       crate::interaction::scroll_wheel::ScrollWheelInput { delta_x, delta_y },
     );

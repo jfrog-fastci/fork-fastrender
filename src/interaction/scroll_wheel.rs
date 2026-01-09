@@ -1,10 +1,11 @@
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
-use crate::scroll::ScrollState;
-use crate::style::types::Overflow;
+use crate::scroll::{
+  apply_scroll_chain, build_scroll_chain, build_scroll_chain_with_root_mode, ScrollOptions,
+  ScrollSource, ScrollState,
+};
 use crate::tree::box_tree::{FormControlKind, ReplacedType as BoxReplacedType};
-use crate::tree::fragment_tree::FragmentContent;
-use crate::tree::fragment_tree::FragmentTree;
+use crate::tree::fragment_tree::{FragmentContent, FragmentTree, HitTestRoot};
 
 pub struct ScrollWheelInput {
   pub delta_x: f32,
@@ -17,7 +18,7 @@ pub struct ScrollWheelInput {
 /// fragments), so layout does not produce a meaningful `scroll_overflow` size. Wheel scrolling
 /// needs an approximate scroll range, so we mirror the painter's `row_height * total_rows` logic.
 fn select_listbox_scroll_overflow_height(
-  fragment_tree: &FragmentTree,
+  viewport_size: Size,
   fragment: &crate::tree::fragment_tree::FragmentNode,
   style: &crate::style::ComputedStyle,
 ) -> Option<f32> {
@@ -34,8 +35,7 @@ fn select_listbox_scroll_overflow_height(
     return None;
   }
 
-  let row_height =
-    compute_line_height_with_metrics_viewport(style, None, Some(fragment_tree.viewport_size()));
+  let row_height = compute_line_height_with_metrics_viewport(style, None, Some(viewport_size));
   if row_height <= 0.0 || !row_height.is_finite() {
     return None;
   }
@@ -49,81 +49,218 @@ fn select_listbox_scroll_overflow_height(
   }
 }
 
+fn patch_listbox_scroll_bounds(
+  viewport_size: Size,
+  chain: &mut [crate::scroll::ScrollChainState<'_>],
+) {
+  for state in chain.iter_mut() {
+    let Some(style) = state.container.style.as_deref() else {
+      continue;
+    };
+    let Some(content_height) =
+      select_listbox_scroll_overflow_height(viewport_size, state.container, style)
+    else {
+      continue;
+    };
+    let viewport_height = state.viewport.height;
+    if !viewport_height.is_finite() {
+      continue;
+    }
+    let max_scroll_y = (content_height - viewport_height).max(0.0);
+    if max_scroll_y.is_finite() {
+      state.bounds.min_y = 0.0;
+      state.bounds.max_y = max_scroll_y;
+    }
+  }
+}
+
 pub fn apply_wheel_scroll_at_point(
   fragment_tree: &FragmentTree,
   scroll_state: &ScrollState,
+  viewport_size: Size,
   page_point: Point,
   input: ScrollWheelInput,
 ) -> ScrollState {
-  if input.delta_x == 0.0 && input.delta_y == 0.0 {
+  let delta = Point::new(
+    if input.delta_x.is_finite() {
+      input.delta_x
+    } else {
+      0.0
+    },
+    if input.delta_y.is_finite() {
+      input.delta_y
+    } else {
+      0.0
+    },
+  );
+
+  if delta.x == 0.0 && delta.y == 0.0 {
     return scroll_state.clone();
   }
 
-  for fragment in fragment_tree.hit_test(page_point) {
-    let Some(box_id) = fragment.box_id() else {
-      continue;
-    };
-    let Some(style) = fragment.get_style() else {
-      continue;
-    };
+  let sanitize_scroll = |value: Point| {
+    Point::new(
+      if value.x.is_finite() { value.x } else { 0.0 },
+      if value.y.is_finite() { value.y } else { 0.0 },
+    )
+  };
 
-    let scroll_x =
-      input.delta_x != 0.0 && matches!(style.overflow_x, Overflow::Auto | Overflow::Scroll);
-    let scroll_y =
-      input.delta_y != 0.0 && matches!(style.overflow_y, Overflow::Auto | Overflow::Scroll);
-    if !scroll_x && !scroll_y {
-      continue;
+  let original_viewport = sanitize_scroll(scroll_state.viewport);
+
+  let options = ScrollOptions {
+    source: ScrollSource::User,
+    simulate_overscroll: false,
+  };
+
+  let mut scrolled_tree = fragment_tree.clone();
+  let sanitized_elements = scroll_state
+    .elements
+    .iter()
+    .filter_map(|(&id, &offset)| {
+      let offset = sanitize_scroll(offset);
+      (offset != Point::ZERO).then_some((id, offset))
+    })
+    .collect();
+  let sanitized_scroll_state = ScrollState::from_parts(original_viewport, sanitized_elements);
+  crate::scroll::apply_scroll_offsets(&mut scrolled_tree, &sanitized_scroll_state);
+
+  let Some((root_kind, path)) = scrolled_tree.hit_test_path(page_point) else {
+    let mut next = scroll_state.clone();
+    next.viewport = apply_viewport_delta(
+      fragment_tree,
+      viewport_size,
+      sanitize_scroll(next.viewport),
+      delta,
+      options,
+    );
+    return next;
+  };
+
+  let mut next = scroll_state.clone();
+  let mut any_element_scrolled = false;
+
+  match root_kind {
+    HitTestRoot::Root => {
+      let mut chain = build_scroll_chain(&fragment_tree.root, viewport_size, &path);
+      if chain.is_empty() {
+        next.viewport =
+          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+        return next;
+      }
+
+      let chain_len = chain.len();
+      for (idx, state) in chain.iter_mut().enumerate() {
+        if idx == chain_len - 1 {
+          state.scroll = original_viewport;
+        } else if let Some(id) = state.container.box_id() {
+          state.scroll = sanitize_scroll(scroll_state.element_offset(id));
+        }
+      }
+      patch_listbox_scroll_bounds(viewport_size, &mut chain);
+
+      let before_viewport = chain
+        .last()
+        .map(|s| s.scroll)
+        .unwrap_or(original_viewport);
+
+      let before_elements: Vec<(usize, Point)> = chain
+        .iter()
+        .take(chain.len().saturating_sub(1))
+        .filter_map(|state| state.container.box_id().map(|id| (id, state.scroll)))
+        .collect();
+
+      apply_scroll_chain(&mut chain, delta, options);
+
+      for (idx, state) in chain.iter().enumerate() {
+        if idx == chain_len - 1 {
+          next.viewport = state.scroll;
+        } else if let Some(id) = state.container.box_id() {
+          next.elements.insert(id, state.scroll);
+        }
+      }
+
+      any_element_scrolled = before_elements
+        .iter()
+        .any(|(id, before)| next.element_offset(*id) != *before);
+
+      let viewport_scrolled = next.viewport != before_viewport;
+      if !any_element_scrolled && !viewport_scrolled {
+        next.viewport =
+          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+      }
     }
-
-    let viewport = fragment.bounds.size;
-    let mut content = fragment.scroll_overflow.size;
-    if let Some(listbox_height) =
-      select_listbox_scroll_overflow_height(fragment_tree, fragment, style)
-    {
-      content.height = listbox_height;
-    }
-    let max_scroll_x = (content.width - viewport.width).max(0.0);
-    let max_scroll_y = (content.height - viewport.height).max(0.0);
-
-    let current = scroll_state.element_offset(box_id);
-    let mut next = current;
-
-    if scroll_x {
-      let delta = if input.delta_x.is_finite() {
-        input.delta_x
-      } else {
-        0.0
+    HitTestRoot::Additional(idx) => {
+      let Some(root) = fragment_tree.additional_fragments.get(idx) else {
+        next.viewport =
+          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+        return next;
       };
-      let value = current.x + delta;
-      next.x = if value.is_finite() {
-        value.clamp(0.0, max_scroll_x)
-      } else {
-        current.x
-      };
-    }
 
-    if scroll_y {
-      let delta = if input.delta_y.is_finite() {
-        input.delta_y
-      } else {
-        0.0
-      };
-      let value = current.y + delta;
-      next.y = if value.is_finite() {
-        value.clamp(0.0, max_scroll_y)
-      } else {
-        current.y
-      };
-    }
+      let mut chain = build_scroll_chain_with_root_mode(root, root.bounds.size, &path, false);
 
-    if next == current {
-      continue;
-    }
+      let before_elements: Vec<(usize, Point)> = chain
+        .iter()
+        .filter_map(|state| {
+          state
+            .container
+            .box_id()
+            .map(|id| (id, sanitize_scroll(scroll_state.element_offset(id))))
+        })
+        .collect();
 
-    let mut updated = scroll_state.clone();
-    updated.elements.insert(box_id, next);
-    return updated;
+      for state in chain.iter_mut() {
+        if let Some(id) = state.container.box_id() {
+          state.scroll = sanitize_scroll(scroll_state.element_offset(id));
+        }
+      }
+      patch_listbox_scroll_bounds(viewport_size, &mut chain);
+
+      let result = apply_scroll_chain(&mut chain, delta, options);
+
+      for state in chain.iter() {
+        if let Some(id) = state.container.box_id() {
+          next.elements.insert(id, state.scroll);
+        }
+      }
+
+      any_element_scrolled = before_elements
+        .iter()
+        .any(|(id, before)| next.element_offset(*id) != *before);
+
+      if result.remaining != Point::ZERO {
+        next.viewport = apply_viewport_delta(
+          fragment_tree,
+          viewport_size,
+          original_viewport,
+          result.remaining,
+          options,
+        );
+      }
+
+      let viewport_scrolled = next.viewport != original_viewport;
+      if !any_element_scrolled && !viewport_scrolled {
+        next.viewport =
+          apply_viewport_delta(fragment_tree, viewport_size, original_viewport, delta, options);
+      }
+    }
   }
 
-  scroll_state.clone()
+  next
+}
+
+fn apply_viewport_delta(
+  fragment_tree: &FragmentTree,
+  viewport_size: Size,
+  viewport_scroll: Point,
+  delta: Point,
+  options: ScrollOptions,
+) -> Point {
+  let mut chain = build_scroll_chain(&fragment_tree.root, viewport_size, &[]);
+  if chain.is_empty() {
+    return viewport_scroll;
+  }
+
+  chain[0].scroll = viewport_scroll;
+  apply_scroll_chain(&mut chain, delta, options);
+  chain[0].scroll
 }

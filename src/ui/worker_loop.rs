@@ -1,5 +1,5 @@
 use crate::api::{BrowserDocument, FastRender, RenderOptions};
-use crate::geometry::Point;
+use crate::geometry::{Point, Size};
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::scroll::ScrollState;
@@ -360,6 +360,7 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
             apply_wheel_scroll_at_point(
               prepared.fragment_tree(),
               &current,
+              Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32),
               page_point,
               ScrollWheelInput {
                 delta_x,

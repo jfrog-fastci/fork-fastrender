@@ -1123,16 +1123,26 @@ impl<'a> ScrollChainState<'a> {
   }
 }
 
-pub fn build_scroll_chain<'a>(
+/// Builds the scroll chain for a node path.
+///
+/// When `treat_root_as_scroll_container` is true, the root fragment is always included in the chain
+/// even when it is not an overflow scroll container. This is appropriate for document roots where
+/// viewport scrolling should always be available.
+///
+/// When false, the root fragment participates only if it is a real scroll container (overflow
+/// scroll/auto or scroll snap). This is useful for additional fragment roots (e.g., fixed layers)
+/// that should not be promoted to viewport scroll.
+pub fn build_scroll_chain_with_root_mode<'a>(
   root: &'a FragmentNode,
   viewport: Size,
   path: &[usize],
+  treat_root_as_scroll_container: bool,
 ) -> Vec<ScrollChainState<'a>> {
   let mut stack: Vec<(&FragmentNode, Point, Size, bool)> = Vec::new();
   let mut current = root;
   let mut origin = Point::new(root.bounds.x(), root.bounds.y());
   let mut current_viewport = viewport;
-  stack.push((current, origin, current_viewport, true));
+  stack.push((current, origin, current_viewport, treat_root_as_scroll_container));
 
   for &idx in path {
     if let Some(child) = current.children.get(idx) {
@@ -1146,13 +1156,21 @@ pub fn build_scroll_chain<'a>(
   }
 
   let mut out = Vec::new();
-  for (node, origin, viewport, is_root) in stack.into_iter().rev() {
-    if let Some(state) = ScrollChainState::from_fragment(node, origin, viewport, is_root) {
+  for (node, origin, viewport, treat_as_root) in stack.into_iter().rev() {
+    if let Some(state) = ScrollChainState::from_fragment(node, origin, viewport, treat_as_root) {
       out.push(state);
     }
   }
 
   out
+}
+
+pub fn build_scroll_chain<'a>(
+  root: &'a FragmentNode,
+  viewport: Size,
+  path: &[usize],
+) -> Vec<ScrollChainState<'a>> {
+  build_scroll_chain_with_root_mode(root, viewport, path, true)
 }
 
 #[derive(Debug, Clone)]

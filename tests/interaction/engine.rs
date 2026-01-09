@@ -1043,7 +1043,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         vec![
           el(
             "option",
-            vec![("value", "a")],
+            vec![("id", "o-a"), ("value", "a")],
             vec![DomNode {
               node_type: DomNodeType::Text {
                 content: "Alpha".to_string(),
@@ -1053,7 +1053,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
           ),
           el(
             "option",
-            vec![("value", "b"), ("disabled", "")],
+            vec![("id", "o-b"), ("value", "b"), ("disabled", "")],
             vec![DomNode {
               node_type: DomNodeType::Text {
                 content: "Beta".to_string(),
@@ -1063,7 +1063,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
           ),
           el(
             "option",
-            vec![("value", "c")],
+            vec![("id", "o-c"), ("value", "c")],
             vec![DomNode {
               node_type: DomNodeType::Text {
                 content: "Gamma".to_string(),
@@ -1077,11 +1077,15 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
   )]);
 
   let select_dom_id = node_id(&dom, "sel");
+  let option_a_dom_id = node_id(&dom, "o-a");
+  let option_b_dom_id = node_id(&dom, "o-b");
+  let option_c_dom_id = node_id(&dom, "o-c");
   let expected_control = SelectControl {
     multiple: false,
     size: 1,
     items: Arc::new(vec![
       SelectItem::Option {
+        node_id: option_a_dom_id,
         label: "Alpha".to_string(),
         value: "a".to_string(),
         selected: true,
@@ -1089,6 +1093,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: option_b_dom_id,
         label: "Beta".to_string(),
         value: "b".to_string(),
         selected: false,
@@ -1096,6 +1101,7 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: option_c_dom_id,
         label: "Gamma".to_string(),
         value: "c".to_string(),
         selected: false,
@@ -1445,12 +1451,16 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
   )]);
 
   let select_dom_id = node_id(&dom, "s");
+  let option_1_dom_id = node_id(&dom, "o1");
+  let option_2_dom_id = node_id(&dom, "o2");
+  let option_3_dom_id = node_id(&dom, "o3");
 
   let control = FormControlKind::Select(SelectControl {
     multiple: false,
     size: 3,
     items: Arc::new(vec![
       SelectItem::Option {
+        node_id: option_1_dom_id,
         label: "One".to_string(),
         value: "1".to_string(),
         selected: true,
@@ -1458,6 +1468,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: option_2_dom_id,
         label: "Two".to_string(),
         value: "2".to_string(),
         selected: false,
@@ -1465,6 +1476,7 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         in_optgroup: false,
       },
       SelectItem::Option {
+        node_id: option_3_dom_id,
         label: "Three".to_string(),
         value: "3".to_string(),
         selected: false,
