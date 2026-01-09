@@ -173,6 +173,8 @@ fn get_element_by_id_returns_first_in_tree_order_and_ignores_detached_nodes() {
   let root = crate::dom::parse_html(html).unwrap();
   let mut doc = Document::from_renderer_dom(&root);
 
+  assert_eq!(doc.get_element_by_id(""), None);
+
   let first = doc.get_element_by_id("dup").unwrap();
   assert_eq!(tag_name(&doc, first), Some("div"));
 
