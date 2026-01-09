@@ -5,8 +5,9 @@ use crate::error::{Error, Result};
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, JsExecutionOptions, RunLimits,
-  RunUntilIdleOutcome, ScriptBlockExecutor, ScriptElementSpec, ScriptId, ScriptOrchestrator,
-  ScriptScheduler, ScriptSchedulerAction, ScriptType, TaskSource,
+  RunAnimationFrameOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
+  ScriptElementSpec, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
+  ScriptType, TaskSource,
 };
 use crate::resource::{FetchDestination, FetchRequest};
 
@@ -562,8 +563,23 @@ impl BrowserTab {
     max_frames: usize,
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
+    if !self.host.document.is_dirty()
+      && self.event_loop.is_idle()
+      && !self.event_loop.has_pending_animation_frame_callbacks()
+    {
+      return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+    }
+    let mut frames_executed = 0usize;
 
     loop {
+      if frames_executed >= max_frames {
+        return Ok(RunUntilStableOutcome::Stopped {
+          reason: RunUntilStableStopReason::MaxFrames { limit: max_frames },
+          frames_rendered,
+        });
+      }
+      frames_executed += 1;
+
       match self.run_event_loop_until_idle(limits)? {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
@@ -574,19 +590,44 @@ impl BrowserTab {
         }
       }
 
-      if self.host.document.is_dirty() {
-        if frames_rendered >= max_frames {
-          return Ok(RunUntilStableOutcome::Stopped {
-            reason: RunUntilStableStopReason::MaxFrames { limit: max_frames },
-            frames_rendered,
-          });
+      let raf_outcome = self.event_loop.run_animation_frame(&mut self.host)?;
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        // HTML: microtask checkpoint after rAF callbacks.
+        //
+        // We run this as a "microtasks only" spin so that:
+        // - microtasks queued by rAF are drained immediately,
+        // - normal tasks (including timer tasks) are not run until the next loop iteration (after
+        //   rendering).
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: limits.max_microtasks,
+          max_wall_time: limits.max_wall_time,
+        };
+        match self.event_loop.run_until_idle(&mut self.host, microtask_limits)? {
+          RunUntilIdleOutcome::Idle => {}
+          RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {
+            // Expected: tasks are present, but this checkpoint only drains microtasks.
+          }
+          RunUntilIdleOutcome::Stopped(reason) => {
+            return Ok(RunUntilStableOutcome::Stopped {
+              reason: RunUntilStableStopReason::EventLoop(reason),
+              frames_rendered,
+            });
+          }
         }
-        let _pixmap = self.host.document.render_frame()?;
-        frames_rendered += 1;
-        continue;
       }
 
-      return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+      if self.host.document.is_dirty() {
+        let _pixmap = self.host.document.render_frame()?;
+        frames_rendered += 1;
+      }
+
+      if !self.host.document.is_dirty()
+        && self.event_loop.is_idle()
+        && !self.event_loop.has_pending_animation_frame_callbacks()
+      {
+        return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+      }
     }
   }
 

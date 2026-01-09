@@ -156,7 +156,7 @@ Key modules:
   - parse-time helpers for building `ScriptElementSpec` (base URL + attrs + inline text)
 - `src/js/orchestrator.rs`
   - host bookkeeping for `Document.currentScript` (spec-shaped, `dom2`-backed)
-- `src/js/window_timers.rs`, `src/js/time.rs`, `src/js/url.rs`
+- `src/js/window_timers.rs`, `src/js/window_animation_frame.rs`, `src/js/time.rs`, `src/js/url.rs`
   - early “web platform” primitives used by tests and eventual page execution
 
 ### DOM for bindings (`src/dom2/*`)
@@ -238,7 +238,7 @@ The JS event loop integrates with these deadlines: `EventLoop::run_until_idle` c
 The JS event loop provides explicit budgets:
 
 - **Run limits:** `js::RunLimits { max_tasks, max_microtasks, max_wall_time }`
-- **Queue caps:** `js::QueueLimits { max_pending_tasks, max_pending_microtasks, max_pending_timers }`
+- **Queue caps:** `js::QueueLimits { max_pending_tasks, max_pending_microtasks, max_pending_timers, max_pending_animation_frame_callbacks }`
 
 These prevent untrusted scripts from queueing unbounded work or spinning forever.
 

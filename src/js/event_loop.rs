@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::clock::{Clock, RealClock};
+use super::time::duration_to_ms_f64;
 
 /// HTML task sources (WHATWG terminology).
 ///
@@ -91,6 +92,7 @@ pub struct QueueLimits {
   pub max_pending_tasks: usize,
   pub max_pending_microtasks: usize,
   pub max_pending_timers: usize,
+  pub max_pending_animation_frame_callbacks: usize,
 }
 
 impl QueueLimits {
@@ -99,6 +101,7 @@ impl QueueLimits {
       max_pending_tasks: usize::MAX,
       max_pending_microtasks: usize::MAX,
       max_pending_timers: usize::MAX,
+      max_pending_animation_frame_callbacks: usize::MAX,
     }
   }
 }
@@ -111,6 +114,7 @@ impl Default for QueueLimits {
       max_pending_tasks: 100_000,
       max_pending_microtasks: 100_000,
       max_pending_timers: 100_000,
+      max_pending_animation_frame_callbacks: 100_000,
     }
   }
 }
@@ -141,13 +145,29 @@ pub enum SpinOutcome {
   Stopped(RunUntilIdleStopReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunAnimationFrameOutcome {
+  Idle,
+  Ran { callbacks: usize },
+}
+
 /// JS-visible timer ID returned by `setTimeout`/`setInterval`.
 ///
 /// The HTML Standard uses integer handles for timers; we use `i32` so this can be exposed to JS
 /// without lossy conversions.
 pub type TimerId = i32;
 
-type TimerCallback<Host> = Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+/// JS-visible handle returned by `requestAnimationFrame`.
+///
+/// Like timers, the HTML Standard uses integer handles; we use `i32` so this can be exposed to JS
+/// without lossy conversions.
+pub type AnimationFrameId = i32;
+
+type TimerCallback<Host> =
+  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>) -> Result<()> + 'static>;
+
+type AnimationFrameCallback<Host> =
+  Box<dyn FnMut(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TimerKind {
@@ -177,6 +197,9 @@ pub struct EventLoop<Host: 'static> {
   next_timer_id: TimerId,
   next_timer_seq: u64,
   timer_nesting_level: u32,
+  animation_frame_callbacks: HashMap<AnimationFrameId, AnimationFrameCallback<Host>>,
+  animation_frame_queue: VecDeque<AnimationFrameId>,
+  next_animation_frame_id: AnimationFrameId,
   performing_microtask_checkpoint: bool,
   currently_running_task: Option<RunningTask>,
 }
@@ -196,6 +219,9 @@ impl<Host: 'static> Default for EventLoop<Host> {
       next_timer_id: 1,
       next_timer_seq: 0,
       timer_nesting_level: 0,
+      animation_frame_callbacks: HashMap::new(),
+      animation_frame_queue: VecDeque::new(),
+      next_animation_frame_id: 1,
       performing_microtask_checkpoint: false,
       currently_running_task: None,
     }
@@ -253,6 +279,17 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn currently_running_task(&self) -> Option<RunningTask> {
     self.currently_running_task
+  }
+
+  /// Whether there is any runnable work (tasks or microtasks) queued.
+  ///
+  /// This does *not* consider future timers that are not yet due.
+  pub fn is_idle(&self) -> bool {
+    self.task_queues.is_empty() && self.microtask_queue.is_empty()
+  }
+
+  pub fn has_pending_animation_frame_callbacks(&self) -> bool {
+    !self.animation_frame_callbacks.is_empty()
   }
 
   pub fn queue_task<F>(&mut self, source: TaskSource, runnable: F) -> Result<()>
@@ -334,6 +371,67 @@ impl<Host: 'static> EventLoop<Host> {
 
   pub fn clear_interval(&mut self, id: TimerId) {
     self.clear_timeout(id);
+  }
+
+  pub fn request_animation_frame<F>(&mut self, callback: F) -> Result<AnimationFrameId>
+  where
+    F: FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()> + 'static,
+  {
+    if self.animation_frame_callbacks.len() >= self.queue_limits.max_pending_animation_frame_callbacks {
+      return Err(Error::Other(format!(
+        "EventLoop exceeded max pending requestAnimationFrame callbacks (limit={})",
+        self.queue_limits.max_pending_animation_frame_callbacks
+      )));
+    }
+
+    let id: AnimationFrameId = loop {
+      if self.next_animation_frame_id == 0 {
+        self.next_animation_frame_id = 1;
+      }
+      let id = self.next_animation_frame_id;
+      self.next_animation_frame_id = self.next_animation_frame_id.wrapping_add(1);
+      if self.next_animation_frame_id == 0 {
+        self.next_animation_frame_id = 1;
+      }
+      if !self.animation_frame_callbacks.contains_key(&id) {
+        break id;
+      }
+    };
+
+    let mut maybe = Some(
+      Box::new(callback) as Box<dyn FnOnce(&mut Host, &mut EventLoop<Host>, f64) -> Result<()>>,
+    );
+    let callback: AnimationFrameCallback<Host> = Box::new(move |host, event_loop, timestamp| {
+      let runnable = maybe
+        .take()
+        .ok_or_else(|| {
+          Error::Other("requestAnimationFrame callback invoked more than once".to_string())
+        })?;
+      runnable(host, event_loop, timestamp)
+    });
+
+    self.animation_frame_callbacks.insert(id, callback);
+    self.animation_frame_queue.push_back(id);
+    Ok(id)
+  }
+
+  pub fn cancel_animation_frame(&mut self, id: AnimationFrameId) {
+    self.animation_frame_callbacks.remove(&id);
+    if self.animation_frame_callbacks.is_empty() {
+      // Avoid accumulating canceled IDs in the scheduling queue.
+      self.animation_frame_queue.clear();
+    }
+  }
+
+  /// Run one animation frame "turn" (draining callbacks queued before the frame started).
+  ///
+  /// - Callbacks scheduled while executing the frame are deferred to the next frame.
+  /// - All callbacks in the same frame observe the same timestamp argument.
+  pub fn run_animation_frame(&mut self, host: &mut Host) -> Result<RunAnimationFrameOutcome> {
+    match self.run_animation_frame_inner(host) {
+      Ok(outcome) => Ok(outcome),
+      Err(err) => Err(err),
+    }
   }
 
   /// Perform a microtask checkpoint (HTML Standard terminology).
@@ -773,6 +871,68 @@ impl<Host: 'static> EventLoop<Host> {
     self.currently_running_task = previous_running_task;
     self.performing_microtask_checkpoint = false;
     result
+  }
+
+  fn run_animation_frame_inner(&mut self, host: &mut Host) -> Result<RunAnimationFrameOutcome> {
+    // If all callbacks have been cancelled, clear out any stale IDs from the queue.
+    if self.animation_frame_callbacks.is_empty() {
+      self.animation_frame_queue.clear();
+      return Ok(RunAnimationFrameOutcome::Idle);
+    }
+
+    let previous_stage = render_control::active_stage();
+    let _stage_guard = StageGuard::install(previous_stage.or(Some(RenderStage::Script)));
+    if previous_stage.is_none() {
+      record_stage(StageHeartbeat::Script);
+    }
+
+    // Integrate renderer-level cancellation/deadlines.
+    let stage = render_control::active_stage().unwrap_or(self.default_deadline_stage);
+    render_control::check_active(stage)?;
+
+    // Snapshot semantics: callbacks queued during this frame are deferred to the next one.
+    let queued_at_start = self.animation_frame_queue.len();
+    let mut trace_span = self.trace.span("js.animation_frame.run", "js");
+    trace_span.arg_u64("queued_at_start", queued_at_start as u64);
+    let mut queue = std::mem::take(&mut self.animation_frame_queue);
+    let timestamp = duration_to_ms_f64(self.now());
+
+    let previous_running_task = self.currently_running_task;
+    self.currently_running_task = Some(RunningTask {
+      // Treat rAF as script execution for the purposes of "is the JS stack empty?" checks.
+      source: TaskSource::Script,
+      is_microtask: false,
+    });
+
+    let result = (|| -> Result<usize> {
+      let mut executed = 0usize;
+      while let Some(id) = queue.pop_front() {
+        // Integrate renderer-level cancellation/deadlines.
+        render_control::check_active(stage)?;
+
+        let Some(mut callback) = self.animation_frame_callbacks.remove(&id) else {
+          continue;
+        };
+        (callback)(host, self, timestamp)?;
+        executed += 1;
+      }
+      Ok(executed)
+    })();
+
+    self.currently_running_task = previous_running_task;
+
+    let executed = result?;
+    trace_span.arg_u64("executed", executed as u64);
+    if self.animation_frame_callbacks.is_empty() {
+      // Avoid accumulating canceled IDs in the scheduling queue when all callbacks are gone.
+      self.animation_frame_queue.clear();
+    }
+
+    if executed == 0 {
+      Ok(RunAnimationFrameOutcome::Idle)
+    } else {
+      Ok(RunAnimationFrameOutcome::Ran { callbacks: executed })
+    }
   }
 
   fn pending_task_count(&self) -> usize {
@@ -1868,6 +2028,7 @@ mod tests {
       max_pending_tasks: 1,
       max_pending_microtasks: 1,
       max_pending_timers: 1,
+      max_pending_animation_frame_callbacks: 1,
     });
 
     event_loop
@@ -1902,5 +2063,156 @@ mod tests {
       matches!(err, Error::Other(ref msg) if msg.contains("max pending timers")),
       "unexpected error: {err:?}"
     );
+  }
+
+  #[test]
+  fn animation_frame_callbacks_are_ordered_and_snapshotted() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    event_loop.request_animation_frame(|host, event_loop, _ts| {
+      host.log.push("a");
+      event_loop.request_animation_frame(|host, _event_loop, _ts| {
+        host.log.push("a2");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    event_loop.request_animation_frame(|host, event_loop, _ts| {
+      host.log.push("b");
+      event_loop.request_animation_frame(|host, _event_loop, _ts| {
+        host.log.push("b2");
+        Ok(())
+      })?;
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+    assert_eq!(host.log, vec!["a", "b"]);
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+    assert_eq!(host.log, vec!["a", "b", "a2", "b2"]);
+
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Idle
+    );
+    Ok(())
+  }
+
+  #[test]
+  fn cancel_animation_frame_before_run_cancels_callback() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let a = event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("a");
+      Ok(())
+    })?;
+    let _b = event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("b");
+      Ok(())
+    })?;
+    event_loop.cancel_animation_frame(a);
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    assert_eq!(host.log, vec!["b"]);
+    Ok(())
+  }
+
+  #[test]
+  fn cancel_animation_frame_inside_other_callback_prevents_invocation() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      log: Vec<&'static str>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let id_to_cancel: Rc<Cell<Option<AnimationFrameId>>> = Rc::new(Cell::new(None));
+    let id_to_cancel_for_cb = Rc::clone(&id_to_cancel);
+
+    event_loop.request_animation_frame(move |host, event_loop, _ts| {
+      host.log.push("a");
+      let id = id_to_cancel_for_cb
+        .get()
+        .expect("expected animation frame id to be set");
+      event_loop.cancel_animation_frame(id);
+      Ok(())
+    })?;
+
+    let b = event_loop.request_animation_frame(|host, _event_loop, _ts| {
+      host.log.push("b");
+      Ok(())
+    })?;
+    id_to_cancel.set(Some(b));
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 1 }
+    );
+    assert_eq!(host.log, vec!["a"]);
+    Ok(())
+  }
+
+  #[test]
+  fn animation_frame_timestamp_is_stable_within_frame() -> Result<()> {
+    #[derive(Default)]
+    struct Host {
+      observed: Vec<f64>,
+    }
+
+    let clock = Arc::new(VirtualClock::new());
+    clock.set_now(Duration::from_millis(10));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<Host>::with_clock(clock_for_loop);
+
+    let clock_for_cb = Arc::clone(&clock);
+    event_loop.request_animation_frame(move |host, _event_loop, ts| {
+      host.observed.push(ts);
+      clock_for_cb.advance(Duration::from_millis(5));
+      Ok(())
+    })?;
+
+    event_loop.request_animation_frame(|host, _event_loop, ts| {
+      host.observed.push(ts);
+      Ok(())
+    })?;
+
+    let mut host = Host::default();
+    assert_eq!(
+      event_loop.run_animation_frame(&mut host)?,
+      RunAnimationFrameOutcome::Ran { callbacks: 2 }
+    );
+
+    assert_eq!(host.observed, vec![10.0, 10.0]);
+    Ok(())
   }
 }

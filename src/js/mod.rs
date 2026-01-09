@@ -39,6 +39,7 @@ pub mod runtime;
 pub mod time;
 pub mod url;
 pub mod url_bindings;
+pub mod window_animation_frame;
 pub mod window_timers;
 pub mod vm_host;
 pub mod streaming;
@@ -58,8 +59,8 @@ pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
 pub use ecma_vm_runtime::{EcmaVmRuntime, EcmaVmRuntimeConfig};
 pub use event_loop::{
-  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome,
-  Task, TaskSource, TimerId,
+  AnimationFrameId, EventLoop, QueueLimits, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
+  RunUntilIdleStopReason, SpinOutcome, Task, TaskSource, TimerId,
 };
 pub use options::JsExecutionOptions;
 pub use ecma_microtasks::{VmJsEngineHost, VmJsHostHooks, VmJsJobContext};
@@ -89,6 +90,7 @@ pub use page_load::{
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
 pub use url_bindings::install_url_bindings;
+pub use window_animation_frame::install_window_animation_frame_bindings;
 pub use window_timers::install_window_timers_bindings;
 pub use window_realm::{ConsoleSink, WindowRealm, WindowRealmConfig, WindowRealmHost};
 pub use window::{WindowHost, WindowHostState};

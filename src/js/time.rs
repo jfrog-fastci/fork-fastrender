@@ -265,7 +265,7 @@ fn performance_now_native(
   Ok(Value::Number(duration_to_ms_f64(clock.now())))
 }
 
-fn duration_to_ms_f64(duration: Duration) -> f64 {
+pub(crate) fn duration_to_ms_f64(duration: Duration) -> f64 {
   let nanos = duration.as_nanos();
   let millis = nanos / 1_000_000;
   let rem_nanos = nanos % 1_000_000;

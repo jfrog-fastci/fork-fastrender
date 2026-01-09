@@ -1,7 +1,8 @@
 use crate::error::Result;
 use crate::js::{
-  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunLimits, RunUntilIdleOutcome,
-  RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator, JsExecutionOptions, RealClock,
+  CurrentScriptHost, CurrentScriptStateHandle, EventLoop, RunAnimationFrameOutcome, RunLimits,
+  RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptExecutionLog, ScriptOrchestrator,
+  JsExecutionOptions, RealClock,
 };
 use crate::js::webidl::VmJsRuntime;
 use std::sync::Arc;
@@ -10,7 +11,8 @@ use super::BrowserDocumentDom2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunUntilStableStopReason {
-  /// Rendering did not converge before exhausting the frame budget.
+  /// The JS + animation frame + render stabilization driver did not converge before exhausting the
+  /// frame budget.
   MaxFrames { limit: usize },
   /// The underlying JS event loop stopped due to its run limits.
   EventLoop(RunUntilIdleStopReason),
@@ -154,8 +156,8 @@ impl BrowserDocumentJs {
   ///
   /// This is intentionally deterministic and bounded:
   /// - JS execution is bounded by [`JsExecutionOptions::event_loop_run_limits`] via
-  ///   [`EventLoop::run_until_idle`].
-  /// - Rendering is bounded by `max_frames`.
+  ///   [`EventLoop::run_until_idle`] (repeatedly).
+  /// - Animation frame turns (`requestAnimationFrame`) and rendering are bounded by `max_frames`.
   pub fn run_until_stable(&mut self, max_frames: usize) -> Result<RunUntilStableOutcome> {
     self.run_until_stable_with_run_limits(self.js_execution_options.event_loop_run_limits, max_frames)
   }
@@ -166,19 +168,35 @@ impl BrowserDocumentJs {
     max_frames: usize,
   ) -> Result<RunUntilStableOutcome> {
     let mut frames_rendered = 0usize;
+    if !self.document.is_dirty()
+      && self
+        .event_loop
+        .as_ref()
+        .is_some_and(|event_loop| event_loop.is_idle() && !event_loop.has_pending_animation_frame_callbacks())
+    {
+      return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+    }
+    let mut frames_executed = 0usize;
 
     loop {
+      if frames_executed >= max_frames {
+        return Ok(RunUntilStableOutcome::Stopped {
+          reason: RunUntilStableStopReason::MaxFrames { limit: max_frames },
+          frames_rendered,
+        });
+      }
+      frames_executed += 1;
+
       let mut event_loop = self
         .event_loop
         .take()
         .expect("BrowserDocumentJs should always have an event loop");
 
       let outcome = event_loop.run_until_idle(self, limits);
-      self.event_loop = Some(event_loop);
-
       match outcome? {
         RunUntilIdleOutcome::Idle => {}
         RunUntilIdleOutcome::Stopped(reason) => {
+          self.event_loop = Some(event_loop);
           return Ok(RunUntilStableOutcome::Stopped {
             reason: RunUntilStableStopReason::EventLoop(reason),
             frames_rendered,
@@ -186,19 +204,42 @@ impl BrowserDocumentJs {
         }
       }
 
-      if self.document.is_dirty() {
-        if frames_rendered >= max_frames {
-          return Ok(RunUntilStableOutcome::Stopped {
-            reason: RunUntilStableStopReason::MaxFrames { limit: max_frames },
-            frames_rendered,
-          });
+      let raf_outcome = event_loop.run_animation_frame(self)?;
+      if matches!(raf_outcome, RunAnimationFrameOutcome::Ran { .. }) {
+        let microtask_limits = RunLimits {
+          max_tasks: 0,
+          max_microtasks: limits.max_microtasks,
+          max_wall_time: limits.max_wall_time,
+        };
+        match event_loop.run_until_idle(self, microtask_limits)? {
+          RunUntilIdleOutcome::Idle => {}
+          RunUntilIdleOutcome::Stopped(RunUntilIdleStopReason::MaxTasks { .. }) => {}
+          RunUntilIdleOutcome::Stopped(reason) => {
+            self.event_loop = Some(event_loop);
+            return Ok(RunUntilStableOutcome::Stopped {
+              reason: RunUntilStableStopReason::EventLoop(reason),
+              frames_rendered,
+            });
+          }
         }
-        let _pixmap = self.document.render_frame()?;
-        frames_rendered += 1;
-        continue;
       }
 
-      return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+      self.event_loop = Some(event_loop);
+
+      if self.document.is_dirty() {
+        let _pixmap = self.document.render_frame()?;
+        frames_rendered += 1;
+      }
+
+      let Some(event_loop) = self.event_loop.as_ref() else {
+        return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+      };
+      if !self.document.is_dirty()
+        && event_loop.is_idle()
+        && !event_loop.has_pending_animation_frame_callbacks()
+      {
+        return Ok(RunUntilStableOutcome::Stable { frames_rendered });
+      }
     }
   }
 }
