@@ -3032,17 +3032,43 @@ impl Painter {
           return Ok(());
         }
 
+        // When clipping transformed stacking contexts to the viewport, we must compute the layer
+        // bounds in the *pre-transform* coordinate space. Otherwise, classic centering patterns
+        // like `left: 50%; transform: translateX(-50%)` can have all required source pixels culled
+        // before the transform is applied, producing an empty layer.
+        //
+        // For 2D affine transforms we map the viewport back into the layer's source coordinate
+        // space using the inverse transform. For non-invertible / non-affine transforms we fall
+        // back to the previous conservative behavior.
+        let viewport_inverse_2d = transform_3d
+          .as_ref()
+          .filter(|t| !t.is_identity())
+          .and_then(|t| t.to_2d())
+          .and_then(|t| t.inverse());
+
         let bounds_start = profile_enabled.then(Instant::now);
-        let Some(mut bounds) = stacking_context_bounds(
-          &commands,
-          &filters,
-          &backdrop_filters,
-          context_rect,
-          transform_3d.as_ref(),
-          clip.as_ref(),
-          clip_path.as_ref(),
-          (self.css_width, self.css_height),
-        ) else {
+        let Some(mut bounds) = (match viewport_inverse_2d {
+          Some(_) => stacking_context_bounds(
+            &commands,
+            &filters,
+            &backdrop_filters,
+            context_rect,
+            None,
+            clip.as_ref(),
+            clip_path.as_ref(),
+            (self.css_width, self.css_height),
+          ),
+          None => stacking_context_bounds(
+            &commands,
+            &filters,
+            &backdrop_filters,
+            context_rect,
+            transform_3d.as_ref(),
+            clip.as_ref(),
+            clip_path.as_ref(),
+            (self.css_width, self.css_height),
+          ),
+        }) else {
           return Ok(());
         };
         if let Some(start) = bounds_start {
@@ -3051,19 +3077,32 @@ impl Painter {
 
         // Constrain the stacking layer to the visible viewport (expanded by filter outsets).
         // If a context is entirely outside the viewport, skip it.
-        let (filter_l, filter_t, filter_r, filter_b) = compute_filter_outset(&filters, bounds, 1.0);
+        let (filter_l, filter_t, filter_r, filter_b) =
+          compute_filter_outset(&filters, bounds, 1.0);
         let (back_l, back_t, back_r, back_b) =
           compute_filter_outset(&backdrop_filters, bounds, 1.0);
         let expand_l = filter_l.max(back_l);
         let expand_t = filter_t.max(back_t);
         let expand_r = filter_r.max(back_r);
         let expand_b = filter_b.max(back_b);
-        let view_bounds = Rect::from_xywh(
-          -expand_l,
-          -expand_t,
-          self.css_width + expand_l + expand_r,
-          self.css_height + expand_t + expand_b,
-        );
+        let view_bounds = match viewport_inverse_2d {
+          Some(inv) => {
+            let viewport_rect = Rect::from_xywh(0.0, 0.0, self.css_width, self.css_height);
+            let inv_viewport = inv.transform_rect(viewport_rect);
+            Rect::from_xywh(
+              inv_viewport.x() - expand_l,
+              inv_viewport.y() - expand_t,
+              inv_viewport.width() + expand_l + expand_r,
+              inv_viewport.height() + expand_t + expand_b,
+            )
+          }
+          None => Rect::from_xywh(
+            -expand_l,
+            -expand_t,
+            self.css_width + expand_l + expand_r,
+            self.css_height + expand_t + expand_b,
+          ),
+        };
         match bounds.intersection(view_bounds) {
           Some(clipped) if clipped.width() > 0.0 && clipped.height() > 0.0 => bounds = clipped,
           _ => return Ok(()),
@@ -4220,7 +4259,21 @@ impl Painter {
       return;
     }
 
-    let canvas_rect_css = Rect::from_xywh(0.0, 0.0, self.css_width, self.css_height);
+    // `css_width`/`css_height` represent the layout viewport size (used for vw/vh, fixed
+    // backgrounds, etc.), but this painter may be rendering into an offscreen layer whose origin
+    // is offset within the global CSS coordinate space. Cull background tiles against the actual
+    // pixmap bounds in CSS coordinates so transformed/translated stacking-context layers paint the
+    // correct visible region.
+    let canvas_rect_css = if self.scale.is_finite() && self.scale.abs() > f32::EPSILON {
+      Rect::from_xywh(
+        self.origin_offset_css.x,
+        self.origin_offset_css.y,
+        self.pixmap.width() as f32 / self.scale,
+        self.pixmap.height() as f32 / self.scale,
+      )
+    } else {
+      Rect::from_xywh(0.0, 0.0, self.css_width, self.css_height)
+    };
     let Some(visible_clip_css) = clip_rect_css.intersection(canvas_rect_css) else {
       return;
     };
