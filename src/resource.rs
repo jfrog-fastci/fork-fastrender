@@ -1043,7 +1043,7 @@ impl FetchDestination {
 
   /// Returns the default credentials mode for this destination.
   ///
-  /// Most CORS-mode fetches default to `"same-origin"` credentials:
+  /// CORS-mode fetches default to `"same-origin"` credentials:
   ///
   /// - `fetch()` requests are sent in `cors` mode but default to `"same-origin"` credentials per
   ///   the Fetch API.
@@ -1051,15 +1051,11 @@ impl FetchDestination {
   ///   also use `cors` mode; the default/empty keyword maps to `"same-origin"` credentials.
   /// - Fonts are fetched in `cors` mode and default to `"same-origin"` credentials per the CSS font
   ///   fetch algorithms (allowing cookies for same-origin fonts when the client origin is known).
-  const fn default_credentials_mode(self) -> FetchCredentialsMode {
-    match self {
-      Self::Fetch | Self::StyleCors | Self::ImageCors | Self::Font => FetchCredentialsMode::SameOrigin,
-      Self::Document
-      | Self::DocumentNoUser
-      | Self::Iframe
-      | Self::Style
-      | Self::Image
-      | Self::Other => FetchCredentialsMode::Include,
+  fn default_credentials_mode(self) -> FetchCredentialsMode {
+    if self.sec_fetch_mode() == "cors" {
+      FetchCredentialsMode::SameOrigin
+    } else {
+      FetchCredentialsMode::Include
     }
   }
 
