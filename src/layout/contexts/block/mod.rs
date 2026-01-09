@@ -2500,6 +2500,80 @@ impl BlockFormattingContext {
       .map(|logical| logical.translate(delta));
   }
 
+  /// Cancels a parent-applied translation for out-of-flow positioned descendants whose containing
+  /// blocks live outside the translated subtree.
+  ///
+  /// In the parallel block-children path we lay out each child at `box_y=0` (because its final
+  /// vertical placement depends on previous siblings). After all children complete we translate the
+  /// child's fragment root into its final position.
+  ///
+  /// For in-flow content, translating only the fragment root is correct because descendants are
+  /// expressed in the parent's local coordinate space.
+  ///
+  /// Out-of-flow positioned descendants (e.g. `position:absolute` whose containing block is an
+  /// ancestor of this child, or `position:fixed` relative to the viewport) *must not* inherit this
+  /// translation: their bounds are resolved against an external containing block, so moving the
+  /// subtree root would incorrectly offset them.
+  ///
+  /// Serial block layout avoids this by translating viewport-relative state into the child's
+  /// coordinate space before running layout (see `FormattingContextFactory::translated_for_child`).
+  /// The parallel path currently can't do that because it doesn't know `box_y` yet, so we correct
+  /// the resulting fragment tree here.
+  fn cancel_translation_for_out_of_flow_positioned_descendants(
+    fragment: &mut FragmentNode,
+    delta: Point,
+  ) {
+    if delta.x == 0.0 && delta.y == 0.0 {
+      return;
+    }
+    let cancel = Point::new(-delta.x, -delta.y);
+    fn walk(
+      node: &mut FragmentNode,
+      cancel: Point,
+      has_abs_cb: bool,
+      has_fixed_cb: bool,
+    ) {
+      let (has_abs_cb_here, has_fixed_cb_here) = node
+        .style
+        .as_deref()
+        .map(|style| {
+          (
+            has_abs_cb || style.establishes_abs_containing_block(),
+            has_fixed_cb || style.establishes_fixed_containing_block(),
+          )
+        })
+        .unwrap_or((has_abs_cb, has_fixed_cb));
+      for child in node.children_mut() {
+        let is_abs = child
+          .style
+          .as_deref()
+          .is_some_and(|style| matches!(style.position, Position::Absolute));
+        let is_fixed = child
+          .style
+          .as_deref()
+          .is_some_and(|style| matches!(style.position, Position::Fixed));
+        let needs_cancel = (is_abs && !has_abs_cb_here) || (is_fixed && !has_fixed_cb_here);
+        if needs_cancel {
+          child.bounds = child.bounds.translate(cancel);
+          child.logical_override = child.logical_override.map(|logical| logical.translate(cancel));
+          // The entire subtree under this out-of-flow fragment inherits the cancelled translation,
+          // so avoid double-applying it to descendants.
+          continue;
+        }
+        walk(child, cancel, has_abs_cb_here, has_fixed_cb_here);
+      }
+    }
+    let has_abs_cb_root = fragment
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_abs_containing_block());
+    let has_fixed_cb_root = fragment
+      .style
+      .as_deref()
+      .is_some_and(|style| style.establishes_fixed_containing_block());
+    walk(fragment, cancel, has_abs_cb_root, has_fixed_cb_root);
+  }
+
   #[allow(clippy::too_many_arguments)]
   fn try_parallel_block_children(
     &self,
@@ -2618,7 +2692,9 @@ impl BlockFormattingContext {
       };
 
       let delta = box_y - fragment.bounds.y();
-      Self::translate_fragment_tree(&mut fragment, Point::new(0.0, delta));
+      let delta = Point::new(0.0, delta);
+      Self::translate_fragment_tree(&mut fragment, delta);
+      Self::cancel_translation_for_out_of_flow_positioned_descendants(&mut fragment, delta);
 
       let block_extent = fragment.bounds.height();
       let next_y = box_y + block_extent;
