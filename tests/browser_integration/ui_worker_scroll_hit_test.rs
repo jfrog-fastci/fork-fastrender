@@ -156,7 +156,15 @@ fn click_after_scroll_hits_link() {
     })
     .expect("Navigate");
 
-  let _ = wait_for_frame_ready(&ui_rx, tab_id, TIMEOUT);
+  let frame_before_scroll = wait_for_frame_ready(&ui_rx, tab_id, TIMEOUT);
+  let px_before_scroll = rgba_at(&frame_before_scroll.pixmap, 150, 20);
+  assert!(
+    !(px_before_scroll[0] > 200
+      && px_before_scroll[1] < 40
+      && px_before_scroll[2] < 40
+      && px_before_scroll[3] > 200),
+    "expected pixel to not be red before scroll, got rgba={px_before_scroll:?}"
+  );
 
   ui_tx
     .send(UiToWorker::Scroll {
