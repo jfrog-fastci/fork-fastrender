@@ -3765,6 +3765,10 @@ impl FormattingContext for FlexFormattingContext {
     // When the parent did *not* force a used border-box height (i.e. this is a content-sized
     // `height:auto` flex container), ensure the container is tall enough to enclose its in-flow
     // children (plus its bottom padding/border).
+    //
+    // Important: respect min/max-height constraints while doing so. In particular, `max-height`
+    // intentionally allows in-flow children to overflow and be clipped by `overflow`, so we must
+    // not "grow to fit" past the computed `max-height`.
     if physical_height_is_auto(&box_node.style) && constraints.used_border_box_height.is_none() {
       let mut max_child_bottom = 0.0f32;
       let mut deadline_counter = 0usize;
@@ -3784,15 +3788,65 @@ impl FormattingContext for FlexFormattingContext {
       }
       if max_child_bottom.is_finite() {
         let cb_width = fragment.bounds.width().max(0.0);
+        let containing_block_height = constraints.height().filter(|h| h.is_finite()).map(|h| h.max(0.0));
         // Padding percentages resolve against the physical width, even for vertical edges.
+        let padding_top =
+          self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
         let padding_bottom =
           self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+        let border_top = self.resolve_length_for_width(
+          box_node.style.used_border_top_width(),
+          cb_width,
+          &box_node.style,
+        );
         let border_bottom = self.resolve_length_for_width(
           box_node.style.used_border_bottom_width(),
           cb_width,
           &box_node.style,
         );
         let required = (max_child_bottom + padding_bottom + border_bottom).max(0.0);
+
+        let vertical_edges = (padding_top + padding_bottom + border_top + border_bottom).max(0.0);
+        let resolve_block_size_len = |len: Length| -> Option<f32> {
+          resolve_length_with_percentage_metrics(
+            len,
+            containing_block_height,
+            self.viewport_size,
+            box_node.style.font_size,
+            box_node.style.root_font_size,
+            Some(&box_node.style),
+            Some(&self.font_context),
+          )
+          .filter(|v| v.is_finite())
+          .map(|v| v.max(0.0))
+        };
+
+        let mut min_height = box_node
+          .style
+          .min_height
+          .as_ref()
+          .and_then(|l| resolve_block_size_len(*l))
+          .unwrap_or(0.0);
+        let mut max_height = box_node
+          .style
+          .max_height
+          .as_ref()
+          .and_then(|l| resolve_block_size_len(*l))
+          .unwrap_or(f32::INFINITY);
+
+        // Convert content-box min/max heights into border-box units so we can clamp the fragment's
+        // border-box size.
+        if box_node.style.box_sizing == BoxSizing::ContentBox {
+          min_height = (min_height + vertical_edges).max(0.0);
+          if max_height.is_finite() {
+            max_height = (max_height + vertical_edges).max(0.0);
+          }
+        }
+        if max_height.is_finite() && max_height < min_height {
+          max_height = min_height;
+        }
+
+        let required = crate::layout::utils::clamp_with_order(required, min_height, max_height);
         if required > fragment.bounds.height() + 0.01 {
           fragment.bounds.size.height = required;
         }

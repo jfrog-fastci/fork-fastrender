@@ -79,6 +79,7 @@ mod flex_positioned_relayout;
 mod flex_replaced_percentage;
 mod flex_replaced_percentage_height_indefinite;
 mod flex_root_used_border_box_width;
+mod flex_auto_height_respects_max_height;
 mod flex_wrap_auto_height;
 mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
