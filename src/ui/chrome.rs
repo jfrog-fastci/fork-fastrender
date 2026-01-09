@@ -32,88 +32,92 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
   //
   // These are implemented in the egui frame (rather than as winit-level shortcuts) so we don't
   // need to do platform-specific modifier bookkeeping and can respect egui's "text editing"
-  // state. Avoid firing shortcuts while the address bar is focused (or whenever egui is actively
-  // consuming keyboard input).
-  // Ctrl/Cmd+L is widely used to focus the address bar. We want it to work even when the address
-  // bar currently has focus (select all), so handle it outside the "no text editing" gate used by
-  // the other shortcuts.
-  let focus_address_bar = ctx.input(|i| {
+  // state.
+  //
+  // Most "browser chrome" shortcuts should still work while the user is editing the address bar,
+  // matching typical browser behaviour. Some shortcuts (e.g. Alt+Left/Right) are suppressed while
+  // editing to avoid interfering with word-wise cursor movement on some platforms.
+  let (focus_address_bar, new_tab, close_tab, reload, tab_delta) = ctx.input(|i| {
     // Use the key event's modifier snapshot rather than `i.modifiers`: the winit integration feeds
     // modifiers via events, and using the event snapshot keeps this robust in unit tests as well.
-    i.events.iter().any(|event| match event {
-      egui::Event::Key {
-        key: egui::Key::L,
+    let mut focus_address_bar = false;
+    let mut new_tab = false;
+    let mut close_tab = false;
+    let mut reload = false;
+    let mut tab_delta: Option<isize> = None;
+
+    for event in &i.events {
+      let egui::Event::Key {
+        key,
         pressed: true,
         repeat: false,
         modifiers,
-      } => (modifiers.command || modifiers.ctrl) && !modifiers.alt,
-      _ => false,
-    })
+      } = event
+      else {
+        continue;
+      };
+
+      // Guard against AltGr (often encoded as Ctrl+Alt).
+      let cmd_or_ctrl = (modifiers.command || modifiers.ctrl) && !modifiers.alt;
+
+      match key {
+        egui::Key::L if cmd_or_ctrl => focus_address_bar = true,
+        egui::Key::T if cmd_or_ctrl => new_tab = true,
+        egui::Key::W if cmd_or_ctrl => close_tab = true,
+        egui::Key::R if cmd_or_ctrl => reload = true,
+        egui::Key::Tab if cmd_or_ctrl => {
+          tab_delta = Some(if modifiers.shift { -1isize } else { 1isize })
+        }
+        // F5 is a common reload shortcut. Ignore modified F5 (Ctrl/Cmd+F5 / Alt+F5).
+        egui::Key::F5 if !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd) && !modifiers.alt => {
+          reload = true
+        }
+        _ => {}
+      }
+    }
+
+    (focus_address_bar, new_tab, close_tab, reload, tab_delta)
   });
+
   if focus_address_bar {
     actions.push(ChromeAction::FocusAddressBar);
   }
-
-  // F5 is a common reload shortcut, and does not conflict with text editing, so handle it
-  // regardless of focus.
-  let f5_reload = ctx.input(|i| {
-    i.events.iter().any(|event| match event {
-      egui::Event::Key {
-        key: egui::Key::F5,
-        pressed: true,
-        repeat: false,
-        modifiers,
-      } => !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd) && !modifiers.alt,
-      _ => false,
-    })
-  });
-  if f5_reload {
+  if new_tab {
+    actions.push(ChromeAction::NewTab);
+  }
+  if close_tab {
+    if let Some(tab_id) = app.active_tab_id() {
+      actions.push(ChromeAction::CloseTab(tab_id));
+    }
+  }
+  if reload {
     actions.push(ChromeAction::Reload);
+  }
+  if let Some(delta) = tab_delta {
+    let active = app.active_tab_id();
+    let len = app.tabs.len();
+    if len >= 2 {
+      if let Some(active) = active {
+        if let Some(idx) = app.tabs.iter().position(|t| t.id == active) {
+          let new_idx = (idx as isize + delta).rem_euclid(len as isize) as usize;
+          actions.push(ChromeAction::ActivateTab(app.tabs[new_idx].id));
+        }
+      }
+    }
   }
 
   if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
-    let (new_tab, close_tab, reload, back, forward, tab_delta) = ctx.input(|i| {
-      // Guard against AltGr (often encoded as Ctrl+Alt).
-      let cmd_or_ctrl = (i.modifiers.command || i.modifiers.ctrl) && !i.modifiers.alt;
-      let new_tab = cmd_or_ctrl && i.key_pressed(egui::Key::T);
-      let close_tab = cmd_or_ctrl && i.key_pressed(egui::Key::W);
-      let reload = cmd_or_ctrl && i.key_pressed(egui::Key::R);
-      let back = i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft);
-      let forward = i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight);
-      let tab_delta = (cmd_or_ctrl && i.key_pressed(egui::Key::Tab)).then(|| {
-        if i.modifiers.shift { -1isize } else { 1isize }
-      });
-      (new_tab, close_tab, reload, back, forward, tab_delta)
+    let (back, forward) = ctx.input(|i| {
+      (
+        i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft),
+        i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight),
+      )
     });
-
-    if new_tab {
-      actions.push(ChromeAction::NewTab);
-    }
-    if close_tab {
-      if let Some(tab_id) = app.active_tab_id() {
-        actions.push(ChromeAction::CloseTab(tab_id));
-      }
-    }
-    if reload {
-      actions.push(ChromeAction::Reload);
-    }
     if back {
       actions.push(ChromeAction::Back);
     }
     if forward {
       actions.push(ChromeAction::Forward);
-    }
-    if let Some(delta) = tab_delta {
-      let active = app.active_tab_id();
-      let len = app.tabs.len();
-      if len >= 2 {
-        if let Some(active) = active {
-          if let Some(idx) = app.tabs.iter().position(|t| t.id == active) {
-            let new_idx = (idx as isize + delta).rem_euclid(len as isize) as usize;
-            actions.push(ChromeAction::ActivateTab(app.tabs[new_idx].id));
-          }
-        }
-      }
     }
   }
 
@@ -232,35 +236,36 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 #[cfg(test)]
 mod tests {
   use super::{chrome_ui, ChromeAction};
-  use crate::ui::browser_app::BrowserAppState;
+  use crate::ui::browser_app::{BrowserAppState, BrowserTabState};
+  use crate::ui::messages::TabId;
 
-  #[test]
-  fn ctrl_l_emits_focus_address_bar_action() {
-    let mut app = BrowserAppState::new();
-
+  fn new_context_with_key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Context {
     let ctx = egui::Context::default();
     let mut raw = egui::RawInput::default();
     raw.screen_rect = Some(egui::Rect::from_min_size(
       egui::Pos2::new(0.0, 0.0),
       egui::vec2(800.0, 600.0),
     ));
+    raw.events.push(egui::Event::Key {
+      key,
+      pressed: true,
+      repeat: false,
+      modifiers,
+    });
+    ctx.begin_frame(raw);
+    ctx
+  }
+
+  #[test]
+  fn ctrl_l_emits_focus_address_bar_action() {
+    let mut app = BrowserAppState::new();
+
     // Egui's `Event::Key` carries a modifier snapshot.
     let modifiers = egui::Modifiers {
       command: true,
       ..Default::default()
     };
-    raw.events.push(egui::Event::Key {
-      key: egui::Key::L,
-      pressed: true,
-      repeat: false,
-      modifiers,
-    });
-
-    ctx.begin_frame(raw);
-    assert!(
-      ctx.input(|i| i.key_pressed(egui::Key::L)),
-      "test setup failure: egui input did not register Key::L as pressed"
-    );
+    let ctx = new_context_with_key(egui::Key::L, modifiers);
     let actions = chrome_ui(&ctx, &mut app);
     let _ = ctx.end_frame();
 
@@ -276,24 +281,7 @@ mod tests {
   fn f5_emits_reload_action() {
     let mut app = BrowserAppState::new();
 
-    let ctx = egui::Context::default();
-    let mut raw = egui::RawInput::default();
-    raw.screen_rect = Some(egui::Rect::from_min_size(
-      egui::Pos2::new(0.0, 0.0),
-      egui::vec2(800.0, 600.0),
-    ));
-    raw.events.push(egui::Event::Key {
-      key: egui::Key::F5,
-      pressed: true,
-      repeat: false,
-      modifiers: Default::default(),
-    });
-
-    ctx.begin_frame(raw);
-    assert!(
-      ctx.input(|i| i.key_pressed(egui::Key::F5)),
-      "test setup failure: egui input did not register Key::F5 as pressed"
-    );
+    let ctx = new_context_with_key(egui::Key::F5, Default::default());
     let actions = chrome_ui(&ctx, &mut app);
     let _ = ctx.end_frame();
 
@@ -302,6 +290,104 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::Reload)),
       "expected ChromeAction::Reload, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_r_emits_reload_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::R,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::Reload)),
+      "expected ChromeAction::Reload, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_t_emits_new_tab_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::T,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions.iter().any(|action| matches!(action, ChromeAction::NewTab)),
+      "expected ChromeAction::NewTab, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_w_emits_close_tab_for_active_tab_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_id = TabId(1);
+    app.push_tab(BrowserTabState::new(tab_id, "about:newtab".to_string()), true);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::W,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::CloseTab(id) if *id == tab_id)),
+      "expected ChromeAction::CloseTab({tab_id:?}), got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn ctrl_tab_cycles_tabs_even_when_address_bar_focused() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "about:newtab".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "about:newtab".to_string()), false);
+    app.chrome.address_bar_has_focus = true;
+    app.chrome.address_bar_editing = true;
+
+    let ctx = new_context_with_key(
+      egui::Key::Tab,
+      egui::Modifiers {
+        command: true,
+        ..Default::default()
+      },
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::ActivateTab(id) if *id == tab_b)),
+      "expected ChromeAction::ActivateTab({tab_b:?}), got {actions:?}"
     );
   }
 }
