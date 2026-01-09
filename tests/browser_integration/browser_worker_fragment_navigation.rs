@@ -130,6 +130,83 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
 }
 
 #[test]
+fn navigation_with_percent_encoded_percent_fragment_scrolls_to_target_before_first_frame() {
+  let _lock = super::stage_listener_test_lock();
+
+  // Regression test for double-decoding fragment identifiers in browser worker navigation/scroll
+  // paths:
+  // - HTML id is the literal string "%23foo"
+  // - URL fragment is "%2523foo" (decodes once to "%23foo")
+  //
+  // Fragment scrolling decodes internally (to match `:target` semantics), so callers must pass the
+  // raw fragment string through. If the worker decodes before calling into the anchor-scroll helper,
+  // the fragment would decode twice ("%2523foo" -> "%23foo" -> "#foo") and fail to find the target.
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "page.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #top { height: 40px; background: rgb(255, 0, 0); }
+            #spacer { height: 2000px; background: rgb(0, 0, 255); }
+            div[id="%23foo"] { height: 100px; background: rgb(255, 0, 0); }
+            div[id="%23foo"]:target { background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <div id="top"></div>
+          <div id="spacer"></div>
+          <div id="%23foo"></div>
+        </body>
+      </html>
+    "##,
+  );
+  let url = format!("{page_url}#%2523foo");
+
+  let worker = fastrender::ui::spawn_browser_worker().expect("spawn browser worker");
+  let tab_id = TabId::new();
+  worker
+    .tx
+    .send(support::create_tab_msg(tab_id, Some(url.clone())))
+    .expect("create tab");
+  worker
+    .tx
+    .send(support::viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("viewport");
+
+  let msg = next_navigation_committed(&worker.rx, tab_id);
+  match msg {
+    WorkerToUi::NavigationCommitted { url: committed, .. } => {
+      assert!(
+        committed.contains("#%2523foo"),
+        "expected committed URL to include #%2523foo, got {committed}"
+      );
+    }
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}");
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+
+  let frame = next_frame_ready(&worker.rx, tab_id);
+  assert!(
+    frame.scroll_state.viewport.y > 0.0,
+    "expected first frame to be scrolled to the target element, got {:?}",
+    frame.scroll_state.viewport
+  );
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 10),
+    [0, 255, 0, 255],
+    "expected first frame to be scrolled to the target element and match :target styling"
+  );
+
+  drop(worker.tx);
+  worker.join.join().expect("worker join");
+}
+
+#[test]
 fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let _lock = super::stage_listener_test_lock();
 
