@@ -4,14 +4,21 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
-/// Fail CI if `openssl-sys` (and thus system OpenSSL headers) are pulled into the default
-/// `fastrender` dependency graph.
+/// Fail CI if `openssl-sys` (and thus system OpenSSL headers) are pulled into the dependency graph.
 ///
 /// This is primarily a hermeticity guard: agent/CI environments should be able to build the core
 /// renderer without installing OpenSSL development packages.
 #[derive(Args, Debug, Clone, Copy)]
 pub struct LintNoOpenSslArgs {
-  /// Also assert that `openssl-sys` is absent when building fastrender with all features enabled.
+  /// Check the resolved dependency graph for the entire Cargo workspace (all workspace members),
+  /// not just the `fastrender` crate.
+  ///
+  /// This is a stronger hermeticity guard: CI runs `cargo test --all-features` at the workspace
+  /// root, which compiles all workspace members.
+  #[arg(long)]
+  pub workspace: bool,
+
+  /// Also assert that `openssl-sys` is absent when building with all features enabled.
   ///
   /// CI builds `--all-features`, so this provides an extra guard against optional features pulling
   /// in system OpenSSL dependencies.
@@ -23,6 +30,7 @@ pub struct LintNoOpenSslArgs {
 struct CargoMetadata {
   packages: Vec<CargoPackage>,
   resolve: Option<CargoResolve>,
+  workspace_members: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,14 +57,40 @@ struct CargoNodeDep {
 }
 
 pub fn run_lint_no_openssl(repo_root: &Path, args: LintNoOpenSslArgs) -> Result<()> {
-  check_openssl_sys_absent(repo_root, &[], "default")?;
+  let scope = if args.workspace {
+    Scope::Workspace
+  } else {
+    Scope::Fastrender
+  };
+
+  check_openssl_sys_absent(repo_root, &[], "default", scope)?;
   if args.all_features {
-    check_openssl_sys_absent(repo_root, &["--all-features"], "all-features")?;
+    check_openssl_sys_absent(repo_root, &["--all-features"], "all-features", scope)?;
   }
   Ok(())
 }
 
-fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &str) -> Result<()> {
+#[derive(Debug, Clone, Copy)]
+enum Scope {
+  Fastrender,
+  Workspace,
+}
+
+impl Scope {
+  fn label(self) -> &'static str {
+    match self {
+      Scope::Fastrender => "fastrender",
+      Scope::Workspace => "workspace",
+    }
+  }
+}
+
+fn check_openssl_sys_absent(
+  repo_root: &Path,
+  metadata_args: &[&str],
+  label: &str,
+  scope: Scope,
+) -> Result<()> {
   // Use the agent wrapper so local invocations don't spawn unbounded cargo compilations.
   let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.args(["metadata", "--locked", "--format-version", "1"]);
@@ -82,9 +116,10 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
     .resolve
     .context("cargo metadata did not include a resolved dependency graph")?;
 
-  let Some(fastrender_pkg) = metadata.packages.iter().find(|pkg| pkg.name == "fastrender") else {
+  let fastrender_pkg = metadata.packages.iter().find(|pkg| pkg.name == "fastrender");
+  if matches!(scope, Scope::Fastrender) && fastrender_pkg.is_none() {
     bail!("cargo metadata did not include a `fastrender` package entry");
-  };
+  }
 
   let mut nodes_by_id: HashMap<&str, &CargoNode> = HashMap::new();
   for node in &resolve.nodes {
@@ -96,17 +131,23 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
     packages_by_id.insert(pkg.id.as_str(), pkg);
   }
 
-  // Traverse the resolved graph starting from `fastrender` so we only gate dependencies that
-  // affect the core renderer (workspace members may have different constraints).
+  // Traverse the resolved graph starting from the requested root(s).
   //
   // Keep a parent map so we can print a useful dependency chain if `openssl-sys` shows up.
-  let root_id = fastrender_pkg.id.as_str();
+  let root_ids: Vec<&str> = match scope {
+    Scope::Fastrender => vec![fastrender_pkg.unwrap().id.as_str()],
+    Scope::Workspace => metadata.workspace_members.iter().map(|id| id.as_str()).collect(),
+  };
+
   let mut queue: VecDeque<&str> = VecDeque::new();
   let mut visited: HashSet<&str> = HashSet::new();
   let mut parent: HashMap<&str, &str> = HashMap::new();
 
-  visited.insert(root_id);
-  queue.push_back(root_id);
+  for root_id in root_ids {
+    if visited.insert(root_id) {
+      queue.push_back(root_id);
+    }
+  }
 
   while let Some(id) = queue.pop_front() {
     let Some(node) = nodes_by_id.get(id) else {
@@ -155,7 +196,7 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
     }
 
     bail!(
-      "lint-no-openssl ({label}): forbidden dependency `openssl-sys` found in the fastrender build graph.\n\
+      "lint-no-openssl ({label}, {}): forbidden dependency `openssl-sys` found in the resolved build graph.\n\
        \n\
        This makes builds depend on system OpenSSL development headers.\n\
        Prefer a Rust TLS backend (e.g. reqwest rustls) for hermetic CI/agent builds.\n\
@@ -164,8 +205,9 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
        {}\n\
        \n\
        To debug:\n\
-         cargo tree -p fastrender | rg openssl"
+         cargo tree -i openssl-sys"
       ,
+      scope.label(),
       chains
         .iter()
         .map(|chain| format!("  - {chain}"))
@@ -174,6 +216,9 @@ fn check_openssl_sys_absent(repo_root: &Path, metadata_args: &[&str], label: &st
     );
   }
 
-  println!("✓ lint-no-openssl ({label}): openssl-sys not present in fastrender dependency graph");
+  println!(
+    "✓ lint-no-openssl ({label}, {}): openssl-sys not present in resolved dependency graph",
+    scope.label()
+  );
   Ok(())
 }

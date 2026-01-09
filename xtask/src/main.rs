@@ -157,7 +157,7 @@ enum Commands {
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
   /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
   LintNoPanics(lint_no_panics::LintNoPanicsArgs),
-  /// Fail CI if the default `fastrender` dependency graph includes `openssl-sys`.
+  /// Fail CI if the dependency graph includes `openssl-sys` (and thus requires system OpenSSL headers).
   LintNoOpenssl(lint_no_openssl::LintNoOpenSslArgs),
   /// Generate deterministic WebIDL metadata from vendored WHATWG specs.
   #[command(alias = "webidl")]
