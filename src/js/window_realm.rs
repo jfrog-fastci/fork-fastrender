@@ -244,11 +244,12 @@ fn init_window_globals(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use vm_js::VmHostHooks;
 
   #[derive(Default)]
   struct NoopHostHooks;
 
-  impl vm_js::VmHostHooks for NoopHostHooks {
+  impl VmHostHooks for NoopHostHooks {
     fn host_enqueue_promise_job(&mut self, _job: vm_js::Job, _realm: Option<vm_js::RealmId>) {
       // This test only calls synchronous native functions.
     }

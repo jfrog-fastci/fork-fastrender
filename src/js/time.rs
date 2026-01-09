@@ -239,6 +239,7 @@ mod tests {
   use super::*;
   use crate::js::clock::VirtualClock;
   use std::sync::Arc;
+  use vm_js::VmHostHooks;
 
   #[derive(Default)]
   struct NoopHostHooks;
