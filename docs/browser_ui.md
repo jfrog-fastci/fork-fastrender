@@ -60,6 +60,7 @@ See [env-vars.md](env-vars.md) for details.
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
   - Spawns the browser worker thread via [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
     handles navigation/scroll/input and produces `WorkerToUi` updates.
+  - Renders a small egui popup for `<select>` dropdowns driven by `WorkerToUi::OpenSelectDropdown`.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -151,6 +152,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 **Worker → UI** (`WorkerToUi`) includes:
 
 - `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata
+- `OpenSelectDropdown { tab_id, select_node_id, control }` — request the UI open a dropdown popup
+  for a `<select>` control (used for `size=1` single-select dropdowns; listbox selects are handled
+  directly by DOM interaction).
 - `NavigationStarted/Committed/Failed { ... }` — URL/title/back-forward state updates
 - `Stage { tab_id, stage }` — coarse progress heartbeats forwarded from the renderer
   (`StageHeartbeat` from [`src/render_control.rs`](../src/render_control.rs))
@@ -159,8 +163,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed UI’s
-browser worker emits `FrameReady` and navigation events and forwards `Stage` heartbeats from the
-renderer.
+browser worker emits `FrameReady`, `OpenSelectDropdown`, and navigation events and forwards `Stage`
+heartbeats from the renderer.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
@@ -204,7 +208,8 @@ CPU by stopping stale work early.
   but the interaction layer is intentionally minimal and will grow over time.
 - **Limited form support** (non-JS):
   - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
-  - many controls are not yet supported (`<select>`, `contenteditable`, file inputs, etc.)
+  - `<select>` support is basic (listbox clicks + dropdown popup selection; no typeahead/multi-select yet)
+  - many controls are not yet supported (`contenteditable`, file inputs, etc.)
 - No persistent browser profile (cookies/storage/devtools/extensions/etc.).
 
 ## MSRV + GUI version pinning
