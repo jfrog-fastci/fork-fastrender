@@ -7494,7 +7494,15 @@ impl FlexFormattingContext {
     // This preserves the fully laid-out fragment trees (text, inline content) instead of
     // reconstructing empty boxes from the cached measure results.
     let mut children: Vec<FragmentNode>;
-    let factory = self.child_factory();
+    // Update the child factory to reflect any containing blocks established by *this* flex
+    // container.
+    //
+    // This is critical for absolutely positioned descendants nested inside in-flow flex items
+    // (e.g. Next.js `Image` wrappers) because their nearest positioned ancestor is the flex
+    // container, not their DOM parent. Without propagating the flex container's padding box as
+    // the `nearest_positioned_cb`, those descendants can resolve percentage sizes against an
+    // unrelated ancestor CB and collapse to 0px.
+    let mut factory = self.child_factory();
     let measured_fragments = self.measured_fragments.clone();
     let main_axis_is_row = matches!(
       box_node.style.flex_direction,
@@ -7576,6 +7584,47 @@ impl FlexFormattingContext {
     let child_count = box_node.children.len();
     let rect_w = rect.width();
     let rect_h = rect.height();
+
+    let style = box_node.style.as_ref();
+    let establishes_abs_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
+    if establishes_abs_cb || establishes_fixed_cb {
+      let width_base = constraints
+        .width()
+        .or(constraints.inline_percentage_base)
+        .unwrap_or_else(|| if rect_w.is_finite() { rect_w } else { self.viewport_size.width })
+        .max(0.0);
+      let border_left =
+        self.resolve_length_for_width(style.used_border_left_width(), width_base, style);
+      let border_top =
+        self.resolve_length_for_width(style.used_border_top_width(), width_base, style);
+      let border_right =
+        self.resolve_length_for_width(style.used_border_right_width(), width_base, style);
+      let border_bottom =
+        self.resolve_length_for_width(style.used_border_bottom_width(), width_base, style);
+
+      let padding_origin = Point::new(border_left, border_top);
+      let padding_size = Size::new(
+        (rect_w - border_left - border_right).max(0.0),
+        (rect_h - border_top - border_bottom).max(0.0),
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+      let padding_cb = ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        self.viewport_size,
+        Some(padding_rect.size.width),
+        // Percentage lengths on absolutely positioned boxes resolve against the used height of
+        // the containing block, even when its own height is `auto` (CSS 2.1 §10.5). Use the
+        // computed padding box height as the percentage base.
+        Some(padding_rect.size.height),
+      );
+      if establishes_abs_cb && padding_cb != factory.nearest_positioned_cb() {
+        factory = factory.with_positioned_cb(padding_cb);
+      }
+      if establishes_fixed_cb && padding_cb != factory.nearest_fixed_cb() {
+        factory = factory.with_fixed_cb(padding_cb);
+      }
+    }
     let eps = 0.01;
     let main_axis_positive_container = if main_axis_is_row {
       inline_positive

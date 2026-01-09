@@ -10716,6 +10716,21 @@ impl FastRender {
       );
     }
 
+    // `@font-face { font-display: swap }` is intentionally non-blocking, but for deterministic
+    // offline rendering it's often desirable to wait briefly for the deferred faces so text uses
+    // the intended web fonts rather than falling back to bundled/system fonts.
+    //
+    // This is controlled via a runtime toggle so tooling like `render_fixtures` can opt into the
+    // higher-fidelity behavior without making all renders pay the cost.
+    let web_font_wait_ms = runtime::runtime_toggles()
+      .u64("FASTR_WEB_FONT_WAIT_MS")
+      .unwrap_or(0);
+    if web_font_wait_ms > 0 && !font_faces.is_empty() {
+      self
+        .font_context
+        .wait_for_pending_web_fonts(Duration::from_millis(web_font_wait_ms));
+    }
+
     let keyframes_timer = stats.as_deref().and_then(|rec| rec.timer());
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
@@ -20842,6 +20857,13 @@ mod tests {
     })
   }
 
+  fn text_width_for(tree: &FragmentTree, needle: &str) -> Option<f32> {
+    tree.iter_fragments().find_map(|frag| match &frag.content {
+      FragmentContent::Text { text, .. } if text.contains(needle) => Some(frag.bounds.width()),
+      _ => None,
+    })
+  }
+
   fn styled_color_by_id(styled: &StyledNode, id: &str) -> Option<Rgba> {
     if styled.node.get_attribute("id").as_deref() == Some(id) {
       return Some(styled.styles.color);
@@ -22473,6 +22495,49 @@ mod tests {
 
     assert_eq!(pixel(&top), (255, 0, 0, 255));
     assert_eq!(pixel(&scrolled), (0, 255, 0, 255));
+  }
+
+  #[test]
+  fn clip_rect_with_empty_area_clips_entire_element() {
+    let mut renderer = FastRender::new().unwrap();
+    let html = r#"
+            <style>
+                html, body { margin: 0; background: rgb(255, 255, 255); }
+                .clipped {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 20px;
+                    height: 20px;
+                    background: rgb(255, 0, 0);
+                    clip: rect(0, 0, 0, 0);
+                }
+            </style>
+            <div class="clipped"></div>
+        "#;
+
+    let pixmap = renderer.render_html(html, 20, 20).expect("render");
+    let data = pixmap.data();
+    let width = pixmap.width();
+    for y in 0..pixmap.height() {
+      for x in 0..width {
+        let idx = ((y * width + x) * 4) as usize;
+        let (r, g, b, a) = (data[idx], data[idx + 1], data[idx + 2], data[idx + 3]);
+        let (r, g, b) = if a == 0 {
+          (0, 0, 0)
+        } else {
+          (
+            ((r as u16 * 255) / a as u16) as u8,
+            ((g as u16 * 255) / a as u16) as u8,
+            ((b as u16 * 255) / a as u16) as u8,
+          )
+        };
+        assert!(
+          g >= 240 && b >= 240,
+          "expected clipped element not to paint; found pixel ({x},{y}) rgb=({r},{g},{b}) a={a}"
+        );
+      }
+    }
   }
 
   #[test]
@@ -27878,6 +27943,85 @@ mod tests {
       .unwrap();
     let tree = artifacts.fragment_tree.as_ref().expect("fragment tree");
     assert_eq!(text_color_for(tree, "Toggle"), Some(Rgba::rgb(255, 0, 0)));
+  }
+
+  #[test]
+  fn web_font_wait_toggle_allows_swap_faces_to_affect_layout() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Pick a font whose glyph advances differ significantly from the bundled sans-serif fallback.
+    // Monospace makes the difference obvious and avoids relying on system font availability.
+    let font_path = manifest_dir.join("tests/fixtures/fonts/NotoSansMono-subset.ttf");
+    assert!(
+      font_path.is_file(),
+      "expected test font at {}",
+      font_path.display()
+    );
+
+    let font_url = format!("file://{}", font_path.display());
+    let base_hint = format!("file://{}/", manifest_dir.display());
+    let html = format!(
+      r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            @font-face {{
+              font-family: "TestFace";
+              src: url("{font_url}");
+              font-display: swap;
+            }}
+            body {{ margin: 0; }}
+            p {{ font-family: "TestFace", sans-serif; font-size: 40px; margin: 0; white-space: nowrap; }}
+          </style>
+        </head>
+        <body>
+          <p>HelloHelloHelloHelloHello</p>
+        </body>
+      </html>"#
+    );
+
+    let mut renderer = FastRender::new().expect("renderer");
+    let report = renderer
+      .render_html_with_stylesheets_report(
+        &html,
+        &base_hint,
+        RenderOptions::new().with_viewport(1200, 200).with_runtime_toggles(RuntimeToggles::from_map(
+          HashMap::from([("FASTR_WEB_FONT_WAIT_MS".to_string(), "0".to_string())]),
+        )),
+        RenderArtifactRequest {
+          fragment_tree: true,
+          ..RenderArtifactRequest::default()
+        },
+      )
+      .expect("render without web font wait");
+    let tree = report.artifacts.fragment_tree.as_ref().expect("fragment tree");
+    let width_without_wait =
+      text_width_for(tree, "HelloHelloHello").expect("text fragment width (no wait)");
+
+    // With a wait budget, the swap face should load and become active for layout.
+    let mut renderer = FastRender::new().expect("renderer");
+    let report = renderer
+      .render_html_with_stylesheets_report(
+        &html,
+        &base_hint,
+        RenderOptions::new().with_viewport(1200, 200).with_runtime_toggles(RuntimeToggles::from_map(
+          HashMap::from([(
+            "FASTR_WEB_FONT_WAIT_MS".to_string(),
+            "500".to_string(),
+          )]),
+        )),
+        RenderArtifactRequest {
+          fragment_tree: true,
+          ..RenderArtifactRequest::default()
+        },
+      )
+      .expect("render with web font wait");
+    let tree = report.artifacts.fragment_tree.as_ref().expect("fragment tree");
+    let width_with_wait = text_width_for(tree, "HelloHelloHello").expect("text fragment width (wait)");
+
+    assert!(
+      (width_with_wait - width_without_wait).abs() > 0.5,
+      "expected swap web font to change text advance (no wait={width_without_wait}, wait={width_with_wait})"
+    );
   }
 
   #[test]

@@ -30,6 +30,7 @@ mod flex_abspos_static_position;
 mod flex_abspos_static_position_flexing;
 mod flex_abspos_static_position_margins;
 mod flex_abspos_static_position_siblings;
+mod flex_abspos_percent_containing_block;
 mod flex_align_content_gaps;
 mod flex_align_content_multiline;
 mod flex_align_items_flex_start_axis_polarity;

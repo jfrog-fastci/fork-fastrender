@@ -315,6 +315,11 @@ fn fixture_runtime_toggles() -> RuntimeToggles {
   raw
     .entry("FASTR_DETERMINISTIC_PAINT".to_string())
     .or_insert_with(|| "1".to_string());
+  // Fixture diffs compare against a Chrome snapshot that has had time to load local web fonts.
+  // Wait briefly so `font-display: swap` faces become active deterministically for the render.
+  raw
+    .entry("FASTR_WEB_FONT_WAIT_MS".to_string())
+    .or_insert_with(|| "500".to_string());
   RuntimeToggles::from_map(raw)
 }
 

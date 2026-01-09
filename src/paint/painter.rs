@@ -1968,24 +1968,31 @@ impl Painter {
           }
         };
 
-        let clip_rect = Rect::from_xywh(left, top, right - left, bottom - top);
-        if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
-          None
-        } else {
-          Some(clip_rect)
+        // CSS 2.1 `clip: rect(...)` is allowed to collapse to an empty region (e.g.
+        // `rect(0,0,0,0)` as used by sr-only patterns). That should clip all painting for the
+        // element, not behave like `clip: auto`.
+        let clip_w = (right - left).max(0.0);
+        let clip_h = (bottom - top).max(0.0);
+        if !left.is_finite() || !top.is_finite() || !clip_w.is_finite() || !clip_h.is_finite() {
+          return None;
         }
+        Some(Rect::from_xywh(left, top, clip_w, clip_h))
       });
 
     match (overflow_clip, clip_property) {
-      (Some(overflow), Some(prop_rect)) => overflow.rect.intersection(prop_rect).map(|rect| {
-        StackingClip {
-          rect,
+      (Some(overflow), Some(prop_rect)) => {
+        let left = overflow.rect.min_x().max(prop_rect.min_x());
+        let top = overflow.rect.min_y().max(prop_rect.min_y());
+        let right = overflow.rect.max_x().min(prop_rect.max_x());
+        let bottom = overflow.rect.max_y().min(prop_rect.max_y());
+        Some(StackingClip {
+          rect: Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0)),
           radii: BorderRadii::ZERO,
           clip_x: true,
           clip_y: true,
           clip_root: true,
-        }
-      }),
+        })
+      }
       (Some(overflow), None) => Some(overflow),
       (None, Some(prop_rect)) => Some(StackingClip {
         rect: prop_rect,

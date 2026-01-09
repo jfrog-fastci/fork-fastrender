@@ -500,4 +500,32 @@ mod tests {
     assert!(parse_svg_view_box("0 0 10 10").is_some());
     assert!(parse_svg_view_box(&format!("0{nbsp}0 10 10")).is_none());
   }
+
+  #[test]
+  fn svg_intrinsic_dimensions_resolve_em_and_rem() {
+    let dims = svg_intrinsic_dimensions_from_attributes(
+      Some("1em"),
+      Some("0.75rem"),
+      Some("0 0 12 12"),
+      None,
+      20.0,
+      16.0,
+    );
+    assert_eq!(dims.width, Some(20.0));
+    assert_eq!(dims.height, Some(12.0));
+    assert_eq!(dims.aspect_ratio, Some(20.0 / 12.0));
+    assert!(!dims.aspect_ratio_none);
+
+    let rem_only = svg_intrinsic_dimensions_from_attributes(
+      Some("2rem"),
+      Some("2rem"),
+      Some("0 0 10 10"),
+      Some("xMidYMid"),
+      10.0,
+      18.0,
+    );
+    assert_eq!(rem_only.width, Some(36.0));
+    assert_eq!(rem_only.height, Some(36.0));
+    assert_eq!(rem_only.aspect_ratio, Some(1.0));
+  }
 }
