@@ -2235,6 +2235,87 @@ fn submit_click_includes_selected_select_option_in_query() {
 }
 
 #[test]
+fn submit_click_single_select_prefers_last_selected_option_in_tree_order() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("action", "/search")],
+        vec![
+          el(
+            "select",
+            vec![("id", "sel"), ("name", "s")],
+            vec![
+              el(
+                "option",
+                vec![("id", "o1"), ("value", "a"), ("selected", "")],
+                vec![],
+              ),
+              el(
+                "option",
+                vec![("id", "o2"), ("value", "b"), ("selected", "")],
+                vec![],
+              ),
+            ],
+          ),
+          el("input", vec![("id", "submit"), ("type", "submit")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?s=b".to_string()
+    },
+    "for single-selects, the last <option selected> should win when multiple are marked selected"
+  );
+}
+
+#[test]
 fn submit_click_includes_form_associated_control_outside_form_in_query() {
   let mut dom = doc(vec![el(
     "html",

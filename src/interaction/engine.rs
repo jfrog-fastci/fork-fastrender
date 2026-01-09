@@ -1246,8 +1246,9 @@ fn build_get_form_submission_url(
             .and_then(|opt| opt.get_attribute_ref("selected"))
             .is_some()
           {
+            // For single-select controls, if multiple `<option>` elements are marked selected (e.g.
+            // from authored markup), the last one in tree order wins.
             chosen = Some(*opt_id);
-            break;
           }
         }
         if chosen.is_none() {
