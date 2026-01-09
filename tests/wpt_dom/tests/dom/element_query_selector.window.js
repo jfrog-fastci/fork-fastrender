@@ -80,6 +80,58 @@ test(() => {
 test(() => {
   const body = document.body;
   clear_children(body);
+  const a = document.createElement("div");
+  a.id = "a";
+  body.appendChild(a);
+
+  const scope = a.querySelector(":scope");
+  assert_equals(scope, a, "expected :scope to match the element itself");
+
+  const matches = a.querySelectorAll(":scope");
+  assert_equals(matches.length, 1, "expected one :scope match");
+  assert_equals(matches[0], a, "expected :scope match to be the element itself");
+}, "Element.querySelector(All) supports :scope");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
+
+  const a = document.createElement("div");
+  a.id = "a";
+  body.appendChild(a);
+
+  const direct = document.createElement("span");
+  direct.id = "direct";
+  direct.className = "inner other";
+  a.appendChild(direct);
+
+  const wrapper = document.createElement("div");
+  wrapper.id = "wrapper";
+  wrapper.className = "inner";
+  a.appendChild(wrapper);
+
+  const nested = document.createElement("span");
+  nested.id = "nested";
+  nested.className = "inner other";
+  wrapper.appendChild(nested);
+
+  const foundDirect = a.querySelector(":scope > span.inner.other");
+  assert_true(foundDirect !== null, "expected to match the direct child span");
+  assert_equals(foundDirect.id, "direct", "expected child combinator to only match direct children");
+
+  const foundNested = a.querySelector("div#wrapper span.inner");
+  assert_true(foundNested !== null, "expected to match the nested span under #wrapper");
+  assert_equals(foundNested.id, "nested");
+
+  const ordered = a.querySelectorAll("#nested, #direct");
+  assert_equals(ordered.length, 2, "expected two matches");
+  assert_equals(ordered[0].id, "direct", "matches must be returned in tree order");
+  assert_equals(ordered[1].id, "nested", "matches must be returned in tree order");
+}, "Element.querySelector(All) supports child combinators, compound selectors, and selector lists");
+
+test(() => {
+  const body = document.body;
+  clear_children(body);
 
   const tmpl = document.createElement("template");
   body.appendChild(tmpl);

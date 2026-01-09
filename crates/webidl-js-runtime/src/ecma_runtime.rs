@@ -167,7 +167,7 @@ impl VmJsRuntime {
     }
 
     let result = f(self);
-    for id in root_ids {
+    for id in root_ids.drain(..) {
       self.heap.remove_root(id);
     }
     result

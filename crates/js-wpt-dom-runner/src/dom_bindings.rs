@@ -201,51 +201,220 @@ const DOM_BINDINGS_SHIM: &str = r##"
     return sel;
   }
 
-  function splitTokens(sel) {
-    var parts = String(sel).trim().split(/\s+/);
+  function splitSelectorGroups(sel) {
+    sel = String(sel);
+    var groups = [];
+    var start = 0;
+    var brackets = 0;
+    var parens = 0;
+    for (var i = 0; i < sel.length; i++) {
+      var ch = sel[i];
+      if (ch === "[") brackets++;
+      else if (ch === "]") brackets--;
+      else if (ch === "(") parens++;
+      else if (ch === ")") parens--;
+      if (ch === "," && brackets === 0 && parens === 0) {
+        groups.push(sel.slice(start, i).trim());
+        start = i + 1;
+      }
+    }
+    groups.push(sel.slice(start).trim());
     var out = [];
-    for (var i = 0; i < parts.length; i++) {
-      if (parts[i]) out.push(parts[i]);
+    for (var j = 0; j < groups.length; j++) {
+      var g = groups[j];
+      if (g === "") throw new SyntaxError("SyntaxError");
+      out.push(g);
     }
     return out;
   }
 
-  function matchesSimple(node, token) {
-    if (!node || node.__node_kind !== "element") return false;
-    token = String(token);
-    if (token === "") return false;
-    var first = token[0];
-    if (first === "#") {
-      return String(node.id || "") === token.slice(1);
-    }
-    if (first === ".") {
-      var cls = String(node.className || "");
-      if (cls === "") return false;
-      var parts = cls.split(/\s+/);
-      for (var i = 0; i < parts.length; i++) {
-        if (parts[i] === token.slice(1)) return true;
+  function parseChain(sel) {
+    sel = String(sel).trim();
+    if (sel === "") throw new SyntaxError("SyntaxError");
+    var chain = [];
+    var i = 0;
+    var pending = null; // combinator from previous token to the next one
+    while (true) {
+      // Skip whitespace before the next token.
+      while (i < sel.length && /\s/.test(sel[i])) i++;
+      if (i >= sel.length) break;
+      if (sel[i] === ">") {
+        // Leading combinator.
+        throw new SyntaxError("SyntaxError");
       }
-      return false;
+
+      var start = i;
+      while (i < sel.length && !/\s/.test(sel[i]) && sel[i] !== ">") i++;
+      var token = sel.slice(start, i);
+      if (token === "") throw new SyntaxError("SyntaxError");
+      chain.push({ token: token, combinator: pending });
+
+      var sawWs = false;
+      while (i < sel.length && /\s/.test(sel[i])) {
+        sawWs = true;
+        i++;
+      }
+      if (i >= sel.length) break;
+
+      if (sel[i] === ">") {
+        pending = ">";
+        i++;
+        while (i < sel.length && /\s/.test(sel[i])) i++;
+        if (i >= sel.length) throw new SyntaxError("SyntaxError");
+      } else if (sawWs) {
+        pending = " ";
+      } else {
+        // Shouldn't happen (token parsing stops only on whitespace or '>'), but fall back to the
+        // descendant combinator.
+        pending = " ";
+      }
     }
-    // Tag name selector (ASCII case-insensitive).
-    return String(node.tagName || "").toLowerCase() === token.toLowerCase();
+    return chain;
   }
 
-  function matchesSelector(node, tokens, scopeRoot) {
-    if (!tokens || tokens.length === 0) return false;
-    var cur = node;
-    var ti = tokens.length - 1;
-    if (!matchesSimple(cur, tokens[ti])) return false;
-    ti--;
-    while (ti >= 0) {
-      var want = tokens[ti];
-      cur = cur.parentNode;
-      while (cur && cur !== scopeRoot && !matchesSimple(cur, want)) {
-        cur = cur.parentNode;
+  function parseSimpleToken(token) {
+    token = String(token);
+    if (token === ":scope") return { scope: true };
+
+    // Only attempt to parse the subset we support (tag / #id / .class / *).
+    for (var k = 0; k < token.length; k++) {
+      var ch = token[k];
+      if (ch === "." || ch === "#" || ch === "*") continue;
+      if (
+        (ch >= "0" && ch <= "9") ||
+        (ch >= "A" && ch <= "Z") ||
+        (ch >= "a" && ch <= "z") ||
+        ch === "_" ||
+        ch === "-"
+      ) {
+        continue;
       }
-      if (!cur) return false;
-      if (cur === scopeRoot && !matchesSimple(cur, want)) return false;
-      ti--;
+      // Unsupported selector syntax (attribute selectors, pseudo-classes, etc).
+      return null;
+    }
+
+    var tag = null;
+    var id = null;
+    var classes = [];
+    var i = 0;
+    if (token[i] === "*") {
+      tag = "*";
+      i++;
+    } else if (token[i] !== "." && token[i] !== "#") {
+      var start = i;
+      while (i < token.length && token[i] !== "." && token[i] !== "#") i++;
+      tag = token.slice(start, i);
+    }
+
+    while (i < token.length) {
+      var ch = token[i];
+      if (ch === "#") {
+        i++;
+        var start = i;
+        while (i < token.length && token[i] !== "." && token[i] !== "#") i++;
+        var value = token.slice(start, i);
+        if (value === "") throw new SyntaxError("SyntaxError");
+        if (id != null) throw new SyntaxError("SyntaxError");
+        id = value;
+        continue;
+      }
+      if (ch === ".") {
+        i++;
+        var start = i;
+        while (i < token.length && token[i] !== "." && token[i] !== "#") i++;
+        var value = token.slice(start, i);
+        if (value === "") throw new SyntaxError("SyntaxError");
+        classes.push(value);
+        continue;
+      }
+      return null;
+    }
+
+    return { tag: tag, id: id, classes: classes };
+  }
+
+  function nodeHasClass(node, cls) {
+    var raw = String(node.className || "");
+    if (raw === "") return false;
+    var parts = raw.split(/\s+/);
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === cls) return true;
+    }
+    return false;
+  }
+
+  function matchesSimple(node, token, scopeRoot) {
+    token = String(token);
+    if (token === ":scope") return node === scopeRoot;
+    if (!node || node.__node_kind !== "element") return false;
+    var parsed = parseSimpleToken(token);
+    if (!parsed) return false;
+
+    if (parsed.tag && parsed.tag !== "*") {
+      if (String(node.tagName || "").toLowerCase() !== String(parsed.tag).toLowerCase()) {
+        return false;
+      }
+    }
+    if (parsed.id != null) {
+      if (String(node.id || "") !== parsed.id) return false;
+    }
+    if (parsed.classes && parsed.classes.length) {
+      for (var i = 0; i < parsed.classes.length; i++) {
+        if (!nodeHasClass(node, parsed.classes[i])) return false;
+      }
+    }
+    return true;
+  }
+
+  function matchesChain(node, chain, scopeRoot) {
+    if (!chain || chain.length === 0) return false;
+    var cur = node;
+    var i = chain.length - 1;
+    if (!matchesSimple(cur, chain[i].token, scopeRoot)) return false;
+    while (i > 0) {
+      if (scopeRoot && cur === scopeRoot) return false;
+      var combinator = chain[i].combinator || " ";
+      var want = chain[i - 1].token;
+      if (combinator === ">") {
+        cur = cur.parentNode;
+        if (!cur) return false;
+        if (!matchesSimple(cur, want, scopeRoot)) return false;
+      } else {
+        cur = cur.parentNode;
+        while (cur && cur !== scopeRoot && !matchesSimple(cur, want, scopeRoot)) {
+          cur = cur.parentNode;
+        }
+        if (!cur) return false;
+        if (cur === scopeRoot && !matchesSimple(cur, want, scopeRoot)) return false;
+      }
+      i--;
+    }
+    return true;
+  }
+
+  // Like `matchesChain`, but does not treat `scopeRoot` as a hard boundary. This is used to
+  // implement `Element.matches()` / `Element.closest()`, where `:scope` refers to the element being
+  // tested but ancestor traversal should not be restricted to within it.
+  function matchesChainUnbounded(node, chain, scopeRoot) {
+    if (!chain || chain.length === 0) return false;
+    var cur = node;
+    var i = chain.length - 1;
+    if (!matchesSimple(cur, chain[i].token, scopeRoot)) return false;
+    while (i > 0) {
+      var combinator = chain[i].combinator || " ";
+      var want = chain[i - 1].token;
+      if (combinator === ">") {
+        cur = cur.parentNode;
+        if (!cur) return false;
+        if (!matchesSimple(cur, want, scopeRoot)) return false;
+      } else {
+        cur = cur.parentNode;
+        while (cur && !matchesSimple(cur, want, scopeRoot)) {
+          cur = cur.parentNode;
+        }
+        if (!cur) return false;
+      }
+      i--;
     }
     return true;
   }
@@ -268,13 +437,34 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
   function queryAll(scope, selectors) {
     var sel = validateSelectors(selectors);
-    var tokens = splitTokens(sel);
+    var groups = splitSelectorGroups(sel);
+    var chains = [];
+    for (var i = 0; i < groups.length; i++) {
+      chains.push(parseChain(groups[i]));
+    }
+    var matches = [];
+    // `querySelector(All)` does not normally include the scope root itself, but `:scope` is special:
+    // it matches the scope root. Add it explicitly so `el.querySelector(":scope")` works.
+    if (scope && scope.__node_kind === "element") {
+      for (var c = 0; c < chains.length; c++) {
+        var chain = chains[c];
+        if (chain.length > 0 && String(chain[chain.length - 1].token) === ":scope") {
+          if (matchesChain(scope, chain, scope)) {
+            matches.push(scope);
+            break;
+          }
+        }
+      }
+    }
     var nodes = [];
     collectDescendants(scope, nodes);
-    var matches = [];
-    for (var i = 0; i < nodes.length; i++) {
-      if (matchesSelector(nodes[i], tokens, scope)) {
-        matches.push(nodes[i]);
+    for (var n = 0; n < nodes.length; n++) {
+      var node = nodes[n];
+      for (var c = 0; c < chains.length; c++) {
+        if (matchesChain(node, chains[c], scope)) {
+          matches.push(node);
+          break;
+        }
       }
     }
     return matches;
@@ -313,18 +503,26 @@ const DOM_BINDINGS_SHIM: &str = r##"
       };
       g.Element.prototype.matches = function (selectors) {
         var sel = validateSelectors(selectors);
-        var tokens = splitTokens(sel);
-        // `Element.matches()` uses the element itself as the selector subject; no additional scoping
-        // root restriction is applied (unlike `querySelector`, which scopes traversal).
-        return matchesSelector(this, tokens, null);
+        var groups = splitSelectorGroups(sel);
+        for (var i = 0; i < groups.length; i++) {
+          var chain = parseChain(groups[i]);
+          if (matchesChainUnbounded(this, chain, this)) return true;
+        }
+        return false;
       };
       g.Element.prototype.closest = function (selectors) {
         var sel = validateSelectors(selectors);
-        var tokens = splitTokens(sel);
+        var groups = splitSelectorGroups(sel);
+        var chains = [];
+        for (var i = 0; i < groups.length; i++) {
+          chains.push(parseChain(groups[i]));
+        }
         var cur = this;
         while (cur) {
-          if (cur.__node_kind === "element" && matchesSelector(cur, tokens, null)) {
-            return cur;
+          if (cur.__node_kind === "element") {
+            for (var c = 0; c < chains.length; c++) {
+              if (matchesChainUnbounded(cur, chains[c], cur)) return cur;
+            }
           }
           cur = cur.parentNode;
         }
