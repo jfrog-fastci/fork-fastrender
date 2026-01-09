@@ -287,6 +287,127 @@ fn accessibility_presentational_role_suppresses_semantics() {
 }
 
 #[test]
+fn accessibility_summary_role_presentation_disallowed_falls_back_to_button() {
+  let html = r##"
+    <html>
+      <body>
+        <details id="d" open>
+          <summary id="s" role="presentation">More</summary>
+        </details>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["s"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "s": {
+        "role": "button",
+        "name": "More",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "summary",
+        "states": {
+          "focusable": true,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false,
+          "expanded": true
+        }
+      }
+    })
+  );
+}
+
+#[test]
+fn accessibility_area_role_presentation_disallowed_falls_back_to_link() {
+  let html = r##"
+    <html>
+      <head>
+        <style>
+          map, area { display: block; }
+        </style>
+      </head>
+      <body>
+        <map name="m">
+          <area id="a" href="#x" alt="Go" role="presentation">
+        </map>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["a"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "a": {
+        "role": "link",
+        "name": "Go",
+        "description": null,
+        "value": null,
+        "level": null,
+        "html_tag": "area",
+        "states": {
+          "focusable": true,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false
+        }
+      }
+    })
+  );
+}
+
+#[test]
+fn accessibility_option_role_presentation_disallowed_falls_back_to_option() {
+  let html = r##"
+    <html>
+      <body>
+        <select aria-label="Choices">
+          <option id="o" role="presentation" selected>One</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let subset = snapshot_subset(&tree, &["o"]);
+
+  assert_eq!(
+    subset,
+    json!({
+      "o": {
+        "role": "option",
+        "name": "One",
+        "description": null,
+        "value": "One",
+        "level": null,
+        "html_tag": "option",
+        "states": {
+          "focusable": true,
+          "disabled": false,
+          "required": false,
+          "invalid": false,
+          "visited": false,
+          "readonly": false,
+          "selected": true
+        }
+      }
+    })
+  );
+}
+
+#[test]
 fn accessibility_details_expanded_state() {
   let html = r##"
     <html>

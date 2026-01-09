@@ -1273,6 +1273,14 @@ fn focusable_for_presentational_role(node: &DomNode) -> bool {
     return false;
   };
 
+  if tag == "area" && node.get_attribute_ref("href").is_some() {
+    return true;
+  }
+
+  if tag == "summary" {
+    return true;
+  }
+
   if tag == "a" && node.get_attribute_ref("href").is_some() {
     return true;
   }
@@ -1290,6 +1298,10 @@ fn focusable_for_presentational_role(node: &DomNode) -> bool {
       .map(|t| t.to_ascii_lowercase())
       .unwrap_or_else(|| "text".to_string());
     return input_type != "hidden";
+  }
+
+  if tag == "option" {
+    return node.get_attribute_ref("disabled").is_none();
   }
 
   node
