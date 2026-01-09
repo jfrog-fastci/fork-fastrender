@@ -353,4 +353,16 @@ mod tests {
     assert_eq!(specs[0].base_url.as_deref(), Some("https://good.example/"));
     assert_eq!(specs[0].src.as_deref(), Some("https://good.example/a.js"));
   }
+
+  #[test]
+  fn base_in_foreign_namespace_does_not_update_base_url() {
+    let html = r#"<!doctype html><body>
+      <svg><foreignObject><base href="https://worse.example/"></base></foreignObject></svg>
+      <script src="a.js"></script>
+    </body>"#;
+    let specs = parse_and_collect_script_specs(html, Some("https://ex/doc.html"));
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].base_url.as_deref(), Some("https://ex/doc.html"));
+    assert_eq!(specs[0].src.as_deref(), Some("https://ex/a.js"));
+  }
 }

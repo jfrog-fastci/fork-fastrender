@@ -11620,11 +11620,12 @@ mod tests {
     let children_replaced: Vec<&BoxNode> = vec![&replaced];
 
     let mut deadline_counter = 0usize;
-    let normal_fp =
-      super::grid_child_fingerprint(&children_normal, &mut deadline_counter).expect("fingerprint");
-    let mut deadline_counter = 0usize;
-    let replaced_fp = super::grid_child_fingerprint(&children_replaced, &mut deadline_counter)
+    let normal_fp = super::grid_child_fingerprint(&children_normal, false, &mut deadline_counter)
       .expect("fingerprint");
+    let mut deadline_counter = 0usize;
+    let replaced_fp =
+      super::grid_child_fingerprint(&children_replaced, false, &mut deadline_counter)
+        .expect("fingerprint");
 
     assert_ne!(
       normal_fp, replaced_fp,
