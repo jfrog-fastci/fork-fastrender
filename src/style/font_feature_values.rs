@@ -49,6 +49,11 @@ pub struct FontFeatureValuesRegistry {
 }
 
 impl FontFeatureValuesRegistry {
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.families.is_empty()
+  }
+
   /// Register a parsed `@font-feature-values` rule using cascade order (later overrides earlier).
   ///
   /// Each feature-value declaration is applied to every family listed in the rule prelude.

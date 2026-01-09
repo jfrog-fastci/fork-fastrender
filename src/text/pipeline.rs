@@ -2429,12 +2429,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
       .unwrap_or(&[])
   };
 
-  // CSS Fonts 4 requires @stylistic/@swash/@ornaments/@annotation definitions to be single-valued;
-  // multi-valued definitions are syntax errors and must be ignored.
-  let resolve_single = |ty: FontFeatureValueType, name: &str| {
-    let values = resolve_list(ty, name);
-    (values.len() == 1).then(|| values[0])
-  };
+  let resolve_first = |ty: FontFeatureValueType, name: &str| resolve_list(ty, name).first().copied();
 
   if let Some(set) = alternates.stylistic.as_ref() {
     // CSS Fonts 4 `stylistic(<feature-value-name>)` maps to `salt <feature-index>`.
@@ -2444,7 +2439,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match set {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValueType::Stylistic, name.as_str())
+        resolve_first(FontFeatureValueType::Stylistic, name.as_str())
       }
     };
     if let Some(value) = value {
@@ -2522,7 +2517,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match swash {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValueType::Swash, name.as_str())
+        resolve_first(FontFeatureValueType::Swash, name.as_str())
       }
     };
     if let Some(value) = value {
@@ -2548,7 +2543,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match orn {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValueType::Ornaments, name)
+        resolve_first(FontFeatureValueType::Ornaments, name)
       }
     };
     if let Some(value) = value {
@@ -2569,7 +2564,7 @@ fn collect_opentype_features(style: &ComputedStyle, font_family: &str) -> Vec<Fe
     let value = match annotation {
       FontVariantAlternateValue::Number(v) => Some(u32::from(*v)),
       FontVariantAlternateValue::Name(name) => {
-        resolve_single(FontFeatureValueType::Annotation, name)
+        resolve_first(FontFeatureValueType::Annotation, name)
       }
     };
     if let Some(value) = value {
@@ -5183,15 +5178,21 @@ fn push_font_run(
   let language = resolve_opentype_language(style, font.as_ref());
 
   let mut features = merge_font_face_features(style_features, font.as_ref());
+
+  let mut position_disable_tag: Option<[u8; 4]> = None;
   if let Some((position_scale, position_shift, disable_tag)) =
     font_variant_position_synthesis(style, font.as_ref(), run_font_size, segment_text)
   {
     run_font_size *= position_scale;
     run_synthetic_bold *= position_scale;
     run_baseline_shift += position_shift;
-    if let Some(tag_bytes) = disable_tag {
+    position_disable_tag = disable_tag;
+  }
+
+  if position_disable_tag.is_some() {
+    let mut vec = features.to_vec();
+    if let Some(tag_bytes) = position_disable_tag {
       let tag = Tag::from_bytes(&tag_bytes);
-      let mut vec = features.to_vec();
       vec.retain(|f| f.tag != tag);
       vec.push(Feature {
         tag,
@@ -5199,8 +5200,8 @@ fn push_font_run(
         start: 0,
         end: u32::MAX,
       });
-      features = vec.into_boxed_slice().into();
     }
+    features = vec.into_boxed_slice().into();
   }
 
   let variations = crate::text::face_cache::with_face(&font, |face| {
@@ -6870,8 +6871,9 @@ impl ClusterMap {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::css::types::FontFaceRule;
-  use crate::css::types::FontFaceSource;
+  use crate::css::types::{
+    FontFaceRule, FontFaceSource, FontFeatureValueType, FontFeatureValuesRule,
+  };
   use crate::style::types::EastAsianVariant;
   use crate::style::types::EastAsianWidth;
   use crate::style::types::FontFeatureSetting;
@@ -6886,6 +6888,7 @@ mod tests {
   use crate::style::types::NumericSpacing;
   use crate::style::types::TextOrientation;
   use crate::style::types::WritingMode;
+  use crate::style::font_feature_values::FontFeatureValuesRegistry;
   use crate::text::font_db::FontConfig;
   use crate::text::font_db::FontDatabase;
   use crate::text::font_db::FontStretch as DbFontStretch;
@@ -6893,6 +6896,7 @@ mod tests {
   use crate::text::font_db::FontWeight as DbFontWeight;
   use crate::text::font_db::GenericFamily;
   use crate::text::font_fallback::FamilyEntry;
+  use rustc_hash::FxHashMap;
   use std::fs;
   use std::sync::Arc;
   use std::time::Duration;
@@ -10223,7 +10227,7 @@ mod tests {
   }
 
   #[test]
-  fn collect_features_includes_alternates() {
+  fn collect_features_includes_historical_forms_only() {
     let mut style = ComputedStyle::default();
     style.font_variant_alternates.historical_forms = true;
     style.font_variant_alternates.stylistic = Some(FontVariantAlternateValue::Number(3));
@@ -10258,6 +10262,121 @@ mod tests {
       Some(&1),
       "annotation() should map to OpenType nalt"
     );
+  }
+
+  fn tag_value(features: &[Feature], tag: &[u8; 4]) -> Option<u32> {
+    features.iter().find(|f| f.tag.to_bytes() == *tag).map(|f| f.value)
+  }
+
+  #[test]
+  fn named_alternates_resolve_styleset() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Styleset,
+      FxHashMap::from_iter([("disambiguation".to_string(), vec![2u32])]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style
+      .font_variant_alternates
+      .stylesets
+      .push(FontVariantAlternateValue::Name("disambiguation".to_string()));
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert_eq!(tag_value(&features, b"ss02"), Some(1));
+  }
+
+  #[test]
+  fn font_feature_settings_override_named_alternates() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Styleset,
+      FxHashMap::from_iter([("disambiguation".to_string(), vec![2u32])]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style
+      .font_variant_alternates
+      .stylesets
+      .push(FontVariantAlternateValue::Name("disambiguation".to_string()));
+    style.font_feature_settings = Arc::from([FontFeatureSetting {
+      tag: *b"ss02",
+      value: 0,
+    }]);
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert_eq!(tag_value(&features, b"ss02"), Some(0));
+  }
+
+  #[test]
+  fn named_alternates_swash_emits_both_features() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Swash,
+      FxHashMap::from_iter([("flowing".to_string(), vec![3u32])]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style.font_variant_alternates.swash =
+      Some(FontVariantAlternateValue::Name("flowing".to_string()));
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert_eq!(tag_value(&features, b"swsh"), Some(3));
+    assert_eq!(tag_value(&features, b"cswh"), Some(3));
+  }
+
+  #[test]
+  fn named_alternates_annotation_emits_nalt() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::Annotation,
+      FxHashMap::from_iter([("note".to_string(), vec![4u32])]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style.font_variant_alternates.annotation = Some(FontVariantAlternateValue::Name("note".to_string()));
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert_eq!(tag_value(&features, b"nalt"), Some(4));
+  }
+
+  #[test]
+  fn named_alternates_character_variant_last_wins() {
+    let mut registry = FontFeatureValuesRegistry::default();
+    let mut rule = FontFeatureValuesRule::new(vec!["Inter".to_string()]);
+    rule.groups.insert(
+      FontFeatureValueType::CharacterVariant,
+      FxHashMap::from_iter([
+        ("one".to_string(), vec![2u32, 1u32]),
+        ("two".to_string(), vec![2u32, 7u32]),
+      ]),
+    );
+    registry.register(rule);
+
+    let mut style = ComputedStyle::default();
+    style.font_feature_values = Arc::new(registry);
+    style
+      .font_variant_alternates
+      .character_variants
+      .extend([
+        FontVariantAlternateValue::Name("one".to_string()),
+        FontVariantAlternateValue::Name("two".to_string()),
+      ]);
+
+    let features = collect_opentype_features(&style, "Inter");
+    assert_eq!(tag_value(&features, b"cv02"), Some(7));
   }
 
   #[test]

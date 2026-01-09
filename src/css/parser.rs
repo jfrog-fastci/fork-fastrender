@@ -3730,7 +3730,6 @@ fn parse_font_feature_values_rule<'i, 't>(
 
   Ok(rule.map(CssRule::FontFeatureValues))
 }
-
 fn parse_font_palette_descriptors<'i, 't>(
   parser: &mut Parser<'i, 't>,
   name: &str,

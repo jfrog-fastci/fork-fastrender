@@ -11508,12 +11508,12 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
   let font_feature_values = {
     let mut registry = crate::style::font_feature_values::FontFeatureValuesRegistry::default();
 
-    let ua_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+    let ua_values = if let Some(cache) = media_cache.as_deref_mut() {
       ua_stylesheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
     } else {
       ua_stylesheet.collect_font_feature_values_rules(media_ctx)
     };
-    let author_feature_values = if let Some(cache) = media_cache.as_deref_mut() {
+    let author_values = if let Some(cache) = media_cache.as_deref_mut() {
       author_sheet.collect_font_feature_values_rules_with_cache(media_ctx, Some(cache))
     } else {
       author_sheet.collect_font_feature_values_rules(media_ctx)
@@ -11534,8 +11534,8 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       }
     }
 
-    register_collected(&mut registry, ua_feature_values);
-    register_collected(&mut registry, author_feature_values);
+    register_collected(&mut registry, ua_values);
+    register_collected(&mut registry, author_values);
 
     for (_host, _shadow_root_id, sheet) in &shadow_sheets {
       let shadow_values = if let Some(cache) = media_cache.as_deref_mut() {

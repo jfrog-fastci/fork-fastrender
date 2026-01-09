@@ -7359,9 +7359,12 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
 
   let mut alt = FontVariantAlternates::default();
   let mut seen_stylistic = false;
+  let mut seen_stylesets = false;
+  let mut seen_character_variants = false;
   let mut seen_swash = false;
   let mut seen_ornaments = false;
   let mut seen_annotation = false;
+
 
   fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     let prefix_len = prefix.len();
@@ -7380,6 +7383,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let value = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
+        FontVariantAlternateValue::Number(*n as u8)
+      }
       _ => return None,
     };
     parser.skip_whitespace();
@@ -7397,6 +7403,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     let tok = parser.next_including_whitespace().ok()?;
     let first = match tok {
       Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+      Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
+        FontVariantAlternateValue::Number(*n as u8)
+      }
       _ => return None,
     };
 
@@ -7421,6 +7430,9 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
       let tok = parser.next_including_whitespace().ok()?;
       let name = match tok {
         Token::Ident(ident) => FontVariantAlternateValue::Name(ident.to_string()),
+        Token::Number { int_value: Some(n), .. } if (1..=99).contains(n) => {
+          FontVariantAlternateValue::Number(*n as u8)
+        }
         _ => return None,
       };
       names.push(name);
@@ -7449,16 +7461,24 @@ fn parse_font_variant_alternates_tokens(tokens: &[&str]) -> Option<FontVariantAl
     if let Some(inner) =
       strip_prefix_ignore_ascii_case(token, "styleset(").and_then(|s| s.strip_suffix(')'))
     {
+      if seen_stylesets {
+        return None;
+      }
       alt.stylesets.extend(parse_feature_value_name_list(inner)?);
+      seen_stylesets = true;
       continue;
     }
 
     if let Some(inner) =
       strip_prefix_ignore_ascii_case(token, "character-variant(").and_then(|s| s.strip_suffix(')'))
     {
+      if seen_character_variants {
+        return None;
+      }
       alt
         .character_variants
         .extend(parse_feature_value_name_list(inner)?);
+      seen_character_variants = true;
       continue;
     }
     if let Some(inner) =
@@ -33036,12 +33056,12 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "font-variant".into(),
-      value: PropertyValue::Keyword(
-        "small-caps oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero \
+       value: PropertyValue::Keyword(
+         "small-caps oldstyle-nums tabular-nums stacked-fractions ordinal slashed-zero \
                  jis90 proportional-width ruby no-common-ligatures discretionary-ligatures \
                  historical-forms styleset(AltG,AltA) swash(Swishy) annotation(Note) sub"
-          .to_string(),
-      ),
+           .to_string(),
+       ),
       contains_var: false,
       raw_value: String::new(),
       important: false,
