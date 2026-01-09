@@ -592,7 +592,7 @@ impl BrowserRuntime {
             }
 
             tab.last_committed_url = Some(url_string.clone());
-            doc.set_document_url_without_invalidation(Some(url_string.clone()));
+            doc.set_document_url(Some(url_string.clone()));
 
             let fragment = percent_decode_str(target_url.fragment().unwrap_or("")).decode_utf8_lossy();
             let offset = if matches!(reason, NavigationReason::BackForward) {
