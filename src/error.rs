@@ -66,6 +66,8 @@ impl ErrorKind {
 pub enum RenderStage {
   /// HTML parsing
   DomParse,
+  /// JavaScript execution (tasks + microtasks).
+  Script,
   /// CSS fetch/parse/inlining
   Css,
   /// Cascade and computed style resolution
@@ -82,6 +84,7 @@ impl RenderStage {
   pub fn as_str(&self) -> &'static str {
     match self {
       RenderStage::DomParse => "dom_parse",
+      RenderStage::Script => "script",
       RenderStage::Css => "css",
       RenderStage::Cascade => "cascade",
       RenderStage::BoxTree => "box_tree",

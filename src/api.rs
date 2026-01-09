@@ -2211,6 +2211,8 @@ pub struct RenderStageMemory {
   #[serde(default)]
   pub dom_parse: RenderStageMemorySample,
   #[serde(default)]
+  pub script: RenderStageMemorySample,
+  #[serde(default)]
   pub css: RenderStageMemorySample,
   #[serde(default)]
   pub cascade: RenderStageMemorySample,
@@ -2226,6 +2228,7 @@ impl RenderStageMemory {
   fn sample_mut(&mut self, stage: RenderStage) -> &mut RenderStageMemorySample {
     match stage {
       RenderStage::DomParse => &mut self.dom_parse,
+      RenderStage::Script => &mut self.script,
       RenderStage::Css => &mut self.css,
       RenderStage::Cascade => &mut self.cascade,
       RenderStage::BoxTree => &mut self.box_tree,

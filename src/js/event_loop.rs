@@ -157,6 +157,7 @@ struct TimerState<Host: 'static> {
 
 pub struct EventLoop<Host: 'static> {
   clock: Arc<dyn Clock>,
+  default_deadline_stage: RenderStage,
   queue_limits: QueueLimits,
   task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
   microtask_queue: VecDeque<Task<Host>>,
@@ -174,6 +175,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
   fn default() -> Self {
     Self {
       clock: Arc::new(RealClock::default()),
+      default_deadline_stage: RenderStage::Script,
       queue_limits: QueueLimits::default(),
       task_queues: BTreeMap::new(),
       microtask_queue: VecDeque::new(),
@@ -192,6 +194,19 @@ impl<Host: 'static> Default for EventLoop<Host> {
 impl<Host: 'static> EventLoop<Host> {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn default_deadline_stage(&self) -> RenderStage {
+    self.default_deadline_stage
+  }
+
+  pub fn set_default_deadline_stage(&mut self, stage: RenderStage) {
+    self.default_deadline_stage = stage;
+  }
+
+  pub fn with_stage_guard<T>(&mut self, stage: RenderStage, f: impl FnOnce(&mut Self) -> T) -> T {
+    let _guard = render_control::StageGuard::install(Some(stage));
+    f(self)
   }
 
   pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
@@ -361,7 +376,7 @@ impl<Host: 'static> EventLoop<Host> {
   }
 
   pub fn run_until_idle(&mut self, host: &mut Host, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
-    let mut run_state = RunState::new(limits, Arc::clone(&self.clock));
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
 
     match self.run_until_idle_inner(host, &mut run_state) {
       Ok(outcome) => Ok(outcome),
@@ -656,7 +671,7 @@ impl<Host: 'static> EventLoop<Host> {
     limits: RunLimits,
     mut condition: impl FnMut(&Host) -> bool,
   ) -> Result<SpinOutcome> {
-    let mut run_state = RunState::new(limits, Arc::clone(&self.clock));
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock), self.default_deadline_stage);
     match self.spin_until_inner(host, &mut run_state, &mut condition) {
       Ok(outcome) => Ok(outcome),
       Err(RunStepError::Stop(reason)) => Ok(SpinOutcome::Stopped(reason)),
@@ -696,16 +711,18 @@ struct RunState {
   limits: RunLimits,
   clock: Arc<dyn Clock>,
   started_at: Duration,
+  default_deadline_stage: RenderStage,
   tasks_executed: usize,
   microtasks_executed: usize,
 }
 
 impl RunState {
-  fn new(limits: RunLimits, clock: Arc<dyn Clock>) -> Self {
+  fn new(limits: RunLimits, clock: Arc<dyn Clock>, default_deadline_stage: RenderStage) -> Self {
     Self {
       limits,
       started_at: clock.now(),
       clock,
+      default_deadline_stage,
       tasks_executed: 0,
       microtasks_executed: 0,
     }
@@ -713,7 +730,7 @@ impl RunState {
 
   fn check_deadline(&self) -> RunStepResult<()> {
     // Integrate renderer-level cancellation/deadlines.
-    let stage = render_control::active_stage().unwrap_or(RenderStage::DomParse);
+    let stage = render_control::active_stage().unwrap_or(self.default_deadline_stage);
     render_control::check_active(stage)
       .map_err(|err| RunStepError::Error(err.into()))?;
 
@@ -764,6 +781,7 @@ enum RunStepError {
 mod tests {
   use super::*;
   use crate::js::VirtualClock;
+  use crate::{error::RenderError, render_control::RenderDeadline};
   use std::cell::Cell;
   use std::rc::Rc;
 
@@ -1054,5 +1072,47 @@ mod tests {
     );
     assert_eq!(host.count, 1);
     Ok(())
+  }
+
+  #[test]
+  fn deadline_defaults_to_script_stage_when_no_active_stage() {
+    let cancel = Arc::new(|| true);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+    let _stage_guard = render_control::StageGuard::install(None);
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+    let mut host = TestHost::default();
+
+    let err = render_control::with_deadline(Some(&deadline), || {
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())
+    })
+    .expect_err("expected deadline to abort execution");
+
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Script),
+      other => panic!("expected render timeout error, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn deadline_attribution_respects_existing_stage_guard() {
+    let cancel = Arc::new(|| true);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+    let mut host = TestHost::default();
+
+    let err = render_control::with_deadline(Some(&deadline), || {
+      let _stage_guard = render_control::StageGuard::install(Some(RenderStage::Layout));
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())
+    })
+    .expect_err("expected deadline to abort execution");
+
+    match err {
+      Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Layout),
+      other => panic!("expected render timeout error, got {other:?}"),
+    }
   }
 }

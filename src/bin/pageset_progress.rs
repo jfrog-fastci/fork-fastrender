@@ -937,6 +937,7 @@ enum ProgressStatus {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ProgressStage {
   DomParse,
+  Script,
   Css,
   Cascade,
   BoxTree,
@@ -948,6 +949,7 @@ impl ProgressStage {
   fn as_str(&self) -> &'static str {
     match self {
       ProgressStage::DomParse => "dom_parse",
+      ProgressStage::Script => "script",
       ProgressStage::Css => "css",
       ProgressStage::Cascade => "cascade",
       ProgressStage::BoxTree => "box_tree",
@@ -961,6 +963,7 @@ impl From<RenderStage> for ProgressStage {
   fn from(stage: RenderStage) -> Self {
     match stage {
       RenderStage::DomParse => ProgressStage::DomParse,
+      RenderStage::Script => ProgressStage::Script,
       RenderStage::Css => ProgressStage::Css,
       RenderStage::Cascade => ProgressStage::Cascade,
       RenderStage::BoxTree => ProgressStage::BoxTree,
@@ -1002,6 +1005,7 @@ fn stage_buckets_for_progress_stage(stage: ProgressStage, total_ms: f64) -> Stag
   let mut buckets = StageBuckets::default();
   match stage {
     ProgressStage::DomParse => buckets.fetch = total_ms,
+    ProgressStage::Script => buckets.fetch = total_ms,
     ProgressStage::Css => buckets.css = total_ms,
     ProgressStage::Cascade => buckets.cascade = total_ms,
     ProgressStage::BoxTree => buckets.box_tree = total_ms,
@@ -2745,6 +2749,7 @@ fn infer_hotspot(stats: Option<&RenderStats>, buckets: &StageBuckets) -> &'stati
 pub(crate) fn hotspot_from_timeout_stage(stage: RenderStage) -> &'static str {
   match stage {
     RenderStage::DomParse => "fetch",
+    RenderStage::Script => "script",
     RenderStage::Css => "css",
     RenderStage::Cascade => "cascade",
     RenderStage::BoxTree => "box_tree",
@@ -2774,6 +2779,7 @@ fn hotspot_from_heartbeat(stage: StageHeartbeat) -> &'static str {
 pub(crate) fn hotspot_from_progress_stage(stage: ProgressStage) -> &'static str {
   match stage {
     ProgressStage::DomParse => "fetch",
+    ProgressStage::Script => "script",
     ProgressStage::Css => "css",
     ProgressStage::Cascade => "cascade",
     ProgressStage::BoxTree => "box_tree",
