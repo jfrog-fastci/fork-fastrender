@@ -1209,6 +1209,9 @@ impl App {
           pos_css,
           button,
         });
+        // `egui_winit` may not request a repaint for pointer moves inside a single widget. We need
+        // a redraw so `render_frame` can flush the coalesced PointerMove to the worker.
+        self.window.request_redraw();
         self.cursor_in_page = now_in_page;
       }
       WindowEvent::MouseInput { state, button, .. } => {
