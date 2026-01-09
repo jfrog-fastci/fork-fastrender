@@ -57,7 +57,7 @@ use crate::paint::display_list::GlyphInstance;
 use crate::paint::display_list::TextItem;
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context};
 use crate::paint::text_rasterize::{
-  concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState,
+  concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState, TextStroke,
 };
 use crate::paint::text_shadow::PathBounds;
 use crate::render_control::{check_active, check_active_periodic};
@@ -2459,6 +2459,50 @@ impl Canvas {
         run_scale,
         rotation,
         color,
+        None,
+        synthetic_bold,
+        synthetic_oblique,
+        palette_index,
+        palette_overrides,
+        palette_override_hash,
+        variations,
+      )
+    })
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub fn draw_text_run_with_stroke(
+    &mut self,
+    position: Point,
+    glyphs: &[GlyphInstance],
+    font: &LoadedFont,
+    font_size: f32,
+    run_scale: f32,
+    rotation: RunRotation,
+    color: Rgba,
+    stroke_width: f32,
+    stroke_color: Rgba,
+    synthetic_bold: f32,
+    synthetic_oblique: f32,
+    palette_index: u16,
+    palette_overrides: &[(u16, Rgba)],
+    palette_override_hash: u64,
+    variations: &[FontVariation],
+  ) -> Result<()> {
+    let stroke = (stroke_width > 0.0 && stroke_color.a > 0.0).then_some(TextStroke {
+      width: stroke_width,
+      color: stroke_color,
+    });
+    self.mirror_to_source_alpha_result(|canvas| {
+      canvas.draw_text_run_impl(
+        position,
+        glyphs,
+        font,
+        font_size,
+        run_scale,
+        rotation,
+        color,
+        stroke,
         synthetic_bold,
         synthetic_oblique,
         palette_index,
@@ -2479,6 +2523,7 @@ impl Canvas {
     run_scale: f32,
     rotation: RunRotation,
     color: Rgba,
+    stroke: Option<TextStroke>,
     synthetic_bold: f32,
     synthetic_oblique: f32,
     palette_index: u16,
@@ -2486,7 +2531,8 @@ impl Canvas {
     palette_override_hash: u64,
     variations: &[FontVariation],
   ) -> Result<()> {
-    if glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
+    let has_stroke = stroke.is_some();
+    if glyphs.is_empty() || (color.a == 0.0 && !has_stroke) || self.current_state.opacity == 0.0 {
       return Ok(());
     }
 
@@ -2506,7 +2552,7 @@ impl Canvas {
       .collect();
 
     let rotation = rotation_transform(rotation, position.x, position.y);
-    self.text_rasterizer.render_glyph_run(
+    self.text_rasterizer.render_glyph_run_with_stroke(
       &positions,
       font,
       font_size * run_scale,
@@ -2520,6 +2566,7 @@ impl Canvas {
       position.x,
       position.y,
       color,
+      stroke,
       state,
       &mut self.pixmap,
     )?;

@@ -4692,6 +4692,7 @@ impl DisplayListRenderer {
     scaled.font_size = self.ds_len(item.font_size);
     scaled.advance_width = self.ds_len(item.advance_width);
     scaled.synthetic_bold = self.ds_len(item.synthetic_bold);
+    scaled.stroke_width = self.ds_len(item.stroke_width);
     scaled.glyphs = item
       .glyphs
       .iter()
@@ -4771,6 +4772,8 @@ impl DisplayListRenderer {
       cached_bounds: item.cached_bounds,
       glyphs: item.glyphs.clone(),
       color: item.color,
+      stroke_width: item.stroke_width,
+      stroke_color: item.stroke_color,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -4794,6 +4797,8 @@ impl DisplayListRenderer {
       cached_bounds: scaled.cached_bounds,
       glyphs: scaled.glyphs,
       color: scaled.color,
+      stroke_width: scaled.stroke_width,
+      stroke_color: scaled.stroke_color,
       shadows: scaled.shadows,
       font_size: scaled.font_size,
       advance_width: scaled.advance_width,
@@ -9132,6 +9137,12 @@ impl DisplayListRenderer {
           max_pad = max_pad.max(blur + spread + offset);
         }
         DisplayItem::Text(text) => {
+          if text.synthetic_bold.is_finite() {
+            max_pad = max_pad.max(text.synthetic_bold.abs());
+          }
+          if text.stroke_width.is_finite() {
+            max_pad = max_pad.max(text.stroke_width.abs() * 0.5);
+          }
           for shadow in &text.shadows {
             if shadow.color.a <= f32::EPSILON {
               continue;
@@ -9142,6 +9153,12 @@ impl DisplayListRenderer {
           }
         }
         DisplayItem::ListMarker(marker) => {
+          if marker.synthetic_bold.is_finite() {
+            max_pad = max_pad.max(marker.synthetic_bold.abs());
+          }
+          if marker.stroke_width.is_finite() {
+            max_pad = max_pad.max(marker.stroke_width.abs() * 0.5);
+          }
           for shadow in &marker.shadows {
             if shadow.color.a <= f32::EPSILON {
               continue;
@@ -13069,7 +13086,7 @@ impl DisplayListRenderer {
       self.render_text_shadows(&font, item)?;
     }
 
-    self.canvas.draw_text_run(
+    self.canvas.draw_text_run_with_stroke(
       item.origin,
       &item.glyphs,
       &font,
@@ -13077,6 +13094,8 @@ impl DisplayListRenderer {
       item.scale,
       item.rotation,
       item.color,
+      item.stroke_width,
+      item.stroke_color,
       item.synthetic_bold,
       item.synthetic_oblique,
       item.palette_index,
@@ -13101,6 +13120,8 @@ impl DisplayListRenderer {
       cached_bounds: item.cached_bounds,
       glyphs: item.glyphs.clone(),
       color: item.color,
+      stroke_width: item.stroke_width,
+      stroke_color: item.stroke_color,
       palette_index: item.palette_index,
       palette_overrides: item.palette_overrides.clone(),
       palette_override_hash: item.palette_override_hash,
@@ -13643,9 +13664,14 @@ impl DisplayListRenderer {
       } else {
         0.0
       };
+      let stroke_pad = if item.stroke_width.is_finite() {
+        item.stroke_width.abs() * 0.5
+      } else {
+        0.0
+      };
       let oblique_pad = skew.abs() * (ascent + descent);
-      let pad_x = bold_pad + oblique_pad + 1.0;
-      let pad_y = bold_pad + 1.0;
+      let pad_x = bold_pad + stroke_pad + oblique_pad + 1.0;
+      let pad_y = bold_pad + stroke_pad + 1.0;
       bounds.min_x -= pad_x;
       bounds.max_x += pad_x;
       bounds.min_y -= pad_y;
@@ -13753,7 +13779,13 @@ impl DisplayListRenderer {
       // Ignore text rasterizer failures so shadows don't prevent painting the rest of the scene.
       // However, deadline timeouts should always bubble up so paint-stage cancellation doesn't get
       // silently ignored.
-      match rasterizer.render_glyph_run(
+      let stroke = (item.stroke_width > 0.0 && item.stroke_color.a > 0.0).then_some(
+        crate::paint::text_rasterize::TextStroke {
+          width: item.stroke_width,
+          color: shadow.color,
+        },
+      );
+      match rasterizer.render_glyph_run_with_stroke(
         &glyph_positions,
         font,
         item.font_size * item.scale,
@@ -13767,6 +13799,7 @@ impl DisplayListRenderer {
         item.origin.x,
         item.origin.y,
         shadow.color,
+        stroke,
         state,
         &mut shadow_pixmap,
       ) {

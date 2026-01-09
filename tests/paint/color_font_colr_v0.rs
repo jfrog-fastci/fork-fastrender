@@ -67,6 +67,8 @@ fn text_item_from_run(run: &ShapedRun, origin: Point, text_color: Rgba) -> TextI
     cached_bounds: None,
     glyphs,
     color: text_color,
+    stroke_width: 0.0,
+    stroke_color: Rgba::TRANSPARENT,
     palette_index: run.palette_index,
     palette_overrides: run.palette_overrides.clone(),
     palette_override_hash: run.palette_override_hash,

@@ -8564,8 +8564,10 @@ fn apply_transitions_to_fragment(
       }
 
       if !updates.is_empty() || !custom_updates.is_empty() {
-        let color_changed = updates.iter().any(|(name, _)| name == "color");
         let original_color = style_arc.color;
+        let color_changed = updates
+          .iter()
+          .any(|(name, _)| name.eq_ignore_ascii_case("color"));
         let mut updated_style = (*style_arc).clone();
         apply_animated_properties_ordered(&mut updated_style, &updates);
         let mut custom_properties_changed = false;
@@ -8697,7 +8699,13 @@ fn apply_transition_state_to_fragment(
           child_style.visibility = parent_for_children.visibility;
         }
         child_style.recompute_inherited_custom_properties(parent_for_children);
+        if child_style.color_is_inherited {
+          child_style.color = parent_for_children.color;
+        }
         child_style.recompute_var_dependent_properties(parent_for_children, viewport);
+        if child_style.color_is_inherited {
+          child_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+        }
       }
       apply_transition_state_to_fragment(
         child,
@@ -8721,7 +8729,13 @@ fn apply_transition_state_to_fragment(
           snapshot_style.visibility = parent_for_children.visibility;
         }
         snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+        if snapshot_style.color_is_inherited {
+          snapshot_style.color = parent_for_children.color;
+        }
         snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
+        if snapshot_style.color_is_inherited {
+          snapshot_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+        }
       }
       apply_transition_state_to_fragment(
         snapshot_node,
@@ -8783,6 +8797,7 @@ fn apply_transition_state_to_fragment(
         }
 
         if !updates.is_empty() || !custom_updates.is_empty() {
+          let original_color = style_arc.color;
           let color_changed = updates
             .iter()
             .any(|(name, _)| name.eq_ignore_ascii_case("color"));
@@ -8813,6 +8828,16 @@ fn apply_transition_state_to_fragment(
             );
             apply_animated_properties_ordered(&mut updated_style, &updates);
           }
+
+          if updated_style.color != original_color {
+            let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
+            updated_style.recompute_current_color_dependent_properties(parent_styles, viewport);
+            // `recompute_current_color_dependent_properties` reapplies cached cascade declarations,
+            // which can touch properties that are also being transitioned. Reapply transition
+            // updates afterward so the transition layer continues to win over the underlying
+            // cascade.
+            apply_animated_properties_ordered(&mut updated_style, &updates);
+          }
           fragment.style = Some(Arc::new(updated_style));
         }
       }
@@ -8836,7 +8861,13 @@ fn apply_transition_state_to_fragment(
         child_style.visibility = parent_for_children.visibility;
       }
       child_style.recompute_inherited_custom_properties(parent_for_children);
+      if child_style.color_is_inherited {
+        child_style.color = parent_for_children.color;
+      }
       child_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      if child_style.color_is_inherited {
+        child_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+      }
     }
     apply_transition_state_to_fragment(
       child,
@@ -8860,7 +8891,13 @@ fn apply_transition_state_to_fragment(
         snapshot_style.visibility = parent_for_children.visibility;
       }
       snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.color = parent_for_children.color;
+      }
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
+      if snapshot_style.color_is_inherited {
+        snapshot_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
+      }
     }
     apply_transition_state_to_fragment(
       snapshot_node,

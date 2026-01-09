@@ -843,6 +843,12 @@ pub struct TextItem {
   /// Text color
   pub color: Rgba,
 
+  /// Text stroke width in CSS px (0 = none).
+  pub stroke_width: f32,
+
+  /// Text stroke color.
+  pub stroke_color: Rgba,
+
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
 
@@ -902,6 +908,8 @@ impl Default for TextItem {
       cached_bounds: None,
       glyphs: Vec::new(),
       color: Rgba::default(),
+      stroke_width: 0.0,
+      stroke_color: Rgba::default(),
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,
@@ -1054,14 +1062,26 @@ fn conservative_glyph_run_bounds(
 
 /// Conservative bounds for a text item using glyph offsets and font size.
 pub fn text_bounds(item: &TextItem) -> Rect {
-  item.cached_bounds.unwrap_or_else(|| {
+  let mut bounds = item.cached_bounds.unwrap_or_else(|| {
     conservative_glyph_run_bounds(
       item.origin,
       &item.glyphs,
       item.advance_width,
       item.font_size,
     )
-  })
+  });
+
+  let mut pad = 0.0f32;
+  if item.synthetic_bold.is_finite() {
+    pad = pad.max(item.synthetic_bold.abs());
+  }
+  if item.stroke_width.is_finite() {
+    pad = pad.max(item.stroke_width.abs() * 0.5);
+  }
+  if pad > 0.0 {
+    bounds = bounds.inflate(pad);
+  }
+  bounds
 }
 
 /// Conservative bounds for a set of text runs (e.g. union clip masks).
@@ -1079,14 +1099,26 @@ pub fn text_runs_bounds(runs: &[TextItem]) -> Rect {
 
 /// Conservative bounds for a list marker item.
 pub fn list_marker_bounds(item: &ListMarkerItem) -> Rect {
-  item.cached_bounds.unwrap_or_else(|| {
+  let mut bounds = item.cached_bounds.unwrap_or_else(|| {
     conservative_glyph_run_bounds(
       item.origin,
       &item.glyphs,
       item.advance_width,
       item.font_size,
     )
-  })
+  });
+
+  let mut pad = 0.0f32;
+  if item.synthetic_bold.is_finite() {
+    pad = pad.max(item.synthetic_bold.abs());
+  }
+  if item.stroke_width.is_finite() {
+    pad = pad.max(item.stroke_width.abs() * 0.5);
+  }
+  if pad > 0.0 {
+    bounds = bounds.inflate(pad);
+  }
+  bounds
 }
 
 /// List marker paint item
@@ -1103,6 +1135,12 @@ pub struct ListMarkerItem {
 
   /// Text color
   pub color: Rgba,
+
+  /// Text stroke width in CSS px (0 = none).
+  pub stroke_width: f32,
+
+  /// Text stroke color.
+  pub stroke_color: Rgba,
 
   /// Selected CPAL palette index for color fonts.
   pub palette_index: u16,
@@ -1159,6 +1197,8 @@ impl Default for ListMarkerItem {
       cached_bounds: None,
       glyphs: Vec::new(),
       color: Rgba::default(),
+      stroke_width: 0.0,
+      stroke_color: Rgba::default(),
       palette_index: 0,
       palette_overrides: Arc::new(Vec::new()),
       palette_override_hash: 0,

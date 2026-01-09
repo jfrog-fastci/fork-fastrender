@@ -6613,6 +6613,14 @@ pub(crate) fn apply_property_from_source(
     "-webkit-text-fill-color" => {
       styles.webkit_text_fill_color = source.webkit_text_fill_color.clone()
     }
+    "-webkit-text-stroke-color" => {
+      styles.webkit_text_stroke_color = source.webkit_text_stroke_color.clone()
+    }
+    "-webkit-text-stroke-width" => styles.webkit_text_stroke_width = source.webkit_text_stroke_width,
+    "-webkit-text-stroke" => {
+      styles.webkit_text_stroke_color = source.webkit_text_stroke_color.clone();
+      styles.webkit_text_stroke_width = source.webkit_text_stroke_width;
+    }
     "background-color" => styles.background_color = source.background_color,
     "fill" => styles.svg_fill = source.svg_fill.clone(),
     "stroke" => styles.svg_stroke = source.svg_stroke.clone(),
@@ -13476,6 +13484,124 @@ fn apply_declaration_with_base_internal_with_order(
         }
       }
       _ => {}
+    },
+    "-webkit-text-stroke-color" => match resolved_value {
+      PropertyValue::Color(c) => {
+        styles.webkit_text_stroke_color = c.resolve_light_dark(is_dark_color_scheme)
+      }
+      PropertyValue::Keyword(kw) => {
+        if let Ok(color) = Color::parse(kw) {
+          styles.webkit_text_stroke_color = color.resolve_light_dark(is_dark_color_scheme);
+        }
+      }
+      _ => {}
+    },
+    "-webkit-text-stroke-width" => {
+      let parsed_len = match resolved_value {
+        PropertyValue::Length(len) => Some(*len),
+        PropertyValue::Number(num) if *num == 0.0 => Some(Length::px(0.0)),
+        PropertyValue::Keyword(kw) => {
+          if kw.eq_ignore_ascii_case("0") {
+            Some(Length::px(0.0))
+          } else {
+            parse_length(kw)
+          }
+        }
+        _ => None,
+      };
+      if let Some(len) = parsed_len {
+        let valid = if len.calc.is_some() {
+          // Accept calc/min/max/clamp expressions as long as they don't contain percentages.
+          !len.has_percentage()
+        } else {
+          len.value.is_finite() && len.value >= 0.0 && !len.has_percentage()
+        };
+        if valid {
+          styles.webkit_text_stroke_width = len;
+        }
+      }
+    },
+    "-webkit-text-stroke" => {
+      let tokens: Vec<PropertyValue> = match resolved_value {
+        PropertyValue::Multiple(values) => values.clone(),
+        other => vec![other.clone()],
+      };
+      if tokens.is_empty() {
+        return;
+      }
+
+      if tokens.len() == 1 {
+        if let PropertyValue::Keyword(kw) = &tokens[0] {
+          if kw.eq_ignore_ascii_case("none") {
+            styles.webkit_text_stroke_width = Length::px(0.0);
+            styles.webkit_text_stroke_color = Color::CurrentColor;
+            return;
+          }
+        }
+      }
+
+      let mut width: Option<Length> = None;
+      let mut color: Option<Color> = None;
+      for token in &tokens {
+        match token {
+          PropertyValue::Length(len) => {
+            if width.is_some() {
+              return;
+            }
+            let valid = if len.calc.is_some() {
+              !len.has_percentage()
+            } else {
+              len.value.is_finite() && len.value >= 0.0 && !len.has_percentage()
+            };
+            if !valid {
+              return;
+            }
+            width = Some(*len);
+          }
+          PropertyValue::Number(num) if *num == 0.0 => {
+            if width.is_some() {
+              return;
+            }
+            width = Some(Length::px(0.0));
+          }
+          PropertyValue::Color(c) => {
+            if color.is_some() {
+              return;
+            }
+            color = Some(c.resolve_light_dark(is_dark_color_scheme));
+          }
+          PropertyValue::Keyword(kw) => {
+            if let Ok(parsed) = Color::parse(kw) {
+              if color.is_some() {
+                return;
+              }
+              color = Some(parsed.resolve_light_dark(is_dark_color_scheme));
+              continue;
+            }
+            if let Some(len) = parse_length(kw) {
+              if width.is_some() {
+                return;
+              }
+              let valid = if len.calc.is_some() {
+                !len.has_percentage()
+              } else {
+                len.value.is_finite() && len.value >= 0.0 && !len.has_percentage()
+              };
+              if !valid {
+                return;
+              }
+              width = Some(len);
+              continue;
+            }
+            return;
+          }
+          _ => return,
+        }
+      }
+
+      // Shorthand resets omitted components to their initial values.
+      styles.webkit_text_stroke_width = width.unwrap_or_else(|| Length::px(0.0));
+      styles.webkit_text_stroke_color = color.unwrap_or(Color::CurrentColor);
     },
     "background-color" => {
       if let Some(c) = resolve_color_value(resolved_value) {

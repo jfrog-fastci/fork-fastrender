@@ -485,6 +485,9 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-size-adjust",
   "text-shadow",
   "-webkit-text-fill-color",
+  "-webkit-text-stroke",
+  "-webkit-text-stroke-width",
+  "-webkit-text-stroke-color",
   "text-transform",
   "text-underline-offset",
   "text-underline-position",
@@ -1641,6 +1644,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
     property,
     "color"
       | "-webkit-text-fill-color"
+      | "-webkit-text-stroke-color"
       | "background-color"
       | "border-color"
       | "border-top-color"
@@ -1980,6 +1984,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "text-emphasis-skip"
       | "text-decoration-skip-self"
       | "text-decoration-skip-spaces"
+      | "-webkit-text-stroke"
       | "contain-intrinsic-size"
       | "contain-intrinsic-width"
       | "contain-intrinsic-height"
@@ -2520,6 +2525,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     }
     "color"
     | "-webkit-text-fill-color"
+    | "-webkit-text-stroke-color"
     | "background-color"
     | "border-color"
     | "border-top-color"

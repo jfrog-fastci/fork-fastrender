@@ -730,6 +730,13 @@ pub struct TextRenderState<'a> {
   pub blend_mode: SkiaBlendMode,
 }
 
+/// Optional stroke to apply when rasterizing text (e.g. `-webkit-text-stroke`).
+#[derive(Debug, Clone, Copy)]
+pub struct TextStroke {
+  pub width: f32,
+  pub color: Rgba,
+}
+
 impl<'a> Default for TextRenderState<'a> {
   fn default() -> Self {
     Self {
@@ -925,6 +932,86 @@ impl TextRasterizer {
     state: TextRenderState<'_>,
     pixmap: &mut Pixmap,
   ) -> Result<f32> {
+    self.render_glyph_run_internal(
+      glyphs,
+      font,
+      font_size,
+      synthetic_bold,
+      synthetic_oblique,
+      palette_index,
+      palette_overrides,
+      palette_override_hash,
+      variations,
+      rotation,
+      x,
+      baseline_y,
+      color,
+      None,
+      state,
+      pixmap,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub fn render_glyph_run_with_stroke(
+    &mut self,
+    glyphs: &[GlyphPosition],
+    font: &LoadedFont,
+    font_size: f32,
+    synthetic_bold: f32,
+    synthetic_oblique: f32,
+    palette_index: u16,
+    palette_overrides: &[(u16, Rgba)],
+    palette_override_hash: u64,
+    variations: &[Variation],
+    rotation: Option<Transform>,
+    x: f32,
+    baseline_y: f32,
+    color: Rgba,
+    stroke: Option<TextStroke>,
+    state: TextRenderState<'_>,
+    pixmap: &mut Pixmap,
+  ) -> Result<f32> {
+    self.render_glyph_run_internal(
+      glyphs,
+      font,
+      font_size,
+      synthetic_bold,
+      synthetic_oblique,
+      palette_index,
+      palette_overrides,
+      palette_override_hash,
+      variations,
+      rotation,
+      x,
+      baseline_y,
+      color,
+      stroke,
+      state,
+      pixmap,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn render_glyph_run_internal(
+    &mut self,
+    glyphs: &[GlyphPosition],
+    font: &LoadedFont,
+    font_size: f32,
+    synthetic_bold: f32,
+    synthetic_oblique: f32,
+    palette_index: u16,
+    palette_overrides: &[(u16, Rgba)],
+    palette_override_hash: u64,
+    variations: &[Variation],
+    rotation: Option<Transform>,
+    x: f32,
+    baseline_y: f32,
+    color: Rgba,
+    stroke: Option<TextStroke>,
+    state: TextRenderState<'_>,
+    pixmap: &mut Pixmap,
+  ) -> Result<f32> {
     let raster_timer = text_diagnostics_timer(TextDiagnosticsStage::Rasterize);
     let diag_enabled = raster_timer.is_some();
     let mut color_glyph_rasters = 0usize;
@@ -932,6 +1019,31 @@ impl TextRasterizer {
     // Fast path: when a render deadline is already expired, avoid doing any work (and avoid
     // burning ~DEADLINE_STRIDE iterations before the first periodic check trips).
     check_active(RenderStage::Paint).map_err(Error::Render)?;
+
+    let opacity = state.opacity.clamp(0.0, 1.0);
+    let fill_alpha = (color.a * opacity).clamp(0.0, 1.0);
+    let draw_fill = fill_alpha > 0.0;
+    let stroke = stroke.filter(|s| s.width.is_finite() && s.width.abs() > 0.0 && s.color.a > 0.0);
+    let stroke_alpha = stroke
+      .map(|s| (s.color.a * opacity).clamp(0.0, 1.0))
+      .unwrap_or(0.0);
+    let draw_stroke = stroke_alpha > 0.0;
+
+    if glyphs.is_empty() || (!draw_fill && !draw_stroke) {
+      let mut cursor_x = x;
+      let mut cursor_y = 0.0_f32;
+      for glyph in glyphs {
+        cursor_x += glyph.x_advance;
+        cursor_y += glyph.y_advance;
+      }
+      let advance = if cursor_y.abs() > (cursor_x - x).abs() {
+        cursor_y
+      } else {
+        cursor_x - x
+      };
+      return Ok(advance);
+    }
+
     // Note: The shared glyph/color caches are used from multiple threads when paint parallelism is
     // enabled. Computing cache deltas from "before" and "after" snapshots taken outside the cache
     // lock can double-count (other threads can bump the counters between snapshots). To keep
@@ -945,18 +1057,33 @@ impl TextRasterizer {
     let mut color_evictions = 0u64;
     let mut color_bytes = 0usize;
 
-    // Create paint with text color
+    // Create paint with fill color
     let mut paint = Paint::default();
-    let opacity = state.opacity.clamp(0.0, 1.0);
-    let alpha = (color.a * opacity).clamp(0.0, 1.0);
     paint.set_color_rgba8(
       color.r,
       color.g,
       color.b,
-      (alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+      (fill_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
     );
     paint.anti_alias = true;
     paint.blend_mode = state.blend_mode;
+
+    // Create paint/stroke params for the optional stroke.
+    let mut stroke_paint = Paint::default();
+    let mut stroke_style = tiny_skia::Stroke::default();
+    if let Some(stroke) = stroke {
+      stroke_paint.set_color_rgba8(
+        stroke.color.r,
+        stroke.color.g,
+        stroke.color.b,
+        (stroke_alpha * 255.0).round().clamp(0.0, 255.0) as u8,
+      );
+      stroke_paint.anti_alias = true;
+      stroke_paint.blend_mode = state.blend_mode;
+      stroke_style.width = stroke.width.abs();
+      stroke_style.line_join = tiny_skia::LineJoin::Round;
+      stroke_style.line_cap = tiny_skia::LineCap::Round;
+    }
 
     let instance =
       FontInstance::new(font, variations).ok_or_else(|| RenderError::RasterizationFailed {
@@ -977,6 +1104,8 @@ impl TextRasterizer {
     let mut cursor_x = x;
     let mut cursor_y = 0.0_f32;
     let transform_signature = cache_transform_signature(state.transform, rotation);
+    let glyph_opacity = color.a.clamp(0.0, 1.0);
+    let color_for_glyph = Rgba { a: 1.0, ..color };
 
     // Render each glyph
     for glyph in glyphs {
@@ -986,108 +1115,87 @@ impl TextRasterizer {
       let glyph_x = cursor_x + glyph.x_offset;
       let glyph_y = baseline_y + cursor_y + glyph.y_offset;
 
-      // Strip CSS alpha from the cached raster and apply it once at draw time so
-      // palette layers (including currentColor paints) pick up text/ancestor opacity
-      // without double-multiplying.
-      let glyph_opacity = color.a.clamp(0.0, 1.0);
-      let color_for_glyph = Rgba { a: 1.0, ..color };
-      let color_key = ColorGlyphCacheKey::new(
-        font,
-        glyph.glyph_id,
-        font_size,
-        palette_index,
-        variations,
-        color_for_glyph,
-        palette_override_hash,
-        synthetic_oblique,
-        transform_signature,
-      );
+      // Color glyph (if available) is painted after the outline stroke/fill so the fill lands on top.
+      let color_glyph = if draw_fill {
+        // Strip CSS alpha from the cached raster and apply it once at draw time so
+        // palette layers (including currentColor paints) pick up text/ancestor opacity
+        // without double-multiplying.
+        let color_key = ColorGlyphCacheKey::new(
+          font,
+          glyph.glyph_id,
+          font_size,
+          palette_index,
+          variations,
+          color_for_glyph,
+          palette_override_hash,
+          synthetic_oblique,
+          transform_signature,
+        );
 
-      let cached_color_glyph = {
-        let mut cache = self
-          .color_cache
-          .lock()
-          .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if diag_enabled {
-          let before = cache.stats();
-          let value = cache.get(&color_key);
-          let after = cache.stats();
-          let delta = after.delta_from(&before);
-          color_hits = color_hits.saturating_add(delta.hits);
-          color_misses = color_misses.saturating_add(delta.misses);
-          color_evictions = color_evictions.saturating_add(delta.evictions);
-          color_bytes = color_bytes.max(after.bytes);
-          value
-        } else {
-          cache.get(&color_key)
-        }
-      };
-
-      let color_glyph = match cached_color_glyph {
-        Some(value) => value,
-        None => {
-          let rendered = self.color_renderer.render(
-            font,
-            &instance,
-            glyph.glyph_id,
-            font_size,
-            palette_index,
-            palette_overrides,
-            palette_override_hash,
-            color_for_glyph,
-            0.0,
-            variations,
-            Some((pixmap.width(), pixmap.height())),
-          );
-          {
-            let mut cache = self
-              .color_cache
-              .lock()
-              .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if diag_enabled {
-              let before = cache.stats();
-              cache.insert(color_key, rendered.clone());
-              let after = cache.stats();
-              let delta = after.delta_from(&before);
-              color_hits = color_hits.saturating_add(delta.hits);
-              color_misses = color_misses.saturating_add(delta.misses);
-              color_evictions = color_evictions.saturating_add(delta.evictions);
-              color_bytes = color_bytes.max(after.bytes);
-            } else {
-              cache.insert(color_key, rendered.clone());
-            }
-          }
-          rendered
-        }
-      };
-
-      if let Some(color_image) = color_glyph {
-        let combined_opacity = (glyph_opacity * state.opacity).clamp(0.0, 1.0);
-        if combined_opacity > 0.0 {
+        let cached_color_glyph = {
+          let mut cache = self
+            .color_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
           if diag_enabled {
-            color_glyph_rasters += 1;
+            let before = cache.stats();
+            let value = cache.get(&color_key);
+            let after = cache.stats();
+            let delta = after.delta_from(&before);
+            color_hits = color_hits.saturating_add(delta.hits);
+            color_misses = color_misses.saturating_add(delta.misses);
+            color_evictions = color_evictions.saturating_add(delta.evictions);
+            color_bytes = color_bytes.max(after.bytes);
+            value
+          } else {
+            cache.get(&color_key)
           }
-          let mut transform = color_glyph_transform(
-            synthetic_oblique,
-            glyph_x,
-            glyph_y,
-            color_image.left,
-            color_image.top,
-          );
-          if let Some(rotation) = rotation {
-            transform = concat_transforms(rotation, transform);
+        };
+
+        Some(match cached_color_glyph {
+          Some(value) => value,
+          None => {
+            let rendered = self.color_renderer.render(
+              font,
+              &instance,
+              glyph.glyph_id,
+              font_size,
+              palette_index,
+              palette_overrides,
+              palette_override_hash,
+              color_for_glyph,
+              0.0,
+              variations,
+              Some((pixmap.width(), pixmap.height())),
+            );
+            {
+              let mut cache = self
+                .color_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+              if diag_enabled {
+                let before = cache.stats();
+                cache.insert(color_key, rendered.clone());
+                let after = cache.stats();
+                let delta = after.delta_from(&before);
+                color_hits = color_hits.saturating_add(delta.hits);
+                color_misses = color_misses.saturating_add(delta.misses);
+                color_evictions = color_evictions.saturating_add(delta.evictions);
+                color_bytes = color_bytes.max(after.bytes);
+              } else {
+                cache.insert(color_key, rendered.clone());
+              }
+            }
+            rendered
           }
-          transform = concat_transforms(state.transform, transform);
-          draw_color_glyph(
-            pixmap,
-            &color_image,
-            transform,
-            combined_opacity,
-            state.blend_mode,
-            state.clip_mask,
-          );
-        }
+        })
       } else {
+        None
+      }
+      .and_then(|glyph| glyph);
+
+      let needs_outline = draw_stroke || (draw_fill && color_glyph.is_none());
+      if needs_outline {
         let cached_path = {
           let mut cache = self
             .cache
@@ -1118,21 +1226,61 @@ impl TextRasterizer {
           }
           transform = concat_transforms(state.transform, transform);
 
-          // Render the path
-          pixmap.fill_path(
-            path.as_ref(),
-            &paint,
-            FillRule::Winding,
+          if draw_stroke {
+            pixmap.stroke_path(
+              path.as_ref(),
+              &stroke_paint,
+              &stroke_style,
+              transform,
+              state.clip_mask,
+            );
+          }
+
+          if draw_fill && color_glyph.is_none() {
+            // Render the path fill
+            pixmap.fill_path(
+              path.as_ref(),
+              &paint,
+              FillRule::Winding,
+              transform,
+              state.clip_mask,
+            );
+            if synthetic_bold > 0.0 {
+              let mut stroke = tiny_skia::Stroke::default();
+              stroke.width = synthetic_bold * 2.0;
+              stroke.line_join = tiny_skia::LineJoin::Round;
+              stroke.line_cap = tiny_skia::LineCap::Round;
+              pixmap.stroke_path(path.as_ref(), &paint, &stroke, transform, state.clip_mask);
+            }
+          }
+        }
+      }
+
+      if let Some(color_image) = color_glyph {
+        let combined_opacity = (glyph_opacity * opacity).clamp(0.0, 1.0);
+        if combined_opacity > 0.0 {
+          if diag_enabled {
+            color_glyph_rasters += 1;
+          }
+          let mut transform = color_glyph_transform(
+            synthetic_oblique,
+            glyph_x,
+            glyph_y,
+            color_image.left,
+            color_image.top,
+          );
+          if let Some(rotation) = rotation {
+            transform = concat_transforms(rotation, transform);
+          }
+          transform = concat_transforms(state.transform, transform);
+          draw_color_glyph(
+            pixmap,
+            &color_image,
             transform,
+            combined_opacity,
+            state.blend_mode,
             state.clip_mask,
           );
-          if synthetic_bold > 0.0 {
-            let mut stroke = tiny_skia::Stroke::default();
-            stroke.width = synthetic_bold * 2.0;
-            stroke.line_join = tiny_skia::LineJoin::Round;
-            stroke.line_cap = tiny_skia::LineCap::Round;
-            pixmap.stroke_path(path.as_ref(), &paint, &stroke, transform, state.clip_mask);
-          }
         }
       }
 

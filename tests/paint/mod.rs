@@ -182,6 +182,7 @@ mod text_decoration_skip_ink_vertical_mixed_golden_test;
 mod text_emphasis_currentcolor_palette;
 mod text_emphasis_string_color_font;
 mod text_rasterize_test;
+mod text_stroke_test;
 mod text_multiscript_emoji_golden;
 mod text_shadow_color_emoji_golden;
 mod text_variable_font_test;

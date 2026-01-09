@@ -683,6 +683,9 @@ impl DisplayListOptimizer {
         if item.color.a > 0.0 {
           return false;
         }
+        if item.stroke_width.is_finite() && item.stroke_width > 0.0 && item.stroke_color.a > 0.0 {
+          return false;
+        }
         if item.shadows.iter().any(|shadow| shadow.color.a > 0.0) {
           return false;
         }
@@ -1570,6 +1573,35 @@ mod tests {
         blur_radius: 0.0,
         color: Rgba::RED,
       }],
+      font_size: 20.0,
+      advance_width: 10.0,
+      ..Default::default()
+    }));
+
+    let viewport = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+    let (optimized, stats) = optimize_with_stats(list, viewport);
+
+    assert_eq!(stats.transparent_removed, 0);
+    assert!(matches!(optimized.items(), [DisplayItem::Text(_)]));
+  }
+
+  #[test]
+  fn transparent_text_with_stroke_not_removed() {
+    let glyphs = vec![GlyphInstance {
+      glyph_id: 1,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 10.0,
+      y_advance: 0.0,
+    }];
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::Text(TextItem {
+      origin: Point::new(0.0, 20.0),
+      glyphs,
+      color: Rgba::TRANSPARENT,
+      stroke_width: 2.0,
+      stroke_color: Rgba::RED,
       font_size: 20.0,
       advance_width: 10.0,
       ..Default::default()

@@ -1155,6 +1155,8 @@ pub struct ComputedStyle {
   /// value so `currentColor`-dependent properties stay correct.
   pub color_is_inherited: bool,
   pub webkit_text_fill_color: Color,
+  pub webkit_text_stroke_color: Color,
+  pub webkit_text_stroke_width: Length,
 
   // SVG presentation properties (used when serializing inline SVG for resvg)
   pub svg_fill: Option<ColorOrNone>,
@@ -1559,6 +1561,8 @@ impl Default for ComputedStyle {
       color: Rgba::BLACK,
       color_is_inherited: false,
       webkit_text_fill_color: Color::CurrentColor,
+      webkit_text_stroke_color: Color::CurrentColor,
+      webkit_text_stroke_width: Length::px(0.0),
       svg_fill: None,
       svg_stroke: None,
       svg_stroke_width: None,

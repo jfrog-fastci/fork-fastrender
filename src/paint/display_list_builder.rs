@@ -5460,6 +5460,9 @@ impl DisplayListBuilder {
             });
           }
           let cached_bounds = bounds.finish(font_size);
+          let (stroke_width, stroke_color) = style_opt
+            .map(|s| self.resolve_webkit_text_stroke_for_run(s, font_size))
+            .unwrap_or_default();
 
           if *is_marker {
             let item = ListMarkerItem {
@@ -5467,6 +5470,8 @@ impl DisplayListBuilder {
               cached_bounds: Some(cached_bounds),
               glyphs,
               color,
+              stroke_width,
+              stroke_color,
               shadows: shadows.clone(),
               font_size,
               advance_width,
@@ -5479,6 +5484,8 @@ impl DisplayListBuilder {
               cached_bounds: Some(cached_bounds),
               glyphs,
               color,
+              stroke_width,
+              stroke_color,
               shadows: shadows.clone(),
               font_size,
               advance_width,
@@ -8095,6 +8102,9 @@ impl DisplayListBuilder {
       let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
+      let (stroke_width, stroke_color) = style
+        .map(|s| self.resolve_webkit_text_stroke_for_run(s, run.font_size))
+        .unwrap_or_default();
       let emphasis = style.and_then(|s| {
         self.build_emphasis(
           run,
@@ -8116,6 +8126,8 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color,
+        stroke_width,
+        stroke_color,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -8210,6 +8222,9 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
+      let (stroke_width, stroke_color) = style
+        .map(|s| self.resolve_webkit_text_stroke_for_run(s, run.font_size))
+        .unwrap_or_default();
       let emphasis = style.and_then(|s| {
         self.build_emphasis(
           run,
@@ -8231,6 +8246,8 @@ impl DisplayListBuilder {
         cached_bounds: Some(cached_bounds),
         glyphs,
         color,
+        stroke_width,
+        stroke_color,
         palette_index: run.palette_index,
         palette_overrides: Arc::clone(&run.palette_overrides),
         palette_override_hash: run.palette_override_hash,
@@ -8326,6 +8343,9 @@ impl DisplayListBuilder {
       let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
+      let (stroke_width, stroke_color) = style
+        .map(|s| self.resolve_webkit_text_stroke_for_run(s, run.font_size))
+        .unwrap_or_default();
       let emphasis = style.and_then(|s| {
         self.build_emphasis(
           run,
@@ -8347,6 +8367,8 @@ impl DisplayListBuilder {
         glyphs,
         font_size: run.font_size,
         color,
+        stroke_width,
+        stroke_color,
         shadows: shadows.to_vec(),
         advance_width: run.advance,
         font_id,
@@ -8389,6 +8411,9 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
+      let (stroke_width, stroke_color) = style
+        .map(|s| self.resolve_webkit_text_stroke_for_run(s, run.font_size))
+        .unwrap_or_default();
       let emphasis = style.and_then(|s| {
         self.build_emphasis(
           run,
@@ -8410,6 +8435,8 @@ impl DisplayListBuilder {
         glyphs,
         font_size: run.font_size,
         color,
+        stroke_width,
+        stroke_color,
         shadows: shadows.to_vec(),
         advance_width: run.advance,
         font_id,
@@ -9436,6 +9463,22 @@ impl DisplayListBuilder {
           .collect()
       })
       .unwrap_or_default()
+  }
+
+  fn resolve_webkit_text_stroke_for_run(
+    &self,
+    style: &ComputedStyle,
+    run_font_size: f32,
+  ) -> (f32, Rgba) {
+    let current = style.color;
+    let stroke_color = style.webkit_text_stroke_color.to_rgba(current);
+    let (vw, vh) = self.viewport.unwrap_or((0.0, 0.0));
+    let width = style
+      .webkit_text_stroke_width
+      .resolve_with_context(None, vw, vh, run_font_size, style.root_font_size)
+      .unwrap_or(0.0);
+    let width = if width.is_finite() { width.max(0.0) } else { 0.0 };
+    (width, stroke_color)
   }
 
   fn emit_replaced_placeholder(
@@ -11119,12 +11162,17 @@ impl DisplayListBuilder {
       });
     }
     let cached_bounds = bounds.finish(font_size);
+    let (stroke_width, stroke_color) = style
+      .map(|s| self.resolve_webkit_text_stroke_for_run(s, font_size))
+      .unwrap_or_default();
 
     let item = TextItem {
       origin,
       cached_bounds: Some(cached_bounds),
       glyphs,
       color,
+      stroke_width,
+      stroke_color,
       shadows,
       font_size,
       advance_width,

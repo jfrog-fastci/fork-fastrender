@@ -1143,7 +1143,6 @@ fn currentcolor_dependent_border_color_tracks_color_transition() -> Result<()> {
 #[test]
 fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()> {
   ensure_test_env();
-
   let html = r#"
     <style>
       #box {
@@ -1186,6 +1185,60 @@ fn currentcolor_border_tracks_color_transition_when_color_is_var() -> Result<()>
     fragment_border_top_color(&sampled, box_id),
     expected,
     "border-top-color: currentColor should track animated color (even when color comes from var())"
+  );
+
+  Ok(())
+}
+
+#[test]
+fn currentcolor_dependent_border_color_tracks_color_transition_through_color_mix() -> Result<()> {
+  ensure_test_env();
+
+  // Regression test for `currentColor` nested inside color functions. This is not covered by the
+  // var-dependent recomputation path (which only tracks literal `currentColor` keywords), so the
+  // transition sampling step must explicitly recompute `currentColor`-dependent declarations when
+  // `color` animates.
+  let html = r#"
+    <style>
+      #box {
+        width: 20px;
+        height: 20px;
+        color: rgb(0, 0, 0);
+        border-top-style: solid;
+        border-top-width: 1px;
+        border-top-color: color-mix(in srgb, currentColor, currentColor);
+        transition: color 1000ms linear;
+      }
+      #box.b { color: rgb(255, 255, 255); }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut doc = BrowserDocument::from_html(
+    html,
+    RenderOptions::new()
+      .with_viewport(200, 50)
+      .with_animation_time(0.0),
+  )?;
+  doc.render_frame()?;
+
+  assert!(set_class(&mut doc, "box", "b"));
+  // Keep time at t=0 so this frame records the transition start time.
+  doc.render_frame()?;
+
+  let prepared = doc.prepared().expect("prepared");
+  let box_id = box_id_by_element_id(prepared, "box");
+  let mut sampled = prepared.fragment_tree().clone();
+  let viewport = sampled.viewport_size();
+
+  animation::apply_transitions(&mut sampled, 500.0, viewport);
+
+  let expected = Rgba::new(128, 128, 128, 1.0);
+  assert_eq!(fragment_color(&sampled, box_id), expected, "animated text color");
+  assert_eq!(
+    fragment_border_top_color(&sampled, box_id),
+    expected,
+    "border-top-color should track animated color when currentColor is nested inside color-mix()"
   );
 
   Ok(())
