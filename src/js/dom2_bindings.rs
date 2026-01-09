@@ -102,6 +102,36 @@ pub fn class_list_toggle<Host: DomHost>(
   })
 }
 
+/// `Element.classList.replace(token, newToken)` for a `dom2` element.
+///
+/// Returns whether `token` existed. The host invalidation flag is derived by comparing the `class`
+/// attribute before/after the operation.
+pub fn class_list_replace<Host: DomHost>(
+  host: &mut Host,
+  element: NodeId,
+  token: &str,
+  new_token: &str,
+) -> std::result::Result<bool, DomError> {
+  host.mutate_dom(|dom| {
+    let before = match dom.get_attribute(element, "class") {
+      Ok(v) => v.map(str::to_string),
+      Err(err) => return (Err(err), false),
+    };
+
+    match dom.class_list_replace(element, token, new_token) {
+      Ok(found) => {
+        let after = match dom.get_attribute(element, "class") {
+          Ok(v) => v.map(str::to_string),
+          Err(err) => return (Err(err), false),
+        };
+        let changed = before != after;
+        (Ok(found), changed)
+      }
+      Err(err) => (Err(err), false),
+    }
+  })
+}
+
 /// `Element.setAttribute(name, value)` for a `dom2` element.
 ///
 /// Returns `Ok(true)` only when the underlying attribute list changes.

@@ -150,7 +150,7 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
     .build()?;
   let mut doc = BrowserDocumentDom2::new(
     renderer,
-    "<!doctype html><html><body><div id=\"box\">Hello</div></body></html>",
+    "<!doctype html><html><body><div id=\"box\" class=\"a b\">Hello</div></body></html>",
     options,
   )?;
 
@@ -162,6 +162,26 @@ fn browser_document_dom2_dom2_bindings_query_selector_and_attribute_mutations() 
   let box_id = fastrender::js::dom2_bindings::query_selector(&mut doc, "#box", None)
     .expect("querySelector should succeed")
     .expect("expected #box to exist");
+  assert!(doc.render_if_needed()?.is_none());
+
+  // classList.replace should dirty only when it changes the underlying `class` attribute.
+  // - If `newToken` already exists, it just removes the old one.
+  let found = fastrender::js::dom2_bindings::class_list_replace(&mut doc, box_id, "a", "b")
+    .expect("classList.replace should succeed");
+  assert!(found);
+  assert!(doc.render_if_needed()?.is_some());
+  assert!(doc.render_if_needed()?.is_none());
+
+  // Token not present => return false + no dirty.
+  let found = fastrender::js::dom2_bindings::class_list_replace(&mut doc, box_id, "a", "c")
+    .expect("classList.replace should succeed");
+  assert!(!found);
+  assert!(doc.render_if_needed()?.is_none());
+
+  // Token present but token == newToken => return true + no dirty.
+  let found = fastrender::js::dom2_bindings::class_list_replace(&mut doc, box_id, "b", "b")
+    .expect("classList.replace should succeed");
+  assert!(found);
   assert!(doc.render_if_needed()?.is_none());
 
   // setAttribute should dirty only when it changes the underlying attribute value.
