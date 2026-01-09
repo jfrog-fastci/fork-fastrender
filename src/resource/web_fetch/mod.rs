@@ -24,6 +24,9 @@ pub enum WebFetchError {
   #[error("invalid header value: {value:?}")]
   InvalidHeaderValue { value: String },
 
+  #[error("invalid HeadersInit: expected a sequence of 2 items, got {len}")]
+  HeadersInitSequenceItemWrongLength { len: usize },
+
   #[error("headers are immutable")]
   HeadersImmutable,
 
@@ -96,6 +99,77 @@ mod tests {
     let mut headers = Headers::new_with_guard(HeadersGuard::Response);
     headers.set("set-cookie", "a=b").unwrap();
     assert!(!headers.has("set-cookie").unwrap());
+  }
+
+  #[test]
+  fn headers_sort_and_combine_sorts_and_combines_duplicates() {
+    let mut headers = Headers::new();
+    headers.append("X-Test", "a").unwrap();
+    headers.append("a-test", "b").unwrap();
+    headers.append("x-test", "c").unwrap();
+
+    assert_eq!(
+      headers.sort_and_combine(),
+      vec![
+        ("a-test".to_string(), "b".to_string()),
+        ("x-test".to_string(), "a, c".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn headers_sort_and_combine_keeps_set_cookie_separate() {
+    let mut headers = Headers::new();
+    headers.append("x-test", "z").unwrap();
+    headers.append("set-cookie", "a=b").unwrap();
+    headers.append("Set-Cookie", "c=d").unwrap();
+    headers.append("x-test", "y").unwrap();
+
+    assert_eq!(
+      headers.sort_and_combine(),
+      vec![
+        ("set-cookie".to_string(), "a=b".to_string()),
+        ("set-cookie".to_string(), "c=d".to_string()),
+        ("x-test".to_string(), "z, y".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn headers_fill_from_sequence_rejects_non_pairs() {
+    let mut headers = Headers::new();
+    let err = headers
+      .fill_from_sequence(vec![vec!["x-test".to_string()], vec!["a".to_string(), "b".to_string()]])
+      .unwrap_err();
+    assert!(matches!(
+      err,
+      WebFetchError::HeadersInitSequenceItemWrongLength { len: 1 }
+    ));
+  }
+
+  #[test]
+  fn headers_fill_from_pairs_respects_response_guard() {
+    let mut headers = Headers::new_with_guard(HeadersGuard::Response);
+    headers
+      .fill_from_pairs(vec![
+        ("set-cookie".to_string(), "a=b".to_string()),
+        ("x-test".to_string(), "ok".to_string()),
+      ])
+      .unwrap();
+    assert!(!headers.has("set-cookie").unwrap());
+    assert_eq!(headers.get("x-test").unwrap().as_deref(), Some("ok"));
+  }
+
+  #[test]
+  fn headers_extend_from_raw_pairs_respects_response_guard() {
+    let mut headers = Headers::new_with_guard(HeadersGuard::Response);
+    let raw = vec![
+      ("set-cookie".to_string(), "a=b".to_string()),
+      ("x-test".to_string(), "ok".to_string()),
+    ];
+    headers.extend_from_raw_pairs(&raw).unwrap();
+    assert!(!headers.has("set-cookie").unwrap());
+    assert_eq!(headers.get("x-test").unwrap().as_deref(), Some("ok"));
   }
 
   #[test]

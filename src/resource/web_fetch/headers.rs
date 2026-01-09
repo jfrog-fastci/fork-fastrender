@@ -156,6 +156,87 @@ impl Headers {
     Ok(())
   }
 
+  /// Fill this `Headers` object from an iterator of `(name, value)` pairs.
+  ///
+  /// This matches the Fetch `Headers` constructor behavior for the `HeadersInit` record and
+  /// sequence-of-pairs forms: each pair is appended using [`Headers::append`], so names/values are
+  /// normalized and the current [`HeadersGuard`] is enforced.
+  pub fn fill_from_pairs<I, N, V>(&mut self, pairs: I) -> Result<()>
+  where
+    I: IntoIterator<Item = (N, V)>,
+    N: AsRef<str>,
+    V: AsRef<str>,
+  {
+    for (name, value) in pairs {
+      self.append(name.as_ref(), value.as_ref())?;
+    }
+    Ok(())
+  }
+
+  /// Fill this `Headers` object from the WebIDL `sequence<sequence<ByteString>>` form.
+  ///
+  /// Each inner sequence must contain exactly two items (`[name, value]`). If an entry has a
+  /// different length, this returns [`WebFetchError::HeadersInitSequenceItemWrongLength`] (distinct
+  /// from header name/value validation).
+  pub fn fill_from_sequence<I, E, S>(&mut self, sequence: I) -> Result<()>
+  where
+    I: IntoIterator<Item = E>,
+    E: AsRef<[S]>,
+    S: AsRef<str>,
+  {
+    for entry in sequence {
+      let entry = entry.as_ref();
+      if entry.len() != 2 {
+        return Err(WebFetchError::HeadersInitSequenceItemWrongLength { len: entry.len() });
+      }
+      self.append(entry[0].as_ref(), entry[1].as_ref())?;
+    }
+    Ok(())
+  }
+
+  /// Append a raw list of `(name, value)` pairs.
+  ///
+  /// This is intended for bridging from [`crate::resource::FetchedResource::response_headers`]:
+  /// duplicates are preserved and each pair is appended via [`Headers::append`] so guard
+  /// enforcement still applies (e.g. `Response` headers ignore `Set-Cookie`).
+  pub fn extend_from_raw_pairs(&mut self, pairs: &[(String, String)]) -> Result<()> {
+    for (name, value) in pairs {
+      self.append(name, value)?;
+    }
+    Ok(())
+  }
+
+  /// Return this header list using Fetch's "header list sort and combine" algorithm.
+  ///
+  /// The returned list is suitable for deterministic iteration (`for..of`, `entries()`, etc.):
+  ///
+  /// - Header names are lowercased and sorted.
+  /// - Duplicate names are combined using `", "` (matching [`Headers::get`]).
+  /// - `set-cookie` is treated specially: each value is returned as a distinct pair in original
+  ///   order.
+  pub fn sort_and_combine(&self) -> Vec<(String, String)> {
+    // https://fetch.spec.whatwg.org/#concept-header-list-sort-and-combine
+    let mut headers: Vec<&Header> = self.header_list.iter().collect();
+    headers.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
+
+    let mut output: Vec<(String, String)> = Vec::new();
+    for header in headers {
+      let name = header.name.as_str();
+      if name == "set-cookie" {
+        output.push((name.to_string(), header.value.clone()));
+        continue;
+      }
+
+      if let Some((_, value)) = output.last_mut().filter(|(out_name, _)| out_name == name) {
+        value.push_str(", ");
+        value.push_str(&header.value);
+      } else {
+        output.push((name.to_string(), header.value.clone()));
+      }
+    }
+    output
+  }
+
   fn validate_mutation(&self, name: &HeaderName, value: &str) -> Result<bool> {
     // Fetch "Headers/validate" algorithm:
     // https://fetch.spec.whatwg.org/#concept-headers-validate
