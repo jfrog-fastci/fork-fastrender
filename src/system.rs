@@ -49,7 +49,9 @@ fn ceil_div_u64(numer: u64, denom: u64) -> u64 {
 
 #[cfg(target_os = "linux")]
 fn parse_cgroup_v2_cpu_max(contents: &str) -> Option<usize> {
-  let mut it = contents.split_whitespace();
+  // Linux cgroup CPU quota files use ASCII whitespace separators. Avoid Rust's Unicode whitespace
+  // helpers so we don't treat non-ASCII whitespace (e.g. NBSP U+00A0) as valid separators.
+  let mut it = contents.split_ascii_whitespace();
   let quota_raw = it.next()?;
   let period_raw = it.next()?;
   if quota_raw == "max" {
@@ -66,8 +68,12 @@ fn parse_cgroup_v2_cpu_max(contents: &str) -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn parse_cgroup_v1_cpu_quota(quota_raw: &str, period_raw: &str) -> Option<usize> {
-  let quota = quota_raw.trim().parse::<i64>().ok()?;
-  let period = period_raw.trim().parse::<i64>().ok()?;
+  fn trim_ascii_whitespace(value: &str) -> &str {
+    value.trim_matches(|c: char| c.is_ascii_whitespace())
+  }
+
+  let quota = trim_ascii_whitespace(quota_raw).parse::<i64>().ok()?;
+  let period = trim_ascii_whitespace(period_raw).parse::<i64>().ok()?;
   if quota <= 0 || period <= 0 {
     return None;
   }
@@ -210,6 +216,13 @@ mod tests {
 
   #[cfg(target_os = "linux")]
   #[test]
+  fn non_ascii_whitespace_parse_cgroup_v2_cpu_max_does_not_split_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(parse_cgroup_v2_cpu_max(&format!("100000{nbsp}100000")), None);
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
   fn parse_cgroup_v1_cpu_quota_values() {
     assert_eq!(parse_cgroup_v1_cpu_quota("-1", "100000"), None);
     assert_eq!(parse_cgroup_v1_cpu_quota("0", "100000"), None);
@@ -218,6 +231,13 @@ mod tests {
     assert_eq!(parse_cgroup_v1_cpu_quota("50000", "100000"), Some(1));
     assert_eq!(parse_cgroup_v1_cpu_quota("100000", "0"), None);
     assert_eq!(parse_cgroup_v1_cpu_quota("oops", "100000"), None);
+  }
+
+  #[cfg(target_os = "linux")]
+  #[test]
+  fn non_ascii_whitespace_parse_cgroup_v1_cpu_quota_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    assert_eq!(parse_cgroup_v1_cpu_quota(&format!("{nbsp}100000"), "100000"), None);
   }
 
   #[cfg(target_os = "linux")]
