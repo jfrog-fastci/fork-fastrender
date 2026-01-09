@@ -3369,7 +3369,7 @@ fn generate_boxes_for_styled_into(
             && styled
               .node
               .get_attribute_ref("type")
-              .is_some_and(|input_type| input_type.eq_ignore_ascii_case("image"));
+              .is_some_and(|t| t.eq_ignore_ascii_case("image"));
 
           if (is_replaced_element(tag) || is_input_image) && styled.styles.display != Display::Contents {
             let picture_sources_for_img = if tag.eq_ignore_ascii_case("img") {
@@ -4720,13 +4720,9 @@ fn apply_counter_properties_from_style(
     return;
   }
 
-  // Counters are evaluated as part of box generation. Elements that are fully removed from the
-  // box tree (`display:none`) must not reset/set/increment counters.
-  //
-  // Note that `display: contents` only removes the element's principal box; it does *not* remove
-  // the element from the element tree. Per the display spec, "semantics based on the document
-  // tree ... are not affected", and CSS counters are defined over the element tree.
-  if styled.styles.display == Display::None {
+  // Counters are evaluated as part of box generation, so elements that do not generate boxes must
+  // not reset/set/increment counters.
+  if matches!(styled.styles.display, Display::None | Display::Contents) {
     return;
   }
 
@@ -4880,23 +4876,21 @@ fn list_item_count(styled: &StyledNode) -> usize {
     if tag.is_some_and(|tag| {
       tag.eq_ignore_ascii_case("source")
         || tag.eq_ignore_ascii_case("track")
-        || tag.eq_ignore_ascii_case("option")
-        || tag.eq_ignore_ascii_case("optgroup")
+      || tag.eq_ignore_ascii_case("option")
+      || tag.eq_ignore_ascii_case("optgroup")
     }) {
       continue;
     }
-    // Treat list containers as nested list boundaries, even when they are `display: contents`.
-    //
-    // Although `display: contents` removes the list container's principal box, it does not remove
-    // the element from the element tree; list counter properties (notably the UA default
-    // `counter-reset: list-item`) still apply to its descendants.
     let is_list = tag.is_some_and(|tag| {
       tag.eq_ignore_ascii_case("ol")
         || tag.eq_ignore_ascii_case("ul")
         || tag.eq_ignore_ascii_case("menu")
         || tag.eq_ignore_ascii_case("dir")
     });
-    let now_nested = in_nested_list || is_list;
+    // Treat list containers as nested list boundaries when they generate boxes. A list container
+    // with `display: contents` contributes its descendants without applying list counter resets, so
+    // its list items participate in the ancestor list's counter sequence.
+    let now_nested = in_nested_list || (is_list && node.styles.display != Display::Contents);
     if !now_nested && node.styles.display == Display::ListItem {
       count += 1;
     }
@@ -5408,15 +5402,8 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       } else if input_type.eq_ignore_ascii_case("time") {
         placeholder.get_or_insert_with(|| "hh:mm".to_string());
         TextControlKind::Date
-      } else if input_type.is_empty()
-        || input_type.eq_ignore_ascii_case("text")
-        || input_type.eq_ignore_ascii_case("search")
-        || input_type.eq_ignore_ascii_case("url")
-        || input_type.eq_ignore_ascii_case("tel")
-        || input_type.eq_ignore_ascii_case("email")
-      {
-        TextControlKind::Plain
       } else {
+        // HTML: invalid/unknown `<input type="...">` values fall back to the text state.
         TextControlKind::Plain
       };
 
@@ -7719,6 +7706,7 @@ mod tests {
       <input type=\"checkbox\" indeterminate=\"true\">
       <input type=\"file\" value=\"C:\\\\fakepath\\\\hello.txt\">
       <input type=\"foo\" placeholder=\"mystery\" data-fastr-focus-visible=\"true\">
+      <input type=\"mystery\" value=\"abc\" placeholder=\"ph\" size=\"7\">
       <input size=\"5\" value=\"sized\">
       <textarea rows=\"4\" cols=\"10\">hi</textarea>
     </body></html>";
@@ -7981,14 +7969,30 @@ mod tests {
     assert!(
       controls
         .iter()
-        .any(|c| matches!(&c.control, FormControlKind::Text {
-          kind: TextControlKind::Plain,
-          placeholder,
-          ..
-        } if placeholder.as_deref() == Some("mystery"))
-          && c.focus_visible
+        .any(|c| matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Plain,
+            placeholder,
+            value,
+            ..
+          } if placeholder.as_deref() == Some("mystery") && value.is_empty()
+        ) && c.focus_visible
           && c.focused),
-      "unknown types should fall back to a text control and keep focus-visible hint"
+      "unknown types should fall back to plain text controls and keep focus-visible hint"
+    );
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Text {
+          kind: TextControlKind::Plain,
+          value,
+          placeholder,
+          size_attr: Some(7),
+          ..
+        } if value == "abc" && placeholder.as_deref() == Some("ph")
+      )),
+      "unknown input types should behave like type=text and preserve value/placeholder/size"
     );
     assert!(
       controls.iter().any(|c| matches!(
@@ -8110,6 +8114,19 @@ mod tests {
     assert!(
       texts.iter().any(|t| t == "Icon"),
       "expected <button> contents to be preserved in the box tree (texts={texts:?})"
+    );
+  }
+
+  #[test]
+  fn input_type_image_is_treated_as_replaced_image() {
+    let html = "<html><body><input type=\"image\" src=\"test.png\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+    assert_eq!(
+      first_image_src(&box_tree.root).as_deref(),
+      Some("test.png"),
+      "<input type=image> should be generated as an image replaced element"
     );
   }
 
