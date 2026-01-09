@@ -66,6 +66,19 @@ impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
   }
 }
 
+fn value_is_valid_or_primitive(heap: &vm_js::Heap, value: vm_js::Value) -> bool {
+  match value {
+    vm_js::Value::Undefined
+    | vm_js::Value::Null
+    | vm_js::Value::Bool(_)
+    | vm_js::Value::Number(_)
+    | vm_js::Value::BigInt(_) => true,
+    vm_js::Value::String(s) => heap.is_valid_string(s),
+    vm_js::Value::Symbol(sym) => heap.is_valid_symbol(sym),
+    vm_js::Value::Object(obj) => heap.is_valid_object(obj),
+  }
+}
+
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn call(
     &mut self,
@@ -75,6 +88,17 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    if !value_is_valid_or_primitive(heap, callee) {
+      return Err(vm_js::VmError::InvalidHandle);
+    }
+    if !value_is_valid_or_primitive(heap, this) {
+      return Err(vm_js::VmError::InvalidHandle);
+    }
+    for &arg in args {
+      if !value_is_valid_or_primitive(heap, arg) {
+        return Err(vm_js::VmError::InvalidHandle);
+      }
+    }
     let mut scope = heap.scope();
     if let Some(realm) = self.realm {
       // `vm-js` jobs are executed as host work; if a realm is provided, run the call under an
@@ -97,6 +121,17 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     new_target: vm_js::Value,
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    if !value_is_valid_or_primitive(heap, callee) {
+      return Err(vm_js::VmError::InvalidHandle);
+    }
+    if !value_is_valid_or_primitive(heap, new_target) {
+      return Err(vm_js::VmError::InvalidHandle);
+    }
+    for &arg in args {
+      if !value_is_valid_or_primitive(heap, arg) {
+        return Err(vm_js::VmError::InvalidHandle);
+      }
+    }
     let mut scope = heap.scope();
 
     if let Some(realm) = self.realm {
