@@ -9661,6 +9661,56 @@ fn prioritize_starting_style_rules(rules: &mut [MatchedRule<'_>]) {
 
 const INLINE_SPECIFICITY: u32 = 1 << 30;
 const INLINE_RULE_ORDER: usize = usize::MAX / 2;
+// UA-injected `:root { color-scheme: ... }` rule derived from `<meta name="color-scheme">`.
+const META_COLOR_SCHEME_SPECIFICITY: u32 = 1 << 10; // pseudo-class selector specificity
+const META_COLOR_SCHEME_RULE_ORDER: usize = usize::MAX / 4;
+
+fn serialize_color_scheme_preference(pref: &ColorSchemePreference) -> String {
+  match pref {
+    ColorSchemePreference::Normal => "normal".to_string(),
+    ColorSchemePreference::Supported { schemes, only } => {
+      let mut out = String::new();
+      let mut first = true;
+      if *only {
+        out.push_str("only");
+        first = false;
+      }
+      for scheme in schemes {
+        if !first {
+          out.push(' ');
+        }
+        first = false;
+        match scheme {
+          ColorSchemeEntry::Light => out.push_str("light"),
+          ColorSchemeEntry::Dark => out.push_str("dark"),
+          ColorSchemeEntry::Custom(name) => out.push_str(name),
+        }
+      }
+      out
+    }
+  }
+}
+
+fn meta_color_scheme_matched_rule<'a>(
+  pref: &ColorSchemePreference,
+  layer_order: Arc<[u32]>,
+) -> MatchedRule<'a> {
+  let decl = Declaration {
+    property: "color-scheme".into(),
+    value: PropertyValue::Keyword(serialize_color_scheme_preference(pref)),
+    raw_value: String::new(),
+    important: false,
+    contains_var: false,
+  };
+  MatchedRule {
+    origin: StyleOrigin::UserAgent,
+    specificity: META_COLOR_SCHEME_SPECIFICITY,
+    order: META_COLOR_SCHEME_RULE_ORDER,
+    layer_order,
+    declarations: Cow::Owned(vec![decl]),
+    starting_style: false,
+  }
+}
 
 /// Starting-style snapshots for an element and its pseudos.
 #[derive(Debug, Default, Clone)]
@@ -10293,12 +10343,13 @@ pub fn explain_property_for_node_with_imports(
   let mut style_set = StyleSet::from_document(stylesheet.clone());
   style_set.shadows = shadow_sheets;
 
-    let mut prepared = PreparedCascade::new_for_style_set(
+  let mut prepared = PreparedCascade::new_for_style_set(
       dom,
       &style_set,
       media_ctx,
       import_loader,
       base_url,
+      None,
       None,
       false,
       CascadeOptions::default(),
@@ -10456,6 +10507,7 @@ fn explain_property_for_node_with_prepared(
         ua_root_font_size,
         viewport,
         color_scheme_pref,
+        prepared.meta_color_scheme.as_deref(),
         &ancestors,
         None,
         &ancestor_ids,
@@ -11494,6 +11546,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         16.0,
         Size::new(media_ctx.viewport_width, media_ctx.viewport_height),
         color_scheme_pref,
+        None,
         &mut node_counter,
         &mut ancestor_ids,
         container_ctx,
@@ -11550,6 +11603,7 @@ pub(crate) struct PreparedCascade<'a> {
   base_styles: ComputedStyle,
   base_ua_styles: ComputedStyle,
   has_starting_styles: bool,
+  meta_color_scheme: Option<Arc<ColorSchemePreference>>,
   viewport: Size,
   color_scheme_pref: ColorScheme,
   device_pixel_ratio: f32,
@@ -11568,6 +11622,7 @@ impl<'a> PreparedCascade<'a> {
     shadow_sheets: Vec<(usize, Box<StyleSheet>)>,
     media_ctx: &MediaContext,
     mut media_cache: Option<&mut MediaQueryCache>,
+    meta_color_scheme: Option<Arc<ColorSchemePreference>>,
     include_starting_style: bool,
     cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
@@ -12027,6 +12082,7 @@ impl<'a> PreparedCascade<'a> {
       base_styles,
       base_ua_styles,
       has_starting_styles,
+      meta_color_scheme,
       viewport,
       color_scheme_pref,
       device_pixel_ratio,
@@ -12047,6 +12103,7 @@ impl<'a> PreparedCascade<'a> {
     import_loader: Option<&dyn CssImportLoader>,
     base_url: Option<&str>,
     mut media_cache: Option<&mut MediaQueryCache>,
+    meta_color_scheme: Option<Arc<ColorSchemePreference>>,
     include_starting_style: bool,
     cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
@@ -12088,6 +12145,7 @@ impl<'a> PreparedCascade<'a> {
       shadow_sheets,
       media_ctx,
       media_cache.as_deref_mut(),
+      meta_color_scheme,
       include_starting_style,
       cascade_options,
     )
@@ -12105,6 +12163,7 @@ impl<'a> PreparedCascade<'a> {
     import_loader: Option<&dyn CssImportLoader>,
     base_url: Option<&str>,
     mut media_cache: Option<&mut MediaQueryCache>,
+    meta_color_scheme: Option<Arc<ColorSchemePreference>>,
     include_starting_style: bool,
     cascade_options: CascadeOptions,
   ) -> Result<Self, RenderError> {
@@ -12146,6 +12205,7 @@ impl<'a> PreparedCascade<'a> {
       shadow_sheets,
       media_ctx,
       media_cache.as_deref_mut(),
+      meta_color_scheme,
       include_starting_style,
       cascade_options,
     )
@@ -12252,6 +12312,7 @@ impl<'a> PreparedCascade<'a> {
           16.0,
           self.viewport,
           self.color_scheme_pref,
+          self.meta_color_scheme.as_deref(),
           &mut node_counter,
           &mut ancestor_ids,
           container_ctx,
@@ -12434,6 +12495,7 @@ fn apply_style_set_with_media_target_and_imports_cached_with_deadline_impl(
     import_loader,
     base_url,
     media_cache.as_deref_mut(),
+    None,
     include_starting_style,
     CascadeOptions::default(),
   )?;
@@ -14990,6 +15052,7 @@ fn compute_base_styles<'a>(
   ua_root_font_size: f32,
   viewport: Size,
   color_scheme_pref: ColorScheme,
+  meta_color_scheme: Option<&ColorSchemePreference>,
   ancestors: &[&'a DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
   ancestor_ids: &[usize],
@@ -15139,11 +15202,18 @@ fn compute_base_styles<'a>(
     element_attr_cache,
   )?;
   let inline_tree_scope = tree_scope_prefix_for_node(dom_maps, node_id);
+  let unlayered_layer_order = scratch.unlayered_layer_order(inline_tree_scope);
+  let is_root = is_root_element(ancestors);
   matching_rules.extend(ua_default_rules(
     node,
     parent_styles.direction,
-    &scratch.unlayered_layer_order(inline_tree_scope),
+    &unlayered_layer_order,
   ));
+  if is_root {
+    if let Some(pref) = meta_color_scheme {
+      matching_rules.push(meta_color_scheme_matched_rule(pref, unlayered_layer_order.clone()));
+    }
+  }
   if include_starting_style {
     prioritize_starting_style_rules(&mut matching_rules);
   } else {
@@ -15180,8 +15250,6 @@ fn compute_base_styles<'a>(
   {
     ua_styles.language = normalize_language_tag(lang).into();
   }
-
-  let is_root = is_root_element(ancestors);
 
   finalize_grid_placement(&mut ua_styles);
   resolve_match_parent_text_align_last(&mut ua_styles, parent_ua_styles, is_root);
@@ -15243,7 +15311,7 @@ fn compute_base_styles<'a>(
   let inline_decls =
     cached_inline_style_declarations(inline_style_decls, node, node_id).map(Cow::Borrowed);
   let inline_layer_order = if inline_decls.is_some() {
-    Some(scratch.unlayered_layer_order(inline_tree_scope))
+    Some(unlayered_layer_order.clone())
   } else {
     None
   };
@@ -15382,6 +15450,7 @@ fn apply_styles_internal(
   ua_root_font_size: f32,
   viewport: Size,
   color_scheme_pref: ColorScheme,
+  meta_color_scheme: Option<&ColorSchemePreference>,
   node_counter: &mut usize,
   ancestor_ids: &mut Vec<usize>,
   container_ctx: Option<&ContainerQueryContext>,
@@ -15416,6 +15485,7 @@ fn apply_styles_internal(
     ua_root_font_size,
     viewport,
     color_scheme_pref,
+    meta_color_scheme,
     &mut ancestors,
     &mut ancestor_bloom_filter,
     ancestor_bloom_enabled,
@@ -16105,6 +16175,7 @@ fn apply_styles_internal_with_ancestors<'a>(
   ua_root_font_size: f32,
   viewport: Size,
   color_scheme_pref: ColorScheme,
+  meta_color_scheme: Option<&ColorSchemePreference>,
   ancestors: &mut Vec<&'a DomNode>,
   ancestor_bloom_filter: &mut selectors::bloom::BloomFilter,
   ancestor_bloom_enabled: bool,
@@ -16220,6 +16291,7 @@ fn apply_styles_internal_with_ancestors<'a>(
     ua_root_font_size,
     viewport,
     color_scheme_pref,
+    meta_color_scheme,
     ancestors.as_slice(),
     ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
     ancestor_ids.as_slice(),
@@ -16249,6 +16321,7 @@ fn apply_styles_internal_with_ancestors<'a>(
       ua_root_font_size,
       viewport,
       color_scheme_pref,
+      meta_color_scheme,
       ancestors.as_slice(),
       ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
       ancestor_ids.as_slice(),
@@ -16414,6 +16487,7 @@ fn apply_styles_internal_with_ancestors<'a>(
             inheritance_ua_root_font_size,
             viewport,
             color_scheme_pref,
+            meta_color_scheme,
             ancestors.as_slice(),
             ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
             ancestor_ids.as_slice(),
@@ -16460,6 +16534,7 @@ fn apply_styles_internal_with_ancestors<'a>(
               inheritance_ua_root_font_size,
               viewport,
               color_scheme_pref,
+              meta_color_scheme,
               ancestors.as_slice(),
               ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
               ancestor_ids.as_slice(),
@@ -19504,6 +19579,7 @@ mod tests {
       None,
       None,
       None,
+      None,
       false,
       CascadeOptions::default(),
     )
@@ -19785,6 +19861,7 @@ mod tests {
       None,
       None,
       None,
+      None,
       false,
       CascadeOptions::default(),
     )
@@ -19922,6 +19999,7 @@ mod tests {
       &dom,
       &style_set,
       &media_ctx,
+      None,
       None,
       None,
       None,
@@ -20416,6 +20494,7 @@ mod tests {
       None,
       None,
       None,
+      None,
       true,
       CascadeOptions::default(),
     )
@@ -20478,6 +20557,7 @@ mod tests {
       &dom,
       &style_set,
       &media_ctx,
+      None,
       None,
       None,
       None,
@@ -24357,6 +24437,7 @@ mod tests {
       None,
       None,
       None,
+      None,
       false,
       CascadeOptions::default(),
     )
@@ -24435,6 +24516,7 @@ mod tests {
       &dom,
       &style_set,
       &media_ctx,
+      None,
       None,
       None,
       None,
@@ -24542,6 +24624,7 @@ mod tests {
       &dom,
       &style_set,
       &media_ctx,
+      None,
       None,
       None,
       None,

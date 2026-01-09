@@ -152,7 +152,6 @@ use crate::resource::{
   ResourceFetcher, ResourcePolicy,
 };
 use crate::scroll::ScrollState;
-use crate::style::cascade::apply_starting_style_set_with_media_target_and_imports_cached_with_deadline;
 use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
 use crate::style::cascade::attach_starting_styles;
 use crate::style::cascade::ContainerQueryContext;
@@ -519,6 +518,9 @@ pub struct FastRender {
   /// layout viewport for screen media.
   apply_meta_viewport: bool,
 
+  /// Whether to honor `<meta name="color-scheme">` directives as a UA `color-scheme` baseline.
+  apply_meta_color_scheme: bool,
+
   /// When true, expand the paint canvas to cover the laid-out content bounds.
   fit_canvas_to_content: bool,
 
@@ -576,6 +578,7 @@ impl std::fmt::Debug for FastRender {
       .field("default_height", &self.default_height)
       .field("device_pixel_ratio", &self.device_pixel_ratio)
       .field("apply_meta_viewport", &self.apply_meta_viewport)
+      .field("apply_meta_color_scheme", &self.apply_meta_color_scheme)
       .field("fit_canvas_to_content", &self.fit_canvas_to_content)
       .field("base_url", &self.base_url)
       .field("compat_profile", &self.compat_profile)
@@ -658,6 +661,9 @@ pub struct FastRenderConfig {
   /// Whether to honor `<meta name="viewport">` when computing the layout viewport.
   pub apply_meta_viewport: bool,
 
+  /// Whether to honor `<meta name="color-scheme">` as a UA `color-scheme` baseline.
+  pub apply_meta_color_scheme: bool,
+
   /// Optional pagination/fragmentation configuration applied when no `@page` rules are present.
   pub fragmentation: Option<FragmentationOptions>,
 
@@ -718,6 +724,7 @@ impl Default for FastRenderConfig {
       dom_compat_mode: DomCompatibilityMode::Standard,
       dom_scripting_enabled: false,
       apply_meta_viewport: false,
+      apply_meta_color_scheme: false,
       fragmentation: None,
       fit_canvas_to_content: false,
       font_config: FontConfig::default(),
@@ -850,6 +857,12 @@ impl FastRenderBuilder {
   /// well as the visual viewport used for device media features.
   pub fn apply_meta_viewport(mut self, enabled: bool) -> Self {
     self.config.apply_meta_viewport = enabled;
+    self
+  }
+
+  /// Applies `<meta name="color-scheme">` directives as a UA `color-scheme` baseline.
+  pub fn apply_meta_color_scheme(mut self, enabled: bool) -> Self {
+    self.config.apply_meta_color_scheme = enabled;
     self
   }
 
@@ -3540,6 +3553,12 @@ impl FastRenderConfig {
     self
   }
 
+  /// Applies `<meta name="color-scheme">` directives as a UA `color-scheme` baseline.
+  pub fn with_meta_color_scheme(mut self, enabled: bool) -> Self {
+    self.apply_meta_color_scheme = enabled;
+    self
+  }
+
   /// Expands the paint canvas to fit the laid-out content bounds.
   pub fn with_fit_canvas_to_content(mut self, enabled: bool) -> Self {
     self.fit_canvas_to_content = enabled;
@@ -5185,6 +5204,7 @@ impl FastRender {
       default_height: config.default_height,
       device_pixel_ratio: config.device_pixel_ratio,
       apply_meta_viewport: config.apply_meta_viewport,
+      apply_meta_color_scheme: config.apply_meta_color_scheme,
       fit_canvas_to_content: config.fit_canvas_to_content,
       pending_device_size: None,
       base_url: config.base_url.clone(),
@@ -9757,6 +9777,12 @@ impl FastRender {
         None
       };
       let dom_for_style = dom_with_state.as_ref().unwrap_or(dom);
+      let meta_color_scheme = if self.apply_meta_color_scheme {
+        crate::html::color_scheme::extract_color_scheme_with_deadline(dom_for_style)?
+      } else {
+        None
+      };
+      let meta_color_scheme = meta_color_scheme.map(Arc::new);
       let viewport_size = resolved_viewport.layout_viewport;
       let device_size = resolved_viewport.visual_viewport;
       let media_ctx = match options.media_type {
@@ -9781,18 +9807,46 @@ impl FastRender {
           .stack_size(8 * 1024 * 1024)
           .spawn_scoped(scope, || {
             let mut local_media_query_cache = MediaQueryCache::default();
-            let styled_tree = apply_style_set_with_media_target_and_imports_cached(
+            let styled_tree = match PreparedCascade::new_for_style_set(
               dom_for_style,
               &style_set,
               &media_ctx,
-              target_fragment.as_deref(),
-              None,
-              None,
-              None,
               None,
               None,
               Some(&mut local_media_query_cache),
-            );
+              meta_color_scheme.clone(),
+              false,
+              crate::style::cascade::CascadeOptions::default(),
+            ) {
+              Ok(mut prepared) => prepared
+                .apply(target_fragment.as_deref(), None, None, None, None)
+                .unwrap_or_else(|_| {
+                  apply_style_set_with_media_target_and_imports_cached(
+                    dom_for_style,
+                    &style_set,
+                    &media_ctx,
+                    target_fragment.as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&mut local_media_query_cache),
+                  )
+                }),
+              Err(_) => apply_style_set_with_media_target_and_imports_cached(
+                dom_for_style,
+                &style_set,
+                &media_ctx,
+                target_fragment.as_deref(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut local_media_query_cache),
+              ),
+            };
 
             crate::accessibility::build_accessibility_tree(&styled_tree)
           })
@@ -10231,6 +10285,13 @@ impl FastRender {
       }
     }
 
+    let meta_color_scheme = if self.apply_meta_color_scheme {
+      crate::html::color_scheme::extract_color_scheme_with_deadline(&dom_with_state)?
+    } else {
+      None
+    };
+    let meta_color_scheme = meta_color_scheme.map(Arc::new);
+
     let viewport_size = Size::new(width as f32, height as f32);
     let device_size = self.pending_device_size.take().unwrap_or(viewport_size);
     let media_ctx = match media_type {
@@ -10378,19 +10439,20 @@ impl FastRender {
     let style_apply_start = timings_enabled.then(Instant::now);
     record_stage(StageHeartbeat::Cascade);
     let starting_tree = if has_starting_style_rules {
-      apply_starting_style_set_with_media_target_and_imports_cached_with_deadline(
-        &dom_with_state,
-        &style_set,
-        &media_ctx,
-        target_fragment.as_deref(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(&mut media_query_cache),
-        deadline,
-      )
+      (|| -> std::result::Result<StyledNode, RenderError> {
+        let mut prepared = PreparedCascade::new_for_style_set(
+          &dom_with_state,
+          &style_set,
+          &media_ctx,
+          None,
+          None,
+          Some(&mut media_query_cache),
+          meta_color_scheme.clone(),
+          true,
+          crate::style::cascade::CascadeOptions::default(),
+        )?;
+        prepared.apply(target_fragment.as_deref(), None, None, None, deadline)
+      })()
       .ok()
     } else {
       None
@@ -10405,6 +10467,7 @@ impl FastRender {
         None,
         None,
         Some(&mut media_query_cache),
+        meta_color_scheme.clone(),
         false,
         crate::style::cascade::CascadeOptions::default(),
       )?;
@@ -11797,6 +11860,7 @@ impl FastRender {
       dom_compat_mode: self.dom_compat_mode,
       dom_scripting_enabled: self.dom_scripting_enabled,
       apply_meta_viewport: self.apply_meta_viewport,
+      apply_meta_color_scheme: self.apply_meta_color_scheme,
       fragmentation: self.fragmentation,
       fit_canvas_to_content: self.fit_canvas_to_content,
       // `from_parts` uses the provided `FontContext`, so the font discovery config is irrelevant
@@ -17759,6 +17823,7 @@ pub(crate) fn layout_html_with_shared_resources(
     default_height: height,
     device_pixel_ratio,
     apply_meta_viewport: false,
+    apply_meta_color_scheme: false,
     fit_canvas_to_content: false,
     pending_device_size: None,
     base_url,
@@ -17842,6 +17907,7 @@ pub(crate) fn render_html_with_shared_resources(
     default_height: height,
     device_pixel_ratio,
     apply_meta_viewport: false,
+    apply_meta_color_scheme: false,
     fit_canvas_to_content: false,
     pending_device_size: None,
     base_url,

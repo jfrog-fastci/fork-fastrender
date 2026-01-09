@@ -2,6 +2,7 @@
 
 pub mod asset_discovery;
 pub mod base_url_tracker;
+pub mod color_scheme;
 pub mod content_security_policy;
 pub mod encoding;
 pub mod image_attrs;

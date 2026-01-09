@@ -47,6 +47,7 @@ mod has_selector_test;
 mod layer_important_test;
 mod logical_properties_test;
 mod mask_properties_test;
+mod meta_color_scheme_test;
 mod media_at_rule_query_list_test;
 mod media_invalid_calc;
 mod media_invalid_type;

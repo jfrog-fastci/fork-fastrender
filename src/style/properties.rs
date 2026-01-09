@@ -985,7 +985,7 @@ fn parse_color_scheme(value: &PropertyValue) -> Option<ColorSchemePreference> {
   parse_color_scheme_tokens(&tokens)
 }
 
-fn parse_color_scheme_tokens(tokens: &[String]) -> Option<ColorSchemePreference> {
+pub(crate) fn parse_color_scheme_tokens(tokens: &[String]) -> Option<ColorSchemePreference> {
   if tokens.is_empty() {
     return None;
   }
