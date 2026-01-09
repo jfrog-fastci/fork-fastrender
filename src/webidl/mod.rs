@@ -27,6 +27,7 @@ pub struct WebIdlInterfaceMember {
 pub struct WebIdlInterface {
   pub name: &'static str,
   pub inherits: Option<&'static str>,
+  pub callback: bool,
   pub ext_attrs: &'static [WebIdlExtendedAttribute],
   pub members: &'static [WebIdlInterfaceMember],
 }
@@ -171,6 +172,17 @@ mod tests {
     assert!(
       params_member_names.contains(&"size"),
       "expected URLSearchParams to contain size: {params_member_names:?}"
+    );
+  }
+
+  #[test]
+  fn generated_world_preserves_callback_interface_flag() {
+    assert!(
+      WORLD
+        .interface("EventListener")
+        .expect("generated world should include EventListener interface")
+        .callback,
+      "expected EventListener to be marked as a callback interface"
     );
   }
 }

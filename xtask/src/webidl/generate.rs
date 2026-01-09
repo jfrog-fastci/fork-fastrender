@@ -120,6 +120,7 @@ fn write_interface(out: &mut String, iface: &ResolvedInterface, indent: usize) {
 
   indent_kv_str(out, indent + 2, "name", &iface.name);
   indent_kv_opt_str(out, indent + 2, "inherits", iface.inherits.as_deref());
+  indent_kv_bool(out, indent + 2, "callback", iface.callback);
   indent_kv_ext_attrs(out, indent + 2, "ext_attrs", &iface.ext_attrs);
 
   indent_line(out, indent + 2);
@@ -244,6 +245,11 @@ fn indent_kv_opt_str(out: &mut String, indent: usize, key: &str, value: Option<&
   }
 }
 
+fn indent_kv_bool(out: &mut String, indent: usize, key: &str, value: bool) {
+  indent_line(out, indent);
+  let _ = writeln!(out, "{key}: {value},");
+}
+
 fn indent_kv_ext_attrs(out: &mut String, indent: usize, key: &str, attrs: &[ExtendedAttribute]) {
   indent_line(out, indent);
   let _ = writeln!(out, "{key}: &[");
@@ -330,6 +336,13 @@ pub fn rustfmt(source: &str, rustfmt_config_path: &Path) -> Result<String> {
   }
 
   let mut formatted = String::from_utf8(output.stdout).context("decode rustfmt stdout as UTF-8")?;
+  // Newer rustfmt versions prefix `--emit stdout` output with a `<path>:` header line.
+  // Strip it to keep generated snapshots deterministic.
+  if let Some((maybe_path, rest)) = formatted.split_once("\n\n") {
+    if maybe_path.ends_with(':') && (maybe_path.contains('/') || maybe_path.contains('\\')) {
+      formatted = rest.to_string();
+    }
+  }
   if !formatted.ends_with('\n') {
     formatted.push('\n');
   }

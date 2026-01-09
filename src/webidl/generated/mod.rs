@@ -15,6 +15,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "AbortController",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -43,6 +44,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "AbortSignal",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -98,6 +100,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "AbstractRange",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -137,6 +140,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Attr",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -189,6 +193,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "AudioTrack",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -228,6 +233,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "AudioTrackList",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -273,6 +279,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "BarProp",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -288,6 +295,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "BeforeUnloadEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -303,6 +311,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "BroadcastChannel",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -348,6 +357,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CDATASection",
     inherits: Some("Text"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -357,6 +367,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CanvasGradient",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -372,6 +383,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CanvasPattern",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -387,6 +399,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CanvasRenderingContext2D",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -901,6 +914,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CharacterData",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -996,6 +1010,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CloseWatcher",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1041,6 +1056,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CommandEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1068,6 +1084,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Comment",
     inherits: Some("CharacterData"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1083,6 +1100,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CustomElementRegistry",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1137,6 +1155,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CustomEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -1164,6 +1183,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "CustomStateSet",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1179,6 +1199,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DOMImplementation",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1215,6 +1236,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DOMParser",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1237,6 +1259,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DOMStringList",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -1264,6 +1287,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DOMStringMap",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyOverrideBuiltIns", value: None },
@@ -1294,6 +1318,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DOMTokenList",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1368,6 +1393,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DataTransfer",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1439,6 +1465,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DataTransferItem",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1472,6 +1499,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DataTransferItemList",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -1517,6 +1545,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DedicatedWorkerGlobalScope",
     inherits: Some("WorkerGlobalScope"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Global", value: Some("(Worker,DedicatedWorker)") },
       WebIdlExtendedAttribute { name: "Exposed", value: Some("DedicatedWorker") },
@@ -1576,6 +1605,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Document",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyOverrideBuiltIns", value: None },
@@ -2663,6 +2693,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DocumentFragment",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -2753,6 +2784,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DocumentType",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -2812,6 +2844,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "DragEvent",
     inherits: Some("MouseEvent"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -2833,6 +2866,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Element",
     inherits: Some("Node"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3227,6 +3261,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ElementInternals",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3303,6 +3338,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ErrorEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -3348,6 +3384,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Event",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -3496,6 +3533,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "EventListener",
     inherits: None,
+    callback: true,
     ext_attrs: &[
     ],
     members: &[
@@ -3510,6 +3548,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "EventSource",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -3585,6 +3624,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "EventTarget",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -3618,6 +3658,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Example",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3627,6 +3668,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "External",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3648,6 +3690,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "FakeWorkletGlobalScope",
     inherits: Some("WorkletGlobalScope"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Global", value: Some("(Worklet,FakeWorklet)") },
       WebIdlExtendedAttribute { name: "Exposed", value: Some("FakeWorklet") },
@@ -3665,6 +3708,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "FetchLaterResult",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3680,6 +3724,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "FormDataEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3701,6 +3746,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLAllCollection",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -3735,6 +3781,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLAnchorElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -3939,6 +3986,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLAreaElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4112,6 +4160,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLAudioElement",
     inherits: Some("HTMLMediaElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyFactoryFunction", value: Some("Audio(optional DOMString src)") },
@@ -4129,6 +4178,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLBRElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4153,6 +4203,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLBaseElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4185,6 +4236,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLBodyElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4357,6 +4409,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLButtonElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4522,6 +4575,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLCanvasElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4576,6 +4630,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLCollection",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -4604,6 +4659,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDListElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4628,6 +4684,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDataElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4652,6 +4709,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDataListElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4675,6 +4733,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDetailsElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4707,6 +4766,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDialogElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4773,6 +4833,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDirectoryElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4797,6 +4858,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLDivElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -4821,6 +4883,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLElement",
     inherits: Some("Element"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5527,6 +5590,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLEmbedElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5597,6 +5661,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFieldSetElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5685,6 +5750,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFontElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5725,6 +5791,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFormControlsCollection",
     inherits: Some("HTMLCollection"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5740,6 +5807,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFormElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyOverrideBuiltIns", value: None },
@@ -5899,6 +5967,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFrameElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -5991,6 +6060,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLFrameSetElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6131,6 +6201,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLHRElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6187,6 +6258,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLHeadElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6203,6 +6275,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLHeadingElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6227,6 +6300,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLHtmlElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6251,6 +6325,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLIFrameElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -6411,6 +6486,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLImageElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyFactoryFunction", value: Some("Image(optional unsigned long width, optional unsigned long height)") },
@@ -6613,6 +6689,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLInputElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7047,6 +7124,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLLIElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7079,6 +7157,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLLabelElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7115,6 +7194,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLLegendElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7145,6 +7225,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLLinkElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7312,6 +7393,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMapElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7343,6 +7425,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMarqueeElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7460,6 +7543,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMediaElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7748,6 +7832,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMenuElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7772,6 +7857,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMetaElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7828,6 +7914,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLMeterElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7898,6 +7985,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLModElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7930,6 +8018,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLOListElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -7979,6 +8068,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLObjectElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8183,6 +8273,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLOptGroupElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8215,6 +8306,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLOptionElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyFactoryFunction", value: Some("Option(optional DOMString text = \"\", optional DOMString value, optional boolean defaultSelected = false, optional boolean selected = false)") },
@@ -8289,6 +8381,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLOptionsCollection",
     inherits: Some("HTMLCollection"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8332,6 +8425,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLOutputElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8433,6 +8527,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLParagraphElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8457,6 +8552,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLParamElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8505,6 +8601,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLPictureElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8521,6 +8618,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLPreElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8545,6 +8643,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLProgressElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8590,6 +8689,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLQuoteElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8614,6 +8714,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLScriptElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8744,6 +8845,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLSelectElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8942,6 +9044,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLSelectedContentElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -8958,6 +9061,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLSlotElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9000,6 +9104,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLSourceElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9072,6 +9177,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLSpanElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9088,6 +9194,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLStyleElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9135,6 +9242,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableCaptionElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9159,6 +9267,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableCellElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9296,6 +9405,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableColElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9362,6 +9472,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9543,6 +9654,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableRowElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9631,6 +9743,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTableSectionElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9699,6 +9812,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTemplateElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9760,6 +9874,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTextAreaElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -9989,6 +10104,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTimeElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10013,6 +10129,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTitleElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10036,6 +10153,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLTrackElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10127,6 +10245,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLUListElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10159,6 +10278,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLUnknownElement",
     inherits: Some("HTMLElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10168,6 +10288,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HTMLVideoElement",
     inherits: Some("HTMLMediaElement"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10228,6 +10349,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "HashChangeEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10255,6 +10377,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Headers",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -10312,6 +10435,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "History",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10369,6 +10493,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ImageBitmap",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
       WebIdlExtendedAttribute { name: "Serializable", value: None },
@@ -10398,6 +10523,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ImageBitmapRenderingContext",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -10419,6 +10545,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ImageData",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
       WebIdlExtendedAttribute { name: "Serializable", value: None },
@@ -10471,6 +10598,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Location",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10572,6 +10700,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MediaError",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10617,6 +10746,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MessageChannel",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -10644,6 +10774,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MessageEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker,AudioWorklet)") },
     ],
@@ -10695,6 +10826,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MessagePort",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker,AudioWorklet)") },
       WebIdlExtendedAttribute { name: "Transferable", value: None },
@@ -10747,6 +10879,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MimeType",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10780,6 +10913,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MimeTypeArray",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -10808,6 +10942,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MutationObserver",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10841,6 +10976,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "MutationRecord",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -10907,6 +11043,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NamedNodeMap",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -10969,6 +11106,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigateEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11062,6 +11200,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Navigation",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11167,6 +11306,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationActivation",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11194,6 +11334,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationCurrentEntryChangeEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11221,6 +11362,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationDestination",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11266,6 +11408,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationHistoryEntry",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11317,6 +11460,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationPrecommitController",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11338,6 +11482,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NavigationTransition",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11377,6 +11522,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Navigator",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11534,6 +11680,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Node",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11835,6 +11982,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NodeFilter",
     inherits: None,
+    callback: true,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -11946,6 +12094,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NodeIterator",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12004,6 +12153,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NodeList",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12031,6 +12181,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NotRestoredReasonDetails",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12053,6 +12204,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "NotRestoredReasons",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12105,6 +12257,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "OffscreenCanvas",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
       WebIdlExtendedAttribute { name: "Transferable", value: None },
@@ -12163,6 +12316,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "OffscreenCanvasRenderingContext2D",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -12665,6 +12819,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Origin",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -12704,6 +12859,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PageRevealEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12725,6 +12881,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PageSwapEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12752,6 +12909,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PageTransitionEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12773,6 +12931,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Path2D",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -12854,6 +13013,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Plugin",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -12900,6 +13060,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PluginArray",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "LegacyUnenumerableNamedProperties", value: None },
@@ -12934,6 +13095,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PopStateEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12961,6 +13123,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ProcessingInstruction",
     inherits: Some("CharacterData"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -12976,6 +13139,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "PromiseRejectionEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -13003,6 +13167,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "RadioNodeList",
     inherits: Some("NodeList"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13018,6 +13183,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Range",
     inherits: Some("AbstractRange"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13205,6 +13371,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Request",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -13378,6 +13545,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Response",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -13518,6 +13686,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ShadowRoot",
     inherits: Some("DocumentFragment"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13601,6 +13770,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "SharedWorker",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13628,6 +13798,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "SharedWorkerGlobalScope",
     inherits: Some("WorkerGlobalScope"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Global", value: Some("(Worker,SharedWorker)") },
       WebIdlExtendedAttribute { name: "Exposed", value: Some("SharedWorker") },
@@ -13657,6 +13828,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "StaticRange",
     inherits: Some("AbstractRange"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13672,6 +13844,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Storage",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13717,6 +13890,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "StorageEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13768,6 +13942,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "SubmitEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13789,6 +13964,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Text",
     inherits: Some("CharacterData"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13823,6 +13999,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TextMetrics",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,Worker)") },
     ],
@@ -13904,6 +14081,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TextTrack",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -13979,6 +14157,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TextTrackCue",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14030,6 +14209,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TextTrackCueList",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14057,6 +14237,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TextTrackList",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14102,6 +14283,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TimeRanges",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14129,6 +14311,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ToggleEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14162,6 +14345,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TrackEvent",
     inherits: Some("Event"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14183,6 +14367,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "TreeWalker",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14259,6 +14444,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "URL",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
       WebIdlExtendedAttribute { name: "LegacyWindowAlias", value: Some("webkitURL") },
@@ -14366,6 +14552,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "URLSearchParams",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("*") },
     ],
@@ -14441,6 +14628,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "UserActivation",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14462,6 +14650,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "ValidityState",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14537,6 +14726,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "VideoTrack",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14576,6 +14766,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "VideoTrackList",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -14627,6 +14818,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "VisibilityStateEntry",
     inherits: Some("PerformanceEntry"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window)") },
     ],
@@ -14660,6 +14852,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Window",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Global", value: Some("Window") },
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
@@ -15649,6 +15842,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Worker",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("(Window,DedicatedWorker,SharedWorker)") },
     ],
@@ -15700,6 +15894,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "WorkerGlobalScope",
     inherits: Some("EventTarget"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
     ],
@@ -15861,6 +16056,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "WorkerLocation",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
     ],
@@ -15924,6 +16120,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "WorkerNavigator",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Worker") },
     ],
@@ -16028,6 +16225,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "Worklet",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
       WebIdlExtendedAttribute { name: "SecureContext", value: None },
@@ -16045,6 +16243,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "WorkletGlobalScope",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Worklet") },
       WebIdlExtendedAttribute { name: "SecureContext", value: None },
@@ -16055,6 +16254,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XMLDocument",
     inherits: Some("Document"),
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -16064,6 +16264,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XMLSerializer",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -16085,6 +16286,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XPathEvaluator",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -16119,6 +16321,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XPathExpression",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -16134,6 +16337,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XPathNSResolver",
     inherits: None,
+    callback: true,
     ext_attrs: &[
     ],
     members: &[
@@ -16148,6 +16352,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XPathResult",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
@@ -16271,6 +16476,7 @@ pub const WORLD: WebIdlWorld = WebIdlWorld {
   WebIdlInterface {
     name: "XSLTProcessor",
     inherits: None,
+    callback: false,
     ext_attrs: &[
       WebIdlExtendedAttribute { name: "Exposed", value: Some("Window") },
     ],
