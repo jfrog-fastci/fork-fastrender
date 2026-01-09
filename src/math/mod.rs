@@ -382,6 +382,19 @@ pub enum MathSize {
   Absolute(f32),
 }
 
+fn parse_script_size_multiplier(raw: Option<&str>) -> Option<f32> {
+  let value = trim_ascii_whitespace(raw?);
+  if value.is_empty() {
+    return None;
+  }
+  let parsed = value.parse::<f32>().ok()?;
+  if parsed.is_finite() && parsed > 0.0 {
+    Some(parsed)
+  } else {
+    None
+  }
+}
+
 /// Represents a MathML Core `scriptlevel` override.
 ///
 /// MathML Core allows both absolute (`scriptlevel="2"`) and relative
@@ -396,6 +409,8 @@ pub enum MathScriptLevel {
 pub struct MathStyleOverrides {
   pub display_style: Option<bool>,
   pub script_level: Option<MathScriptLevel>,
+  pub script_size_multiplier: Option<f32>,
+  pub script_min_size: Option<MathLength>,
   pub math_size: Option<MathSize>,
   pub math_variant: Option<MathVariant>,
 }
@@ -644,6 +659,8 @@ struct MathStyle {
   font_size: f32,
   display_style: bool,
   default_variant: Option<MathVariant>,
+  script_size_multiplier: Option<f32>,
+  script_min_size_px: f32,
   script_level: u8,
 }
 
@@ -653,11 +670,20 @@ impl MathStyle {
       font_size: style.font_size,
       display_style: false,
       default_variant: None,
+      script_size_multiplier: None,
+      script_min_size_px: MIN_SCRIPT_FONT_SIZE_PX,
       script_level: 0,
     }
   }
 
-  fn script_scale_down(constants: Option<&MathConstants>, current_level: u8) -> f32 {
+  fn script_scale_down(
+    constants: Option<&MathConstants>,
+    current_level: u8,
+    script_size_multiplier: Option<f32>,
+  ) -> f32 {
+    if let Some(multiplier) = script_size_multiplier {
+      return multiplier;
+    }
     if current_level == 0 {
       constants
         .and_then(|c| c.script_percent_scale_down)
@@ -676,8 +702,9 @@ impl MathStyle {
         if out.script_level >= MAX_SCRIPT_LEVEL {
           break;
         }
-        let scale = Self::script_scale_down(constants, out.script_level);
-        out.font_size = (out.font_size * scale).max(MIN_SCRIPT_FONT_SIZE_PX);
+        let scale =
+          Self::script_scale_down(constants, out.script_level, out.script_size_multiplier);
+        out.font_size = (out.font_size * scale).max(out.script_min_size_px.max(1.0));
         out.script_level = out.script_level.saturating_add(1);
       }
     } else if delta < 0 {
@@ -686,7 +713,8 @@ impl MathStyle {
           break;
         }
         let prev_level = out.script_level.saturating_sub(1);
-        let scale_down = Self::script_scale_down(constants, prev_level);
+        let scale_down =
+          Self::script_scale_down(constants, prev_level, out.script_size_multiplier);
         if scale_down > 0.0 {
           out.font_size = (out.font_size / scale_down).max(1.0);
         }
@@ -1081,6 +1109,10 @@ fn parse_style_overrides(node: &DomNode) -> MathStyleOverrides {
   MathStyleOverrides {
     display_style: parse_display_style(node.get_attribute_ref("displaystyle")),
     script_level: parse_script_level(node.get_attribute_ref("scriptlevel")),
+    script_size_multiplier: parse_script_size_multiplier(
+      node.get_attribute_ref("scriptsizemultiplier"),
+    ),
+    script_min_size: parse_math_length(node.get_attribute_ref("scriptminsize")),
     math_size: node
       .get_attribute_ref("mathsize")
       .and_then(|v| parse_math_size(v)),
@@ -1091,6 +1123,8 @@ fn parse_style_overrides(node: &DomNode) -> MathStyleOverrides {
 fn has_style_overrides(overrides: &MathStyleOverrides) -> bool {
   overrides.display_style.is_some()
     || overrides.script_level.is_some()
+    || overrides.script_size_multiplier.is_some()
+    || overrides.script_min_size.is_some()
     || overrides.math_size.is_some()
     || overrides.math_variant.is_some()
 }
@@ -2414,6 +2448,13 @@ impl MathLayoutContext {
         MathSize::Scale(f) => (style.font_size * f).max(1.0),
         MathSize::Absolute(px) => px.max(1.0),
       };
+    }
+    if let Some(multiplier) = overrides.script_size_multiplier {
+      next.script_size_multiplier = Some(multiplier);
+    }
+    if let Some(min_size) = overrides.script_min_size {
+      let metrics = self.base_font_metrics(base_style, next.font_size);
+      next.script_min_size_px = self.resolve_length(min_size, &next, &metrics).max(1.0);
     }
     if let Some(script_level) = overrides.script_level {
       let target = match script_level {
@@ -5566,19 +5607,19 @@ mod tests {
     };
     let root_layout = ctx.layout_node(&root_node, &math_style, &style);
 
-      let radical_start_x = root_layout
-        .fragments
-        .iter()
-        .filter_map(|frag| match frag {
-          MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
-          MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
-          MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
-          MathFragment::StrokeRoundedRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
-          MathFragment::Line { from, to, .. } => {
-            (from.y.min(to.y) >= 0.0).then_some(from.x.min(to.x))
-          }
-        })
-        .fold(f32::INFINITY, |acc, x| acc.min(x));
+    let radical_start_x = root_layout
+      .fragments
+      .iter()
+      .filter_map(|frag| match frag {
+        MathFragment::Glyph { origin, .. } => (origin.y >= 0.0).then_some(origin.x),
+        MathFragment::Rule(rect) => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::StrokeRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::StrokeRoundedRect { rect, .. } => (rect.y() >= 0.0).then_some(rect.x()),
+        MathFragment::Line { from, to, .. } => {
+          (from.y.min(to.y) >= 0.0).then_some(from.x.min(to.x))
+        }
+      })
+      .fold(f32::INFINITY, |acc, x| acc.min(x));
 
     assert!(
       radical_start_x.is_finite(),
@@ -5646,6 +5687,58 @@ mod tests {
       "expected scriptlevel=+1 to reduce font size ({} -> {})",
       baseline_size,
       scripted_size
+    );
+  }
+
+  #[test]
+  fn scriptsizemultiplier_on_mstyle_scales_script_font_size() {
+    let ctx = bundled_math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let baseline = parse_math_from_html("<math><msub><mi>x</mi><mi>y</mi></msub></math>");
+    let scaled = parse_math_from_html(
+      "<math><mstyle scriptsizemultiplier=\"0.5\"><msub><mi>x</mi><mi>y</mi></msub></mstyle></math>",
+    );
+
+    let baseline_layout = layout_mathml(&baseline, &style, &ctx);
+    let scaled_layout = layout_mathml(&scaled, &style, &ctx);
+
+    let baseline_size = find_run(&baseline_layout, "y").font_size;
+    let scaled_size = find_run(&scaled_layout, "y").font_size;
+
+    assert!(
+      (scaled_size - style.font_size * 0.5).abs() < 0.01,
+      "expected scriptsizemultiplier=0.5 to scale script size to ~0.5x ({} -> {})",
+      baseline_size,
+      scaled_size
+    );
+    assert!(
+      scaled_size < baseline_size,
+      "scriptsizemultiplier should reduce script font size ({} -> {})",
+      baseline_size,
+      scaled_size
+    );
+  }
+
+  #[test]
+  fn scriptminsize_on_mstyle_clamps_script_font_size() {
+    let ctx = bundled_math_font_context();
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+
+    let node = parse_math_from_html(
+      "<math><mstyle scriptsizemultiplier=\"0.1\" scriptminsize=\"18px\"><msub><mi>x</mi><mi>y</mi></msub></mstyle></math>",
+    );
+
+    let layout = layout_mathml(&node, &style, &ctx);
+    let script_size = find_run(&layout, "y").font_size;
+    assert!(
+      (script_size - 18.0).abs() < 0.01,
+      "expected scriptminsize=18px to clamp script font size (got {})",
+      script_size
     );
   }
 

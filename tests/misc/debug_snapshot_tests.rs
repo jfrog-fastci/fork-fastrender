@@ -64,7 +64,7 @@ fn pipeline_snapshot_matches_fixture() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &actual).unwrap();
       }
- 
+
       assert_eq!(actual, expected);
     })
     .expect("spawn snapshot test");
