@@ -240,6 +240,194 @@ impl DomJsRealm {
       node_id,
     )
   }
+
+  /// Dispatch a Rust-owned DOM event into the realm, invoking JS `addEventListener` callbacks.
+  ///
+  /// This is intended for host-driven platform events (e.g. HTML lifecycle events like
+  /// `DOMContentLoaded`/`load`) that are not triggered via `EventTarget.dispatchEvent(...)` from JS.
+  ///
+  /// Note: the internal JS `Event` wrapper objects are currently rooted permanently (matching the
+  /// behavior of the JS `Event` constructor in this module). Since browsers fire only a handful of
+  /// lifecycle events per document, this is acceptable for the MVP.
+  pub fn dispatch_event_to_js(
+    &mut self,
+    target: events::EventTargetId,
+    event: events::Event,
+  ) -> Result<bool, VmError> {
+    let dom = self.dom.clone();
+    let platform_objects = self.platform_objects.clone();
+    let node_wrapper_cache = self.node_wrapper_cache.clone();
+    let event_listeners = self.event_listeners.clone();
+    let listener_callbacks = self.listener_callbacks.clone();
+    let events_map = self.events.clone();
+    let active_events = self.active_events.clone();
+    let prototypes = self.prototypes;
+    let window = self.window;
+    let document = self.document;
+    let document_node_id = self.document_node_id;
+
+    let rt = &mut self.rt;
+
+    // Allocate a fresh Event wrapper identity and store the Rust `Event` in our per-realm table.
+    let event_id = self.next_event_id.get();
+    self.next_event_id.set(event_id.wrapping_add(1));
+    events_map.borrow_mut().insert(event_id, event);
+
+    let event_value = rt.alloc_object_value()?;
+    // The Rust event table is not traced by the GC, so keep wrapper objects rooted.
+    let _ = rt.heap_mut().add_root(event_value)?;
+    rt.set_prototype(event_value, Some(prototypes.event))?;
+    let Value::Object(event_obj) = event_value else {
+      return Err(VmError::InvariantViolation(
+        "alloc_object_value must return an object",
+      ));
+    };
+    platform_objects
+      .borrow_mut()
+      .insert(event_obj, PlatformObjectKind::Event { event_id });
+
+    // Temporarily move the event out of the events table so we can hold an `&mut Event` for the
+    // duration of dispatch.
+    let mut event = events_map
+      .borrow_mut()
+      .remove(&event_id)
+      .expect("event id must exist");
+
+    struct ActiveEventGuard {
+      active: ActiveEventMap,
+      id: u64,
+    }
+    impl Drop for ActiveEventGuard {
+      fn drop(&mut self) {
+        self.active.borrow_mut().remove(&self.id);
+      }
+    }
+
+    struct JsInvoker {
+      rt: *mut VmJsRuntime,
+      listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
+      dom: Rc<RefCell<dom2::Document>>,
+      platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
+      node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+      document_node_id: NodeId,
+      window: Value,
+      document: Value,
+      prototypes: Prototypes,
+      event_value: Value,
+    }
+
+    impl events::EventListenerInvoker for JsInvoker {
+      fn invoke(
+        &mut self,
+        listener_id: events::ListenerId,
+        event: &mut events::Event,
+      ) -> std::result::Result<(), events::DomError> {
+        let callback = self
+          .listener_callbacks
+          .borrow()
+          .get(&listener_id)
+          .map(|e| e.callback)
+          .ok_or_else(|| events::DomError::new("unknown listener id"))?;
+
+        let current_target = event
+          .current_target
+          .ok_or_else(|| events::DomError::new("missing currentTarget during dispatch"))?;
+
+        // SAFETY: `rt` is borrowed mutably by the caller while this invoker is alive.
+        let rt = unsafe { &mut *self.rt };
+        let current_target_wrapper = wrap_event_target(
+          rt,
+          &self.dom,
+          &self.platform_objects,
+          &self.node_wrapper_cache,
+          self.document_node_id,
+          self.window,
+          self.document,
+          self.prototypes,
+          current_target,
+        )
+        .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+
+        if rt.is_callable(callback) {
+          rt
+            .call_function(callback, current_target_wrapper, &[self.event_value])
+            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+        } else {
+          // Support callback objects with a `handleEvent` method.
+          let handle_event_key = prop_key_str(rt, "handleEvent")
+            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          let handle_event = rt
+            .get(callback, handle_event_key)
+            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+          if !rt.is_callable(handle_event) {
+            return Err(events::DomError::new(
+              "EventTarget listener callback has no callable handleEvent",
+            ));
+          }
+          rt
+            .call_function(handle_event, callback, &[self.event_value])
+            .map_err(|e| events::DomError::new(format!("{e:?}")))?;
+        }
+        Ok(())
+      }
+    }
+
+    let mut invoker = JsInvoker {
+      rt: rt as *mut VmJsRuntime,
+      listener_callbacks: listener_callbacks.clone(),
+      dom: dom.clone(),
+      platform_objects: platform_objects.clone(),
+      node_wrapper_cache: node_wrapper_cache.clone(),
+      document_node_id,
+      window,
+      document,
+      prototypes,
+      event_value,
+    };
+
+    let result = {
+      // Register the Event as active so Event.prototype methods can mutate it during callback
+      // invocation without tripping RefCell reentrancy.
+      {
+        let ptr = NonNull::from(&mut event);
+        active_events.borrow_mut().insert(event_id, ptr);
+      }
+      let _active_guard = ActiveEventGuard {
+        active: active_events.clone(),
+        id: event_id,
+      };
+
+      let dom_ref = dom.borrow();
+      events::dispatch_event(target, &mut event, &dom_ref, &event_listeners, &mut invoker)
+    };
+
+    // Persist updated event state after dispatch.
+    events_map.borrow_mut().insert(event_id, event);
+
+    // `events::dispatch_event` may remove listeners during dispatch (e.g. `{ once: true }`). Clean
+    // up any callback roots for listener IDs that are now unreferenced.
+    {
+      let stale_ids: Vec<events::ListenerId> = listener_callbacks
+        .borrow()
+        .keys()
+        .copied()
+        .filter(|id| !event_listeners.contains_listener_id(*id))
+        .collect();
+      if !stale_ids.is_empty() {
+        let mut callbacks = listener_callbacks.borrow_mut();
+        for id in stale_ids {
+          if let Some(entry) = callbacks.remove(&id) {
+            rt.heap_mut().remove_root(entry.callback_root);
+          }
+        }
+      }
+    }
+
+    match result {
+      Ok(not_canceled) => Ok(not_canceled),
+      Err(err) => Err(rt.throw_type_error(&err.to_string())),
+    }
+  }
 }
 
 fn prop_key_str(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {

@@ -528,14 +528,15 @@ impl DomHost for BrowserTabHost {
 }
 
 impl DocumentLifecycleHost for BrowserTabHost {
-  fn dom_mut(&mut self) -> &mut crate::dom2::Document {
-    self.document.dom_mut()
+  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut crate::dom2::Document) -> R) -> R {
+    let dom = self.document.dom_mut();
+    f(dom)
   }
 
   fn dispatch_lifecycle_event(
     &mut self,
     target: crate::web::events::EventTargetId,
-    event: &mut crate::web::events::Event,
+    mut event: crate::web::events::Event,
   ) -> Result<()> {
     use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
 
@@ -553,7 +554,7 @@ impl DocumentLifecycleHost for BrowserTabHost {
 
     let dom: &crate::dom2::Document = self.document.dom();
     let mut invoker = NoopInvoker;
-    dispatch_event(target, event, dom, dom.events(), &mut invoker)
+    dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
       .map(|_default_not_prevented| ())
       .map_err(|err| Error::Other(err.to_string()))
   }

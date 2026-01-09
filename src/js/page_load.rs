@@ -343,14 +343,19 @@ where
   F: ScriptFetcher,
   E: ScriptExecutor<HtmlLoadOrchestrator<F, E>>,
 {
-  fn dom_mut(&mut self) -> &mut Document {
-    self
+  fn with_dom_mut<R>(&mut self, f: impl FnOnce(&mut Document) -> R) -> R {
+    let dom = self
       .finished_document
       .as_mut()
-      .expect("HTML document lifecycle events require parsing to be complete")
+      .expect("HTML document lifecycle events require parsing to be complete");
+    f(dom)
   }
 
-  fn dispatch_lifecycle_event(&mut self, target: crate::web::events::EventTargetId, event: &mut crate::web::events::Event) -> Result<()> {
+  fn dispatch_lifecycle_event(
+    &mut self,
+    target: crate::web::events::EventTargetId,
+    mut event: crate::web::events::Event,
+  ) -> Result<()> {
     use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
 
     struct NoopInvoker;
@@ -366,7 +371,7 @@ where
       .as_ref()
       .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
     let mut invoker = NoopInvoker;
-    dispatch_event(target, event, dom, dom.events(), &mut invoker)
+    dispatch_event(target, &mut event, dom, dom.events(), &mut invoker)
       .map(|_default_not_prevented| ())
       .map_err(|err| Error::Other(err.to_string()))
   }
