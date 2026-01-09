@@ -2,6 +2,7 @@
 
 mod absolute_position_body;
 mod abspos_intrinsic_sizing_keywords;
+mod abspos_inline_synthetic_container;
 mod abspos_percent_bases;
 mod abspos_static_position;
 mod abspos_static_position_subgrid;
@@ -64,6 +65,8 @@ mod flex_fragmentation_row_lines;
 mod flex_fragmentation_order_and_oof;
 mod flex_used_border_box_override;
 mod flex_item_used_border_box_width_overrides_percent_width;
+mod flex_padding_calc_percent;
+mod flex_row_reverse_percent_flex;
 mod flex_positioned_relayout;
 mod flex_root_used_border_box_width;
 mod flex_wrap_alignment;

@@ -870,10 +870,14 @@ impl FormattingContext for FlexFormattingContext {
       // When a style override is active, update the root Taffy style in-place so we can keep
       // reusing cached Taffy templates without deep-cloning the box subtree.
       let mut override_style = self.computed_style_to_taffy_base(style_override, true, None)?;
-      self.apply_calc_sizing_properties(
+      self.apply_calc_sizing_properties(style_override, None, Some(&constraints), &mut override_style);
+      let root_percentage_base = constraints
+        .inline_percentage_base
+        .or_else(|| constraints.width())
+        .filter(|b| b.is_finite());
+      self.apply_calc_percentage_padding_and_margin(
         style_override,
-        None,
-        Some(&constraints),
+        root_percentage_base,
         &mut override_style,
       );
       taffy_tree
@@ -1271,6 +1275,11 @@ impl FormattingContext for FlexFormattingContext {
             &constraints,
             &mut resolved_style,
           )?;
+          self.apply_calc_percentage_padding_and_margin(
+            child.style.as_ref(),
+            container_inner_size.width,
+            &mut resolved_style,
+          );
           self.apply_calc_flex_basis(
             child.style.as_ref(),
             container_inner_main_size,
@@ -3205,6 +3214,11 @@ impl FormattingContext for FlexFormattingContext {
           &constraints,
           &mut resolved_style,
         )?;
+        self.apply_calc_percentage_padding_and_margin(
+          child.style.as_ref(),
+          container_inner_size.width,
+          &mut resolved_style,
+        );
         self.apply_calc_flex_basis(
           child.style.as_ref(),
           container_inner_main_size,
@@ -5255,6 +5269,10 @@ impl FlexFormattingContext {
     } else {
       container_inner_size.width
     };
+    let root_percentage_base = constraints
+      .inline_percentage_base
+      .or_else(|| constraints.width())
+      .filter(|b| b.is_finite());
     let mut taffy_children = Vec::with_capacity(root_children.len());
     for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
       check_layout_deadline(&mut deadline_counter)?;
@@ -5284,6 +5302,11 @@ impl FlexFormattingContext {
         constraints,
         &mut resolved_style,
       )?;
+      self.apply_calc_percentage_padding_and_margin(
+        child.style.as_ref(),
+        container_inner_size.width,
+        &mut resolved_style,
+      );
       self.apply_calc_flex_basis(
         child.style.as_ref(),
         container_inner_main_size,
@@ -5315,6 +5338,11 @@ impl FlexFormattingContext {
 
     let mut root_taffy_style = template.root_style.0.clone();
     self.apply_calc_sizing_properties(root_style, None, Some(constraints), &mut root_taffy_style);
+    self.apply_calc_percentage_padding_and_margin(
+      root_style,
+      root_percentage_base,
+      &mut root_taffy_style,
+    );
     let taffy_node = if taffy_children.is_empty() {
       taffy_tree
         .new_leaf(root_taffy_style)
@@ -6548,6 +6576,108 @@ impl FlexFormattingContext {
       content_height
     } else {
       content_width
+    }
+  }
+
+  fn flex_container_inner_inline_size(
+    &self,
+    container_style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+  ) -> Option<f32> {
+    let border_box_width = constraints
+      .used_border_box_width
+      .or_else(|| constraints.width())
+      .filter(|w| w.is_finite());
+
+    let inline_base = constraints
+      .inline_percentage_base
+      .or(border_box_width)
+      .unwrap_or(self.viewport_size.width)
+      .max(0.0);
+
+    let border_left =
+      self.resolve_length_for_width(container_style.used_border_left_width(), inline_base, container_style);
+    let border_right =
+      self.resolve_length_for_width(container_style.used_border_right_width(), inline_base, container_style);
+    let padding_left =
+      self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
+    let padding_right =
+      self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
+
+    border_box_width
+      .map(|w| (w - border_left - border_right - padding_left - padding_right).max(0.0))
+  }
+
+  fn apply_calc_percentage_padding_and_margin(
+    &self,
+    style: &ComputedStyle,
+    percentage_base: Option<f32>,
+    taffy_style: &mut taffy::style::Style,
+  ) {
+    let percentage_base = percentage_base.filter(|b| b.is_finite());
+    let resolve_calc = |len: Length| -> Option<f32> {
+      if len.unit != LengthUnit::Calc || !len.has_percentage() {
+        return None;
+      }
+      resolve_length_with_percentage_metrics(
+        len,
+        percentage_base,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
+      )
+    };
+
+    if let Some(px) = resolve_calc(style.padding_left) {
+      if px.is_finite() {
+        taffy_style.padding.left = LengthPercentage::length(px.max(0.0));
+      }
+    }
+    if let Some(px) = resolve_calc(style.padding_right) {
+      if px.is_finite() {
+        taffy_style.padding.right = LengthPercentage::length(px.max(0.0));
+      }
+    }
+    if let Some(px) = resolve_calc(style.padding_top) {
+      if px.is_finite() {
+        taffy_style.padding.top = LengthPercentage::length(px.max(0.0));
+      }
+    }
+    if let Some(px) = resolve_calc(style.padding_bottom) {
+      if px.is_finite() {
+        taffy_style.padding.bottom = LengthPercentage::length(px.max(0.0));
+      }
+    }
+
+    if let Some(margin) = style.margin_left {
+      if let Some(px) = resolve_calc(margin) {
+        if px.is_finite() {
+          taffy_style.margin.left = LengthPercentageAuto::length(px);
+        }
+      }
+    }
+    if let Some(margin) = style.margin_right {
+      if let Some(px) = resolve_calc(margin) {
+        if px.is_finite() {
+          taffy_style.margin.right = LengthPercentageAuto::length(px);
+        }
+      }
+    }
+    if let Some(margin) = style.margin_top {
+      if let Some(px) = resolve_calc(margin) {
+        if px.is_finite() {
+          taffy_style.margin.top = LengthPercentageAuto::length(px);
+        }
+      }
+    }
+    if let Some(margin) = style.margin_bottom {
+      if let Some(px) = resolve_calc(margin) {
+        if px.is_finite() {
+          taffy_style.margin.bottom = LengthPercentageAuto::length(px);
+        }
+      }
     }
   }
 
@@ -9403,6 +9533,9 @@ impl FlexFormattingContext {
               cursor += child.bounds.width();
             }
           } else {
+            // When the main axis grows in the reverse direction, place children contiguously from
+            // right-to-left while preserving their order. Start from the right edge of the first
+            // child so the first item's position remains unchanged.
             let mut cursor = children[0].bounds.max_x();
             for child in &mut children {
               cursor -= child.bounds.width();

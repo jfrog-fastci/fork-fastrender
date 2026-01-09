@@ -11282,12 +11282,24 @@ impl InlineFormattingContext {
         Some(padding_rect.size.width),
         cb_block_base,
       );
-      let abs_cb = if style.establishes_abs_containing_block() {
+      // The inline formatting context is often invoked on synthetic wrapper boxes created during
+      // block layout (e.g. the anonymous inline container used to lay out a run of inline-level
+      // children). These wrappers may inherit `position`/`transform` from the real block box, but
+      // they are not element boxes and must not establish containing blocks for absolute/fixed
+      // descendants. Otherwise, absolutely positioned descendants nested under inline children can
+      // incorrectly use the wrapper's line-box height as their containing block, collapsing
+      // "absolute fill" patterns (e.g. responsive images).
+      let root_is_element_box = box_node.id != 0;
+      let root_establishes_abs_cb =
+        root_is_element_box && style.establishes_abs_containing_block();
+      let root_establishes_fixed_cb =
+        root_is_element_box && style.establishes_fixed_containing_block();
+      let abs_cb = if root_establishes_abs_cb {
         cb
       } else {
         self.nearest_positioned_cb
       };
-      let default_fixed_cb = if style.establishes_fixed_containing_block() {
+      let default_fixed_cb = if root_establishes_fixed_cb {
         cb
       } else {
         self.nearest_fixed_cb
@@ -11356,7 +11368,7 @@ impl InlineFormattingContext {
           .get(&box_id)
           .copied()
           .unwrap_or(default_static_position);
-        if !adjust_static_position && child_cb == cb && style.establishes_abs_containing_block() {
+        if !adjust_static_position && child_cb == cb && root_establishes_abs_cb {
           // Static positions are tracked in the inline formatting context's content coordinate space.
           // When the positioned containing block is the padding box (bounded by the padding edge),
           // translate them so they're relative to the padding edge instead.
