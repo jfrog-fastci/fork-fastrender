@@ -7,6 +7,7 @@ use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::text::font_db::FontConfig;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_tree::ReplacedType;
+use fastrender::Rgba;
 use fastrender::{FastRender, FragmentContent, FragmentNode};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -234,6 +235,106 @@ fn fraction_linethickness_zero_emits_no_rule_fragments() {
 }
 
 #[test]
+fn mathcolor_attribute_only_colors_subtree() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let dom = renderer
+      .parse_html("<math><mrow><mi mathcolor=\"#ff0000\">x</mi><mi>y</mi></mrow></math>")
+      .expect("dom");
+    let fragments = renderer
+      .layout_document(&dom, 200, 200)
+      .expect("layout document");
+
+    let replaced = find_math_fragment(&fragments.root).expect("math fragment");
+    let ReplacedType::Math(math) = replaced else {
+      panic!("expected math replaced type");
+    };
+    let layout = math.layout.as_ref().expect("math layout");
+
+    let mut saw_x = false;
+    let mut saw_y = false;
+    let mut x_color: Option<Rgba> = None;
+    let mut y_color: Option<Rgba> = None;
+    for frag in &layout.fragments {
+      if let MathFragment::Glyph { run, color, .. } = frag {
+        if run.text == "x" {
+          saw_x = true;
+          x_color = *color;
+        } else if run.text == "y" {
+          saw_y = true;
+          y_color = *color;
+        }
+      }
+    }
+
+    assert!(saw_x, "expected x glyph fragment");
+    assert!(saw_y, "expected y glyph fragment");
+    assert_eq!(
+      x_color,
+      Some(Rgba {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 1.0
+      })
+    );
+    assert_eq!(y_color, None);
+  });
+}
+
+#[test]
+fn mathbackground_attribute_emits_background_rect_fragment() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let dom = renderer
+      .parse_html("<math><mi mathbackground=\"#00ff00\">x</mi></math>")
+      .expect("dom");
+    let fragments = renderer
+      .layout_document(&dom, 200, 200)
+      .expect("layout document");
+
+    let replaced = find_math_fragment(&fragments.root).expect("math fragment");
+    let ReplacedType::Math(math) = replaced else {
+      panic!("expected math replaced type");
+    };
+    let layout = math.layout.as_ref().expect("math layout");
+
+    let mut bg_idx: Option<usize> = None;
+    let mut x_idx: Option<usize> = None;
+    for (idx, frag) in layout.fragments.iter().enumerate() {
+      match frag {
+        MathFragment::Rule { rect, color } => {
+          if *color
+            == Some(Rgba {
+              r: 0,
+              g: 255,
+              b: 0,
+              a: 1.0,
+            })
+          {
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            bg_idx = Some(idx);
+          }
+        }
+        MathFragment::Glyph { run, .. } if run.text == "x" => {
+          x_idx = Some(idx);
+        }
+        _ => {}
+      }
+    }
+
+    let bg_idx = bg_idx.expect("expected mathbackground to emit a fill rule fragment");
+    let x_idx = x_idx.expect("expected x glyph fragment");
+    assert!(
+      bg_idx < x_idx,
+      "expected background fragment to precede glyph fragment (bg_idx={}, x_idx={})",
+      bg_idx,
+      x_idx
+    );
+  });
+}
+
+#[test]
 fn math_constructs_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
@@ -360,7 +461,8 @@ fn math_stretchy_ops_match_golden() {
 fn math_ms_quotes_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
-    let html = std::fs::read_to_string(fixture_path("math_ms_quotes")).expect("load math_ms_quotes");
+    let html =
+      std::fs::read_to_string(fixture_path("math_ms_quotes")).expect("load math_ms_quotes");
     let png = renderer
       .render_to_png(&html, 240, 120)
       .expect("render math ms quotes");
@@ -471,7 +573,11 @@ fn math_mathvariant_alphanumerics_match_golden() {
     let png = renderer
       .render_to_png(&html, 560, 240)
       .expect("render math mathvariant alphanumerics");
-    compare_golden("math_mathvariant_alphanumerics", &png, &CompareConfig::lenient());
+    compare_golden(
+      "math_mathvariant_alphanumerics",
+      &png,
+      &CompareConfig::lenient(),
+    );
   });
 }
 
