@@ -1,6 +1,7 @@
 use crate::api::{BrowserDocument, FastRender, FastRenderFactory, PreparedDocumentReport, RenderOptions};
 use crate::geometry::Point;
 use crate::html::find_document_title;
+use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
 use crate::interaction::{InteractionAction, InteractionEngine};
 use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
@@ -28,6 +29,7 @@ pub struct BrowserWorkerHandle {
 #[derive(Debug, Clone)]
 struct NavigationRequest {
   url: String,
+  apply_fragment_scroll: bool,
 }
 
 struct TabState {
@@ -85,6 +87,41 @@ fn base_url_for_links(tab: &TabState) -> &str {
     .as_deref()
     .or(tab.last_committed_url.as_deref())
     .unwrap_or(about_pages::ABOUT_BASE_URL)
+}
+
+fn normalize_url_without_fragment(mut url: url::Url) -> url::Url {
+  url.set_fragment(None);
+  url
+}
+
+fn resolve_href_against(base: &url::Url, href: &str) -> Option<url::Url> {
+  url::Url::parse(href).ok().or_else(|| base.join(href).ok())
+}
+
+/// Returns the fully-resolved target URL when `href` is a same-document navigation that only
+/// changes the fragment (e.g. `#target`).
+fn same_document_fragment_target(current_url: &str, href: &str) -> Option<url::Url> {
+  let current_parsed = url::Url::parse(current_url).ok()?;
+  let target_parsed = resolve_href_against(&current_parsed, href)?;
+
+  let current_base = normalize_url_without_fragment(current_parsed.clone());
+  let target_base = normalize_url_without_fragment(target_parsed.clone());
+  if current_base != target_base {
+    return None;
+  }
+
+  // Only treat this as a fragment navigation when either side actually has a fragment component.
+  // (Pure same-URL navigations still trigger a reload.)
+  if current_parsed.fragment().is_none() && target_parsed.fragment().is_none() {
+    return None;
+  }
+
+  // Ignore no-op navigations to the exact same URL string.
+  (current_url != target_parsed.as_str()).then_some(target_parsed)
+}
+
+fn url_fragment(url: &str) -> Option<&str> {
+  url.split_once('#').map(|(_, fragment)| fragment)
 }
 
 fn is_allowed_navigation_url(url: &str) -> Result<(), String> {
@@ -225,7 +262,7 @@ impl BrowserRuntime {
           tab.history.go_back().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, false);
+          self.begin_navigation(tab_id, url, NavigationReason::BackForward, false);
         }
       }
       UiToWorker::GoForward { tab_id } => {
@@ -236,7 +273,7 @@ impl BrowserRuntime {
           tab.history.go_forward().map(|entry| entry.url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, false);
+          self.begin_navigation(tab_id, url, NavigationReason::BackForward, false);
         }
       }
       UiToWorker::Reload { tab_id } => {
@@ -251,7 +288,7 @@ impl BrowserRuntime {
             .or_else(|| tab.last_committed_url.clone())
         };
         if let Some(url) = url {
-          self.begin_navigation(tab_id, url, false);
+          self.begin_navigation(tab_id, url, NavigationReason::Reload, false);
         }
       }
       UiToWorker::ViewportChanged {
@@ -417,12 +454,12 @@ impl BrowserRuntime {
         // Only normalize user-typed URLs. Back/forward/reload should preserve the exact URL
         // stored in history (the UI sends those URLs verbatim).
         let url = crate::ui::normalize_user_url(&requested_url).unwrap_or(requested_url);
-        self.begin_navigation(tab_id, url, true);
+        self.begin_navigation(tab_id, url, NavigationReason::TypedUrl, true);
       }
       NavigationReason::LinkClick => {
         // Link clicks are resolved by the interaction engine against the current document base
         // URL, so we treat them as already-canonical.
-        self.begin_navigation(tab_id, requested_url, true);
+        self.begin_navigation(tab_id, requested_url, NavigationReason::LinkClick, true);
       }
       NavigationReason::Reload => {
         let (nav_url, push_history) = {
@@ -437,7 +474,7 @@ impl BrowserRuntime {
             .unwrap_or_else(|| requested_url.clone());
           (nav_url, push_history)
         };
-        self.begin_navigation(tab_id, nav_url, push_history);
+        self.begin_navigation(tab_id, nav_url, NavigationReason::Reload, push_history);
       }
       NavigationReason::BackForward => {
         let nav_url = {
@@ -467,21 +504,105 @@ impl BrowserRuntime {
           return;
         };
 
-        self.begin_navigation(tab_id, nav_url, false);
+        self.begin_navigation(tab_id, nav_url, NavigationReason::BackForward, false);
       }
     }
   }
 
-  fn begin_navigation(&mut self, tab_id: TabId, url: String, push_history: bool) {
+  fn begin_navigation(
+    &mut self,
+    tab_id: TabId,
+    url: String,
+    reason: NavigationReason,
+    push_history: bool,
+  ) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };
+
+    // Fragment-only navigation within the same document: update URL + scroll state in-place.
+    //
+    // Avoid a full reload/reprepare; we reuse the cached layout artifacts for hit-testing and
+    // compute a new viewport offset for the fragment target.
+    //
+    // `Reload` must not take this path because callers expect a full reload.
+    if reason != NavigationReason::Reload {
+      if tab.pending_navigation.is_none() {
+        if let (Some(current), Some(doc)) = (tab.last_committed_url.as_deref(), tab.document.as_mut()) {
+          if let Some(target_url) = same_document_fragment_target(current, &url) {
+            let url_string = target_url.to_string();
+
+            // Persist current scroll position for the previous history entry before pushing a new
+            // entry for the fragment navigation.
+            tab
+              .history
+              .update_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y);
+            if push_history {
+              tab.history.push(url_string.clone());
+            }
+
+            tab.last_committed_url = Some(url_string.clone());
+            doc.set_document_url_without_invalidation(Some(url_string.clone()));
+
+            let fragment = target_url.fragment().unwrap_or("");
+            let offset = if matches!(reason, NavigationReason::BackForward) {
+              tab
+                .history
+                .current()
+                .map(|entry| Point::new(entry.scroll_x, entry.scroll_y))
+                .unwrap_or(Point::ZERO)
+            } else if fragment.is_empty() {
+              Point::ZERO
+            } else {
+              match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+                let viewport = fragment_tree.viewport_size();
+                let offset =
+                  scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
+                (false, offset)
+              }) {
+                Ok(Some(offset)) => offset,
+                Ok(None) => Point::ZERO,
+                Err(err) => {
+                  let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+                    tab_id,
+                    line: format!("fragment navigation scroll failed: {err}"),
+                  });
+                  tab.scroll_state.viewport
+                }
+              }
+            };
+
+            tab.scroll_state.viewport = offset;
+            doc.set_scroll_state(tab.scroll_state.clone());
+
+            let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
+              tab_id,
+              url: url_string.clone(),
+            });
+            let title = find_document_title(doc.dom());
+            let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+              tab_id,
+              url: url_string,
+              title,
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
+            });
+
+            tab.cancel.bump_paint();
+            tab.needs_repaint = true;
+            tab.wants_scroll_update = true;
+            return;
+          }
+        }
+      }
+    }
 
     tab.cancel.bump_nav();
     tab.loading = true;
     tab.needs_repaint = false;
     tab.pending_navigation = Some(NavigationRequest {
       url: url.clone(),
+      apply_fragment_scroll: matches!(reason, NavigationReason::TypedUrl | NavigationReason::LinkClick),
     });
     if push_history {
       tab.history.push(url.clone());
@@ -712,6 +833,7 @@ impl BrowserRuntime {
     let viewport_css = tab.viewport_css;
     let dpr = tab.dpr;
     let initial_scroll = tab.history.current().map(|e| (e.scroll_x, e.scroll_y));
+    let apply_fragment_scroll = request.apply_fragment_scroll;
 
     // Drop the mutable borrow for the potentially expensive prepare+paint.
     let (prepared, original_url) = {
@@ -761,10 +883,28 @@ impl BrowserRuntime {
         tab.last_base_url = base_url.clone();
 
         // Create and paint the document.
-        let scroll_state = ScrollState::with_viewport(Point::new(
+        let mut scroll_state = ScrollState::with_viewport(Point::new(
           initial_scroll.map(|(x, _)| x).unwrap_or(0.0),
           initial_scroll.map(|(_, y)| y).unwrap_or(0.0),
         ));
+        if apply_fragment_scroll {
+          if let Some(fragment) = url_fragment(&committed_url) {
+            let offset = if fragment.is_empty() {
+              Some(Point::ZERO)
+            } else {
+              scroll_offset_for_fragment_target(
+                document.dom(),
+                document.box_tree(),
+                document.fragment_tree(),
+                fragment,
+                document.layout_viewport(),
+              )
+            };
+            if let Some(offset) = offset {
+              scroll_state.viewport = offset;
+            }
+          }
+        }
 
         let mut doc = match BrowserDocument::from_prepared(
           renderer,

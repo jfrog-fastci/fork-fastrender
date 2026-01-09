@@ -3,6 +3,7 @@
 mod browser_binary_headless_smoke;
 mod browser_headless_smoke_test;
 mod browser_mem_limit_env;
+mod browser_worker_fragment_navigation;
 mod document;
 mod document2;
 mod select_listbox_wheel_scroll;
