@@ -23,6 +23,7 @@ use crate::geometry::Size;
 use crate::image_loader::ImageCache;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::factory::FormattingContextFactory;
+use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::formatting_context::intrinsic_cache_use_epoch;
 use crate::layout::formatting_context::layout_cache_entry_limit_for_box_tree;
 use crate::layout::formatting_context::layout_cache_stats;
@@ -821,14 +822,20 @@ impl LayoutEngine {
         config.parallelism.max_threads = Some(cap);
       }
     }
-    let factory = FormattingContextFactory::with_font_context_and_viewport(
-      font_context.clone(),
-      config.initial_containing_block,
-    )
-    .with_viewport_fixed_size(config.viewport_fixed_containing_block)
-    .with_image_cache(image_cache)
-    .with_viewport_scroll(config.viewport_scroll)
-    .with_parallelism(config.parallelism);
+    // Keep viewport-relative units (`vw`/`vh`) and media queries based on the *outer* viewport,
+    // while using the initial containing block as the root percentage base (e.g.
+    // `documentElement.clientWidth`). When classic scrollbars reserve a gutter, these sizes differ.
+    let viewport_size = config.viewport_fixed_containing_block;
+    let positioned_cb = ContainingBlock::with_viewport(
+      crate::geometry::Rect::new(Point::ZERO, config.initial_containing_block),
+      viewport_size,
+    );
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_context.clone(), viewport_size)
+      .with_positioned_cb(positioned_cb)
+      .with_viewport_fixed_size(config.viewport_fixed_containing_block)
+      .with_image_cache(image_cache)
+      .with_viewport_scroll(config.viewport_scroll)
+      .with_parallelism(config.parallelism);
     let parallel_pool = config
       .parallelism
       .max_threads

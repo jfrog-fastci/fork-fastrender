@@ -10796,7 +10796,12 @@ impl FastRender {
     };
     let meta_color_scheme = meta_color_scheme.map(Arc::new);
 
-    let viewport_size = Size::new(width as f32, height as f32);
+    // When the viewport scrollport is reduced (e.g. `scrollbar-gutter: stable` with classic
+    // scrollbars), CSS `vw`/`vh` units and media queries continue to resolve against the outer
+    // viewport (`window.innerWidth/innerHeight`). The layout viewport used for percentage bases on
+    // the root element corresponds to the scrollport (`documentElement.clientWidth/clientHeight`).
+    let layout_viewport_size = Size::new(width as f32, height as f32);
+    let viewport_size = Size::new(viewport_fixed_width as f32, viewport_fixed_height as f32);
     let device_size = self.pending_device_size.take().unwrap_or(viewport_size);
     let dom_scripting_enabled = match &dom_with_state.node_type {
       DomNodeType::Document {
@@ -11020,7 +11025,7 @@ impl FastRender {
     let mut svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&styled_tree);
     let mut svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&styled_tree);
 
-    let fallback_page_size = viewport_size;
+    let fallback_page_size = layout_viewport_size;
     let owned_page_rules = {
       let collected =
         prepared_cascade.collect_page_rules_with_cache(&media_ctx, Some(&mut media_query_cache));
