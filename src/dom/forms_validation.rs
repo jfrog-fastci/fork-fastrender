@@ -471,6 +471,13 @@ fn validity_for_input(element: &ElementRef) -> ValidityState {
     return state;
   }
 
+  if input_type.eq_ignore_ascii_case("color") {
+    // Color inputs have a default value and their value is sanitized to a valid simple color. They
+    // are never invalid for requiredness or parsing errors in browsers.
+    state.compute_validity();
+    return state;
+  }
+
   // Date/time-like inputs.
   if input_type.eq_ignore_ascii_case("date") {
     return validity_for_date_like(element, required, parse_date_value, 1.0, |v| v as i64 * 86_400_000);

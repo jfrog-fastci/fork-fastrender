@@ -9310,6 +9310,15 @@ mod tests {
   }
 
   #[test]
+  fn color_input_is_always_valid_even_when_required() {
+    let input = element_with_attrs("input", vec![("type", "color"), ("required", "")], vec![]);
+    let state = forms_validation::validity_state(&ElementRef::new(&input)).expect("validity state");
+    assert!(state.valid);
+    assert!(!state.value_missing);
+    assert!(ElementRef::new(&input).is_valid_control());
+  }
+
+  #[test]
   fn select_value_multiple_includes_disabled_selected_placeholder() {
     let select = element_with_attrs(
       "select",

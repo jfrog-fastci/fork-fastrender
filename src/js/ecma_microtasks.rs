@@ -26,6 +26,9 @@ pub trait VmJsEngineHost {
   /// Borrow the embedded `vm-js` heap immutably.
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
+  /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
+  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
+
   /// Borrow the embedded `vm-js` heap mutably.
   ///
   /// Defaults to the heap returned by [`VmJsEngineHost::vm_js_vm_and_heap_mut`].
@@ -33,9 +36,6 @@ pub trait VmJsEngineHost {
     let (_, heap) = self.vm_js_vm_and_heap_mut();
     heap
   }
-
-  /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
-  fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
 }
 
 /// Execution context passed to `vm-js` [`vm_js::Job`]s.
