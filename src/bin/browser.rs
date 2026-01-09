@@ -961,9 +961,9 @@ impl App {
           egui::ScrollArea::vertical()
             .max_height(240.0)
             .show(ui, |ui| {
-              let mut clicked_item_idx: Option<usize> = None;
+              let mut clicked_option_node_id: Option<usize> = None;
 
-              for (idx, item) in control.items.iter().enumerate() {
+              for item in control.items.iter() {
                 match item {
                   SelectItem::OptGroupLabel { label, disabled } => {
                     let text = egui::RichText::new(label).strong();
@@ -974,6 +974,7 @@ impl App {
                     }
                   }
                   SelectItem::Option {
+                    node_id,
                     label,
                     value,
                     selected,
@@ -993,13 +994,13 @@ impl App {
                       egui::SelectableLabel::new(*selected, text),
                     );
                     if response.clicked() {
-                      clicked_item_idx = Some(idx);
+                      clicked_option_node_id = Some(*node_id);
                     }
                   }
                 }
               }
 
-              clicked_item_idx
+              clicked_option_node_id
             })
             .inner
         });
@@ -1007,34 +1008,16 @@ impl App {
         (frame.response.rect, frame.inner)
       });
 
-    let (popup_rect, clicked_item_idx) = popup.inner;
+    let (popup_rect, clicked_option_node_id) = popup.inner;
     self.open_select_dropdown_rect = Some(popup_rect);
 
-    let Some(clicked_item_idx) = clicked_item_idx else {
+    let Some(option_node_id) = clicked_option_node_id else {
       return;
     };
-
-    let Some(SelectItem::Option {
-      option_node_id,
-      disabled,
-      ..
-    }) = control.items.get(clicked_item_idx)
-    else {
-      self.close_select_dropdown();
-      self.window.request_redraw();
-      return;
-    };
-    if *disabled {
-      self.close_select_dropdown();
-      self.window.request_redraw();
-      return;
-    }
-
-    // Apply selection directly rather than synthesizing key events.
     self.send_worker_msg(UiToWorker::SelectDropdownChoose {
       tab_id,
       select_node_id,
-      option_node_id: *option_node_id,
+      option_node_id,
     });
 
     self.close_select_dropdown();

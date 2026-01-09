@@ -45,7 +45,6 @@ fn listbox_select_uses_border_box_geometry_once() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: 1,
       },
       SelectItem::Option {
         node_id: 2,
@@ -54,7 +53,6 @@ fn listbox_select_uses_border_box_geometry_once() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: 2,
       },
       SelectItem::Option {
         node_id: 3,
@@ -63,7 +61,6 @@ fn listbox_select_uses_border_box_geometry_once() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: 3,
       },
     ]),
     selected: vec![0],

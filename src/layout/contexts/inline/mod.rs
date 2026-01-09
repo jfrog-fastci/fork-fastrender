@@ -13206,7 +13206,6 @@ mod tests {
             selected: true,
             disabled: false,
             in_optgroup: false,
-            option_node_id: 1,
           }]),
           selected: vec![0],
         }),

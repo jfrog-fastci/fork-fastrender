@@ -1875,7 +1875,6 @@ fn select_listbox_click_marks_user_validity() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: option_1_dom_id,
       },
       SelectItem::Option {
         node_id: option_2_dom_id,
@@ -1884,7 +1883,6 @@ fn select_listbox_click_marks_user_validity() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: option_2_dom_id,
       },
     ]),
     selected: vec![0],
@@ -2348,7 +2346,6 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: option_a_dom_id,
       },
       SelectItem::Option {
         node_id: option_b_dom_id,
@@ -2357,7 +2354,6 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: false,
         disabled: true,
         in_optgroup: false,
-        option_node_id: option_b_dom_id,
       },
       SelectItem::Option {
         node_id: option_c_dom_id,
@@ -2366,7 +2362,6 @@ fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: option_c_dom_id,
       },
     ]),
     selected: vec![0],
@@ -3007,7 +3002,6 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -3016,7 +3010,6 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o2_dom_id,
       },
       SelectItem::Option {
         node_id: o3_dom_id,
@@ -3025,7 +3018,6 @@ fn listbox_select_click_sets_selected_option_and_focuses_select() {
         selected: false,
         disabled: true,
         in_optgroup: false,
-        option_node_id: o3_dom_id,
       },
     ]),
     selected: vec![0],
@@ -3314,7 +3306,6 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o1_dom_id,
       },
       SelectItem::Option {
         node_id: o2_dom_id,
@@ -3323,7 +3314,6 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o2_dom_id,
       },
       SelectItem::Option {
         node_id: o3_dom_id,
@@ -3332,7 +3322,6 @@ fn multiple_listbox_select_click_toggles_selected_option_without_clearing_others
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: o3_dom_id,
       },
     ]),
     selected: vec![0],
@@ -3540,7 +3529,6 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
           selected: idx == 0,
           disabled: false,
           in_optgroup: false,
-          option_node_id,
         }
       })
       .collect::<Vec<_>>(),

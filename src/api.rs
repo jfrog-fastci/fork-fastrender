@@ -25124,7 +25124,6 @@ mod tests {
         selected: true,
         disabled: false,
         in_optgroup: false,
-        option_node_id: 1,
       },
       SelectItem::Option {
         node_id: 2,
@@ -25133,7 +25132,6 @@ mod tests {
         selected: false,
         disabled: false,
         in_optgroup: false,
-        option_node_id: 2,
       },
     ]);
     let select = crate::tree::box_tree::SelectControl {

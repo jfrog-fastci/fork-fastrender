@@ -216,32 +216,18 @@ impl BrowserWorkerRuntime {
         }
         self.handle_pointer_up(tab_id, pos_css);
       }
-      UiToWorker::SelectDropdownChoose {
-        tab_id,
-        select_node_id,
-        option_node_id,
-      } => {
-        let Some(tab) = self.tabs.get_mut(&tab_id) else {
-          return;
-        };
-        let Some(dom) = tab.dom.as_mut() else {
-          return;
-        };
-        if crate::interaction::dom_mutation::activate_select_option(
-          dom,
-          select_node_id,
-          option_node_id,
-          false,
-        ) {
-          tab.dirty = true;
-          self.render_current(tab_id, RepaintReason::Input);
-        }
-      }
       UiToWorker::TextInput { tab_id, text } => {
         self.text_input(tab_id, &text);
       }
       UiToWorker::KeyAction { tab_id, key } => {
         self.key_action(tab_id, key);
+      }
+      UiToWorker::SelectDropdownChoose {
+        tab_id,
+        select_node_id,
+        option_node_id,
+      } => {
+        self.select_dropdown_choose(tab_id, select_node_id, option_node_id);
       }
       UiToWorker::RequestRepaint { tab_id, reason } => {
         self.render_current(tab_id, reason);
@@ -686,6 +672,25 @@ impl BrowserWorkerRuntime {
           self.render_current(tab_id, RepaintReason::Input);
         }
       }
+    }
+  }
+
+  fn select_dropdown_choose(
+    &mut self,
+    tab_id: TabId,
+    select_node_id: usize,
+    option_node_id: usize,
+  ) {
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    let Some(dom) = tab.dom.as_mut() else {
+      return;
+    };
+
+    if crate::interaction::dom_mutation::activate_select_option(dom, select_node_id, option_node_id, false) {
+      tab.dirty = true;
+      self.render_current(tab_id, RepaintReason::Input);
     }
   }
 

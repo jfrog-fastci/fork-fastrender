@@ -151,6 +151,7 @@ impl UiWorker {
       | UiToWorker::SelectDropdownChoose { .. }
       | UiToWorker::TextInput { .. }
       | UiToWorker::KeyAction { .. }
+      | UiToWorker::SelectDropdownChoose { .. }
       | UiToWorker::RequestRepaint { .. } => {}
     }
   }

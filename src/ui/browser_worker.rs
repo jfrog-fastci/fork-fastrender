@@ -710,6 +710,7 @@ impl BrowserUiWorker {
       | UiToWorker::SelectDropdownChoose { .. }
       | UiToWorker::TextInput { .. }
       | UiToWorker::KeyAction { .. } => {}
+      UiToWorker::SelectDropdownChoose { .. } => {}
     }
   }
 

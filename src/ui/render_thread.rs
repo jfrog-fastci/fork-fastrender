@@ -721,7 +721,12 @@ impl BrowserRenderThread {
     }
   }
 
-  fn select_dropdown_choose(&mut self, tab_id: TabId, select_node_id: usize, option_node_id: usize) {
+  fn select_dropdown_choose(
+    &mut self,
+    tab_id: TabId,
+    select_node_id: usize,
+    option_node_id: usize,
+  ) {
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };

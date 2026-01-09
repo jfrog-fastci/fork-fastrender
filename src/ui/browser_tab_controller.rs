@@ -289,61 +289,45 @@ impl BrowserTabController {
       dom_changed
     });
 
-    if matches!(action, InteractionAction::Navigate { .. }) {
-      if let InteractionAction::Navigate { href } = action {
+    match action {
+      InteractionAction::Navigate { href } => {
         // Link click navigation.
         return self.handle_navigation_action(href, NavigationReason::LinkClick);
       }
-    }
-
-    let (select_node_id, select_control) = if let InteractionAction::OpenSelectDropdown {
-      select_node_id,
-      control,
-    } = action
-    {
-      (Some(select_node_id), Some(control))
-    } else {
-      (None, None)
-    };
-
-    let mut out = if changed {
-      self.paint_if_needed()?
-    } else {
-      Vec::new()
-    };
-
-    if let (Some(select_node_id), Some(control)) = (select_node_id, select_control) {
-      let anchor_css = self
-        .select_anchor_css(select_node_id)
-        .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
-      out.push(WorkerToUi::SelectDropdownOpened {
-        tab_id: self.tab_id,
+      InteractionAction::OpenSelectDropdown {
         select_node_id,
         control,
-        anchor_css,
-      });
-    }
+      } => {
+        // Back-compat: older UIs listen for `OpenSelectDropdown`.
+        let mut out = vec![WorkerToUi::OpenSelectDropdown {
+          tab_id: self.tab_id,
+          select_node_id,
+          control: control.clone(),
+        }];
 
-    Ok(out)
-  }
+        let anchor_css = self
+          .select_anchor_css(select_node_id)
+          .unwrap_or_else(|| Rect::from_xywh(viewport_point.x, viewport_point.y, 0.0, 0.0));
+        out.push(WorkerToUi::SelectDropdownOpened {
+          tab_id: self.tab_id,
+          select_node_id,
+          control,
+          anchor_css,
+        });
 
-  fn handle_select_dropdown_choose(
-    &mut self,
-    select_node_id: usize,
-    option_node_id: usize,
-  ) -> Result<Vec<WorkerToUi>> {
-    let changed = self.document.mutate_dom(|dom| {
-      crate::interaction::dom_mutation::activate_select_option(
-        dom,
-        select_node_id,
-        option_node_id,
-        /*toggle_for_multiple=*/ false,
-      )
-    });
-    if changed {
-      self.paint_if_needed()
-    } else {
-      Ok(Vec::new())
+        if changed {
+          out.extend(self.paint_if_needed()?);
+        }
+
+        Ok(out)
+      }
+      _ => {
+        if changed {
+          self.paint_if_needed()
+        } else {
+          Ok(Vec::new())
+        }
+      }
     }
   }
 
@@ -419,10 +403,47 @@ impl BrowserTabController {
       }
     };
 
-    if let InteractionAction::Navigate { href } = action {
-      return self.handle_navigation_action(href, NavigationReason::LinkClick);
+    let mut out = Vec::new();
+    match action {
+      InteractionAction::Navigate { href } => {
+        return self.handle_navigation_action(href, NavigationReason::LinkClick);
+      }
+      InteractionAction::OpenSelectDropdown {
+        select_node_id,
+        control,
+      } => {
+        // Back-compat: older UIs listen for `OpenSelectDropdown`.
+        out.push(WorkerToUi::OpenSelectDropdown {
+          tab_id: self.tab_id,
+          select_node_id,
+          control: control.clone(),
+        });
+        let anchor_css = self.select_anchor_css(select_node_id).unwrap_or(Rect::ZERO);
+        out.push(WorkerToUi::SelectDropdownOpened {
+          tab_id: self.tab_id,
+          select_node_id,
+          control,
+          anchor_css,
+        });
+      }
+      _ => {}
     }
 
+    if changed {
+      out.extend(self.paint_if_needed()?);
+    }
+
+    Ok(out)
+  }
+
+  fn handle_select_dropdown_choose(
+    &mut self,
+    select_node_id: usize,
+    option_node_id: usize,
+  ) -> Result<Vec<WorkerToUi>> {
+    let changed = self.document.mutate_dom(|dom| {
+      crate::interaction::dom_mutation::activate_select_option(dom, select_node_id, option_node_id, false)
+    });
     if changed {
       self.paint_if_needed()
     } else {

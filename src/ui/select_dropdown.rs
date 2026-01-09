@@ -43,7 +43,7 @@ impl SelectDropdown {
       SelectItem::OptGroupLabel { .. } => None,
       SelectItem::Option {
         disabled,
-        option_node_id,
+        node_id,
         ..
       } => {
         if *disabled {
@@ -51,7 +51,7 @@ impl SelectDropdown {
         }
         Some(SelectDropdownChoice {
           select_node_id: open.select_node_id,
-          option_node_id: *option_node_id,
+          option_node_id: *node_id,
         })
       }
     }
@@ -163,7 +163,6 @@ mod tests {
           selected: false,
           disabled: false,
           in_optgroup: true,
-          option_node_id: 101,
         },
         SelectItem::Option {
           node_id: 102,
@@ -172,7 +171,6 @@ mod tests {
           selected: true,
           disabled: true,
           in_optgroup: true,
-          option_node_id: 102,
         },
       ]),
       selected: vec![2],
