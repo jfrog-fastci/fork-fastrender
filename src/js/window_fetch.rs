@@ -698,6 +698,24 @@ fn headers_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u8
   Ok((env_id, kind_u8, owner))
 }
 
+fn response_info_from_this(scope: &mut Scope<'_>, this: Value) -> Result<(u64, u64), VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+
+  let env_val = get_data_prop(scope, obj, ENV_ID_KEY)?;
+  let response_val = get_data_prop(scope, obj, RESPONSE_ID_KEY)?;
+  if !matches!(env_val, Value::Number(_)) || !matches!(response_val, Value::Number(_)) {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  }
+
+  let env_id =
+    number_to_u64(env_val).map_err(|_| VmError::TypeError("Response: illegal invocation"))?;
+  let response_id =
+    number_to_u64(response_val).map_err(|_| VmError::TypeError("Response: illegal invocation"))?;
+  Ok((env_id, response_id))
+}
+
 fn get_headers_mut<'a>(
   state: &'a mut EnvState,
   kind: u8,
@@ -1291,11 +1309,7 @@ fn response_text_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Response: illegal invocation"));
-  };
-  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
-  let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
 
@@ -1372,11 +1386,7 @@ fn response_json_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Response: illegal invocation"));
-  };
-  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
-  let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
 
   let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
 
@@ -1503,11 +1513,7 @@ fn response_body_used_get_native(
   this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  let Value::Object(obj) = this else {
-    return Err(VmError::TypeError("Response: illegal invocation"));
-  };
-  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
-  let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
+  let (env_id, response_id) = response_info_from_this(scope, this)?;
   let used = with_env_state(env_id, |state| {
     let res = state
       .responses
@@ -2365,6 +2371,43 @@ mod tests {
     )
     .expect_err("expected illegal invocation TypeError");
     assert!(matches!(err, VmError::TypeError(_)), "err={err}");
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_body_used_getter_rejects_non_response_object() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let mut scope = heap.scope();
+
+    let this_obj = scope.alloc_object()?;
+    let callee = scope.alloc_object()?;
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_body_used_get_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(this_obj),
+      &[],
+    )
+    .expect_err("expected illegal invocation TypeError");
+    assert!(
+      matches!(err, VmError::TypeError("Response: illegal invocation")),
+      "err={err}"
+    );
 
     drop(scope);
     realm.teardown(&mut heap);
