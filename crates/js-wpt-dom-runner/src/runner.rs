@@ -161,7 +161,6 @@ impl Runner {
     }
 
     let mut backend: Box<dyn Backend> = match backend_kind {
-      BackendKind::QuickJs => Box::new(crate::backend_quickjs::QuickJsBackend::new()),
       BackendKind::VmJs => Box::new(crate::backend_vmjs::VmJsBackend::new()),
     };
 

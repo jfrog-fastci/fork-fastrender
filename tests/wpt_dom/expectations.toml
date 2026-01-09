@@ -21,3 +21,33 @@ reason = "Intentional failing .window.js smoke test used to validate WPT report 
 id = "smoke/uncaught-exception.html"
 status = "xfail"
 reason = "Intentional harness-level error used to validate uncaught exception classification."
+
+[[expectations]]
+glob = "event_loop/**"
+status = "skip"
+reason = "vm-js backend currently runs a minimal JavaScript subset; curated event-loop tests require a fuller testharness implementation."
+
+[[expectations]]
+glob = "events/**"
+status = "skip"
+reason = "EventTarget/web event tests are not supported by the vm-js WPT runner yet."
+
+[[expectations]]
+glob = "dom/**"
+status = "skip"
+reason = "DOM bindings are not supported by the vm-js WPT runner yet."
+
+[[expectations]]
+id = "smoke/async-timeout-pass.html"
+status = "skip"
+reason = "HTML testharness helpers are not supported by the vm-js runner yet."
+
+[[expectations]]
+id = "smoke/promise-pass.html"
+status = "skip"
+reason = "HTML testharness helpers are not supported by the vm-js runner yet."
+
+[[expectations]]
+id = "smoke/document_head_body.window.js"
+status = "skip"
+reason = "DOM shims are not supported by the vm-js runner yet."

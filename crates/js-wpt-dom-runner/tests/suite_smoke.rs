@@ -24,7 +24,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
     // Use an explicit backend so local debugging env vars don't affect test results.
-    backend: BackendSelection::QuickJs,
+    backend: BackendSelection::VmJs,
   })
   .expect("run suite");
 

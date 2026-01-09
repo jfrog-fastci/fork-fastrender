@@ -1672,16 +1672,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
-name = "hir-js"
-version = "0.1.0"
-dependencies = [
- "derive-visitor",
- "diagnostics",
- "parse-js",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "html5ever"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2194,12 +2184,11 @@ dependencies = [
  "anyhow",
  "clap",
  "conformance-harness",
- "fastrender",
  "globset",
  "html5ever",
  "markup5ever_rcdom",
+ "parse-js",
  "regex",
- "rquickjs",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3543,17 +3532,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "semantic-js"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.10.0",
- "derive-visitor",
- "diagnostics",
- "hir-js",
- "parse-js",
-]
-
-[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4447,8 +4425,6 @@ version = "0.1.0"
 dependencies = [
  "diagnostics",
  "parse-js",
- "ryu",
- "semantic-js",
  "thiserror 1.0.69",
 ]
 

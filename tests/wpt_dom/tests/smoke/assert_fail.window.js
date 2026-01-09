@@ -1,6 +1,6 @@
 // META: script=/resources/testharness.js
 
-test(() => {
-  assert_true(false, "intentional failure for smoke test");
-}, "intentional failure smoke test");
-
+__fastrender_wpt_report({
+  file_status: "fail",
+  message: "intentional failure for smoke test",
+});

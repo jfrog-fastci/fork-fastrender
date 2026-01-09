@@ -40,11 +40,9 @@ impl SuitePreset {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 enum Backend {
-  /// Let the runner pick (prefer vm-js when available; otherwise QuickJS).
+  /// Let the runner pick (currently only vm-js).
   Auto,
-  /// Force the QuickJS backend.
-  Quickjs,
-  /// Force the vm-js backend (currently unavailable).
+  /// Force the vm-js backend.
   Vmjs,
 }
 
@@ -52,7 +50,6 @@ impl Backend {
   fn as_env_value(self) -> &'static str {
     match self {
       Backend::Auto => "auto",
-      Backend::Quickjs => "quickjs",
       Backend::Vmjs => "vmjs",
     }
   }
@@ -106,8 +103,6 @@ struct Cli {
   report: PathBuf,
 
   /// Select which JS backend to use.
-  ///
-  /// Note: vm-js is not wired up yet; QuickJS is the only available backend today.
   #[arg(long, value_enum, default_value_t = Backend::Auto)]
   backend: Backend,
 }

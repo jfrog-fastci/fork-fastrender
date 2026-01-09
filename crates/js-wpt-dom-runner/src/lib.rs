@@ -13,15 +13,10 @@
 
 mod discover;
 mod backend;
-mod backend_quickjs;
 mod backend_vmjs;
-mod dom_bindings;
 mod meta;
-mod timer_event_loop;
 mod runner;
 mod suite;
-#[cfg(feature = "url_bindings")]
-mod url_bindings;
 pub mod wpt_fs;
 mod wpt_report;
 

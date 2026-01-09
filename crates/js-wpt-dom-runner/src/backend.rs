@@ -5,39 +5,28 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
-  QuickJs,
   VmJs,
 }
 
 impl BackendKind {
   pub fn as_str(self) -> &'static str {
     match self {
-      BackendKind::QuickJs => "quickjs",
       BackendKind::VmJs => "vmjs",
     }
   }
 
   pub fn is_available(self) -> bool {
     match self {
-      BackendKind::QuickJs => true,
       BackendKind::VmJs => crate::backend_vmjs::is_available(),
     }
   }
 
   pub fn preferred() -> Self {
-    if BackendKind::VmJs.is_available() {
-      BackendKind::VmJs
-    } else {
-      BackendKind::QuickJs
-    }
+    BackendKind::VmJs
   }
 
   pub fn all_available() -> Vec<Self> {
-    let mut out = vec![BackendKind::QuickJs];
-    if BackendKind::VmJs.is_available() {
-      out.push(BackendKind::VmJs);
-    }
-    out
+    vec![BackendKind::VmJs]
   }
 }
 
@@ -51,7 +40,6 @@ impl std::fmt::Display for BackendKind {
 pub enum BackendSelection {
   /// Choose the best backend available in the current build (prefer vm-js).
   Auto,
-  QuickJs,
   VmJs,
 }
 
@@ -59,14 +47,13 @@ impl BackendSelection {
   pub fn resolve(self) -> BackendKind {
     match self {
       BackendSelection::Auto => BackendKind::preferred(),
-      BackendSelection::QuickJs => BackendKind::QuickJs,
       BackendSelection::VmJs => BackendKind::VmJs,
     }
   }
 
   /// Reads `FASTERENDER_WPT_DOM_BACKEND` if set.
   ///
-  /// Accepted values: `auto` | `vmjs` | `quickjs`.
+  /// Accepted values: `auto` | `vmjs`.
   pub fn from_env() -> Result<Option<Self>, RunError> {
     let Ok(raw) = env::var("FASTERENDER_WPT_DOM_BACKEND") else {
       return Ok(None);
@@ -75,10 +62,9 @@ impl BackendSelection {
     let selection = match value.as_str() {
       "" | "auto" => BackendSelection::Auto,
       "vmjs" => BackendSelection::VmJs,
-      "quickjs" => BackendSelection::QuickJs,
       other => {
         return Err(RunError::Js(format!(
-          "invalid FASTERENDER_WPT_DOM_BACKEND={other:?} (expected auto|vmjs|quickjs)"
+          "invalid FASTERENDER_WPT_DOM_BACKEND={other:?} (expected auto|vmjs)"
         )))
       }
     };
