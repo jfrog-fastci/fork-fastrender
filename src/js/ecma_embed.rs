@@ -850,6 +850,34 @@ mod tests {
   }
 
   #[test]
+  fn host_function_can_be_called() {
+    let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
+      heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
+      default_fuel: Some(10_000),
+      default_deadline: None,
+      check_time_every: 1,
+      max_stack_depth: 1024,
+    })
+    .unwrap();
+
+    realm
+      .register_host_function(
+        "add",
+        Box::new(|args| match args {
+          [ScriptValue::Number(a), ScriptValue::Number(b)] => Ok(ScriptValue::Number(a + b)),
+          other => Err(ScriptError::Runtime {
+            message: format!("unexpected args: {other:?}"),
+            stack_trace: String::new(),
+          }),
+        }),
+      )
+      .unwrap();
+
+    let value = realm.eval_script("host.js", "add(1, 2)").unwrap();
+    assert_eq!(value, ScriptValue::Number(3.0));
+  }
+
+  #[test]
   fn string_literals_preserve_utf16_code_units() {
     let mut realm = VmJsScriptRealm::new(ScriptRealmOptions {
       heap_limits: HeapLimits::new(4 * 1024 * 1024, 2 * 1024 * 1024),
