@@ -29,8 +29,17 @@ enum SuitePreset {
 impl SuitePreset {
   fn default_filter(self) -> Option<&'static str> {
     match self {
-      // Today the curated suite is "everything under event_*" (event loop ordering + EventTarget).
-      SuitePreset::Curated => Some("event*/**"),
+      // Curated suite selection depends on which backends are available:
+      // - QuickJS-only builds do not expose DOM/EventTarget shims yet, so they run only the
+      //   `event_loop/**` coverage.
+      // - vm-js builds run the full curated corpus (`event_loop/**` + `events/**`).
+      SuitePreset::Curated => {
+        if cfg!(feature = "vmjs") {
+          Some("event*/**")
+        } else {
+          Some("event_loop/**")
+        }
+      }
       SuitePreset::Smoke => Some("smoke/**"),
       SuitePreset::All => None,
     }

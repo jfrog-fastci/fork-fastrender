@@ -34,11 +34,11 @@ impl BackendKind {
   }
 
   pub fn preferred() -> Self {
-    if BackendKind::QuickJs.is_available() {
-      return BackendKind::QuickJs;
-    }
     if BackendKind::VmJs.is_available() {
       return BackendKind::VmJs;
+    }
+    if BackendKind::QuickJs.is_available() {
+      return BackendKind::QuickJs;
     }
     BackendKind::QuickJs
   }
@@ -63,7 +63,7 @@ impl std::fmt::Display for BackendKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendSelection {
-  /// Choose the best backend available in the current build (prefer QuickJS for now).
+  /// Choose the best backend available in the current build (prefer vm-js when available).
   Auto,
   QuickJs,
   VmJs,
