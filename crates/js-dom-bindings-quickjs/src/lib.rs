@@ -785,6 +785,13 @@ impl Node {
     self.state.wrap_node(ctx, id)
   }
 
+  #[qjs(rename = "createDocumentFragment")]
+  fn create_document_fragment<'js>(&self, ctx: Ctx<'js>) -> JsResult<Object<'js>> {
+    self.ensure_document(ctx.clone())?;
+    let id = self.state.dom.borrow_mut().create_document_fragment();
+    self.state.wrap_node(ctx, id)
+  }
+
   #[qjs(rename = "getElementById")]
   fn get_element_by_id<'js>(&self, ctx: Ctx<'js>, id: String) -> JsResult<Option<Object<'js>>> {
     self.ensure_document(ctx.clone())?;
@@ -803,6 +810,7 @@ impl Node {
       let dom = self.state.dom.borrow();
       match &dom.node(self.node_id).kind {
         NodeKind::Document { .. } => (None, false),
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => (Some(self.node_id), false),
         NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), !allow_scope),
         _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
       }
@@ -842,6 +850,7 @@ impl Node {
       let dom = self.state.dom.borrow();
       match &dom.node(self.node_id).kind {
         NodeKind::Document { .. } => (None, false),
+        NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => (Some(self.node_id), false),
         NodeKind::Element { .. } | NodeKind::Slot { .. } => (Some(self.node_id), !allow_scope),
         _ => return Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
       }

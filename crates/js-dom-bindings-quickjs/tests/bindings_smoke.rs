@@ -502,6 +502,57 @@ fn error_mapping_and_invalid_selectors() {
 }
 
 #[test]
+fn document_fragment_create_and_query_selector() {
+  let dom = make_dom(r#"<!doctype html><html><body><div id="in-document"></div></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const frag = document.createDocumentFragment();
+            if (frag.nodeType !== 11) return "bad_nodeType:" + String(frag.nodeType);
+            if (frag.nodeName !== "#document-fragment") return "bad_nodeName:" + String(frag.nodeName);
+
+            // DocumentFragment.querySelector must operate within the fragment, not the full document.
+            if (frag.querySelector("#in-document") !== null) return "bad_scope";
+
+            const el = document.createElement("div");
+            el.id = "in-fragment";
+            frag.appendChild(el);
+
+            const found = frag.querySelector("#in-fragment");
+            if (found !== el) return "bad_found";
+            const all = frag.querySelectorAll("#in-fragment");
+            if (all.length !== 1 || all[0] !== el) return "bad_found_all";
+
+            // Invalid selector should still throw SyntaxError.
+            try {
+              frag.querySelectorAll("[");
+              return "no_throw";
+            } catch (e) {
+              if (String(e && e.name) !== "SyntaxError") return String(e && e.name);
+            }
+
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "DocumentFragment querySelector failed: {outcome}");
+  });
+}
+
+#[test]
 fn wrapper_cache_installs_finalizer_when_supported() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 
