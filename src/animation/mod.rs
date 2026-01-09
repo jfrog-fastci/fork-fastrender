@@ -7432,12 +7432,8 @@ fn transition_pairs<'a>(
           insert(name);
         } else {
           let expanded = expand_transition_property_name(name);
-          if expanded.is_empty() {
+          for name in expanded {
             insert(name);
-          } else {
-            for name in expanded {
-              insert(name);
-            }
           }
         }
       }
