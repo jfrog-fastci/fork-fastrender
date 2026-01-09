@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use vm_js::{
   GcObject, GcString, GcSymbol, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind,
-  RootId, Value, VmError, WeakGcObject,
+  Value, VmError, WeakGcObject,
 };
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
@@ -133,51 +133,26 @@ impl VmJsRuntime {
     roots: impl IntoIterator<Item = Value>,
     f: impl FnOnce(&mut Self) -> Result<R, VmError>,
   ) -> Result<R, VmError> {
-    // `vm-js` removed the old manual stack root APIs in favour of `Heap::scope()` (RAII) rooting.
-    // We can't hold a `Scope` across `f(self)` because `f` needs mutable access to the heap (and
-    // may create its own scopes).
+    // We can't hold a `Scope` guard across `f(self)` because `f` needs mutable access to the heap
+    // (and may create its own scopes).
     //
-    // Instead, emulate the old temporary stack root behaviour by using persistent roots that are
-    // removed immediately after `f` returns.
-    let mut root_ids: Vec<RootId> = Vec::new();
+    // Instead, explicitly push stack roots and truncate them after `f` returns.
+    let base_len = self.heap.stack_root_len();
     for v in roots {
+      // `vm-js` only debug-asserts root validity when pushing stack roots. Ensure we return an
+      // error in release builds rather than silently enqueuing stale handles.
       if !self.value_is_valid_or_primitive(v) {
-        // Best-effort cleanup for any roots we managed to register before failing.
-        for id in root_ids.drain(..) {
-          self.heap.remove_root(id);
-        }
+        self.heap.truncate_stack_roots(base_len);
         return Err(VmError::InvalidHandle);
       }
-      // Ensure the vector can grow before creating a root so we never leak roots on OOM.
-      root_ids
-        .try_reserve_exact(1)
-        .map_err(|_| VmError::OutOfMemory)?;
-      let id = match self.heap.add_root(v) {
-        Ok(id) => id,
-        Err(err) => {
-          // Roll back any roots we successfully added so callers don't leak persistent roots when
-          // rooting fails (e.g. due to OOM limits).
-          for id in root_ids.drain(..) {
-            self.heap.remove_root(id);
-          }
-          return Err(err);
-        }
-      };
-      if root_ids.try_reserve_exact(1).is_err() {
-        // Avoid aborting on OOM: if we can't record the ID, roll back the newly-added root.
-        self.heap.remove_root(id);
-        for id in root_ids.drain(..) {
-          self.heap.remove_root(id);
-        }
-        return Err(VmError::OutOfMemory);
+      if let Err(err) = self.heap.push_stack_root(v) {
+        self.heap.truncate_stack_roots(base_len);
+        return Err(err);
       }
-      root_ids.push(id);
     }
 
     let result = f(self);
-    for id in root_ids.drain(..) {
-      self.heap.remove_root(id);
-    }
+    self.heap.truncate_stack_roots(base_len);
     result
   }
 

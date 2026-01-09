@@ -195,7 +195,6 @@ impl Env {
           .globals
           .try_reserve(1)
           .map_err(|_| VmError::OutOfMemory)?;
-
         let root = heap.add_root(value)?;
         self.globals.insert(owned, root);
         Ok(())

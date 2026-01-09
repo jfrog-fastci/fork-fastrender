@@ -61,6 +61,10 @@ impl Body {
     &self.bytes
   }
 
+  pub fn bytes(&self) -> &[u8] {
+    self.as_bytes()
+  }
+
   pub fn body_used(&self) -> bool {
     self.body_used
   }
