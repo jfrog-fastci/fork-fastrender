@@ -9634,7 +9634,27 @@ impl DisplayListBuilder {
         if control.invalid {
           button_style.color = accent;
         }
-        let _ = emit_text_aligned(self, label, &button_style, rect, true, true);
+        let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+        let metrics_scaled = Self::resolve_scaled_metrics(&button_style, &self.font_ctx);
+        let line_height =
+          compute_line_height_with_metrics_viewport(&button_style, metrics_scaled.as_ref(), viewport);
+        let baseline_offset_y = if line_height.is_finite() {
+          (rect.height() - line_height) / 2.0
+        } else {
+          0.0
+        };
+        let baseline_offset_y = if baseline_offset_y.is_finite() {
+          baseline_offset_y
+        } else {
+          0.0
+        };
+        let centered_rect = Rect::from_xywh(
+          rect.x(),
+          rect.y() + baseline_offset_y,
+          rect.width(),
+          rect.height(),
+        );
+        let _ = self.emit_text_with_style_raw(label, Some(&button_style), centered_rect);
         true
       }
       FormControlKind::Checkbox {
