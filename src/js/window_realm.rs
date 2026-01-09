@@ -543,6 +543,15 @@ fn window_btoa_native(
     bytes.push(u as u8);
   }
 
+  let expected_len = (bytes.len().saturating_add(2) / 3).saturating_mul(4);
+  if expected_len > MAX_BASE64_OUTPUT_LEN {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be encoded is too large.",
+    )?));
+  }
+
   // HTML's "forgiving-base64 encode" uses the standard alphabet with padding and no line breaks.
   let encoded = general_purpose::STANDARD.encode(bytes);
   if encoded.len() > MAX_BASE64_OUTPUT_LEN {
@@ -570,10 +579,70 @@ fn window_atob_native(
     Value::String(s) => s,
     other => scope.heap_mut().to_string(other)?,
   };
-  let input_str = scope.heap().get_string(s)?.to_utf8_lossy();
+  let code_units = scope.heap().get_string(s)?.as_code_units();
 
-  let decoded = match forgiving_base64_decode(&input_str) {
-    Ok(bytes) => bytes,
+  if code_units.len() > MAX_BASE64_INPUT_LEN {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be decoded is too large.",
+    )?));
+  }
+
+  // HTML's forgiving-base64 decode algorithm.
+  let mut stripped: Vec<u8> = Vec::new();
+  stripped
+    .try_reserve_exact(code_units.len())
+    .map_err(|_| VmError::OutOfMemory)?;
+
+  for &unit in code_units {
+    if is_html_ascii_whitespace_unit(unit) {
+      continue;
+    }
+    if unit > 0xFF {
+      return Err(VmError::Throw(make_dom_exception(
+        scope,
+        "InvalidCharacterError",
+        "The string to be decoded is not correctly encoded.",
+      )?));
+    }
+    stripped.push(unit as u8);
+  }
+
+  // If length mod 4 is 0, remove up to two '=' from the end.
+  if stripped.len() % 4 == 0 {
+    let mut removed = 0usize;
+    while removed < 2 && stripped.last() == Some(&b'=') {
+      stripped.pop();
+      removed += 1;
+    }
+  }
+
+  // If length mod 4 is 1, fail.
+  if stripped.len() % 4 == 1 {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be decoded is not correctly encoded.",
+    )?));
+  }
+
+  // If it contains a non-base64 character, fail.
+  if stripped.iter().copied().any(|b| !is_base64_alphabet_byte(b)) {
+    return Err(VmError::Throw(make_dom_exception(
+      scope,
+      "InvalidCharacterError",
+      "The string to be decoded is not correctly encoded.",
+    )?));
+  }
+
+  // Pad with '=' until length mod 4 is 0.
+  while stripped.len() % 4 != 0 {
+    stripped.push(b'=');
+  }
+
+  let decoded = match general_purpose::STANDARD.decode(&stripped) {
+    Ok(decoded) => decoded,
     Err(_) => {
       return Err(VmError::Throw(make_dom_exception(
         scope,
@@ -582,6 +651,7 @@ fn window_atob_native(
       )?));
     }
   };
+
   if decoded.len() > MAX_BASE64_OUTPUT_LEN {
     return Err(VmError::Throw(make_dom_exception(
       scope,
@@ -660,50 +730,12 @@ fn is_secure_context_for_document_url(url: &str) -> bool {
   }
 }
 
-fn forgiving_base64_decode(input: &str) -> Result<Vec<u8>, ()> {
-  if input.len() > MAX_BASE64_INPUT_LEN {
-    return Err(());
-  }
-
-  // 1. Remove all ASCII whitespace.
-  let mut stripped = String::with_capacity(input.len());
-  for ch in input.chars() {
-    if matches!(ch, '\t' | '\n' | '\u{000C}' | '\r' | ' ') {
-      continue;
-    }
-    stripped.push(ch);
-  }
-
-  // 2. If length mod 4 is 0, remove up to two `=` from the end.
-  if stripped.len() % 4 == 0 {
-    let mut removed = 0usize;
-    while removed < 2 && stripped.ends_with('=') {
-      stripped.pop();
-      removed += 1;
-    }
-  }
-
-  // 3. If length mod 4 is 1, fail.
-  if stripped.len() % 4 == 1 {
-    return Err(());
-  }
-
-  // 4. If it contains a non-base64 character, fail.
-  if stripped.bytes().any(|b| !is_base64_alphabet_byte(b)) {
-    return Err(());
-  }
-
-  // 5. Pad with `=` until length mod 4 is 0.
-  while stripped.len() % 4 != 0 {
-    stripped.push('=');
-  }
-
-  // 6. Decode.
-  general_purpose::STANDARD.decode(stripped.as_bytes()).map_err(|_| ())
-}
-
 fn is_base64_alphabet_byte(b: u8) -> bool {
   matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/')
+}
+
+fn is_html_ascii_whitespace_unit(unit: u16) -> bool {
+  matches!(unit, 0x09 | 0x0A | 0x0C | 0x0D | 0x20)
 }
 
 fn location_href_get_native(
@@ -2468,6 +2500,14 @@ mod tests {
       .unwrap()
   }
 
+  fn unwrap_thrown_object(err: VmError) -> GcObject {
+    match err {
+      VmError::Throw(Value::Object(obj)) => obj,
+      VmError::Throw(other) => panic!("expected thrown object, got {other:?}"),
+      other => panic!("expected VmError::Throw, got {other:?}"),
+    }
+  }
+
   fn console_sink_test_lock() -> &'static StdMutex<()> {
     static LOCK: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
     LOCK.get_or_init(|| StdMutex::new(()))
@@ -2752,6 +2792,48 @@ mod tests {
         CapturedConsoleArg::Null
       ]]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn atob_btoa_roundtrip() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+    let encoded = realm.exec_script("btoa('hello')")?;
+    assert_eq!(get_string(realm.heap(), encoded), "aGVsbG8=");
+
+    let decoded = realm.exec_script("atob('aGVsbG8=')")?;
+    assert_eq!(get_string(realm.heap(), decoded), "hello");
+    Ok(())
+  }
+
+  #[test]
+  fn atob_btoa_invalid_character_errors() -> Result<(), VmError> {
+    let mut realm = WindowRealm::new(WindowRealmConfig::new("https://example.com/"))?;
+
+    {
+      let err = realm
+        .exec_script("btoa('☃')")
+        .expect_err("btoa should throw InvalidCharacterError for non-Latin1 input");
+      let obj = unwrap_thrown_object(err);
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj))?;
+      let name = get_prop(&mut scope, obj, "name");
+      assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
+    }
+
+    {
+      let err = realm
+        .exec_script("atob('!')")
+        .expect_err("atob should throw InvalidCharacterError for invalid base64");
+      let obj = unwrap_thrown_object(err);
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      let mut scope = heap.scope();
+      scope.push_root(Value::Object(obj))?;
+      let name = get_prop(&mut scope, obj, "name");
+      assert_eq!(get_string(scope.heap(), name), "InvalidCharacterError");
+    }
+
     Ok(())
   }
 }
