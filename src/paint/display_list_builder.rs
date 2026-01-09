@@ -2767,14 +2767,19 @@ impl DisplayListBuilder {
     let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
     let root_background = if is_root {
       root_fragment.and_then(|fragment| {
-        let viewport = self
-          .viewport
+        // The layout viewport can differ from the actual paint surface size when the renderer
+        // reserves viewport scrollbar gutters (or when a caller paints into a surface larger than
+        // the layout viewport). Canvas background propagation must cover the *paint* surface so
+        // the exposed gutter region is painted with the document background (matching browsers).
+        let canvas = self
+          .culling_viewport
+          .or(self.viewport)
           .unwrap_or_else(|| (context_bounds.width(), context_bounds.height()));
-        if viewport.0 <= 0.0 || viewport.1 <= 0.0 {
+        if canvas.0 <= 0.0 || canvas.1 <= 0.0 {
           return None;
         }
-        let target_w = viewport.0.max(context_bounds.width());
-        let target_h = viewport.1.max(context_bounds.height());
+        let target_w = canvas.0.max(context_bounds.width());
+        let target_h = canvas.1.max(context_bounds.height());
         let target_rect =
           Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h);
         let (style, suppress_box_id, source_rect) =
