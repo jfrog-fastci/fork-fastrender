@@ -437,6 +437,25 @@ where
   )?;
 
   globals.set(
+    "__fastrender_dom_closest",
+    Function::new(ctx.clone(), {
+      let dom = Rc::clone(&dom);
+      move |ctx: Ctx<'js>, node: u32, selectors: String| {
+        let mut dom = dom.borrow_mut();
+        let node_id = match dom.with_dom(|dom| dom.node_id_from_index(node as usize)) {
+          Ok(id) => id,
+          Err(err) => return throw_dom_error(ctx, err),
+        };
+        let result = dom.mutate_dom(|dom| (dom.closest(node_id, &selectors), false));
+        match result {
+          Ok(found) => Ok(found.map(|id| id.index() as u32)),
+          Err(DomException::SyntaxError { message }) => throw_syntax_error(ctx, &message),
+        }
+      }
+    })?,
+  )?;
+
+  globals.set(
     "__fastrender_dom_get_element_by_id",
     Function::new(ctx.clone(), {
       let dom = Rc::clone(&dom);
@@ -1118,6 +1137,12 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
   Element.prototype.matches = function (selectors) {
     return !!g.__fastrender_dom_matches_selector(this.__node_id, String(selectors));
+  };
+
+  Element.prototype.closest = function (selectors) {
+    var id = g.__fastrender_dom_closest(this.__node_id, String(selectors));
+    if (id == null) return null;
+    return g.__fastrender_wrap_node_id(id, "element");
   };
 
   Element.prototype.setAttribute = function (name, value) {
@@ -2196,6 +2221,14 @@ const DOM_BINDINGS_SHIM: &str = r##"
 
               if (!a.matches("span.x")) return "fail: matches should be true";
               if (a.matches("div")) return "fail: matches should be false";
+
+              if (a.closest("span") !== a) return "fail: closest should return self";
+              if (a.closest("div") !== parent) return "fail: closest should return ancestor";
+              if (a.closest(".nope") !== null) return "fail: closest should return null";
+
+              var closestThrew = false;
+              try { a.closest("["); } catch (e) { closestThrew = String(e && e.name) === "SyntaxError"; }
+              if (!closestThrew) return "fail: closest invalid selector should throw";
 
               var threw = false;
               try { a.matches("["); } catch (e) { threw = String(e && e.name) === "SyntaxError"; }

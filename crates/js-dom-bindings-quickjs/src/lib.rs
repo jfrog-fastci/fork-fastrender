@@ -106,6 +106,7 @@ const DOM_NULLABLE_SHIM: &str = r#"
     wrapMethod(proto, "getElementById");
     wrapMethod(proto, "getAttribute");
     wrapMethod(proto, "querySelector");
+    wrapMethod(proto, "closest");
   } catch (_e) {}
 })();
 "#;
@@ -690,6 +691,18 @@ impl Node {
         .map_err(|e| dom_exception_to_js(&ctx, e))?
     };
     Ok(result)
+  }
+
+  #[qjs(rename = "closest")]
+  fn closest<'js>(&self, ctx: Ctx<'js>, selectors: String) -> JsResult<Option<Object<'js>>> {
+    self.ensure_element(ctx.clone())?;
+    let found = {
+      let mut dom = self.state.dom.borrow_mut();
+      dom
+        .closest(self.node_id, &selectors)
+        .map_err(|e| dom_exception_to_js(&ctx, e))?
+    };
+    found.map(|id| self.state.wrap_node(ctx, id)).transpose()
   }
 
   // ===========================================================================

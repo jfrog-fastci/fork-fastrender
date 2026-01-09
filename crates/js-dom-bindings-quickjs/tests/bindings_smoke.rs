@@ -97,6 +97,48 @@ fn element_scoped_query_selectors_do_not_include_the_scope_element() {
 }
 
 #[test]
+fn element_closest_returns_ancestors_and_null() {
+  let dom = make_dom(
+    r#"<!doctype html><html><body><div id="p"><span id="a"></span></div></body></html>"#,
+  );
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r##"
+        (() => {
+          try {
+            const parent = document.getElementById("p");
+            const a = document.getElementById("a");
+            if (!parent || !a) return "missing";
+
+            if (a.closest("span") !== a) return "bad_self";
+            if (a.closest("div") !== parent) return "bad_parent";
+            if (a.closest(".nope") !== null) return "bad_null";
+
+            try {
+              a.closest("[");
+              return "no_throw";
+            } catch (e) {
+              return String(e && e.name);
+            }
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "##,
+      )
+      .unwrap();
+    assert_eq!(outcome, "SyntaxError", "element.closest failed: {outcome}");
+  });
+}
+
+#[test]
 fn element_creation_append_and_text_content() {
   let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
 
