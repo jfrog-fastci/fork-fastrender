@@ -1,0 +1,9 @@
+[package]
+name = "js-dom-bindings"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fastrender = { path = "../.." }
+rquickjs = "0.9"

@@ -1,6 +1,8 @@
 use crate::dom2::{Document, NodeId, NodeKind};
 use crate::error::Result;
 use crate::js::ScriptType;
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
 
 /// Host-side bookkeeping for `Document.currentScript`.
 ///
@@ -19,6 +21,26 @@ pub struct CurrentScriptState {
   /// Equivalent to `Document.currentScript` (as a `dom2::NodeId` handle).
   pub current_script: Option<NodeId>,
   previous_current_script: Vec<Option<NodeId>>,
+}
+
+/// Shared, host-managed handle for [`CurrentScriptState`].
+///
+/// This is the intended bridge between the host script execution pipeline (e.g. [`ScriptOrchestrator`])
+/// and the JS DOM bindings layer (`document.currentScript`).
+///
+/// The bindings must **not** own this state; they only read it. The HTML orchestration code (host)
+/// mutates it as scripts execute.
+#[derive(Debug, Clone, Default)]
+pub struct CurrentScriptStateHandle(Rc<RefCell<CurrentScriptState>>);
+
+impl CurrentScriptStateHandle {
+  pub fn borrow(&self) -> Ref<'_, CurrentScriptState> {
+    self.0.borrow()
+  }
+
+  pub fn borrow_mut(&self) -> RefMut<'_, CurrentScriptState> {
+    self.0.borrow_mut()
+  }
 }
 
 impl CurrentScriptState {
@@ -43,11 +65,10 @@ impl CurrentScriptState {
 
 /// Trait for host types that carry `Document.currentScript` state.
 pub trait CurrentScriptHost {
-  fn current_script_state(&self) -> &CurrentScriptState;
-  fn current_script_state_mut(&mut self) -> &mut CurrentScriptState;
+  fn current_script_state(&self) -> &CurrentScriptStateHandle;
 
   fn current_script(&self) -> Option<NodeId> {
-    self.current_script_state().current_script
+    self.current_script_state().borrow().current_script
   }
 }
 
@@ -112,9 +133,12 @@ impl ScriptOrchestrator {
       ScriptType::ImportMap | ScriptType::Unknown => None,
     };
 
-    host.current_script_state_mut().push(new_current_script);
+    host
+      .current_script_state()
+      .borrow_mut()
+      .push(new_current_script);
     let result = executor.execute_script(host, self, dom, script, script_type);
-    host.current_script_state_mut().pop();
+    host.current_script_state().borrow_mut().pop();
     result
   }
 }
@@ -146,16 +170,12 @@ mod tests {
 
   #[derive(Default)]
   struct Host {
-    script_state: CurrentScriptState,
+    script_state: CurrentScriptStateHandle,
   }
 
   impl CurrentScriptHost for Host {
-    fn current_script_state(&self) -> &CurrentScriptState {
+    fn current_script_state(&self) -> &CurrentScriptStateHandle {
       &self.script_state
-    }
-
-    fn current_script_state_mut(&mut self) -> &mut CurrentScriptState {
-      &mut self.script_state
     }
   }
 
@@ -226,7 +246,7 @@ mod tests {
     assert_eq!(host.current_script(), None);
 
     assert_eq!(executor.observed, vec![Some(scripts[0]), Some(scripts[1])]);
-    assert_eq!(host.script_state.stack_depth(), 0);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
     Ok(())
   }
 
@@ -299,7 +319,7 @@ mod tests {
       vec![Some(script_a), Some(script_b), Some(script_a)]
     );
     assert_eq!(host.current_script(), None);
-    assert_eq!(host.script_state.stack_depth(), 0);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
     Ok(())
   }
 
@@ -333,7 +353,7 @@ mod tests {
     let mut host = Host::default();
     // Simulate an outer (already executing) script.
     let outer_current = dom.root();
-    host.script_state.current_script = Some(outer_current);
+    host.script_state.borrow_mut().current_script = Some(outer_current);
 
     let mut orchestrator = ScriptOrchestrator::new();
     let mut executor = ErroringExecutor;
@@ -343,7 +363,7 @@ mod tests {
 
     assert!(matches!(err, Error::Other(msg) if msg == "boom"));
     assert_eq!(host.current_script(), Some(outer_current));
-    assert_eq!(host.script_state.stack_depth(), 0);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
   }
 
   #[test]
@@ -392,7 +412,7 @@ mod tests {
     )?;
     assert_eq!(host.current_script(), None);
     assert_eq!(executor.observed, vec![Some(live_script)]);
-    assert_eq!(host.script_state.stack_depth(), 0);
+    assert_eq!(host.script_state.borrow().stack_depth(), 0);
     Ok(())
   }
 }

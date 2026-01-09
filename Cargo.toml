@@ -7,7 +7,13 @@ rust-version = "1.70"
 publish = false
 
 [workspace]
-members = ["xtask", "crates/webidl-ir", "crates/js-wpt-dom-runner", "crates/webidl-js-runtime"]
+members = [
+  "xtask",
+  "crates/webidl-ir",
+  "crates/js-wpt-dom-runner",
+  "crates/webidl-js-runtime",
+  "crates/js-dom-bindings",
+]
 # `engines/ecma-rs` is a nested workspace (git submodule). Exclude it so Cargo can build `vm-js`
 # and friends using their own workspace-inherited metadata.
 exclude = ["engines/ecma-rs"]

@@ -41,7 +41,8 @@ pub use event_loop::{
 };
 pub use ecma_microtasks::{VmJsHostHooks, VmJsJobContext};
 pub use orchestrator::{
-  CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
+  CurrentScriptHost, CurrentScriptState, CurrentScriptStateHandle, ScriptBlockExecutor,
+  ScriptOrchestrator,
 };
 pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
