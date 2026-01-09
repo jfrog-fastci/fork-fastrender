@@ -10873,4 +10873,90 @@ mod tests {
       .collect();
     assert_eq!(custom, vec!["--a", "--b"]);
   }
+
+  #[test]
+  fn transition_state_interruption_sampling_expands_border_radius_shorthand() {
+    let prev_box_id = 1usize;
+    let prev_state = TransitionState {
+      entries: HashMap::new(),
+      viewport: Size::new(800.0, 600.0),
+      box_sizes: HashMap::from([(prev_box_id, Size::new(100.0, 100.0))]),
+    };
+
+    let mut start_style = ComputedStyle::default();
+    start_style.border_top_left_radius = BorderCornerRadius {
+      x: Length::px(0.0),
+      y: Length::px(0.0),
+    };
+
+    let mut end_style = ComputedStyle::default();
+    end_style.transition_properties = vec![TransitionProperty::Name("border-radius".to_string())].into();
+    end_style.transition_durations = vec![1000.0].into();
+    end_style.transition_delays = vec![0.0].into();
+    end_style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    end_style.border_top_left_radius = BorderCornerRadius {
+      x: Length::px(10.0),
+      y: Length::px(10.0),
+    };
+
+    let prev_entry = TransitionEntry {
+      stable_key: TransitionStableKey {
+        styled_node_id: 0,
+        generated_pseudo: None,
+      },
+      start_time_ms: 0.0,
+      start_style: Arc::new(start_style),
+    };
+
+    let sampled = TransitionState::sample_style_for_interruption(
+      &prev_state,
+      prev_box_id,
+      &prev_entry,
+      &end_style,
+      500.0,
+    );
+    assert!((sampled.border_top_left_radius.x.to_px() - 5.0).abs() < 1e-6);
+    assert!((sampled.border_top_left_radius.y.to_px() - 5.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn transition_state_interruption_sampling_longhand_all_only() {
+    let prev_box_id = 1usize;
+    let prev_state = TransitionState {
+      entries: HashMap::new(),
+      viewport: Size::new(800.0, 600.0),
+      box_sizes: HashMap::from([(prev_box_id, Size::new(100.0, 100.0))]),
+    };
+
+    let mut start_style = ComputedStyle::default();
+    start_style.border_top_color = Rgba::BLACK;
+    start_style.border_right_color = Rgba::BLACK;
+
+    let mut end_style = ComputedStyle::default();
+    end_style.transition_properties = vec![TransitionProperty::All].into();
+    end_style.transition_durations = vec![1000.0].into();
+    end_style.transition_delays = vec![0.0].into();
+    end_style.transition_timing_functions = vec![TransitionTimingFunction::Linear].into();
+    end_style.border_top_color = Rgba::RED;
+    end_style.border_right_color = Rgba::GREEN;
+
+    let prev_entry = TransitionEntry {
+      stable_key: TransitionStableKey {
+        styled_node_id: 0,
+        generated_pseudo: None,
+      },
+      start_time_ms: 0.0,
+      start_style: Arc::new(start_style),
+    };
+
+    let sampled = TransitionState::sample_style_for_interruption(
+      &prev_state,
+      prev_box_id,
+      &prev_entry,
+      &end_style,
+      500.0,
+    );
+    assert_eq!(sampled.border_top_color, Rgba::rgb(128, 0, 0));
+    assert_eq!(sampled.border_right_color, Rgba::rgb(0, 128, 0));
+  }
 }
