@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Args, Debug)]
 pub struct WebIdlCodegenArgs {
@@ -37,34 +37,52 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
   let repo_root = crate::repo_root();
   let rustfmt_config = repo_root.join(".rustfmt.toml");
 
-  let dom_source = absolutize(repo_root.clone(), args.dom_source);
-  let html_source = absolutize(repo_root.clone(), args.html_source);
-  let url_source = absolutize(repo_root.clone(), args.url_source);
-  let fetch_source = absolutize(repo_root.clone(), args.fetch_source);
-  let out_path = absolutize(repo_root, args.out);
+  let dom_source = to_repo_rel_source(&repo_root, &args.dom_source)
+    .with_context(|| format!("resolve DOM source path {}", args.dom_source.display()))?;
+  let html_source = to_repo_rel_source(&repo_root, &args.html_source)
+    .with_context(|| format!("resolve HTML source path {}", args.html_source.display()))?;
+  let url_source = to_repo_rel_source(&repo_root, &args.url_source)
+    .with_context(|| format!("resolve URL source path {}", args.url_source.display()))?;
+  let fetch_source = to_repo_rel_source(&repo_root, &args.fetch_source)
+    .with_context(|| format!("resolve Fetch source path {}", args.fetch_source.display()))?;
 
-  let dom_text = fs::read_to_string(&dom_source)
-    .with_context(|| format!("read DOM spec source {}", dom_source.display()))?;
-  let html_text = fs::read_to_string(&html_source)
-    .with_context(|| format!("read HTML spec source {}", html_source.display()))?;
-  let url_text = fs::read_to_string(&url_source)
-    .with_context(|| format!("read URL spec source {}", url_source.display()))?;
-  let fetch_text = fs::read_to_string(&fetch_source)
-    .with_context(|| format!("read Fetch spec source {}", fetch_source.display()))?;
+  let out_path = absolutize(repo_root.clone(), args.out);
 
-  let mut parsed = xtask::webidl::ParsedWebIdlWorld::default();
-  // Parse each extracted block in isolation (rather than concatenating all sources into one giant
-  // string) so an unterminated statement in an upstream block cannot swallow subsequent spec
-  // sources. This keeps the pipeline resilient to small Bikeshed formatting inconsistencies while
-  // preserving deterministic ordering.
-  extend_parsed_world_with_extracted_blocks(&mut parsed, &dom_text)
-    .context("parse extracted DOM WebIDL blocks")?;
-  extend_parsed_world_with_extracted_blocks(&mut parsed, &html_text)
-    .context("parse extracted HTML WebIDL blocks")?;
-  extend_parsed_world_with_extracted_blocks(&mut parsed, &url_text)
-    .context("parse extracted URL WebIDL blocks")?;
-  extend_parsed_world_with_extracted_blocks(&mut parsed, &fetch_text)
-    .context("parse extracted Fetch WebIDL blocks")?;
+  let sources = [
+    xtask::webidl::load::WebIdlSource {
+      rel_path: dom_source.as_str(),
+      label: "DOM",
+    },
+    xtask::webidl::load::WebIdlSource {
+      rel_path: html_source.as_str(),
+      label: "HTML",
+    },
+    xtask::webidl::load::WebIdlSource {
+      rel_path: url_source.as_str(),
+      label: "URL",
+    },
+    xtask::webidl::load::WebIdlSource {
+      rel_path: fetch_source.as_str(),
+      label: "Fetch",
+    },
+  ];
+
+  let loaded = xtask::webidl::load::load_combined_webidl(&repo_root, &sources)
+    .context("load combined WebIDL sources")?;
+  if !loaded.missing_sources.is_empty() {
+    let mut message = String::from("missing WebIDL sources:\n");
+    for (label, path) in &loaded.missing_sources {
+      message.push_str(&format!("  - {label}: {}\n", path.display()));
+    }
+    message.push_str(
+      "\nHint: ensure the spec submodules are checked out (e.g. `git submodule update --init \\\n\
+       specs/whatwg-dom specs/whatwg-html specs/whatwg-url specs/whatwg-fetch`).\n",
+    );
+    bail!("{message}");
+  }
+
+  let parsed =
+    xtask::webidl::parse_webidl(&loaded.combined_idl).context("parse extracted WebIDL")?;
   let resolved = xtask::webidl::resolve::resolve_webidl_world(&parsed);
 
   let generated = xtask::webidl::generate::generate_rust_module(&resolved, &rustfmt_config)
@@ -100,17 +118,16 @@ fn absolutize(repo_root: PathBuf, path: PathBuf) -> PathBuf {
   }
 }
 
-fn extend_parsed_world_with_extracted_blocks(
-  world: &mut xtask::webidl::ParsedWebIdlWorld,
-  spec_source: &str,
-) -> Result<()> {
-  for mut block in xtask::webidl::extract_webidl_blocks(spec_source) {
-    // Some upstream IDL blocks (notably from WHATWG HTML) are not consistently terminated with a
-    // top-level `;`. Appending an extra statement terminator keeps statement splitting inside each
-    // block robust.
-    block.push_str("\n;\n");
-    let parsed = xtask::webidl::parse_webidl(&block)?;
-    world.definitions.extend(parsed.definitions);
+fn to_repo_rel_source(repo_root: &Path, path: &Path) -> Result<String> {
+  if path.is_absolute() {
+    let rel = path.strip_prefix(repo_root).with_context(|| {
+      format!(
+        "source path {} is absolute but not under repo root {}",
+        path.display(),
+        repo_root.display()
+      )
+    })?;
+    return Ok(rel.to_string_lossy().into_owned());
   }
-  Ok(())
+  Ok(path.to_string_lossy().into_owned())
 }

@@ -148,15 +148,30 @@ pub fn extract_webidl_blocks_from_bikeshed(source: &str) -> Vec<String> {
   for line in source.lines() {
     if !in_idl {
       if let Some(idx) = line.find("<pre") {
-        let tag = &line[idx..];
-        if tag.contains("class=idl") || tag.contains("class='idl'") || tag.contains("class=\"idl\"")
-        {
-          // Everything after the first '>' is IDL content (some blocks place it on the same line).
-          //
+        // Only treat `<pre>` tags with `class=idl` as Bikeshed IDL blocks.
+        //
+        // Important: WHATWG HTML embeds IDL in `<pre><code class="idl">...</code></pre>`. The
+        // `<pre>` start tag itself typically has no `class`, but the `<code>` tag does. A naive
+        // substring search would incorrectly treat those blocks as Bikeshed IDL and capture raw
+        // HTML markup/comments, which then breaks statement splitting/parsing.
+        let tag_end = find_html_tag_end(line, idx);
+        let pre_tag = tag_end.map(|end| &line[idx..=end]).unwrap_or(&line[idx..]);
+        let is_idl_pre = if tag_end.is_some() {
+          html_start_tag_has_class_token(pre_tag, "idl")
+        } else {
           // Bikeshed sources occasionally omit the closing `>` when the IDL begins immediately
           // after the opening `<pre class=idl` tag, e.g.:
           //   `<pre class=idl>[Exposed=(Window,Worker)]`
-          // In that case, capture from the first `[` onwards.
+          // In that case, inspect only the start tag fragment (up to the first `[` if present).
+          let tag_head = pre_tag.split_once('[').map(|(h, _)| h).unwrap_or(pre_tag);
+          tag_head.contains("class=idl")
+            || tag_head.contains("class='idl'")
+            || tag_head.contains("class=\"idl\"")
+        };
+
+        if is_idl_pre {
+          // Everything after the first '>' is IDL content (some blocks place it on the same line).
+          let tag = &line[idx..];
           let after = if let Some(gt) = tag.find('>') {
             Some(&tag[gt + 1..])
           } else if let Some(bracket) = tag.find('[') {
@@ -568,12 +583,13 @@ fn find_html_tag_end(input: &str, start: usize) -> Option<usize> {
     return None;
   }
 
-  // HTML comments (`<!-- ... -->`) are not normal tags and can contain arbitrary `'`/`"` chars.
-  // Treat them specially so quote scanning doesn't skip past the real end.
-  if input[start..].starts_with("<!--") {
-    let after_start = start + "<!--".len();
-    let rel_end = input.get(after_start..)?.find("-->")?;
-    return Some(after_start + rel_end + "-->".len() - 1);
+  // HTML comments (`<!-- ... -->`) can contain arbitrary text, including `'` and `"` characters.
+  // Treat them specially so we don't interpret those as quoted attribute delimiters and accidentally
+  // skip the rest of an IDL block.
+  if input.get(start..)?.starts_with("<!--") {
+    let after = start + "<!--".len();
+    let rel_end = input.get(after..)?.find("-->")?;
+    return Some(after + rel_end + "-->".len() - 1);
   }
 
   let mut i = start + 1;
@@ -691,6 +707,21 @@ fn strip_html_tags_preserve_text(input: &str) -> String {
     // Flush any text before this tag.
     if last_text < i {
       out.push_str(&input[last_text..i]);
+    }
+
+    // HTML comment: `<!-- ... -->`.
+    //
+    // Comments can contain `'` and `"` characters, so don't use the generic tag scanner (which
+    // treats those as quoted attribute delimiters).
+    if input[i..].starts_with("<!--") {
+      if let Some(rel_end) = input[i + "<!--".len()..].find("-->") {
+        i = i + "<!--".len() + rel_end + "-->".len();
+        last_text = i;
+        continue;
+      }
+      // Unclosed comment: strip to end.
+      last_text = input.len();
+      break;
     }
 
     // Skip the tag itself (forgiving).
@@ -1211,12 +1242,20 @@ fn split_semicolon_terminated(input: &str) -> Vec<String> {
       }
       b';' => {
         i += 1;
-        if curly == 0 && bracket == 0 && paren == 0 {
+        // Be forgiving: in spec sources we occasionally see malformed fragments (especially when
+        // scraping HTML) that leave `[`/`(`/`)` counters unbalanced. Those should not prevent us
+        // from splitting the overall IDL stream at top-level statement boundaries.
+        //
+        // Curly braces still gate splitting so interface/dictionary bodies (and `{}` default
+        // values) don't get broken up.
+        if curly == 0 {
           let seg = input[start..i].trim();
           if !seg.is_empty() {
             out.push(seg.to_string());
           }
           start = i;
+          bracket = 0;
+          paren = 0;
         }
       }
       _ => i += 1,

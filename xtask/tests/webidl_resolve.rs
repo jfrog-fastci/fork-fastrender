@@ -74,8 +74,26 @@ fn smoke_resolve_dom_url_fetch() {
     return;
   }
 
+  // Sanity check: the combined IDL should include key interfaces from URL/Fetch.
+  assert!(
+    loaded.combined_idl.contains("interface URL {"),
+    "expected combined WebIDL input to include `interface URL`"
+  );
+  assert!(
+    loaded.combined_idl.contains("interface Response {"),
+    "expected combined WebIDL input to include `interface Response`"
+  );
+
   let parsed = parse_webidl(&loaded.combined_idl).unwrap();
   let resolved = resolve_webidl_world(&parsed);
+  assert!(
+    resolved.interfaces.contains_key("URL"),
+    "expected `URL` interface to resolve"
+  );
+  assert!(
+    resolved.interfaces.contains_key("Response"),
+    "expected `Response` interface to resolve"
+  );
   assert!(
     !resolved.interfaces.is_empty(),
     "expected non-empty interface set from DOM+URL+Fetch"
@@ -106,6 +124,64 @@ fn smoke_resolve_whatwg_html() {
   assert!(
     !resolved.interfaces.is_empty(),
     "expected non-empty interface set from WHATWG HTML"
+  );
+}
+
+#[test]
+fn smoke_resolve_dom_html_url_fetch() {
+  let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask has a parent dir");
+
+  let sources = [
+    WebIdlSource {
+      rel_path: "specs/whatwg-dom/dom.bs",
+      label: "DOM",
+    },
+    WebIdlSource {
+      rel_path: "specs/whatwg-html/source",
+      label: "HTML",
+    },
+    WebIdlSource {
+      rel_path: "specs/whatwg-url/url.bs",
+      label: "URL",
+    },
+    WebIdlSource {
+      rel_path: "specs/whatwg-fetch/fetch.bs",
+      label: "Fetch",
+    },
+  ];
+
+  let loaded = load_combined_webidl(repo_root, &sources).unwrap();
+  if !loaded.missing_sources.is_empty() {
+    for (label, path) in &loaded.missing_sources {
+      eprintln!("skipping WebIDL smoke test: missing {label} source at {}", path.display());
+    }
+    return;
+  }
+
+  assert!(
+    loaded.combined_idl.contains("interface URL {"),
+    "expected combined WebIDL input to include `interface URL`"
+  );
+  assert!(
+    loaded.combined_idl.contains("interface Response {"),
+    "expected combined WebIDL input to include `interface Response`"
+  );
+
+  let parsed = parse_webidl(&loaded.combined_idl).unwrap();
+  let resolved = resolve_webidl_world(&parsed);
+  assert!(
+    resolved.interfaces.contains_key("URL"),
+    "expected `URL` interface to resolve"
+  );
+  assert!(
+    resolved.interfaces.contains_key("Response"),
+    "expected `Response` interface to resolve"
+  );
+  assert!(
+    !resolved.interfaces.is_empty(),
+    "expected non-empty interface set from DOM+HTML+URL+Fetch"
   );
 }
 

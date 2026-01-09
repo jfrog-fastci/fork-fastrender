@@ -27,11 +27,15 @@ how to update it.
 
 The `cargo xtask webidl` command runs the full pipeline end-to-end:
 
-1. **Extract** IDL blocks from vendored spec sources:
-   - DOM: `specs/whatwg-dom/dom.bs` (Bikeshed source)
-   - HTML: `specs/whatwg-html/source` (WHATWG HTML source format)
-   - URL: `specs/whatwg-url/url.bs` (Bikeshed source)
-   - Fetch: `specs/whatwg-fetch/fetch.bs` (Bikeshed source)
+1. **Load + extract** IDL blocks from vendored sources:
+   - Prelude/overrides:
+      - `tools/webidl/prelude.idl`
+      - `tools/webidl/overrides/*.idl` (lexicographic)
+    - Specs:
+      - DOM: `specs/whatwg-dom/dom.bs` (Bikeshed source)
+      - HTML: `specs/whatwg-html/source` (WHATWG HTML source format)
+      - URL: `specs/whatwg-url/url.bs` (Bikeshed source)
+      - Fetch: `specs/whatwg-fetch/fetch.bs` (Bikeshed source)
 2. **Parse + resolve** into a consolidated world:
     - Merge partial definitions.
     - Apply `includes` statements.
@@ -44,7 +48,11 @@ The `cargo xtask webidl` command runs the full pipeline end-to-end:
 submodules checked out:
 
 ```bash
-git submodule update --init specs/whatwg-dom specs/whatwg-html specs/whatwg-url specs/whatwg-fetch
+git submodule update --init \
+  specs/whatwg-dom \
+  specs/whatwg-html \
+  specs/whatwg-url \
+  specs/whatwg-fetch
 ```
 
 Then run:
@@ -109,19 +117,12 @@ The current generator snapshots IDL from:
 - URL (`specs/whatwg-url/url.bs`)
 - Fetch (`specs/whatwg-fetch/fetch.bs`)
 
-To pull in additional WebIDL sources beyond these, you will need to:
-The current generator snapshots IDL from:
-
-- DOM (`specs/whatwg-dom/dom.bs`)
-- HTML (`specs/whatwg-html/source`)
-- URL (`specs/whatwg-url/url.bs`)
-- Fetch (`specs/whatwg-fetch/fetch.bs`)
-
-To pull in additional WebIDL sources beyond these, you will need to:
+To pull in additional WebIDL sources (WebSockets/etc.), you will need to:
 
 1. Add/init the appropriate spec submodule under `specs/` (see `specs/README.md`).
-2. Extend `xtask/src/webidl_codegen.rs` to read that source and call
-   `xtask::webidl::extract_webidl_blocks(...)`.
+2. Extend `xtask/src/webidl_codegen.rs` to include the source in the call to
+   `xtask::webidl::load::load_combined_webidl` (and update the header comment in
+   `xtask/src/webidl/generate.rs`).
 3. Re-run `cargo xtask webidl` and commit the updated `src/webidl/generated/mod.rs`.
 
 Downstream binding generation (Rust glue / JS-visible APIs) should treat the snapshot as the source
