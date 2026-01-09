@@ -1469,4 +1469,37 @@ mod tests {
     assert_eq!(wrapper.style.border_left_width, Length::px(0.0));
     assert_eq!(wrapper.style.background_color, Rgba::TRANSPARENT);
   }
+
+  #[test]
+  fn inline_text_wrappers_do_not_copy_position_from_positioned_inline_parent() {
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Inline;
+    inline_style.position = Position::Absolute;
+    let inline_style = Arc::new(inline_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.position = Position::Static;
+    let text_style = Arc::new(text_style);
+
+    let text = BoxNode::new_text(text_style, "Hello".to_string());
+    let inline = BoxNode::new_inline(inline_style, vec![text]);
+
+    let fixed = fixup_tree(inline);
+    assert_eq!(fixed.children.len(), 1);
+
+    let wrapper = &fixed.children[0];
+    assert!(
+      wrapper.is_anonymous() && wrapper.is_inline_level(),
+      "expected anonymous inline wrapper for text child"
+    );
+    assert_eq!(wrapper.style.display, Display::Inline);
+    assert_eq!(
+      wrapper.style.position,
+      Position::Static,
+      "anonymous text wrappers must not become out-of-flow when their inline parent is positioned"
+    );
+    assert_eq!(wrapper.children.len(), 1);
+    assert!(matches!(&wrapper.children[0].box_type, BoxType::Text(_)));
+  }
 }
