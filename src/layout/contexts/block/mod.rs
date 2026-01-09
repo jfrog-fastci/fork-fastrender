@@ -2505,17 +2505,18 @@ impl BlockFormattingContext {
 
     let trailing_margin = margin_ctx.pending_margin();
     let allow_collapse_last = parent.id != 1 && should_collapse_with_last_child(&parent.style);
-    let parent_has_bottom_separation = resolve_length_for_width(
-      parent.style.used_border_bottom_width(),
-      containing_width,
+    let (_, parent_block_end) = block_axis_sides(&parent.style);
+    let parent_has_bottom_separation = resolve_border_side(
       &parent.style,
+      parent_block_end,
+      containing_width,
       &self.font_context,
       self.viewport_size,
     ) > 0.0
-      || resolve_length_for_width(
-        parent.style.padding_bottom,
-        containing_width,
+      || resolve_padding_side(
         &parent.style,
+        parent_block_end,
+        containing_width,
         &self.font_context,
         self.viewport_size,
       ) > 0.0;
@@ -3128,17 +3129,18 @@ impl BlockFormattingContext {
       physical_height_base,
     );
     // Check for border/padding that prevents margin collapse with first child
-    let parent_has_top_separation = resolve_length_for_width(
-      parent.style.used_border_top_width(),
-      containing_width,
+    let (parent_block_start, _) = block_axis_sides(&parent.style);
+    let parent_has_top_separation = resolve_border_side(
       &parent.style,
+      parent_block_start,
+      containing_width,
       &self.font_context,
       self.viewport_size,
     ) > 0.0
-      || resolve_length_for_width(
-        parent.style.padding_top,
-        containing_width,
+      || resolve_padding_side(
         &parent.style,
+        parent_block_start,
+        containing_width,
         &self.font_context,
         self.viewport_size,
       ) > 0.0;
@@ -4297,17 +4299,18 @@ impl BlockFormattingContext {
     let allow_collapse_last = !parent_is_root && should_collapse_with_last_child(&parent.style);
 
     // Check for bottom separation
-    let parent_has_bottom_separation = resolve_length_for_width(
-      parent.style.used_border_bottom_width(),
-      containing_width,
+    let (_, parent_block_end) = block_axis_sides(&parent.style);
+    let parent_has_bottom_separation = resolve_border_side(
       &parent.style,
+      parent_block_end,
+      containing_width,
       &self.font_context,
       self.viewport_size,
     ) > 0.0
-      || resolve_length_for_width(
-        parent.style.padding_bottom,
-        containing_width,
+      || resolve_padding_side(
         &parent.style,
+        parent_block_end,
+        containing_width,
         &self.font_context,
         self.viewport_size,
       ) > 0.0;

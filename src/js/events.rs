@@ -334,14 +334,15 @@ impl JsDomEvents {
       // Per DOM, `addEventListener(null, ...)` is a no-op.
       return Ok(None);
     };
+    let capture = options.capture;
 
     if self.registry.add_event_listener(target, type_, id, options) {
       if let Err(err) = self.ensure_listener_entry(id, callback) {
-        let _ = self
-          .registry
-          .remove_event_listener(target, type_, id, options.capture);
         // Ensure the registry does not contain listeners that cannot be invoked due to resource
         // limits.
+        let _ = self
+          .registry
+          .remove_event_listener(target, type_, id, capture);
         self.remove_listener_if_unused(id);
         return Err(err);
       }

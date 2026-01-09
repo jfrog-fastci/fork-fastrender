@@ -57,6 +57,9 @@ fn wpt_local_suite_passes() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
       config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
+      config.filter = std::env::var("WPT_FILTER")
+        .ok()
+        .and_then(|v| (!v.is_empty()).then_some(v));
 
       let mut runner = WptRunner::with_config(renderer, config);
 

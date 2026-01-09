@@ -27,7 +27,64 @@
 //! Reference: <https://www.w3.org/TR/CSS21/box.html#collapsing-margins>
 
 use crate::style::position::Position;
+use crate::style::{block_axis_is_horizontal, block_axis_positive, PhysicalSide};
 use crate::style::ComputedStyle;
+
+fn block_axis_sides(style: &ComputedStyle) -> (PhysicalSide, PhysicalSide) {
+  // Match `BlockFormattingContext::block_axis_sides` without depending on the block module.
+  //
+  // Margin collapsing is defined on the block axis, so in vertical writing modes we must treat
+  // the physical left/right edges as block-start/block-end respectively.
+  match (
+    block_axis_is_horizontal(style.writing_mode),
+    block_axis_positive(style.writing_mode),
+  ) {
+    (true, true) => (PhysicalSide::Left, PhysicalSide::Right),
+    (true, false) => (PhysicalSide::Right, PhysicalSide::Left),
+    (false, true) => (PhysicalSide::Top, PhysicalSide::Bottom),
+    (false, false) => (PhysicalSide::Bottom, PhysicalSide::Top),
+  }
+}
+
+fn padding_for_side(style: &ComputedStyle, side: PhysicalSide) -> f32 {
+  match side {
+    PhysicalSide::Top => style.padding_top.to_px(),
+    PhysicalSide::Right => style.padding_right.to_px(),
+    PhysicalSide::Bottom => style.padding_bottom.to_px(),
+    PhysicalSide::Left => style.padding_left.to_px(),
+  }
+}
+
+fn has_non_zero_block_size(style: &ComputedStyle) -> bool {
+  // Margin collapsing operates on the block axis. In vertical writing modes, the block axis is
+  // horizontal so the physical `width` maps to the block size. In horizontal writing modes, the
+  // block axis is vertical so the physical `height` maps to the block size.
+  let (block_size, keyword) = if block_axis_is_horizontal(style.writing_mode) {
+    (style.width.as_ref(), style.width_keyword)
+  } else {
+    (style.height.as_ref(), style.height_keyword)
+  };
+
+  if keyword.is_some() {
+    return true;
+  }
+
+  block_size.is_some_and(|len| len.to_px() > 0.0)
+}
+
+fn has_non_zero_min_block_size(style: &ComputedStyle) -> bool {
+  let (min_block, keyword) = if block_axis_is_horizontal(style.writing_mode) {
+    (style.min_width.as_ref(), style.min_width_keyword)
+  } else {
+    (style.min_height.as_ref(), style.min_height_keyword)
+  };
+
+  if keyword.is_some() {
+    return true;
+  }
+
+  min_block.is_some_and(|len| len.to_px() > 0.0)
+}
 
 /// A collapsible margin that tracks positive and negative components separately
 ///
@@ -293,31 +350,31 @@ pub fn collapse_margins(margin1: f32, margin2: f32) -> f32 {
 /// - height is auto or zero
 /// - No padding or border
 pub fn is_margin_collapsible_through(style: &ComputedStyle) -> bool {
-  if style.used_border_top_width().to_px() > 0.0 || style.used_border_bottom_width().to_px() > 0.0 {
+  let (block_start, block_end) = block_axis_sides(style);
+  if style.used_border_width(block_start).to_px() > 0.0
+    || style.used_border_width(block_end).to_px() > 0.0
+  {
     return false;
   }
-  if style.padding_top.to_px() > 0.0 || style.padding_bottom.to_px() > 0.0 {
+  if padding_for_side(style, block_start) > 0.0 || padding_for_side(style, block_end) > 0.0 {
     return false;
   }
-  if let Some(h) = &style.height {
-    if h.to_px() > 0.0 {
-      return false;
-    }
+  if has_non_zero_block_size(style) {
+    return false;
   }
-  if let Some(min_h) = &style.min_height {
-    if min_h.to_px() > 0.0 {
-      return false;
-    }
+  if has_non_zero_min_block_size(style) {
+    return false;
   }
   true
 }
 
 /// Determines if margins should collapse between parent and first child
 pub fn should_collapse_with_first_child(parent_style: &ComputedStyle) -> bool {
-  if parent_style.used_border_top_width().to_px() > 0.0 {
+  let (block_start, _) = block_axis_sides(parent_style);
+  if parent_style.used_border_width(block_start).to_px() > 0.0 {
     return false;
   }
-  if parent_style.padding_top.to_px() > 0.0 {
+  if padding_for_side(parent_style, block_start) > 0.0 {
     return false;
   }
   if establishes_bfc(parent_style) {
@@ -327,14 +384,15 @@ pub fn should_collapse_with_first_child(parent_style: &ComputedStyle) -> bool {
 }
 
 /// Determines if margins should collapse between parent and last child
-  pub fn should_collapse_with_last_child(parent_style: &ComputedStyle) -> bool {
-  if parent_style.used_border_bottom_width().to_px() > 0.0 {
+pub fn should_collapse_with_last_child(parent_style: &ComputedStyle) -> bool {
+  let (_, block_end) = block_axis_sides(parent_style);
+  if parent_style.used_border_width(block_end).to_px() > 0.0 {
     return false;
   }
-  if parent_style.padding_bottom.to_px() > 0.0 {
+  if padding_for_side(parent_style, block_end) > 0.0 {
     return false;
   }
-  if parent_style.height.is_some() {
+  if has_non_zero_block_size(parent_style) || has_non_zero_min_block_size(parent_style) {
     return false;
   }
   if establishes_bfc(parent_style) {

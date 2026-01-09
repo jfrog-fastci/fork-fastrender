@@ -436,6 +436,18 @@ width = 480
 height = 320
 
 [[tests]]
+id = "layout/margin-collapse-001"
+path = "layout/margin-collapse-001.html"
+test_type = "visual"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 80
+
+[[tests]]
 id = "layout/flex-row-001"
 path = "layout/flex-row-001.html"
 test_type = "visual"

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  /* Margin collapsing is defined on the block axis; in vertical writing modes the block
+     axis is horizontal (right-to-left for vertical-rl). Padding on the block-start edge
+     must suppress parent/first-child margin collapse. */
+  #outer {
+    writing-mode: vertical-rl;
+    width: 100px;
+    height: 60px;
+    padding-right: 10px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* In vertical-rl, block-start is on the right, so the block-start margin is margin-right. */
+  #inner {
+    width: 10px;
+    height: 20px;
+    margin-right: 20px;
+    background: rgb(0, 255, 0);
+  }
+</style>
+<div id="outer"><div id="inner"></div></div>
