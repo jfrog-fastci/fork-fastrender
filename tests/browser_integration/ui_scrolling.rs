@@ -8,6 +8,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+use super::support;
+
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn wait_for_message<F>(rx: &Receiver<WorkerToUi>, timeout: Duration, mut f: F) -> WorkerToUi
@@ -63,19 +65,11 @@ fn scroll_snap_updates_viewport_scroll_state() {
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: Some(url),
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, Some(url)))
     .unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (100, 100),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (100, 100), 1.0))
     .unwrap();
 
   let _ = wait_for_message(&worker_rx, TIMEOUT, |msg| {
@@ -84,11 +78,7 @@ fn scroll_snap_updates_viewport_scroll_state() {
   drain_worker(&worker_rx);
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 60.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 60.0), None))
     .unwrap();
 
   let msg = wait_for_message(&worker_rx, TIMEOUT, |msg| match msg {
@@ -166,19 +156,11 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
   let (ui_tx, worker_rx, handle) = spawn_worker();
   let tab_id = TabId(1);
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: Some(url),
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, Some(url)))
     .unwrap();
   ui_tx.send(UiToWorker::SetActiveTab { tab_id }).unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (200, 200),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (200, 200), 1.0))
     .unwrap();
 
   let _ = wait_for_message(&worker_rx, TIMEOUT, |msg| {
@@ -187,11 +169,7 @@ fn element_scroll_at_pointer_updates_element_scroll_state() {
   drain_worker(&worker_rx);
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 20.0),
-      pointer_css: Some((10.0, 10.0)),
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 20.0), Some((10.0, 10.0))))
     .unwrap();
 
   let msg = wait_for_message(&worker_rx, TIMEOUT, |msg| match msg {

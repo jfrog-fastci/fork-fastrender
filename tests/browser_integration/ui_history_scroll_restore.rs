@@ -1,6 +1,8 @@
 #![cfg(feature = "browser_ui")]
 
-use super::support::{recv_for_tab, TempSite};
+use super::support::{
+  create_tab_with_cancel, navigate_msg, recv_for_tab, scroll_msg, viewport_changed_msg, TempSite,
+};
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use fastrender::ui::{BrowserTabState, NavigationReason, TabId, UiToWorker, WorkerToUi};
@@ -38,11 +40,7 @@ fn send_scroll_delta(ui_tx: &Sender<UiToWorker>, tab_id: TabId, delta: (f32, f32
     return;
   }
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: delta,
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, delta, None))
     .expect("send Scroll");
 }
 
@@ -253,18 +251,10 @@ fn back_navigation_restores_viewport_scroll_from_history() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: CancelGens::new(),
-    })
+    .send(create_tab_with_cancel(tab_id, None, CancelGens::new()))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: VIEWPORT_CSS,
-      dpr: DPR,
-    })
+    .send(viewport_changed_msg(tab_id, VIEWPORT_CSS, DPR))
     .expect("ViewportChanged");
 
   // Start on url1.
@@ -272,21 +262,13 @@ fn back_navigation_restores_viewport_scroll_from_history() {
   tab.loading = true;
   tab.pending_nav_url = Some(url1.clone());
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url1.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url1.clone(), NavigationReason::TypedUrl))
     .expect("Navigate url1");
   wait_for_navigation_complete(&mut tab, &ui_tx, &ui_rx, tab_id);
 
   // Scroll url1 and verify history was updated.
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 320.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 320.0), None))
     .expect("Scroll url1");
   wait_for_scroll_y_at_least(&mut tab, &ui_tx, &ui_rx, tab_id, 200.0);
   let saved_scroll_y = tab.history.current().unwrap().scroll_y;
@@ -303,20 +285,12 @@ fn back_navigation_restores_viewport_scroll_from_history() {
   tab.error = None;
   tab.pending_nav_url = Some(url2.clone());
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url2.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url2.clone(), NavigationReason::TypedUrl))
     .expect("Navigate url2");
   wait_for_navigation_complete(&mut tab, &ui_tx, &ui_rx, tab_id);
 
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 640.0),
-      pointer_css: None,
-    })
+    .send(scroll_msg(tab_id, (0.0, 640.0), None))
     .expect("Scroll url2");
   wait_for_scroll_y_at_least(&mut tab, &ui_tx, &ui_rx, tab_id, 400.0);
 
@@ -331,11 +305,7 @@ fn back_navigation_restores_viewport_scroll_from_history() {
   tab.error = None;
   tab.pending_nav_url = Some(back_url.clone());
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: back_url,
-      reason: NavigationReason::BackForward,
-    })
+    .send(navigate_msg(tab_id, back_url, NavigationReason::BackForward))
     .expect("Navigate back");
 
   wait_for_restored_scroll_y(&mut tab, &ui_tx, &ui_rx, tab_id, back_target_y);

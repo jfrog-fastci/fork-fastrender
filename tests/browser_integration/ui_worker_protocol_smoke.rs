@@ -6,6 +6,8 @@ use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
+use super::support;
+
 struct Harness {
   tab_id: TabId,
   cancel_gens: CancelGens,
@@ -117,11 +119,11 @@ fn create_tab_with_initial_url_emits_navigation_and_frame() {
   let tab_id = TabId::new();
   let h = Harness::new(tab_id);
 
-  h.send(UiToWorker::CreateTab {
+  h.send(support::create_tab_with_cancel(
     tab_id,
-    initial_url: Some("about:newtab".to_string()),
-    cancel: h.cancel_gens.clone(),
-  });
+    Some("about:newtab"),
+    h.cancel_gens.clone(),
+  ));
 
   let messages = h.collect_until(Duration::from_secs(3), |msgs| {
     let mut saw_started = false;
@@ -261,20 +263,16 @@ fn viewport_changed_triggers_frame_ready() {
   let tab_id = TabId::new();
   let h = Harness::new(tab_id);
 
-  h.send(UiToWorker::CreateTab {
+  h.send(support::create_tab_with_cancel(
     tab_id,
-    initial_url: Some("about:newtab".to_string()),
-    cancel: h.cancel_gens.clone(),
-  });
+    Some("about:newtab"),
+    h.cancel_gens.clone(),
+  ));
 
   // Drain initial navigation.
   let _initial = h.recv_next_frame(Duration::from_secs(3));
 
-  h.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (320, 240),
-    dpr: 2.0,
-  });
+  h.send(support::viewport_changed_msg(tab_id, (320, 240), 2.0));
 
   let frame = h.recv_next_frame(Duration::from_secs(3));
   assert_eq!(frame.viewport_css, (320, 240));
