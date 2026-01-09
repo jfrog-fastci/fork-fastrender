@@ -1,7 +1,7 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_wheel::{apply_wheel_scroll_at_point, ScrollWheelInput};
-use crate::interaction::{InteractionAction, InteractionEngine};
+use crate::interaction::{fragment_tree_with_scroll, InteractionAction, InteractionEngine};
 use crate::scroll::ScrollState;
 use crate::ui::about_pages;
 use crate::ui::messages::{
@@ -220,6 +220,10 @@ impl BrowserTabController {
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let fragment_tree = unsafe { &*fragment_tree_ptr };
+    let scrolled = (!self.scroll_state.elements.is_empty())
+      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
+    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
       self
@@ -227,7 +231,7 @@ impl BrowserTabController {
         .pointer_move(
           dom,
           unsafe { &*box_tree_ptr },
-          unsafe { &*fragment_tree_ptr },
+          fragment_tree,
           &self.scroll_state,
           viewport_point,
         )
@@ -254,6 +258,10 @@ impl BrowserTabController {
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let fragment_tree = unsafe { &*fragment_tree_ptr };
+    let scrolled = (!self.scroll_state.elements.is_empty())
+      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
+    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let changed = self.document.mutate_dom(|dom| {
       self
@@ -261,7 +269,7 @@ impl BrowserTabController {
         .pointer_down(
           dom,
           unsafe { &*box_tree_ptr },
-          unsafe { &*fragment_tree_ptr },
+          fragment_tree,
           &self.scroll_state,
           viewport_point,
         )
@@ -288,13 +296,17 @@ impl BrowserTabController {
     };
 
     let viewport_point = Point::new(pos_css.0, pos_css.1);
+    let fragment_tree = unsafe { &*fragment_tree_ptr };
+    let scrolled = (!self.scroll_state.elements.is_empty())
+      .then(|| fragment_tree_with_scroll(fragment_tree, &self.scroll_state));
+    let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
 
     let mut action = InteractionAction::None;
     let changed = self.document.mutate_dom(|dom| {
       let (dom_changed, next_action) = self.interaction.pointer_up_with_scroll(
         dom,
         unsafe { &*box_tree_ptr },
-        unsafe { &*fragment_tree_ptr },
+        fragment_tree,
         &self.scroll_state,
         viewport_point,
         &self.current_url,

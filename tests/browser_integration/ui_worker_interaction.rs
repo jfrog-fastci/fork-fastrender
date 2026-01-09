@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 use super::support::{
-  create_tab_msg, navigate_msg, pointer_down, pointer_up, text_input, viewport_changed_msg,
-  DEFAULT_TIMEOUT,
+  create_tab_msg, navigate_msg, pointer_down, pointer_up, scroll_at_pointer, text_input,
+  viewport_changed_msg, DEFAULT_TIMEOUT,
 };
 
 // These tests spin up real UI worker threads that create renderers and rasterize frames.
@@ -345,6 +345,134 @@ fn link_click_triggers_navigation_to_resolved_url() {
 
   assert!(saw_started, "expected NavigationStarted for page2");
   assert!(saw_committed, "expected NavigationCommitted for page2");
+  assert!(saw_frame, "expected FrameReady after navigation committed");
+
+  drop(ui_tx);
+  join.join().unwrap();
+}
+
+#[test]
+fn element_scroll_then_click_link_uses_scrolled_hit_testing() {
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+  let page1_path = dir.path().join("page1.html");
+  let page2_path = dir.path().join("page2.html");
+
+  // The link starts below the fold inside the scroller; after scrolling the element, it should be
+  // clickable at the same viewport coordinate where it is painted.
+  let page1 = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          #scroller { width: 200px; height: 100px; overflow: auto; background: rgb(240, 240, 240); }
+          #spacer { height: 120px; }
+          #link { display: block; height: 40px; background: rgb(255, 0, 0); }
+        </style>
+      </head>
+      <body>
+        <div id="scroller">
+          <div id="spacer"></div>
+          <a href="page2.html" id="link">Go</a>
+        </div>
+      </body>
+    </html>
+  "#;
+  let page2 = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }
+        </style>
+      </head>
+      <body>Second</body>
+    </html>
+  "#;
+
+  std::fs::write(&page1_path, page1).expect("write page1");
+  std::fs::write(&page2_path, page2).expect("write page2");
+
+  let page1_url = format!("file://{}", page1_path.display());
+  let page2_url = format!("file://{}", page2_path.display());
+
+  let handle =
+    spawn_ui_worker("fastr-ui-worker-interaction-element-scroll").expect("spawn ui worker");
+  let (ui_tx, ui_rx, join) = handle.split();
+  let tab_id = TabId::new();
+  ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (240, 160), 1.0))
+    .unwrap();
+  ui_tx
+    .send(navigate_msg(tab_id, page1_url.clone(), NavigationReason::TypedUrl))
+    .unwrap();
+
+  let deadline = Instant::now() + TIMEOUT;
+  let _frame = recv_until_frame(&ui_rx, tab_id, Some(page1_url.as_str()), deadline);
+  while ui_rx.try_recv().is_ok() {}
+
+  ui_tx
+    .send(scroll_at_pointer(tab_id, (0.0, 1000.0), (10.0, 10.0)))
+    .unwrap();
+
+  let deadline = Instant::now() + TIMEOUT;
+  let frame = recv_until_frame(&ui_rx, tab_id, None, deadline);
+  assert!(
+    frame.scroll_state.viewport.y.abs() < 0.5,
+    "expected viewport scroll to remain 0 when scrolling element; got {:?}",
+    frame.scroll_state.viewport
+  );
+  assert!(
+    frame
+      .scroll_state
+      .elements
+      .values()
+      .any(|offset| offset.y > 0.0),
+    "expected element scroll offset after scroll_at_pointer; got {:?}",
+    frame.scroll_state
+  );
+
+  // Click where the link is painted after scrolling.
+  ui_tx
+    .send(pointer_down(tab_id, (10.0, 60.0), PointerButton::Primary))
+    .unwrap();
+  ui_tx
+    .send(pointer_up(tab_id, (10.0, 60.0), PointerButton::Primary))
+    .unwrap();
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut saw_started = false;
+  let mut saw_committed = false;
+  let mut saw_frame = false;
+
+  while Instant::now() < deadline {
+    match ui_rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => match msg {
+        WorkerToUi::NavigationStarted { tab_id: msg_tab, url } if msg_tab == tab_id => {
+          if url == page2_url {
+            saw_started = true;
+          }
+        }
+        WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. } if msg_tab == tab_id => {
+          if url == page2_url {
+            saw_committed = true;
+          }
+        }
+        WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+          if saw_committed {
+            saw_frame = true;
+            break;
+          }
+        }
+        _ => {}
+      },
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  assert!(saw_started, "expected NavigationStarted for page2 after scrolled click");
+  assert!(saw_committed, "expected NavigationCommitted for page2 after scrolled click");
   assert!(saw_frame, "expected FrameReady after navigation committed");
 
   drop(ui_tx);

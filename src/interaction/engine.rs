@@ -1472,7 +1472,10 @@ impl InteractionEngine {
 
   /// Update hover state (data-fastr-hover on target + ancestors).
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
-  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
+  /// translating it by `scroll.viewport`.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
   pub fn pointer_move(
     &mut self,
     dom: &mut DomNode,
@@ -1482,12 +1485,6 @@ impl InteractionEngine {
     viewport_point: Point,
   ) -> bool {
     let page_point = viewport_point.translate(scroll.viewport);
-    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
-      let mut tree = fragment_tree.clone();
-      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
-      tree
-    });
-    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
     let mut index = DomIndexMut::new(dom);
     let mut dom_changed = false;
     if let Some(state) = self.range_drag {
@@ -1531,7 +1528,10 @@ impl InteractionEngine {
 
   /// Begin active state (data-fastr-active on target + ancestors) and set modality=Pointer.
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
-  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
+  /// translating it by `scroll.viewport`.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
   pub fn pointer_down(
     &mut self,
     dom: &mut DomNode,
@@ -1545,12 +1545,6 @@ impl InteractionEngine {
     self.range_drag = None;
 
     let page_point = viewport_point.translate(scroll.viewport);
-    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
-      let mut tree = fragment_tree.clone();
-      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
-      tree
-    });
-    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
 
     let down_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let down_target = down_hit.as_ref().map(|hit| hit.dom_node_id);
@@ -1651,7 +1645,10 @@ impl InteractionEngine {
   /// - text control/textarea: focus
   /// - dropdown select: return OpenSelectDropdown (selection deferred to UI)
   /// `viewport_point` is in viewport coordinates; this method converts it to a page point by
-  /// translating it by `scroll.viewport` and applies any element scroll offsets before hit-testing.
+  /// translating it by `scroll.viewport`.
+  ///
+  /// The provided `fragment_tree` must already have element scroll offsets applied (e.g. via
+  /// [`crate::interaction::fragment_tree_with_scroll`]).
   pub fn pointer_up_with_scroll(
     &mut self,
     dom: &mut DomNode,
@@ -1666,12 +1663,6 @@ impl InteractionEngine {
     let prev_focus = self.focused;
 
     let page_point = viewport_point.translate(scroll.viewport);
-    let scrolled_tree = (!scroll.elements.is_empty()).then(|| {
-      let mut tree = fragment_tree.clone();
-      crate::scroll::apply_scroll_offsets(&mut tree, scroll);
-      tree
-    });
-    let fragment_tree = scrolled_tree.as_ref().unwrap_or(fragment_tree);
 
     let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
     let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);

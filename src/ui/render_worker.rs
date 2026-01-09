@@ -12,7 +12,7 @@ use crate::api::{
 use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
-use crate::interaction::{dom_mutation, InteractionAction, InteractionEngine};
+use crate::interaction::{dom_mutation, fragment_tree_with_scroll, InteractionAction, InteractionEngine};
 use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGuard};
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
@@ -352,16 +352,29 @@ struct BrowserRuntime {
   factory: FastRenderFactory,
   tabs: HashMap<TabId, TabState>,
   active_tab: Option<TabId>,
+  /// When `true`, tabs created without an explicit initial URL will auto-navigate to
+  /// `about:newtab` (matching the interactive browser UI).
+  ///
+  /// The headless UI worker used by most integration tests prefers to stay inert until the test
+  /// explicitly sends a `Navigate` message; keeping this behaviour configurable avoids extra frames
+  /// that could race with test-driven navigations.
+  auto_newtab_on_create: bool,
 }
 
 impl BrowserRuntime {
-  fn new(ui_rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, factory: FastRenderFactory) -> Self {
+  fn new(
+    ui_rx: Receiver<UiToWorker>,
+    ui_tx: Sender<WorkerToUi>,
+    factory: FastRenderFactory,
+    auto_newtab_on_create: bool,
+  ) -> Self {
     Self {
       ui_rx,
       ui_tx,
       factory,
       tabs: HashMap::new(),
       active_tab: None,
+      auto_newtab_on_create,
     }
   }
 
@@ -1016,6 +1029,9 @@ impl BrowserRuntime {
     let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
       let changed = engine.pointer_move(dom, box_tree, fragment_tree, scroll, viewport_point);
       (changed, changed)
     }) {
@@ -1043,6 +1059,9 @@ impl BrowserRuntime {
     let engine = &mut tab.interaction;
 
     let changed = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+      let scrolled =
+        (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+      let fragment_tree = scrolled.as_ref().unwrap_or(fragment_tree);
       let changed = engine.pointer_down(dom, box_tree, fragment_tree, scroll, viewport_point);
       (changed, changed)
     }) {
@@ -1074,26 +1093,32 @@ impl BrowserRuntime {
     let Some(doc) = tab.document.as_mut() else {
       return;
     };
-    let (dom_changed, action, anchor_css) = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-      let (dom_changed, action) = engine.pointer_up_with_scroll(
-        dom,
-        box_tree,
-        fragment_tree,
-        scroll,
-        viewport_point,
-        &document_url,
-        &base_url,
-      );
+    let (dom_changed, action, anchor_css) =
+      match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+        let scrolled =
+          (!scroll.elements.is_empty()).then(|| fragment_tree_with_scroll(fragment_tree, scroll));
+        let hit_tree = scrolled.as_ref().unwrap_or(fragment_tree);
+        let (dom_changed, action) = engine.pointer_up_with_scroll(
+          dom,
+          box_tree,
+          hit_tree,
+          scroll,
+          viewport_point,
+          &document_url,
+          &base_url,
+        );
 
-      let anchor_css = match &action {
-        InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
-          select_anchor_css(box_tree, fragment_tree, scroll, *select_node_id)
-        }
-        _ => None,
-      };
+        let anchor_css = match &action {
+          InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
+            // `select_anchor_css` expects an unscrolled fragment tree and applies element scroll
+            // offsets internally.
+            select_anchor_css(box_tree, fragment_tree, scroll, *select_node_id)
+          }
+          _ => None,
+        };
 
-      (dom_changed, (dom_changed, action, anchor_css))
-    }) {
+        (dom_changed, (dom_changed, action, anchor_css))
+      }) {
       Ok(result) => result,
       Err(_) => return,
     };
@@ -2052,7 +2077,7 @@ fn default_ui_worker_factory() -> crate::Result<FastRenderFactory> {
 /// navigation events, etc). It is intended to be driven by a UI thread/event loop, but it is also
 /// usable from tests to exercise end-to-end interaction wiring.
 pub fn spawn_ui_worker(name: impl Into<String>) -> crate::Result<UiWorkerHandle> {
-  spawn_ui_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?)
+  spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, false)
 }
 
 /// Spawn a UI worker with an optional per-frame artificial delay (test-only).
@@ -2060,7 +2085,12 @@ pub fn spawn_ui_worker_for_test(
   name: impl Into<String>,
   test_render_delay_ms: Option<u64>,
 ) -> crate::Result<UiWorkerHandle> {
-  spawn_ui_worker_with_factory_inner(name.into(), test_render_delay_ms, default_ui_worker_factory()?)
+  spawn_worker_with_factory_inner(
+    name.into(),
+    test_render_delay_ms,
+    default_ui_worker_factory()?,
+    false,
+  )
 }
 
 /// Spawn a UI worker using a preconfigured [`FastRenderFactory`].
@@ -2070,13 +2100,14 @@ pub fn spawn_ui_worker_with_factory(
   name: impl Into<String>,
   factory: FastRenderFactory,
 ) -> crate::Result<UiWorkerHandle> {
-  spawn_ui_worker_with_factory_inner(name.into(), None, factory)
+  spawn_worker_with_factory_inner(name.into(), None, factory, false)
 }
 
-fn spawn_ui_worker_with_factory_inner(
+fn spawn_worker_with_factory_inner(
   name: String,
   test_render_delay_ms: Option<u64>,
   factory: FastRenderFactory,
+  auto_newtab_on_create: bool,
 ) -> crate::Result<UiWorkerHandle> {
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<UiToWorker>();
   let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<WorkerToUi>();
@@ -2100,7 +2131,8 @@ fn spawn_ui_worker_with_factory_inner(
         TestRenderDelayGuard
       });
 
-      let mut runtime = BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory);
+      let mut runtime =
+        BrowserRuntime::new(ui_to_worker_rx, worker_to_ui_tx, factory, auto_newtab_on_create);
       runtime.run();
     })?;
 
@@ -2125,7 +2157,8 @@ pub fn spawn_browser_worker() -> crate::Result<BrowserWorkerHandle> {
 pub fn spawn_browser_worker_with_name(
   name: impl Into<String>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_ui_worker(name)?;
+  let handle =
+    spawn_worker_with_factory_inner(name.into(), None, default_ui_worker_factory()?, true)?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -2136,7 +2169,12 @@ pub fn spawn_browser_worker_with_name(
 /// Like [`spawn_browser_worker`], but allows callers (tests) to provide a preconfigured renderer
 /// factory.
 pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_ui_worker_with_factory("browser_worker", factory)?;
+  let handle = spawn_worker_with_factory_inner(
+    "browser_worker".to_string(),
+    None,
+    factory,
+    true,
+  )?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,
@@ -2148,7 +2186,12 @@ pub fn spawn_browser_worker_with_factory(factory: FastRenderFactory) -> crate::R
 pub fn spawn_browser_worker_for_test(
   test_render_delay_ms: Option<u64>,
 ) -> crate::Result<BrowserWorkerHandle> {
-  let handle = spawn_ui_worker_for_test("browser_worker", test_render_delay_ms)?;
+  let handle = spawn_worker_with_factory_inner(
+    "browser_worker".to_string(),
+    test_render_delay_ms,
+    default_ui_worker_factory()?,
+    true,
+  )?;
   Ok(BrowserWorkerHandle {
     tx: handle.ui_tx,
     rx: handle.ui_rx,

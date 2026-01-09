@@ -256,6 +256,16 @@ thread_local! {
   static STAGE_LISTENER_STACK: RefCell<Vec<Option<StageListener>>> = RefCell::new(Vec::new());
 }
 
+thread_local! {
+  /// Re-entrancy counter for [`GlobalStageListenerGuard`].
+  ///
+  /// Some UI layers wrap both "prepare" and "paint" in nested job helpers that each install a
+  /// global stage listener guard. The stage listener itself is process-global, so we still need an
+  /// inter-thread mutex to prevent concurrent installs, but we must allow the *same* thread to
+  /// re-enter without deadlocking.
+  static GLOBAL_STAGE_LISTENER_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
 fn stage_listener() -> &'static Mutex<Option<StageListener>> {
   static LISTENER: OnceLock<Mutex<Option<StageListener>>> = OnceLock::new();
   LISTENER.get_or_init(|| Mutex::new(None))
@@ -317,12 +327,41 @@ pub fn record_stage(stage: StageHeartbeat) {
 #[must_use]
 pub struct GlobalStageListenerGuard {
   previous: Option<StageListener>,
+  // Hold an exclusive lock for the lifetime of this guard.
+  //
+  // The underlying stage listener is a *single* global callback shared by the whole process. If
+  // two threads attempted to install independent `GlobalStageListenerGuard`s concurrently, the
+  // later one would overwrite the listener used by the earlier job, causing stage heartbeats to be
+  // mis-routed (or dropped) until one of the guards is dropped.
+  //
+  // The browser UI worker currently renders at most one job at a time, so serialising installs via
+  // this mutex is acceptable and prevents flaky cross-test interference under `cargo test`'s
+  // default parallelism.
+  _exclusive: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 impl GlobalStageListenerGuard {
   pub fn new(listener: StageListener) -> Self {
+    static EXCLUSIVE: OnceLock<Mutex<()>> = OnceLock::new();
+    let exclusive = GLOBAL_STAGE_LISTENER_DEPTH.with(|depth| {
+      let prev = depth.get();
+      depth.set(prev.saturating_add(1));
+      if prev == 0 {
+        Some(
+          EXCLUSIVE
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+      } else {
+        None
+      }
+    });
     let previous = swap_stage_listener(Some(listener));
-    Self { previous }
+    Self {
+      previous,
+      _exclusive: exclusive,
+    }
   }
 }
 
@@ -330,6 +369,15 @@ impl Drop for GlobalStageListenerGuard {
   fn drop(&mut self) {
     let previous = self.previous.take();
     let _ = swap_stage_listener(previous);
+    GLOBAL_STAGE_LISTENER_DEPTH.with(|depth| {
+      let cur = depth.get();
+      if cur == 0 {
+        // Should be impossible unless a guard is dropped without being constructed (UB) or the
+        // thread-local storage was corrupted.
+        return;
+      }
+      depth.set(cur - 1);
+    });
   }
 }
 
