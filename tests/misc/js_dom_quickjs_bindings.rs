@@ -229,3 +229,76 @@ fn quickjs_dom_node_and_element_navigation_mvp() {
     })
     .expect("js eval");
 }
+
+#[test]
+fn quickjs_dom_inner_html_and_outer_html_round_trip() {
+  let html = "<!doctype html><html><head></head><body><div id=target></div></body></html>";
+  let renderer_dom = parse_html(html).expect("parse html");
+  let dom = Document::from_renderer_dom(&renderer_dom);
+  let dom: SharedDom2Document = Rc::new(RefCell::new(dom));
+
+  let rt = Runtime::new().expect("quickjs runtime");
+  let ctx = Context::full(&rt).expect("quickjs context");
+
+  ctx
+    .with(|ctx| -> rquickjs::Result<()> {
+      install_dom2_bindings(ctx.clone(), Rc::clone(&dom))?;
+
+      // Document -> HTML -> BODY -> DIV (target).
+      ctx.eval::<(), _>("globalThis.div = document.firstChild.lastChild.firstChild;")?;
+      assert_eq!(ctx.eval::<String, _>("div.tagName")?, "DIV");
+      assert_eq!(ctx.eval::<String, _>("div.id")?, "target");
+      assert_eq!(ctx.eval::<String, _>("div.innerHTML")?, "");
+
+      // innerHTML setter + getter should round trip.
+      ctx.eval::<(), _>("div.innerHTML = '<span id=child>hi</span>tail';")?;
+      assert_eq!(ctx.eval::<String, _>("div.innerHTML")?, "<span id=\"child\">hi</span>tail");
+      assert_eq!(ctx.eval::<String, _>("div.firstChild.nodeName")?, "SPAN");
+      assert_eq!(ctx.eval::<String, _>("div.firstChild.id")?, "child");
+      assert_eq!(ctx.eval::<String, _>("div.firstChild.nextSibling.nodeValue")?, "tail");
+
+      // outerHTML getter should serialize the element itself.
+      assert_eq!(
+        ctx.eval::<String, _>("div.outerHTML")?,
+        "<div id=\"target\"><span id=\"child\">hi</span>tail</div>"
+      );
+
+      // Setting innerHTML to a script should insert it but scripts must be marked inert for later
+      // execution (see Rust-side assertion below).
+      ctx.eval::<(), _>("div.innerHTML = '<script id=s>console.log(1)</script>';")?;
+      assert_eq!(ctx.eval::<String, _>("div.firstChild.nodeName")?, "SCRIPT");
+
+      Ok(())
+    })
+    .expect("js eval");
+
+  // Verify that scripts inserted via `innerHTML` are marked "already started" so they never execute
+  // even if later moved/reinserted.
+  let script_id = {
+    let dom_ref = dom.borrow();
+    dom_ref
+      .get_element_by_id("s")
+      .expect("expected script inserted via innerHTML")
+  };
+  assert!(
+    dom.borrow().node(script_id).script_already_started,
+    "expected innerHTML-inserted script to be marked already started"
+  );
+
+  // outerHTML setter should replace the element in the tree and disconnect the old wrapper.
+  ctx
+    .with(|ctx| -> rquickjs::Result<()> {
+      ctx.eval::<(), _>("div.outerHTML = '<p id=replaced>ok</p>';")?;
+      assert_eq!(ctx.eval::<bool, _>("div.isConnected")?, false);
+      assert_eq!(
+        ctx.eval::<String, _>("document.firstChild.lastChild.firstChild.nodeName")?,
+        "P"
+      );
+      assert_eq!(
+        ctx.eval::<String, _>("document.firstChild.lastChild.firstChild.id")?,
+        "replaced"
+      );
+      Ok(())
+    })
+    .expect("js eval");
+}

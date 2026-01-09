@@ -9,7 +9,7 @@
 //!   wrapper cache so node identity is preserved (`node.firstChild === node.firstChild`).
 
 use crate::dom::HTML_NAMESPACE;
-use crate::dom2::{Document, NodeId, NodeKind};
+use crate::dom2::{DomError, Document, NodeId, NodeKind};
 use rquickjs::{Ctx, Function};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -177,6 +177,28 @@ const DOM_BOOTSTRAP: &str = r#"
       const id = idOf(this);
       assertValidId(id);
       __dom_set_inner_text(id, v == null ? "" : String(v));
+    }
+
+    get innerHTML() {
+      const id = idOf(this);
+      assertValidId(id);
+      return __dom_inner_html(id);
+    }
+    set innerHTML(v) {
+      const id = idOf(this);
+      assertValidId(id);
+      __dom_set_inner_html(id, String(v));
+    }
+
+    get outerHTML() {
+      const id = idOf(this);
+      assertValidId(id);
+      return __dom_outer_html(id);
+    }
+    set outerHTML(v) {
+      const id = idOf(this);
+      assertValidId(id);
+      __dom_set_outer_html(id, String(v));
     }
   }
 
@@ -579,6 +601,86 @@ pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rqu
     globals.set("__dom_set_inner_text", f)?;
   }
 
+  // -- HTML serialization/parsing helpers (innerHTML / outerHTML) -------------
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(ctx.clone(), move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
+      let result = {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(String::new());
+        };
+        dom.inner_html(id)
+      };
+      match result {
+        Ok(html) => Ok(html),
+        Err(err) => throw_dom_error(js_ctx, err),
+      }
+    })?;
+    globals.set("__dom_inner_html", f)?;
+  }
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32, html: String| -> rquickjs::Result<()> {
+      let result = {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        dom.set_inner_html(id, &html)
+      };
+      match result {
+        Ok(()) => Ok(()),
+        Err(err) => throw_dom_error(js_ctx, err),
+      }
+    },
+    )?;
+    globals.set("__dom_set_inner_html", f)?;
+  }
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(ctx.clone(), move |js_ctx: Ctx<'_>, raw: u32| -> rquickjs::Result<String> {
+      let result = {
+        let dom = dom.borrow();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(String::new());
+        };
+        dom.outer_html(id)
+      };
+      match result {
+        Ok(html) => Ok(html),
+        Err(err) => throw_dom_error(js_ctx, err),
+      }
+    })?;
+    globals.set("__dom_outer_html", f)?;
+  }
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32, html: String| -> rquickjs::Result<()> {
+      let result = {
+        let mut dom = dom.borrow_mut();
+        let Ok(id) = dom.node_id_from_index(raw as usize) else {
+          return Ok(());
+        };
+        dom.set_outer_html(id, &html)
+      };
+      match result {
+        Ok(()) => Ok(()),
+        Err(err) => throw_dom_error(js_ctx, err),
+      }
+    },
+    )?;
+    globals.set("__dom_set_outer_html", f)?;
+  }
+
   // Define JS wrapper classes + cache.
   ctx.eval::<(), _>(DOM_BOOTSTRAP)?;
   Ok(())
@@ -586,6 +688,23 @@ pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rqu
 
 fn is_html_namespace(namespace: &str) -> bool {
   namespace.is_empty() || namespace == HTML_NAMESPACE
+}
+
+fn throw_dom_exception<'js, T>(ctx: Ctx<'js>, name: &str, message: &str) -> rquickjs::Result<T> {
+  // rquickjs surfaces thrown values via `Error::Exception`. The easiest way to throw a DOMException
+  // without relying on internal constructors is to `eval` a `throw`.
+  //
+  // This is only used by the QuickJS test harness bindings.
+  let msg = serde_json::to_string(message).unwrap_or_else(|_| "\"DOMException\"".to_string());
+  let name = serde_json::to_string(name).unwrap_or_else(|_| "\"Error\"".to_string());
+  match ctx.eval::<(), _>(format!("throw new DOMException({msg}, {name});")) {
+    Ok(()) => Err(rquickjs::Error::Exception),
+    Err(err) => Err(err),
+  }
+}
+
+fn throw_dom_error<'js, T>(ctx: Ctx<'js>, err: DomError) -> rquickjs::Result<T> {
+  throw_dom_exception(ctx, err.code(), err.code())
 }
 
 fn dom_parent_node_index(dom: &Document, raw: u32) -> rquickjs::Result<Option<u32>> {
