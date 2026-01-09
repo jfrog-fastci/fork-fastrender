@@ -178,7 +178,13 @@ fn radio_click_is_scoped_to_nearest_form() {
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(action, InteractionAction::None);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
 
   assert!(
     !has_attr(&dom, "a1", "checked"),
@@ -558,8 +564,19 @@ fn checkbox_click_toggles_checked_attribute() {
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(action, InteractionAction::None);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
   assert!(has_attr(&dom, "cb", "checked"));
+  assert_eq!(
+    attr_value(&dom, "cb", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "clicking a checkbox should focus it"
+  );
 }
 
 #[test]
@@ -615,8 +632,162 @@ fn label_click_activates_associated_checkbox() {
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(action, InteractionAction::None);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
   assert!(has_attr(&dom, "cb", "checked"));
+  assert_eq!(
+    attr_value(&dom, "cb", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "clicking a label should focus the associated checkbox"
+  );
+}
+
+#[test]
+fn radio_click_checks_and_focuses() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el("input", vec![("id", "r"), ("type", "radio")], vec![])],
+    )],
+  )]);
+
+  let radio_dom_id = node_id(&dom, "r");
+  let mut radio_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  radio_box.styled_node_id = Some(radio_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![radio_box],
+  ));
+
+  let radio_box_id = find_box_id_for_styled_node(&box_tree, radio_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      radio_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
+  assert!(has_attr(&dom, "r", "checked"), "radio should be checked");
+  assert_eq!(
+    attr_value(&dom, "r", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "clicking a radio should focus it"
+  );
+}
+
+#[test]
+fn clicking_outside_focusable_blurs_current_focus() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("input", vec![("id", "txt"), ("value", "")], vec![]),
+        el("div", vec![("id", "outside")], vec![]),
+      ],
+    )],
+  )]);
+
+  let input_dom_id = node_id(&dom, "txt");
+  let outside_dom_id = node_id(&dom, "outside");
+
+  let mut input_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  input_box.styled_node_id = Some(input_dom_id);
+  let mut outside_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  outside_box.styled_node_id = Some(outside_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![input_box, outside_box],
+  ));
+
+  let input_box_id = find_box_id_for_styled_node(&box_tree, input_dom_id);
+  let outside_box_id = find_box_id_for_styled_node(&box_tree, outside_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 80.0, 20.0), input_box_id, vec![]),
+      FragmentNode::new_block_with_id(
+        Rect::from_xywh(0.0, 40.0, 200.0, 160.0),
+        outside_box_id,
+        vec![],
+      ),
+    ],
+  ));
+
+  let mut engine = InteractionEngine::new();
+
+  // Focus the input.
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, Point::new(5.0, 5.0));
+  let (changed, _) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 5.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(
+    attr_value(&dom, "txt", "data-fastr-focus").as_deref(),
+    Some("true"),
+    "input should be focused after click"
+  );
+
+  // Click outside any focusable element to blur.
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 60.0),
+  );
+  let (changed, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    Point::new(5.0, 60.0),
+    "https://x/",
+  );
+  assert!(changed);
+  assert_eq!(
+    action,
+    InteractionAction::FocusChanged { node_id: None },
+    "blurring should emit FocusChanged(None)"
+  );
+  assert!(
+    !has_attr(&dom, "txt", "data-fastr-focus"),
+    "input focus should be cleared after clicking outside"
+  );
 }
 
 #[test]
@@ -761,7 +932,13 @@ fn submit_click_marks_form_user_validity() {
     "https://x/",
   );
   assert!(changed);
-  assert_eq!(action, InteractionAction::None);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
 
   assert_eq!(
     attr_value(&dom, "f", "data-fastr-user-validity").as_deref(),
@@ -1146,7 +1323,13 @@ fn checkbox_toggle_clears_indeterminate_and_aria_checked_mixed() {
     Point::new(5.0, 5.0),
     "https://x/",
   );
-  assert_eq!(action, InteractionAction::None);
+  assert!(
+    matches!(
+      action,
+      InteractionAction::FocusChanged { node_id: Some(_) } | InteractionAction::None
+    ),
+    "pointer_up may emit FocusChanged"
+  );
   assert!(has_attr(&dom, "cb", "checked"));
   assert!(
     !has_attr(&dom, "cb", "indeterminate"),

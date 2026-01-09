@@ -207,9 +207,14 @@ fn is_anchor_with_href(node: &DomNode) -> bool {
   node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("a"))
-    && node
-      .get_attribute_ref("href")
-      .is_some_and(|href| !trim_ascii_whitespace(href).is_empty())
+    && node.get_attribute_ref("href").is_some_and(|href| {
+      let href = trim_ascii_whitespace(href);
+      !href.is_empty()
+        && !href
+          .as_bytes()
+          .get(.."javascript:".len())
+          .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"javascript:"))
+    })
 }
 
 fn is_label(node: &DomNode) -> bool {
@@ -241,9 +246,8 @@ fn is_button(node: &DomNode) -> bool {
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
 }
-
 fn input_type(node: &DomNode) -> &str {
-  node.get_attribute_ref("type").unwrap_or("text")
+  trim_ascii_whitespace(node.get_attribute_ref("type").unwrap_or("text"))
 }
 
 fn is_checkbox_input(node: &DomNode) -> bool {
@@ -286,12 +290,72 @@ fn is_text_input(node: &DomNode) -> bool {
     && !t.eq_ignore_ascii_case("image")
 }
 
-fn is_focusable_text_control(node: &DomNode) -> bool {
-  is_textarea(node) || is_text_input(node)
+fn is_disabled_or_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let Some(node) = index.node(node_id) else {
+      return false;
+    };
+
+    if node.get_attribute_ref("disabled").is_some() {
+      return true;
+    }
+    if node.get_attribute_ref("inert").is_some() {
+      return true;
+    }
+    if node
+      .get_attribute_ref("data-fastr-inert")
+      .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    {
+      return true;
+    }
+
+    node_id = *index.parent.get(node_id).unwrap_or(&0);
+  }
+
+  false
 }
 
-fn is_focusable_control(node: &DomNode) -> bool {
-  is_focusable_text_control(node) || is_select(node)
+fn has_tabindex_minus_one(node: &DomNode) -> bool {
+  let Some(tabindex) = node.get_attribute_ref("tabindex") else {
+    return false;
+  };
+  let trimmed = trim_ascii_whitespace(tabindex);
+  if trimmed.is_empty() {
+    return false;
+  }
+  trimmed
+    .parse::<i32>()
+    .ok()
+    .is_some_and(|value| value == -1)
+}
+
+/// MVP focusable predicate for pointer focus / blur decisions.
+///
+/// This intentionally only covers native interactive elements we currently support.
+fn is_focusable_interactive_element(index: &DomIndexMut, node_id: usize) -> bool {
+  let Some(node) = index.node(node_id) else {
+    return false;
+  };
+
+  if is_disabled_or_inert(index, node_id) {
+    return false;
+  }
+
+  // If tabindex=-1 is used to remove an element from focus traversal, also skip focusing it via
+  // pointer interaction for MVP consistency.
+  if has_tabindex_minus_one(node) {
+    return false;
+  }
+
+  if is_anchor_with_href(node) {
+    return true;
+  }
+
+  if is_input(node) {
+    return !input_type(node).eq_ignore_ascii_case("hidden");
+  }
+
+  is_textarea(node) || is_select(node) || is_button(node)
 }
 
 fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) -> bool {
@@ -873,31 +937,14 @@ impl InteractionEngine {
       if let Some(target_id) = click_target {
         if node_or_ancestor_is_inert(&index, target_id) {
           // Inert subtrees are not interactive: do not navigate, focus, or mutate form state.
-        } else if let Some(href) = index
-          .node(target_id)
-          .filter(|node| is_anchor_with_href(node))
-          .and_then(|node| node.get_attribute_ref("href"))
-        {
-          if let Some(resolved) = resolve_url(base_url, href) {
-            dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
-            action = InteractionAction::Navigate { href: resolved };
-          }
-        } else if index.node(target_id).is_some_and(is_checkbox_input) {
-          if !node_is_disabled(&index, target_id) {
-            if let Some(node_mut) = index.node_mut(target_id) {
-              dom_changed |= dom_mutation::toggle_checkbox(node_mut);
-            }
-          }
-        } else if index.node(target_id).is_some_and(is_radio_input) {
-          if !node_is_disabled(&index, target_id) {
-            dom_changed |= dom_mutation::activate_radio(dom, target_id);
-          }
         } else if index.node(target_id).is_some_and(is_select) {
-          dom_changed |= self.set_focus(&mut index, Some(target_id), false);
-
           let snapshot = select_control_snapshot_from_box_tree(box_tree, target_id);
           let computed_disabled = snapshot.as_ref().is_some_and(|(_, disabled)| *disabled);
-          let disabled = node_is_disabled(&index, target_id) || computed_disabled;
+          if is_focusable_interactive_element(&index, target_id) && !computed_disabled {
+            dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+          }
+
+          let disabled = is_disabled_or_inert(&index, target_id) || computed_disabled;
 
           if !disabled {
             if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
@@ -922,19 +969,41 @@ impl InteractionEngine {
               }
             }
           }
-        } else if index.node(target_id).is_some_and(|node| {
-          is_submit_input(node) || is_submit_button(node)
-        }) {
-          // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
-          dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
-        } else if index.node(target_id).is_some_and(is_focusable_text_control) {
-          dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+        } else {
+          if is_focusable_interactive_element(&index, target_id) {
+            dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+          }
+
+          if let Some(href) = index
+            .node(target_id)
+            .filter(|node| is_anchor_with_href(node))
+            .and_then(|node| node.get_attribute_ref("href"))
+          {
+            if let Some(resolved) = resolve_url(base_url, href) {
+              dom_changed |= set_data_flag(&mut index, target_id, "data-fastr-visited", true);
+              action = InteractionAction::Navigate { href: resolved };
+            }
+          } else if index.node(target_id).is_some_and(is_checkbox_input) {
+            if !node_is_disabled(&index, target_id) {
+              if let Some(node_mut) = index.node_mut(target_id) {
+                dom_changed |= dom_mutation::toggle_checkbox(node_mut);
+              }
+            }
+          } else if index.node(target_id).is_some_and(is_radio_input) {
+            if !node_is_disabled(&index, target_id) {
+              dom_changed |= dom_mutation::activate_radio(dom, target_id);
+            }
+          } else if index.node(target_id).is_some_and(|node| {
+            is_submit_input(node) || is_submit_button(node)
+          }) {
+            // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+            dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
+          }
         }
       }
 
       // Blur when clicking outside focusable controls.
-      let clicked_focusable =
-        click_target.is_some_and(|id| index.node(id).is_some_and(is_focusable_control));
+      let clicked_focusable = click_target.is_some_and(|id| is_focusable_interactive_element(&index, id));
       if !clicked_focusable && prev_focus.is_some() {
         dom_changed |= self.set_focus(&mut index, None, false);
       }
