@@ -1,5 +1,5 @@
+use fastrender::dom2::NodeKind;
 use fastrender::{BrowserDocument2, FastRender, RenderOptions, Result};
-use fastrender::dom2;
 
 #[test]
 fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
@@ -48,8 +48,32 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
   );
 
   let changed = doc.mutate_dom(|dom| {
-    let node_id = dom2::get_element_by_id(dom, "box").expect("expected #box element");
-    dom2::set_attribute(dom, node_id, "class", "b")
+    let node_id = dom
+      .subtree_preorder(dom.root())
+      .find(|&id| match &dom.node(id).kind {
+        NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes
+          .iter()
+          .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == "box"),
+        _ => false,
+      })
+      .expect("expected #box element");
+
+    let attrs = match &mut dom.node_mut(node_id).kind {
+      NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } => attributes,
+      _ => panic!("expected #box to be an element"),
+    };
+    if let Some((_, class)) = attrs.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case("class")) {
+      if class == "b" {
+        false
+      } else {
+        class.clear();
+        class.push_str("b");
+        true
+      }
+    } else {
+      attrs.push(("class".to_string(), "b".to_string()));
+      true
+    }
   });
   assert!(changed, "expected class mutation to report a change");
 
@@ -70,4 +94,3 @@ fn browser_document2_rerenders_after_dom_mutation() -> Result<()> {
 
   Ok(())
 }
-
