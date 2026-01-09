@@ -50,6 +50,30 @@ fn create_element_marks_template_inert_and_slot_kind() {
 }
 
 #[test]
+fn create_comment_is_a_leaf_node_and_can_be_inserted() {
+  let mut doc = Document::new(QuirksMode::NoQuirks);
+  let root = doc.root();
+  let parent = doc.create_element("div", "");
+  doc.append_child(root, parent).unwrap();
+
+  let comment = doc.create_comment("hello");
+  assert!(doc.node(comment).children.is_empty());
+  assert!(matches!(&doc.node(comment).kind, NodeKind::Comment { .. }));
+  if let NodeKind::Comment { content } = &doc.node(comment).kind {
+    assert_eq!(content, "hello");
+  }
+
+  doc.append_child(parent, comment).unwrap();
+  assert_eq!(doc.parent(comment).unwrap(), Some(parent));
+
+  let child = doc.create_text("x");
+  assert_eq!(
+    doc.append_child(comment, child),
+    Err(DomError::HierarchyRequestError)
+  );
+}
+
+#[test]
 fn append_child_sets_parent_and_updates_children() {
   let mut doc = Document::new(QuirksMode::NoQuirks);
   let root = doc.root();

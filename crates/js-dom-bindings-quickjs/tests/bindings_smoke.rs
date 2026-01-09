@@ -75,6 +75,40 @@ fn element_creation_append_and_text_content() {
 }
 
 #[test]
+fn comment_nodes_support_text_content() {
+  let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    let outcome: String = ctx
+      .eval(
+        r#"
+        (() => {
+          try {
+            const c = document.createComment("hello");
+            if (c.textContent !== "hello") return "bad_get";
+            c.textContent = "bye";
+            if (c.textContent !== "bye") return "bad_set";
+            document.body.appendChild(c);
+            // Comment nodes must not contribute to element `textContent`.
+            if (document.body.textContent !== "") return "bad_body_text";
+            return "ok";
+          } catch (e) {
+            if (!e) return "unknown";
+            return String(e) + "\n" + String(e.stack || "");
+          }
+        })()
+      "#,
+      )
+      .unwrap();
+    assert_eq!(outcome, "ok", "comment textContent JS threw: {outcome}");
+  });
+}
+
+#[test]
 fn class_list_add_remove_toggle() {
   let dom = make_dom(r#"<!doctype html><html><body><div id="x" class="a b"></div></body></html>"#);
 

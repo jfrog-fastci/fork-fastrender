@@ -140,6 +140,16 @@ impl Document {
     )
   }
 
+  pub fn create_comment(&mut self, data: &str) -> NodeId {
+    self.push_node(
+      NodeKind::Comment {
+        content: data.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
+  }
+
   pub fn text_data(&self, node: NodeId) -> Result<&str, DomError> {
     let node = self.node_checked(node)?;
     match &node.kind {

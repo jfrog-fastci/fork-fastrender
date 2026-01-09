@@ -288,6 +288,13 @@ impl Node {
     self.state.wrap_node(ctx, id)
   }
 
+  #[qjs(rename = "createComment")]
+  fn create_comment<'js>(&self, ctx: Ctx<'js>, data: String) -> JsResult<Object<'js>> {
+    self.ensure_document(ctx.clone())?;
+    let id = self.state.dom.borrow_mut().create_comment(&data);
+    self.state.wrap_node(ctx, id)
+  }
+
   #[qjs(rename = "getElementById")]
   fn get_element_by_id<'js>(&self, ctx: Ctx<'js>, id: String) -> JsResult<Option<Object<'js>>> {
     self.ensure_document(ctx.clone())?;
@@ -662,6 +669,8 @@ fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Erro
 fn text_content(dom: &Document, root: NodeId) -> String {
   match &dom.node(root).kind {
     NodeKind::Text { content } => return content.clone(),
+    NodeKind::Comment { content } => return content.clone(),
+    NodeKind::ProcessingInstruction { data, .. } => return data.clone(),
     _ => {}
   }
 
