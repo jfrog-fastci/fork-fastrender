@@ -4581,6 +4581,33 @@ pub(crate) fn input_color_value_string(node: &DomNode) -> Option<String> {
   Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
+fn sanitize_input_value_string(
+  node: &DomNode,
+  expected_type: &str,
+  is_valid: impl FnOnce(&str) -> bool,
+) -> Option<String> {
+  if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
+    return None;
+  }
+
+  let input_type = node.get_attribute_ref("type");
+  if !matches!(input_type, Some(t) if t.eq_ignore_ascii_case(expected_type)) {
+    return None;
+  }
+
+  let raw = node.get_attribute_ref("value").unwrap_or("");
+  let trimmed = trim_ascii_whitespace_html(raw);
+  if trimmed.is_empty() {
+    return Some(String::new());
+  }
+
+  if is_valid(trimmed) {
+    Some(trimmed.to_string())
+  } else {
+    Some(String::new())
+  }
+}
+
 pub(crate) fn input_number_value_string(node: &DomNode) -> Option<String> {
   if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
     return None;
@@ -4603,6 +4630,36 @@ pub(crate) fn input_number_value_string(node: &DomNode) -> Option<String> {
   } else {
     Some(String::new())
   }
+}
+
+pub(crate) fn input_date_value_string(node: &DomNode) -> Option<String> {
+  sanitize_input_value_string(node, "date", |value| {
+    forms_validation::parse_date_value(value).is_some()
+  })
+}
+
+pub(crate) fn input_time_value_string(node: &DomNode) -> Option<String> {
+  sanitize_input_value_string(node, "time", |value| {
+    forms_validation::parse_time_value(value).is_some()
+  })
+}
+
+pub(crate) fn input_datetime_local_value_string(node: &DomNode) -> Option<String> {
+  sanitize_input_value_string(node, "datetime-local", |value| {
+    forms_validation::parse_datetime_local_value(value).is_some()
+  })
+}
+
+pub(crate) fn input_month_value_string(node: &DomNode) -> Option<String> {
+  sanitize_input_value_string(node, "month", |value| {
+    forms_validation::parse_month_value(value).is_some()
+  })
+}
+
+pub(crate) fn input_week_value_string(node: &DomNode) -> Option<String> {
+  sanitize_input_value_string(node, "week", |value| {
+    forms_validation::parse_week_value(value).is_some()
+  })
 }
 
 /// Wrapper for DomNode that implements Element trait for selector matching
@@ -5447,6 +5504,21 @@ impl<'a> ElementRef<'a> {
         return Some(value);
       }
       if let Some(value) = input_number_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_date_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_time_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_datetime_local_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_month_value_string(self.node) {
+        return Some(value);
+      }
+      if let Some(value) = input_week_value_string(self.node) {
         return Some(value);
       }
       return Some(
@@ -9459,16 +9531,65 @@ mod tests {
   }
 
   #[test]
-  fn bad_input_flags_invalid_date_time_values() {
+  fn date_time_value_attribute_invalid_sanitizes_to_empty_and_does_not_set_bad_input() {
     let date = element_with_attrs("input", vec![("type", "date"), ("value", "2020-13-01")], vec![]);
+    assert_eq!(input_date_value_string(&date), Some(String::new()));
+    assert_eq!(ElementRef::new(&date).control_value(), Some(String::new()));
     let state = forms_validation::validity_state(&ElementRef::new(&date)).expect("validity state");
-    assert!(state.bad_input);
-    assert!(!state.valid);
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
 
     let time = element_with_attrs("input", vec![("type", "time"), ("value", "25:00")], vec![]);
+    assert_eq!(input_time_value_string(&time), Some(String::new()));
+    assert_eq!(ElementRef::new(&time).control_value(), Some(String::new()));
     let state = forms_validation::validity_state(&ElementRef::new(&time)).expect("validity state");
-    assert!(state.bad_input);
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
+
+    let datetime_local = element_with_attrs(
+      "input",
+      vec![("type", "datetime-local"), ("value", "2020-01-01T25:00")],
+      vec![],
+    );
+    assert_eq!(input_datetime_local_value_string(&datetime_local), Some(String::new()));
+    assert_eq!(
+      ElementRef::new(&datetime_local).control_value(),
+      Some(String::new())
+    );
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&datetime_local)).expect("validity state");
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
+
+    let month = element_with_attrs("input", vec![("type", "month"), ("value", "2020-13")], vec![]);
+    assert_eq!(input_month_value_string(&month), Some(String::new()));
+    assert_eq!(ElementRef::new(&month).control_value(), Some(String::new()));
+    let state = forms_validation::validity_state(&ElementRef::new(&month)).expect("validity state");
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
+
+    let week = element_with_attrs("input", vec![("type", "week"), ("value", "2020-W99")], vec![]);
+    assert_eq!(input_week_value_string(&week), Some(String::new()));
+    assert_eq!(ElementRef::new(&week).control_value(), Some(String::new()));
+    let state = forms_validation::validity_state(&ElementRef::new(&week)).expect("validity state");
+    assert!(!state.bad_input);
+    assert!(state.valid);
+    assert!(!state.value_missing);
+
+    let required_date = element_with_attrs(
+      "input",
+      vec![("type", "date"), ("value", "2020-13-01"), ("required", "")],
+      vec![],
+    );
+    let state =
+      forms_validation::validity_state(&ElementRef::new(&required_date)).expect("validity state");
+    assert!(!state.bad_input);
     assert!(!state.valid);
+    assert!(state.value_missing);
   }
 
   #[test]
@@ -13074,6 +13195,43 @@ mod tests {
     );
     assert!(!matches(&number_nan, &[], &PseudoClass::Invalid));
     assert!(!matches(&number_nan, &[], &PseudoClass::UserInvalid));
+
+    let date_invalid = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "date".to_string()),
+          ("value".to_string(), "2020-13-01".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(matches(&date_invalid, &[], &PseudoClass::Valid));
+    assert!(!matches(&date_invalid, &[], &PseudoClass::Invalid));
+
+    let required_date_invalid = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("type".to_string(), "date".to_string()),
+          ("value".to_string(), "2020-13-01".to_string()),
+          ("required".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    assert!(matches(
+      &required_date_invalid,
+      &[],
+      &PseudoClass::Invalid
+    ));
+    assert!(!matches(
+      &required_date_invalid,
+      &[],
+      &PseudoClass::Valid
+    ));
 
     let disabled_input = DomNode {
       node_type: DomNodeType::Element {

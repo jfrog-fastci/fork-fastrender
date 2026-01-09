@@ -7556,10 +7556,16 @@ mod tests {
       <input type=\"color\" value=\"not-a-color\">
       <input type=\"color\" value=\"not-a-color-disabled\" disabled>
       <input type=\"date\" required>
+      <input type=\"date\" value=\"2020-13-01\" placeholder=\"invalid date\">
+      <input type=\"date\" value=\"2020-13-01\" required placeholder=\"required invalid date\">
       <input type=\"datetime-local\">
+      <input type=\"datetime-local\" value=\"2020-01-01T25:00\" placeholder=\"invalid datetime\">
       <input type=\"month\">
+      <input type=\"month\" value=\"2020-13\" placeholder=\"invalid month\">
       <input type=\"week\">
+      <input type=\"week\" value=\"2020-W99\" placeholder=\"invalid week\">
       <input type=\"time\">
+      <input type=\"time\" value=\"25:00\" placeholder=\"invalid time\">
       <input type=\"number\" size=\"7\" placeholder=\"sized number\">
       <input type=\"checkbox\" indeterminate=\"true\">
       <input type=\"file\" value=\"C:\\\\fakepath\\\\hello.txt\">
@@ -7661,6 +7667,96 @@ mod tests {
           && !c.invalid
       }),
       "disabled color inputs with invalid values should stay valid for painting"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid date")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid date input values should sanitize to empty and remain valid when not required"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("required invalid date")
+        ) && c.required
+          && c.invalid
+      }),
+      "required date input with invalid value should be marked invalid"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid datetime")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid datetime-local input values should sanitize to empty and remain valid when not required"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid month")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid month input values should sanitize to empty and remain valid when not required"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid week")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid week input values should sanitize to empty and remain valid when not required"
+    );
+    assert!(
+      controls.iter().any(|c| {
+        matches!(
+          &c.control,
+          FormControlKind::Text {
+            kind: TextControlKind::Date,
+            value,
+            placeholder,
+            ..
+          } if value.is_empty() && placeholder.as_deref() == Some("invalid time")
+        ) && !c.required
+          && !c.invalid
+      }),
+      "invalid time input values should sanitize to empty and remain valid when not required"
     );
     assert!(
       controls.iter().any(|c| matches!(

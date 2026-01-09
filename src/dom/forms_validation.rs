@@ -174,7 +174,7 @@ fn apply_length_constraints(state: &mut ValidityState, value: &str, node: &DomNo
   }
 }
 
-fn parse_time_value(value: &str) -> Option<i64> {
+pub(super) fn parse_time_value(value: &str) -> Option<i64> {
   // https://html.spec.whatwg.org/#time-state-(type=time)
   // Supported formats:
   //   HH:MM
@@ -226,19 +226,19 @@ fn parse_time_value(value: &str) -> Option<i64> {
   Some(total_ms)
 }
 
-fn parse_date_value(value: &str) -> Option<i32> {
+pub(super) fn parse_date_value(value: &str) -> Option<i32> {
   let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
   Some(date.num_days_from_ce())
 }
 
-fn parse_datetime_local_value(value: &str) -> Option<i64> {
+pub(super) fn parse_datetime_local_value(value: &str) -> Option<i64> {
   let (date, time) = value.split_once('T')?;
   let date_days = parse_date_value(date)? as i64;
   let time_ms = parse_time_value(time)?;
   Some(date_days * 86_400_000 + time_ms)
 }
 
-fn parse_month_value(value: &str) -> Option<i32> {
+pub(super) fn parse_month_value(value: &str) -> Option<i32> {
   let (year, month) = value.split_once('-')?;
   let year: i32 = year.parse().ok()?;
   let month: u32 = month.parse().ok()?;
@@ -248,7 +248,7 @@ fn parse_month_value(value: &str) -> Option<i32> {
   year.checked_mul(12)?.checked_add((month as i32) - 1)
 }
 
-fn parse_week_value(value: &str) -> Option<i32> {
+pub(super) fn parse_week_value(value: &str) -> Option<i32> {
   let (year, week) = value.split_once("-W")?;
   let year: i32 = year.parse().ok()?;
   let week: u32 = week.parse().ok()?;
@@ -534,9 +534,11 @@ fn validity_for_date_like(
   to_ms: fn(i32) -> i64,
 ) -> ValidityState {
   let mut state = ValidityState::default();
-  let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-  let trimmed = super::trim_ascii_whitespace_html(raw);
-  if trimmed.is_empty() {
+  // Date/time-like inputs sanitize invalid values to the empty string. Invalid author values should
+  // behave like missing values rather than surfacing `badInput` (which is intended for user-driven
+  // parse errors).
+  let sanitized = element.control_value().unwrap_or_default();
+  if sanitized.is_empty() {
     if required {
       state.value_missing = true;
     }
@@ -544,8 +546,10 @@ fn validity_for_date_like(
     return state;
   }
 
-  let Some(value) = parser(trimmed) else {
-    state.bad_input = true;
+  let Some(value) = parser(&sanitized) else {
+    if required {
+      state.value_missing = true;
+    }
     state.compute_validity();
     return state;
   };
@@ -572,9 +576,8 @@ fn validity_for_date_like(
 
 fn validity_for_month(element: &ElementRef, required: bool) -> ValidityState {
   let mut state = ValidityState::default();
-  let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-  let trimmed = super::trim_ascii_whitespace_html(raw);
-  if trimmed.is_empty() {
+  let sanitized = element.control_value().unwrap_or_default();
+  if sanitized.is_empty() {
     if required {
       state.value_missing = true;
     }
@@ -582,8 +585,10 @@ fn validity_for_month(element: &ElementRef, required: bool) -> ValidityState {
     return state;
   }
 
-  let Some(value) = parse_month_value(trimmed) else {
-    state.bad_input = true;
+  let Some(value) = parse_month_value(&sanitized) else {
+    if required {
+      state.value_missing = true;
+    }
     state.compute_validity();
     return state;
   };
@@ -628,9 +633,8 @@ fn validity_for_month(element: &ElementRef, required: bool) -> ValidityState {
 
 fn validity_for_week(element: &ElementRef, required: bool) -> ValidityState {
   let mut state = ValidityState::default();
-  let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-  let trimmed = super::trim_ascii_whitespace_html(raw);
-  if trimmed.is_empty() {
+  let sanitized = element.control_value().unwrap_or_default();
+  if sanitized.is_empty() {
     if required {
       state.value_missing = true;
     }
@@ -638,8 +642,10 @@ fn validity_for_week(element: &ElementRef, required: bool) -> ValidityState {
     return state;
   }
 
-  let Some(value_days) = parse_week_value(trimmed) else {
-    state.bad_input = true;
+  let Some(value_days) = parse_week_value(&sanitized) else {
+    if required {
+      state.value_missing = true;
+    }
     state.compute_validity();
     return state;
   };
@@ -684,9 +690,8 @@ fn validity_for_week(element: &ElementRef, required: bool) -> ValidityState {
 
 fn validity_for_time_like(element: &ElementRef, required: bool) -> ValidityState {
   let mut state = ValidityState::default();
-  let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-  let trimmed = super::trim_ascii_whitespace_html(raw);
-  if trimmed.is_empty() {
+  let sanitized = element.control_value().unwrap_or_default();
+  if sanitized.is_empty() {
     if required {
       state.value_missing = true;
     }
@@ -694,8 +699,10 @@ fn validity_for_time_like(element: &ElementRef, required: bool) -> ValidityState
     return state;
   }
 
-  let Some(value_ms) = parse_time_value(trimmed) else {
-    state.bad_input = true;
+  let Some(value_ms) = parse_time_value(&sanitized) else {
+    if required {
+      state.value_missing = true;
+    }
     state.compute_validity();
     return state;
   };
@@ -741,9 +748,8 @@ fn validity_for_time_like(element: &ElementRef, required: bool) -> ValidityState
 
 fn validity_for_datetime_local(element: &ElementRef, required: bool) -> ValidityState {
   let mut state = ValidityState::default();
-  let raw = element.node.get_attribute_ref("value").unwrap_or_default();
-  let trimmed = super::trim_ascii_whitespace_html(raw);
-  if trimmed.is_empty() {
+  let sanitized = element.control_value().unwrap_or_default();
+  if sanitized.is_empty() {
     if required {
       state.value_missing = true;
     }
@@ -751,8 +757,10 @@ fn validity_for_datetime_local(element: &ElementRef, required: bool) -> Validity
     return state;
   }
 
-  let Some(value_ms) = parse_datetime_local_value(trimmed) else {
-    state.bad_input = true;
+  let Some(value_ms) = parse_datetime_local_value(&sanitized) else {
+    if required {
+      state.value_missing = true;
+    }
     state.compute_validity();
     return state;
   };
