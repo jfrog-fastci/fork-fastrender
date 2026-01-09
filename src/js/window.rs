@@ -3,7 +3,9 @@ use crate::error::{Error, Result};
 use crate::js::host_document::DocumentHostState;
 use crate::js::orchestrator::CurrentScriptHost;
 use crate::js::window_realm::{WindowRealm, WindowRealmConfig, WindowRealmHost};
-use crate::js::{DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource};
+use crate::js::{
+  install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
+};
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
@@ -78,11 +80,19 @@ impl WindowHostState {
   pub fn new(dom: dom2::Document, document_url: impl Into<String>) -> Result<Self> {
     let document_url = document_url.into();
     let document = DocumentHostState::new(dom);
-    let window = WindowRealm::new(
+    let mut window = WindowRealm::new(
       WindowRealmConfig::new(document_url.clone())
         .with_current_script_state(document.current_script_state().clone()),
     )
     .map_err(|e| Error::Other(e.to_string()))?;
+
+    // Install timer bindings (`setTimeout`, `setInterval`, `queueMicrotask`) so scripts executed in
+    // this host can schedule work onto the accompanying `EventLoop`.
+    {
+      let (vm, realm, heap) = window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<WindowHostState>(vm, realm, heap)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    }
 
     Ok(Self {
       base_url: Some(document_url.clone()),
@@ -148,4 +158,3 @@ impl WindowRealmHost for WindowHostState {
     &mut self.window
   }
 }
-

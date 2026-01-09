@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
-  GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
-  Vm, VmError, VmHostHooks, VmOptions,
+  GcObject, Heap, HeapLimits, JsRuntime as VmJsRuntime, PropertyDescriptor, PropertyKey,
+  PropertyKind, Realm, Scope, SourceText, Value, Vm, VmError, VmHostHooks, VmOptions,
 };
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -48,81 +48,78 @@ impl WindowRealmConfig {
 }
 
 pub struct WindowRealm {
-  vm: Vm,
-  heap: Heap,
-  realm: Realm,
+  runtime: VmJsRuntime,
   console_sink_id: Option<u64>,
   current_script_source_id: Option<u64>,
-  interrupt_flag: Arc<AtomicBool>,
 }
 
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
-    let interrupt_flag = Arc::new(AtomicBool::new(false));
     let mut vm_options = VmOptions::default();
-    vm_options.interrupt_flag = Some(interrupt_flag.clone());
-    let mut vm = Vm::new(vm_options);
-    let mut heap = Heap::new(config.heap_limits);
-    let mut realm = Realm::new(&mut vm, &mut heap)?;
-    let (console_sink_id, current_script_source_id) =
-      match init_window_globals(&mut vm, &mut heap, &realm, &config) {
-        Ok(ids) => ids,
-      Err(err) => {
-        // `vm-js` realms own persistent roots registered with the heap. Even though we're about to
-        // drop the heap on this error path, `Realm` asserts (in debug builds) that embeddings call
-        // `teardown()` to make the contract explicit and avoid accidental leaks when a heap is reused.
-        realm.teardown(&mut heap);
-        return Err(err);
-      }
-    };
+    // Window realms should be interruptible even before full script execution is wired up.
+    // This is separate from the renderer-level interrupt flag; callers can wire it up as needed.
+    vm_options.interrupt_flag = Some(Arc::new(AtomicBool::new(false)));
+    let vm = Vm::new(vm_options);
+    let heap = Heap::new(config.heap_limits);
+
+    let mut runtime = VmJsRuntime::new(vm, heap)?;
+
+    // `vm-js::JsRuntime` does not expose a borrow-splitting accessor for `(vm, realm, heap)`. Use a
+    // raw pointer to the realm to allow simultaneously borrowing `vm`/`heap` mutably.
+    //
+    // SAFETY: `vm-js::JsRuntime` stores `vm`, `heap`, and `realm` as disjoint fields. We do not
+    // move the runtime while these borrows are live.
+    let realm_ptr = runtime.realm() as *const Realm;
+    let (vm, heap) = (&mut runtime.vm, &mut runtime.heap);
+    let realm = unsafe { &*realm_ptr };
+
+    let (console_sink_id, current_script_source_id) = init_window_globals(vm, heap, realm, &config)?;
     Ok(Self {
-      vm,
-      heap,
-      realm,
+      runtime,
       console_sink_id,
       current_script_source_id,
-      interrupt_flag,
     })
   }
 
   pub fn reset_interrupt(&self) {
-    self.interrupt_flag.store(false, Ordering::Relaxed);
+    self.runtime.vm.reset_interrupt();
   }
 
   pub fn heap(&self) -> &Heap {
-    &self.heap
+    &self.runtime.heap
   }
 
   pub fn heap_mut(&mut self) -> &mut Heap {
-    &mut self.heap
+    &mut self.runtime.heap
   }
 
   pub fn vm(&self) -> &Vm {
-    &self.vm
+    &self.runtime.vm
   }
 
   pub fn vm_mut(&mut self) -> &mut Vm {
-    &mut self.vm
+    &mut self.runtime.vm
   }
 
   pub fn vm_and_heap_mut(&mut self) -> (&mut Vm, &mut Heap) {
-    (&mut self.vm, &mut self.heap)
+    (&mut self.runtime.vm, &mut self.runtime.heap)
   }
 
   pub fn vm_realm_and_heap_mut(&mut self) -> (&mut Vm, &Realm, &mut Heap) {
-    (&mut self.vm, &self.realm, &mut self.heap)
+    // SAFETY: `realm` is stored separately from `vm` and `heap` inside `vm-js::JsRuntime`.
+    let realm_ptr = self.runtime.realm() as *const Realm;
+    let vm = &mut self.runtime.vm;
+    let heap = &mut self.runtime.heap;
+    let realm = unsafe { &*realm_ptr };
+    (vm, realm, heap)
   }
 
   pub fn realm(&self) -> &Realm {
-    &self.realm
-  }
-
-  pub fn realm_mut(&mut self) -> &mut Realm {
-    &mut self.realm
+    self.runtime.realm()
   }
 
   pub fn global_object(&self) -> GcObject {
-    self.realm.global_object()
+    self.runtime.realm().global_object()
   }
 
   pub fn teardown(&mut self) {
@@ -132,7 +129,22 @@ impl WindowRealm {
     if let Some(id) = self.current_script_source_id.take() {
       unregister_current_script_source(id);
     }
-    self.realm.teardown(&mut self.heap);
+  }
+
+  /// Execute a classic script in this window realm.
+  pub fn exec_script(&mut self, source: &str) -> Result<Value, VmError> {
+    self.runtime.exec_script(source)
+  }
+
+  /// Execute a classic script with an explicit source name for stack traces.
+  pub fn exec_script_with_name(
+    &mut self,
+    source_name: impl Into<Arc<str>>,
+    source_text: impl Into<Arc<str>>,
+  ) -> Result<Value, VmError> {
+    self
+      .runtime
+      .exec_script_source(Arc::new(SourceText::new(source_name, source_text)))
   }
 }
 
@@ -152,7 +164,7 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
   }
 
   fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-    &mut self.heap
+    self.heap_mut()
   }
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
     self.vm_and_heap_mut()
@@ -185,11 +197,11 @@ impl vm_js::VmJobContext for WindowRealm {
   }
 
   fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
-    self.heap.add_root(value)
+    self.runtime.heap.add_root(value)
   }
 
   fn remove_root(&mut self, id: vm_js::RootId) {
-    self.heap.remove_root(id);
+    self.runtime.heap.remove_root(id);
   }
 }
 fn default_heap_limits() -> HeapLimits {
@@ -598,7 +610,7 @@ fn init_window_globals(
     data_desc(Value::Object(wrapper_cache)),
   )?;
 
-  let mut current_script_guard = config
+  let current_script_guard = config
     .current_script_state
     .clone()
     .map(CurrentScriptSourceGuard::new);
@@ -641,7 +653,7 @@ fn init_window_globals(
   let error_key = alloc_key(&mut scope, "error")?;
   scope.define_property(console_obj, error_key, data_desc(Value::Object(log_func)))?;
 
-  let mut console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
+  let console_sink_guard = config.console_sink.clone().map(ConsoleSinkGuard::new);
   if let Some(guard) = console_sink_guard.as_ref() {
     let sink_key = alloc_key(&mut scope, "__fastrender_console_sink_id")?;
     scope.define_property(

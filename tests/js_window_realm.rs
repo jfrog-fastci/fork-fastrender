@@ -230,3 +230,109 @@ fn location_href_setter_errors_deterministically() -> Result<()> {
   );
   Ok(())
 }
+
+#[test]
+fn js_execution_can_observe_window_globals() -> Result<()> {
+  let url = "https://example.com/path";
+  let mut realm = WindowRealm::new(WindowRealmConfig::new(url))
+    .map_err(|e| Error::Other(e.to_string()))?;
+
+  let value = realm
+    .exec_script("window === globalThis && self === window")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(value, Value::Bool(true));
+
+  let value = realm
+    .exec_script("document.URL")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), url);
+
+  let value = realm
+    .exec_script("location.href")
+    .map_err(|e| Error::Other(e.to_string()))?;
+  assert_eq!(get_string(realm.heap(), value), url);
+  Ok(())
+}
+
+#[test]
+fn document_current_script_is_visible_to_js_execution() -> Result<()> {
+  #[derive(Default)]
+  struct JsExecutor {
+    observed: Vec<usize>,
+    wrapper_identity_ok: Vec<bool>,
+  }
+
+  impl ScriptBlockExecutor<WindowHostState> for JsExecutor {
+    fn execute_script(
+      &mut self,
+      host: &mut WindowHostState,
+      _orchestrator: &mut ScriptOrchestrator,
+      _script: NodeId,
+      _script_type: ScriptType,
+    ) -> Result<()> {
+      let realm = host.window_mut();
+
+      let stable = realm
+        .exec_script("document.currentScript === document.currentScript")
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let Value::Bool(stable) = stable else {
+        return Err(Error::Other(
+          "expected document.currentScript identity check to return a bool".to_string(),
+        ));
+      };
+      self.wrapper_identity_ok.push(stable);
+
+      let node_id = realm
+        .exec_script("document.currentScript.__fastrender_node_id")
+        .map_err(|e| Error::Other(e.to_string()))?;
+      let Value::Number(n) = node_id else {
+        return Err(Error::Other(
+          "expected document.currentScript.__fastrender_node_id to be a number".to_string(),
+        ));
+      };
+      let as_usize = n as usize;
+      if (as_usize as f64) != n {
+        return Err(Error::Other(format!(
+          "expected document.currentScript.__fastrender_node_id to be an integer, got {n:?}"
+        )));
+      }
+      self.observed.push(as_usize);
+      Ok(())
+    }
+  }
+
+  let renderer_dom =
+    fastrender::dom::parse_html("<!doctype html><script></script><script></script>")?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+  let scripts = find_script_elements(host.dom());
+  assert_eq!(scripts.len(), 2);
+
+  // Outside execution, currentScript is null.
+  {
+    let realm = host.window_mut();
+    let value = realm
+      .exec_script("document.currentScript")
+      .map_err(|e| Error::Other(e.to_string()))?;
+    assert_eq!(value, Value::Null);
+  }
+
+  let mut orchestrator = ScriptOrchestrator::new();
+  let mut executor = JsExecutor::default();
+
+  orchestrator.execute_script_element(
+    &mut host,
+    scripts[0],
+    ScriptType::Classic,
+    &mut executor,
+  )?;
+  orchestrator.execute_script_element(
+    &mut host,
+    scripts[1],
+    ScriptType::Classic,
+    &mut executor,
+  )?;
+
+  assert_eq!(executor.wrapper_identity_ok, vec![true, true]);
+  assert_eq!(executor.observed, vec![scripts[0].index(), scripts[1].index()]);
+  Ok(())
+}
