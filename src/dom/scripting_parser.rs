@@ -66,6 +66,7 @@ pub struct ScriptToken {
     note = "Legacy RcDom snapshot-based scripting parser; cannot support parse-time DOM mutation (e.g. document.write). Use html::streaming_parser + js::streaming pipeline (dom2 streaming parser) instead (see src/html/streaming_parser.rs)."
   )
 )]
+#[allow(deprecated)]
 pub fn parse_html_with_scripting(
   html: &str,
   mut handler: impl FnMut(&crate::dom::DomNode, ScriptToken) -> Result<()>,
@@ -98,6 +99,7 @@ pub struct ScriptingHtmlParser {
   done: bool,
 }
 
+#[allow(deprecated)]
 impl ScriptingHtmlParser {
   pub fn new() -> Self {
     let dom = RcDom::default();
