@@ -507,6 +507,8 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
 
 #[cfg(test)]
 mod tests {
+  #![allow(deprecated)]
+
   use super::*;
   use crate::dom::parse_html;
   use crate::js::extract_script_elements;

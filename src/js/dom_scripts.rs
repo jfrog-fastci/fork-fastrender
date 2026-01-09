@@ -1,3 +1,19 @@
+//! Best-effort `<script>` element extraction from a fully-parsed DOM tree.
+//!
+//! # WARNING: not for JavaScript execution
+//!
+//! This module walks the DOM *after* HTML parsing has completed. That is inherently incapable of
+//! implementing the HTML script processing model correctly (parser pausing, `async`/`defer`
+//! ordering, base URL timing, etc.). It is intended only for tooling that wants a best-effort list
+//! of scripts in DOM order (e.g. diagnostics, bundling, crawlers).
+//!
+//! For spec-correct JavaScript execution, script specs must be constructed at parse time. Use the
+//! streaming parse-time APIs in [`crate::js::streaming`].
+//!
+//! Note: even with best-effort improvements (like base URL tracking), this module still cannot be
+//! spec-correct for executing scripts. It does not model parser pausing, script-inserted vs
+//! parser-inserted differences, or dynamic base URL changes from earlier scripts.
+
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::html::base_url_tracker::BaseUrlTracker;
 
@@ -5,11 +21,22 @@ use super::{determine_script_type, ScriptElementSpec};
 
 /// Extract `<script>` elements from a parsed DOM tree in document order.
 ///
-/// This is a best-effort bridge between FastRender's HTML parser (`DomNode`) and the JavaScript
-/// script scheduler. Traversal is iterative (non-recursive) and skips inert subtrees:
+/// # WARNING: not for JavaScript execution
+///
+/// This is a post-parse DOM scan, so it cannot be used for spec-correct JavaScript execution. It
+/// does not (and cannot) model parse-time behaviors like base URL timing, parser pausing, or
+/// `async`/`defer` ordering.
+///
+/// Use [`crate::js::streaming`] to construct [`ScriptElementSpec`] at the moment a `<script>`
+/// element finishes parsing.
+///
+/// Traversal is iterative (non-recursive) and skips inert subtrees:
 ///
 /// - `<template>` contents (`DomNode::traversal_children`)
 /// - Shadow roots (`DomNodeType::ShadowRoot`) (conservative initial behavior)
+#[deprecated(
+  note = "Post-parse DOM scan; cannot be spec-correct for JS execution (base URL timing, parser pausing, async/defer). Use crate::js::streaming instead."
+)]
 pub fn extract_script_elements(
   dom: &DomNode,
   document_url: Option<&str>,
@@ -61,6 +88,8 @@ pub fn extract_script_elements(
           inline_text,
           async_attr,
           defer_attr,
+          // Best-effort: treat DOM-parsed scripts as parser-inserted (matching the common case and
+          // enabling scheduler tests). This is not reliable for dynamically inserted scripts.
           parser_inserted: true,
           script_type: determine_script_type(node),
         });
@@ -99,6 +128,8 @@ pub fn extract_script_elements(
 
 #[cfg(test)]
 mod tests {
+  #![allow(deprecated)]
+
   use super::extract_script_elements;
   use crate::dom::parse_html;
 

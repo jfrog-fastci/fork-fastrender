@@ -1,11 +1,20 @@
 //! JavaScript host integration utilities.
 //!
-//! This module is intentionally small and focused: it provides DOM-to-scheduler bridging helpers
-//! such as `<script>` element extraction. Full JS execution + event loop integration will be built
-//! incrementally on top of these primitives.
+//! See [`docs/html_script_processing.md`](../../docs/html_script_processing.md) for the spec-mapped
+//! design of HTML `<script>` processing + parser integration (classic scripts first).
 //!
-//! See [`docs/html_script_processing.md`](../../docs/html_script_processing.md) for the
-//! spec-mapped design of HTML `<script>` processing + parser integration (classic scripts first).
+//! # WARNING: `dom_scripts` is tooling-only
+//!
+//! The HTML script processing model is *parse-time* semantics: the parser pauses for
+//! parser-inserted scripts, the base URL can change as `<base href>` elements are encountered, and
+//! `async`/`defer` ordering depends on when scripts are discovered.
+//!
+//! Scanning an already-built DOM tree in "document order" cannot be spec-correct for executing
+//! JavaScript. The [`dom_scripts`] module exists only for best-effort tooling (diagnostics,
+//! crawling/bundling) and is deprecated for execution.
+//!
+//! For spec-correct execution plumbing, construct [`ScriptElementSpec`] at parse time (see
+//! [`streaming`]) and feed it into the scheduler/event loop pipeline described in the doc above.
 
 pub mod dom_scripts;
 pub mod clock;
@@ -14,7 +23,9 @@ pub mod script_scheduler;
 pub mod url;
 pub mod window_timers;
 pub mod orchestrator;
+pub mod streaming;
 
+#[allow(deprecated)]
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use event_loop::{
@@ -29,7 +40,9 @@ pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
-pub use orchestrator::{CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator};
+pub use orchestrator::{
+  CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
+};
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,8 +78,11 @@ pub struct ScriptElementSpec {
   pub defer_attr: bool,
   /// Whether the script was inserted by the HTML parser.
   ///
-  /// For now, DOM-extracted scripts are always treated as parser-inserted; later integration with
-  /// the HTML parser can set this more precisely.
+  /// This affects scheduling (`defer` only applies to parser-inserted scripts; parser-inserted
+  /// scripts can block parsing).
+  ///
+  /// When building specs during HTML parsing, this should be `true`. Best-effort DOM scans may set
+  /// this to `true` as a default, but dynamically inserted scripts should use `false`.
   pub parser_inserted: bool,
   /// The script type (classic/module/importmap/unknown) derived from element attributes.
   pub script_type: ScriptType,
@@ -214,7 +230,11 @@ mod tests {
       "application/x-javascript",
     ] {
       let node = script(&[("type", ty)]);
-      assert_eq!(determine_script_type(&node), ScriptType::Classic, "type={ty}");
+      assert_eq!(
+        determine_script_type(&node),
+        ScriptType::Classic,
+        "type={ty}"
+      );
     }
   }
 
