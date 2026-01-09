@@ -1957,6 +1957,31 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.node, "hasChildNodes", has_child_nodes)?;
 
+    // cloneNode
+    let dom_for_clone = dom.clone();
+    let platform_objects_for_clone = platform_objects.clone();
+    let node_wrapper_cache_for_clone = node_wrapper_cache.clone();
+    let clone_node = rt.alloc_function_value(move |rt, this, args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_clone, this)?;
+      let deep_val = args.get(0).copied().unwrap_or(Value::Undefined);
+      let deep = rt.to_boolean(deep_val)?;
+      let cloned_id = dom_for_clone
+        .borrow_mut()
+        .clone_node(node_id, deep)
+        .map_err(|e| throw_dom_error(rt, dom_exception_proto, e))?;
+      wrap_node(
+        rt,
+        &dom_for_clone,
+        &platform_objects_for_clone,
+        &node_wrapper_cache_for_clone,
+        document_node_id,
+        document,
+        prototypes,
+        cloned_id,
+      )
+    })?;
+    define_method(rt, prototypes.node, "cloneNode", clone_node)?;
+
     // contains
     let dom_for_contains = dom.clone();
     let platform_objects_for_contains = platform_objects.clone();
@@ -5153,6 +5178,100 @@ mod tests {
     assert_eq!(dom_ref.text_data(child).unwrap(), "x");
     let got = realm.rt.get(div, text_content_key).unwrap();
     assert_eq!(as_str(&realm.rt, got), "x");
+  }
+
+  #[test]
+  fn node_clone_node_deep_clones_detached_subtree() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let create_text_key = pk(&mut realm.rt, "createTextNode");
+    let create_text = realm.rt.get(document, create_text_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let append_child = realm.rt.get(document, append_child_key).unwrap();
+
+    // document.appendChild(<div id=src><span>hello</span></div>)
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+
+    let set_attribute_key = pk(&mut realm.rt, "setAttribute");
+    let set_attribute = realm.rt.get(div, set_attribute_key).unwrap();
+    let attr_id = realm.rt.alloc_string_value("id").unwrap();
+    let id_src = realm.rt.alloc_string_value("src").unwrap();
+    realm
+      .rt
+      .call_function(set_attribute, div, &[attr_id, id_src])
+      .unwrap();
+
+    realm.rt.call_function(append_child, document, &[div]).unwrap();
+
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+    let div_append = realm.rt.get(div, append_child_key).unwrap();
+    realm.rt.call_function(div_append, div, &[span]).unwrap();
+
+    let hello = realm.rt.alloc_string_value("hello").unwrap();
+    let text = realm
+      .rt
+      .call_function(create_text, document, &[hello])
+      .unwrap();
+    let span_append = realm.rt.get(span, append_child_key).unwrap();
+    realm.rt.call_function(span_append, span, &[text]).unwrap();
+
+    // div.cloneNode(true) should deep clone but remain detached.
+    let clone_node_key = pk(&mut realm.rt, "cloneNode");
+    let clone_node = realm.rt.get(div, clone_node_key).unwrap();
+    let clone = realm
+      .rt
+      .call_function(clone_node, div, &[Value::Bool(true)])
+      .unwrap();
+    assert_ne!(clone, div);
+
+    let parent_node_key = pk(&mut realm.rt, "parentNode");
+    assert_eq!(realm.rt.get(clone, parent_node_key).unwrap(), Value::Null);
+    let is_connected_key = pk(&mut realm.rt, "isConnected");
+    assert_eq!(
+      realm.rt.get(clone, is_connected_key).unwrap(),
+      Value::Bool(false)
+    );
+
+    let id_key = pk(&mut realm.rt, "id");
+    let clone_id = realm.rt.get(clone, id_key).unwrap();
+    assert_eq!(as_str(&realm.rt, clone_id), "src");
+
+    let first_child_key = pk(&mut realm.rt, "firstChild");
+    let clone_span = realm.rt.get(clone, first_child_key).unwrap();
+    assert_ne!(clone_span, Value::Null);
+    assert_ne!(clone_span, span);
+
+    let clone_text = realm.rt.get(clone_span, first_child_key).unwrap();
+    let node_value_key = pk(&mut realm.rt, "nodeValue");
+    let clone_text_value = realm.rt.get(clone_text, node_value_key).unwrap();
+    assert_eq!(as_str(&realm.rt, clone_text_value), "hello");
+
+    // Shallow clone omits children.
+    let shallow = realm.rt.call_function(clone_node, div, &[]).unwrap();
+    assert_eq!(realm.rt.get(shallow, first_child_key).unwrap(), Value::Null);
+
+    // Document.cloneNode is currently unsupported by dom2; surface NotSupportedError.
+    let document_clone = realm.rt.get(document, clone_node_key).unwrap();
+    let err = realm
+      .rt
+      .call_function(document_clone, document, &[])
+      .expect_err("expected document.cloneNode to throw");
+    let thrown = err.thrown_value().expect("expected thrown value");
+    let name_key = pk(&mut realm.rt, "name");
+    let name = realm.rt.get(thrown, name_key).unwrap();
+    assert_eq!(as_str(&realm.rt, name), "NotSupportedError");
   }
 
   #[test]

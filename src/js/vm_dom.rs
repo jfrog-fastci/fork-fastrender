@@ -1151,6 +1151,34 @@ fn dom_node_append_child(
   Ok(child_val)
 }
 
+fn dom_node_clone_node(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  // Per DOM, missing/undefined => false via ToBoolean.
+  let deep_val = args.get(0).copied().unwrap_or(Value::Undefined);
+  let deep = scope.heap().to_boolean(deep_val)?;
+
+  let cloned = {
+    let mut dom = host.dom.borrow_mut();
+    match dom.clone_node(node_id, deep) {
+      Ok(id) => id,
+      Err(err) => return throw_dom_error(scope, host, err),
+    }
+  };
+
+  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(cloned).kind);
+  wrap_node(host, scope, cloned, kind)
+}
+
 fn dom_node_has_child_nodes(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2289,6 +2317,7 @@ pub fn install_dom_bindings_with_limits(
     vm.register_native_call(dom_element_get_elements_by_tag_name_ns)?;
   let call_element_get_elements_by_class_name = vm.register_native_call(dom_element_get_elements_by_class_name)?;
   let call_append_child = vm.register_native_call(dom_node_append_child)?;
+  let call_clone_node = vm.register_native_call(dom_node_clone_node)?;
   let call_has_child_nodes = vm.register_native_call(dom_node_has_child_nodes)?;
   let call_parent_node = vm.register_native_call(dom_node_parent_node_getter)?;
   let call_parent_element = vm.register_native_call(dom_node_parent_element_getter)?;
@@ -2358,6 +2387,7 @@ pub fn install_dom_bindings_with_limits(
     1,
   )?;
   install_method(&mut scope, proto_node, "appendChild", call_append_child, 1)?;
+  install_method(&mut scope, proto_node, "cloneNode", call_clone_node, 1)?;
   install_method(&mut scope, proto_node, "hasChildNodes", call_has_child_nodes, 0)?;
   install_getter(&mut scope, proto_node, "parentNode", call_parent_node)?;
   install_getter(&mut scope, proto_node, "parentElement", call_parent_element)?;

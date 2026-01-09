@@ -349,3 +349,47 @@ fn quickjs_dom_insert_adjacent_html_round_trip() {
     "expected insertAdjacentHTML-inserted script to be marked already started"
   );
 }
+
+#[test]
+fn quickjs_dom_clone_node_deep_clones_detached_subtree() {
+  let html = "<!doctype html><html><body><div id=a><span>hello</span></div></body></html>";
+  let renderer_dom = parse_html(html).expect("parse html");
+  let dom = Document::from_renderer_dom(&renderer_dom);
+  let dom: SharedDom2Document = Rc::new(RefCell::new(dom));
+
+  let rt = Runtime::new().expect("quickjs runtime");
+  let ctx = Context::full(&rt).expect("quickjs context");
+
+  ctx
+    .with(|ctx| -> rquickjs::Result<()> {
+      install_dom2_bindings(ctx.clone(), Rc::clone(&dom))?;
+
+      ctx.eval::<(), _>("globalThis.div = document.firstChild.lastChild.firstChild;")?;
+      ctx.eval::<(), _>("globalThis.clone = div.cloneNode(true);")?;
+
+      assert_eq!(ctx.eval::<bool, _>("clone !== div")?, true);
+      assert_eq!(ctx.eval::<String, _>("clone.tagName")?, "DIV");
+      assert_eq!(ctx.eval::<String, _>("clone.id")?, "a");
+
+      assert_eq!(ctx.eval::<bool, _>("clone.isConnected")?, false);
+      assert_eq!(ctx.eval::<bool, _>("clone.parentNode === null")?, true);
+
+      assert_eq!(ctx.eval::<String, _>("clone.firstChild.nodeName")?, "SPAN");
+      assert_eq!(ctx.eval::<bool, _>("clone.firstChild !== div.firstChild")?, true);
+      assert_eq!(
+        ctx.eval::<String, _>("clone.firstChild.firstChild.nodeValue")?,
+        "hello"
+      );
+
+      ctx.eval::<(), _>("globalThis.shallow = div.cloneNode();")?;
+      assert_eq!(ctx.eval::<bool, _>("shallow.firstChild === null")?, true);
+
+      ctx.eval::<(), _>(
+        "globalThis.__bad = false; try { document.cloneNode(true); } catch(e) { __bad = (e.name === 'NotSupportedError'); }",
+      )?;
+      assert_eq!(ctx.eval::<bool, _>("__bad")?, true);
+
+      Ok(())
+    })
+    .expect("js eval");
+}

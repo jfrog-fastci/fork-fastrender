@@ -1851,3 +1851,171 @@ fn get_elements_by_tag_name_ns_supports_html_namespace_and_wildcards() -> Result
   realm.teardown(&mut heap);
   Ok(())
 }
+
+#[test]
+fn node_clone_node_deep_clones_detached_subtree() -> Result<(), VmError> {
+  let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+  let mut heap = Heap::new(limits);
+  let mut vm = Vm::new(VmOptions::default());
+
+  let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+  let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+  let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+  install_dom_bindings(&mut vm, &mut heap, &realm, dom, current_script)?;
+
+  let mut scope = heap.scope();
+
+  let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+  let document_val = scope
+    .heap()
+    .object_get_own_data_property_value(realm.global_object(), &key_document)?
+    .expect("globalThis.document should be defined");
+  let document_obj = match document_val {
+    Value::Object(o) => o,
+    _ => panic!("document should be an object"),
+  };
+
+  let key_create_element = PropertyKey::from_string(scope.alloc_string("createElement")?);
+  let create_element = get_data_property_value(scope.heap(), document_obj, &key_create_element)
+    .expect("document.createElement should exist");
+
+  let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
+  let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
+    .expect("appendChild exists");
+
+  // document.createElement("div")
+  let tag_div = Value::String(scope.alloc_string("div")?);
+  let div_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_div])?;
+  let Value::Object(div_obj) = div_val else {
+    panic!("expected div wrapper");
+  };
+
+  // div.id = "src" (via setter).
+  let key_id = PropertyKey::from_string(scope.alloc_string("id")?);
+  let id_set = get_accessor_setter(scope.heap(), div_obj, &key_id).expect("id setter exists");
+  let arg_src = Value::String(scope.alloc_string("src")?);
+  vm.call_without_host(&mut scope, id_set, div_val, &[arg_src])?;
+
+  // Connect the original: document.appendChild(div)
+  vm.call_without_host(&mut scope, append_child, document_val, &[div_val])?;
+
+  // Add a child: <span>hello</span>
+  let tag_span = Value::String(scope.alloc_string("span")?);
+  let span_val = vm.call_without_host(&mut scope, create_element, document_val, &[tag_span])?;
+  vm.call_without_host(&mut scope, append_child, div_val, &[span_val])?;
+
+  let Value::Object(span_obj) = span_val else {
+    panic!("expected span wrapper");
+  };
+  let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+  let text_content_set =
+    get_accessor_setter(scope.heap(), span_obj, &key_text_content).expect("textContent setter exists");
+  let arg_hello = Value::String(scope.alloc_string("hello")?);
+  vm.call_without_host(&mut scope, text_content_set, span_val, &[arg_hello])?;
+
+  // div.cloneNode(true)
+  let key_clone_node = PropertyKey::from_string(scope.alloc_string("cloneNode")?);
+  let clone_node =
+    get_data_property_value(scope.heap(), div_obj, &key_clone_node).expect("cloneNode exists");
+  let clone_val = vm.call_without_host(&mut scope, clone_node, div_val, &[Value::Bool(true)])?;
+  let Value::Object(clone_obj) = clone_val else {
+    panic!("expected clone wrapper");
+  };
+
+  assert_ne!(clone_val, div_val, "cloneNode must allocate a new wrapper");
+
+  // Detached clone: parentNode === null, isConnected === false.
+  let key_parent_node = PropertyKey::from_string(scope.alloc_string("parentNode")?);
+  let parent_node_get = get_accessor_getter(scope.heap(), clone_obj, &key_parent_node)
+    .expect("parentNode getter exists");
+  assert_eq!(
+    vm.call_without_host(&mut scope, parent_node_get, clone_val, &[])?,
+    Value::Null
+  );
+
+  let key_is_connected = PropertyKey::from_string(scope.alloc_string("isConnected")?);
+  let is_connected_get = get_accessor_getter(scope.heap(), clone_obj, &key_is_connected)
+    .expect("isConnected getter exists");
+  assert_eq!(
+    vm.call_without_host(&mut scope, is_connected_get, clone_val, &[])?,
+    Value::Bool(false)
+  );
+
+  // Reflected attribute is cloned.
+  let id_get = get_accessor_getter(scope.heap(), clone_obj, &key_id).expect("id getter exists");
+  let id_val = vm.call_without_host(&mut scope, id_get, clone_val, &[])?;
+  let Value::String(id_str) = id_val else {
+    panic!("expected id string");
+  };
+  assert_eq!(scope.heap().get_string(id_str)?.to_utf8_lossy(), "src");
+
+  // Deep clone should include children but preserve identity (cloneChild !== span).
+  let key_first_child = PropertyKey::from_string(scope.alloc_string("firstChild")?);
+  let first_child_get = get_accessor_getter(scope.heap(), clone_obj, &key_first_child)
+    .expect("firstChild getter exists");
+  let clone_span = vm.call_without_host(&mut scope, first_child_get, clone_val, &[])?;
+  assert_ne!(clone_span, Value::Null);
+  assert_ne!(clone_span, span_val);
+
+  let Value::Object(clone_span_obj) = clone_span else {
+    panic!("expected cloned span wrapper");
+  };
+
+  let key_node_name = PropertyKey::from_string(scope.alloc_string("nodeName")?);
+  let node_name_get = get_accessor_getter(scope.heap(), clone_span_obj, &key_node_name)
+    .expect("nodeName getter exists");
+  let node_name = vm.call_without_host(&mut scope, node_name_get, clone_span, &[])?;
+  let Value::String(node_name_str) = node_name else {
+    panic!("expected nodeName string");
+  };
+  assert_eq!(scope.heap().get_string(node_name_str)?.to_utf8_lossy(), "SPAN");
+
+  // Validate nested text node value.
+  let clone_text = vm.call_without_host(&mut scope, first_child_get, clone_span, &[])?;
+  let Value::Object(clone_text_obj) = clone_text else {
+    panic!("expected cloned text wrapper");
+  };
+  let key_node_value = PropertyKey::from_string(scope.alloc_string("nodeValue")?);
+  let node_value_get = get_accessor_getter(scope.heap(), clone_text_obj, &key_node_value)
+    .expect("nodeValue getter exists");
+  let v = vm.call_without_host(&mut scope, node_value_get, clone_text, &[])?;
+  let Value::String(v_str) = v else {
+    panic!("expected nodeValue string");
+  };
+  assert_eq!(scope.heap().get_string(v_str)?.to_utf8_lossy(), "hello");
+
+  // Shallow clone: no children.
+  let shallow_val = vm.call_without_host(&mut scope, clone_node, div_val, &[])?;
+  let Value::Object(shallow_obj) = shallow_val else {
+    panic!("expected shallow clone wrapper");
+  };
+  let shallow_first_child_get =
+    get_accessor_getter(scope.heap(), shallow_obj, &key_first_child).expect("firstChild getter exists");
+  let shallow_first = vm.call_without_host(&mut scope, shallow_first_child_get, shallow_val, &[])?;
+  assert_eq!(shallow_first, Value::Null);
+
+  // Document.cloneNode is currently unsupported by dom2; bindings must surface NotSupportedError.
+  let document_clone = get_data_property_value(scope.heap(), document_obj, &key_clone_node)
+    .expect("document.cloneNode exists");
+  let thrown = match vm.call_without_host(&mut scope, document_clone, document_val, &[]) {
+    Ok(_) => panic!("expected document.cloneNode to throw"),
+    Err(err) => err.thrown_value().expect("expected thrown value"),
+  };
+  let Value::Object(thrown_obj) = thrown else {
+    panic!("expected thrown object");
+  };
+  let key_name = PropertyKey::from_string(scope.alloc_string("name")?);
+  let name_val = get_data_property_value(scope.heap(), thrown_obj, &key_name).expect("name exists");
+  let Value::String(name_str) = name_val else {
+    panic!("expected name string");
+  };
+  assert_eq!(
+    scope.heap().get_string(name_str)?.to_utf8_lossy(),
+    "NotSupportedError"
+  );
+
+  drop(scope);
+  realm.teardown(&mut heap);
+  Ok(())
+}

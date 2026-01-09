@@ -135,6 +135,12 @@ const DOM_BOOTSTRAP: &str = r#"
       assertValidId(id);
       return !!__dom_is_connected(id);
     }
+
+    cloneNode(subtree) {
+      const id = idOf(this);
+      assertValidId(id);
+      return wrap(__dom_clone_node(id, !!subtree));
+    }
   }
 
   class Document extends Node {
@@ -372,6 +378,27 @@ pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rqu
       Ok(())
     })?;
     globals.set("__dom_set_node_value", f)?;
+  }
+
+  {
+    let dom = Rc::clone(&dom);
+    let f = Function::new(
+      ctx.clone(),
+      move |js_ctx: Ctx<'_>, raw: u32, deep: bool| -> rquickjs::Result<u32> {
+        let result = {
+          let mut dom = dom.borrow_mut();
+          let Ok(id) = dom.node_id_from_index(raw as usize) else {
+            return throw_dom_error(js_ctx, DomError::NotFoundError);
+          };
+          dom.clone_node(id, deep)
+        };
+        match result {
+          Ok(cloned) => Ok(cloned.index() as u32),
+          Err(err) => throw_dom_error(js_ctx, err),
+        }
+      },
+    )?;
+    globals.set("__dom_clone_node", f)?;
   }
 
   // -- Navigation ------------------------------------------------------------
