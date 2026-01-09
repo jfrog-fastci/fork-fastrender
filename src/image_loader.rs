@@ -882,6 +882,524 @@ fn inline_svg_use_references<'a>(
   Ok(Cow::Owned(out))
 }
 
+fn unescape_xml_attr_value(value: &str) -> Cow<'_, str> {
+  if !value.contains('&') {
+    return Cow::Borrowed(value);
+  }
+  let mut out = String::with_capacity(value.len());
+  let bytes = value.as_bytes();
+  let mut i = 0usize;
+  while i < bytes.len() {
+    if bytes[i] != b'&' {
+      out.push(bytes[i] as char);
+      i += 1;
+      continue;
+    }
+    let Some(semi_rel) = value[i + 1..].find(';') else {
+      out.push('&');
+      i += 1;
+      continue;
+    };
+    let semi = i + 1 + semi_rel;
+    let entity = &value[i + 1..semi];
+    let decoded = match entity {
+      "amp" => Some('&'),
+      "lt" => Some('<'),
+      "gt" => Some('>'),
+      "quot" => Some('"'),
+      "apos" => Some('\''),
+      _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+        u32::from_str_radix(&entity[2..], 16)
+          .ok()
+          .and_then(char::from_u32)
+      }
+      _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
+      _ => None,
+    };
+    if let Some(ch) = decoded {
+      out.push(ch);
+      i = semi + 1;
+      continue;
+    }
+    out.push('&');
+    out.push_str(entity);
+    out.push(';');
+    i = semi + 1;
+  }
+  Cow::Owned(out)
+}
+
+fn find_xml_start_tag_end(svg_content: &str, start: usize, limit: usize) -> Option<usize> {
+  let bytes = svg_content.as_bytes();
+  let mut quote: Option<u8> = None;
+  let mut i = start;
+  let limit = limit.min(bytes.len());
+  while i < limit {
+    let b = bytes[i];
+    if let Some(q) = quote {
+      if b == q {
+        quote = None;
+      }
+    } else if b == b'"' || b == b'\'' {
+      quote = Some(b);
+    } else if b == b'>' {
+      return Some(i + 1);
+    }
+    i += 1;
+  }
+  None
+}
+
+/// Best-effort preprocessor that inlines external image references (`<image>` / `<feImage>`) by
+/// fetching the referenced resource and rewriting its href into a base64 `data:` URL.
+fn inline_svg_image_href_references<'a>(
+  svg_content: &'a str,
+  svg_url: &str,
+  fetcher: &dyn ResourceFetcher,
+  ctx: Option<&ResourceContext>,
+) -> Result<Cow<'a, str>> {
+  use base64::Engine;
+
+  // Avoid parsing unless it looks like we might have `<image>` references. Inline SVG content in
+  // HTML is sometimes namespaced (e.g. `<svg:image>`), so also scan for `:image`.
+  if !svg_content.contains("<image")
+    && !svg_content.contains(":image")
+    && !svg_content.contains("<feImage")
+    && !svg_content.contains(":feImage")
+  {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  const MAX_IMAGE_INLINES: usize = 64;
+  const MAX_EMBEDDED_BYTES_TOTAL: usize = 4 * 1024 * 1024;
+  const MAX_INJECTED_BYTES: usize = 8 * 1024 * 1024;
+
+  check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) | Err(_) => return Ok(Cow::Borrowed(svg_content)),
+  };
+
+  let base_url = Url::parse(svg_url)
+    .ok()
+    .map(|_| svg_url)
+    .or_else(|| {
+      ctx
+        .and_then(|ctx| ctx.document_url.as_deref())
+        .filter(|doc_url| Url::parse(doc_url).is_ok())
+    });
+
+  let mut deadline_counter = 0usize;
+  let mut replacements: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+  let mut embedded_bytes_total = 0usize;
+  let mut injected_bytes = 0usize;
+  let mut inlines = 0usize;
+  let mut data_url_cache: HashMap<String, String> = HashMap::new();
+
+  'node_loop: for node in doc.descendants().filter(|n| n.is_element()) {
+    check_root_periodic(
+      &mut deadline_counter,
+      IMAGE_DECODE_DEADLINE_STRIDE,
+      RenderStage::Paint,
+    )
+    .map_err(Error::Render)?;
+
+    let name = node.tag_name().name();
+    let is_image = name.eq_ignore_ascii_case("image");
+    let is_fe_image = name.eq_ignore_ascii_case("feimage");
+    if !is_image && !is_fe_image {
+      continue;
+    }
+
+    if node.children().any(|child| child.is_element()) {
+      continue;
+    }
+
+    let node_range = node.range();
+    if node_range.end > svg_content.len() || node_range.start >= node_range.end {
+      continue;
+    }
+
+    let Some(tag_end) = find_xml_start_tag_end(svg_content, node_range.start, node_range.end)
+    else {
+      continue;
+    };
+    if tag_end > svg_content.len() || tag_end <= node_range.start {
+      continue;
+    }
+
+    let tag = &svg_content[node_range.start..tag_end];
+    let bytes = tag.as_bytes();
+    let mut i = 0usize;
+
+    // Skip `<` + element name.
+    if bytes.get(i) == Some(&b'<') {
+      i += 1;
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+      while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && bytes[i] != b'>'
+        && bytes[i] != b'/'
+      {
+        i += 1;
+      }
+    }
+
+    while i < bytes.len() {
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+      if i >= bytes.len() || bytes[i] == b'>' {
+        break;
+      }
+      if bytes[i] == b'/' {
+        i += 1;
+        continue;
+      }
+
+      let name_start = i;
+      while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && bytes[i] != b'='
+        && bytes[i] != b'>'
+        && bytes[i] != b'/'
+      {
+        i += 1;
+      }
+      let name_end = i;
+      if name_end == name_start {
+        i = i.saturating_add(1);
+        continue;
+      }
+      let attr_name = &tag[name_start..name_end];
+      let local_name = attr_name
+        .rsplit_once(':')
+        .map(|(_, local)| local)
+        .unwrap_or(attr_name);
+
+      let is_candidate = local_name.eq_ignore_ascii_case("href")
+        || (is_image && local_name.eq_ignore_ascii_case("src"));
+
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+
+      if i >= bytes.len() || bytes[i] != b'=' {
+        continue;
+      }
+      i += 1;
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+
+      let value_start = i;
+      if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+        let quote = bytes[i];
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        let value_end = i;
+        if i < bytes.len() {
+          i += 1;
+        }
+        let value_start = start;
+        let value_range = (node_range.start + value_start)..(node_range.start + value_end);
+
+        if !is_candidate {
+          continue;
+        }
+
+        let raw_value = tag.get(value_start..value_end).unwrap_or_default();
+        let decoded = unescape_xml_attr_value(raw_value);
+        let trimmed = trim_ascii_whitespace(decoded.as_ref());
+        if trimmed.is_empty()
+          || trimmed.starts_with('#')
+          || crate::resource::is_data_url(trimmed)
+          || is_about_url(trimmed)
+        {
+          continue;
+        }
+
+        let Some(resolved_base) = base_url
+          .and_then(|base| resolve_against_base(base, trimmed))
+          .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
+        else {
+          continue;
+        };
+        let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+          continue;
+        };
+        resolved_url.set_fragment(None);
+        let resolved_url = resolved_url.to_string();
+
+        if let Some(ctx) = ctx {
+          if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved_url) {
+            return Err(Error::Image(ImageError::LoadFailed {
+              url: resolved_url.clone(),
+              reason: err.reason,
+            }));
+          }
+        }
+
+        let original_value_len = value_range.end.saturating_sub(value_range.start);
+
+        let data_url = if let Some(cached) = data_url_cache.get(&resolved_url) {
+          cached.clone()
+        } else {
+          if inlines >= MAX_IMAGE_INLINES {
+            break 'node_loop;
+          }
+
+          check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+          let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+          if let Some(ctx) = ctx {
+            if let Some(origin) = ctx.policy.document_origin.as_ref() {
+              req = req.with_client_origin(origin);
+            }
+            if let Some(referrer_url) = ctx.document_url.as_deref() {
+              req = req.with_referrer_url(referrer_url);
+            }
+            req = req.with_referrer_policy(ctx.referrer_policy);
+          }
+
+          let res = match fetcher.fetch_with_request(req) {
+            Ok(res) => res,
+            Err(_) => continue,
+          };
+
+          if let Some(ctx) = ctx {
+            if let Err(err) = ctx.check_allowed_with_final(
+              ResourceKind::Image,
+              &resolved_url,
+              res.final_url.as_deref(),
+            ) {
+              return Err(Error::Image(ImageError::LoadFailed {
+                url: resolved_url.clone(),
+                reason: err.reason,
+              }));
+            }
+          }
+
+          if let Err(_) = ensure_http_success(&res, &resolved_url)
+            .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+          {
+            continue;
+          }
+
+          let bytes_len = res.bytes.len();
+          if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
+            break 'node_loop;
+          }
+
+          let mime = res
+            .content_type
+            .as_deref()
+            .and_then(|ct| ct.split(';').next())
+            .map(|ct| ct.trim_matches(|c: char| matches!(c, ' ' | '\t')))
+            .filter(|ct| !ct.is_empty())
+            .unwrap_or("application/octet-stream");
+
+          let base64_len = u64::try_from(bytes_len)
+            .ok()
+            .and_then(|n| n.checked_add(2))
+            .and_then(|n| n.checked_div(3))
+            .and_then(|n| n.checked_mul(4))
+            .and_then(|n| usize::try_from(n).ok());
+          let Some(base64_len) = base64_len else {
+            break 'node_loop;
+          };
+
+          let prefix_len = "data:".len() + mime.len() + ";base64,".len();
+          let total_len = prefix_len.saturating_add(base64_len);
+          let growth = total_len.saturating_sub(original_value_len);
+          if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+            break 'node_loop;
+          }
+
+          let encoded = base64::engine::general_purpose::STANDARD.encode(&res.bytes);
+          let data_url = format!("data:{mime};base64,{encoded}");
+
+          embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
+          inlines += 1;
+          data_url_cache.insert(resolved_url.clone(), data_url.clone());
+          data_url
+        };
+
+        let growth = data_url.len().saturating_sub(original_value_len);
+        if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+          break 'node_loop;
+        }
+        injected_bytes = injected_bytes.saturating_add(growth);
+        replacements.push((value_range, data_url));
+        continue;
+      }
+
+      let start = value_start;
+      while i < bytes.len()
+        && !bytes[i].is_ascii_whitespace()
+        && bytes[i] != b'>'
+        && bytes[i] != b'/'
+      {
+        i += 1;
+      }
+      let value_end = i;
+
+      let value_range = (node_range.start + start)..(node_range.start + value_end);
+      if !is_candidate {
+        continue;
+      }
+      let raw_value = tag.get(start..value_end).unwrap_or_default();
+      let decoded = unescape_xml_attr_value(raw_value);
+      let trimmed = trim_ascii_whitespace(decoded.as_ref());
+      if trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || crate::resource::is_data_url(trimmed)
+        || is_about_url(trimmed)
+      {
+        continue;
+      }
+
+      let Some(resolved_base) = base_url
+        .and_then(|base| resolve_against_base(base, trimmed))
+        .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
+      else {
+        continue;
+      };
+      let Ok(mut resolved_url) = Url::parse(&resolved_base) else {
+        continue;
+      };
+      resolved_url.set_fragment(None);
+      let resolved_url = resolved_url.to_string();
+
+      if let Some(ctx) = ctx {
+        if let Err(err) = ctx.check_allowed(ResourceKind::Image, &resolved_url) {
+          return Err(Error::Image(ImageError::LoadFailed {
+            url: resolved_url.clone(),
+            reason: err.reason,
+          }));
+        }
+      }
+
+      let original_value_len = value_range.end.saturating_sub(value_range.start);
+      let data_url = if let Some(cached) = data_url_cache.get(&resolved_url) {
+        cached.clone()
+      } else {
+        if inlines >= MAX_IMAGE_INLINES {
+          break 'node_loop;
+        }
+
+        check_root(RenderStage::Paint).map_err(Error::Render)?;
+
+        let mut req = FetchRequest::new(&resolved_url, FetchDestination::Image);
+        if let Some(ctx) = ctx {
+          if let Some(origin) = ctx.policy.document_origin.as_ref() {
+            req = req.with_client_origin(origin);
+          }
+          if let Some(referrer_url) = ctx.document_url.as_deref() {
+            req = req.with_referrer_url(referrer_url);
+          }
+          req = req.with_referrer_policy(ctx.referrer_policy);
+        }
+
+        let res = match fetcher.fetch_with_request(req) {
+          Ok(res) => res,
+          Err(_) => continue,
+        };
+
+        if let Some(ctx) = ctx {
+          if let Err(err) = ctx.check_allowed_with_final(
+            ResourceKind::Image,
+            &resolved_url,
+            res.final_url.as_deref(),
+          ) {
+            return Err(Error::Image(ImageError::LoadFailed {
+              url: resolved_url.clone(),
+              reason: err.reason,
+            }));
+          }
+        }
+
+        if let Err(_) = ensure_http_success(&res, &resolved_url)
+          .and_then(|()| ensure_image_mime_sane(&res, &resolved_url))
+        {
+          continue;
+        }
+
+        let bytes_len = res.bytes.len();
+        if embedded_bytes_total.saturating_add(bytes_len) > MAX_EMBEDDED_BYTES_TOTAL {
+          break 'node_loop;
+        }
+
+        let mime = res
+          .content_type
+          .as_deref()
+          .and_then(|ct| ct.split(';').next())
+          .map(|ct| ct.trim_matches(|c: char| matches!(c, ' ' | '\t')))
+          .filter(|ct| !ct.is_empty())
+          .unwrap_or("application/octet-stream");
+
+        let base64_len = u64::try_from(bytes_len)
+          .ok()
+          .and_then(|n| n.checked_add(2))
+          .and_then(|n| n.checked_div(3))
+          .and_then(|n| n.checked_mul(4))
+          .and_then(|n| usize::try_from(n).ok());
+        let Some(base64_len) = base64_len else {
+          break 'node_loop;
+        };
+
+        let prefix_len = "data:".len() + mime.len() + ";base64,".len();
+        let total_len = prefix_len.saturating_add(base64_len);
+        let growth = total_len.saturating_sub(original_value_len);
+        if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+          break 'node_loop;
+        }
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&res.bytes);
+        let data_url = format!("data:{mime};base64,{encoded}");
+
+        embedded_bytes_total = embedded_bytes_total.saturating_add(bytes_len);
+        inlines += 1;
+        data_url_cache.insert(resolved_url.clone(), data_url.clone());
+        data_url
+      };
+
+      let growth = data_url.len().saturating_sub(original_value_len);
+      if injected_bytes.saturating_add(growth) > MAX_INJECTED_BYTES {
+        break 'node_loop;
+      }
+      injected_bytes = injected_bytes.saturating_add(growth);
+      replacements.push((value_range, data_url));
+    }
+  }
+
+  if replacements.is_empty() {
+    return Ok(Cow::Borrowed(svg_content));
+  }
+
+  replacements.sort_by_key(|(range, _)| range.start);
+  let mut out = String::with_capacity(svg_content.len().saturating_add(injected_bytes));
+  let mut cursor = 0usize;
+  for (range, replacement) in replacements {
+    if range.start < cursor || range.end < range.start || range.end > svg_content.len() {
+      return Ok(Cow::Borrowed(svg_content));
+    }
+    out.push_str(&svg_content[cursor..range.start]);
+    out.push_str(&replacement);
+    cursor = range.end;
+  }
+  out.push_str(&svg_content[cursor..]);
+  Ok(Cow::Owned(out))
+}
+
 fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
   let trimmed = trim_ascii_whitespace(value);
   if trimmed.is_empty() {
@@ -4048,17 +4566,23 @@ impl ImageCache {
     url: &str,
   ) -> Result<Arc<tiny_skia::Pixmap>> {
     use resvg::usvg;
-
+ 
     let render_timer = Instant::now();
-
-    let svg_content = inline_svg_use_references(
+ 
+    let svg_use_inlined = inline_svg_use_references(
       svg_content,
       url,
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_content = svg_content.as_ref();
-
+    let svg_images_inlined = inline_svg_image_href_references(
+      svg_use_inlined.as_ref(),
+      url,
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+    )?;
+    let svg_content = svg_images_inlined.as_ref();
+ 
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
       record_image_decode_ms(render_timer.elapsed().as_secs_f64() * 1000.0);
@@ -5544,13 +6068,19 @@ impl ImageCache {
       }
     }
     self.enforce_svg_resource_policy(svg_content, url)?;
-    let svg_content = inline_svg_use_references(
+    let svg_use_inlined = inline_svg_use_references(
       svg_content,
       url,
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_content = svg_content.as_ref();
+    let svg_images_inlined = inline_svg_image_href_references(
+      svg_use_inlined.as_ref(),
+      url,
+      self.fetcher.as_ref(),
+      self.resource_context.as_ref(),
+    )?;
+    let svg_content = svg_images_inlined.as_ref();
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_content, &options)
     })) {
@@ -8525,6 +9055,122 @@ mod tests {
     assert_eq!(
       (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
       (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
+  fn svg_external_image_href_is_fetched_and_renders() {
+    let main_url = "https://example.test/main.svg";
+    let img_url = "https://example.test/img.png";
+
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
+
+    let mut main_res =
+      FetchedResource::new(main_svg.as_bytes().to_vec(), Some("image/svg+xml".to_string()));
+    main_res.status = Some(200);
+    main_res.final_url = Some(main_url.to_string());
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (main_url.to_string(), main_res),
+      (img_url.to_string(), img_res),
+    ]);
+
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let image = cache.load(main_url).expect("main svg should render");
+    assert_eq!(image.dimensions(), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(rgba.get_pixel(0, 0).0, [255, 0, 0, 255]);
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+      "expected fetch for image href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn inline_svg_external_image_uses_document_url_as_base() {
+    let doc_url = "https://example.test/page.html";
+    let img_url = "https://example.test/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="/img.png" width="1" height="1"/></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+      "expected fetch for inline svg image href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn svg_policy_blocks_external_image_during_render() {
+    let doc_url = "https://doc.test/";
+    let blocked_url = "https://cross.test/a.png";
+
+    let fetcher = MapFetcher::default();
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    ctx.policy.same_origin_only = true;
+    cache.set_resource_context(Some(ctx));
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><image href="https://cross.test/a.png" width="1" height="1"/></svg>"#;
+
+    let err = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, "inline-svg", 1.0)
+      .expect_err("expected policy block during render");
+    match err {
+      Error::Image(ImageError::LoadFailed { url, reason }) => {
+        assert_eq!(url, blocked_url);
+        assert!(
+          reason.contains("Blocked cross-origin subresource"),
+          "unexpected policy reason: {reason}"
+        );
+      }
+      other => panic!("expected ImageError::LoadFailed, got {other:?}"),
+    }
+
+    let requests = fetcher.requests();
+    assert!(
+      requests.is_empty(),
+      "fetcher should not be called for policy-blocked URLs, got: {requests:?}"
     );
   }
 
