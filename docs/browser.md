@@ -33,7 +33,8 @@ For build/run commands, platform prerequisites, and MSRV constraints, see [brows
 
 ## Current capabilities (MVP)
 
-The `browser` UI is intentionally minimal, but it is now wired up end-to-end:
+The `browser` UI is intentionally minimal, but the core chrome/navigation loop is now wired up
+end-to-end:
 
 - **Tabs**: create/close/switch tabs.
 - **Navigation**:

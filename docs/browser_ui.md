@@ -102,6 +102,9 @@ The browser UI should run rendering on a dedicated large-stack thread:
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
 - Thread spawn helper: [`spawn_render_worker_thread`](../src/ui/worker.rs).
+  - Note: the windowed `browser` app currently spawns its worker directly in
+    [`src/bin/browser.rs`](../src/bin/browser.rs); `spawn_render_worker_thread` is a reusable helper
+    for other UI/worker wiring.
 
 ### Message protocol (channels)
 
