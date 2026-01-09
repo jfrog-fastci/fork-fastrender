@@ -638,4 +638,44 @@ mod tests {
     assert_eq!(entries[0].script_id, scripts[1].index());
     Ok(())
   }
+
+  #[test]
+  fn classic_script_in_shadow_root_is_connected_but_current_script_is_null() -> Result<()> {
+    // Scripts inside declaratively attached shadow roots should be treated as connected for script
+    // preparation, but `document.currentScript` must remain null for classic scripts in shadow
+    // trees.
+    let dom = crate::dom2::parse_html(
+      r#"<div id="host"><template shadowroot="open"><script id="shadow"></script></template></div>"#,
+    )
+    .unwrap();
+
+    let scripts = find_script_elements(&dom);
+    assert_eq!(scripts.len(), 1);
+    let script = scripts[0];
+    assert!(
+      dom.is_connected_for_scripting(script),
+      "script inside attached shadow root should be connected for scripting"
+    );
+
+    let mut host = Host {
+      dom,
+      script_state: CurrentScriptStateHandle::default(),
+      log: None,
+    };
+    let mut orchestrator = ScriptOrchestrator::new();
+    let mut executor = RecordingExecutor::default();
+    orchestrator.execute_script_element(
+      &mut host,
+      script,
+      ScriptType::Classic,
+      &mut executor,
+    )?;
+
+    assert_eq!(
+      executor.observed,
+      vec![None],
+      "currentScript must be null for classic scripts in shadow trees"
+    );
+    Ok(())
+  }
 }

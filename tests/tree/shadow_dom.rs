@@ -2,6 +2,7 @@ use fastrender::dom::{
   compute_slot_assignment_with_ids, enumerate_dom_ids, parse_html, DomNode, DomNodeType,
   ShadowRootMode,
 };
+use fastrender::debug::snapshot::snapshot_dom;
 use fastrender::error::{Error, RenderError, RenderStage};
 use fastrender::render_control::{with_deadline, RenderDeadline};
 use std::collections::HashMap;
@@ -615,4 +616,91 @@ fn slot_assignment_times_out_under_expired_deadline() {
     Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Cascade),
     other => panic!("expected timeout error, got {other:?}"),
   }
+}
+
+#[test]
+fn dom2_parser_preserves_declarative_shadow_dom_snapshot_semantics() {
+  let html = r#"
+    <div id="host">
+      <template shadowroot="open">
+        <div id="shadow">
+          <div id="inner-host">
+            <template shadowroot="open">
+              <span id="nested-shadow">nested</span>
+            </template>
+            <p id="inner-light">inner light</p>
+          </div>
+        </div>
+      </template>
+
+      <p id="light-1">light one</p>
+
+      <!-- Second declarative template should remain inert light DOM -->
+      <template shadowroot="closed">
+        <div id="unused-shadow-host">
+          <template shadowroot="open">
+            <span id="should-not-attach">nope</span>
+          </template>
+        </div>
+      </template>
+
+      <p id="light-2">light two</p>
+    </div>
+  "#;
+
+  let legacy = parse_html(html).expect("legacy parse_html");
+  let dom2_doc = fastrender::dom2::parse_html(html).expect("dom2 parse_html");
+  let dom2_snapshot = dom2_doc.to_renderer_dom_with_mapping();
+
+  // Sanity-check parent/child invariants for the connected tree; detached template nodes are
+  // allowed and should not appear in the root traversal.
+  {
+    use std::collections::HashSet;
+    let mut seen: HashSet<fastrender::dom2::NodeId> = HashSet::new();
+    let mut stack = vec![dom2_doc.root()];
+    while let Some(id) = stack.pop() {
+      assert!(seen.insert(id), "node appears multiple times in the tree: {id:?}");
+      let node = dom2_doc.node(id);
+      for &child in &node.children {
+        let child_node = dom2_doc.node(child);
+        assert_eq!(
+          child_node.parent,
+          Some(id),
+          "child must point back to parent: parent={id:?} child={child:?}"
+        );
+        stack.push(child);
+      }
+    }
+  }
+
+  assert_eq!(
+    snapshot_dom(&legacy),
+    snapshot_dom(&dom2_snapshot.dom),
+    "dom2 parse_html output must match legacy parse_html DOM snapshot"
+  );
+
+  let host = find_by_id(&dom2_snapshot.dom, "host").expect("host element");
+  let shadow_roots: Vec<&DomNode> = host
+    .children
+    .iter()
+    .filter(|child| matches!(child.node_type, DomNodeType::ShadowRoot { .. }))
+    .collect();
+  assert_eq!(shadow_roots.len(), 1, "only the first shadowroot template is promoted");
+
+  assert!(
+    host.children.first().is_some_and(|n| matches!(n.node_type, DomNodeType::ShadowRoot { .. })),
+    "shadow root must be the first child of the host"
+  );
+
+  let inner_host = find_by_id(&dom2_snapshot.dom, "inner-host").expect("inner host element");
+  assert!(
+    find_shadow_root(inner_host).is_some(),
+    "nested declarative shadow roots inside the promoted template must attach"
+  );
+
+  let unused_shadow_host = find_by_id(&dom2_snapshot.dom, "unused-shadow-host").expect("unused shadow host");
+  assert!(
+    find_shadow_root(unused_shadow_host).is_none(),
+    "nested shadow roots inside inert declarative templates must not attach"
+  );
 }
