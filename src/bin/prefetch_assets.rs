@@ -4,6 +4,7 @@
 //! `fetch_pages` caches HTML, then this tool warms `fetches/assets/` so the
 //! render step doesn't spend its 5s budget waiting on first-run network fetches.
 
+#[cfg(feature = "disk_cache")]
 use fastrender::cli_utils as common;
 
 use serde::Serialize;

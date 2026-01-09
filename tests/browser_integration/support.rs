@@ -447,12 +447,14 @@ pub fn scroll_msg(tab_id: TabId, delta_css: (f32, f32), pointer_css: Option<(f32
 
 /// Construct a `UiToWorker::Scroll` message that only affects the viewport scroll position.
 #[cfg(feature = "browser_ui")]
+#[allow(dead_code)]
 pub fn scroll_viewport(tab_id: TabId, delta_css: (f32, f32)) -> UiToWorker {
   scroll_msg(tab_id, delta_css, None)
 }
 
 /// Construct a `UiToWorker::Scroll` message scoped to the element under the pointer (if any).
 #[cfg(feature = "browser_ui")]
+#[allow(dead_code)]
 pub fn scroll_at_pointer(
   tab_id: TabId,
   delta_css: (f32, f32),

@@ -173,7 +173,6 @@ test = false
 [[bin]]
 name = "browser"
 path = "src/bin/browser.rs"
-required-features = ["browser_ui"]
 test = false
 
 [[bench]]

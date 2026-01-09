@@ -3,8 +3,10 @@ fn main() {
   eprintln!(
     "The `browser` binary requires the `browser_ui` feature.\n\
 Run:\n\
-  cargo run --features browser_ui --bin browser"
+  bash scripts/run_limited.sh --as 64G -- \\\n\
+    bash scripts/cargo_agent.sh run --features browser_ui --bin browser"
   );
+  std::process::exit(2);
 }
 
 #[cfg(feature = "browser_ui")]
