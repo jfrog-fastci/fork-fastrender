@@ -145,6 +145,9 @@ mod scripting_parser;
 #[allow(deprecated)]
 pub use scripting_parser::{parse_html_with_scripting, ScriptToken};
 
+mod fragment;
+pub use fragment::parse_html_fragment;
+
 pub(crate) mod forms_validation;
 
 #[derive(Debug, Default, Clone)]
