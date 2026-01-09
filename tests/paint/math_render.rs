@@ -450,6 +450,19 @@ fn math_scriptlevel_matches_golden() {
 }
 
 #[test]
+fn math_color_background_matches_golden() {
+  with_stack(|| {
+    let mut renderer = deterministic_renderer();
+    let html = std::fs::read_to_string(fixture_path("math_color_background"))
+      .expect("load math_color_background");
+    let png = renderer
+      .render_to_png(&html, 520, 260)
+      .expect("render math color/background");
+    compare_golden("math_color_background", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_mathvariant_alphanumerics_match_golden() {
   with_stack(|| {
     let mut renderer = deterministic_renderer();
