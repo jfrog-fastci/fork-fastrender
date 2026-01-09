@@ -11,6 +11,7 @@ use crate::ui::about_pages;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
+use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -154,6 +155,8 @@ fn navigate_fragment_in_place(
   // Same-document fragment navigations should not reload the page; we only update the tab's URL
   // and adjust scroll based on the existing layout cache.
   tab.url = Some(url_string.clone());
+  // Update document URL so `:target` / `:target-within` reflect the new fragment.
+  tab.document.set_document_url(Some(url_string.clone()));
 
   let title = crate::html::title::find_document_title(tab.document.dom());
   let _ = ui_tx.send(WorkerToUi::NavigationCommitted {
@@ -165,10 +168,11 @@ fn navigate_fragment_in_place(
   });
 
   let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
-  let fragment = url.fragment().unwrap_or("");
+  let fragment = percent_decode_str(url.fragment().unwrap_or("")).decode_utf8_lossy();
 
   let target_offset = match tab.document.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-    let offset = scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment, viewport);
+    let offset =
+      scroll_offset_for_fragment_target(dom, box_tree, fragment_tree, fragment.as_ref(), viewport);
     (false, offset)
   }) {
     Ok(offset) => offset.unwrap_or(Point::ZERO),
@@ -214,7 +218,12 @@ fn navigate_fragment_in_place(
 fn non_empty_url_fragment(url: &str) -> Option<String> {
   Url::parse(url)
     .ok()
-    .and_then(|parsed| parsed.fragment().filter(|frag| !frag.is_empty()).map(str::to_string))
+    .and_then(|parsed| {
+      parsed
+        .fragment()
+        .filter(|frag| !frag.is_empty())
+        .map(|frag| percent_decode_str(frag).decode_utf8_lossy().into_owned())
+    })
 }
 
 /// Install a stage listener that forwards heartbeats to the UI for the lifetime of the returned

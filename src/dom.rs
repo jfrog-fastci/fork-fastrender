@@ -283,7 +283,11 @@ pub(crate) fn with_target_fragment<R, F: FnOnce() -> R>(target: Option<&str>, f:
   TARGET_FRAGMENT.with(|slot| {
     let previous = slot.borrow_mut().take();
     if let Some(t) = target {
-      *slot.borrow_mut() = Some(t.trim_start_matches('#').to_string());
+      let without_hash = t.strip_prefix('#').unwrap_or(t);
+      let decoded = percent_encoding::percent_decode_str(without_hash)
+        .decode_utf8_lossy()
+        .into_owned();
+      *slot.borrow_mut() = Some(decoded);
     }
     let result = f();
     *slot.borrow_mut() = previous;

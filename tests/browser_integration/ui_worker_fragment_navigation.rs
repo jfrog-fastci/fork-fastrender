@@ -96,6 +96,77 @@ fn navigation_with_fragment_scrolls_to_target_before_first_frame() {
 }
 
 #[test]
+fn navigation_with_percent_encoded_fragment_scrolls_to_target_before_first_frame() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let page_url = site.write(
+    "page.html",
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            .spacer { height: 2000px; }
+            div[id="foo#bar"] { height: 20px; background: rgb(255, 0, 0); }
+            div[id="foo#bar"]:target { background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <div class="spacer"></div>
+          <div id="foo#bar"></div>
+          <div class="spacer"></div>
+        </body>
+      </html>
+    "#,
+  );
+  let url = format!("{page_url}#foo%23bar");
+
+  let worker = spawn_ui_worker("fastr-ui-worker-fragment-percent").expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .unwrap();
+  worker
+    .ui_tx
+    .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .unwrap();
+
+  let msg = next_navigation_committed(&worker.ui_rx, tab_id);
+  match msg {
+    WorkerToUi::NavigationCommitted { url, .. } => {
+      assert!(
+        url.contains("#foo%23bar"),
+        "expected committed URL to include #foo%23bar, got {url}"
+      );
+    }
+    WorkerToUi::NavigationFailed { url, error, .. } => {
+      panic!("navigation failed for {url}: {error}");
+    }
+    other => panic!("unexpected WorkerToUi message: {other:?}"),
+  }
+
+  let frame = next_frame_ready(&worker.ui_rx, tab_id);
+  assert!(
+    frame.scroll_state.viewport.y > 0.0,
+    "expected first frame to be scrolled for fragment navigation, got {:?}",
+    frame.scroll_state.viewport
+  );
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 10),
+    [0, 255, 0, 255],
+    "expected :target styling to match decoded fragment after scrolling"
+  );
+
+  worker.join().unwrap();
+}
+
+#[test]
 fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
   let _lock = super::stage_listener_test_lock();
 

@@ -8,6 +8,7 @@ use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
 use crate::{BrowserDocument, FastRender, RenderOptions, Result};
+use percent_encoding::percent_decode_str;
 use url::Url;
 
 /// Per-tab worker-side controller that owns interactive document state (DOM + scroll + input).
@@ -523,7 +524,10 @@ fn same_document_fragment(current_url: &str, href: &str) -> Option<String> {
   let mut href_base = href.clone();
   href_base.set_fragment(None);
 
-  (current_base == href_base).then(|| href.fragment().unwrap_or("").to_string())
+  (current_base == href_base).then(|| {
+    let raw = href.fragment().unwrap_or("");
+    percent_decode_str(raw).decode_utf8_lossy().into_owned()
+  })
 }
 
 fn strip_fragment(url: &str) -> String {

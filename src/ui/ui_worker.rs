@@ -7,6 +7,7 @@ use crate::ui::about_pages;
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::{RenderOptions, Result};
+use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use url::Url;
@@ -299,13 +300,14 @@ impl UiWorker {
 
       if let Ok(parsed) = Url::parse(&nav_url) {
         if let Some(fragment) = parsed.fragment().filter(|frag| !frag.is_empty()) {
+          let fragment = percent_decode_str(fragment).decode_utf8_lossy();
           if let Some(doc) = tab.document.as_ref() {
             let viewport = Size::new(tab.viewport_css.0 as f32, tab.viewport_css.1 as f32);
             if let Some(point) = scroll_offset_for_fragment_target(
               doc.dom(),
               doc.box_tree(),
               doc.fragment_tree(),
-              fragment,
+              fragment.as_ref(),
               viewport,
             ) {
               tab.scroll_state.viewport = point;
