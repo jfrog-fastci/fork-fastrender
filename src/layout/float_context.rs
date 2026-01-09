@@ -43,8 +43,10 @@ use crate::geometry::Rect;
 use crate::layout::float_shape::FloatShape;
 use crate::layout::formatting_context::LayoutError;
 use crate::render_control::check_active_periodic;
-use crate::style::float::Clear;
 use crate::style::float::Float;
+use crate::style::types::{Direction, WritingMode};
+use crate::style::inline_axis_is_horizontal;
+use crate::style::inline_axis_positive;
 use std::cell::{Cell, RefCell};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
@@ -53,24 +55,138 @@ use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Side-based clearing directive resolved into the float layout coordinate system.
+///
+/// `FloatContext` operates in a logical coordinate system where the inline-start side is
+/// represented by `Left` and the inline-end side by `Right` (regardless of `direction`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ClearSide {
+  /// Do not clear floats.
+  #[default]
+  None,
+  /// Clear floats on the inline-start side.
+  Left,
+  /// Clear floats on the inline-end side.
+  Right,
+  /// Clear floats on both inline-start and inline-end sides.
+  Both,
+}
+
+impl ClearSide {
+  #[inline]
+  pub fn is_clearing(self) -> bool {
+    !matches!(self, ClearSide::None)
+  }
+
+  #[inline]
+  pub fn clears_left(self) -> bool {
+    matches!(self, ClearSide::Left | ClearSide::Both)
+  }
+
+  #[inline]
+  pub fn clears_right(self) -> bool {
+    matches!(self, ClearSide::Right | ClearSide::Both)
+  }
+}
+
 /// Side on which a float is placed
 ///
-/// This enum represents the physical side where a float is positioned,
-/// derived from the CSS `float` property value.
+/// This enum represents the side of the *inline axis* where a float is positioned in the
+/// [`FloatContext`] coordinate system.
+///
+/// `FloatSide::Left` corresponds to **inline-start**, and `FloatSide::Right` corresponds to
+/// **inline-end**. For `writing-mode: horizontal-tb` this matches physical left/right in LTR, but is
+/// reversed in RTL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FloatSide {
-  /// Float is positioned on the left side
+  /// Float is positioned on the inline-start side.
   Left,
-  /// Float is positioned on the right side
+  /// Float is positioned on the inline-end side.
   Right,
 }
 
-impl From<Float> for Option<FloatSide> {
-  fn from(float: Float) -> Self {
-    match float {
-      Float::Left => Some(FloatSide::Left),
-      Float::Right => Some(FloatSide::Right),
-      Float::None | Float::Footnote => None,
+/// Resolves a CSS `float` value into a side in the float layout coordinate system.
+///
+/// The returned side is *flow-relative* (inline-start/end). Physical `left`/`right` are mapped
+/// into flow-relative sides using the provided `writing_mode`/`direction`.
+pub(crate) fn resolve_float_side(float: Float, writing_mode: WritingMode, direction: Direction) -> Option<FloatSide> {
+  match float {
+    Float::None | Float::Footnote => None,
+    Float::InlineStart => Some(FloatSide::Left),
+    Float::InlineEnd => Some(FloatSide::Right),
+    Float::Left | Float::Right => {
+      // Physical `left`/`right` only map cleanly to inline sides when the inline axis is
+      // horizontal. For vertical writing modes, FastRender currently treats physical `left/right`
+      // as if they were `inline-start/inline-end` (legacy behavior).
+      if !inline_axis_is_horizontal(writing_mode) {
+        return Some(match float {
+          Float::Left => FloatSide::Left,
+          Float::Right => FloatSide::Right,
+          _ => unreachable!(),
+        });
+      }
+
+      let inline_positive = inline_axis_positive(writing_mode, direction);
+      match float {
+        // physical left == inline-start when inline axis is positive, otherwise inline-end.
+        Float::Left => Some(if inline_positive {
+          FloatSide::Left
+        } else {
+          FloatSide::Right
+        }),
+        // physical right == inline-end when inline axis is positive, otherwise inline-start.
+        Float::Right => Some(if inline_positive {
+          FloatSide::Right
+        } else {
+          FloatSide::Left
+        }),
+        _ => unreachable!(),
+      }
+    }
+  }
+}
+
+/// Resolves a CSS `clear` value into a `ClearSide` in the float layout coordinate system.
+pub(crate) fn resolve_clear_side(
+  clear: crate::style::float::Clear,
+  writing_mode: WritingMode,
+  direction: Direction,
+) -> ClearSide {
+  use crate::style::float::Clear as CssClear;
+
+  match clear {
+    CssClear::None => ClearSide::None,
+    CssClear::Both => ClearSide::Both,
+    CssClear::InlineStart => ClearSide::Left,
+    CssClear::InlineEnd => ClearSide::Right,
+    CssClear::Left | CssClear::Right => {
+      // See `resolve_float_side` for rationale around vertical writing modes.
+      if !inline_axis_is_horizontal(writing_mode) {
+        return match clear {
+          CssClear::Left => ClearSide::Left,
+          CssClear::Right => ClearSide::Right,
+          _ => unreachable!(),
+        };
+      }
+
+      let inline_positive = inline_axis_positive(writing_mode, direction);
+      match clear {
+        CssClear::Left => {
+          if inline_positive {
+            ClearSide::Left
+          } else {
+            ClearSide::Right
+          }
+        }
+        CssClear::Right => {
+          if inline_positive {
+            ClearSide::Right
+          } else {
+            ClearSide::Left
+          }
+        }
+        _ => unreachable!(),
+      }
     }
   }
 }
@@ -108,7 +224,7 @@ impl FloatInfo {
     Self { side, rect, shape }
   }
 
-  /// Create a left float at the given position
+  /// Create an inline-start float at the given position.
   pub fn new_left(x: f32, y: f32, width: f32, height: f32) -> Self {
     Self {
       side: FloatSide::Left,
@@ -117,7 +233,7 @@ impl FloatInfo {
     }
   }
 
-  /// Create a right float at the given position
+  /// Create an inline-end float at the given position.
   pub fn new_right(x: f32, y: f32, width: f32, height: f32) -> Self {
     Self {
       side: FloatSide::Right,
@@ -1121,20 +1237,20 @@ impl FloatContext {
   ///
   /// ```
   /// use fastrender::{FloatContext, FloatSide};
-  /// use fastrender::Clear;
+  /// use fastrender::layout::float_context::ClearSide;
   ///
   /// let mut ctx = FloatContext::new(800.0);
   /// ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
   ///
   /// // Clear left at y=50 should push us below the float
-  /// let new_y = ctx.compute_clearance(50.0, Clear::Left);
+  /// let new_y = ctx.compute_clearance(50.0, ClearSide::Left);
   /// assert_eq!(new_y, 100.0); // Float ends at y=100
   ///
   /// // Clear right at y=50 does nothing (no right floats)
-  /// let new_y = ctx.compute_clearance(50.0, Clear::Right);
+  /// let new_y = ctx.compute_clearance(50.0, ClearSide::Right);
   /// assert_eq!(new_y, 50.0);
   /// ```
-  pub fn compute_clearance(&self, y: f32, clear: Clear) -> f32 {
+  pub fn compute_clearance(&self, y: f32, clear: ClearSide) -> f32 {
     if !clear.is_clearing() {
       return y;
     }
@@ -1180,7 +1296,7 @@ impl FloatContext {
   /// # Returns
   ///
   /// The additional Y offset needed (0 if no clearance needed).
-  pub fn clearance_amount(&self, y: f32, clear: Clear) -> f32 {
+  pub fn clearance_amount(&self, y: f32, clear: ClearSide) -> f32 {
     let cleared_y = self.compute_clearance(y, clear);
     (cleared_y - y).max(0.0)
   }
@@ -1630,10 +1746,10 @@ mod tests {
   #[test]
   fn test_clearance_no_floats() {
     let ctx = FloatContext::new(800.0);
-    assert_eq!(ctx.compute_clearance(0.0, Clear::Left), 0.0);
-    assert_eq!(ctx.compute_clearance(0.0, Clear::Right), 0.0);
-    assert_eq!(ctx.compute_clearance(0.0, Clear::Both), 0.0);
-    assert_eq!(ctx.compute_clearance(0.0, Clear::None), 0.0);
+    assert_eq!(ctx.compute_clearance(0.0, ClearSide::Left), 0.0);
+    assert_eq!(ctx.compute_clearance(0.0, ClearSide::Right), 0.0);
+    assert_eq!(ctx.compute_clearance(0.0, ClearSide::Both), 0.0);
+    assert_eq!(ctx.compute_clearance(0.0, ClearSide::None), 0.0);
   }
 
   #[test]
@@ -1641,9 +1757,9 @@ mod tests {
     let mut ctx = FloatContext::new(800.0);
     ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
 
-    assert_eq!(ctx.compute_clearance(50.0, Clear::Left), 100.0);
-    assert_eq!(ctx.compute_clearance(50.0, Clear::Right), 50.0); // No change
-    assert_eq!(ctx.compute_clearance(150.0, Clear::Left), 150.0); // Already below
+    assert_eq!(ctx.compute_clearance(50.0, ClearSide::Left), 100.0);
+    assert_eq!(ctx.compute_clearance(50.0, ClearSide::Right), 50.0); // No change
+    assert_eq!(ctx.compute_clearance(150.0, ClearSide::Left), 150.0); // Already below
   }
 
   #[test]
@@ -1651,8 +1767,8 @@ mod tests {
     let mut ctx = FloatContext::new(800.0);
     ctx.add_float_at(FloatSide::Right, 600.0, 0.0, 200.0, 100.0);
 
-    assert_eq!(ctx.compute_clearance(50.0, Clear::Right), 100.0);
-    assert_eq!(ctx.compute_clearance(50.0, Clear::Left), 50.0); // No change
+    assert_eq!(ctx.compute_clearance(50.0, ClearSide::Right), 100.0);
+    assert_eq!(ctx.compute_clearance(50.0, ClearSide::Left), 50.0); // No change
   }
 
   #[test]
@@ -1662,7 +1778,7 @@ mod tests {
     ctx.add_float_at(FloatSide::Right, 600.0, 0.0, 200.0, 150.0);
 
     // Should clear to bottom of tallest float
-    assert_eq!(ctx.compute_clearance(50.0, Clear::Both), 150.0);
+    assert_eq!(ctx.compute_clearance(50.0, ClearSide::Both), 150.0);
   }
 
   #[test]
@@ -1670,9 +1786,9 @@ mod tests {
     let mut ctx = FloatContext::new(800.0);
     ctx.add_float_at(FloatSide::Left, 0.0, 0.0, 200.0, 100.0);
 
-    assert_eq!(ctx.clearance_amount(50.0, Clear::Left), 50.0);
-    assert_eq!(ctx.clearance_amount(100.0, Clear::Left), 0.0);
-    assert_eq!(ctx.clearance_amount(150.0, Clear::Left), 0.0);
+    assert_eq!(ctx.clearance_amount(50.0, ClearSide::Left), 50.0);
+    assert_eq!(ctx.clearance_amount(100.0, ClearSide::Left), 0.0);
+    assert_eq!(ctx.clearance_amount(150.0, ClearSide::Left), 0.0);
   }
 
   // ==================== Float Positioning Tests ====================
@@ -1890,19 +2006,6 @@ mod tests {
     assert_eq!(new_ctx.current_y(), 0.0); // Y is reset
   }
 
-  #[test]
-  fn test_float_side_from_float() {
-    assert_eq!(
-      Option::<FloatSide>::from(Float::Left),
-      Some(FloatSide::Left)
-    );
-    assert_eq!(
-      Option::<FloatSide>::from(Float::Right),
-      Some(FloatSide::Right)
-    );
-    assert_eq!(Option::<FloatSide>::from(Float::None), None);
-  }
-
   // ==================== Complex Scenario Tests ====================
 
   #[test]
@@ -2091,7 +2194,7 @@ mod tests {
 
   #[test]
   fn clearance_matches_naive_scan() {
-    fn naive(ctx: &FloatContext, y: f32, clear: Clear) -> f32 {
+    fn naive(ctx: &FloatContext, y: f32, clear: ClearSide) -> f32 {
       if !clear.is_clearing() {
         return y;
       }
@@ -2127,13 +2230,18 @@ mod tests {
 
     for i in 0..2000usize {
       let y = i as f32;
-      for clear in [Clear::Left, Clear::Right, Clear::Both, Clear::None] {
+      for clear in [
+        ClearSide::Left,
+        ClearSide::Right,
+        ClearSide::Both,
+        ClearSide::None,
+      ] {
         assert_eq!(ctx.compute_clearance(y, clear), naive(&ctx, y, clear));
       }
     }
 
     for &y in &[250.0, 125.0, 375.0, 10.0, 999.0, 0.0, 500.0] {
-      for clear in [Clear::Left, Clear::Right, Clear::Both] {
+      for clear in [ClearSide::Left, ClearSide::Right, ClearSide::Both] {
         assert_eq!(ctx.compute_clearance(y, clear), naive(&ctx, y, clear));
       }
     }
@@ -2148,7 +2256,7 @@ mod tests {
       let y = i as f32;
       ctx.add_float_at(FloatSide::Left, 0.0, y, 20.0, 1.0);
       ctx.add_float_at(FloatSide::Right, 180.0, y, 20.0, 1.0);
-      let _ = ctx.compute_clearance(y, Clear::Both);
+      let _ = ctx.compute_clearance(y, ClearSide::Both);
     }
     let stats = float_profile_stats();
 
@@ -2166,6 +2274,6 @@ mod tests {
     ctx.add_float_at(FloatSide::Left, 0.0, 100.0, 200.0, 50.0);
     ctx.add_float_at(FloatSide::Left, 0.0, 50.0, 200.0, 25.0);
 
-    assert_eq!(ctx.compute_clearance(60.0, Clear::Left), 75.0);
+    assert_eq!(ctx.compute_clearance(60.0, ClearSide::Left), 75.0);
   }
 }

@@ -53,17 +53,31 @@ pub enum Float {
   #[default]
   None,
 
-  /// Box floats to the left
+  /// Box floats to the physical left side of the containing block.
   ///
-  /// Corresponds to `float: left`
-  /// Content flows on the right side of the float.
+  /// Corresponds to `float: left`.
+  ///
+  /// Note: this is a *physical* direction. In `direction: rtl`, `left` differs from
+  /// `inline-start`.
   Left,
 
-  /// Box floats to the right
+  /// Box floats to the physical right side of the containing block.
   ///
-  /// Corresponds to `float: right`
-  /// Content flows on the left side of the float.
+  /// Corresponds to `float: right`.
+  ///
+  /// Note: this is a *physical* direction. In `direction: rtl`, `right` differs from
+  /// `inline-end`.
   Right,
+
+  /// Box floats to the logical inline-start side of the containing block.
+  ///
+  /// Corresponds to `float: inline-start` from CSS Logical Properties.
+  InlineStart,
+
+  /// Box floats to the logical inline-end side of the containing block.
+  ///
+  /// Corresponds to `float: inline-end` from CSS Logical Properties.
+  InlineEnd,
 
   /// Box is a page footnote.
   ///
@@ -84,11 +98,16 @@ impl Float {
   ///
   /// assert!(Float::Left.is_floating());
   /// assert!(Float::Right.is_floating());
+  /// assert!(Float::InlineStart.is_floating());
+  /// assert!(Float::InlineEnd.is_floating());
   /// assert!(!Float::Footnote.is_floating());
   /// assert!(!Float::None.is_floating());
   /// ```
   pub fn is_floating(self) -> bool {
-    matches!(self, Float::Left | Float::Right)
+    matches!(
+      self,
+      Float::Left | Float::Right | Float::InlineStart | Float::InlineEnd
+    )
   }
 
   /// Parse a float value from a CSS string
@@ -100,6 +119,8 @@ impl Float {
   ///
   /// assert_eq!(Float::parse("left").unwrap(), Float::Left);
   /// assert_eq!(Float::parse("right").unwrap(), Float::Right);
+  /// assert_eq!(Float::parse("inline-start").unwrap(), Float::InlineStart);
+  /// assert_eq!(Float::parse("inline-end").unwrap(), Float::InlineEnd);
   /// assert_eq!(Float::parse("footnote").unwrap(), Float::Footnote);
   /// assert_eq!(Float::parse("none").unwrap(), Float::None);
   /// assert!(Float::parse("invalid").is_err());
@@ -110,6 +131,8 @@ impl Float {
       "none" => Ok(Float::None),
       "left" => Ok(Float::Left),
       "right" => Ok(Float::Right),
+      "inline-start" => Ok(Float::InlineStart),
+      "inline-end" => Ok(Float::InlineEnd),
       "footnote" => Ok(Float::Footnote),
       _ => Err(FloatParseError::InvalidValue(s.to_string())),
     }
@@ -122,6 +145,8 @@ impl fmt::Display for Float {
       Float::None => write!(f, "none"),
       Float::Left => write!(f, "left"),
       Float::Right => write!(f, "right"),
+      Float::InlineStart => write!(f, "inline-start"),
+      Float::InlineEnd => write!(f, "inline-end"),
       Float::Footnote => write!(f, "footnote"),
     }
   }
@@ -150,20 +175,30 @@ pub enum Clear {
   #[default]
   None,
 
-  /// Box is moved below any left-floating boxes
+  /// Box is moved below any floats on the physical left side.
   ///
-  /// Corresponds to `clear: left`
+  /// Corresponds to `clear: left`.
   Left,
 
-  /// Box is moved below any right-floating boxes
+  /// Box is moved below any floats on the physical right side.
   ///
-  /// Corresponds to `clear: right`
+  /// Corresponds to `clear: right`.
   Right,
 
   /// Box is moved below any floating boxes (left or right)
   ///
   /// Corresponds to `clear: both`
   Both,
+
+  /// Box is moved below any floats on the logical inline-start side.
+  ///
+  /// Corresponds to `clear: inline-start`.
+  InlineStart,
+
+  /// Box is moved below any floats on the logical inline-end side.
+  ///
+  /// Corresponds to `clear: inline-end`.
+  InlineEnd,
 }
 
 impl Clear {
@@ -209,6 +244,8 @@ impl Clear {
   /// assert!(Clear::Left.is_clearing());
   /// assert!(Clear::Right.is_clearing());
   /// assert!(Clear::Both.is_clearing());
+  /// assert!(Clear::InlineStart.is_clearing());
+  /// assert!(Clear::InlineEnd.is_clearing());
   /// assert!(!Clear::None.is_clearing());
   /// ```
   pub fn is_clearing(self) -> bool {
@@ -225,6 +262,8 @@ impl Clear {
   /// assert_eq!(Clear::parse("left").unwrap(), Clear::Left);
   /// assert_eq!(Clear::parse("right").unwrap(), Clear::Right);
   /// assert_eq!(Clear::parse("both").unwrap(), Clear::Both);
+  /// assert_eq!(Clear::parse("inline-start").unwrap(), Clear::InlineStart);
+  /// assert_eq!(Clear::parse("inline-end").unwrap(), Clear::InlineEnd);
   /// assert_eq!(Clear::parse("none").unwrap(), Clear::None);
   /// assert!(Clear::parse("invalid").is_err());
   /// ```
@@ -235,6 +274,8 @@ impl Clear {
       "left" => Ok(Clear::Left),
       "right" => Ok(Clear::Right),
       "both" => Ok(Clear::Both),
+      "inline-start" => Ok(Clear::InlineStart),
+      "inline-end" => Ok(Clear::InlineEnd),
       _ => Err(ClearParseError::InvalidValue(s.to_string())),
     }
   }
@@ -247,6 +288,8 @@ impl fmt::Display for Clear {
       Clear::Left => write!(f, "left"),
       Clear::Right => write!(f, "right"),
       Clear::Both => write!(f, "both"),
+      Clear::InlineStart => write!(f, "inline-start"),
+      Clear::InlineEnd => write!(f, "inline-end"),
     }
   }
 }
@@ -318,6 +361,8 @@ mod tests {
   fn test_parse_float_case_insensitive() {
     assert_eq!(Float::parse("LEFT").unwrap(), Float::Left);
     assert_eq!(Float::parse("Right").unwrap(), Float::Right);
+    assert_eq!(Float::parse("INLINE-START").unwrap(), Float::InlineStart);
+    assert_eq!(Float::parse("Inline-End").unwrap(), Float::InlineEnd);
     assert_eq!(Float::parse("FOOTNOTE").unwrap(), Float::Footnote);
     assert_eq!(Float::parse("NONE").unwrap(), Float::None);
   }
@@ -360,6 +405,8 @@ mod tests {
   fn test_float_is_floating() {
     assert!(Float::Left.is_floating());
     assert!(Float::Right.is_floating());
+    assert!(Float::InlineStart.is_floating());
+    assert!(Float::InlineEnd.is_floating());
     assert!(!Float::Footnote.is_floating());
     assert!(!Float::None.is_floating());
   }
@@ -369,6 +416,8 @@ mod tests {
     assert_eq!(format!("{}", Float::None), "none");
     assert_eq!(format!("{}", Float::Left), "left");
     assert_eq!(format!("{}", Float::Right), "right");
+    assert_eq!(format!("{}", Float::InlineStart), "inline-start");
+    assert_eq!(format!("{}", Float::InlineEnd), "inline-end");
     assert_eq!(format!("{}", Float::Footnote), "footnote");
   }
 
@@ -379,7 +428,14 @@ mod tests {
 
   #[test]
   fn test_float_roundtrip() {
-    for float in [Float::None, Float::Left, Float::Right, Float::Footnote] {
+    for float in [
+      Float::None,
+      Float::Left,
+      Float::Right,
+      Float::InlineStart,
+      Float::InlineEnd,
+      Float::Footnote,
+    ] {
       let string = format!("{}", float);
       let parsed = Float::parse(&string).unwrap();
       assert_eq!(parsed, float);
@@ -412,6 +468,8 @@ mod tests {
     assert_eq!(Clear::parse("LEFT").unwrap(), Clear::Left);
     assert_eq!(Clear::parse("Right").unwrap(), Clear::Right);
     assert_eq!(Clear::parse("BOTH").unwrap(), Clear::Both);
+    assert_eq!(Clear::parse("INLINE-START").unwrap(), Clear::InlineStart);
+    assert_eq!(Clear::parse("Inline-End").unwrap(), Clear::InlineEnd);
   }
 
   #[test]
@@ -457,6 +515,8 @@ mod tests {
     assert_eq!(format!("{}", Clear::Left), "left");
     assert_eq!(format!("{}", Clear::Right), "right");
     assert_eq!(format!("{}", Clear::Both), "both");
+    assert_eq!(format!("{}", Clear::InlineStart), "inline-start");
+    assert_eq!(format!("{}", Clear::InlineEnd), "inline-end");
   }
 
   #[test]
@@ -466,7 +526,14 @@ mod tests {
 
   #[test]
   fn test_clear_roundtrip() {
-    for clear in [Clear::None, Clear::Left, Clear::Right, Clear::Both] {
+    for clear in [
+      Clear::None,
+      Clear::Left,
+      Clear::Right,
+      Clear::Both,
+      Clear::InlineStart,
+      Clear::InlineEnd,
+    ] {
       let string = format!("{}", clear);
       let parsed = Clear::parse(&string).unwrap();
       assert_eq!(parsed, clear);

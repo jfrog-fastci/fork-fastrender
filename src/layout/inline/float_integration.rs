@@ -49,9 +49,9 @@
 //! ```
 
 use crate::geometry::Rect;
+use crate::layout::float_context::ClearSide;
 use crate::layout::float_context::FloatContext;
 use crate::layout::float_context::FloatSide;
-use crate::style::float::Clear;
 
 /// Describes the available space for a line box
 ///
@@ -321,7 +321,7 @@ impl<'a> InlineFloatIntegration<'a> {
   pub fn find_line_space_with_clear(
     &self,
     start_y: f32,
-    clear: Clear,
+    clear: ClearSide,
     options: LineSpaceOptions,
   ) -> LineSpace {
     // First apply clearance
@@ -448,7 +448,7 @@ impl<'a> InlineFloatIntegrationMut<'a> {
   pub fn find_line_space_with_clear(
     &self,
     start_y: f32,
-    clear: Clear,
+    clear: ClearSide,
     options: LineSpaceOptions,
   ) -> LineSpace {
     let cleared_y = self.float_ctx.compute_clearance(start_y, clear);
@@ -528,14 +528,14 @@ impl<'a> InlineFloatIntegrationMut<'a> {
   /// Computes clearance needed at a position
   ///
   /// Returns the Y position after applying clearance.
-  pub fn compute_clearance(&self, y: f32, clear: Clear) -> f32 {
+  pub fn compute_clearance(&self, y: f32, clear: ClearSide) -> f32 {
     self.float_ctx.compute_clearance(y, clear)
   }
 
   /// Gets the clearance amount as a delta
   ///
   /// Returns how much Y needs to increase to clear floats.
-  pub fn clearance_amount(&self, y: f32, clear: Clear) -> f32 {
+  pub fn clearance_amount(&self, y: f32, clear: ClearSide) -> f32 {
     self.float_ctx.clearance_amount(y, clear)
   }
 
@@ -777,7 +777,7 @@ mod tests {
     let integration = InlineFloatIntegration::new(&ctx);
 
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(50.0, Clear::Left, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Left, opts);
 
     // Should be pushed below the float
     assert_eq!(space.y, 100.0);
@@ -871,9 +871,9 @@ mod tests {
     integration.place_inline_float(FloatSide::Left, 200.0, 100.0, 0.0);
 
     // Check clearance
-    assert_eq!(integration.compute_clearance(50.0, Clear::Left), 100.0);
-    assert_eq!(integration.compute_clearance(50.0, Clear::Right), 50.0);
-    assert_eq!(integration.clearance_amount(50.0, Clear::Left), 50.0);
+    assert_eq!(integration.compute_clearance(50.0, ClearSide::Left), 100.0);
+    assert_eq!(integration.compute_clearance(50.0, ClearSide::Right), 50.0);
+    assert_eq!(integration.clearance_amount(50.0, ClearSide::Left), 50.0);
   }
 
   #[test]

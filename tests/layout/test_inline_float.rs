@@ -8,7 +8,7 @@ use fastrender::layout::inline::float_integration::InlineFloatIntegration;
 use fastrender::layout::inline::float_integration::InlineFloatIntegrationMut;
 use fastrender::layout::inline::float_integration::LineSpace;
 use fastrender::layout::inline::float_integration::LineSpaceOptions;
-use fastrender::Clear;
+use fastrender::layout::float_context::ClearSide;
 use fastrender::FloatContext;
 use fastrender::FloatSide;
 
@@ -309,7 +309,7 @@ mod clear_tests {
 
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(50.0, Clear::None, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::None, opts);
 
     // No clearance applied
     assert_eq!(space.y, 50.0);
@@ -322,7 +322,7 @@ mod clear_tests {
 
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(50.0, Clear::Left, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Left, opts);
 
     // Should be pushed below the left float
     assert_eq!(space.y, 100.0);
@@ -335,7 +335,7 @@ mod clear_tests {
 
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(50.0, Clear::Right, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Right, opts);
 
     assert_eq!(space.y, 100.0);
   }
@@ -348,7 +348,7 @@ mod clear_tests {
 
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(50.0, Clear::Both, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Both, opts);
 
     // Should clear past both floats (right float is taller)
     assert_eq!(space.y, 150.0);
@@ -361,7 +361,7 @@ mod clear_tests {
 
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
-    let space = integration.find_line_space_with_clear(150.0, Clear::Left, opts);
+    let space = integration.find_line_space_with_clear(150.0, ClearSide::Left, opts);
 
     // Already below float, no change
     assert_eq!(space.y, 150.0);
@@ -500,10 +500,10 @@ mod integration_mut_tests {
 
     integration.place_inline_float(FloatSide::Left, 200.0, 100.0, 0.0);
 
-    assert_eq!(integration.compute_clearance(50.0, Clear::Left), 100.0);
-    assert_eq!(integration.compute_clearance(50.0, Clear::Right), 50.0);
-    assert_eq!(integration.clearance_amount(50.0, Clear::Left), 50.0);
-    assert_eq!(integration.clearance_amount(50.0, Clear::Right), 0.0);
+    assert_eq!(integration.compute_clearance(50.0, ClearSide::Left), 100.0);
+    assert_eq!(integration.compute_clearance(50.0, ClearSide::Right), 50.0);
+    assert_eq!(integration.clearance_amount(50.0, ClearSide::Left), 50.0);
+    assert_eq!(integration.clearance_amount(50.0, ClearSide::Right), 0.0);
   }
 
   #[test]
@@ -774,7 +774,7 @@ mod clear_integration_tests {
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
 
-    let space = integration.find_line_space_with_clear(50.0, Clear::Left, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Left, opts);
 
     // Should clear left float (to 100) but not right (at 150)
     assert_eq!(space.y, 100.0);
@@ -789,7 +789,7 @@ mod clear_integration_tests {
     let integration = InlineFloatIntegration::new(&ctx);
     let opts = LineSpaceOptions::default();
 
-    let space = integration.find_line_space_with_clear(50.0, Clear::Right, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Right, opts);
 
     // Should clear right float (to 100) but not left (at 150)
     assert_eq!(space.y, 100.0);
@@ -805,7 +805,7 @@ mod clear_integration_tests {
 
     // Clear left, but then need 300px which doesn't fit until y=150
     let opts = LineSpaceOptions::with_min_width(300.0).line_height(20.0);
-    let space = integration.find_line_space_with_clear(50.0, Clear::Left, opts);
+    let space = integration.find_line_space_with_clear(50.0, ClearSide::Left, opts);
 
     // First clears to 100, then finds 300px doesn't fit (only 200 available)
     // Must continue to 150 where second float ends

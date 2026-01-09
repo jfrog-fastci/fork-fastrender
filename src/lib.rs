@@ -304,6 +304,7 @@ pub use layout::engine::LayoutConfig;
 pub use layout::engine::LayoutEngine;
 pub use layout::engine::LayoutParallelism;
 pub use layout::engine::LayoutParallelismMode;
+pub use layout::float_context::ClearSide;
 pub use layout::float_context::FloatContext;
 pub use layout::float_context::FloatSide;
 pub use layout::formatting_context::FormattingContext;

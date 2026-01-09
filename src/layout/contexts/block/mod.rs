@@ -40,7 +40,7 @@ use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::contexts::positioned::PositionedLayout;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::float_context::FloatContext;
-use crate::layout::float_context::FloatSide;
+use crate::layout::float_context::{resolve_clear_side, resolve_float_side};
 use crate::layout::float_shape::build_float_shape;
 use crate::layout::formatting_context::count_block_intrinsic_call;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
@@ -72,7 +72,6 @@ use crate::style::block_axis_positive;
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
 use crate::style::float::Clear;
-use crate::style::float::Float;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::inline_axis_positive;
 use crate::style::position::Position;
@@ -3160,9 +3159,10 @@ impl BlockFormattingContext {
         let child_margins = self.collapsed_block_margins(child, containing_width, false);
         let pending_margin = margin_ctx.pending_collapsible_margin();
         let margin_edge_y = current_y + pending_margin.resolve();
-        let cleared_margin_edge_y =
-          float_ctx_ref.compute_clearance(float_base_y + margin_edge_y, child.style.clear)
-            - float_base_y;
+        let cleared_margin_edge_y = float_ctx_ref.compute_clearance(
+          float_base_y + margin_edge_y,
+          resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
+        ) - float_base_y;
         let clearance = (cleared_margin_edge_y - margin_edge_y).max(0.0);
 
         let box_y = if clearance > 0.0 {
@@ -3823,7 +3823,10 @@ impl BlockFormattingContext {
 
         // Honor clearance against existing floats for this float's placement only.
         float_cursor_y = float_ctx
-          .compute_clearance(float_base_y + float_cursor_y, child.style.clear)
+          .compute_clearance(
+            float_base_y + float_cursor_y,
+            resolve_clear_side(child.style.clear, parent.style.writing_mode, parent.style.direction),
+          )
           - float_base_y;
 
         let percentage_base = containing_width;
@@ -4056,11 +4059,8 @@ impl BlockFormattingContext {
         let box_width = used_border_box;
         let float_height = margin_top + fragment.bounds.height() + margin_bottom;
 
-        let side = match child.style.float {
-          Float::Left => FloatSide::Left,
-          Float::Right => FloatSide::Right,
-          Float::None | Float::Footnote => unreachable!(),
-        };
+        let side = resolve_float_side(child.style.float, parent.style.writing_mode, parent.style.direction)
+          .unwrap_or_else(|| panic!("expected floating side for box_id={}", child.id));
 
         let (fx, fy) = float_ctx.compute_float_position(
           side,
@@ -8210,6 +8210,7 @@ mod tests {
   use crate::layout::formatting_context::IntrinsicSizingMode;
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
+  use crate::style::float::Float;
   use crate::style::position::Position;
   use crate::style::types::BorderStyle;
   use crate::style::types::ContentVisibility;

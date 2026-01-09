@@ -9165,6 +9165,8 @@ impl InlineFormattingContext {
     float_base_y: f32,
     min_y: f32,
     float_ctx: &mut FloatContext,
+    writing_mode: WritingMode,
+    direction: Direction,
   ) -> Result<(FragmentNode, f32, f32), LayoutError> {
     let mut float_node = floating.box_node.clone();
     // Floats generate block-level boxes. Normalize inline-level display/box types so intrinsic
@@ -9483,13 +9485,17 @@ impl InlineFormattingContext {
     let box_width = used_border_box;
     let float_height = margin_top + fragment.bounds.height() + margin_bottom;
 
-    let side = match float_node.style.float {
-      crate::style::float::Float::Left => crate::layout::float_context::FloatSide::Left,
-      crate::style::float::Float::Right => crate::layout::float_context::FloatSide::Right,
-      crate::style::float::Float::None | crate::style::float::Float::Footnote => unreachable!(),
-    };
+    let side = crate::layout::float_context::resolve_float_side(
+      float_node.style.float,
+      writing_mode,
+      direction,
+    )
+    .unwrap_or_else(|| panic!("expected floating side for box_id={}", float_node.id));
 
-    let cleared_y = float_ctx.compute_clearance(min_y, float_node.style.clear);
+    let cleared_y = float_ctx.compute_clearance(
+      min_y,
+      crate::layout::float_context::resolve_clear_side(float_node.style.clear, writing_mode, direction),
+    );
     let (fx, fy) = float_ctx.compute_float_position(
       side,
       margin_left + box_width + margin_right,
@@ -10477,6 +10483,8 @@ impl InlineFormattingContext {
                 float_base_y,
                 float_min_y,
                 &mut candidate_ctx,
+                style.writing_mode,
+                style.direction,
               )?;
               max_float_bottom = max_float_bottom.max(bottom_rel);
               flow_order.push(FlowChunk::Float {
@@ -13573,6 +13581,8 @@ mod tests {
         0.0,
         0.0,
         &mut float_ctx,
+        WritingMode::HorizontalTb,
+        Direction::Ltr,
       )
       .expect("layout float");
     assert!(
@@ -13664,6 +13674,8 @@ mod tests {
         0.0,
         0.0,
         &mut float_ctx,
+        WritingMode::HorizontalTb,
+        Direction::Ltr,
       )
       .expect("layout float");
     assert!(
@@ -13745,6 +13757,8 @@ mod tests {
         0.0,
         0.0,
         &mut float_ctx,
+        WritingMode::HorizontalTb,
+        Direction::Ltr,
       )
       .expect("layout float table");
     assert!(
@@ -13844,6 +13858,8 @@ mod tests {
         0.0,
         0.0,
         &mut float_ctx,
+        WritingMode::HorizontalTb,
+        Direction::Ltr,
       )
       .expect("layout float");
     assert!(
