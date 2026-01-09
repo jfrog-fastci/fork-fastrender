@@ -295,6 +295,22 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       );
       continue;
     }
+    if let WorkerToUi::SelectDropdownOpened {
+      tab_id,
+      select_node_id,
+      anchor_css,
+      ..
+    } = msg
+    {
+      let _ = writeln!(
+        &mut out,
+        "SelectDropdownOpened(tab={}, select_node_id={}, anchor_css={:?})",
+        tab_id.0,
+        select_node_id,
+        anchor_css
+      );
+      continue;
+    }
     if let WorkerToUi::NavigationStarted { tab_id, url } = msg {
       let _ = writeln!(&mut out, "NavigationStarted(tab={}, url={url})", tab_id.0);
       continue;

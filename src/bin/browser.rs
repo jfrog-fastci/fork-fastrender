@@ -814,7 +814,10 @@ impl App {
           return;
         }
 
-        let anchor_points = self.last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        let anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
 
         self.open_select_dropdown = Some(OpenSelectDropdown {
           tab_id,
@@ -837,13 +840,18 @@ impl App {
           return;
         }
 
-        let mut anchor_points =
-          self.last_cursor_pos_points.unwrap_or_else(|| egui::pos2(0.0, 0.0));
+        let mut anchor_points = self
+          .last_cursor_pos_points
+          .or_else(|| self.page_rect_points.map(|rect| rect.center()))
+          .unwrap_or_else(|| egui::pos2(0.0, 0.0));
         let mut anchor_width_points = None;
-        if let Some(mapping) = self.page_input_mapping {
-          if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
-            anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
-            anchor_width_points = Some(rect_points.width());
+
+        if anchor_css != fastrender::geometry::Rect::ZERO && self.page_input_tab == Some(tab_id) {
+          if let Some(mapping) = self.page_input_mapping {
+            if let Some(rect_points) = mapping.rect_css_to_rect_points_clamped(anchor_css) {
+              anchor_points = egui::pos2(rect_points.min.x, rect_points.max.y);
+              anchor_width_points = Some(rect_points.width());
+            }
           }
         }
 

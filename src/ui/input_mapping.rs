@@ -109,23 +109,52 @@ impl InputMapping {
 
   /// Convert a position in viewport CSS pixels to an egui position (points).
   ///
-  /// This is the inverse of [`Self::pos_points_to_pos_css_clamped`]. The input is clamped to the
-  /// viewport bounds.
-  pub fn pos_css_to_pos_points_clamped(&self, pos_css: (f32, f32)) -> Option<Pos2> {
+  pub fn pos_css_to_pos_points(&self, pos_css: (f32, f32)) -> Option<Pos2> {
+    if !pos_css.0.is_finite() || !pos_css.1.is_finite() {
+      return None;
+    }
+
     let css_per_point = self.css_per_point()?;
+    // Protect against division by 0 when the viewport is degenerate.
+    if css_per_point.x <= 0.0 || css_per_point.y <= 0.0 {
+      return None;
+    }
+
+    let local_points = Vec2::new(pos_css.0 / css_per_point.x, pos_css.1 / css_per_point.y);
+    if !local_points.x.is_finite() || !local_points.y.is_finite() {
+      return None;
+    }
+    Some(self.image_rect_points.min + local_points)
+  }
+
+  /// Convert a position in viewport CSS pixels to an egui position (points), clamping `pos_css` to
+  /// the viewport bounds.
+  ///
+  /// This is the inverse of [`Self::pos_points_to_pos_css_clamped`].
+  pub fn pos_css_to_pos_points_clamped(&self, pos_css: (f32, f32)) -> Option<Pos2> {
+    if !pos_css.0.is_finite() || !pos_css.1.is_finite() {
+      return None;
+    }
     let viewport_css = self.viewport_css_f32();
-    let mut css = Vec2::new(pos_css.0, pos_css.1);
-    css.x = css.x.clamp(0.0, viewport_css.x);
-    css.y = css.y.clamp(0.0, viewport_css.y);
-    Some(
-      self.image_rect_points.min + Vec2::new(css.x / css_per_point.x, css.y / css_per_point.y),
-    )
+    let css = (
+      pos_css.0.clamp(0.0, viewport_css.x),
+      pos_css.1.clamp(0.0, viewport_css.y),
+    );
+    self.pos_css_to_pos_points(css)
   }
 
   /// Convert a viewport-local CSS rect to an egui rect in points.
   ///
   /// This is useful for positioning native UI overlays (e.g. `<select>` dropdown popups) relative
   /// to an element's viewport-local layout rect.
+  pub fn rect_css_to_rect_points(&self, rect_css: crate::geometry::Rect) -> Option<Rect> {
+    let min = self.pos_css_to_pos_points((rect_css.min_x(), rect_css.min_y()))?;
+    let max = self.pos_css_to_pos_points((rect_css.max_x(), rect_css.max_y()))?;
+    Some(Rect::from_min_max(min, max))
+  }
+
+  /// Convert a viewport-local CSS rect to an egui rect in points, clamping it to the viewport
+  /// bounds.
   pub fn rect_css_to_rect_points_clamped(&self, rect_css: crate::geometry::Rect) -> Option<Rect> {
     let min = self.pos_css_to_pos_points_clamped((rect_css.min_x(), rect_css.min_y()))?;
     let max = self.pos_css_to_pos_points_clamped((rect_css.max_x(), rect_css.max_y()))?;
@@ -181,6 +210,22 @@ mod tests {
     );
   }
 
+  fn assert_approx_pos2(actual: Pos2, expected: Pos2) {
+    let eps = 1e-4;
+    assert!(
+      (actual.x - expected.x).abs() <= eps,
+      "x mismatch: actual={} expected={}",
+      actual.x,
+      expected.x
+    );
+    assert!(
+      (actual.y - expected.y).abs() <= eps,
+      "y mismatch: actual={} expected={}",
+      actual.y,
+      expected.y
+    );
+  }
+
   #[test]
   fn identity_mapping_at_1_to_1_draw() {
     let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
@@ -193,6 +238,15 @@ mod tests {
   }
 
   #[test]
+  fn identity_mapping_points_from_css() {
+    let image_rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let pos = mapping.pos_css_to_pos_points((100.0, 50.0)).unwrap();
+    assert_approx_pos2(pos, Pos2::new(110.0, 70.0));
+  }
+
+  #[test]
   fn scaled_draw_maps_points_into_css_space() {
     // Viewport is 800x600 CSS px, but the image is drawn at half size (400x300 points).
     let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
@@ -202,6 +256,16 @@ mod tests {
       .pos_points_to_pos_css_clamped(Pos2::new(200.0, 150.0))
       .unwrap();
     assert_approx2(pos, (400.0, 300.0));
+  }
+
+  #[test]
+  fn scaled_draw_maps_css_into_points_space() {
+    // Viewport is 800x600 CSS px, but the image is drawn at half size (400x300 points).
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(400.0, 300.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+
+    let pos = mapping.pos_css_to_pos_points((400.0, 300.0)).unwrap();
+    assert_approx_pos2(pos, Pos2::new(200.0, 150.0));
   }
 
   #[test]
@@ -218,6 +282,13 @@ mod tests {
       .pos_points_to_pos_css_clamped(Pos2::new(9999.0, 9999.0))
       .unwrap();
     assert_approx2(pos_after, (800.0, 600.0));
+  }
+
+  #[test]
+  fn degenerate_image_rect_returns_none_for_css_to_points() {
+    let image_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(0.0, 0.0));
+    let mapping = InputMapping::new(image_rect, (800, 600));
+    assert!(mapping.pos_css_to_pos_points((10.0, 10.0)).is_none());
   }
 
   #[test]

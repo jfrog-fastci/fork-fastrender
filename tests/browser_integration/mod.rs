@@ -10,6 +10,7 @@ mod browser_worker_thread;
 mod browser_thread_cancellation;
 mod browser_thread_history_scroll_restore;
 mod browser_thread_select_dropdown;
+mod browser_thread_select_dropdown_choose;
 mod browser_thread_paint_cancellation;
 mod document;
 mod document2;

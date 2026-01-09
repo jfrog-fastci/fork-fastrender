@@ -112,7 +112,7 @@ fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
         if anchor_css.width() > 1.0 && anchor_css.height() > 1.0
     )
   })
-  .expect("expected SelectDropdownOpened message");
+  .expect("expected SelectDropdownOpened message with a non-degenerate anchor rect");
 
   let WorkerToUi::SelectDropdownOpened {
     tab_id: msg_tab,
