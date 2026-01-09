@@ -421,7 +421,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
     return Err(throw_type_error(scope, "queueMicrotask callback is not callable"));
   }
 
-  let Value::Object(global_obj) = this else {
+  let Value::Object(_global_obj) = this else {
     return Err(throw_type_error(scope, "queueMicrotask called with invalid this value"));
   };
 
@@ -445,7 +445,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
           vm.tick()?;
-          let _ = vm.call(&mut scope, callback, Value::Object(global_obj), &[])?;
+          let _ = vm.call(&mut scope, callback, Value::Undefined, &[])?;
           Ok(())
         })();
         vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
@@ -663,6 +663,19 @@ mod tests {
     scope.alloc_native_function(id, None, name_s, 0).unwrap()
   }
 
+  fn make_callback_with_global(
+    vm: &mut Vm,
+    scope: &mut Scope<'_>,
+    global: vm_js::GcObject,
+    name: &str,
+    native: vm_js::NativeCall,
+  ) -> vm_js::GcObject {
+    let func = make_callback(vm, scope, name, native);
+    scope.push_root(Value::Object(func)).unwrap();
+    set_prop(scope, func, "__global", Value::Object(global));
+    func
+  }
+
   fn cb_push_t(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
@@ -680,13 +693,20 @@ mod tests {
   fn cb_push_m(
     _vm: &mut Vm,
     scope: &mut Scope<'_>,
-    _callee: vm_js::GcObject,
+    callee: vm_js::GcObject,
     this: Value,
     _args: &[Value],
   ) -> Result<Value, VmError> {
-    let Value::Object(global) = this else {
-      return Ok(Value::Undefined);
+    let global = match get_prop(scope, callee, "__global") {
+      Value::Object(obj) => obj,
+      other => panic!("expected callback.__global to be an object, got {other:?}"),
     };
+    set_prop(
+      scope,
+      global,
+      "__microtask_this_is_undefined",
+      Value::Bool(matches!(this, Value::Undefined)),
+    );
     push_log(scope, global, "m");
     Ok(Value::Undefined)
   }
@@ -787,6 +807,12 @@ mod tests {
       let mut scope = heap.scope();
       let global = realm.global_object();
       init_log(&mut scope, global);
+      set_prop(
+        &mut scope,
+        global,
+        "__microtask_this_is_undefined",
+        Value::Bool(false),
+      );
     }
 
     event_loop.queue_task(TaskSource::Script, |host, event_loop| {
@@ -800,7 +826,7 @@ mod tests {
         let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
 
         let timeout_cb = make_callback(vm, &mut scope, "timeout_cb", cb_push_t);
-        let micro_cb = make_callback(vm, &mut scope, "micro_cb", cb_push_m);
+        let micro_cb = make_callback_with_global(vm, &mut scope, global, "micro_cb", cb_push_m);
 
         vm.call(
           &mut scope,
@@ -832,6 +858,17 @@ mod tests {
       read_log(heap, realm)
     };
     assert_eq!(log, vec!["sync", "m", "t"]);
+
+    let microtask_this_is_undefined = {
+      let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let mut scope = heap.scope();
+      let global = realm.global_object();
+      match get_prop(&mut scope, global, "__microtask_this_is_undefined") {
+        Value::Bool(b) => b,
+        other => panic!("expected bool, got {other:?}"),
+      }
+    };
+    assert!(microtask_this_is_undefined);
     Ok(())
   }
 

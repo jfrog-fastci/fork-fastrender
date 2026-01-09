@@ -24428,18 +24428,22 @@ mod tests {
     let style = Arc::new(ComputedStyle::default());
     let items = Arc::new(vec![
       SelectItem::Option {
+        node_id: 1,
         label: "option-label".to_string(),
         value: "value".to_string(),
         selected: true,
         disabled: false,
         in_optgroup: false,
+        option_node_id: 1,
       },
       SelectItem::Option {
+        node_id: 2,
         label: "wider-option-label".to_string(),
         value: "value2".to_string(),
         selected: false,
         disabled: false,
         in_optgroup: false,
+        option_node_id: 2,
       },
     ]);
     let select = crate::tree::box_tree::SelectControl {
