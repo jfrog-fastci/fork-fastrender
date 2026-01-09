@@ -13,7 +13,7 @@
 use crate::error::Error;
 use crate::js::event_loop::TaskSource;
 use crate::js::runtime::{current_event_loop_mut, with_event_loop};
-use crate::js::url_resolve::resolve_url;
+use crate::js::url_resolve::{resolve_url, UrlResolveError};
 use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
@@ -1560,6 +1560,141 @@ fn response_ctor_call(
   Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
 }
 
+fn response_error_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let response_proto = response_proto_from_callee(scope, callee)?;
+
+  let mut response = CoreResponse::new(0);
+  response.r#type = crate::resource::web_fetch::ResponseType::Error;
+  response.headers.set_guard(HeadersGuard::Immutable);
+
+  let response_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.responses.insert(id, response);
+    Ok(id)
+  })?;
+
+  let resp_obj = scope.alloc_object_with_prototype(Some(response_proto))?;
+  scope.push_root(Value::Object(resp_obj))?;
+
+  set_data_prop(scope, resp_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(
+    scope,
+    resp_obj,
+    RESPONSE_ID_KEY,
+    Value::Number(response_id as f64),
+    false,
+  )?;
+  set_data_prop(scope, resp_obj, "status", Value::Number(0.0), false)?;
+  set_data_prop(scope, resp_obj, "ok", Value::Bool(false), false)?;
+  let url_s = scope.alloc_string("")?;
+  let st_s = scope.alloc_string("")?;
+  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
+  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
+
+  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
+  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
+
+  Ok(Value::Object(resp_obj))
+}
+
+fn response_redirect_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let env_id = env_id_from_callee(scope, callee)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+  let response_proto = response_proto_from_callee(scope, callee)?;
+
+  let max_url_bytes = with_env_state(env_id, |state| Ok(state.env.limits.max_url_bytes))?;
+  let url_input = to_rust_string_limited(
+    scope.heap_mut(),
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    max_url_bytes,
+    FETCH_URL_TOO_LONG_ERROR,
+  )?;
+  let base_url = with_env_state(env_id, |state| Ok(state.env.document_url.clone()))?;
+  let resolved_url = match resolve_url(&url_input, base_url.as_deref()) {
+    Ok(url) => url,
+    Err(UrlResolveError::RelativeUrlWithoutBase) => {
+      return Err(throw_type_error(
+        vm,
+        scope,
+        host_hooks,
+        "Response.redirect URL is relative without a base URL",
+      ));
+    }
+    Err(UrlResolveError::Url(_)) => {
+      return Err(throw_type_error(vm, scope, host_hooks, "Response.redirect URL is invalid"));
+    }
+  };
+
+  let status_val = args.get(1).copied().unwrap_or(Value::Number(302.0));
+  let status_num = scope.heap_mut().to_number(status_val)?;
+  let status = number_to_u16_wrapping(status_num);
+  if !matches!(status, 301 | 302 | 303 | 307 | 308) {
+    return Err(throw_range_error(
+      vm,
+      scope,
+      host_hooks,
+      "Response.redirect status must be a redirect status",
+    ));
+  }
+
+  // Build headers while mutable, then lock them down to match the "immutable" guard.
+  let mut headers = CoreHeaders::new_with_guard(HeadersGuard::Response);
+  headers
+    .append("Location", &resolved_url)
+    .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
+  headers.set_guard(HeadersGuard::Immutable);
+
+  let mut response = CoreResponse::new(status);
+  response.headers = headers;
+
+  let response_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.responses.insert(id, response);
+    Ok(id)
+  })?;
+
+  let resp_obj = scope.alloc_object_with_prototype(Some(response_proto))?;
+  scope.push_root(Value::Object(resp_obj))?;
+
+  set_data_prop(scope, resp_obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(
+    scope,
+    resp_obj,
+    RESPONSE_ID_KEY,
+    Value::Number(response_id as f64),
+    false,
+  )?;
+  set_data_prop(scope, resp_obj, "status", Value::Number(status as f64), false)?;
+  set_data_prop(scope, resp_obj, "ok", Value::Bool(false), false)?;
+  let url_s = scope.alloc_string("")?;
+  let st_s = scope.alloc_string("")?;
+  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
+  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
+
+  let headers_obj = make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_RESPONSE, response_id)?;
+  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
+
+  Ok(Value::Object(resp_obj))
+}
+
 fn response_text_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
@@ -2657,6 +2792,41 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
       },
     )?;
 
+    // Static methods (`Response.error`, `Response.redirect`).
+    let error_id = vm.register_native_call(response_error_native)?;
+    let error_name = scope.alloc_string("error")?;
+    scope.push_root(Value::String(error_name))?;
+    let error_fn = scope.alloc_native_function_with_slots(
+      error_id,
+      None,
+      error_name,
+      0,
+      &[
+        Value::Number(env_id as f64),
+        Value::Object(headers_proto),
+        Value::Object(proto),
+      ],
+    )?;
+    scope.heap_mut().object_set_prototype(error_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, ctor, "error", Value::Object(error_fn), true)?;
+
+    let redirect_id = vm.register_native_call(response_redirect_native)?;
+    let redirect_name = scope.alloc_string("redirect")?;
+    scope.push_root(Value::String(redirect_name))?;
+    let redirect_fn = scope.alloc_native_function_with_slots(
+      redirect_id,
+      None,
+      redirect_name,
+      2,
+      &[
+        Value::Number(env_id as f64),
+        Value::Object(headers_proto),
+        Value::Object(proto),
+      ],
+    )?;
+    scope.heap_mut().object_set_prototype(redirect_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, ctor, "redirect", Value::Object(redirect_fn), true)?;
+
     let key = alloc_key(&mut scope, "Response")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
     proto
@@ -3107,6 +3277,330 @@ mod tests {
 
     let Some(Value::Object(err_obj)) = err.thrown_value() else {
       panic!("expected thrown TypeError object, got {err:?}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected TypeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_error_returns_error_response() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let error_key = alloc_key(&mut scope, "error")?;
+    let error_fn = vm.get(&mut scope, response_ctor, error_key)?;
+    let Value::Object(error_fn) = error_fn else {
+      return Err(VmError::InvariantViolation("Response.error missing"));
+    };
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(resp_obj) = response_error_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      error_fn,
+      Value::Object(response_ctor),
+      &[],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response.error must return an object"));
+    };
+
+    assert!(matches!(
+      get_data_prop(&mut scope, resp_obj, "status")?,
+      Value::Number(n) if n == 0.0
+    ));
+    assert!(matches!(get_data_prop(&mut scope, resp_obj, "ok")?, Value::Bool(false)));
+
+    let Value::Object(headers_obj) = get_data_prop(&mut scope, resp_obj, "headers")? else {
+      return Err(VmError::InvariantViolation("Response.headers missing"));
+    };
+
+    let name = scope.alloc_string("x-test")?;
+    scope.push_root(Value::String(name))?;
+    let value = scope.alloc_string("a")?;
+    scope.push_root(Value::String(value))?;
+    let callee = scope.alloc_object()?;
+    let err = headers_append_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(headers_obj),
+      &[Value::String(name), Value::String(value)],
+    )
+    .expect_err("expected Response.error headers to be immutable");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown TypeError, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected error.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_redirect_sets_location_and_immutable_headers() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(
+        Arc::new(crate::resource::HttpFetcher::new()),
+        Some("https://example.com/dir/page".to_string()),
+      ),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let redirect_key = alloc_key(&mut scope, "redirect")?;
+    let redirect_fn = vm.get(&mut scope, response_ctor, redirect_key)?;
+    let Value::Object(redirect_fn) = redirect_fn else {
+      return Err(VmError::InvariantViolation("Response.redirect missing"));
+    };
+
+    let url = scope.alloc_string("foo")?;
+    scope.push_root(Value::String(url))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let Value::Object(resp_obj) = response_redirect_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      redirect_fn,
+      Value::Object(response_ctor),
+      &[Value::String(url), Value::Number(302.0)],
+    )?
+    else {
+      return Err(VmError::InvariantViolation("Response.redirect must return an object"));
+    };
+
+    assert!(matches!(
+      get_data_prop(&mut scope, resp_obj, "status")?,
+      Value::Number(n) if n == 302.0
+    ));
+
+    let Value::Object(headers_obj) = get_data_prop(&mut scope, resp_obj, "headers")? else {
+      return Err(VmError::InvariantViolation("Response.headers missing"));
+    };
+
+    let loc_name = scope.alloc_string("Location")?;
+    scope.push_root(Value::String(loc_name))?;
+    let callee = scope.alloc_object()?;
+    let loc_value = headers_get_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(headers_obj),
+      &[Value::String(loc_name)],
+    )?;
+    let Value::String(loc_s) = loc_value else {
+      return Err(VmError::InvariantViolation("Location header missing"));
+    };
+    let loc = scope.heap().get_string(loc_s)?.to_utf8_lossy();
+    assert_eq!(loc, "https://example.com/dir/foo");
+
+    let name = scope.alloc_string("x-test")?;
+    scope.push_root(Value::String(name))?;
+    let value = scope.alloc_string("a")?;
+    scope.push_root(Value::String(value))?;
+    let callee = scope.alloc_object()?;
+    let err = headers_set_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      callee,
+      Value::Object(headers_obj),
+      &[Value::String(name), Value::String(value)],
+    )
+    .expect_err("expected Response.redirect headers to be immutable");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown TypeError, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected error.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "TypeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_redirect_rejects_invalid_status() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(
+        Arc::new(crate::resource::HttpFetcher::new()),
+        Some("https://example.com/".to_string()),
+      ),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let redirect_key = alloc_key(&mut scope, "redirect")?;
+    let redirect_fn = vm.get(&mut scope, response_ctor, redirect_key)?;
+    let Value::Object(redirect_fn) = redirect_fn else {
+      return Err(VmError::InvariantViolation("Response.redirect missing"));
+    };
+
+    let url = scope.alloc_string("https://example.com/")?;
+    scope.push_root(Value::String(url))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_redirect_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      redirect_fn,
+      Value::Object(response_ctor),
+      &[Value::String(url), Value::Number(200.0)],
+    )
+    .expect_err("expected invalid status RangeError");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown RangeError object, got {err}");
+    };
+    let name_key = alloc_key(&mut scope, "name")?;
+    let name_val = vm.get(&mut scope, err_obj, name_key)?;
+    let Value::String(name_s) = name_val else {
+      panic!("expected RangeError.name to be a string, got {name_val:?}");
+    };
+    let name = scope.heap().get_string(name_s)?.to_utf8_lossy();
+    assert_eq!(name, "RangeError");
+
+    drop(scope);
+    drop(bindings);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
+
+  #[test]
+  fn response_redirect_rejects_relative_without_base_url() -> Result<(), VmError> {
+    struct NoopHooks;
+
+    impl VmHostHooks for NoopHooks {
+      fn host_enqueue_promise_job(&mut self, _job: Job, _realm: Option<RealmId>) {}
+    }
+
+    let mut vm = Vm::new(VmOptions::default());
+    let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+    let bindings = install_window_fetch_bindings_with_guard::<DummyHost>(
+      &mut vm,
+      &realm,
+      &mut heap,
+      WindowFetchEnv::for_document(Arc::new(crate::resource::HttpFetcher::new()), None),
+    )?;
+    let mut scope = heap.scope();
+
+    let global = realm.global_object();
+    let Value::Object(response_ctor) = get_data_prop(&mut scope, global, "Response")? else {
+      return Err(VmError::InvariantViolation("Response constructor missing"));
+    };
+    let redirect_key = alloc_key(&mut scope, "redirect")?;
+    let redirect_fn = vm.get(&mut scope, response_ctor, redirect_key)?;
+    let Value::Object(redirect_fn) = redirect_fn else {
+      return Err(VmError::InvariantViolation("Response.redirect missing"));
+    };
+
+    let url = scope.alloc_string("foo")?;
+    scope.push_root(Value::String(url))?;
+
+    let mut host_state = ();
+    let mut hooks = NoopHooks;
+    let err = response_redirect_native(
+      &mut vm,
+      &mut scope,
+      &mut host_state,
+      &mut hooks,
+      redirect_fn,
+      Value::Object(response_ctor),
+      &[Value::String(url), Value::Number(302.0)],
+    )
+    .expect_err("expected relative without base URL TypeError");
+
+    let VmError::Throw(Value::Object(err_obj)) = err else {
+      panic!("expected thrown TypeError object, got {err}");
     };
     let name_key = alloc_key(&mut scope, "name")?;
     let name_val = vm.get(&mut scope, err_obj, name_key)?;
