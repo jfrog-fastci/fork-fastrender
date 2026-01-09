@@ -1329,4 +1329,45 @@ mod tests {
     assert_eq!(flag, Value::Bool(true));
     Ok(())
   }
+
+  #[test]
+  fn non_callable_queue_microtask_handlers_throw_type_error() -> crate::error::Result<()> {
+    let clock = Arc::new(VirtualClock::new());
+    let mut event_loop = EventLoop::<Host>::with_clock(clock);
+    let mut host = Host::new();
+
+    {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      install_window_timers_bindings::<Host>(vm, realm, heap).unwrap();
+    }
+
+    let err = {
+      let (vm, realm, heap) = host.window.vm_realm_and_heap_mut();
+      let global = realm.global_object();
+      with_event_loop(&mut event_loop, || {
+        let mut scope = heap.scope();
+        let queue_microtask = get_prop(&mut scope, global, "queueMicrotask");
+        let handler_obj = scope.alloc_object().unwrap();
+        scope
+          .push_root(Value::Object(handler_obj))
+          .expect("push root handler object");
+        vm.call(
+          &mut scope,
+          queue_microtask,
+          Value::Object(global),
+          &[Value::Object(handler_obj)],
+        )
+      })
+      .expect_err("non-callable handlers should be rejected")
+    };
+
+    match err {
+      VmError::TypeError(msg) => {
+        assert_eq!(msg, QUEUE_MICROTASK_NOT_CALLABLE_ERROR);
+      }
+      other => panic!("expected TypeError, got {other:?}"),
+    }
+
+    Ok(())
+  }
 }
