@@ -50,11 +50,13 @@ pub mod wgpu_pixmap_texture;
 
 #[cfg(feature = "browser_ui")]
 pub use wgpu_pixmap_texture::WgpuPixmapTexture;
-
 pub use url::normalize_user_url;
 
 pub use history::{HistoryEntry, TabHistory};
-pub use browser_app::{BrowserAppState, BrowserTabState, ChromeState, LatestFrameMeta};
+pub use browser_app::{
+  AppUpdate, BrowserAppState, BrowserTabState, ChromeState, FrameReadyUpdate, LatestFrameMeta,
+  OpenSelectDropdownUpdate,
+};
 
 #[cfg(feature = "browser_ui")]
 pub use chrome::{chrome_ui, ChromeAction};

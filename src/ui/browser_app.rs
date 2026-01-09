@@ -1,14 +1,58 @@
 use crate::render_control::StageHeartbeat;
 use crate::scroll::ScrollState;
-use crate::ui::messages::{NavigationReason, TabId, UiToWorker};
+use crate::ui::about_pages;
+use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::ui::normalize_user_url;
+use std::collections::VecDeque;
 use url::Url;
+
+const DEBUG_LOG_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LatestFrameMeta {
   pub pixmap_px: (u32, u32),
   pub viewport_css: (u32, u32),
   pub dpr: f32,
+}
+
+#[derive(Debug, Default)]
+pub struct AppUpdate {
+  /// Whether the front-end should schedule a repaint/redraw.
+  pub request_redraw: bool,
+  /// Recommended full window title for the host window.
+  pub set_window_title: Option<String>,
+  /// A new pixmap is ready for upload; the state model does not store pixel buffers.
+  pub frame_ready: Option<FrameReadyUpdate>,
+  /// The worker requested opening a `<select>` dropdown for a specific tab.
+  ///
+  /// Front-ends are expected to pick an anchor position (typically current pointer position or the
+  /// control's screen-space rect if known).
+  pub open_select_dropdown: Option<OpenSelectDropdownUpdate>,
+}
+
+pub struct FrameReadyUpdate {
+  pub tab_id: TabId,
+  pub pixmap: tiny_skia::Pixmap,
+  pub viewport_css: (u32, u32),
+  pub dpr: f32,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenSelectDropdownUpdate {
+  pub tab_id: TabId,
+  pub select_node_id: usize,
+  pub control: crate::tree::box_tree::SelectControl,
+}
+
+impl std::fmt::Debug for FrameReadyUpdate {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("FrameReadyUpdate")
+      .field("tab_id", &self.tab_id)
+      .field("pixmap_px", &(self.pixmap.width(), self.pixmap.height()))
+      .field("viewport_css", &self.viewport_css)
+      .field("dpr", &self.dpr)
+      .finish()
+  }
 }
 
 #[derive(Debug)]
@@ -27,6 +71,7 @@ pub struct BrowserTabState {
   ///
   /// Used to associate `NavigationCommitted`/`NavigationFailed` messages with the initiating URL.
   pub pending_nav_url: Option<String>,
+  debug_log: VecDeque<String>,
 }
 
 impl BrowserTabState {
@@ -43,6 +88,7 @@ impl BrowserTabState {
       scroll_state: ScrollState::default(),
       latest_frame_meta: None,
       pending_nav_url: None,
+      debug_log: VecDeque::new(),
     }
   }
 
@@ -96,6 +142,17 @@ impl BrowserTabState {
       url: normalized,
       reason: NavigationReason::TypedUrl,
     })
+  }
+
+  pub fn debug_log(&self) -> impl Iterator<Item = &str> {
+    self.debug_log.iter().map(String::as_str)
+  }
+
+  fn push_debug_log(&mut self, line: String) {
+    if self.debug_log.len() >= DEBUG_LOG_CAPACITY {
+      self.debug_log.pop_front();
+    }
+    self.debug_log.push_back(line);
   }
 }
 
@@ -225,6 +282,18 @@ impl BrowserAppState {
     }
   }
 
+  pub fn new_with_initial_tab(initial_url: String) -> Self {
+    let url = if initial_url.trim().is_empty() {
+      about_pages::ABOUT_NEWTAB.to_string()
+    } else {
+      initial_url
+    };
+    let tab_id = TabId::new();
+    let mut app = Self::new();
+    app.push_tab(BrowserTabState::new(tab_id, url), true);
+    app
+  }
+
   pub fn active_tab_id(&self) -> Option<TabId> {
     self.active_tab
   }
@@ -261,6 +330,10 @@ impl BrowserAppState {
     true
   }
 
+  pub fn set_active(&mut self, tab_id: TabId) {
+    let _ = self.set_active_tab(tab_id);
+  }
+
   pub fn push_tab(&mut self, tab: BrowserTabState, make_active: bool) {
     let tab_id = tab.id;
     self.tabs.push(tab);
@@ -269,6 +342,17 @@ impl BrowserAppState {
       self.chrome.address_bar_editing = false;
       self.sync_address_bar_to_active();
     }
+  }
+
+  pub fn create_tab(&mut self, initial_url: Option<String>) -> TabId {
+    let url = initial_url.unwrap_or_else(|| about_pages::ABOUT_NEWTAB.to_string());
+    let tab_id = TabId::new();
+    self.push_tab(BrowserTabState::new(tab_id, url), true);
+    tab_id
+  }
+
+  pub fn close_tab(&mut self, tab_id: TabId) {
+    let _ = self.remove_tab(tab_id);
   }
 
   /// Removes a tab, returning the new active tab if the active tab changed.
@@ -296,7 +380,7 @@ impl BrowserAppState {
     if self.tabs.is_empty() {
       let new_tab_id = TabId::new();
       self.push_tab(
-        BrowserTabState::new(new_tab_id, "about:newtab".to_string()),
+        BrowserTabState::new(new_tab_id, about_pages::ABOUT_NEWTAB.to_string()),
         true,
       );
       return RemoveTabResult {
@@ -343,11 +427,175 @@ impl BrowserAppState {
     };
     self.chrome.address_bar_text = active.current_url().map(str::to_string).unwrap_or_default();
   }
+
+  pub fn set_address_bar_editing(&mut self, editing: bool) {
+    self.chrome.address_bar_editing = editing;
+    self.chrome.address_bar_has_focus = editing;
+    if !editing {
+      self.sync_address_bar_to_active();
+    }
+  }
+
+  pub fn set_address_bar_text(&mut self, text: String) {
+    self.chrome.address_bar_text = text;
+  }
+
+  pub fn commit_address_bar(&mut self) -> Result<String, String> {
+    let tab_id = self
+      .active_tab
+      .ok_or_else(|| "no active tab".to_string())?;
+
+    let normalized = normalize_user_url(&self.chrome.address_bar_text)?;
+    validate_typed_url_scheme(&normalized)?;
+
+    self.chrome.address_bar_editing = false;
+    self.chrome.address_bar_has_focus = false;
+    self.chrome.address_bar_text = normalized.clone();
+
+    if let Some(tab) = self.tab_mut(tab_id) {
+      tab.current_url = Some(normalized.clone());
+      tab.loading = true;
+      tab.error = None;
+      tab.stage = None;
+      tab.pending_nav_url = Some(normalized.clone());
+    }
+
+    Ok(normalized)
+  }
+
+  pub fn apply_worker_msg(&mut self, msg: WorkerToUi) -> AppUpdate {
+    let mut update = AppUpdate::default();
+
+    match msg {
+      WorkerToUi::FrameReady { tab_id, frame } => {
+        let RenderedFrame {
+          pixmap,
+          viewport_css,
+          dpr,
+          scroll_state,
+        } = frame;
+        let pixmap_px = (pixmap.width(), pixmap.height());
+
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.scroll_state = scroll_state;
+          tab.latest_frame_meta = Some(LatestFrameMeta {
+            pixmap_px,
+            viewport_css,
+            dpr,
+          });
+        }
+
+        update.request_redraw = true;
+        update.frame_ready = Some(FrameReadyUpdate {
+          tab_id,
+          pixmap,
+          viewport_css,
+          dpr,
+        });
+      }
+      WorkerToUi::OpenSelectDropdown {
+        tab_id,
+        select_node_id,
+        control,
+      } => {
+        update.request_redraw = true;
+        update.open_select_dropdown = Some(OpenSelectDropdownUpdate {
+          tab_id,
+          select_node_id,
+          control,
+        });
+      }
+      WorkerToUi::Stage { tab_id, stage } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.stage = Some(stage);
+          update.request_redraw = true;
+        }
+      }
+      WorkerToUi::NavigationStarted { tab_id, url } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.current_url = Some(url.clone());
+          tab.loading = true;
+          tab.error = None;
+          tab.stage = None;
+          tab.pending_nav_url = Some(url.clone());
+        }
+        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+          self.chrome.address_bar_text = url;
+        }
+        update.request_redraw = true;
+      }
+      WorkerToUi::NavigationCommitted {
+        tab_id,
+        url,
+        title,
+        can_go_back,
+        can_go_forward,
+      } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.current_url = Some(url.clone());
+          tab.title = title;
+          tab.loading = false;
+          tab.error = None;
+          tab.stage = None;
+          tab.pending_nav_url = None;
+          tab.can_go_back = can_go_back;
+          tab.can_go_forward = can_go_forward;
+        }
+        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+          self.chrome.address_bar_text = url;
+        }
+        update.request_redraw = true;
+      }
+      WorkerToUi::NavigationFailed { tab_id, url, error } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.loading = false;
+          tab.error = Some(error);
+          tab.stage = None;
+          tab.pending_nav_url = None;
+        }
+        if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
+          self.chrome.address_bar_text = url;
+        }
+        update.request_redraw = true;
+      }
+      WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.scroll_state = scroll;
+        }
+        update.request_redraw = true;
+      }
+      WorkerToUi::LoadingState { tab_id, loading } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.loading = loading;
+        }
+        update.request_redraw = true;
+      }
+      WorkerToUi::DebugLog { tab_id, line } => {
+        if let Some(tab) = self.tab_mut(tab_id) {
+          tab.push_debug_log(line);
+        }
+        update.request_redraw = self.active_tab_id() == Some(tab_id);
+      }
+    }
+
+    update
+  }
 }
 
 #[cfg(test)]
 mod browser_app_tests {
   use super::*;
+  use crate::geometry::Point;
+
+  fn assert_active_is_valid(app: &BrowserAppState) {
+    let active = app.active_tab_id();
+    assert!(active.is_some(), "active tab must exist");
+    assert!(
+      app.tabs.iter().any(|t| Some(t.id) == active),
+      "active tab must exist (active={active:?}, tabs={:?})",
+      app.tabs.iter().map(|t| t.id).collect::<Vec<_>>()
+    );
+  }
 
   #[test]
   fn closing_last_tab_immediately_creates_newtab() {
@@ -359,7 +607,7 @@ mod browser_app_tests {
 
     let tab_id = TabId(1_000_000);
     app.push_tab(
-      BrowserTabState::new(tab_id, "about:newtab".to_string()),
+      BrowserTabState::new(tab_id, about_pages::ABOUT_NEWTAB.to_string()),
       true,
     );
     assert_eq!(app.tabs.len(), 1);
@@ -374,7 +622,7 @@ mod browser_app_tests {
     assert_eq!(result.created_tab, Some(new_tab_id));
     assert_eq!(
       app.tab(new_tab_id).and_then(|t| t.current_url()),
-      Some("about:newtab")
+      Some(about_pages::ABOUT_NEWTAB)
     );
   }
 
@@ -384,8 +632,14 @@ mod browser_app_tests {
 
     let a = TabId(1_000_000);
     let b = TabId(1_000_001);
-    app.push_tab(BrowserTabState::new(a, "about:newtab".to_string()), true);
-    app.push_tab(BrowserTabState::new(b, "about:newtab".to_string()), false);
+    app.push_tab(
+      BrowserTabState::new(a, about_pages::ABOUT_NEWTAB.to_string()),
+      true,
+    );
+    app.push_tab(
+      BrowserTabState::new(b, about_pages::ABOUT_NEWTAB.to_string()),
+      false,
+    );
     assert_eq!(app.active_tab_id(), Some(a));
 
     let result = app.remove_tab(a);
@@ -393,6 +647,91 @@ mod browser_app_tests {
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(app.active_tab_id(), Some(b));
     assert_eq!(result.new_active, Some(b));
+  }
+
+  #[test]
+  fn tab_create_close_invariants() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    assert_eq!(app.tabs.len(), 1);
+    assert_active_is_valid(&app);
+
+    let t2 = app.create_tab(Some("https://example.com".to_string()));
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(app.active_tab_id(), Some(t2));
+    assert_active_is_valid(&app);
+
+    app.close_tab(t2);
+    assert_eq!(app.tabs.len(), 1);
+    assert_active_is_valid(&app);
+
+    // Closing the last tab should auto-create a new one.
+    let last = app.active_tab_id().unwrap();
+    app.close_tab(last);
+    assert_eq!(app.tabs.len(), 1);
+    assert_active_is_valid(&app);
+    assert_eq!(
+      app.active_tab().and_then(|t| t.current_url()),
+      Some(about_pages::ABOUT_NEWTAB)
+    );
+  }
+
+  #[test]
+  fn navigation_committed_updates_title_url_and_nav_flags() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let _update = app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://example.com/".to_string(),
+      title: Some("Example Domain".to_string()),
+      can_go_back: true,
+      can_go_forward: false,
+    });
+
+    let tab = app.active_tab().unwrap();
+    assert_eq!(tab.current_url(), Some("https://example.com/"));
+    assert_eq!(tab.title.as_deref(), Some("Example Domain"));
+    assert!(tab.can_go_back);
+    assert!(!tab.can_go_forward);
+    assert_eq!(app.chrome.address_bar_text, "https://example.com/");
+  }
+
+  #[test]
+  fn frame_ready_updates_scroll_and_meta() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    let expected_scroll = ScrollState::with_viewport(Point::new(10.0, 20.0));
+    let pixmap = tiny_skia::Pixmap::new(2, 3).unwrap();
+    let viewport_css = (800, 600);
+    let dpr = 2.0;
+
+    let update = app.apply_worker_msg(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap,
+        viewport_css,
+        dpr,
+        scroll_state: expected_scroll.clone(),
+      },
+    });
+
+    let tab = app.active_tab().unwrap();
+    assert_eq!(tab.scroll_state, expected_scroll);
+    assert_eq!(
+      tab.latest_frame_meta,
+      Some(LatestFrameMeta {
+        pixmap_px: (2, 3),
+        viewport_css,
+        dpr
+      })
+    );
+
+    let ready = update.frame_ready.expect("expected FrameReadyUpdate");
+    assert_eq!(ready.tab_id, tab_id);
+    assert_eq!(ready.viewport_css, viewport_css);
+    assert!((ready.dpr - dpr).abs() < f32::EPSILON);
+    assert_eq!((ready.pixmap.width(), ready.pixmap.height()), (2, 3));
   }
 }
 
@@ -433,5 +772,49 @@ mod address_bar_tests {
     assert!(app.set_active_tab(tab_b));
     assert!(!app.chrome.address_bar_editing);
     assert_eq!(app.chrome.address_bar_text, "https://b.example/");
+  }
+
+  #[test]
+  fn address_bar_editing_prevents_overwrite_until_commit() {
+    let mut app = BrowserAppState::new_with_initial_tab("about:newtab".to_string());
+    let tab_id = app.active_tab_id().unwrap();
+
+    app.set_address_bar_editing(true);
+    app.set_address_bar_text("https://typed.example".to_string());
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://committed.example/".to_string(),
+      title: Some("Committed".to_string()),
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    assert_eq!(
+      app.chrome.address_bar_text,
+      "https://typed.example",
+      "worker updates should not clobber user typing"
+    );
+    assert_eq!(
+      app.active_tab().and_then(|t| t.current_url()),
+      Some("https://committed.example/")
+    );
+
+    let committed = app.commit_address_bar().unwrap();
+    assert_eq!(committed, "https://typed.example/");
+    assert!(!app.chrome.address_bar_editing);
+
+    app.apply_worker_msg(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: "https://after.example/".to_string(),
+      title: None,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+    assert_eq!(
+      app.chrome.address_bar_text,
+      "https://after.example/",
+      "after commit, address bar should follow tab display_url again"
+    );
   }
 }
