@@ -60,6 +60,7 @@ impl BrowserTabState {
       .unwrap_or_else(|| "New Tab".to_string())
   }
 
+
   /// Validate + normalize an address-bar navigation and produce a `UiToWorker::Navigate` message.
   ///
   /// This applies a scheme allowlist for typed URLs (http/https/file/about), rejecting
@@ -144,7 +145,6 @@ mod tab_tests {
     assert!(tab.loading);
   }
 }
-
 #[derive(Debug, Default)]
 pub struct ChromeState {
   pub address_bar_text: String,

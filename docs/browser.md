@@ -55,13 +55,9 @@ FastRender also has a small DOM interaction layer intended to support basic “n
   `Enter`/`Space`)
 
 These interactions are currently exercised by the headless UI workers used by integration tests;
-**wiring them into the windowed `browser` app is still in progress**. See [browser_ui.md](browser_ui.md)
-for implementation details and current status.
-
-Note: the window currently starts by navigating to `about:newtab`, but `about:` URLs are not yet
-supported by the windowed UI’s current render worker (it currently expects `http(s)://` or
-`file://` URLs), so you may see a navigation error on startup. Type a URL into the address bar and
-press Enter to navigate.
+the windowed `browser` app now uses the same worker-thread wiring, so link clicking and basic form
+interactions work in the GUI as well. See [browser_ui.md](browser_ui.md) for implementation details
+and current status.
 
 ## Environment variables / resource limits
 

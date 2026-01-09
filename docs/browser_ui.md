@@ -58,8 +58,8 @@ See [env-vars.md](env-vars.md) for details.
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
-  - Also contains the current in-binary render worker thread (`spawn_default_render_worker`) that
-    handles basic navigation/scroll/paint for the windowed UI.
+  - Spawns the browser worker thread via [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
+    handles navigation/scroll/input and produces `WorkerToUi` updates.
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -67,9 +67,9 @@ See [env-vars.md](env-vars.md) for details.
   - UI state model (`BrowserAppState`/tabs/chrome): [`src/ui/browser_app.rs`](../src/ui/browser_app.rs)
   - egui chrome widgets (tabs row, nav buttons, address bar): [`src/ui/chrome.rs`](../src/ui/chrome.rs)
   - About pages (`about:blank`, `about:newtab`, `about:error`): [`src/ui/about_pages.rs`](../src/ui/about_pages.rs)
-    - Used by the headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs))
-      and the synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE`
-      test mode). The windowed UI's in-binary worker does not yet special-case `about:` URLs.
+    - Used by the browser worker ([`src/ui/browser_thread.rs`](../src/ui/browser_thread.rs)), the
+      headless worker loops (e.g. [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)), and the
+      synchronous `BrowserWorker` helper (used by the `FASTR_TEST_BROWSER_HEADLESS_SMOKE` test mode).
   - Cancellation helpers: [`src/ui/cancel.rs`](../src/ui/cancel.rs)
   - Message protocol types: [`src/ui/messages.rs`](../src/ui/messages.rs)
   - Input coordinate mapping helpers (egui points ↔ viewport CSS px): [`src/ui/input_mapping.rs`](../src/ui/input_mapping.rs)
@@ -110,8 +110,9 @@ browser-style behaviors over time:
 - keep the UI responsive under slow network/layout,
 - route results to the correct tab via `tab_id`.
 
-Cancellation and stale-frame dropping are planned (see below), but are not yet fully wired into the
-current worker implementations.
+Cancellation and stale-frame dropping are wired into the browser worker thread via generation
+counters (`CancelGens`) plus `RenderDeadline` cancel callbacks, so rapid navigations/scroll events can
+cooperatively stop stale work.
 
 ### UI thread vs render worker thread
 
@@ -119,10 +120,10 @@ The browser UI should run rendering on a dedicated large-stack thread:
 
 - Render recursion can be deep on real pages; see
   [`DEFAULT_RENDER_STACK_SIZE`](../src/system.rs) (128 MiB).
-- Thread spawn helper: [`spawn_render_worker_thread`](../src/ui/worker.rs).
-  - Note: the windowed `browser` app currently spawns its worker directly in
-    [`src/bin/browser.rs`](../src/bin/browser.rs); `spawn_render_worker_thread` is a reusable helper
-    for other UI/worker wiring.
+- The windowed `browser` app uses [`spawn_browser_worker`](../src/ui/browser_thread.rs), which
+  spawns the render worker via `std::thread::Builder` and configures the stack size.
+- The headless UI worker used by integration tests is spawned via
+  [`spawn_render_worker_thread`](../src/ui/worker.rs).
 
 ### Message protocol (channels)
 
@@ -153,9 +154,8 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 - `ScrollStateUpdated { tab_id, scroll }` / `LoadingState { tab_id, loading }`
 
 Note: not all worker implementations emit every message variant. For example, the windowed UI’s
-current in-binary worker (`spawn_default_render_worker`) focuses on `FrameReady` and navigation
-events, while `Stage` heartbeats are currently emitted by the synchronous `BrowserWorker` helper
-(used by the headless smoke mode).
+browser worker emits `FrameReady` and navigation events and forwards `Stage` heartbeats from the
+renderer.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
@@ -172,8 +172,9 @@ The browser UI includes generation-counter cancellation helpers in [`src/ui/canc
 - `CancelGens::bump_nav()` invalidates in-flight **prepare** and **paint** work (new navigation).
 - `CancelGens::bump_paint()` invalidates only in-flight **paint** work (e.g. scroll/resize).
 
-Note: the current worker loops are mostly synchronous and do not yet use these helpers; they
-document the intended pattern for when cancellation is wired in.
+The browser worker thread uses these helpers to cancel/ignore stale work (rapid navigations,
+scroll/resize repaint storms). Some of the older headless/synchronous helpers are still more
+synchronous and may not take advantage of generation cancellation yet.
 
 The typical pattern is:
 
@@ -193,11 +194,9 @@ CPU by stopping stale work early.
 ## Known limitations (as of now)
 
 - **No author JavaScript**: `<script>` does not execute.
-- **Window UI interaction parity**: the windowed `browser` app currently uses a minimal in-binary
-  worker (`spawn_default_render_worker` in [`src/bin/browser.rs`](../src/bin/browser.rs)) that
-  repaints on input but does not yet apply DOM interaction/hit-testing. Link clicking and basic
-  form interactions are currently implemented in the headless worker loop
-  ([`src/ui/worker.rs`](../src/ui/worker.rs)) used by integration tests.
+- **DOM interaction is still incremental**: the windowed `browser` app forwards pointer/keyboard
+  events to the browser worker thread and supports basic hit-testing + form interactions (non-JS),
+  but the interaction layer is intentionally minimal and will grow over time.
 - **Limited form support** (non-JS):
   - text input is intentionally minimal (no selection/caret movement beyond append/backspace)
   - many controls are not yet supported (`<select>`, `contenteditable`, file inputs, etc.)
