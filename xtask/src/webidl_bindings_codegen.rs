@@ -129,7 +129,7 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
       .with_context(|| format!("read generated file {}", out_path.display()))?;
     if existing != generated_window {
       bail!(
-        "generated WebIDL bindings are out of date: run `cargo xtask webidl-bindings` (path={})",
+        "generated WebIDL bindings are out of date: run `bash scripts/cargo_agent.sh xtask webidl-bindings` (path={})",
         out_path.display()
       );
     }
@@ -138,7 +138,7 @@ pub fn run_webidl_bindings_codegen(args: WebIdlBindingsCodegenArgs) -> Result<()
       .with_context(|| format!("read generated file {}", dom_out_path.display()))?;
     if existing_dom != generated_dom {
       bail!(
-        "generated DOM bindings are out of date: run `cargo xtask webidl-bindings` (path={})",
+        "generated DOM bindings are out of date: run `bash scripts/cargo_agent.sh xtask webidl-bindings` (path={})",
         dom_out_path.display()
       );
     }

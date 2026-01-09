@@ -108,7 +108,7 @@ pub fn run_webidl_codegen(args: WebIdlCodegenArgs) -> Result<()> {
       .with_context(|| format!("read generated file {}", out_path.display()))?;
     if existing != generated {
       bail!(
-        "generated WebIDL bindings are out of date: run `cargo xtask webidl` (path={})",
+        "generated WebIDL snapshot is out of date: run `bash scripts/cargo_agent.sh xtask webidl` (path={})",
         out_path.display()
       );
     }
