@@ -14,6 +14,7 @@ mod browser_thread_paint_cancellation;
 mod document;
 mod document2;
 mod history_navigation;
+mod select_dropdown;
 mod select_dropdown_hidden_option_arrow_key;
 mod select_listbox_hidden_option_click;
 mod select_dropdown_pick;

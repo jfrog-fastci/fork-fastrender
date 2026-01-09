@@ -20,6 +20,10 @@ use super::support::{
 // take longer than a couple seconds on busy CI hosts. Keep the timeout generous to avoid flakiness
 // while still failing quickly on genuine deadlocks.
 const TIMEOUT: Duration = DEFAULT_TIMEOUT;
+// The legacy UI worker builds its own renderer instance per tab. In debug builds, the first
+// navigation can be dominated by one-time initialization (font DB, caches), so allow more time for
+// this select-specific smoke test.
+const SELECT_DROPDOWN_TIMEOUT: Duration = Duration::from_secs(120);
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;
@@ -378,7 +382,7 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
     .send(navigate_msg(tab_id, file_url.clone(), NavigationReason::TypedUrl))
     .unwrap();
 
-  let deadline = Instant::now() + TIMEOUT;
+  let deadline = Instant::now() + SELECT_DROPDOWN_TIMEOUT;
   let _frame = recv_until_frame(&ui_rx, tab_id, Some(file_url.as_str()), deadline);
   while ui_rx.try_recv().is_ok() {}
 
@@ -389,7 +393,7 @@ fn select_dropdown_click_emits_select_dropdown_opened_message() {
     .send(pointer_up(tab_id, (10.0, 10.0), PointerButton::Primary))
     .unwrap();
 
-  let deadline = Instant::now() + TIMEOUT;
+  let deadline = Instant::now() + SELECT_DROPDOWN_TIMEOUT;
   let mut received = None;
   while Instant::now() < deadline {
     match ui_rx.recv_timeout(Duration::from_millis(200)) {

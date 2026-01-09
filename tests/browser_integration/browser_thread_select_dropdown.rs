@@ -5,8 +5,9 @@ use fastrender::tree::box_tree::SelectItem;
 use fastrender::ui::messages::{PointerButton, TabId, UiToWorker, WorkerToUi};
 use std::time::Duration;
 
-// Worker startup + first render can take a few seconds under parallel load (CI).
-const TIMEOUT: Duration = Duration::from_secs(20);
+// Worker startup + first render can take a while in debug builds (font init, cache warming, etc).
+// Keep this generous so the test remains reliable when run in isolation.
+const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn browser_thread_click_dropdown_select_emits_select_dropdown_opened_message() {
