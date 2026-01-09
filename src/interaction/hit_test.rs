@@ -1,10 +1,9 @@
-use crate::dom::DomNode;
+use crate::dom::{DomNode, DomNodeType};
 use crate::geometry::Point;
 use crate::style::computed::Visibility;
 use crate::style::types::PointerEvents;
 use crate::tree::box_tree::{BoxNode, BoxTree};
 use crate::tree::fragment_tree::FragmentTree;
-use std::collections::HashMap;
 use std::ptr;
 
 use super::image_maps;
@@ -142,6 +141,59 @@ impl DomIndex {
     }
     false
   }
+}
+
+fn tree_root_boundary_id(dom_index: &DomIndex, mut node_id: usize) -> Option<usize> {
+  while node_id != 0 {
+    let node = dom_index.node(node_id)?;
+    if matches!(
+      node.node_type,
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. }
+    ) {
+      return Some(node_id);
+    }
+    node_id = dom_index.parent_id(node_id).unwrap_or(0);
+  }
+  None
+}
+
+fn node_or_ancestor_is_template(dom_index: &DomIndex, mut node_id: usize) -> bool {
+  while node_id != 0 {
+    let Some(node) = dom_index.node(node_id) else {
+      return false;
+    };
+    if node.template_contents_are_inert() {
+      return true;
+    }
+    node_id = dom_index.parent_id(node_id).unwrap_or(0);
+  }
+  false
+}
+
+fn find_element_by_id_attr_in_tree(
+  dom_index: &DomIndex,
+  tree_root_id: usize,
+  html_id: &str,
+) -> Option<usize> {
+  for node_id in dom_index.node_ids() {
+    let Some(node) = dom_index.node(node_id) else {
+      debug_assert!(false, "node_ids only yields valid ids");
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    if node_or_ancestor_is_template(dom_index, node_id) {
+      continue;
+    }
+    if node.get_attribute_ref("id") != Some(html_id) {
+      continue;
+    }
+    if tree_root_boundary_id(dom_index, node_id) == Some(tree_root_id) {
+      return Some(node_id);
+    }
+  }
+  None
 }
 
 fn box_is_interactive(box_node: &BoxNode) -> bool {
@@ -353,26 +405,17 @@ pub fn resolve_label_associated_control(dom: &DomNode, label_node_id: usize) -> 
     return None;
   }
 
+  let label_tree_root = tree_root_boundary_id(&dom_index, label_node_id)?;
   if let Some(for_value) = label
     .get_attribute_ref("for")
     .map(trim_ascii_whitespace)
     .filter(|v| !v.is_empty())
   {
-    let mut by_id: HashMap<String, usize> = HashMap::new();
-    for node_id in dom_index.node_ids() {
-      let Some(node) = dom_index.node(node_id) else {
-        debug_assert!(false, "node_ids only yields valid ids");
-        continue;
-      };
-      let Some(id_attr) = node.get_attribute_ref("id") else {
-        continue;
-      };
-      by_id.entry(id_attr.to_string()).or_insert(node_id);
-    }
-    return by_id
-      .get(for_value)
-      .copied()
-      .filter(|&node_id| dom_index.node(node_id).is_some_and(node_is_form_control));
+    let referenced = find_element_by_id_attr_in_tree(&dom_index, label_tree_root, for_value)?;
+    return dom_index
+      .node(referenced)
+      .is_some_and(node_is_form_control)
+      .then_some(referenced);
   }
 
   // No explicit `for` => first descendant control element inside the label.

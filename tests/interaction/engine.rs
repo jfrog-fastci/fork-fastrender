@@ -1096,6 +1096,73 @@ fn label_click_activates_associated_checkbox() {
 }
 
 #[test]
+fn label_for_ignores_non_form_control_target() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("label", vec![("id", "lbl"), ("for", "x")], vec![]),
+        el("a", vec![("id", "x"), ("href", "/foo")], vec![]),
+      ],
+    )],
+  )]);
+
+  let label_dom_id = node_id(&dom, "lbl");
+
+  let mut label_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  label_box.styled_node_id = Some(label_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![label_box],
+  ));
+
+  let label_box_id = find_box_id_for_styled_node(&box_tree, label_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
+      label_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  engine.pointer_down(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+  );
+  let (_changed, action) = engine.pointer_up_with_scroll(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &ScrollState::default(),
+    Point::new(5.0, 5.0),
+    "https://x/",
+    "https://x/",
+  );
+
+  assert!(
+    !matches!(action, InteractionAction::Navigate { .. }),
+    "label[for] should only resolve to labelable form controls"
+  );
+  assert!(
+    !has_attr(&dom, "x", "data-fastr-visited"),
+    "label click must not mark an unrelated anchor as visited"
+  );
+  assert!(
+    attr_value(&dom, "x", "data-fastr-focus").is_none(),
+    "label click must not focus an unrelated anchor"
+  );
+}
+
+#[test]
 fn label_for_does_not_cross_shadow_root_boundary() {
   let mut dom = doc(vec![el(
     "html",

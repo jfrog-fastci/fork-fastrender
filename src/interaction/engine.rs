@@ -271,6 +271,13 @@ fn is_label(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("label"))
 }
 
+fn is_labelable_form_control(node: &DomNode) -> bool {
+  if is_input(node) {
+    return !input_type(node).eq_ignore_ascii_case("hidden");
+  }
+  is_textarea(node) || is_select(node) || is_button(node)
+}
+
 fn is_input(node: &DomNode) -> bool {
   node
     .tag_name()
@@ -613,7 +620,11 @@ fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option
     // Spec-ish: `for` matches element IDs in the same tree (tree-root boundary, i.e. the document
     // or current shadow root).
     let tree_root = tree_root_boundary_id(index, label_id)?;
-    return find_element_by_id_attr_in_tree(index, tree_root, for_attr);
+    let referenced = find_element_by_id_attr_in_tree(index, tree_root, for_attr)?;
+    return index
+      .node(referenced)
+      .is_some_and(is_labelable_form_control)
+      .then_some(referenced);
   }
 
   // Fallback: first descendant control.
@@ -630,12 +641,7 @@ fn find_label_associated_control(index: &DomIndexMut, label_id: usize) -> Option
     let Some(node) = index.node(id) else {
       continue;
     };
-    if is_input(node)
-      || is_textarea(node)
-      || node
-        .tag_name()
-        .is_some_and(|t| t.eq_ignore_ascii_case("select"))
-    {
+    if is_labelable_form_control(node) {
       return Some(id);
     }
   }

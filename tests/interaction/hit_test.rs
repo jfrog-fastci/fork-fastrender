@@ -1,4 +1,4 @@
-use fastrender::dom::{enumerate_dom_ids, DomNode, DomNodeType};
+use fastrender::dom::{enumerate_dom_ids, DomNode, DomNodeType, ShadowRootMode};
 use fastrender::interaction::{hit_test_dom, resolve_label_associated_control, HitTestKind};
 use fastrender::style::types::PointerEvents;
 use fastrender::{BoxNode, BoxTree, ComputedStyle, FragmentNode, FragmentTree, Point, Rect};
@@ -331,4 +331,32 @@ fn resolve_label_associated_control_descendant_input() {
   // 2 label
   // 3 input
   assert_eq!(resolve_label_associated_control(&dom, 2), Some(3));
+}
+
+#[test]
+fn resolve_label_associated_control_does_not_cross_shadow_root_boundary() {
+  let dom = doc(vec![
+    elem("input", vec![("id", "x"), ("type", "text")], vec![]),
+    elem(
+      "div",
+      vec![("id", "host")],
+      vec![DomNode {
+        node_type: DomNodeType::ShadowRoot {
+          mode: ShadowRootMode::Open,
+          delegates_focus: false,
+        },
+        children: vec![elem("label", vec![("for", "x")], vec![text("Label")])],
+      }],
+    ),
+  ]);
+
+  let ids = enumerate_dom_ids(&dom);
+  let label = &dom.children[1].children[0].children[0] as *const DomNode;
+  let label_id = ids[&label];
+
+  assert_eq!(
+    resolve_label_associated_control(&dom, label_id),
+    None,
+    "label `for` associations must not cross the shadow root boundary"
+  );
 }
