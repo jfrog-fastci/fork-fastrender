@@ -6299,35 +6299,25 @@ impl DisplayListRenderer {
     let bottom_center = rect.y() + rect.height() - bottom.width * 0.5;
     let left_center = rect.x() + left.width * 0.5;
     let right_center = rect.x() + rect.width() - right.width * 0.5;
-    let outer_left = rect.x();
-    let outer_top = rect.y();
-    let outer_right = rect.x() + rect.width();
-    let outer_bottom = rect.y() + rect.height();
+
+    // Use the adjacent edge center coordinates as endpoints so stroke caps remain within the
+    // border box. This matters for dotted borders (round caps) and any other stroke styles that
+    // extend beyond their endpoints.
     let edges: [(_, _, _, _); 4] = [
-      (
-        BorderEdge::Top,
-        &top,
-        (outer_left, top_center),
-        (outer_right, top_center),
-      ),
+      (BorderEdge::Top, &top, (left_center, top_center), (right_center, top_center)),
       (
         BorderEdge::Right,
         &right,
-        (right_center, outer_top),
-        (right_center, outer_bottom),
+        (right_center, top_center),
+        (right_center, bottom_center),
       ),
       (
         BorderEdge::Bottom,
         &bottom,
-        (outer_left, bottom_center),
-        (outer_right, bottom_center),
+        (left_center, bottom_center),
+        (right_center, bottom_center),
       ),
-      (
-        BorderEdge::Left,
-        &left,
-        (left_center, outer_top),
-        (left_center, outer_bottom),
-      ),
+      (BorderEdge::Left, &left, (left_center, top_center), (left_center, bottom_center)),
     ];
 
     for (edge, side, (x1, y1), (x2, y2)) in edges {

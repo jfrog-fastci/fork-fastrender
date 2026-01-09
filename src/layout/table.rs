@@ -11752,11 +11752,10 @@ mod tests {
     let borders = compute_collapsed_borders(&table, &structure).unwrap();
 
     assert_eq!(borders.vertical.len(), 3);
-    // Style wins over width: double outranks solid even though it is thinner.
-    // Double borders are clamped to a minimum of 3px so they can render as three strokes.
+    // CSS 2.1 §17.6.2.1: after `hidden`/`none`, wider borders win; styles only break ties.
     let winning = &borders.vertical[1][0];
-    assert!(winning.width >= 3.0);
-    assert_eq!(winning.style, BorderStyle::Double);
+    assert_eq!(winning.style, BorderStyle::Solid);
+    assert!((winning.width - 8.0).abs() < f32::EPSILON);
   }
 
   #[test]
