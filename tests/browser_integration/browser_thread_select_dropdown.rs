@@ -71,24 +71,19 @@ fn browser_thread_click_dropdown_select_emits_open_select_dropdown_message() {
   .expect("PointerUp");
 
   let msg = support::recv_for_tab(&rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::SelectDropdownOpened { .. })
+    matches!(msg, WorkerToUi::OpenSelectDropdown { .. })
   })
-  .expect("expected SelectDropdownOpened message");
+  .expect("expected OpenSelectDropdown message");
 
-  let WorkerToUi::SelectDropdownOpened {
+  let WorkerToUi::OpenSelectDropdown {
     tab_id: msg_tab,
     select_node_id,
     control,
-    anchor_css: anchor_rect_css,
   } = msg
   else {
     unreachable!("filtered above");
   };
   assert_eq!(msg_tab, tab_id);
-  assert!(
-    anchor_rect_css.width() > 0.0 && anchor_rect_css.height() > 0.0,
-    "expected non-zero anchor_css, got {anchor_rect_css:?}"
-  );
   assert!(select_node_id > 0, "expected non-zero select_node_id");
   assert!(!control.multiple, "expected dropdown select to be single-select");
   assert_eq!(control.size, 1);
