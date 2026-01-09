@@ -1,4 +1,5 @@
 use crate::dom2::{self, NodeId};
+use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptStateHandle;
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -71,6 +72,19 @@ pub struct WindowRealm {
   current_script_source_id: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+struct WindowRealmUserData {
+  cookie_jar: CookieJar,
+}
+
+impl WindowRealmUserData {
+  fn new() -> Self {
+    Self {
+      cookie_jar: CookieJar::new(),
+    }
+  }
+}
+
 impl WindowRealm {
   pub fn new(config: WindowRealmConfig) -> Result<Self, VmError> {
     let realm_id = RealmId::from_raw(NEXT_WINDOW_REALM_ID.fetch_add(1, Ordering::Relaxed));
@@ -82,6 +96,7 @@ impl WindowRealm {
     let heap = Heap::new(config.heap_limits);
 
     let mut runtime = VmJsRuntime::new(vm, heap)?;
+    runtime.vm.set_user_data(WindowRealmUserData::new());
 
     // `vm-js::JsRuntime` does not expose a borrow-splitting accessor for `(vm, realm, heap)`. Use a
     // raw pointer to the realm to allow simultaneously borrowing `vm`/`heap` mutably.
@@ -2947,6 +2962,51 @@ fn document_current_script_get_native(
   get_or_create_node_wrapper(scope, document_obj, node_id)
 }
 
+fn document_cookie_get_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let cookie = vm
+    .user_data::<WindowRealmUserData>()
+    .map(|data| data.cookie_jar.cookie_string())
+    .unwrap_or_default();
+  Ok(Value::String(scope.alloc_string(&cookie)?))
+}
+
+fn document_cookie_set_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  _this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Some(data) = vm.user_data_mut::<WindowRealmUserData>() else {
+    return Ok(Value::Undefined);
+  };
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let value = match value {
+    Value::String(s) => s,
+    other => scope.heap_mut().to_string(other)?,
+  };
+
+  let s = scope.heap().get_string(value)?;
+  if s.as_code_units().len() > MAX_COOKIE_STRING_BYTES {
+    return Ok(Value::Undefined);
+  }
+
+  let cookie_string = s.to_utf8_lossy();
+  data.cookie_jar.set_cookie_string(&cookie_string);
+  Ok(Value::Undefined)
+}
+
 fn init_window_globals(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -3741,6 +3801,39 @@ fn init_window_globals(
       kind: PropertyKind::Accessor {
         get: Value::Object(current_script_func),
         set: Value::Undefined,
+      },
+    },
+  )?;
+
+  // document.cookie
+  let cookie_key = alloc_key(&mut scope, "cookie")?;
+  let cookie_get_call_id = vm.register_native_call(document_cookie_get_native)?;
+  let cookie_get_name = scope.alloc_string("get cookie")?;
+  scope.push_root(Value::String(cookie_get_name))?;
+  let cookie_get_func = scope.alloc_native_function(cookie_get_call_id, None, cookie_get_name, 0)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cookie_get_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(cookie_get_func))?;
+
+  let cookie_set_call_id = vm.register_native_call(document_cookie_set_native)?;
+  let cookie_set_name = scope.alloc_string("set cookie")?;
+  scope.push_root(Value::String(cookie_set_name))?;
+  let cookie_set_func = scope.alloc_native_function(cookie_set_call_id, None, cookie_set_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(cookie_set_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(cookie_set_func))?;
+
+  scope.define_property(
+    document_obj,
+    cookie_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: true,
+      kind: PropertyKind::Accessor {
+        get: Value::Object(cookie_get_func),
+        set: Value::Object(cookie_set_func),
       },
     },
   )?;

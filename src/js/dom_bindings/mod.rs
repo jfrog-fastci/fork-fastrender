@@ -10,6 +10,7 @@
 
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{self, NodeId, NodeKind};
+use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::bindings::DomExceptionClass;
 use crate::js::orchestrator::CurrentScriptState;
 use crate::web::events;
@@ -60,6 +61,7 @@ pub struct DomJsRealm {
 
   dom: Rc<RefCell<dom2::Document>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
+  cookie_jar: Rc<RefCell<CookieJar>>,
 
   platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
   node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
@@ -81,6 +83,7 @@ impl DomJsRealm {
     let document_node_id = dom.borrow().root();
 
     let current_script_state = Rc::new(RefCell::new(CurrentScriptState::default()));
+    let cookie_jar: Rc<RefCell<CookieJar>> = Rc::new(RefCell::new(CookieJar::new()));
     let platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>> =
       Rc::new(RefCell::new(FxHashMap::default()));
     let node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>> =
@@ -190,6 +193,7 @@ impl DomJsRealm {
       dom.clone(),
       node_wrapper_cache.clone(),
       current_script_state.clone(),
+      cookie_jar.clone(),
     )?;
 
     Ok(Self {
@@ -199,6 +203,7 @@ impl DomJsRealm {
       document_node_id,
       dom,
       current_script_state,
+      cookie_jar,
       platform_objects,
       node_wrapper_cache,
       event_listeners,
@@ -233,6 +238,10 @@ impl DomJsRealm {
 
   pub fn dom(&self) -> Rc<RefCell<dom2::Document>> {
     self.dom.clone()
+  }
+
+  pub fn cookie_jar(&self) -> Rc<RefCell<CookieJar>> {
+    self.cookie_jar.clone()
   }
 
   pub fn current_script_state(&self) -> Rc<RefCell<CurrentScriptState>> {
@@ -1013,6 +1022,7 @@ fn install_constructors(
   dom: Rc<RefCell<dom2::Document>>,
   node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
   current_script_state: Rc<RefCell<CurrentScriptState>>,
+  cookie_jar: Rc<RefCell<CookieJar>>,
 ) -> Result<(), VmError> {
   fn illegal_constructor(rt: &mut VmJsRuntime, name: &'static str) -> Result<Value, VmError> {
     Err(rt.throw_type_error(&format!("{name} is not a constructor")))
@@ -2911,6 +2921,35 @@ fn install_constructors(
       Value::Undefined,
     )?;
 
+    // document.cookie (MVP: deterministic name=value store; ignores attributes).
+    let cookie_jar_for_get = cookie_jar.clone();
+    let platform_objects_for_cookie_get = platform_objects.clone();
+    let cookie_get = rt.alloc_function_value(move |rt, this, _args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_cookie_get, this)?;
+      let cookie = cookie_jar_for_get.borrow().cookie_string();
+      rt.alloc_string_value(&cookie)
+    })?;
+    let cookie_jar_for_set = cookie_jar.clone();
+    let platform_objects_for_cookie_set = platform_objects.clone();
+    let cookie_set = rt.alloc_function_value(move |rt, this, args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_cookie_set, this)?;
+      let value = args.get(0).copied().unwrap_or(Value::Undefined);
+      let s = rt.to_string(value)?;
+      let Value::String(s) = s else {
+        return Err(VmError::InvariantViolation("to_string must return a string value"));
+      };
+      let js_s = rt.heap().get_string(s)?;
+      if js_s.as_code_units().len() > MAX_COOKIE_STRING_BYTES {
+        return Ok(Value::Undefined);
+      }
+      let cookie_string = js_s.to_utf8_lossy();
+      cookie_jar_for_set
+        .borrow_mut()
+        .set_cookie_string(&cookie_string);
+      Ok(Value::Undefined)
+    })?;
+    define_accessor(rt, prototypes.document, "cookie", cookie_get, cookie_set)?;
+
     // Legacy DOM Events factory: `document.createEvent(interfaceName)`.
     let dom_for_create_event = dom.clone();
     let platform_objects_for_create_event = platform_objects.clone();
@@ -3562,6 +3601,36 @@ mod tests {
       panic!("expected string, got {v:?}");
     };
     rt.heap().get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn document_cookie_get_and_set_round_trips_deterministically() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let cookie_key = pk(&mut realm.rt, "cookie");
+    let initial = realm.rt.get(document, cookie_key).unwrap();
+    assert_eq!(as_str(&realm.rt, initial), "");
+
+    let desc = realm
+      .rt
+      .get_own_property(realm.prototypes.document, cookie_key)
+      .unwrap()
+      .expect("expected Document.prototype.cookie");
+    let set = match desc.kind {
+      JsPropertyKind::Accessor { set, .. } => set,
+      other => panic!("expected accessor property, got {other:?}"),
+    };
+
+    // Attributes are ignored and output ordering is deterministic (sorted by cookie name).
+    let b = realm.rt.alloc_string_value("b=c; Path=/").unwrap();
+    realm.rt.call_function(set, document, &[b]).unwrap();
+    let a = realm.rt.alloc_string_value("a=b").unwrap();
+    realm.rt.call_function(set, document, &[a]).unwrap();
+
+    let got = realm.rt.get(document, cookie_key).unwrap();
+    assert_eq!(as_str(&realm.rt, got), "a=b; b=c");
   }
 
   #[test]

@@ -1,5 +1,6 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
+use crate::js::cookie_jar::{CookieJar, MAX_COOKIE_STRING_BYTES};
 use crate::js::CurrentScriptState;
 use crate::web::dom::DomException;
 use std::char::decode_utf16;
@@ -226,6 +227,8 @@ pub struct DomHost {
   /// the input contains lone surrogates that decode to U+FFFD). Keep this bounded so hostile input
   /// cannot force unbounded host allocations even when the VM heap is capped.
   max_string_bytes: usize,
+
+  cookie_jar: CookieJar,
 
   // Identity cache: preserve wrapper identity without keeping wrappers alive.
   node_wrappers: HashMap<NodeId, WeakGcObject>,
@@ -2169,6 +2172,54 @@ fn dom_document_current_script_getter(
   wrap_node(host, scope, node_id, kind)
 }
 
+fn dom_document_cookie_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  require_this_document(scope, host, this)?;
+  Ok(Value::String(scope.alloc_string(&host.cookie_jar.cookie_string())?))
+}
+
+fn dom_document_cookie_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  require_this_document(scope, host, this)?;
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let cookie_string = match value {
+    Value::Object(_) => "[object Object]".to_string(),
+    Value::Symbol(_) => return throw_type_error(scope, host, "Cannot convert a Symbol value to a string"),
+    other => {
+      let s = match scope.heap_mut().to_string(other) {
+        Ok(s) => s,
+        Err(VmError::TypeError(msg)) => return throw_type_error(scope, host, msg),
+        Err(e) => return Err(e),
+      };
+      let js = scope.heap().get_string(s)?;
+      if js.as_code_units().len() > MAX_COOKIE_STRING_BYTES {
+        return Ok(Value::Undefined);
+      }
+      js.to_utf8_lossy()
+    }
+  };
+
+  host.cookie_jar.set_cookie_string(&cookie_string);
+  Ok(Value::Undefined)
+}
+
 pub fn install_dom_bindings(
   vm: &mut Vm,
   heap: &mut Heap,
@@ -2264,6 +2315,8 @@ pub fn install_dom_bindings_with_limits(
   let call_insert_adjacent_element = vm.register_native_call(dom_element_insert_adjacent_element)?;
   let call_insert_adjacent_text = vm.register_native_call(dom_element_insert_adjacent_text)?;
   let call_current_script = vm.register_native_call(dom_document_current_script_getter)?;
+  let call_cookie_get = vm.register_native_call(dom_document_cookie_getter)?;
+  let call_cookie_set = vm.register_native_call(dom_document_cookie_setter)?;
   let call_text_content_get = vm.register_native_call(dom_node_text_content_getter)?;
   let call_text_content_set = vm.register_native_call(dom_node_text_content_setter)?;
   let call_class_list_get = vm.register_native_call(dom_element_class_list_getter)?;
@@ -2389,6 +2442,7 @@ pub fn install_dom_bindings_with_limits(
     call_outer_html_set,
   )?;
   install_getter(&mut scope, proto_document, "currentScript", call_current_script)?;
+  install_accessor(&mut scope, proto_document, "cookie", call_cookie_get, call_cookie_set)?;
   install_accessor(
     &mut scope,
     proto_node,
@@ -2408,6 +2462,7 @@ pub fn install_dom_bindings_with_limits(
     dom: dom.clone(),
     current_script: current_script.clone(),
     max_string_bytes,
+    cookie_jar: CookieJar::new(),
     node_wrappers: HashMap::new(),
     class_list_wrappers: HashMap::new(),
     live_collections: Vec::new(),
@@ -2509,4 +2564,90 @@ fn install_accessor(
     accessor_desc_get_set(Value::Object(get_func), Value::Object(set_func)),
   )?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use selectors::context::QuirksMode;
+  use std::cell::RefCell;
+  use std::rc::Rc;
+  use vm_js::{Heap, HeapLimits, PropertyKey, PropertyKind, Realm, Value, Vm, VmError, VmOptions};
+
+  fn get_accessor_getter(heap: &Heap, obj: vm_js::GcObject, key: &PropertyKey) -> Option<Value> {
+    heap
+      .get_property(obj, key)
+      .ok()
+      .flatten()
+      .and_then(|desc| match desc.kind {
+        PropertyKind::Accessor { get, .. } => Some(get),
+        PropertyKind::Data { .. } => None,
+      })
+  }
+
+  fn get_accessor_setter(heap: &Heap, obj: vm_js::GcObject, key: &PropertyKey) -> Option<Value> {
+    heap
+      .get_property(obj, key)
+      .ok()
+      .flatten()
+      .and_then(|desc| match desc.kind {
+        PropertyKind::Accessor { set, .. } => Some(set),
+        PropertyKind::Data { .. } => None,
+      })
+  }
+
+  #[test]
+  fn document_cookie_round_trip_is_deterministic() -> Result<(), VmError> {
+    let limits = HeapLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024);
+    let mut heap = Heap::new(limits);
+    let mut vm = Vm::new(VmOptions::default());
+    let mut realm = Realm::new(&mut vm, &mut heap)?;
+
+    let dom = Rc::new(RefCell::new(Document::new(QuirksMode::NoQuirks)));
+    let current_script = Rc::new(RefCell::new(CurrentScriptState::default()));
+    install_dom_bindings(&mut vm, &mut heap, &realm, dom, current_script)?;
+
+    let mut scope = heap.scope();
+
+    let key_document = PropertyKey::from_string(scope.alloc_string("document")?);
+    let document_val = scope
+      .heap()
+      .object_get_own_data_property_value(realm.global_object(), &key_document)?
+      .expect("globalThis.document should exist");
+    let document_obj = match document_val {
+      Value::Object(o) => o,
+      other => panic!("expected document object, got {other:?}"),
+    };
+
+    let key_cookie = PropertyKey::from_string(scope.alloc_string("cookie")?);
+    let cookie_get = get_accessor_getter(scope.heap(), document_obj, &key_cookie)
+      .expect("document.cookie getter should exist");
+    let cookie_set = get_accessor_setter(scope.heap(), document_obj, &key_cookie)
+      .expect("document.cookie setter should exist");
+
+    let cookie = vm.call_without_host(&mut scope, cookie_get, document_val, &[])?;
+    let Value::String(cookie_s) = cookie else {
+      panic!("expected cookie string, got {cookie:?}");
+    };
+    assert!(scope.heap().get_string(cookie_s)?.to_utf8_lossy().is_empty());
+
+    let b = Value::String(scope.alloc_string("b=c; Path=/")?);
+    vm.call_without_host(&mut scope, cookie_set, document_val, &[b])?;
+    let a = Value::String(scope.alloc_string("a=b")?);
+    vm.call_without_host(&mut scope, cookie_set, document_val, &[a])?;
+
+    let cookie = vm.call_without_host(&mut scope, cookie_get, document_val, &[])?;
+    let Value::String(cookie_s) = cookie else {
+      panic!("expected cookie string, got {cookie:?}");
+    };
+    assert_eq!(
+      scope.heap().get_string(cookie_s)?.to_utf8_lossy(),
+      "a=b; b=c"
+    );
+
+    drop(scope);
+    realm.teardown(&mut heap);
+    Ok(())
+  }
 }

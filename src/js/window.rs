@@ -351,4 +351,26 @@ mod tests {
     assert!(matches!(get_global_prop(&mut host, "__x"), Value::Number(n) if n == 2.0));
     Ok(())
   }
+
+  #[test]
+  fn document_cookie_round_trip_is_deterministic() -> Result<()> {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut host = WindowHost::new(dom, "https://example.invalid/")?;
+
+    host.exec_script("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
+
+    let cookie = host.exec_script("document.cookie")?;
+    let Value::String(cookie_str) = cookie else {
+      panic!("expected document.cookie to return a string, got {cookie:?}");
+    };
+    let got = host
+      .host()
+      .window()
+      .heap()
+      .get_string(cookie_str)
+      .expect("heap should contain cookie string")
+      .to_utf8_lossy();
+    assert_eq!(got, "a=b; b=c");
+    Ok(())
+  }
 }

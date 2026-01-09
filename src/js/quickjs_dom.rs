@@ -10,6 +10,7 @@
 
 use crate::dom::HTML_NAMESPACE;
 use crate::dom2::{DomError, Document, NodeId, NodeKind};
+use crate::js::cookie_jar::CookieJar;
 use rquickjs::{Ctx, Function};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -136,7 +137,14 @@ const DOM_BOOTSTRAP: &str = r#"
     }
   }
 
-  class Document extends Node {}
+  class Document extends Node {
+    get cookie() {
+      return __dom_cookie_get();
+    }
+    set cookie(v) {
+      __dom_cookie_set(String(v));
+    }
+  }
   class DocumentFragment extends Node {}
 
   class Element extends Node {
@@ -228,6 +236,22 @@ const DOM_BOOTSTRAP: &str = r#"
 /// - `Node`, `Element`, `Document`, `Text` constructors with basic prototype properties
 pub fn install_dom2_bindings<'js>(ctx: Ctx<'js>, dom: SharedDom2Document) -> rquickjs::Result<()> {
   let globals = ctx.globals();
+  let cookie_jar: Rc<RefCell<CookieJar>> = Rc::new(RefCell::new(CookieJar::new()));
+
+  // -- Cookies ---------------------------------------------------------------
+  {
+    let cookie_jar = Rc::clone(&cookie_jar);
+    let f = Function::new(ctx.clone(), move || cookie_jar.borrow().cookie_string())?;
+    globals.set("__dom_cookie_get", f)?;
+  }
+  {
+    let cookie_jar = Rc::clone(&cookie_jar);
+    let f = Function::new(ctx.clone(), move |value: String| -> rquickjs::Result<()> {
+      cookie_jar.borrow_mut().set_cookie_string(&value);
+      Ok(())
+    })?;
+    globals.set("__dom_cookie_set", f)?;
+  }
 
   // -- Node identity + shape -------------------------------------------------
 
@@ -847,4 +871,33 @@ fn text_content(dom: &Document, root: NodeId) -> String {
   }
 
   out
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use rquickjs::{Context, Runtime};
+  use selectors::context::QuirksMode;
+  use std::cell::RefCell;
+  use std::rc::Rc;
+
+  #[test]
+  fn document_cookie_round_trip_is_deterministic() {
+    let dom = Document::new(QuirksMode::NoQuirks);
+    let dom: SharedDom2Document = Rc::new(RefCell::new(dom));
+
+    let rt = Runtime::new().expect("quickjs runtime");
+    let ctx = Context::full(&rt).expect("quickjs context");
+
+    ctx
+      .with(|ctx| -> rquickjs::Result<()> {
+        install_dom2_bindings(ctx.clone(), Rc::clone(&dom))?;
+        ctx.eval::<(), _>("document.cookie = 'b=c; Path=/'; document.cookie = 'a=b';")?;
+        let cookie: String = ctx.eval("document.cookie")?;
+        assert_eq!(cookie, "a=b; b=c");
+        Ok(())
+      })
+      .expect("js eval");
+  }
 }

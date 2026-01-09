@@ -18,6 +18,7 @@
 
 pub mod dom_scripts;
 pub mod dom_host;
+pub mod cookie_jar;
 pub mod dom2_bindings;
 pub mod dom_integration;
 pub mod clock;
