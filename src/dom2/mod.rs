@@ -11,6 +11,7 @@ mod error;
 pub mod import;
 pub mod events;
 mod traversal;
+mod shadow_dom;
 
 pub use error::DomError;
 
