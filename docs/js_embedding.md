@@ -290,7 +290,7 @@ bash scripts/cargo_agent.sh xtask js wpt-dom
 Run only the smoke subset:
 
 ```bash
-scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
+bash scripts/cargo_agent.sh xtask js wpt-dom --suite smoke --fail-on none
 ```
 
 By default it writes a JSON report to `target/js/wpt_dom.json` and classifies known gaps via
