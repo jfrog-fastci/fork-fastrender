@@ -3036,8 +3036,17 @@ impl<'a> LineBuilder<'a> {
       );
     }
 
-    // Check if item fits
-    if self.current_x + item_width <= line_width {
+    // Check if item fits.
+    //
+    // Text advances come from shaping and can contain fractional values. In practice we sometimes
+    // compare values that were rounded/truncated through different code paths (e.g. Taffy
+    // constraints vs shaped glyph advances) and end up with a tiny "doesn't fit" overflow that
+    // triggers an unexpected line break (notably in narrow ad placeholders).
+    //
+    // Allow a small epsilon for breakable inline items (text / inline boxes) so subpixel rounding
+    // differences don't split a word into multiple lines.
+    let fit_eps = if item.is_breakable() { 0.5 } else { 0.0 };
+    if self.current_x + item_width <= line_width + fit_eps {
       // Item fits
       self.place_item_with_width(item, item_width);
     } else if item.is_breakable() {

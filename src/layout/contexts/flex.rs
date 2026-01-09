@@ -7207,6 +7207,8 @@ impl FlexFormattingContext {
       layout_height: f32,
       target_width: f32,
       target_height: f32,
+      raw_layout_width: f32,
+      raw_layout_height: f32,
     }
 
     #[derive(Clone)]
@@ -7248,6 +7250,78 @@ impl FlexFormattingContext {
     let rect_w = rect.width();
     let rect_h = rect.height();
     let eps = 0.01;
+    let main_axis_positive_container = if main_axis_is_row {
+      inline_positive
+    } else {
+      block_positive
+    };
+    let justify_content = match (box_node.style.justify_content, main_axis_positive_container) {
+      (JustifyContent::Start, false) => JustifyContent::End,
+      (JustifyContent::End, false) => JustifyContent::Start,
+      (value, _) => value,
+    };
+    let adjust_zero_main_axis_location = |loc: f32, resolved_main_size: f32| -> f32 {
+      if !loc.is_finite() || !resolved_main_size.is_finite() || resolved_main_size <= eps {
+        return loc;
+      }
+
+      let offset = match justify_content {
+        JustifyContent::Start => 0.0,
+        JustifyContent::End => resolved_main_size,
+        JustifyContent::Center | JustifyContent::SpaceAround | JustifyContent::SpaceEvenly => {
+          resolved_main_size / 2.0
+        }
+        JustifyContent::FlexStart | JustifyContent::SpaceBetween => {
+          if main_grows_positive {
+            0.0
+          } else {
+            resolved_main_size
+          }
+        }
+        JustifyContent::FlexEnd => {
+          if main_grows_positive {
+            resolved_main_size
+          } else {
+            0.0
+          }
+        }
+      };
+
+      loc - offset
+    };
+    let cross_axis_positive_container = if main_axis_is_row {
+      block_positive
+    } else {
+      inline_positive
+    };
+    let normalize_cross_align = |align: AlignItems| match (align, cross_axis_positive_container) {
+      (AlignItems::Start, false) => AlignItems::End,
+      (AlignItems::End, false) => AlignItems::Start,
+      (AlignItems::SelfStart, false) => AlignItems::SelfEnd,
+      (AlignItems::SelfEnd, false) => AlignItems::SelfStart,
+      (AlignItems::FlexStart, false) => AlignItems::FlexEnd,
+      (AlignItems::FlexEnd, false) => AlignItems::FlexStart,
+      (value, _) => value,
+    };
+    let container_cross_align = normalize_cross_align(box_node.style.align_items);
+    let adjust_zero_cross_axis_location =
+      |loc: f32, resolved_cross_size: f32, align: AlignItems| -> f32 {
+        if !loc.is_finite()
+          || !resolved_cross_size.is_finite()
+          || resolved_cross_size <= eps
+        {
+          return loc;
+        }
+
+        let offset = match align {
+          AlignItems::Center => resolved_cross_size / 2.0,
+          AlignItems::End | AlignItems::SelfEnd | AlignItems::FlexEnd => resolved_cross_size,
+          AlignItems::Start | AlignItems::SelfStart | AlignItems::FlexStart => 0.0,
+          AlignItems::Baseline | AlignItems::Stretch => 0.0,
+        };
+
+        loc - offset
+      };
 
     let mut child_metrics: Vec<Option<ChildMetrics>> = vec![None; child_count];
     let mut child_plans: Vec<ChildPlan> = vec![ChildPlan::Skip; child_count];
@@ -7373,6 +7447,8 @@ impl FlexFormattingContext {
         layout_height,
         target_width,
         target_height,
+        raw_layout_width,
+        raw_layout_height,
       });
 
       let skip_contents = match child_box.style.content_visibility {
@@ -7816,6 +7892,13 @@ impl FlexFormattingContext {
       let layout_height = metrics.layout_height;
       let target_width = metrics.target_width;
       let target_height = metrics.target_height;
+      let raw_layout_width = metrics.raw_layout_width;
+      let raw_layout_height = metrics.raw_layout_height;
+      let child_cross_align = child_box
+        .style
+        .align_self
+        .map(normalize_cross_align)
+        .unwrap_or(container_cross_align);
 
       let mut final_fragment: Option<FragmentNode> = None;
       let mut store_remembered_size = false;
@@ -7870,6 +7953,58 @@ impl FlexFormattingContext {
           if allow_height_fallback && resolved_height <= eps {
             resolved_height = target_height;
           }
+          let raw_main_size = if main_axis_is_horizontal {
+            raw_layout_width
+          } else {
+            raw_layout_height
+          };
+          let resolved_main_size = if main_axis_is_horizontal {
+            resolved_width
+          } else {
+            resolved_height
+          };
+          let raw_cross_size = if main_axis_is_horizontal {
+            raw_layout_height
+          } else {
+            raw_layout_width
+          };
+          let resolved_cross_size = if main_axis_is_horizontal {
+            resolved_height
+          } else {
+            resolved_width
+          };
+          let (child_loc_x, child_loc_y) =
+            if raw_main_size <= eps && resolved_main_size > eps {
+              if main_axis_is_horizontal {
+                (
+                  adjust_zero_main_axis_location(child_loc_x, resolved_width),
+                  child_loc_y,
+                )
+              } else {
+                (
+                  child_loc_x,
+                  adjust_zero_main_axis_location(child_loc_y, resolved_height),
+                )
+              }
+            } else {
+              (child_loc_x, child_loc_y)
+            };
+          let (child_loc_x, child_loc_y) =
+            if raw_cross_size <= eps && resolved_cross_size > eps {
+              if main_axis_is_horizontal {
+                (
+                  child_loc_x,
+                  adjust_zero_cross_axis_location(child_loc_y, resolved_height, child_cross_align),
+                )
+              } else {
+                (
+                  adjust_zero_cross_axis_location(child_loc_x, resolved_width, child_cross_align),
+                  child_loc_y,
+                )
+              }
+            } else {
+              (child_loc_x, child_loc_y)
+            };
           let mut origin_x = child_loc_x;
           let mut origin_y = child_loc_y;
           if main_axis_is_horizontal && rect.height().is_finite() {
@@ -8050,6 +8185,48 @@ impl FlexFormattingContext {
             || (!main_axis_is_row && layout_height <= eps)
           {
             if let Some((mut mc_fragment, mc_size)) = output.max_content {
+              let (child_loc_x, child_loc_y) = if main_axis_is_row
+                && layout_width <= eps
+                && mc_size.width > eps
+              {
+                (
+                  adjust_zero_main_axis_location(child_loc_x, mc_size.width),
+                  child_loc_y,
+                )
+              } else if !main_axis_is_row && layout_height <= eps && mc_size.height > eps {
+                (
+                  child_loc_x,
+                  adjust_zero_main_axis_location(child_loc_y, mc_size.height),
+                )
+              } else {
+                (child_loc_x, child_loc_y)
+              };
+              let raw_cross_size = if main_axis_is_horizontal {
+                raw_layout_height
+              } else {
+                raw_layout_width
+              };
+              let resolved_cross_size = if main_axis_is_horizontal {
+                mc_size.height
+              } else {
+                mc_size.width
+              };
+              let (child_loc_x, child_loc_y) =
+                if raw_cross_size <= eps && resolved_cross_size > eps {
+                  if main_axis_is_horizontal {
+                    (
+                      child_loc_x,
+                      adjust_zero_cross_axis_location(child_loc_y, mc_size.height, child_cross_align),
+                    )
+                  } else {
+                    (
+                      adjust_zero_cross_axis_location(child_loc_x, mc_size.width, child_cross_align),
+                      child_loc_y,
+                    )
+                  }
+                } else {
+                  (child_loc_x, child_loc_y)
+                };
               let mut origin = Point::new(child_loc_x, child_loc_y);
               if main_axis_is_row {
                 let same_row = last_layout_y
@@ -8095,13 +8272,64 @@ impl FlexFormattingContext {
             if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
               resolved_width = intrinsic_size.width;
             }
-            if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
-              resolved_height = intrinsic_size.height;
-            }
-            let mut origin_x = child_loc_x;
-            let mut origin_y = child_loc_y;
-            if main_axis_is_horizontal && rect.height().is_finite() {
-              let limit = rect.height().max(1.0) * 5.0;
+             if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
+               resolved_height = intrinsic_size.height;
+             }
+             let raw_main_size = if main_axis_is_horizontal {
+               raw_layout_width
+             } else {
+               raw_layout_height
+             };
+              let resolved_main_size = if main_axis_is_horizontal {
+                resolved_width
+              } else {
+                resolved_height
+              };
+              let (child_loc_x, child_loc_y) = if raw_main_size <= eps && resolved_main_size > eps {
+                if main_axis_is_horizontal {
+                  (
+                    adjust_zero_main_axis_location(child_loc_x, resolved_width),
+                    child_loc_y,
+                  )
+                } else {
+                  (
+                    child_loc_x,
+                    adjust_zero_main_axis_location(child_loc_y, resolved_height),
+                  )
+                }
+              } else {
+                (child_loc_x, child_loc_y)
+              };
+              let raw_cross_size = if main_axis_is_horizontal {
+                raw_layout_height
+              } else {
+                raw_layout_width
+              };
+              let resolved_cross_size = if main_axis_is_horizontal {
+                resolved_height
+              } else {
+                resolved_width
+              };
+              let (child_loc_x, child_loc_y) =
+                if raw_cross_size <= eps && resolved_cross_size > eps {
+                  if main_axis_is_horizontal {
+                    (
+                      child_loc_x,
+                      adjust_zero_cross_axis_location(child_loc_y, resolved_height, child_cross_align),
+                    )
+                  } else {
+                    (
+                      adjust_zero_cross_axis_location(child_loc_x, resolved_width, child_cross_align),
+                      child_loc_y,
+                    )
+                  }
+                } else {
+                  (child_loc_x, child_loc_y)
+                };
+              let mut origin_x = child_loc_x;
+              let mut origin_y = child_loc_y;
+              if main_axis_is_horizontal && rect.height().is_finite() {
+                let limit = rect.height().max(1.0) * 5.0;
               if origin_y.abs() > limit {
                 origin_y = rect.origin.y;
               }

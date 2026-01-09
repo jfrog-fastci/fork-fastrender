@@ -3615,6 +3615,10 @@ fn create_pseudo_element_box(
   };
 
   let pseudo_style = Arc::clone(styles);
+  // Generated content items behave like anonymous child boxes of the pseudo-element. They inherit
+  // inheritable properties (font, color, etc.) from the pseudo-element but should not copy
+  // layout-affecting properties like `display` or `position`.
+  let generated_content_style = Arc::new(crate::tree::anonymous::inherited_style(&pseudo_style));
 
   let mut context = ContentContext::new();
   for (name, value) in styled.node.attributes_iter() {
@@ -3631,14 +3635,14 @@ fn create_pseudo_element_box(
   let mut text_buf = String::new();
 
   let flush_text = |buf: &mut String,
-                    pseudo_style: &Arc<ComputedStyle>,
+                    text_style: &Arc<ComputedStyle>,
                     generated_pseudo: Option<GeneratedPseudoElement>,
                     out: &mut Vec<BoxNode>| {
     if buf.is_empty() {
       return;
     }
     let text = std::mem::take(buf);
-    let mut text_box = BoxNode::new_text(pseudo_style.clone(), text);
+    let mut text_box = BoxNode::new_text(text_style.clone(), text);
     text_box.styled_node_id = Some(styled.node_id);
     text_box.generated_pseudo = generated_pseudo;
     out.push(text_box);
@@ -3711,12 +3715,12 @@ fn create_pseudo_element_box(
         }
         flush_text(
           &mut text_buf,
-          &pseudo_style,
+          &generated_content_style,
           generated_pseudo,
           &mut children,
         );
         let mut replaced_node = BoxNode::new_replaced(
-          pseudo_style.clone(),
+          generated_content_style.clone(),
           ReplacedType::Image {
             src: url.clone(),
             alt: None,
@@ -3731,7 +3735,6 @@ fn create_pseudo_element_box(
         );
         replaced_node.styled_node_id = Some(styled.node_id);
         replaced_node.generated_pseudo = generated_pseudo;
-        replaced_node.starting_style = starting_style.clone();
         children.push(replaced_node);
       }
     }
@@ -3739,7 +3742,7 @@ fn create_pseudo_element_box(
 
   flush_text(
     &mut text_buf,
-    &pseudo_style,
+    &generated_content_style,
     generated_pseudo,
     &mut children,
   );
