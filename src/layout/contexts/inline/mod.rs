@@ -4430,6 +4430,7 @@ impl InlineFormattingContext {
       font_size: used_font_size,
       baseline_shift: 0.0,
       language: None,
+      features: Arc::from(Vec::new()),
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: crate::text::pipeline::RunRotation::None,

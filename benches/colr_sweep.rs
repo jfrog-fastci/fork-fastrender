@@ -60,6 +60,7 @@ fn shaped_run(font: &LoadedFont, ch: char, font_size: f32, palette_index: u16) -
     font_size,
     baseline_shift: 0.0,
     language: None,
+    features: Arc::from(Vec::new()),
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,

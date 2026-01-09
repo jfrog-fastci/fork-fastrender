@@ -16823,6 +16823,7 @@ mod tests {
       font_size: style.font_size,
       baseline_shift: 0.0,
       language: None,
+      features: Arc::from(Vec::new()),
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,

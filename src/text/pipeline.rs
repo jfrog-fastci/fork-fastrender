@@ -5288,6 +5288,8 @@ pub struct ShapedRun {
   pub baseline_shift: f32,
   /// Language set on the shaping buffer (if provided).
   pub language: Option<HbLanguage>,
+  /// OpenType features applied when shaping this run.
+  pub features: Arc<[Feature]>,
   /// Synthetic bold stroke width in pixels (0 = none).
   pub synthetic_bold: f32,
   /// Synthetic oblique shear factor (tan(angle); 0 = none).
@@ -5485,6 +5487,7 @@ fn synthesize_notdef_run(run: &FontRun) -> ShapedRun {
     font_size: run.font_size,
     baseline_shift,
     language: run.language.clone(),
+    features: Arc::clone(&run.features),
     synthetic_bold: run.synthetic_bold,
     synthetic_oblique: run.synthetic_oblique,
     rotation: run.rotation,
@@ -5628,6 +5631,10 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
 
   // Shape the text
   let output = rustybuzz::shape(rb_face.as_face(), features.as_ref(), buffer);
+  let features_used: Arc<[Feature]> = match features {
+    Cow::Borrowed(_) => Arc::clone(&run.features),
+    Cow::Owned(vec) => vec.into_boxed_slice().into(),
+  };
 
   // Calculate scale factor
   let units_per_em = rb_face.as_face().units_per_em() as f32;
@@ -5747,6 +5754,7 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
     font_size: run.font_size,
     baseline_shift,
     language,
+    features: features_used,
     synthetic_bold: run.synthetic_bold,
     synthetic_oblique: run.synthetic_oblique,
     rotation: run.rotation,
@@ -7178,6 +7186,7 @@ mod tests {
       font_size: 16.0,
       baseline_shift: 0.0,
       language: None,
+      features: Arc::from(Vec::new()),
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: RunRotation::None,
@@ -8456,6 +8465,7 @@ mod tests {
         font_size: 16.0,
         baseline_shift: 0.0,
         language: None,
+        features: Arc::from(Vec::new()),
         synthetic_bold: 0.0,
         synthetic_oblique: 0.0,
         rotation: RunRotation::None,

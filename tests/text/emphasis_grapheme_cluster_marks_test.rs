@@ -60,6 +60,7 @@ fn text_emphasis_marks_follow_grapheme_clusters_even_when_harfbuzz_clusters_span
     font_size: 16.0,
     baseline_shift: 0.0,
     language: None,
+    features: Arc::from(Vec::new()),
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,
@@ -107,4 +108,3 @@ fn text_emphasis_marks_follow_grapheme_clusters_even_when_harfbuzz_clusters_span
     "expected two emphasis marks for two grapheme clusters in \"fi\""
   );
 }
-

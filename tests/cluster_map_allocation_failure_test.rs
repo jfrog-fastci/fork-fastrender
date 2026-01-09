@@ -100,6 +100,7 @@ fn synthetic_shaped_run(char_count: usize) -> ShapedRun {
     font_size: 16.0,
     baseline_shift: 0.0,
     language: None,
+    features: Arc::from(Vec::new()),
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,

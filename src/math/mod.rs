@@ -7,6 +7,7 @@
 use crate::dom::{DomNode, DomNodeType, MATHML_NAMESPACE};
 use crate::geometry::{Point, Rect, Size};
 use crate::style::types::FontStyle as CssFontStyle;
+use crate::style::types::FontFeatureSetting;
 use crate::style::types::FontWeight as CssFontWeight;
 use crate::style::ComputedStyle;
 use crate::text::font_db::{FontStretch, FontStyle, LoadedFont, ScaledMetrics};
@@ -1532,6 +1533,7 @@ impl MathLayoutContext {
       font_size,
       baseline_shift: 0.0,
       language: None,
+      features: Arc::from(Vec::new()),
       synthetic_bold: 0.0,
       synthetic_oblique: 0.0,
       rotation: crate::text::pipeline::RunRotation::None,
@@ -2027,6 +2029,16 @@ impl MathLayoutContext {
     };
     if variant.is_bold() {
       style.font_weight = CssFontWeight::Bold;
+    }
+    if math_style.script_level > 0 {
+      let ssty_value = if math_style.script_level == 1 { 1 } else { 2 };
+      let mut feature_settings = style.font_feature_settings.as_ref().to_vec();
+      feature_settings.retain(|setting| setting.tag != *b"ssty");
+      feature_settings.push(FontFeatureSetting {
+        tag: *b"ssty",
+        value: ssty_value,
+      });
+      style.font_feature_settings = feature_settings.into();
     }
 
     let metrics = self.base_font_metrics(&style, style.font_size);
@@ -3658,6 +3670,46 @@ mod tests {
       "mspace must not affect row baseline: {} vs {}",
       with_layout.baseline,
       without_layout.baseline
+    );
+  }
+
+  #[test]
+  fn scripted_runs_enable_ssty_feature() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    let mut style = ComputedStyle::default();
+    style.font_size = 24.0;
+    style.font_family = vec!["STIX Two Math".to_string()].into();
+    let node = parse_math_from_html("<math><msup><mi>x</mi><mi>i</mi></msup></math>");
+    let layout = layout_mathml(&node, &style, &ctx);
+
+    let mut base_run: Option<&ShapedRun> = None;
+    let mut script_run: Option<&ShapedRun> = None;
+    for frag in &layout.fragments {
+      if let MathFragment::Glyph { run, .. } = frag {
+        if base_run.is_none() && run.text == "x" {
+          base_run = Some(run);
+        } else if script_run.is_none() && run.text == "i" {
+          script_run = Some(run);
+        }
+      }
+    }
+    let base_run = base_run.expect("base run");
+    let script_run = script_run.expect("script run");
+
+    let script_ssty = script_run
+      .features
+      .iter()
+      .find(|f| f.tag.to_bytes() == *b"ssty")
+      .map(|f| f.value);
+    assert!(
+      script_ssty.unwrap_or(0) >= 1,
+      "expected superscript to enable ssty feature, got {:?}",
+      script_ssty
+    );
+
+    assert!(
+      base_run.features.iter().all(|f| f.tag.to_bytes() != *b"ssty"),
+      "base run should not set ssty"
     );
   }
 

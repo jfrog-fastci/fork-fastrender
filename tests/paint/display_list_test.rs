@@ -931,6 +931,7 @@ fn sideways_writing_mode_emits_vertical_text_and_decorations() {
     font_size: 16.0,
     baseline_shift: 0.0,
     language: None,
+    features: Arc::from(Vec::new()),
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     // Sideways writing modes keep horizontal shaping but rotate the run during paint.
@@ -1012,6 +1013,7 @@ fn vertical_text_underline_position_respects_left_right() {
     font_size,
     baseline_shift: 0.0,
     language: None,
+    features: Arc::from(Vec::new()),
     synthetic_bold: 0.0,
     synthetic_oblique: 0.0,
     rotation: RunRotation::None,
