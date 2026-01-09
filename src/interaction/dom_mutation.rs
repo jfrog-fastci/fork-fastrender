@@ -174,6 +174,73 @@ pub fn set_visited(node: &mut DomNode, enabled: bool) {
   }
 }
 
+pub fn mark_user_validity(node: &mut DomNode) -> bool {
+  set_attr(node, "data-fastr-user-validity", "true")
+}
+
+fn trim_ascii_whitespace(value: &str) -> &str {
+  value.trim_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
+}
+
+fn is_form_element(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|t| t.eq_ignore_ascii_case("form") && is_html_element(node))
+}
+
+pub fn mark_form_user_validity(root: &mut DomNode, control_node_id: usize) -> bool {
+  let mut index = DomIndex::build(root);
+
+  let form_attr = index
+    .with_node_mut(control_node_id, |control| {
+      control
+        .is_element()
+        .then(|| control.get_attribute_ref("form").map(trim_ascii_whitespace))
+        .flatten()
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+    })
+    .flatten();
+
+  let mut form_owner_id = None;
+
+  if let Some(form_attr) = form_attr.as_deref() {
+    if let Some(id) = index.id_by_element_id.get(form_attr).copied() {
+      if index
+        .with_node_mut(id, |node| is_form_element(node))
+        .unwrap_or(false)
+      {
+        form_owner_id = Some(id);
+      }
+    }
+  }
+
+  if form_owner_id.is_none() {
+    let mut current = control_node_id;
+    while current != 0 {
+      current = *index.parent.get(current).unwrap_or(&0);
+      if current == 0 {
+        break;
+      }
+      if index
+        .with_node_mut(current, |node| is_form_element(node))
+        .unwrap_or(false)
+      {
+        form_owner_id = Some(current);
+        break;
+      }
+    }
+  }
+
+  let Some(form_id) = form_owner_id else {
+    return false;
+  };
+
+  index
+    .with_node_mut(form_id, |form| mark_user_validity(form))
+    .unwrap_or(false)
+}
+
 pub fn toggle_checkbox(node: &mut DomNode) -> bool {
   if !is_input_of_type(node, "checkbox") {
     return false;
@@ -192,6 +259,10 @@ pub fn toggle_checkbox(node: &mut DomNode) -> bool {
     .is_some_and(|v| v.eq_ignore_ascii_case("mixed"))
   {
     changed |= remove_attr(node, "aria-checked");
+  }
+
+  if changed {
+    changed |= mark_user_validity(node);
   }
 
   changed
@@ -392,6 +463,10 @@ pub fn activate_radio(root: &mut DomNode, radio_node_id: usize) -> bool {
 
   changed |= clear_checked_in_radio_group(group_root_ptr, target_ptr, &group_name);
 
+  if changed {
+    changed |= mark_user_validity(target);
+  }
+
   changed
 }
 
@@ -406,20 +481,28 @@ pub fn append_text_to_input(node: &mut DomNode, text: &str) -> bool {
     return false;
   }
 
-  let Some((attrs, is_html)) = node_attrs_mut(node) else {
-    return false;
+  let changed = {
+    let Some((attrs, is_html)) = node_attrs_mut(node) else {
+      return false;
+    };
+
+    if let Some((_, val)) = attrs
+      .iter_mut()
+      .find(|(k, _)| name_matches(k.as_str(), "value", is_html))
+    {
+      val.push_str(text);
+      true
+    } else {
+      attrs.push(("value".to_string(), text.to_string()));
+      true
+    }
   };
 
-  if let Some((_, val)) = attrs
-    .iter_mut()
-    .find(|(k, _)| name_matches(k.as_str(), "value", is_html))
-  {
-    val.push_str(text);
-    return true;
+  if changed {
+    let _ = mark_user_validity(node);
   }
 
-  attrs.push(("value".to_string(), text.to_string()));
-  true
+  changed
 }
 
 pub fn backspace_input(node: &mut DomNode) -> bool {
@@ -434,14 +517,17 @@ pub fn backspace_input(node: &mut DomNode) -> bool {
     return false;
   };
 
-  let Some((_, val)) = attrs
+  let changed = attrs
     .iter_mut()
     .find(|(k, _)| name_matches(k.as_str(), "value", is_html))
-  else {
-    return false;
-  };
+    .and_then(|(_, val)| val.pop())
+    .is_some();
 
-  val.pop().is_some()
+  if changed {
+    let _ = mark_user_validity(node);
+  }
+
+  changed
 }
 
 pub fn append_text_to_textarea(node: &mut DomNode, text: &str) -> bool {
@@ -458,7 +544,7 @@ pub fn append_text_to_textarea(node: &mut DomNode, text: &str) -> bool {
     return false;
   }
 
-  if let Some(last_text) = node.children.iter_mut().rev().find_map(|child| {
+  let changed = if let Some(last_text) = node.children.iter_mut().rev().find_map(|child| {
     if let DomNodeType::Text { content } = &mut child.node_type {
       Some(content)
     } else {
@@ -466,16 +552,22 @@ pub fn append_text_to_textarea(node: &mut DomNode, text: &str) -> bool {
     }
   }) {
     last_text.push_str(text);
-    return true;
+    true
+  } else {
+    node.children.push(DomNode {
+      node_type: DomNodeType::Text {
+        content: text.to_string(),
+      },
+      children: Vec::new(),
+    });
+    true
+  };
+
+  if changed {
+    let _ = mark_user_validity(node);
   }
 
-  node.children.push(DomNode {
-    node_type: DomNodeType::Text {
-      content: text.to_string(),
-    },
-    children: Vec::new(),
-  });
-  true
+  changed
 }
 
 pub fn backspace_textarea(node: &mut DomNode) -> bool {
@@ -489,15 +581,21 @@ pub fn backspace_textarea(node: &mut DomNode) -> bool {
     return false;
   }
 
+  let mut changed = false;
   for child in node.children.iter_mut().rev() {
     if let DomNodeType::Text { content } = &mut child.node_type {
       if content.pop().is_some() {
-        return true;
+        changed = true;
+        break;
       }
     }
   }
 
-  false
+  if changed {
+    let _ = mark_user_validity(node);
+  }
+
+  changed
 }
 
 /// Activate/select an `<option>` descendant of a `<select>` element.
@@ -575,54 +673,62 @@ pub fn activate_select_option(
     return false;
   }
 
-  if select_multiple && toggle_for_multiple {
+  let mut changed = if select_multiple && toggle_for_multiple {
     // Multiple-select toggle.
-    return index
+    index
       .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", !option_selected))
+      .unwrap_or(false)
+  } else {
+    // Replacement selection (single-select and non-toggle multiple-select).
+    if !select_multiple && option_selected {
+      // Spec-ish: activating an already-selected option in single-select is a no-op.
+      return false;
+    }
+
+    // Clear selected state from all other `<option>` descendants of this `<select>` (including under
+    // optgroups).
+    let mut changed = index
+      .with_node_mut(select_node_id, |select| {
+        // Avoid recursion for deeply nested `<optgroup>` trees.
+        let mut changed = false;
+        let mut stack: Vec<*mut DomNode> = vec![select as *mut DomNode];
+        while let Some(ptr) = stack.pop() {
+          // Safety: `select` is mutably borrowed for the duration of this traversal, and we never
+          // mutate `children` vectors (only element attributes), so raw pointers remain stable.
+          let current = unsafe { &mut *ptr };
+
+          if current.is_template_element() {
+            continue;
+          }
+          if ptr != option_ptr
+            && current
+              .tag_name()
+              .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(current))
+          {
+            changed |= remove_attr(current, "selected");
+          }
+
+          for child in current.children.iter_mut().rev() {
+            stack.push(child as *mut DomNode);
+          }
+        }
+        changed
+      })
+      .unwrap_or(false);
+
+    // Ensure the activated option is selected.
+    changed |= index
+      .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", true))
+      .unwrap_or(false);
+
+    changed
+  };
+
+  if changed {
+    changed |= index
+      .with_node_mut(select_node_id, |node| mark_user_validity(node))
       .unwrap_or(false);
   }
-
-  // Replacement selection (single-select and non-toggle multiple-select).
-  if !select_multiple && option_selected {
-    // Spec-ish: activating an already-selected option in single-select is a no-op.
-    return false;
-  }
-
-  // Clear selected state from all other `<option>` descendants of this `<select>` (including under
-  // optgroups).
-  let mut changed = index
-    .with_node_mut(select_node_id, |select| {
-      // Avoid recursion for deeply nested `<optgroup>` trees.
-      let mut changed = false;
-      let mut stack: Vec<*mut DomNode> = vec![select as *mut DomNode];
-      while let Some(ptr) = stack.pop() {
-        // Safety: `select` is mutably borrowed for the duration of this traversal, and we never
-        // mutate `children` vectors (only element attributes), so raw pointers remain stable.
-        let current = unsafe { &mut *ptr };
-
-        if current.is_template_element() {
-          continue;
-        }
-        if ptr != option_ptr
-          && current
-            .tag_name()
-            .is_some_and(|t| t.eq_ignore_ascii_case("option") && is_html_element(current))
-        {
-          changed |= remove_attr(current, "selected");
-        }
-
-        for child in current.children.iter_mut().rev() {
-          stack.push(child as *mut DomNode);
-        }
-      }
-      changed
-    })
-    .unwrap_or(false);
-
-  // Ensure the activated option is selected.
-  changed |= index
-    .with_node_mut(option_node_id, |node| set_bool_attr(node, "selected", true))
-    .unwrap_or(false);
 
   changed
 }

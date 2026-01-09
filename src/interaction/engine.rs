@@ -236,6 +236,12 @@ fn is_select(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
 }
 
+fn is_button(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+}
+
 fn input_type(node: &DomNode) -> &str {
   node.get_attribute_ref("type").unwrap_or("text")
 }
@@ -246,6 +252,19 @@ fn is_checkbox_input(node: &DomNode) -> bool {
 
 fn is_radio_input(node: &DomNode) -> bool {
   is_input(node) && input_type(node).eq_ignore_ascii_case("radio")
+}
+
+fn is_submit_input(node: &DomNode) -> bool {
+  is_input(node) && input_type(node).eq_ignore_ascii_case("submit")
+}
+
+fn button_type(node: &DomNode) -> &str {
+  // HTML <button> defaults to submit.
+  node.get_attribute_ref("type").unwrap_or("submit")
+}
+
+fn is_submit_button(node: &DomNode) -> bool {
+  is_button(node) && button_type(node).eq_ignore_ascii_case("submit")
 }
 
 fn is_text_input(node: &DomNode) -> bool {
@@ -903,6 +922,11 @@ impl InteractionEngine {
               }
             }
           }
+        } else if index.node(target_id).is_some_and(|node| {
+          is_submit_input(node) || is_submit_button(node)
+        }) {
+          // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
+          dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
         } else if index.node(target_id).is_some_and(is_focusable_text_control) {
           dom_changed |= self.set_focus(&mut index, Some(target_id), false);
         }
@@ -952,11 +976,15 @@ impl InteractionEngine {
         .to_string();
       let mut next = current;
       next.push_str(text);
-      changed |= set_node_attr(
+      let changed_value = set_node_attr(
         index.node_mut(focused).expect("node exists"),
         "value",
         &next,
       );
+      changed |= changed_value;
+      if changed_value {
+        changed |= dom_mutation::mark_user_validity(index.node_mut(focused).expect("node exists"));
+      }
       return changed;
     }
 
@@ -981,6 +1009,9 @@ impl InteractionEngine {
       };
       let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
       changed |= changed_value;
+      if changed_value {
+        changed |= dom_mutation::mark_user_validity(node_mut);
+      }
       if inserted {
         let new_ids = enumerate_dom_ids(dom);
         self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
@@ -1018,11 +1049,16 @@ impl InteractionEngine {
             .to_string();
           let mut next = current;
           if next.pop().is_some() {
-            changed |= set_node_attr(
+            let changed_value = set_node_attr(
               index.node_mut(focused).expect("node exists"),
               "value",
               &next,
             );
+            changed |= changed_value;
+            if changed_value {
+              changed |=
+                dom_mutation::mark_user_validity(index.node_mut(focused).expect("node exists"));
+            }
           }
         } else if index.node(focused).is_some_and(is_textarea) {
           if node_or_ancestor_is_inert(&index, focused)
@@ -1042,6 +1078,9 @@ impl InteractionEngine {
             if let Some(node_mut) = index.node_mut(focused) {
               let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
               changed |= changed_value;
+              if changed_value {
+                changed |= dom_mutation::mark_user_validity(node_mut);
+              }
               if inserted {
                 let new_ids = enumerate_dom_ids(dom);
                 self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
@@ -1069,6 +1108,9 @@ impl InteractionEngine {
           if let Some(node_mut) = index.node_mut(focused) {
             let (changed_value, inserted) = set_textarea_text_children_value(node_mut, &next);
             changed |= changed_value;
+            if changed_value {
+              changed |= dom_mutation::mark_user_validity(node_mut);
+            }
             if inserted {
               let new_ids = enumerate_dom_ids(dom);
               self.remap_engine_ids_after_dom_change(&old_index, &new_ids);
