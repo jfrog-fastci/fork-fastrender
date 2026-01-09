@@ -46,6 +46,18 @@ fn callback_interface_conversion_accepts_object_with_handle_event_method() {
 }
 
 #[test]
+fn callback_interface_conversion_accepts_branded_platform_object_without_handle_event() {
+  let mut rt = VmJsRuntime::new();
+  let obj = rt
+    .alloc_platform_object_value("EventListener", &[], 42)
+    .unwrap();
+
+  let ty = callback_interface_type("EventListener");
+  let got = convert_to_callback(&mut rt, obj, &ty).unwrap();
+  assert_eq!(got, obj);
+}
+
+#[test]
 fn callback_interface_conversion_rejects_non_callable_primitives() {
   let mut rt = VmJsRuntime::new();
   let ty = callback_interface_type("EventListener");

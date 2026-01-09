@@ -205,6 +205,20 @@ pub fn to_callback_interface<R: WebIdlJsRuntime>(
   }
 }
 
+/// Convert an ECMAScript value to a WebIDL interface type.
+///
+/// Spec: <https://webidl.spec.whatwg.org/#es-interface>
+pub fn to_interface<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  interface: &str,
+) -> Result<R::JsValue, R::Error> {
+  if rt.implements_interface(value, interface) {
+    return Ok(value);
+  }
+  Err(rt.throw_type_error("Value is not a platform object implementing the expected interface"))
+}
+
 fn convert_to_callback_internal<R: WebIdlJsRuntime>(
   rt: &mut R,
   value: R::JsValue,
@@ -229,7 +243,15 @@ fn convert_to_callback_internal<R: WebIdlJsRuntime>(
       NamedTypeKind::CallbackFunction => {
         to_callback_function(rt, value, legacy_treat_non_object_as_null)
       }
-      NamedTypeKind::CallbackInterface => to_callback_interface(rt, value),
+      NamedTypeKind::CallbackInterface => {
+        // Callback interfaces are normally structural (`handleEvent`) or callable. However, bindings
+        // generators may also treat embedding-defined platform objects as implementing callback
+        // interfaces, so accept those first.
+        if rt.implements_interface(value, &named.name) {
+          return Ok(value);
+        }
+        to_callback_interface(rt, value)
+      }
       _ => Err(rt.throw_type_error("Expected a callback function or callback interface type")),
     },
     _ => Err(rt.throw_type_error("Expected a callback function or callback interface type")),
@@ -247,6 +269,40 @@ pub fn convert_to_callback<R: WebIdlJsRuntime>(
   ty: &IdlType,
 ) -> Result<R::JsValue, R::Error> {
   convert_to_callback_internal(rt, value, ty, false)
+}
+
+fn convert_to_interface_internal<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  ty: &IdlType,
+) -> Result<R::JsValue, R::Error> {
+  match ty {
+    IdlType::Annotated { inner, .. } => convert_to_interface_internal(rt, value, inner),
+    IdlType::Nullable(inner) => {
+      if is_null_or_undefined(rt, value) {
+        return Ok(rt.js_null());
+      }
+      convert_to_interface_internal(rt, value, inner)
+    }
+    IdlType::Named(named) => match named.kind {
+      NamedTypeKind::Interface => to_interface(rt, value, &named.name),
+      _ => Err(rt.throw_type_error("Expected an interface type")),
+    },
+    _ => Err(rt.throw_type_error("Expected an interface type")),
+  }
+}
+
+/// Convert an ECMAScript value to a WebIDL interface type described by `ty`.
+///
+/// This helper supports `interface` types with optional `nullable` and `Annotated` wrappers. It
+/// returns the underlying engine value so bindings can retain the original JS wrapper (and then
+/// use [`WebIdlJsRuntime::platform_object_opaque`] to map it back to host data if needed).
+pub fn convert_to_interface<R: WebIdlJsRuntime>(
+  rt: &mut R,
+  value: R::JsValue,
+  ty: &IdlType,
+) -> Result<R::JsValue, R::Error> {
+  convert_to_interface_internal(rt, value, ty)
 }
 
 /// Invoke a previously-converted callback interface value.
