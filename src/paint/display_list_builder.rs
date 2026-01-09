@@ -10770,12 +10770,12 @@ impl DisplayListBuilder {
           } else {
             0.0
           };
-          let text_rect = Rect::from_xywh(
-            content_rect.x(),
-            content_rect.y(),
-            (content_rect.width() - scrollbar_width).max(0.0),
-            content_rect.height(),
-          );
+          let (text_rect, scrollbar_rect) = if scrollbar_width > 0.0 {
+            let (text, scrollbar) = Self::split_rect_inline_end(content_rect, style, scrollbar_width);
+            (text, Some(scrollbar))
+          } else {
+            (content_rect, None)
+          };
 
           let start_row = (scroll_y / row_height).floor().max(0.0) as usize;
           let end_row = ((scroll_y + viewport_height) / row_height)
@@ -10807,12 +10807,8 @@ impl DisplayListBuilder {
                 } else {
                   style.color.with_alpha(0.75)
                 };
-                let row_rect = Rect::from_xywh(
-                  row_rect.x() + 2.0,
-                  row_rect.y(),
-                  (row_rect.width() - 2.0).max(0.0),
-                  row_rect.height(),
-                );
+                // Indent optgroup labels on the inline-start side (mirrors in RTL).
+                let (_, row_rect) = Self::split_rect_inline_start(row_rect, style, 2.0);
                 let _ = self.emit_text_with_style_raw(label, Some(&row_style), row_rect);
               }
               SelectItem::Option {
@@ -10844,24 +10840,14 @@ impl DisplayListBuilder {
                   style.color
                 };
                 let indent = if *in_optgroup { 10.0 } else { 2.0 };
-                let row_rect = Rect::from_xywh(
-                  row_rect.x() + indent,
-                  row_rect.y(),
-                  (row_rect.width() - indent).max(0.0),
-                  row_rect.height(),
-                );
+                // Indent options on the inline-start side so nesting mirrors in RTL.
+                let (_, row_rect) = Self::split_rect_inline_start(row_rect, style, indent);
                 let _ = self.emit_text_with_style_raw(label, Some(&row_style), row_rect);
               }
             }
           }
 
-          if scrollbar_width > 0.0 && max_scroll_y > 0.0 && content_rect.height() > 0.0 {
-            let track_rect = Rect::from_xywh(
-              content_rect.max_x() - scrollbar_width,
-              content_rect.y(),
-              scrollbar_width,
-              content_rect.height(),
-            );
+          if let Some(track_rect) = scrollbar_rect.filter(|_| content_rect.height() > 0.0) {
             self.list.push(DisplayItem::FillRect(FillRectItem {
               rect: track_rect,
               color: Rgba::rgb(240, 240, 240),

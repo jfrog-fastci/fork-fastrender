@@ -37,6 +37,10 @@
     input[type="range"].control {
       margin-top: 6px;
     }
+
+    select.listbox.control {
+      height: 96px;
+    }
   </style>
 </head>
 <body>
@@ -46,6 +50,19 @@
       <select class="control">
         <option selected>Dropdown</option>
         <option>Second</option>
+      </select>
+      <select class="control listbox" size="5">
+        <optgroup label="Group">
+          <option>Alpha</option>
+          <option>Beta</option>
+          <option>Gamma</option>
+          <option>Delta</option>
+          <option>Epsilon</option>
+          <option>Zeta</option>
+        </optgroup>
+        <option selected>Standalone</option>
+        <option>More</option>
+        <option>Last</option>
       </select>
       <input class="control" type="number" value="12">
       <input class="control" type="date" value="2026-01-09">
@@ -58,6 +75,19 @@
       <select class="control">
         <option selected>Dropdown</option>
         <option>Second</option>
+      </select>
+      <select class="control listbox" size="5">
+        <optgroup label="Group">
+          <option>Alpha</option>
+          <option>Beta</option>
+          <option>Gamma</option>
+          <option>Delta</option>
+          <option>Epsilon</option>
+          <option>Zeta</option>
+        </optgroup>
+        <option selected>Standalone</option>
+        <option>More</option>
+        <option>Last</option>
       </select>
       <input class="control" type="number" value="12">
       <input class="control" type="date" value="2026-01-09">
