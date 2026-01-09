@@ -102,7 +102,6 @@ fn module_graph_loader_caches_loaded_modules_and_resolves_promise() -> Result<()
   }
 
   realm.teardown(&mut heap);
-
   Ok(())
 }
 
@@ -149,9 +148,8 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
   let module2 = modules.add_module(SourceTextModuleRecord::default());
 
   let request_dup = ModuleRequest::new("dup.js", vec![]);
-  let request_other = ModuleRequest::new("other.js", vec![]);
   let mut record = SourceTextModuleRecord::default();
-  record.requested_modules = vec![request_dup.clone(), request_other];
+  record.requested_modules = vec![request_dup.clone(), request_dup.clone()];
   let referrer = modules.add_module(record);
 
   let mut host = PendingHost::default();
@@ -175,17 +173,19 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
     assert_eq!(scope.heap().promise_state(promise_obj)?, PromiseState::Pending);
     assert_eq!(host.pending.len(), 2);
 
-    let pending_dup = host
-      .pending
-      .iter()
-      .find(|p| p.request.spec_equal(&request_dup))
-      .expect("host should have been invoked for dup.js")
-      .clone();
     let PendingLoad {
       referrer,
       request,
       payload,
-    } = pending_dup;
+    } = host.pending[0].clone();
+    assert!(request.spec_equal(&request_dup));
+
+    let PendingLoad {
+      referrer: referrer2,
+      request: request2,
+      payload: payload2,
+    } = host.pending[1].clone();
+    assert!(request2.spec_equal(&request_dup));
 
     // Complete the first load.
     finish_loading_imported_module(
@@ -207,9 +207,9 @@ fn module_graph_loader_rejects_duplicate_loaded_module_mismatch() -> Result<(), 
       &mut scope,
       &mut modules,
       &mut host,
-      referrer,
-      request,
-      payload,
+      referrer2,
+      request2,
+      payload2,
       Ok(module2),
     )?;
 
