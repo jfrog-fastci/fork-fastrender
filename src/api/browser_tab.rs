@@ -11,7 +11,7 @@ use crate::resource::{FetchDestination, FetchRequest};
 
 use std::collections::{HashMap, HashSet};
 
-use super::{BrowserDocumentDom2, Pixmap, PreparedDocumentReport, RenderOptions};
+use super::{BrowserDocumentDom2, Pixmap, RenderOptions};
 
 pub trait BrowserTabJsExecutor {
   fn execute_classic_script(
@@ -417,16 +417,10 @@ impl BrowserTab {
   }
 
   pub fn navigate_to_url(&mut self, url: &str, options: RenderOptions) -> Result<()> {
-    let report: PreparedDocumentReport = self
-      .host
-      .document
-      .renderer_mut()
-      .prepare_url(url, options.clone())?;
-    let PreparedDocumentReport { document, final_url, .. } = report;
-    self.host.document.reset_with_prepared(document, options);
+    let report = self.host.document.navigate_url(url, options)?;
     self.event_loop = EventLoop::new();
-    self.host.reset_scripting_state(final_url.clone());
-    self.discover_and_schedule_scripts(final_url.as_deref())
+    self.host.reset_scripting_state(report.final_url.clone());
+    self.discover_and_schedule_scripts(report.final_url.as_deref())
   }
 
   pub fn run_event_loop_until_idle(&mut self, limits: RunLimits) -> Result<RunUntilIdleOutcome> {
