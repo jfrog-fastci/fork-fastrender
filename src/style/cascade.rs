@@ -35220,7 +35220,11 @@ pub(crate) fn finalize_registered_custom_properties_with_bases(
       CustomPropertyTypedValue::Percentage(p) => CustomPropertyTypedValue::Percentage(*p),
       CustomPropertyTypedValue::Angle(deg) => CustomPropertyTypedValue::Angle(*deg),
       CustomPropertyTypedValue::Color(color) => {
-        let rgba = color.to_rgba_with_scheme(styles.color, styles.used_dark_color_scheme);
+        let rgba = color.to_rgba_with_scheme_and_forced_colors(
+          styles.color,
+          styles.used_dark_color_scheme,
+          styles.forced_colors,
+        );
         CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
       }
       CustomPropertyTypedValue::List { separator, items } => {

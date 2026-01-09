@@ -8918,7 +8918,11 @@ fn apply_declaration_with_base_internal_with_order(
         }
         if let PropertyValue::Keyword(kw) = value {
           if let Ok(color) = Color::parse(kw) {
-            return Some(color.to_rgba_with_scheme(styles.color, is_dark_color_scheme));
+            return Some(color.to_rgba_with_scheme_and_forced_colors(
+              styles.color,
+              is_dark_color_scheme,
+              styles.forced_colors,
+            ));
           }
         }
         None
@@ -14997,7 +15001,13 @@ fn apply_declaration_with_base_internal_with_order(
             color: shadow
               .color
               .as_ref()
-              .map(|c| c.to_rgba_with_scheme(styles.color, is_dark_color_scheme))
+              .map(|c| {
+                c.to_rgba_with_scheme_and_forced_colors(
+                  styles.color,
+                  is_dark_color_scheme,
+                  styles.forced_colors,
+                )
+              })
               .unwrap_or(styles.color),
             inset: shadow.inset,
           })
@@ -15018,7 +15028,11 @@ fn apply_declaration_with_base_internal_with_order(
             blur_radius: shadow.blur_radius,
             color: match shadow.color.as_ref() {
               None | Some(Color::CurrentColor) => None,
-              Some(c) => Some(c.to_rgba_with_scheme(styles.color, is_dark_color_scheme)),
+              Some(c) => Some(c.to_rgba_with_scheme_and_forced_colors(
+                styles.color,
+                is_dark_color_scheme,
+                styles.forced_colors,
+              )),
             },
           })
           .collect::<Vec<_>>()
@@ -15118,12 +15132,22 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "filter" => {
-      if let Some(filters) = parse_filter_list(resolved_value, styles.color, is_dark_color_scheme) {
+      if let Some(filters) = parse_filter_list(
+        resolved_value,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      ) {
         styles.filter = filters;
       }
     }
     "backdrop-filter" => {
-      if let Some(filters) = parse_filter_list(resolved_value, styles.color, is_dark_color_scheme) {
+      if let Some(filters) = parse_filter_list(
+        resolved_value,
+        styles.color,
+        is_dark_color_scheme,
+        styles.forced_colors,
+      ) {
         styles.backdrop_filter = filters;
       }
     }
@@ -18475,6 +18499,7 @@ fn parse_filter_list(
   value: &PropertyValue,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Option<Vec<FilterFunction>> {
   match value {
     PropertyValue::Url(url) => {
@@ -18531,7 +18556,9 @@ fn parse_filter_list(
     };
 
     let parsed = parser
-      .parse_nested_block(|block| parse_filter_function(&func_name, block, current_color, is_dark_color_scheme))
+      .parse_nested_block(|block| {
+        parse_filter_function(&func_name, block, current_color, is_dark_color_scheme, forced_colors)
+      })
       .ok()?;
     filters.push(parsed);
     parser.skip_whitespace();
@@ -18545,6 +18572,7 @@ fn parse_filter_function<'i, 't>(
   input: &mut Parser<'i, 't>,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Result<FilterFunction, cssparser::ParseError<'i, ()>> {
   fn parse_number_or_percentage_with_default<'i, 't>(
     input: &mut Parser<'i, 't>,
@@ -18668,7 +18696,7 @@ fn parse_filter_function<'i, 't>(
       let v = parse_number_or_percentage_with_default(input, 1.0)?;
       Ok(FilterFunction::Opacity(v))
     }
-    "drop-shadow" => parse_drop_shadow(input, current_color, is_dark_color_scheme),
+    "drop-shadow" => parse_drop_shadow(input, current_color, is_dark_color_scheme, forced_colors),
     _ => Err(input.new_custom_error(())),
   }
 }
@@ -19261,6 +19289,7 @@ fn parse_css_color_value<'i, 't>(
   input: &mut Parser<'i, 't>,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Result<FilterColor, cssparser::ParseError<'i, ()>> {
   let location = input.current_source_location();
   let token = input.next()?;
@@ -19287,7 +19316,7 @@ fn parse_css_color_value<'i, 't>(
   }
 
   Ok(FilterColor::Color(
-    parsed.to_rgba_with_scheme(current_color, is_dark_color_scheme),
+    parsed.to_rgba_with_scheme_and_forced_colors(current_color, is_dark_color_scheme, forced_colors),
   ))
 }
 
@@ -19295,6 +19324,7 @@ fn parse_drop_shadow<'i, 't>(
   input: &mut Parser<'i, 't>,
   current_color: Rgba,
   is_dark_color_scheme: bool,
+  forced_colors: bool,
 ) -> Result<FilterFunction, cssparser::ParseError<'i, ()>> {
   let mut lengths = Vec::new();
   let mut color: Option<FilterColor> = None;
@@ -19307,7 +19337,7 @@ fn parse_drop_shadow<'i, 't>(
 
     if color.is_none() {
       if let Ok(c) =
-        input.try_parse(|p| parse_css_color_value(p, current_color, is_dark_color_scheme))
+        input.try_parse(|p| parse_css_color_value(p, current_color, is_dark_color_scheme, forced_colors))
       {
         color = Some(c);
         continue;
@@ -32168,7 +32198,7 @@ mod tests {
   fn parses_filter_list_with_lengths_and_numbers() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "blur(4px) brightness(50%)".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     assert_eq!(filters.len(), 2);
     match &filters[0] {
@@ -32184,7 +32214,8 @@ mod tests {
   #[test]
   fn filter_none_returns_empty_list() {
     let filters =
-      parse_filter_list(&PropertyValue::Keyword("none".to_string()), Rgba::BLACK, false).expect("filters");
+      parse_filter_list(&PropertyValue::Keyword("none".to_string()), Rgba::BLACK, false, false)
+        .expect("filters");
     assert!(filters.is_empty());
   }
 
@@ -32192,7 +32223,7 @@ mod tests {
   fn parses_svg_url_filter() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "url(\"filters.svg#blur\")".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "filters.svg#blur"));
@@ -32200,7 +32231,12 @@ mod tests {
 
   #[test]
   fn parses_fragment_only_svg_url_filter() {
-    let filters = parse_filter_list(&PropertyValue::Keyword("url(#recolor)".to_string()), Rgba::BLACK, false)
+    let filters = parse_filter_list(
+      &PropertyValue::Keyword("url(#recolor)".to_string()),
+      Rgba::BLACK,
+      false,
+      false,
+    )
       .expect("filters");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "#recolor"));
@@ -32208,7 +32244,7 @@ mod tests {
 
   #[test]
   fn parses_filter_value_url_variant() {
-    let filters = parse_filter_list(&PropertyValue::Url("#recolor".to_string()), Rgba::BLACK, false)
+    let filters = parse_filter_list(&PropertyValue::Url("#recolor".to_string()), Rgba::BLACK, false, false)
       .expect("filters parsed");
     assert_eq!(filters.len(), 1);
     assert!(matches!(filters.first(), Some(FilterFunction::Url(url)) if url == "#recolor"));
@@ -32219,7 +32255,7 @@ mod tests {
     let parsed =
       crate::css::properties::parse_property_value("filter", "url(#recolor) opacity(0.5)")
         .expect("parsed");
-    let filters = parse_filter_list(&parsed, Rgba::BLACK, false).expect("filters");
+    let filters = parse_filter_list(&parsed, Rgba::BLACK, false, false).expect("filters");
     assert_eq!(filters.len(), 2);
     assert!(matches!(&filters[0], FilterFunction::Url(url) if url == "#recolor"));
     match &filters[1] {
@@ -32230,14 +32266,14 @@ mod tests {
 
   #[test]
   fn filter_url_empty_is_invalid() {
-    assert!(parse_filter_list(&PropertyValue::Url(String::new()), Rgba::BLACK, false).is_none());
+    assert!(parse_filter_list(&PropertyValue::Url(String::new()), Rgba::BLACK, false, false).is_none());
   }
 
   #[test]
   fn filter_arguments_default_when_omitted() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
             "blur() brightness() contrast() grayscale() sepia() saturate() invert() opacity() hue-rotate()".to_string(),
-        ), Rgba::BLACK, false)
+        ), Rgba::BLACK, false, false)
         .expect("filters");
     assert_eq!(filters.len(), 9);
     match &filters[0] {
@@ -32282,7 +32318,7 @@ mod tests {
   fn hue_rotate_accepts_calc_angles() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "hue-rotate(calc(1turn / 2))".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     match &filters[0] {
       FilterFunction::HueRotate(v) => assert!((*v - 180.0).abs() < 0.01),
@@ -32294,7 +32330,7 @@ mod tests {
   fn parses_drop_shadow_defaulting_to_current_color() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "drop-shadow(2px 3px 4px)".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     assert_eq!(filters.len(), 1);
     match &filters[0] {
@@ -32311,7 +32347,7 @@ mod tests {
   fn drop_shadow_accepts_spread_length() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "drop-shadow(1px 2px 3px 4px)".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     match &filters[0] {
       FilterFunction::DropShadow(shadow) => {
@@ -32326,7 +32362,7 @@ mod tests {
   fn parses_drop_shadow_with_rgba_color() {
     let filters = parse_filter_list(&PropertyValue::Keyword(
       "drop-shadow(0 0 0 2px rgba(20, 40, 80, 0.5))".to_string(),
-    ), Rgba::BLACK, false)
+    ), Rgba::BLACK, false, false)
     .expect("filters");
     assert_eq!(filters.len(), 1);
     match &filters[0] {
@@ -32430,13 +32466,14 @@ mod tests {
   #[test]
   fn filter_lengths_reject_percentages() {
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(10%)".to_string()), Rgba::BLACK, false).is_none(),
+      parse_filter_list(&PropertyValue::Keyword("blur(10%)".to_string()), Rgba::BLACK, false, false)
+        .is_none(),
       "percentage blur should be invalid"
     );
     assert!(
       parse_filter_list(&PropertyValue::Keyword(
         "drop-shadow(1px 2px 10%)".to_string()
-      ), Rgba::BLACK, false)
+      ), Rgba::BLACK, false, false)
       .is_none(),
       "percentage drop-shadow blur should be invalid"
     );
@@ -32445,18 +32482,20 @@ mod tests {
   #[test]
   fn negative_blur_lengths_are_invalid() {
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(-1px)".to_string()), Rgba::BLACK, false).is_none(),
+      parse_filter_list(&PropertyValue::Keyword("blur(-1px)".to_string()), Rgba::BLACK, false, false)
+        .is_none(),
       "negative blur should be invalid"
     );
     assert!(
       parse_filter_list(&PropertyValue::Keyword(
         "drop-shadow(1px 2px -5px)".to_string()
-      ), Rgba::BLACK, false)
+      ), Rgba::BLACK, false, false)
       .is_none(),
       "negative drop-shadow blur should be invalid"
     );
     assert!(
-      parse_filter_list(&PropertyValue::Keyword("blur(-0.5px)".to_string()), Rgba::BLACK, false).is_none(),
+      parse_filter_list(&PropertyValue::Keyword("blur(-0.5px)".to_string()), Rgba::BLACK, false, false)
+        .is_none(),
       "sub-pixel negative blur should still be rejected"
     );
   }

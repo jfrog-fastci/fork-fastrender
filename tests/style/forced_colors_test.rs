@@ -6,6 +6,8 @@ use fastrender::style::color::Rgba;
 use fastrender::style::color::SystemColor;
 use fastrender::style::media::ColorScheme;
 use fastrender::style::media::MediaContext;
+use fastrender::style::types::FilterColor;
+use fastrender::style::types::FilterFunction;
 use fastrender::style::types::OutlineColor;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -145,4 +147,62 @@ fn system_color_text_is_not_overridden_by_forced_colors_policy() {
   let styled = styled_with_forced_colors(css, true);
   let node = find_by_id(&styled, "t").expect("node");
   assert_eq!(node.styles.color, SystemColor::LinkText.to_rgba(false, true));
+}
+
+#[test]
+fn system_colors_in_box_shadow_use_forced_palette() {
+  let css = r#"
+    #t {
+      forced-color-adjust: none;
+      box-shadow: 1px 2px 3px 4px Highlight;
+    }
+  "#;
+
+  let unforced = styled_with_forced_colors(css, false);
+  let forced = styled_with_forced_colors(css, true);
+
+  let expected_unforced = SystemColor::Highlight.to_rgba(false, false);
+  let expected_forced = SystemColor::Highlight.to_rgba(false, true);
+
+  let unforced_node = find_by_id(&unforced, "t").expect("node");
+  assert_eq!(unforced_node.styles.box_shadow.len(), 1);
+  assert_eq!(unforced_node.styles.box_shadow[0].color, expected_unforced);
+
+  let forced_node = find_by_id(&forced, "t").expect("node");
+  assert_eq!(forced_node.styles.box_shadow.len(), 1);
+  assert_eq!(forced_node.styles.box_shadow[0].color, expected_forced);
+}
+
+#[test]
+fn system_colors_in_filter_drop_shadow_use_forced_palette() {
+  let css = r#"
+    #t {
+      forced-color-adjust: none;
+      filter: drop-shadow(1px 2px Highlight);
+    }
+  "#;
+
+  let unforced = styled_with_forced_colors(css, false);
+  let forced = styled_with_forced_colors(css, true);
+
+  let expected_unforced = SystemColor::Highlight.to_rgba(false, false);
+  let expected_forced = SystemColor::Highlight.to_rgba(false, true);
+
+  let unforced_node = find_by_id(&unforced, "t").expect("node");
+  assert_eq!(unforced_node.styles.filter.len(), 1);
+  match &unforced_node.styles.filter[0] {
+    FilterFunction::DropShadow(shadow) => {
+      assert_eq!(shadow.color, FilterColor::Color(expected_unforced));
+    }
+    other => panic!("expected drop-shadow, got {other:?}"),
+  }
+
+  let forced_node = find_by_id(&forced, "t").expect("node");
+  assert_eq!(forced_node.styles.filter.len(), 1);
+  match &forced_node.styles.filter[0] {
+    FilterFunction::DropShadow(shadow) => {
+      assert_eq!(shadow.color, FilterColor::Color(expected_forced));
+    }
+    other => panic!("expected drop-shadow, got {other:?}"),
+  }
 }

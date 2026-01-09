@@ -7375,7 +7375,11 @@ impl Painter {
               let current = color.unwrap_or(base_color);
               let paint_color = style_ref
                 .webkit_text_fill_color
-                .to_rgba_with_scheme(current, used_dark_color_scheme);
+                .to_rgba_with_scheme_and_forced_colors(
+                  current,
+                  used_dark_color_scheme,
+                  style_ref.forced_colors,
+                );
               let scaled_run = scale_run(run);
               let baseline_y = content_rect.y() + origin.y * scale_y;
               let start_x = content_rect.x() + origin.x * scale_x;
@@ -7393,7 +7397,11 @@ impl Painter {
               let current = color.unwrap_or(base_color);
               let paint_color = style_ref
                 .webkit_text_fill_color
-                .to_rgba_with_scheme(current, used_dark_color_scheme);
+                .to_rgba_with_scheme_and_forced_colors(
+                  current,
+                  used_dark_color_scheme,
+                  style_ref.forced_colors,
+                );
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + r.x() * scale_x,
                 content_rect.y() + r.y() * scale_y,
@@ -7430,7 +7438,11 @@ impl Painter {
               let current = color.unwrap_or(base_color);
               let paint_color = style_ref
                 .webkit_text_fill_color
-                .to_rgba_with_scheme(current, used_dark_color_scheme);
+                .to_rgba_with_scheme_and_forced_colors(
+                  current,
+                  used_dark_color_scheme,
+                  style_ref.forced_colors,
+                );
               let start = Point::new(
                 content_rect.x() + from.x * scale_x,
                 content_rect.y() + from.y * scale_y,
@@ -7479,7 +7491,11 @@ impl Painter {
               let current = color.unwrap_or(base_color);
               let paint_color = style_ref
                 .webkit_text_fill_color
-                .to_rgba_with_scheme(current, used_dark_color_scheme);
+                .to_rgba_with_scheme_and_forced_colors(
+                  current,
+                  used_dark_color_scheme,
+                  style_ref.forced_colors,
+                );
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + stroke_rect.x() * scale_x,
                 content_rect.y() + stroke_rect.y() * scale_y,
@@ -7544,7 +7560,11 @@ impl Painter {
               let current = color.unwrap_or(base_color);
               let paint_color = style_ref
                 .webkit_text_fill_color
-                .to_rgba_with_scheme(current, used_dark_color_scheme);
+                .to_rgba_with_scheme_and_forced_colors(
+                  current,
+                  used_dark_color_scheme,
+                  style_ref.forced_colors,
+                );
               let scaled_rect = Rect::from_xywh(
                 content_rect.x() + stroke_rect.x() * scale_x,
                 content_rect.y() + stroke_rect.y() * scale_y,
