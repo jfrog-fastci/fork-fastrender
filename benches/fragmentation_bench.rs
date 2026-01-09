@@ -29,7 +29,7 @@ fn bench_fragmentation(c: &mut Criterion) {
   c.bench_function("fragmentation_reuse_analyzer", |b| {
     b.iter(|| {
       let mut analyzer =
-        FragmentationAnalyzer::new(&root, FragmentationContext::Column, axes, None);
+        FragmentationAnalyzer::new(&root, FragmentationContext::Column, axes, false, None);
       let mut total = 0usize;
       for height in [140.0, 120.0, 160.0, 110.0, 150.0] {
         let boundaries = analyzer
@@ -46,7 +46,7 @@ fn bench_fragmentation(c: &mut Criterion) {
       let mut total = 0usize;
       for height in [140.0, 120.0, 160.0, 110.0, 150.0] {
         let mut analyzer =
-          FragmentationAnalyzer::new(&root, FragmentationContext::Column, axes, None);
+          FragmentationAnalyzer::new(&root, FragmentationContext::Column, axes, false, None);
         let boundaries = analyzer
           .boundaries(height, analyzer.content_extent().max(height))
           .unwrap();

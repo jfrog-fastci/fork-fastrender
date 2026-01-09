@@ -6,6 +6,7 @@ use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::style::color::Rgba;
 use fastrender::style::display::FormattingContextType;
+use fastrender::style::float::Float;
 use fastrender::style::types::BorderStyle;
 use fastrender::style::types::BreakBetween;
 use fastrender::style::types::BreakInside;
@@ -872,6 +873,147 @@ fn avoid_column_blocks_stay_whole() {
   assert!(
     (child_frags[0].bounds.height() - 80.0).abs() < 0.1,
     "avoided block should keep its full height"
+  );
+}
+
+#[test]
+fn float_that_fits_is_not_split_or_clipped_across_columns() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(60.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  // Push the float down so the nominal column boundary lands in the middle of it.
+  let mut leading_style = ComputedStyle::default();
+  leading_style.height = Some(Length::px(30.0));
+  // Penalize the boundary at the float start so the analyzer prefers a later line break that
+  // overlaps the float when the float is not treated as atomic.
+  leading_style.break_after = BreakBetween::AvoidColumn;
+  let mut leading = BoxNode::new_block(Arc::new(leading_style), FormattingContextType::Block, vec![]);
+  leading.id = 80;
+
+  let mut float_style = ComputedStyle::default();
+  float_style.float = Float::Left;
+  float_style.width = Some(Length::px(40.0));
+  float_style.height = Some(Length::px(40.0));
+  let mut float_node =
+    BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+  float_node.id = 81;
+
+  let mut para_style = ComputedStyle::default();
+  para_style.white_space = WhiteSpace::Pre;
+  para_style.orphans = 1;
+  para_style.widows = 1;
+  let para_style = Arc::new(para_style);
+  let text: String = (0..8).map(|i| format!("line {}\n", i)).collect();
+  let text_node = BoxNode::new_text(para_style.clone(), text);
+  let mut para = BoxNode::new_block(
+    para_style.clone(),
+    FormattingContextType::Block,
+    vec![text_node],
+  );
+  para.id = 82;
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![leading.clone(), float_node.clone(), para.clone()],
+  );
+  parent.id = 83;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let float_frags = fragments_with_id(&fragment, float_node.id);
+  assert_eq!(
+    float_frags.len(),
+    1,
+    "float should be kept intact when it fits in a column (got fragments={:?})",
+    float_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+  let float_frag = float_frags[0];
+  assert!(
+    (float_frag.bounds.height() - 40.0).abs() < 0.1,
+    "float should not be clipped (got h={})",
+    float_frag.bounds.height()
+  );
+  assert!(
+    float_frag.bounds.max_y() <= 60.0 + 0.2,
+    "float should fit wholly within a single column (bounds={:?})",
+    float_frag.bounds
+  );
+}
+
+#[test]
+fn too_tall_avoid_column_block_can_still_fragment() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(200.0));
+  parent_style.height = Some(Length::px(60.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(0.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let mut avoid_style = ComputedStyle::default();
+  avoid_style.break_inside = BreakInside::AvoidColumn;
+  let avoid_style = Arc::new(avoid_style);
+
+  let child_style = || -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(40.0));
+    Arc::new(style)
+  };
+
+  let mut first = BoxNode::new_block(child_style(), FormattingContextType::Block, vec![]);
+  first.id = 90;
+  let mut second = BoxNode::new_block(child_style(), FormattingContextType::Block, vec![]);
+  second.id = 91;
+  let mut third = BoxNode::new_block(child_style(), FormattingContextType::Block, vec![]);
+  third.id = 92;
+
+  let mut avoid_block = BoxNode::new_block(
+    avoid_style,
+    FormattingContextType::Block,
+    vec![first.clone(), second.clone(), third.clone()],
+  );
+  avoid_block.id = 93;
+
+  let mut parent =
+    BoxNode::new_block(parent_style, FormattingContextType::Block, vec![avoid_block.clone()]);
+  parent.id = 94;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite_width(200.0))
+    .expect("layout");
+
+  let avoid_frags = fragments_with_id(&fragment, avoid_block.id);
+  assert!(
+    avoid_frags.len() > 1,
+    "avoid-column block taller than the column height should still split to make progress (got fragments={:?})",
+    avoid_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
+  );
+  let mut indices: Vec<usize> = avoid_frags.iter().map(|f| f.fragment_index).collect();
+  indices.sort_unstable();
+  indices.dedup();
+  assert!(
+    indices.len() > 1,
+    "expected avoid-column fragments to span multiple columns (indices={indices:?}, frags={:?})",
+    avoid_frags
+      .iter()
+      .map(|f| (f.fragment_index, f.bounds))
+      .collect::<Vec<_>>()
   );
 }
 

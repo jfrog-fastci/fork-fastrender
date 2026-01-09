@@ -4307,6 +4307,7 @@ impl BlockFormattingContext {
       &physical_flow_root,
       FragmentationContext::Column,
       axes,
+      false,
       None,
     );
     let mut flow_extent = analyzer.content_extent();
@@ -4463,6 +4464,7 @@ impl BlockFormattingContext {
           &physical_flow_root,
           FragmentationContext::Column,
           axes,
+          false,
           None,
         );
         flow_extent = analyzer.content_extent();
@@ -4580,6 +4582,7 @@ impl BlockFormattingContext {
             &clipped_content,
             FragmentationContext::Column,
             axes,
+            false,
             None,
           );
           let content_extent = set_analyzer.content_extent().max(0.0).min(set_content_total);

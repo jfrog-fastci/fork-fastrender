@@ -142,6 +142,16 @@ pub(crate) struct AtomicRange {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct AtomicCandidate {
+  range: AtomicRange,
+  /// The minimum fragmentainer block-size needed for this range to be treated as atomic.
+  ///
+  /// This can differ from `range.end - range.start` when the atomic range is widened to cover
+  /// adjacent gutters (e.g. grid track ranges that absorb a preceding row/column gap).
+  required_fragmentainer_size: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ForcedBoundary {
   pub position: f32,
   pub page_side: Option<PageSide>,
@@ -727,7 +737,7 @@ pub struct FragmentationAnalyzer {
   opportunities: Vec<BreakOpportunity>,
   line_containers: Vec<LineContainer>,
   line_starts: Vec<usize>,
-  atomic: Vec<AtomicRange>,
+  atomic_candidates: Vec<AtomicCandidate>,
   table_repetitions: Vec<TableRepetitionInfo>,
   content_extent: f32,
   deadline_counter: usize,
@@ -921,10 +931,10 @@ impl FragmentationAnalyzer {
     root: &FragmentNode,
     context: FragmentationContext,
     axes: FragmentAxes,
+    enforce_fragmentainer_size: bool,
     fragmentainer_size_hint: Option<f32>,
   ) -> Self {
     let axis = axis_from_fragment_axes(axes);
-    let enforce_fragmentainer_size = fragmentainer_size_hint.is_some();
     let root_writing_mode = root
       .style
       .as_ref()
@@ -943,18 +953,23 @@ impl FragmentationAnalyzer {
       true,
     );
 
-    let mut atomic = collection.atomic;
-    collect_atomic_ranges_with_axis(
+    // Collect atomic range *candidates* independent of the current fragmentainer size.
+    //
+    // Callers may request "soft" enforcement of the fragmentainer size (e.g. multi-column layout
+    // looking slightly past the column height to the next break opportunity). That behaviour must
+    // not disable size-aware atomic modelling: instead we collect all candidates upfront (including
+    // those that only become atomic when they fit) and filter them per-boundary-selection based on
+    // the fragmentainer size used for that boundary.
+    let mut atomic_candidates = Vec::new();
+    collect_atomic_candidates_with_axis(
       root,
       0.0,
-      &mut atomic,
+      &mut atomic_candidates,
       &axis,
       axis.block_size(&root.bounds),
       context,
-      fragmentainer_size_hint,
       root_writing_mode,
     );
-    normalize_atomic_ranges(&mut atomic);
 
     collection.opportunities.sort_by(|a, b| {
       a.pos
@@ -964,11 +979,6 @@ impl FragmentationAnalyzer {
     collection.opportunities.dedup_by(|a, b| {
       (a.pos - b.pos).abs() < BREAK_EPSILON && a.kind == b.kind && a.strength == b.strength
     });
-
-    // Forced breaks override `break-inside: avoid-*` semantics. Atomic ranges represent avoid-inside
-    // (and similar indivisible) content, so ensure they never span across forced break opportunity
-    // positions; otherwise forced breaks can be incorrectly suppressed by `pos_is_inside_atomic`.
-    split_atomic_ranges_at_forced_break_opportunities(&mut atomic, &collection.opportunities);
 
     let content_extent = parallel_flow_content_extent(root, axes, fragmentainer_size_hint, context);
     let table_repetitions = collect_table_repetition_info_with_axis(
@@ -986,7 +996,7 @@ impl FragmentationAnalyzer {
       opportunities: collection.opportunities,
       line_containers,
       line_starts,
-      atomic,
+      atomic_candidates,
       table_repetitions,
       content_extent,
       deadline_counter: 0,
@@ -1009,6 +1019,7 @@ impl FragmentationAnalyzer {
     }
 
     self.reset_state();
+    let atomic = self.atomic_ranges_for(fragmentainer_size);
     let mut boundaries = vec![0.0];
     let mut start = 0.0;
     let mut opportunity_cursor = 0usize;
@@ -1024,6 +1035,7 @@ impl FragmentationAnalyzer {
         fragmentainer_size,
         effective_total,
         &mut opportunity_cursor,
+        &atomic,
       );
       debug_assert!(
         next + BREAK_EPSILON >= start,
@@ -1067,6 +1079,10 @@ impl FragmentationAnalyzer {
     }
 
     self.reset_state();
+    // `max_fragmentainer_size` is the physical fragmentainer size. The balancing loop may target a
+    // smaller "ideal" size for early boundaries, but atomic ranges should still be considered
+    // unbreakable so long as they fit within the physical fragmentainer.
+    let atomic = self.atomic_ranges_for(max_fragmentainer_size);
     let mut boundaries = vec![0.0];
     let mut start = 0.0f32;
     let mut opportunity_cursor = 0usize;
@@ -1115,6 +1131,7 @@ impl FragmentationAnalyzer {
         fragmentainer_size,
         effective_total,
         &mut opportunity_cursor,
+        &atomic,
       );
       debug_assert!(
         next + BREAK_EPSILON >= start,
@@ -1144,6 +1161,35 @@ impl FragmentationAnalyzer {
     self.deadline_counter = 0;
   }
 
+  fn atomic_ranges_for(&self, fragmentainer_size: f32) -> Vec<AtomicRange> {
+    if self.atomic_candidates.is_empty() {
+      return Vec::new();
+    }
+
+    let mut ranges: Vec<AtomicRange> = if fragmentainer_size.is_finite() && fragmentainer_size > 0.0
+    {
+      self
+        .atomic_candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+          let required = candidate.required_fragmentainer_size.max(0.0);
+          required.is_finite() && required <= fragmentainer_size + BREAK_EPSILON
+        })
+        .map(|candidate| candidate.range)
+        .collect()
+    } else {
+      self.atomic_candidates.iter().map(|c| c.range).collect()
+    };
+
+    normalize_atomic_ranges(&mut ranges);
+    // Forced breaks override `break-inside: avoid-*` semantics. Atomic ranges represent avoid-inside
+    // (and similar indivisible) content, so ensure they never span across forced break opportunity
+    // positions; otherwise forced breaks can be incorrectly suppressed by `pos_is_inside_atomic`.
+    split_atomic_ranges_at_forced_break_opportunities(&mut ranges, &self.opportunities);
+    ranges
+  }
+
   fn advance_line_starts(&mut self, boundary: f32) {
     for container in &self.line_containers {
       if let Some(slot) = self.line_starts.get_mut(container.id) {
@@ -1160,8 +1206,9 @@ impl FragmentationAnalyzer {
     fragmentainer: f32,
     total_extent: f32,
     opportunity_cursor: &mut usize,
+    atomic: &[AtomicRange],
   ) -> f32 {
-    if let Some(range) = atomic_containing(start, &self.atomic) {
+    if let Some(range) = atomic_containing(start, atomic) {
       let boundary = range.end.min(total_extent);
       self.advance_line_starts(boundary);
       return boundary;
@@ -1178,6 +1225,7 @@ impl FragmentationAnalyzer {
       fragmentainer,
       total_extent,
       opportunity_cursor,
+      atomic,
     );
 
     if let Some(table) = innermost_footer_table_at(&self.table_repetitions, chosen) {
@@ -1203,6 +1251,7 @@ impl FragmentationAnalyzer {
             fragmentainer,
             total_extent,
             opportunity_cursor,
+            atomic,
           );
         }
       }
@@ -1219,11 +1268,12 @@ impl FragmentationAnalyzer {
     fragmentainer: f32,
     total_extent: f32,
     opportunity_cursor: &mut usize,
+    atomic: &[AtomicRange],
   ) -> f32 {
     // Avoid selecting a boundary that lands inside an atomic range. If the natural fragmentainer
     // limit would split an atomic range, clamp to the atomic start so the next fragment starts
     // before the atomic content.
-    if let Some(range) = atomic_containing(limit, &self.atomic) {
+    if let Some(range) = atomic_containing(limit, atomic) {
       if range.start > start + BREAK_EPSILON {
         limit = limit.min(range.start);
       } else {
@@ -1245,7 +1295,7 @@ impl FragmentationAnalyzer {
     let window_end = window_end.min(ops.len());
     let window = *opportunity_cursor..window_end;
 
-    if let Some(pos) = self.forced_in_window(start, limit, total_extent, window.clone()) {
+    if let Some(pos) = self.forced_in_window(start, limit, total_extent, window.clone(), atomic) {
       self.advance_line_starts(pos);
       return pos;
     }
@@ -1258,7 +1308,7 @@ impl FragmentationAnalyzer {
       if opportunity.pos > limit + BREAK_EPSILON {
         break;
       }
-      if pos_is_inside_atomic(opportunity.pos, &self.atomic) {
+      if pos_is_inside_atomic(opportunity.pos, atomic) {
         continue;
       }
       if matches!(opportunity.strength, BreakStrength::Forced) {
@@ -1328,7 +1378,7 @@ impl FragmentationAnalyzer {
       // hard fragmentainer size.
       if let Some(next) = self.opportunities[window_end..]
         .iter()
-        .find(|o| o.pos > limit + BREAK_EPSILON && !pos_is_inside_atomic(o.pos, &self.atomic))
+        .find(|o| o.pos > limit + BREAK_EPSILON && !pos_is_inside_atomic(o.pos, atomic))
       {
         let clamped = next.pos.min(total_extent);
         self.advance_line_starts(clamped);
@@ -1337,7 +1387,7 @@ impl FragmentationAnalyzer {
     }
 
     let mut fallback = limit;
-    if let Some(near_line) = self.near_line_boundary(start, limit, window.clone()) {
+    if let Some(near_line) = self.near_line_boundary(start, limit, window.clone(), atomic) {
       fallback = near_line;
     }
 
@@ -1356,6 +1406,7 @@ impl FragmentationAnalyzer {
     limit: f32,
     total_extent: f32,
     window: std::ops::Range<usize>,
+    atomic: &[AtomicRange],
   ) -> Option<f32> {
     let forced = self.opportunities[window]
       .iter()
@@ -1363,7 +1414,7 @@ impl FragmentationAnalyzer {
         matches!(o.strength, BreakStrength::Forced)
           && o.pos > start + BREAK_EPSILON
           && o.pos <= limit + BREAK_EPSILON
-          && !pos_is_inside_atomic(o.pos, &self.atomic)
+          && !pos_is_inside_atomic(o.pos, atomic)
       })
       .map(|o| o.pos.min(total_extent));
     if forced.is_some() {
@@ -1385,6 +1436,7 @@ impl FragmentationAnalyzer {
     start: f32,
     limit: f32,
     window: std::ops::Range<usize>,
+    atomic: &[AtomicRange],
   ) -> Option<f32> {
     self.opportunities[window].iter().find_map(|o| {
       if o.pos <= start + BREAK_EPSILON {
@@ -1393,7 +1445,7 @@ impl FragmentationAnalyzer {
       if o.pos - limit > LINE_FALLBACK_EPSILON {
         return None;
       }
-      if pos_is_inside_atomic(o.pos, &self.atomic) {
+      if pos_is_inside_atomic(o.pos, atomic) {
         return None;
       }
       match o.kind {
@@ -1436,10 +1488,12 @@ pub fn resolve_fragmentation_boundaries_with_axes(
   context: FragmentationContext,
   axes: FragmentAxes,
 ) -> Result<Vec<f32>, LayoutError> {
+  let enforce_fragmentainer_size = matches!(context, FragmentationContext::Page);
   let mut analyzer = FragmentationAnalyzer::new(
     root,
     context,
     axes,
+    enforce_fragmentainer_size,
     match context {
       FragmentationContext::Page => Some(fragmentainer_size),
       FragmentationContext::Column => None,
@@ -1515,7 +1569,7 @@ pub fn fragment_tree(
   );
 
   let mut analyzer =
-    FragmentationAnalyzer::new(&root, context, axes, Some(options.fragmentainer_size));
+    FragmentationAnalyzer::new(&root, context, axes, true, Some(options.fragmentainer_size));
 
   let total_extent = analyzer.content_extent().max(options.fragmentainer_size);
   let boundaries = analyzer.boundaries(options.fragmentainer_size, total_extent)?;
@@ -1622,6 +1676,7 @@ fn clip_grid_item_parallel_for_page(
     &local,
     FragmentationContext::Page,
     axes,
+    true,
     Some(fragmentainer_size),
   );
   let total_extent = analyzer.content_extent();
@@ -3414,6 +3469,223 @@ fn atomic_containing(pos: f32, atomic: &[AtomicRange]) -> Option<AtomicRange> {
   }
 }
 
+fn collect_atomic_candidate_for_node(
+  node: &FragmentNode,
+  abs_start: f32,
+  axis: &FragmentAxis,
+  parent_block_size: f32,
+  candidates: &mut Vec<AtomicCandidate>,
+  context: FragmentationContext,
+) {
+  let node_block_size = axis.block_size(&node.bounds);
+  let start = abs_start;
+  let mut end = abs_start + node_block_size;
+  if end <= start + BREAK_EPSILON {
+    return;
+  }
+  let style = node
+    .style
+    .as_ref()
+    .map(|s| s.as_ref())
+    .unwrap_or(default_style());
+
+  if style.float.is_floating() {
+    // Floats are only atomic when they fit within a single fragmentainer. Compute the candidate
+    // range here and defer the "fits" decision to boundary selection.
+    //
+    // Use the logical bounding box so forced breaks modeled as blank insertion (or other overflow)
+    // can expand the float's effective height.
+    let parent_abs_flow_start = abs_start
+      - axis.flow_offset(
+        axis.block_start(&node.bounds),
+        node_block_size,
+        parent_block_size,
+      );
+    let bbox = node.logical_bounding_box();
+    let bbox_block_size = axis.block_size(&bbox);
+    let bbox_flow_start = parent_abs_flow_start
+      + axis.flow_offset(axis.block_start(&bbox), bbox_block_size, parent_block_size);
+    let bbox_flow_end = bbox_flow_start + bbox_block_size;
+    if bbox_flow_end > end + BREAK_EPSILON {
+      end = bbox_flow_end;
+    }
+
+    let required = (end - start).max(0.0);
+    candidates.push(AtomicCandidate {
+      range: AtomicRange { start, end },
+      required_fragmentainer_size: required,
+    });
+  }
+
+  let is_table_row_like = matches!(
+    style.display,
+    Display::TableRow
+      | Display::TableRowGroup
+      | Display::TableHeaderGroup
+      | Display::TableFooterGroup
+  );
+  let avoid_inside = avoids_break_inside(style.break_inside, context) || is_table_row_like;
+  if avoid_inside {
+    let required = (end - start).max(0.0);
+    candidates.push(AtomicCandidate {
+      range: AtomicRange { start, end },
+      required_fragmentainer_size: required,
+    });
+  }
+
+  if matches!(style.display, Display::Grid | Display::InlineGrid) {
+    if let Some(grid_tracks) = node.grid_tracks.as_deref() {
+      let tracks = grid_tracks_in_fragmentation_axis(grid_tracks, axis);
+
+      // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
+      // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`
+      // across fragmentainers (and avoids producing a fragmentainer that contains only the gap).
+      //
+      // Note: the "fits" decision for a track is based on the *track size* (excluding the absorbed
+      // gutter). The gutter is empty space; it may force a fragmentainer to under-fill, but should
+      // not cause a track band that otherwise fits to become breakable.
+      let mut prev_flow_end: Option<f32> = None;
+      for (track_start, track_end) in tracks.iter().copied() {
+        let track_size = (track_end - track_start).max(0.0);
+        let flow_offset = axis.flow_offset(track_start, track_size, node_block_size);
+        let mut start = abs_start + flow_offset;
+        let end = start + track_size;
+
+        if let Some(prev_end) = prev_flow_end {
+          if start > prev_end + BREAK_EPSILON {
+            start = prev_end;
+          }
+        }
+        prev_flow_end = Some(end);
+
+        if track_size <= BREAK_EPSILON {
+          continue;
+        }
+
+        if end > start + BREAK_EPSILON {
+          candidates.push(AtomicCandidate {
+            range: AtomicRange { start, end },
+            required_fragmentainer_size: track_size,
+          });
+        }
+      }
+    }
+  }
+
+  if is_row_flex_container(style) {
+    let node_writing_mode = style.writing_mode;
+    if let Some(flex_lines) = collect_row_flex_lines(
+      node,
+      abs_start,
+      axis,
+      node_block_size,
+      style,
+      node_writing_mode,
+      default_style(),
+    ) {
+      // Treat each flex line as indivisible in the fragmentation axis. Like grid track atomic
+      // candidates, assign any inter-line gutter to the following line so we never produce a
+      // fragmentainer that contains only the gap.
+      //
+      // Note: the "fits" decision is based on the *line size* (excluding the absorbed gutter).
+      let mut prev_flow_end: Option<f32> = None;
+      for line in flex_lines.lines.into_iter() {
+        let line_size = (line.end - line.start).max(0.0);
+        let mut start = line.start;
+        let end = line.end;
+
+        if let Some(prev_end) = prev_flow_end {
+          if start > prev_end + BREAK_EPSILON {
+            start = prev_end;
+          }
+        }
+        prev_flow_end = Some(end);
+
+        if line_size <= BREAK_EPSILON {
+          continue;
+        }
+
+        if end > start + BREAK_EPSILON {
+          candidates.push(AtomicCandidate {
+            range: AtomicRange { start, end },
+            required_fragmentainer_size: line_size,
+          });
+        }
+      }
+    }
+  }
+}
+
+fn collect_atomic_candidates_with_axis(
+  node: &FragmentNode,
+  abs_start: f32,
+  candidates: &mut Vec<AtomicCandidate>,
+  axis: &FragmentAxis,
+  parent_block_size: f32,
+  context: FragmentationContext,
+  inherited_writing_mode: WritingMode,
+) {
+  collect_atomic_candidate_for_node(
+    node,
+    abs_start,
+    axis,
+    parent_block_size,
+    candidates,
+    context,
+  );
+
+  let node_block_size = axis.block_size(&node.bounds);
+  let node_writing_mode = node
+    .style
+    .as_ref()
+    .map(|s| s.writing_mode)
+    .unwrap_or(inherited_writing_mode);
+
+  let default_style = default_style();
+  let style = node
+    .style
+    .as_ref()
+    .map(|s| s.as_ref())
+    .unwrap_or(default_style);
+  if style.float.is_floating() {
+    return;
+  }
+  let grid_items = if matches!(context, FragmentationContext::Page)
+    && matches!(style.display, Display::Grid | Display::InlineGrid)
+  {
+    node.grid_fragmentation.as_ref()
+  } else {
+    None
+  };
+
+  for (idx, child) in node.children.iter().enumerate() {
+    let skip_descendants = grid_items
+      .and_then(|info| info.items.get(idx))
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
+    if skip_descendants {
+      continue;
+    }
+
+    let child_writing_mode = child
+      .style
+      .as_ref()
+      .map(|s| s.writing_mode)
+      .unwrap_or(node_writing_mode);
+    let child_axis =
+      axis_for_child_in_context(axis, context, node_writing_mode, child_writing_mode);
+    let child_abs_start = child_axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+    collect_atomic_candidates_with_axis(
+      child,
+      child_abs_start,
+      candidates,
+      &child_axis,
+      node_block_size,
+      context,
+      child_writing_mode,
+    );
+  }
+}
+
 fn collect_atomic_range_for_node(
   node: &FragmentNode,
   abs_start: f32,
@@ -3875,6 +4147,7 @@ mod tests {
       &root,
       FragmentationContext::Page,
       default_axes(),
+      true,
       Some(50.0),
     );
     let total_extent = analyzer.content_extent().max(50.0);
@@ -3907,6 +4180,7 @@ mod tests {
       &root,
       FragmentationContext::Page,
       default_axes(),
+      true,
       Some(40.0),
     );
     let total_extent = analyzer.content_extent().max(40.0);
@@ -3952,6 +4226,7 @@ mod tests {
       &root,
       FragmentationContext::Page,
       default_axes(),
+      true,
       Some(40.0),
     );
     let total_extent = analyzer.content_extent().max(40.0);
@@ -4032,6 +4307,7 @@ mod tests {
       &root,
       FragmentationContext::Page,
       FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr),
+      true,
       Some(100.0),
     );
     let total_extent = analyzer.content_extent().max(100.0);
@@ -4073,6 +4349,7 @@ mod tests {
       &root,
       FragmentationContext::Page,
       FragmentAxes::from_writing_mode_and_direction(WritingMode::VerticalRl, Direction::Ltr),
+      true,
       Some(35.0),
     );
     let total_extent = analyzer.content_extent().max(35.0);
