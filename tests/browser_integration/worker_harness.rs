@@ -166,6 +166,11 @@ pub fn assert_event_subsequence(events: &[WorkerToUiEvent], expected: &[WorkerEv
 }
 
 pub struct WorkerHarness {
+  // Many browser integration tests use `GlobalStageListenerGuard`, which is process-global and can
+  // significantly slow down concurrent renders (stage events from unrelated renders will also be
+  // forwarded to whichever test installed the listener). To avoid flaky timeouts, the headless
+  // worker runtime harness serializes itself with stage-listener tests.
+  _stage_lock: std::sync::MutexGuard<'static, ()>,
   ui_tx: Option<Sender<UiToWorker>>,
   ui_rx: Receiver<WorkerToUi>,
   handle: Option<JoinHandle<()>>,
@@ -175,6 +180,7 @@ pub struct WorkerHarness {
 
 impl WorkerHarness {
   pub fn spawn() -> Self {
+    let stage_lock = super::stage_listener_test_lock();
     let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
     let stages_for_listener = Arc::clone(&stages);
     let stage_guard = GlobalStageListenerGuard::new(Arc::new(move |stage| {
@@ -194,6 +200,7 @@ impl WorkerHarness {
     .expect("spawn browser worker runtime thread");
 
     Self {
+      _stage_lock: stage_lock,
       ui_tx: Some(ui_tx),
       ui_rx,
       handle: Some(handle),

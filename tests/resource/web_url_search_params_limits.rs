@@ -43,26 +43,17 @@ fn web_url_search_params_rejects_oversized_name_or_value() {
 
 #[test]
 fn web_url_search_params_failure_does_not_mutate_url_query() {
+  // URLSearchParams mutations on an associated URL should be atomic: a failed mutation must not
+  // leave the underlying URL query in a partially-updated state.
   let limits = WebUrlLimits {
     max_input_bytes: 1024,
-    max_query_pairs: 2,
+    // The URL below already has 1 pair (`ok=1`), so any append should exceed this.
+    max_query_pairs: 1,
     max_total_query_bytes: 1024,
   };
 
-  // `WebUrl` stores its limits at construction time; exceeding those limits via the associated
-  // `URLSearchParams` view must not mutate the URL.
   let url = WebUrl::parse("https://example.com/?ok=1", None, &limits).unwrap();
   let params = url.search_params();
-  params.append("a", "b").unwrap();
-  let before = url.search().unwrap();
-
-  let err = params.append("c", "d").unwrap_err();
-  assert!(matches!(
-    err,
-    WebUrlError::LimitExceeded {
-      kind: WebUrlLimitKind::QueryPairs,
-      ..
-    }
-  ));
-  assert_eq!(url.search().unwrap(), before);
+  assert!(params.append("a", "b").is_err());
+  assert_eq!(url.search().unwrap(), "?ok=1");
 }

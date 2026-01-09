@@ -20,7 +20,6 @@ impl Drop for TestRenderDelayGuard {
     fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
-
 #[test]
 fn box_generation_times_out_with_active_deadline() {
   let _guard = TestRenderDelayGuard::set(Some(5));

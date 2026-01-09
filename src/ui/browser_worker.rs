@@ -1,12 +1,14 @@
 use crate::api::{BrowserDocument, FastRender, FastRenderFactory, RenderDiagnostics};
+use crate::error::RenderError;
 use crate::geometry::{Point, Size};
 use crate::html::title::find_document_title;
 use crate::interaction::scroll_offset_for_fragment_target;
 use crate::js::{EventLoop, RunLimits, RunUntilIdleOutcome};
-use crate::render_control::{GlobalStageListenerGuard, StageHeartbeat};
+use crate::render_control::{with_deadline, GlobalStageListenerGuard, StageHeartbeat};
 use crate::scroll::ScrollState;
 use crate::system::DEFAULT_RENDER_STACK_SIZE;
 use crate::ui::about_pages;
+use crate::ui::cancel::{deadline_for, CancelGens};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
 use crate::{Error, PreparedDocument, PreparedPaintOptions, RenderOptions, Result};
@@ -980,6 +982,332 @@ pub fn spawn_browser_ui_worker_thread(
     .spawn(move || {
       let mut worker = BrowserUiWorker::new(renderer, ui_tx);
       worker.run(ui_rx);
+    })
+}
+
+struct CancelWorkerTabState {
+  cancel: CancelGens,
+  viewport_css: (u32, u32),
+  dpr: f32,
+  scroll_state: ScrollState,
+  prepared: Option<PreparedDocument>,
+  committed_url: Option<String>,
+}
+
+impl CancelWorkerTabState {
+  fn new(cancel: CancelGens) -> Self {
+    Self {
+      cancel,
+      viewport_css: (800, 600),
+      dpr: 1.0,
+      scroll_state: ScrollState::default(),
+      prepared: None,
+      committed_url: None,
+    }
+  }
+
+  fn base_render_options(&self) -> RenderOptions {
+    let mut options = RenderOptions::new()
+      .with_viewport(self.viewport_css.0, self.viewport_css.1)
+      .with_device_pixel_ratio(self.dpr)
+      .with_scroll(self.scroll_state.viewport.x, self.scroll_state.viewport.y)
+      .with_element_scroll_offsets(self.scroll_state.elements.clone());
+    options
+  }
+}
+
+struct CancelBrowserWorkerRuntime {
+  renderer: FastRender,
+  ui_tx: Sender<WorkerToUi>,
+  tabs: HashMap<TabId, CancelWorkerTabState>,
+}
+
+impl CancelBrowserWorkerRuntime {
+  fn new(renderer: FastRender, ui_tx: Sender<WorkerToUi>) -> Self {
+    Self {
+      renderer,
+      ui_tx,
+      tabs: HashMap::new(),
+    }
+  }
+
+  fn run(&mut self, rx: Receiver<UiToWorker>) {
+    while let Ok(msg) = rx.recv() {
+      self.handle_message(msg);
+    }
+  }
+
+  fn handle_message(&mut self, msg: UiToWorker) {
+    match msg {
+      UiToWorker::CreateTab {
+        tab_id,
+        initial_url,
+        cancel,
+      } => {
+        self.tabs.insert(tab_id, CancelWorkerTabState::new(cancel));
+        if let Some(url) = initial_url {
+          self.navigate(tab_id, url);
+        }
+      }
+      UiToWorker::NewTab { tab_id, initial_url } => {
+        self
+          .tabs
+          .insert(tab_id, CancelWorkerTabState::new(CancelGens::new()));
+        if let Some(url) = initial_url {
+          self.navigate(tab_id, url);
+        }
+      }
+      UiToWorker::CloseTab { tab_id } => {
+        self.tabs.remove(&tab_id);
+      }
+      UiToWorker::SetActiveTab { .. } => {}
+      UiToWorker::Navigate { tab_id, url, .. } => {
+        self.navigate(tab_id, url);
+      }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } => {
+        // This runtime is used by the cancellation-focused integration tests and intentionally does
+        // not model a full history stack. Use `BrowserUiWorker` for history-aware behaviour.
+      }
+      UiToWorker::Reload { tab_id } => {
+        let url = self
+          .tabs
+          .get(&tab_id)
+          .and_then(|tab| tab.committed_url.clone());
+        if let Some(url) = url {
+          self.navigate(tab_id, url);
+        }
+      }
+      UiToWorker::Tick { .. } => {}
+      UiToWorker::ViewportChanged {
+        tab_id,
+        viewport_css,
+        dpr,
+      } => {
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+          tab.viewport_css = (viewport_css.0.max(1), viewport_css.1.max(1));
+          tab.dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        }
+        self.paint(tab_id);
+      }
+      UiToWorker::Scroll {
+        tab_id,
+        delta_css,
+        ..
+      } => {
+        if let Some(tab) = self.tabs.get_mut(&tab_id) {
+          tab.scroll_state.viewport.x = (tab.scroll_state.viewport.x + delta_css.0).max(0.0);
+          tab.scroll_state.viewport.y = (tab.scroll_state.viewport.y + delta_css.1).max(0.0);
+        }
+        self.paint(tab_id);
+      }
+      UiToWorker::PointerMove { .. }
+      | UiToWorker::PointerDown { .. }
+      | UiToWorker::PointerUp { .. }
+      | UiToWorker::SelectDropdownChoose { .. }
+      | UiToWorker::SelectDropdownPick { .. }
+      | UiToWorker::TextInput { .. }
+      | UiToWorker::KeyAction { .. } => {
+        // Best-effort: this runtime doesn't yet update DOM/interaction state, but still repaints so
+        // the UI stays responsive.
+      }
+      UiToWorker::RequestRepaint { tab_id, .. } => {
+        self.paint(tab_id);
+      }
+    }
+  }
+
+  fn navigate(&mut self, tab_id: TabId, url: String) {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+      return;
+    }
+
+    let (cancel, viewport_css, mut options, paint_snapshot_before_prepare) = {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
+
+      tab.scroll_state = ScrollState::default();
+
+      let cancel = tab.cancel.clone();
+      let viewport_css = tab.viewport_css;
+      let mut options = tab.base_render_options();
+      options.scroll_x = 0.0;
+      options.scroll_y = 0.0;
+      options.element_scroll_offsets.clear();
+      let paint_snapshot = cancel.snapshot_paint();
+
+      (cancel, viewport_css, options, paint_snapshot)
+    };
+
+    let prepare_snapshot = cancel.snapshot_prepare();
+    options.cancel_callback = Some(prepare_snapshot.cancel_callback_for_prepare(&cancel));
+
+    let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
+      tab_id,
+      url: url.clone(),
+    });
+    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+      tab_id,
+      loading: true,
+    });
+
+    let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+
+    let report = {
+      let res = if about_pages::is_about_url(&url) {
+        prepare_about_url(&mut self.renderer, &url, options.clone())
+      } else {
+        self.renderer.prepare_url(&url, options.clone())
+      };
+      match res {
+        Ok(report) => report,
+        Err(err) => {
+          // Avoid emitting stale failures (e.g. after cancellation).
+          if prepare_snapshot.is_still_current_for_prepare(&cancel) {
+            let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+              tab_id,
+              url,
+              error: err.to_string(),
+              can_go_back: false,
+              can_go_forward: false,
+            });
+            let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            });
+          }
+          return;
+        }
+      }
+    };
+
+    if !prepare_snapshot.is_still_current_for_prepare(&cancel) {
+      return;
+    }
+
+    let committed_url = report.final_url.clone().unwrap_or_else(|| url.clone());
+    let title = find_document_title(report.document.dom());
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    tab.prepared = Some(report.document);
+    tab.committed_url = Some(committed_url.clone());
+
+    let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
+      tab_id,
+      url: committed_url.clone(),
+      title,
+      can_go_back: false,
+      can_go_forward: false,
+    });
+
+    // If a paint-only bump occurred while we were preparing, skip the initial paint; the queued
+    // repaint (e.g. scroll/resize) will render the committed document with the latest state.
+    if !paint_snapshot_before_prepare.is_still_current_for_paint(&cancel) {
+      let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+        tab_id,
+        loading: false,
+      });
+      return;
+    }
+
+    self.paint(tab_id);
+
+    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+      tab_id,
+      loading: false,
+    });
+  }
+
+  fn paint(&mut self, tab_id: TabId) {
+    let (cancel, viewport_css, scroll_state, doc) = {
+      let Some(tab) = self.tabs.get_mut(&tab_id) else {
+        return;
+      };
+      let Some(doc) = tab.prepared.as_ref() else {
+        return;
+      };
+      (
+        tab.cancel.clone(),
+        tab.viewport_css,
+        tab.scroll_state.clone(),
+        doc.clone(),
+      )
+    };
+
+    let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+
+    let paint_snapshot = cancel.snapshot_paint();
+    let cancel_cb = paint_snapshot.cancel_callback_for_paint(&cancel);
+    let deadline = deadline_for(cancel_cb, None);
+
+    let painted = match with_deadline(Some(&deadline), || {
+      doc.paint_with_options_frame(PreparedPaintOptions {
+        scroll: Some(scroll_state),
+        viewport: Some(viewport_css),
+        background: None,
+        animation_time: None,
+      })
+    }) {
+      Ok(frame) => frame,
+      Err(err) => {
+        // Cancellation/timeouts should be silent; other errors can be debug-logged if still current.
+        if !matches!(err, Error::Render(RenderError::Timeout { .. }))
+          && paint_snapshot.is_still_current_for_paint(&cancel)
+        {
+          let _ = self.ui_tx.send(WorkerToUi::DebugLog {
+            tab_id,
+            line: format!("paint failed: {err}"),
+          });
+        }
+        return;
+      }
+    };
+
+    if !paint_snapshot.is_still_current_for_paint(&cancel) {
+      return;
+    }
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return;
+    };
+    tab.scroll_state = painted.scroll_state.clone();
+
+    let _ = self.ui_tx.send(WorkerToUi::FrameReady {
+      tab_id,
+      frame: RenderedFrame {
+        pixmap: painted.pixmap,
+        viewport_css,
+        dpr: tab.dpr,
+        scroll_state: painted.scroll_state.clone(),
+      },
+    });
+    let _ = self.ui_tx.send(WorkerToUi::ScrollStateUpdated {
+      tab_id,
+      scroll: painted.scroll_state,
+    });
+  }
+}
+
+/// Spawn a cancellation-aware browser worker thread.
+///
+/// This worker is used by protocol-level cancellation integration tests. It consumes `UiToWorker`
+/// messages and uses shared [`CancelGens`] instances to cancel in-flight work even while blocked
+/// inside the renderer.
+pub fn spawn_browser_worker_thread(
+  name: impl Into<String>,
+  renderer: FastRender,
+  ui_tx: Sender<WorkerToUi>,
+  rx: Receiver<UiToWorker>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+  std::thread::Builder::new()
+    .name(name.into())
+    .stack_size(DEFAULT_RENDER_STACK_SIZE)
+    .spawn(move || {
+      let mut runtime = CancelBrowserWorkerRuntime::new(renderer, ui_tx);
+      runtime.run(rx);
     })
 }
 

@@ -3,7 +3,7 @@ use fastrender::ResourceFetcher;
 use crate::test_support;
 use std::io;
 use std::io::{Read, Write};
-use std::net::{Ipv6Addr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -12,31 +12,42 @@ use test_support::net::net_test_lock;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 
+fn host_has_ip_family(host: &str) -> (bool, bool) {
+  let addrs = match (host, 0).to_socket_addrs() {
+    Ok(addrs) => addrs,
+    Err(_) => return (false, false),
+  };
+  let mut has_v4 = false;
+  let mut has_v6 = false;
+  for addr in addrs {
+    if addr.ip().is_ipv4() {
+      has_v4 = true;
+    } else {
+      has_v6 = true;
+    }
+  }
+  (has_v4, has_v6)
+}
+
 #[track_caller]
 fn try_bind_localhost(context: &str) -> Option<(Vec<TcpListener>, u16)> {
-  match TcpListener::bind("127.0.0.1:0") {
-    Ok(listener) => {
-      let port = listener.local_addr().ok()?.port();
-      // `localhost` frequently resolves to both IPv4 and IPv6. Bind on both loopback addresses so
-      // the client can connect regardless of address resolution order.
-      let mut listeners = vec![listener];
-      match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
-        Ok(v6) => listeners.push(v6),
-        Err(err)
-          if matches!(
-            err.kind(),
-            io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
-          ) =>
-        {
-          // IPv6 isn't available in this environment; continue with IPv4 only.
-        }
-        Err(err) => {
-          let loc = std::panic::Location::caller();
-          panic!("bind IPv6 localhost {context} ({}:{}): {err}", loc.file(), loc.line());
-        }
-      }
-      Some((listeners, port))
-    }
+  let (localhost_v4, localhost_v6) = host_has_ip_family("localhost");
+  let (www_v4, www_v6) = host_has_ip_family("www.localhost");
+  let requires_v4 = (localhost_v4 && !localhost_v6) || (www_v4 && !www_v6);
+  let requires_v6 = (localhost_v6 && !localhost_v4) || (www_v6 && !www_v4);
+
+  let prefer_v6 = requires_v6 || (!requires_v4 && (localhost_v6 || www_v6));
+
+  let mut listeners: Vec<TcpListener> = Vec::new();
+
+  let primary = if prefer_v6 {
+    TcpListener::bind("[::1]:0").or_else(|_| TcpListener::bind("127.0.0.1:0"))
+  } else {
+    TcpListener::bind("127.0.0.1:0").or_else(|_| TcpListener::bind("[::1]:0"))
+  };
+
+  let listener = match primary {
+    Ok(listener) => listener,
     Err(err)
       if matches!(
         err.kind(),
@@ -49,13 +60,52 @@ fn try_bind_localhost(context: &str) -> Option<(Vec<TcpListener>, u16)> {
         loc.file(),
         loc.line()
       );
-      None
+      return None;
     }
     Err(err) => {
       let loc = std::panic::Location::caller();
       panic!("bind {context} ({}:{}): {err}", loc.file(), loc.line());
     }
+  };
+
+  let port = listener.local_addr().ok()?.port();
+  let primary_is_v4 = listener.local_addr().ok()?.ip().is_ipv4();
+  listeners.push(listener);
+
+  // Bind the other IP family on the same port when available so both `localhost` and
+  // `www.localhost` resolve to an address we serve on (environments vary in whether they return
+  // IPv4, IPv6, or both for these hostnames).
+  if primary_is_v4 {
+    if localhost_v6 || www_v6 {
+      if let Ok(listener_v6) = TcpListener::bind(("::1", port)) {
+        listeners.push(listener_v6);
+      } else if requires_v6 {
+        return None;
+      }
+    }
+  } else if localhost_v4 || www_v4 {
+    if let Ok(listener_v4) = TcpListener::bind(("127.0.0.1", port)) {
+      listeners.push(listener_v4);
+    } else if requires_v4 {
+      return None;
+    }
   }
+
+  let have_v4 = listeners
+    .iter()
+    .any(|listener| listener.local_addr().map(|addr| addr.ip().is_ipv4()).unwrap_or(false));
+  let have_v6 = listeners
+    .iter()
+    .any(|listener| listener.local_addr().map(|addr| addr.ip().is_ipv6()).unwrap_or(false));
+
+  if !((localhost_v4 && have_v4) || (localhost_v6 && have_v6)) {
+    return None;
+  }
+  if !((www_v4 && have_v4) || (www_v6 && have_v6)) {
+    return None;
+  }
+
+  Some((listeners, port))
 }
 
 fn read_request(stream: &mut TcpStream) -> Vec<u8> {
@@ -110,12 +160,11 @@ fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()
       {
         break;
       }
-      let mut accepted = false;
-      let mut fatal = false;
+      let mut accepted_any = false;
       for listener in &listeners {
         match listener.accept() {
           Ok((mut stream, _)) => {
-            accepted = true;
+            accepted_any = true;
             last_activity = Instant::now();
             let seen_www = Arc::clone(&seen_www_accept);
             joins.push(thread::spawn(move || {
@@ -141,8 +190,8 @@ fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()
 
               if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost")
               {
-                // Deliberately do not respond; hold the connection open long enough for the client to
-                // hit its timeout so the fetcher is forced to retry with the `www.` hostname.
+                // Deliberately do not respond; hold the connection open long enough for the client
+                // to hit its timeout so the fetcher is forced to retry with the `www.` hostname.
                 thread::sleep(Duration::from_millis(450));
                 return;
               }
@@ -156,16 +205,10 @@ fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()
             if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted =>
           {
           }
-          Err(_) => {
-            fatal = true;
-            break;
-          }
+          Err(_) => return,
         }
       }
-      if fatal {
-        break;
-      }
-      if !accepted {
+      if !accepted_any {
         thread::sleep(Duration::from_millis(5));
       }
     }

@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::scroll::ScrollState;
+use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::WorkerToUi;
 use fastrender::ui::worker::spawn_ui_worker;
 use fastrender::ui::{NavigationReason, RenderedFrame, TabId, UiToWorker};

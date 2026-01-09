@@ -1012,8 +1012,9 @@ impl App {
                   }
                 }
               }
+
             }
- 
+
             clicked_item_idx
           })
           .inner

@@ -330,7 +330,7 @@ fn http_fetch_respects_render_deadline() {
   );
   let lower = err.to_string().to_ascii_lowercase();
   assert!(
-    lower.contains("timeout") || lower.contains("deadline"),
+    lower.contains("timeout") || lower.contains("timed out") || lower.contains("deadline"),
     "expected timeout-ish error, got {lower:?}"
   );
 }

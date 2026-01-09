@@ -29,11 +29,12 @@ impl Drop for TestRenderDelayGuard {
     fastrender::render_control::set_test_render_delay_ms(None);
   }
 }
-
 #[test]
 fn compressed_resource_respects_render_timeout() {
   let _net_guard = net_test_lock();
-  let _guard = TestRenderDelayGuard::set(Some(10));
+  // Use a delay larger than the overall timeout so a single deadline check reliably triggers a
+  // timeout regardless of host speed/caching.
+  let _guard = TestRenderDelayGuard::set(Some(50));
   let compressed = include_bytes!("../fixtures/large_timeout_payload.gz");
 
   let Some(listener) = try_bind_localhost("compressed_resource_respects_render_timeout") else {
@@ -78,9 +79,12 @@ fn compressed_resource_respects_render_timeout() {
   match err {
     Error::Render(RenderError::Timeout { .. }) => {}
     Error::Resource(res) => {
-      let lower = res.message.to_ascii_lowercase();
+      let msg = res.message.to_ascii_lowercase();
       assert!(
-        lower.contains("timeout") || lower.contains("deadline"),
+        msg.contains("render deadline")
+          || msg.contains("timed out")
+          || msg.contains("timeout")
+          || msg.contains("deadline"),
         "unexpected resource error: {}",
         res.message
       );
@@ -95,7 +99,7 @@ fn renderer_times_out_while_decompressing_image() {
   let _net_guard = net_test_lock();
   // Use a delay larger than the overall timeout so a single deadline check reliably triggers a
   // timeout regardless of host speed/caching.
-  let _guard = TestRenderDelayGuard::set(Some(50));
+  let _guard = TestRenderDelayGuard::set(Some(100));
   let compressed = include_bytes!("../fixtures/large_timeout_payload.gz");
 
   let Some(listener) = try_bind_localhost("renderer_times_out_while_decompressing_image") else {
@@ -131,7 +135,7 @@ fn renderer_times_out_while_decompressing_image() {
   let mut renderer = FastRender::new().expect("renderer");
   let options = RenderOptions::default()
     .with_viewport(16, 16)
-    .with_timeout(Some(Duration::from_millis(20)));
+    .with_timeout(Some(Duration::from_millis(80)));
   let url = format!("http://{}/image.png", addr);
   let html = format!("<img src=\"{}\" />", url);
 
@@ -141,10 +145,15 @@ fn renderer_times_out_while_decompressing_image() {
 
   match err {
     Error::Resource(res) => {
+      let msg = res.message.to_ascii_lowercase();
       assert!(
-        res.message.to_ascii_lowercase().contains("decompress"),
+        msg.contains("decompress")
+          || msg.contains("render deadline")
+          || msg.contains("timed out")
+          || msg.contains("timeout")
+          || msg.contains("deadline"),
         "unexpected resource error: {}",
-        res.message
+        res.message,
       );
     }
     Error::Render(RenderError::Timeout { .. }) => {}

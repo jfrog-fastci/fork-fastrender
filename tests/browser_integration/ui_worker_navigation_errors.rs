@@ -1,5 +1,6 @@
 #![cfg(feature = "browser_ui")]
 
+use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker::spawn_ui_worker;
 use fastrender::ui::UiWorker;
