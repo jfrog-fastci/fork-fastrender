@@ -356,7 +356,7 @@ mod tests {
 
     let mut vm = Vm::new(vm_js::VmOptions::default());
     let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
-    let realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
 
     let web_time = WebTime::new(1_000);
     let _bindings = install_time_bindings(&mut vm, &realm, &mut heap, clock_for_bindings, web_time)
