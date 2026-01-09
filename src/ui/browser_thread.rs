@@ -1212,10 +1212,17 @@ impl BrowserRuntime {
     let (renderer, report) = match prepared {
       Ok(r) => r,
       Err(err) => {
+        let (can_go_back, can_go_forward) = self
+          .tabs
+          .get(&tab_id)
+          .map(|tab| (tab.history.can_go_back(), tab.history.can_go_forward()))
+          .unwrap_or((false, false));
         let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url: original_url.to_string(),
           error: format!("{error} (and failed to render error page: {err})"),
+          can_go_back,
+          can_go_forward,
         });
         if let Some(tab) = self.tabs.get_mut(&tab_id) {
           tab.loading = false;
@@ -1253,10 +1260,14 @@ impl BrowserRuntime {
       Ok(doc) => doc,
       Err(_) => {
         // If even the error page can't be installed, just emit NavigationFailed.
+        let (can_go_back, can_go_forward) =
+          (tab.history.can_go_back(), tab.history.can_go_forward());
         let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url: original_url.to_string(),
           error: error.to_string(),
+          can_go_back,
+          can_go_forward,
         });
         tab.loading = false;
         let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -1278,10 +1289,14 @@ impl BrowserRuntime {
     let painted = match painted {
       Ok(Some(frame)) => frame,
       _ => {
+        let (can_go_back, can_go_forward) =
+          (tab.history.can_go_back(), tab.history.can_go_forward());
         let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url: original_url.to_string(),
           error: error.to_string(),
+          can_go_back,
+          can_go_forward,
         });
         tab.loading = false;
         let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -1313,6 +1328,8 @@ impl BrowserRuntime {
           tab_id,
           url: original_url.to_string(),
           error: error.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         },
         WorkerToUi::FrameReady {
           tab_id,

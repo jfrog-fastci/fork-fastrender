@@ -210,6 +210,8 @@ impl BrowserWorker {
             tab_id,
             url: url_string.clone(),
             error: err.to_string(),
+            can_go_back: false,
+            can_go_forward: false,
           });
           return Err(err);
         }
@@ -298,6 +300,8 @@ impl BrowserWorker {
           tab_id,
           url: url_string,
           error: err.to_string(),
+          can_go_back: false,
+          can_go_forward: false,
         });
         return Err(err);
       }
@@ -312,6 +316,8 @@ impl BrowserWorker {
           tab_id,
           url: url_string,
           error,
+          can_go_back: false,
+          can_go_forward: false,
         });
       }
       None => {
@@ -771,6 +777,8 @@ impl BrowserUiWorker {
           tab_id,
           url: url.clone(),
           error: err.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
         let html = about_pages::error_page_html("Navigation failed", &err.to_string());
         let report = match prepare_about_html(

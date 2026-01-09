@@ -517,6 +517,8 @@ impl BrowserTabController {
             tab_id: self.tab_id,
             url: url.to_string(),
             error: err.to_string(),
+            can_go_back: false,
+            can_go_forward: false,
           });
           let html = about_pages::error_page_html("Navigation failed", &err.to_string());
           renderer.set_base_url(about_pages::ABOUT_BASE_URL);

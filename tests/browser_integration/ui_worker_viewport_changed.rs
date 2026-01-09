@@ -24,7 +24,7 @@ fn wait_for_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId, expec
       assert_eq!(got, tab_id);
       assert_eq!(url, expected_url);
     }
-    WorkerToUi::NavigationFailed { tab_id: got, url, error } => {
+    WorkerToUi::NavigationFailed { tab_id: got, url, error, .. } => {
       assert_eq!(got, tab_id);
       panic!("navigation failed for {url}: {error}");
     }
@@ -56,7 +56,7 @@ fn wait_for_frame_with_meta(
       assert_eq!(got, tab_id);
       frame
     }
-    WorkerToUi::NavigationFailed { tab_id: got, url, error } => {
+    WorkerToUi::NavigationFailed { tab_id: got, url, error, .. } => {
       assert_eq!(got, tab_id);
       panic!("navigation failed for {url}: {error}");
     }

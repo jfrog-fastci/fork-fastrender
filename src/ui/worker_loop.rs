@@ -409,6 +409,8 @@ fn navigate_tab(
           tab_id,
           url: url.clone(),
           error: err.clone(),
+          can_go_back: false,
+          can_go_forward: false,
         });
         render_navigation_error_page(tab_id, tab, ui_tx, &err);
         return NavigationOutcome::Completed;
@@ -427,6 +429,8 @@ fn navigate_tab(
             tab_id,
             url: url.clone(),
             error: err.clone(),
+            can_go_back: false,
+            can_go_forward: false,
           });
           render_navigation_error_page(tab_id, tab, ui_tx, &err);
           return NavigationOutcome::Completed;
@@ -457,6 +461,8 @@ fn navigate_tab(
           tab_id,
           url: committed_url.clone(),
           error: err.clone(),
+          can_go_back: false,
+          can_go_forward: false,
         });
         render_navigation_error_page(tab_id, tab, ui_tx, &err);
         return NavigationOutcome::Completed;

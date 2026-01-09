@@ -307,6 +307,8 @@ impl BrowserRenderThread {
             tab_id,
             url: requested_url.clone(),
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
           tab.loading = false;
           let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -327,6 +329,8 @@ impl BrowserRenderThread {
             tab_id,
             url: requested_url.clone(),
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
           tab.loading = false;
           let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -355,6 +359,8 @@ impl BrowserRenderThread {
           tab_id,
           url: requested_url.clone(),
           error: err.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
         tab.loading = false;
         let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -397,6 +403,8 @@ impl BrowserRenderThread {
               tab_id,
               url: requested_url.clone(),
               error: err2.to_string(),
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
             });
             tab.loading = false;
             let _ = self.ui_tx.send(WorkerToUi::LoadingState {
@@ -444,6 +452,8 @@ impl BrowserRenderThread {
         tab_id,
         url: requested_url.clone(),
         error,
+        can_go_back: tab.history.can_go_back(),
+        can_go_forward: tab.history.can_go_forward(),
       });
     }
 

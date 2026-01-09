@@ -691,12 +691,20 @@ impl BrowserAppState {
         }
         update.request_redraw = true;
       }
-      WorkerToUi::NavigationFailed { tab_id, url, error } => {
+      WorkerToUi::NavigationFailed {
+        tab_id,
+        url,
+        error,
+        can_go_back,
+        can_go_forward,
+      } => {
         if let Some(tab) = self.tab_mut(tab_id) {
           tab.loading = false;
           tab.error = Some(error);
           tab.stage = None;
           tab.pending_nav_url = None;
+          tab.can_go_back = can_go_back;
+          tab.can_go_forward = can_go_forward;
         }
         if self.active_tab_id() == Some(tab_id) && !self.chrome.address_bar_editing {
           self.chrome.address_bar_text = url;

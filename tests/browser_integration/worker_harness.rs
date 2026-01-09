@@ -122,7 +122,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
       },
       None,
     ),
-    WorkerToUi::NavigationFailed { tab_id, url, error } => (
+    WorkerToUi::NavigationFailed { tab_id, url, error, .. } => (
       WorkerToUiEvent::NavigationFailed { tab_id, url, error },
       None,
     ),

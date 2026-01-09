@@ -55,6 +55,7 @@ fn recv_until_frame(
           tab_id: msg_tab,
           url,
           error,
+          ..
         } if msg_tab == tab_id => {
           panic!("navigation failed for {url}: {error}");
         }

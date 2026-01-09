@@ -670,6 +670,60 @@ fn url_fragment(url: &str) -> Option<&str> {
   url.split_once('#').map(|(_, fragment)| fragment)
 }
 
+fn render_navigation_error_page(
+  tab_id: TabId,
+  tab: &mut TabState,
+  tx: &Sender<WorkerToUi>,
+  message: &str,
+) {
+  // Best-effort: if we can't render the error page, the caller still emits NavigationFailed so the
+  // UI can surface the error string.
+  let html = about_pages::error_page_html("Navigation failed", message);
+  let url = about_pages::ABOUT_ERROR.to_string();
+
+  // Ensure the error page renders at the top of the viewport.
+  tab.scroll_state = ScrollState::default();
+
+  let options = RenderOptions::new()
+    .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
+    .with_device_pixel_ratio(tab.dpr)
+    .with_scroll(tab.scroll_state.viewport.x, tab.scroll_state.viewport.y)
+    .with_element_scroll_offsets(tab.scroll_state.elements.clone());
+
+  if let Some(doc) = tab.document.as_mut() {
+    doc.set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
+    doc.set_document_url(Some(url.clone()));
+    if doc.reset_with_html(&html, options).is_err() {
+      return;
+    }
+  } else {
+    let mut renderer = match FastRender::new() {
+      Ok(renderer) => renderer,
+      Err(_) => return,
+    };
+    renderer.set_base_url(about_pages::ABOUT_BASE_URL);
+    let dom = match renderer.parse_html(&html) {
+      Ok(dom) => dom,
+      Err(_) => return,
+    };
+    let report = match renderer.prepare_dom_with_options(dom, Some(&url), options.clone()) {
+      Ok(report) => report,
+      Err(_) => return,
+    };
+    let doc = match BrowserDocument::from_prepared(renderer, report.document, options) {
+      Ok(doc) => doc,
+      Err(_) => return,
+    };
+    tab.document = Some(doc);
+  }
+
+  tab.current_url = Some(url);
+  if let Some(doc) = tab.document.as_mut() {
+    doc.set_scroll_state(tab.scroll_state.clone());
+  }
+  repaint_force(tab_id, tab, tx);
+}
+
 fn navigate_tab(
   tab_id: TabId,
   tab: &mut TabState,
@@ -778,11 +832,15 @@ fn navigate_tab(
       doc.set_navigation_urls(Some(url.clone()), Some(about_pages::ABOUT_BASE_URL.to_string()));
       doc.set_document_url(Some(url.clone()));
       if let Err(err) = doc.reset_with_html(&html, options) {
+        let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url,
-          error: err.to_string(),
+          error: err.clone(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
+        render_navigation_error_page(tab_id, tab, tx, &err);
         return;
       }
       url.clone()
@@ -794,7 +852,10 @@ fn navigate_tab(
             tab_id,
             url,
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
+          render_navigation_error_page(tab_id, tab, tx, &err.to_string());
           return;
         }
       };
@@ -809,7 +870,10 @@ fn navigate_tab(
             tab_id,
             url,
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
+          render_navigation_error_page(tab_id, tab, tx, &err.to_string());
           return;
         }
       };
@@ -821,7 +885,10 @@ fn navigate_tab(
             tab_id,
             url,
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
+          render_navigation_error_page(tab_id, tab, tx, &err.to_string());
           return;
         }
       };
@@ -834,7 +901,10 @@ fn navigate_tab(
             tab_id,
             url,
             error: err.to_string(),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
+          render_navigation_error_page(tab_id, tab, tx, &err.to_string());
           return;
         }
       };
@@ -845,11 +915,15 @@ fn navigate_tab(
     match doc.navigate_url(&url, options) {
       Ok(report) => report.final_url.clone().unwrap_or_else(|| url.clone()),
       Err(err) => {
+        let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url,
-          error: err.to_string(),
+          error: err.clone(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
+        render_navigation_error_page(tab_id, tab, tx, &err);
         return;
       }
     }
@@ -864,7 +938,10 @@ fn navigate_tab(
           tab_id,
           url,
           error: err.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
+        render_navigation_error_page(tab_id, tab, tx, &err.to_string());
         return;
       }
     };
@@ -872,11 +949,15 @@ fn navigate_tab(
     let report = match renderer.prepare_url(&url, options.clone()) {
       Ok(report) => report,
       Err(err) => {
+        let err = err.to_string();
         let _ = tx.send(WorkerToUi::NavigationFailed {
           tab_id,
           url,
-          error: err.to_string(),
+          error: err.clone(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
+        render_navigation_error_page(tab_id, tab, tx, &err);
         return;
       }
     };
@@ -889,7 +970,10 @@ fn navigate_tab(
           tab_id,
           url,
           error: err.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
+        render_navigation_error_page(tab_id, tab, tx, &err.to_string());
         return;
       }
     };

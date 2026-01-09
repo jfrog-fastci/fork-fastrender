@@ -243,6 +243,8 @@ impl UiWorker {
               tab_id,
               url: nav_url.clone(),
               error: err.clone(),
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
             });
             should_commit = false;
 
@@ -270,6 +272,8 @@ impl UiWorker {
               tab_id,
               url: nav_url.clone(),
               error: err.clone(),
+              can_go_back: tab.history.can_go_back(),
+              can_go_forward: tab.history.can_go_forward(),
             });
             should_commit = false;
 

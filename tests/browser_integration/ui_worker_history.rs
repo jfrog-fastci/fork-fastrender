@@ -82,6 +82,7 @@ fn next_navigation_committed(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> (Strin
       tab_id: msg_tab,
       url,
       error,
+      ..
     } if msg_tab == tab_id => {
       panic!("navigation failed for {url}: {error}");
     }

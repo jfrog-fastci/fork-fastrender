@@ -90,7 +90,7 @@ fn wait_for_navigation_committed(
           break;
         }
       }
-      Ok(WorkerToUi::NavigationFailed { tab_id: msg_tab, url, error }) if msg_tab == tab_id => {
+      Ok(WorkerToUi::NavigationFailed { tab_id: msg_tab, url, error, .. }) if msg_tab == tab_id => {
         panic!("navigation failed for {url}: {error}");
       }
       Ok(_) => {}

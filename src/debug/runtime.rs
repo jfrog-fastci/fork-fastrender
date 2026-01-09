@@ -288,6 +288,27 @@ pub(crate) fn update_runtime_toggles(toggles: Arc<RuntimeToggles>) {
 
 /// Convenience helper to run a closure with a temporary toggles override.
 pub fn with_runtime_toggles<T>(toggles: Arc<RuntimeToggles>, f: impl FnOnce() -> T) -> T {
+  // Avoid deadlocks when a render running under an existing global override spawns helper threads
+  // (e.g. the large-stack layout thread). Those threads may call `with_runtime_toggles` again with
+  // the *same* `Arc<RuntimeToggles>`, but the global override lock is held by the parent thread
+  // for the duration of the render. Blocking on that lock would deadlock because the parent waits
+  // for the helper thread to finish.
+  //
+  // Fast path: if the requested toggles are already active, only install a thread-local override.
+  // When possible, also take the global override lock in a non-blocking way to prevent other
+  // threads from swapping toggles mid-scope (important if `f` spawns additional threads).
+  let current = runtime_toggles();
+  if Arc::ptr_eq(&current, &toggles) {
+    let thread_guard = set_thread_runtime_toggles(toggles);
+    let maybe_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK
+      .get_or_init(|| ReentrantMutex::new(()))
+      .try_lock();
+    let result = f();
+    drop(maybe_lock);
+    drop(thread_guard);
+    return result;
+  }
+
   // Most toggle lookups happen on the same thread that installs the override (render pipeline hot
   // paths). Install a thread-local copy so repeated `runtime_toggles()` calls avoid taking the
   // global RwLock.

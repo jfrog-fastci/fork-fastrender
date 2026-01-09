@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 use url::Url;
 
-use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn recv_until_deadline(rx: &Receiver<WorkerToUi>, deadline: Instant) -> Option<WorkerToUi> {
   loop {
@@ -117,6 +117,7 @@ fn missing_file_navigation_emits_navigation_failed_and_stops_loading() {
         tab_id: msg_tab,
         url,
         error,
+        ..
       } if msg_tab == tab_id => {
         assert!(
           matches!(expect, Expect::Failed),
@@ -284,6 +285,7 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
         tab_id: msg_tab,
         url,
         error,
+        ..
       } if msg_tab == tab_id => {
         assert!(
           matches!(expect, Expect::Failed),
@@ -362,7 +364,7 @@ fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
       WorkerToUi::FrameReady { tab_id: msg_tab, .. } if msg_tab == tab_id => {
         saw_frame = true;
       }
-      WorkerToUi::NavigationFailed { tab_id: msg_tab, url: failed, error } if msg_tab == tab_id => {
+      WorkerToUi::NavigationFailed { tab_id: msg_tab, url: failed, error, .. } if msg_tab == tab_id => {
         panic!("about navigation unexpectedly failed for {failed}: {error}");
       }
       _ => {}
@@ -371,4 +373,130 @@ fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
 
   drop(ui_tx);
   join.join().expect("join UiWorker");
+}
+
+#[test]
+fn history_worker_missing_file_navigation_renders_about_error_frame_and_updates_nav_flags() {
+  let _lock = super::stage_listener_test_lock();
+  let dir = tempdir().expect("temp dir");
+  let missing_path = dir.path().join("missing.html");
+  let missing_url = Url::from_file_path(&missing_path)
+    .expect("file URL")
+    .to_string();
+
+  let worker =
+    fastrender::ui::worker::spawn_ui_worker("fastr-ui-worker-missing-file-history-test")
+      .expect("spawn ui worker");
+
+  let tab_id = TabId::new();
+  worker
+    .ui_tx
+    .send(create_tab_msg(tab_id, Some("about:newtab".to_string())))
+    .expect("create tab");
+  worker
+    .ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .expect("viewport");
+
+  // Wait for the initial about:newtab navigation to paint so history exists.
+  super::support::recv_for_tab(&worker.ui_rx, tab_id, DEFAULT_TIMEOUT, |msg| {
+    matches!(msg, WorkerToUi::FrameReady { .. })
+  })
+  .expect("initial FrameReady");
+
+  // Navigate to a file:// URL that does not exist.
+  worker
+    .ui_tx
+    .send(navigate_msg(
+      tab_id,
+      missing_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
+    .expect("navigate missing file");
+
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
+  let mut saw_frame = false;
+  let mut saw_scroll = false;
+  let mut saw_failed = false;
+
+  while Instant::now() < deadline {
+    let Some(msg) = recv_until_deadline(&worker.ui_rx, deadline) else {
+      break;
+    };
+
+    match msg {
+      WorkerToUi::NavigationStarted {
+        tab_id: msg_tab,
+        url,
+      } if msg_tab == tab_id => {
+        // Ignore earlier navigations; only care about the failing URL.
+        if url == missing_url {
+          // Once the failing navigation starts, we expect a NavigationFailed + error frame.
+          saw_failed = false;
+          saw_frame = false;
+          saw_scroll = false;
+        }
+      }
+      WorkerToUi::NavigationFailed {
+        tab_id: msg_tab,
+        url,
+        error,
+        can_go_back,
+        can_go_forward,
+        ..
+      } if msg_tab == tab_id => {
+        if url != missing_url {
+          continue;
+        }
+        assert!(!error.is_empty(), "expected non-empty error string");
+        assert!(
+          can_go_back,
+          "expected can_go_back=true after failed navigation from about:newtab"
+        );
+        assert!(
+          !can_go_forward,
+          "expected can_go_forward=false after a new failing navigation"
+        );
+        saw_failed = true;
+      }
+      WorkerToUi::FrameReady {
+        tab_id: msg_tab,
+        frame,
+      } if msg_tab == tab_id => {
+        if !saw_failed {
+          // The fallback error page should only be painted after we report the failure.
+          continue;
+        }
+        assert!(
+          frame.pixmap.width() > 0 && frame.pixmap.height() > 0,
+          "expected non-empty pixmap for about:error fallback"
+        );
+        saw_frame = true;
+      }
+      WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, .. } if msg_tab == tab_id => {
+        if saw_failed {
+          saw_scroll = true;
+        }
+      }
+      WorkerToUi::NavigationCommitted { tab_id: msg_tab, url, .. } if msg_tab == tab_id => {
+        if url == missing_url {
+          panic!("missing-file navigation should not commit");
+        }
+      }
+      _ => {}
+    }
+
+    if saw_failed && saw_frame && saw_scroll {
+      break;
+    }
+  }
+
+  assert!(saw_failed, "expected NavigationFailed for missing file");
+  assert!(saw_frame, "expected about:error fallback FrameReady after failure");
+  assert!(
+    saw_scroll,
+    "expected ScrollStateUpdated for the about:error fallback frame"
+  );
+
+  worker.join().expect("join ui worker");
 }

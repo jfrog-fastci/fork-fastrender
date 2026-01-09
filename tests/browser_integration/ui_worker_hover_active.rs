@@ -68,6 +68,7 @@ fn next_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> RenderedFrame {
       tab_id: msg_tab,
       url,
       error,
+      ..
     } => {
       assert_eq!(msg_tab, tab_id);
       panic!("navigation failed for {url}: {error}");

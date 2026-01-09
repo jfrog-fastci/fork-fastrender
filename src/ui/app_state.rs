@@ -289,7 +289,13 @@ impl BrowserAppState {
           self.address_bar_text = address_text;
         }
       }
-      WorkerToUi::NavigationFailed { tab_id, url, .. } => {
+      WorkerToUi::NavigationFailed {
+        tab_id,
+        url,
+        can_go_back,
+        can_go_forward,
+        ..
+      } => {
         let Some(idx) = self.tab_index(tab_id) else {
           return;
         };
@@ -297,6 +303,8 @@ impl BrowserAppState {
         let tab = &mut self.tabs[idx];
         tab.loading = false;
         tab.pending_navigation_original_url = None;
+        tab.can_go_back = can_go_back;
+        tab.can_go_forward = can_go_forward;
 
         if is_active {
           self.address_bar_text = url;

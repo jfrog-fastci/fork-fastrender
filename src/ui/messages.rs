@@ -244,6 +244,8 @@ pub enum WorkerToUi {
     tab_id: TabId,
     url: String,
     error: String,
+    can_go_back: bool,
+    can_go_forward: bool,
   },
   ScrollStateUpdated {
     tab_id: TabId,

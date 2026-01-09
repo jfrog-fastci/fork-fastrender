@@ -244,12 +244,16 @@ pub fn format_messages(msgs: &[WorkerToUi]) -> String {
       tab_id,
       url,
       error,
+      can_go_back,
+      can_go_forward,
     } = msg
     {
       let _ = writeln!(
         &mut out,
-        "NavigationFailed(tab={}, url={url}, error={error})",
-        tab_id.0
+        "NavigationFailed(tab={}, url={url}, error={error}, back={}, forward={})",
+        tab_id.0,
+        can_go_back,
+        can_go_forward
       );
       continue;
     }

@@ -411,6 +411,8 @@ fn navigate(
       tab_id,
       url: url_trimmed.clone(),
       error,
+      can_go_back: tab.history.can_go_back(),
+      can_go_forward: tab.history.can_go_forward(),
     });
   }
 

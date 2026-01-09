@@ -295,6 +295,8 @@ impl BrowserWorkerRuntime {
         tab_id,
         url: url.clone(),
         error: "unsupported URL scheme".to_string(),
+        can_go_back: tab.history.can_go_back(),
+        can_go_forward: tab.history.can_go_forward(),
       });
       let _ = self.ui_tx.send(WorkerToUi::LoadingState {
         tab_id,
@@ -327,6 +329,8 @@ impl BrowserWorkerRuntime {
             tab_id,
             url: url.clone(),
             error: format!("failed to create renderer: {err}"),
+            can_go_back: tab.history.can_go_back(),
+            can_go_forward: tab.history.can_go_forward(),
           });
           let _ = self.ui_tx.send(WorkerToUi::LoadingState {
             tab_id,
@@ -369,6 +373,8 @@ impl BrowserWorkerRuntime {
           tab_id,
           url: url.clone(),
           error: err.to_string(),
+          can_go_back: tab.history.can_go_back(),
+          can_go_forward: tab.history.can_go_forward(),
         });
         let _ = self.ui_tx.send(WorkerToUi::LoadingState {
           tab_id,

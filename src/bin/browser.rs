@@ -837,7 +837,13 @@ impl App {
           self.browser_state.chrome.address_bar_text = url;
         }
       }
-      fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {
+      fastrender::ui::WorkerToUi::NavigationFailed {
+        tab_id,
+        error,
+        can_go_back,
+        can_go_forward,
+        ..
+      } => {
         if self
           .open_select_dropdown
           .as_ref()
@@ -850,6 +856,8 @@ impl App {
           tab.error = Some(error);
           tab.stage = None;
           tab.pending_nav_url = None;
+          tab.can_go_back = can_go_back;
+          tab.can_go_forward = can_go_forward;
           tab.clear_scroll_restore();
         }
       }
