@@ -72,9 +72,6 @@ scripts/cargo_agent.sh test --quiet --lib
 scripts/cargo_agent.sh test --test layout_tests
 scripts/cargo_agent.sh check -p fastrender
 
-# If your checkout lost executable bits (e.g. zip/tarball downloads), invoking via `bash` is fine:
-bash scripts/cargo_agent.sh check -p fastrender
-
 # WRONG — WILL DESTROY HOST:
 cargo test
 cargo build --all-targets
@@ -88,7 +85,7 @@ If you run unscoped cargo commands, you will compile 100+ binaries with LTO, spa
 `target/` grows without bound. Before loops, check size and clean when over budget:
 
 ```bash
-TARGET_MAX_GB="${TARGET_MAX_GB:-2000}"
+TARGET_MAX_GB="${TARGET_MAX_GB:-400}"
 TARGET_MAX_BYTES=$((TARGET_MAX_GB * 1024 * 1024 * 1024))
 du -xsh target 2>/dev/null || true
 if [[ -d target ]]; then
