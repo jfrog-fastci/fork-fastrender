@@ -47,7 +47,7 @@ fn data_desc(value: Value) -> PropertyDescriptor {
 
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
-  scope.push_root(Value::String(s));
+  scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
 }
 
@@ -133,7 +133,7 @@ fn is_callable(scope: &Scope<'_>, value: Value) -> bool {
 
 fn get_timer_registry(scope: &mut Scope<'_>, global: vm_js::GcObject) -> Result<vm_js::GcObject, VmError> {
   let key_s = scope.alloc_string(TIMER_REGISTRY_KEY)?;
-  scope.push_root(Value::String(key_s));
+  scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
   match scope
     .heap()
@@ -162,7 +162,7 @@ fn store_timer_record(
   extra_args: &[Value],
 ) -> Result<(), VmError> {
   let record = scope.alloc_object()?;
-  scope.push_root(Value::Object(record));
+  scope.push_root(Value::Object(record))?;
 
   let callback_key = alloc_key(scope, TIMER_RECORD_CALLBACK_KEY)?;
   scope.define_property(record, callback_key, data_desc(callback))?;
@@ -433,7 +433,7 @@ fn queue_microtask_native<Host: WindowRealmHost + 'static>(
   };
 
   // Keep the callback alive until the microtask runs.
-  let root = scope.heap_mut().add_root(callback);
+  let root = scope.heap_mut().add_root(callback)?;
   event_loop
     .queue_microtask(move |host, event_loop| {
       let (vm, heap) = host.window_realm().vm_and_heap_mut();
@@ -476,12 +476,12 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
 ) -> Result<(), VmError> {
   let mut scope = heap.scope();
   let global = realm.global_object();
-  scope.push_root(Value::Object(global));
+  scope.push_root(Value::Object(global))?;
 
   // Internal registry that keeps timer callback/argument values alive until they are fired or
   // canceled.
   let registry = scope.alloc_object()?;
-  scope.push_root(Value::Object(registry));
+  scope.push_root(Value::Object(registry))?;
   let registry_key = alloc_key(&mut scope, TIMER_REGISTRY_KEY)?;
   scope.define_property(
     global,
@@ -491,35 +491,35 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
 
   let set_timeout_id = vm.register_native_call(set_timeout_native::<Host>)?;
   let set_timeout_name = scope.alloc_string("setTimeout")?;
-  scope.push_root(Value::String(set_timeout_name));
+  scope.push_root(Value::String(set_timeout_name))?;
   let set_timeout = scope.alloc_native_function(set_timeout_id, None, set_timeout_name, 1)?;
-  scope.push_root(Value::Object(set_timeout));
+  scope.push_root(Value::Object(set_timeout))?;
 
   let clear_timeout_id = vm.register_native_call(clear_timeout_native::<Host>)?;
   let clear_timeout_name = scope.alloc_string("clearTimeout")?;
-  scope.push_root(Value::String(clear_timeout_name));
+  scope.push_root(Value::String(clear_timeout_name))?;
   let clear_timeout = scope.alloc_native_function(clear_timeout_id, None, clear_timeout_name, 1)?;
-  scope.push_root(Value::Object(clear_timeout));
+  scope.push_root(Value::Object(clear_timeout))?;
 
   let set_interval_id = vm.register_native_call(set_interval_native::<Host>)?;
   let set_interval_name = scope.alloc_string("setInterval")?;
-  scope.push_root(Value::String(set_interval_name));
+  scope.push_root(Value::String(set_interval_name))?;
   let set_interval = scope.alloc_native_function(set_interval_id, None, set_interval_name, 1)?;
-  scope.push_root(Value::Object(set_interval));
+  scope.push_root(Value::Object(set_interval))?;
 
   let clear_interval_id = vm.register_native_call(clear_interval_native::<Host>)?;
   let clear_interval_name = scope.alloc_string("clearInterval")?;
-  scope.push_root(Value::String(clear_interval_name));
+  scope.push_root(Value::String(clear_interval_name))?;
   let clear_interval =
     scope.alloc_native_function(clear_interval_id, None, clear_interval_name, 1)?;
-  scope.push_root(Value::Object(clear_interval));
+  scope.push_root(Value::Object(clear_interval))?;
 
   let queue_microtask_id = vm.register_native_call(queue_microtask_native::<Host>)?;
   let queue_microtask_name = scope.alloc_string("queueMicrotask")?;
-  scope.push_root(Value::String(queue_microtask_name));
+  scope.push_root(Value::String(queue_microtask_name))?;
   let queue_microtask =
     scope.alloc_native_function(queue_microtask_id, None, queue_microtask_name, 1)?;
-  scope.push_root(Value::Object(queue_microtask));
+  scope.push_root(Value::Object(queue_microtask))?;
 
   let set_timeout_key = alloc_key(&mut scope, "setTimeout")?;
   let clear_timeout_key = alloc_key(&mut scope, "clearTimeout")?;
@@ -590,14 +590,14 @@ mod tests {
 
   fn set_prop(scope: &mut Scope<'_>, obj: vm_js::GcObject, name: &str, value: Value) {
     let key_s = scope.alloc_string(name).unwrap();
-    scope.push_root(Value::String(key_s));
+    scope.push_root(Value::String(key_s)).unwrap();
     let key = PropertyKey::from_string(key_s);
     scope.define_property(obj, key, data_desc(value)).unwrap();
   }
 
   fn init_log(scope: &mut Scope<'_>, global: vm_js::GcObject) {
     let log_obj = scope.alloc_object().unwrap();
-    scope.push_root(Value::Object(log_obj));
+    scope.push_root(Value::Object(log_obj)).unwrap();
     set_prop(scope, global, "__log_obj", Value::Object(log_obj));
     set_prop(scope, global, "__log_len", Value::Number(0.0));
   }
@@ -612,10 +612,10 @@ mod tests {
       _ => panic!("missing __log_len"),
     };
     let key_s = scope.alloc_string(&len.to_string()).unwrap();
-    scope.push_root(Value::String(key_s));
+    scope.push_root(Value::String(key_s)).unwrap();
     let key = PropertyKey::from_string(key_s);
     let label_s = scope.alloc_string(label).unwrap();
-    scope.push_root(Value::String(label_s));
+    scope.push_root(Value::String(label_s)).unwrap();
     scope
       .define_property(log_obj, key, data_desc(Value::String(label_s)))
       .unwrap();
@@ -625,7 +625,7 @@ mod tests {
   fn read_log(heap: &mut Heap, realm: &Realm) -> Vec<String> {
     let mut scope = heap.scope();
     let global = realm.global_object();
-    scope.push_root(Value::Object(global));
+    scope.push_root(Value::Object(global)).unwrap();
     let log_obj = match get_prop(&mut scope, global, "__log_obj") {
       Value::Object(o) => o,
       _ => panic!("missing __log_obj"),
@@ -661,7 +661,7 @@ mod tests {
       .register_native_call(native)
       .expect("register_native_call");
     let name_s = scope.alloc_string(name).unwrap();
-    scope.push_root(Value::String(name_s));
+    scope.push_root(Value::String(name_s)).unwrap();
     scope.alloc_native_function(id, None, name_s, 0).unwrap()
   }
 
@@ -752,11 +752,11 @@ mod tests {
 
     let mut scope = heap.scope();
     let global = realm.global_object();
-    scope.push_root(Value::Object(global));
+    scope.push_root(Value::Object(global))?;
 
     let set_timeout = get_prop(&mut scope, global, "setTimeout");
     let not_a_function = scope.alloc_object()?;
-    scope.push_root(Value::Object(not_a_function));
+    scope.push_root(Value::Object(not_a_function))?;
 
     let err = vm.call(
       &mut scope,
@@ -976,7 +976,7 @@ mod tests {
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let cb = make_callback(vm, &mut scope, "cb", cb_capture_args);
         let x_s = scope.alloc_string("x").unwrap();
-        scope.push_root(Value::String(x_s));
+        scope.push_root(Value::String(x_s)).unwrap();
         vm.call(
           &mut scope,
           set_timeout,
@@ -1034,7 +1034,7 @@ mod tests {
         let mut scope = heap.scope();
         let set_timeout = get_prop(&mut scope, global, "setTimeout");
         let handler_s = scope.alloc_string("alert(1)").unwrap();
-        scope.push_root(Value::String(handler_s));
+        scope.push_root(Value::String(handler_s)).unwrap();
         vm.call(
           &mut scope,
           set_timeout,

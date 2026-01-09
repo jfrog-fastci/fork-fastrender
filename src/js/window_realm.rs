@@ -139,7 +139,7 @@ impl vm_js::VmJobContext for WindowRealm {
     vm.construct(&mut scope, callee, args, new_target)
   }
 
-  fn add_root(&mut self, value: Value) -> vm_js::RootId {
+  fn add_root(&mut self, value: Value) -> Result<vm_js::RootId, VmError> {
     self.heap.add_root(value)
   }
 
@@ -165,7 +165,7 @@ fn data_desc(value: Value) -> PropertyDescriptor {
 
 fn alloc_key(scope: &mut Scope<'_>, name: &str) -> Result<PropertyKey, VmError> {
   let s = scope.alloc_string(name)?;
-  scope.push_root(Value::String(s));
+  scope.push_root(Value::String(s))?;
   Ok(PropertyKey::from_string(s))
 }
 
@@ -266,15 +266,15 @@ fn init_window_globals(
   let document_url_key = alloc_key(&mut scope, "URL")?;
 
   let url_s = scope.alloc_string(&config.document_url)?;
-  scope.push_root(Value::String(url_s));
+  scope.push_root(Value::String(url_s))?;
   let url_v = Value::String(url_s);
 
   let location_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(location_obj));
+  scope.push_root(Value::Object(location_obj))?;
   scope.define_property(location_obj, href_key, data_desc(url_v))?;
 
   let document_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(document_obj));
+  scope.push_root(Value::Object(document_obj))?;
   scope.define_property(document_obj, document_url_key, data_desc(url_v))?;
   let document_location_key = alloc_key(&mut scope, "location")?;
   scope.define_property(
@@ -284,13 +284,13 @@ fn init_window_globals(
   )?;
 
   let console_obj = scope.alloc_object()?;
-  scope.push_root(Value::Object(console_obj));
+  scope.push_root(Value::Object(console_obj))?;
 
-  let log_call_id = vm.register_native_call(console_log_native);
+  let log_call_id = vm.register_native_call(console_log_native)?;
   let log_name = scope.alloc_string("log")?;
-  scope.push_root(Value::String(log_name));
+  scope.push_root(Value::String(log_name))?;
   let log_func = scope.alloc_native_function(log_call_id, None, log_name, 0)?;
-  scope.push_root(Value::Object(log_func));
+  scope.push_root(Value::Object(log_func))?;
 
   let log_key = alloc_key(&mut scope, "log")?;
   scope.define_property(console_obj, log_key, data_desc(Value::Object(log_func)))?;

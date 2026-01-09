@@ -152,6 +152,7 @@ impl VmJsRuntime {
       };
       root_ids.push(id);
     }
+
     let result = f(self);
     for id in root_ids {
       self.heap.remove_root(id);

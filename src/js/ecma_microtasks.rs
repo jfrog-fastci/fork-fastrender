@@ -81,7 +81,7 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     }
   }
 
-  fn add_root(&mut self, value: vm_js::Value) -> vm_js::RootId {
+  fn add_root(&mut self, value: vm_js::Value) -> Result<vm_js::RootId, vm_js::VmError> {
     let (_vm, heap) = self.host.vm_js_vm_and_heap_mut();
     heap.add_root(value)
   }
@@ -307,7 +307,9 @@ mod tests {
         host: &mut host,
         realm: None,
       };
-      let root = job.add_root(&mut ctx, vm_js::Value::Null);
+      let root = job
+        .add_root(&mut ctx, vm_js::Value::Null)
+        .map_err(|e| Error::Other(e.to_string()))?;
       (root, job)
     };
     hooks.host_enqueue_promise_job(job1, None);
@@ -324,7 +326,9 @@ mod tests {
         host: &mut host,
         realm: None,
       };
-      let root = job.add_root(&mut ctx, vm_js::Value::Undefined);
+      let root = job
+        .add_root(&mut ctx, vm_js::Value::Undefined)
+        .map_err(|e| Error::Other(e.to_string()))?;
       (root, job)
     };
     hooks.host_enqueue_promise_job(job2, None);

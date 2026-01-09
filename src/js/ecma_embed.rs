@@ -142,12 +142,16 @@ impl Env {
     heap.get_root(root)
   }
 
-  fn set(&mut self, heap: &mut Heap, name: &str, value: Value) {
+  fn set(&mut self, heap: &mut Heap, name: &str, value: Value) -> Result<(), VmError> {
     match self.globals.get(name).copied() {
-      Some(root) => heap.set_root(root, value),
+      Some(root) => {
+        heap.set_root(root, value);
+        Ok(())
+      }
       None => {
-        let root = heap.add_root(value);
+        let root = heap.add_root(value)?;
         self.globals.insert(name.to_string(), root);
+        Ok(())
       }
     }
   }
@@ -310,7 +314,10 @@ impl ScriptRealm for VmJsScriptRealm {
       scope.alloc_object().map_err(vm_error_to_runtime)?
     };
     let value = Value::Object(obj);
-    self.env.set(&mut self.heap, name, value);
+    self
+      .env
+      .set(&mut self.heap, name, value)
+      .map_err(vm_error_to_runtime)?;
     self.host_functions.insert(
       obj,
       HostFunctionEntry {
@@ -429,7 +436,10 @@ impl Evaluator<'_> {
     scope: &mut Scope<'_>,
     stmts: &[Node<Stmt>],
   ) -> Result<Value, ScriptError> {
-    let last_root = scope.heap_mut().add_root(Value::Undefined);
+    let last_root = scope
+      .heap_mut()
+      .add_root(Value::Undefined)
+      .map_err(vm_error_to_runtime)?;
     let mut last_value = Value::Undefined;
 
     for stmt in stmts {
@@ -554,9 +564,9 @@ impl Evaluator<'_> {
       parse_js::operator::OperatorName::Addition => {
         let left = self.eval_expr(scope, &expr.left)?;
         let mut rhs_scope = scope.reborrow();
-        rhs_scope.push_root(left);
+        rhs_scope.push_root(left).map_err(vm_error_to_runtime)?;
         let right = self.eval_expr(&mut rhs_scope, &expr.right)?;
-        rhs_scope.push_root(right);
+        rhs_scope.push_root(right).map_err(vm_error_to_runtime)?;
         add_operator(&mut rhs_scope, left, right).map_err(|err| ScriptError::Runtime {
           message: err.to_string(),
           stack_trace: self.stack_trace_at_loc(node.loc),
@@ -573,7 +583,10 @@ impl Evaluator<'_> {
           }
         };
         let value = self.eval_expr(scope, &expr.right)?;
-        self.env.set(scope.heap_mut(), name, value);
+        self
+          .env
+          .set(scope.heap_mut(), name, value)
+          .map_err(vm_error_to_runtime)?;
         Ok(value)
       }
       _ => Err(ScriptError::Runtime {
@@ -591,7 +604,7 @@ impl Evaluator<'_> {
   ) -> Result<Value, ScriptError> {
     let callee = self.eval_expr(scope, &expr.callee)?;
     let mut call_scope = scope.reborrow();
-    call_scope.push_root(callee);
+    call_scope.push_root(callee).map_err(vm_error_to_runtime)?;
 
     let Value::Object(obj) = callee else {
       return Err(ScriptError::Runtime {
@@ -615,7 +628,7 @@ impl Evaluator<'_> {
         });
       }
       let value = self.eval_expr(&mut call_scope, &arg.stx.value)?;
-      call_scope.push_root(value);
+      call_scope.push_root(value).map_err(vm_error_to_runtime)?;
       // Convert into the embedding's stable value representation for the host callback.
       args.push(match value {
         Value::Undefined => ScriptValue::Undefined,
@@ -684,7 +697,7 @@ fn to_primitive(scope: &mut Scope<'_>, value: Value) -> Result<Value, VmError> {
       // This keeps arithmetic/object conversions behaving in a JS-like way without requiring the
       // full @@toPrimitive / valueOf / toString machinery yet.
       let mut scope = scope.reborrow();
-      scope.push_root(Value::Object(obj));
+      scope.push_root(Value::Object(obj))?;
       let s = scope.alloc_string("[object Object]")?;
       Ok(Value::String(s))
     }
@@ -707,20 +720,20 @@ fn to_number(scope: &mut Scope<'_>, value: Value) -> Result<f64, VmError> {
 fn add_operator(scope: &mut Scope<'_>, a: Value, b: Value) -> Result<Value, VmError> {
   // Root inputs and any intermediate heap values for the duration of the operation: `+` may
   // allocate (string concatenation) and thus trigger GC.
-  scope.push_root(a);
-  scope.push_root(b);
+  scope.push_root(a)?;
+  scope.push_root(b)?;
 
   let a = to_primitive(scope, a)?;
-  scope.push_root(a);
+  scope.push_root(a)?;
   let b = to_primitive(scope, b)?;
-  scope.push_root(b);
+  scope.push_root(b)?;
 
   let should_concat = matches!(a, Value::String(_)) || matches!(b, Value::String(_));
   if should_concat {
     let a_str = scope.heap_mut().to_string(a)?;
-    scope.push_root(Value::String(a_str));
+    scope.push_root(Value::String(a_str))?;
     let b_str = scope.heap_mut().to_string(b)?;
-    scope.push_root(Value::String(b_str));
+    scope.push_root(Value::String(b_str))?;
 
     let a_units = scope.heap().get_string(a_str)?.as_code_units();
     let b_units = scope.heap().get_string(b_str)?.as_code_units();

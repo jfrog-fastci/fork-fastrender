@@ -89,10 +89,10 @@ impl EventWrapper {
     ] {
       match key {
         PropertyKey::String(s) => {
-          rt.heap_mut().add_root(Value::String(s));
+          let _ = rt.heap_mut().add_root(Value::String(s))?;
         }
         PropertyKey::Symbol(sym) => {
-          rt.heap_mut().add_root(Value::Symbol(sym));
+          let _ = rt.heap_mut().add_root(Value::Symbol(sym))?;
         }
       }
     }
@@ -103,13 +103,13 @@ impl EventWrapper {
     // wrapper allocation would produce distinct `GcString` ids and unnecessary GC pressure. We
     // pre-allocate + root these once per `JsDomEvents` runtime.
     let window_target = rt.alloc_string_value("window")?;
-    rt.heap_mut().add_root(window_target);
+    let _ = rt.heap_mut().add_root(window_target)?;
     let document_target = rt.alloc_string_value("document")?;
-    rt.heap_mut().add_root(document_target);
+    let _ = rt.heap_mut().add_root(document_target)?;
 
     // Prototype with methods/getters that mutate the active Rust `Event`.
     let prototype = rt.alloc_object_value()?;
-    rt.heap_mut().add_root(prototype);
+    let _ = rt.heap_mut().add_root(prototype)?;
 
     let stop_propagation = {
       let active = active_events.clone();
@@ -322,14 +322,24 @@ impl JsDomEvents {
     type_: &str,
     callback: JsFunctionHandle,
     options: AddEventListenerOptions,
-  ) -> Option<ListenerId> {
-    let id = self.listener_id_for_callback(callback)?;
+  ) -> Result<Option<ListenerId>> {
+    let Some(id) = self.listener_id_for_callback(callback) else {
+      return Ok(None);
+    };
 
     if self.registry.add_event_listener(target, type_, id, options) {
-      self.ensure_listener_entry(id, callback);
+      if let Err(err) = self.ensure_listener_entry(id, callback) {
+        // Ensure the registry does not contain listeners that cannot be invoked due to resource
+        // limits.
+        let _ = self
+          .registry
+          .remove_event_listener(target, type_, id, options.capture);
+        self.remove_listener_if_unused(id);
+        return Err(err);
+      }
     }
 
-    Some(id)
+    Ok(Some(id))
   }
 
   pub fn remove_js_event_listener(
@@ -374,11 +384,15 @@ impl JsDomEvents {
     ))
   }
 
-  fn ensure_listener_entry(&mut self, listener_id: ListenerId, callback: Value) {
+  fn ensure_listener_entry(&mut self, listener_id: ListenerId, callback: Value) -> Result<()> {
     if self.listeners.contains_key(&listener_id) {
-      return;
+      return Ok(());
     }
-    let callback_root = self.runtime.heap_mut().add_root(callback);
+    let callback_root = self
+      .runtime
+      .heap_mut()
+      .add_root(callback)
+      .map_err(|e| Error::Other(e.to_string()))?;
     self.listeners.insert(
       listener_id,
       ListenerEntry {
@@ -386,6 +400,7 @@ impl JsDomEvents {
         callback_root,
       },
     );
+    Ok(())
   }
 
   fn remove_listener_if_unused(&mut self, listener_id: ListenerId) {

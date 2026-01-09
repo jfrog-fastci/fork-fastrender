@@ -126,16 +126,16 @@ pub fn install_time_bindings(
   let result = (|| -> Result<(), VmError> {
     let mut scope = heap.scope();
     let global = realm.global_object();
-    scope.push_root(Value::Object(global));
+    scope.push_root(Value::Object(global))?;
 
     // --- Date.now() ---
     let date = scope.alloc_object()?;
-    scope.push_root(Value::Object(date));
+    scope.push_root(Value::Object(date))?;
 
-    let date_now_id = vm.register_native_call(date_now_native);
+    let date_now_id = vm.register_native_call(date_now_native)?;
     let date_now_name = scope.alloc_string("now")?;
     let date_now = scope.alloc_native_function(date_now_id, None, date_now_name, 0)?;
-    scope.push_root(Value::Object(date_now));
+    scope.push_root(Value::Object(date_now))?;
 
     let date_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
     scope.define_property(date, date_now_key, global_data_desc(Value::Object(date_now)))?;
@@ -145,12 +145,12 @@ pub fn install_time_bindings(
 
     // --- performance.now() ---
     let performance = scope.alloc_object()?;
-    scope.push_root(Value::Object(performance));
+    scope.push_root(Value::Object(performance))?;
 
-    let perf_now_id = vm.register_native_call(performance_now_native);
+    let perf_now_id = vm.register_native_call(performance_now_native)?;
     let perf_now_name = scope.alloc_string("now")?;
     let perf_now = scope.alloc_native_function(perf_now_id, None, perf_now_name, 0)?;
-    scope.push_root(Value::Object(perf_now));
+    scope.push_root(Value::Object(perf_now))?;
 
     let perf_now_key = PropertyKey::from_string(scope.alloc_string("now")?);
     scope.define_property(
@@ -242,7 +242,7 @@ mod tests {
   fn get_global_property(heap: &mut Heap, realm: &Realm, name: &str) -> Value {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string(name).expect("alloc key string");
-    scope.push_root(Value::String(key_s));
+    scope.push_root(Value::String(key_s)).unwrap();
     let key = PropertyKey::from_string(key_s);
     let global = realm.global_object();
     scope
@@ -255,7 +255,7 @@ mod tests {
   fn get_object_property(heap: &mut Heap, obj: vm_js::GcObject, name: &str) -> Value {
     let mut scope = heap.scope();
     let key_s = scope.alloc_string(name).expect("alloc key string");
-    scope.push_root(Value::String(key_s));
+    scope.push_root(Value::String(key_s)).unwrap();
     let key = PropertyKey::from_string(key_s);
     scope
       .heap()

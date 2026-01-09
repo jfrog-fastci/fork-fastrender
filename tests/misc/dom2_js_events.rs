@@ -271,7 +271,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       capture: true,
       ..Default::default()
     },
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Node(parent),
     type_,
@@ -280,7 +280,7 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       capture: true,
       ..Default::default()
     },
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Node(target),
     type_,
@@ -289,26 +289,26 @@ fn js_listeners_capture_and_bubble_in_dom_order() -> Result<()> {
       capture: true,
       ..Default::default()
     },
-  );
+  )?;
 
   js.add_js_event_listener(
     EventTargetId::Node(target),
     type_,
     target_bubble,
     AddEventListenerOptions::default(),
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Node(parent),
     type_,
     parent_bubble,
     AddEventListenerOptions::default(),
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Document,
     type_,
     doc_bubble,
     AddEventListenerOptions::default(),
-  );
+  )?;
 
   let mut event = Event::new(type_, EventInit { bubbles: true, ..Default::default() });
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
@@ -391,13 +391,13 @@ fn js_stop_propagation_is_observed_by_dispatch() -> Result<()> {
     "test",
     stopper,
     AddEventListenerOptions::default(),
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Node(parent),
     "test",
     parent_bubble,
     AddEventListenerOptions::default(),
-  );
+  )?;
 
   let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
@@ -466,13 +466,13 @@ fn js_stop_immediate_propagation_skips_later_listeners_on_same_target() -> Resul
     "test",
     first,
     AddEventListenerOptions::default(),
-  );
+  )?;
   js.add_js_event_listener(
     EventTargetId::Node(target),
     "test",
     second,
     AddEventListenerOptions::default(),
-  );
+  )?;
 
   let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
@@ -525,7 +525,7 @@ fn js_once_listener_runs_only_once() -> Result<()> {
       once: true,
       ..Default::default()
     },
-  );
+  )?;
 
   let mut event = Event::new("test", EventInit { bubbles: true, ..Default::default() });
   js.dispatch_dom_event(&doc, EventTargetId::Node(target), &mut event)?;
@@ -581,7 +581,7 @@ fn js_passive_listener_cannot_prevent_default() -> Result<()> {
       passive: true,
       ..Default::default()
     },
-  );
+  )?;
 
   let mut event = Event::new(
     "test",
@@ -634,7 +634,7 @@ fn js_prevent_default_sets_default_prevented_property() -> Result<()> {
     "test",
     listener,
     AddEventListenerOptions::default(),
-  );
+  )?;
 
   let mut event = Event::new(
     "test",
