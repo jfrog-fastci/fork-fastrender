@@ -133,17 +133,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     match event {
       Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
-        let consumed = app.handle_window_event_pre_egui(&event, control_flow);
-        if consumed {
-          // Shortcuts are handled before passing the event to egui so they work even when the page
-          // has focus. Since the egui path is skipped, request an explicit redraw.
+        let response = app.egui_state.on_event(&app.egui_ctx, &event);
+        app.handle_winit_input_event(&event);
+        // Always redraw on keyboard events so chrome shortcuts (handled inside the egui frame via
+        // `ui::chrome_ui`) are evaluated even when egui doesn't request a repaint.
+        if response.repaint
+          || matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::MouseWheel { .. }
+          )
+        {
           app.window.request_redraw();
-        } else {
-          let response = app.egui_state.on_event(&app.egui_ctx, &event);
-          app.handle_winit_input_event(&event);
-          if response.repaint {
-            app.window.request_redraw();
-          }
         }
 
         match event {
@@ -1046,132 +1046,6 @@ impl App {
     self.browser_state.chrome.request_select_all_address_bar = true;
   }
 
-  fn cycle_active_tab_id(&self, delta: isize) -> Option<fastrender::ui::TabId> {
-    let active = self.browser_state.active_tab_id()?;
-    let len = self.browser_state.tabs.len();
-    if len < 2 {
-      return None;
-    }
-    let idx = self.browser_state.tabs.iter().position(|t| t.id == active)?;
-    let new_idx = (idx as isize + delta).rem_euclid(len as isize) as usize;
-    Some(self.browser_state.tabs[new_idx].id)
-  }
-
-  fn handle_window_event_pre_egui(
-    &mut self,
-    event: &winit::event::WindowEvent<'_>,
-    control_flow: &mut winit::event_loop::ControlFlow,
-  ) -> bool {
-    use fastrender::ui::shortcuts::{map_shortcut, Key, Modifiers, ShortcutAction};
-    use winit::event::VirtualKeyCode;
-    use winit::event::WindowEvent;
-
-    match event {
-      WindowEvent::ModifiersChanged(modifiers) => {
-        self.modifiers = *modifiers;
-        false
-      }
-      WindowEvent::KeyboardInput { input, .. } => {
-        let Some(vkey) = input.virtual_keycode else {
-          return false;
-        };
-
-        let key = match vkey {
-          VirtualKeyCode::L => Some(Key::L),
-          VirtualKeyCode::T => Some(Key::T),
-          VirtualKeyCode::W => Some(Key::W),
-          VirtualKeyCode::Tab => Some(Key::Tab),
-          VirtualKeyCode::Left => Some(Key::Left),
-          VirtualKeyCode::Right => Some(Key::Right),
-          VirtualKeyCode::R => Some(Key::R),
-          VirtualKeyCode::F5 => Some(Key::F5),
-          _ => None,
-        };
-        let Some(key) = key else {
-          return false;
-        };
-
-        let modifiers = Modifiers {
-          ctrl: self.modifiers.ctrl() || self.modifiers.logo(),
-          shift: self.modifiers.shift(),
-          alt: self.modifiers.alt(),
-        };
-
-        let Some(action) = map_shortcut(key, modifiers) else {
-          return false;
-        };
-
-        // Avoid stealing the common "move cursor by word" behaviour on macOS where Option == Alt.
-        if self.egui_ctx.wants_keyboard_input() {
-          match action {
-            ShortcutAction::Back | ShortcutAction::Forward | ShortcutAction::Reload => return false,
-            _ => {}
-          }
-        }
-
-        if input.state == winit::event::ElementState::Pressed {
-          self.apply_shortcut_action(action, control_flow);
-        }
-        true
-      }
-      _ => false,
-    }
-  }
-
-  fn apply_shortcut_action(
-    &mut self,
-    action: fastrender::ui::shortcuts::ShortcutAction,
-    _control_flow: &mut winit::event_loop::ControlFlow,
-  ) {
-    use fastrender::ui::ChromeAction;
-    use fastrender::ui::shortcuts::ShortcutAction;
-
-    match action {
-      ShortcutAction::FocusAddressBar => {
-        self.close_select_dropdown();
-        self.focus_address_bar_select_all();
-      }
-      ShortcutAction::NewTab => {
-        self.handle_chrome_actions(vec![ChromeAction::NewTab]);
-        self.focus_address_bar_select_all();
-      }
-      ShortcutAction::CloseTab => {
-        // Only close if more than one tab exists; closing the last tab is a no-op.
-        if self.browser_state.tabs.len() > 1 {
-          let Some(tab_id) = self.browser_state.active_tab_id() else {
-            return;
-          };
-          self.handle_chrome_actions(vec![ChromeAction::CloseTab(tab_id)]);
-        }
-      }
-      ShortcutAction::NextTab => {
-        let Some(next) = self.cycle_active_tab_id(1) else {
-          return;
-        };
-        let had_page_focus = self.page_has_focus;
-        self.handle_chrome_actions(vec![ChromeAction::ActivateTab(next)]);
-        self.page_has_focus = had_page_focus;
-      }
-      ShortcutAction::PrevTab => {
-        let Some(prev) = self.cycle_active_tab_id(-1) else {
-          return;
-        };
-        let had_page_focus = self.page_has_focus;
-        self.handle_chrome_actions(vec![ChromeAction::ActivateTab(prev)]);
-        self.page_has_focus = had_page_focus;
-      }
-      ShortcutAction::Back => {
-        self.handle_chrome_actions(vec![ChromeAction::Back]);
-      }
-      ShortcutAction::Forward => {
-        self.handle_chrome_actions(vec![ChromeAction::Forward]);
-      }
-      ShortcutAction::Reload => {
-        self.handle_chrome_actions(vec![ChromeAction::Reload]);
-      }
-    }
-  }
-
   fn handle_winit_input_event(&mut self, event: &winit::event::WindowEvent<'_>) {
     use winit::event::ElementState;
     use winit::event::VirtualKeyCode;
@@ -1317,49 +1191,8 @@ impl App {
           }
         }
       }
-      WindowEvent::MouseWheel { delta, .. } => {
-        let Some(pos_points) = self.last_cursor_pos_points else {
-          return;
-        };
-
-        if self.open_select_dropdown.is_some() {
-          if self
-            .open_select_dropdown_rect
-            .is_some_and(|rect| rect.contains(pos_points))
-          {
-            return;
-          }
-          self.close_select_dropdown();
-          self.window.request_redraw();
-        }
-
-        let Some(rect) = self.page_rect_points else {
-          return;
-        };
-        let Some(_viewport_css) = self.page_viewport_css else {
-          return;
-        };
-        let Some(tab_id) = self.page_input_tab else {
-          return;
-        };
-        let Some(mapping) = self.page_input_mapping else {
-          return;
-        };
-        if !rect.contains(pos_points) {
-          return;
-        }
-
-        let wheel_delta = fastrender::ui::WheelDelta::from_winit(*delta, self.pixels_per_point);
-        let Some(delta_css) = mapping.wheel_delta_to_delta_css(wheel_delta) else {
-          return;
-        };
-        let pointer_css = mapping.pos_points_to_pos_css_clamped(pos_points);
-
-        self.send_worker_msg(fastrender::ui::UiToWorker::Scroll {
-          tab_id,
-          delta_css,
-          pointer_css,
-        });
+      WindowEvent::ModifiersChanged(modifiers) => {
+        self.modifiers = *modifiers;
       }
       WindowEvent::KeyboardInput { input, .. } => {
         if input.state != ElementState::Pressed {
@@ -1379,9 +1212,20 @@ impl App {
           self.window.request_redraw();
         }
 
-        // Browser-level shortcuts are handled in `handle_window_event_pre_egui` so they work even
-        // when the page has focus. Here we only forward specific key actions to the page.
-        if self.egui_ctx.wants_keyboard_input() || !self.page_has_focus {
+        // If egui is actively editing text (e.g. the address bar), don't handle page-level key
+        // events.
+        if self.egui_ctx.wants_keyboard_input() {
+          return;
+        }
+
+        // Ctrl/Cmd+Tab is reserved for chrome tab switching; don't forward it to the page as a Tab
+        // key press.
+        if (self.modifiers.ctrl() || self.modifiers.logo()) && matches!(key, VirtualKeyCode::Tab)
+        {
+          return;
+        }
+
+        if !self.page_has_focus {
           return;
         }
         let Some(tab_id) = self.browser_state.active_tab_id() else {

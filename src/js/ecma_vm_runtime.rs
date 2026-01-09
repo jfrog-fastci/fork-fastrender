@@ -601,8 +601,9 @@ impl VmJobContext for FastRenderJobContext {
   ) -> std::result::Result<Value, VmError> {
     // SAFETY: `FastRenderJobContext` is only used while `EcmaVmRuntime` is alive. This uses raw
     // pointers to split-borrow `EcmaVmRuntime` so it can be passed to `Job::run` as both a
-    // `VmJobContext` (backed by the VM/heap) and a `VmHostHooks` implementation (for Promise job
-    // scheduling) without violating Rust's aliasing rules.
+    // `VmJobContext` (backed by the VM/heap) and a `VmHostHooks` implementation (Promise job
+    // scheduling) via `Vm::{call_with_host,construct_with_host}` without violating Rust's aliasing
+    // rules.
     unsafe {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;

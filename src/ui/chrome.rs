@@ -16,21 +16,61 @@ pub enum ChromeAction {
   AddressBarFocusChanged(bool),
 }
 
-fn stage_label(stage: StageHeartbeat) -> &'static str {
-  match stage {
-    StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
-      "Fetch"
-    }
-    StageHeartbeat::CssInline | StageHeartbeat::CssParse | StageHeartbeat::Cascade => "CSS",
-    StageHeartbeat::BoxTree | StageHeartbeat::Layout => "Layout",
-    StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize => "Paint",
-    StageHeartbeat::Script => "Script",
-    StageHeartbeat::Done => "Done",
-  }
-}
-
 pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAction> {
   let mut actions = Vec::new();
+
+  // -----------------------------------------------------------------------------
+  // Chrome-level keyboard shortcuts
+  // -----------------------------------------------------------------------------
+  //
+  // These are implemented in the egui frame (rather than as winit-level shortcuts) so we don't
+  // need to do platform-specific modifier bookkeeping and can respect egui's "text editing"
+  // state. Avoid firing shortcuts while the address bar is focused (or whenever egui is actively
+  // consuming keyboard input).
+  if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
+    let (new_tab, close_tab, reload, back, forward, tab_delta) = ctx.input(|i| {
+      let cmd_or_ctrl = i.modifiers.command || i.modifiers.ctrl;
+      let new_tab = cmd_or_ctrl && i.key_pressed(egui::Key::T);
+      let close_tab = cmd_or_ctrl && i.key_pressed(egui::Key::W);
+      let reload = cmd_or_ctrl && i.key_pressed(egui::Key::R);
+      let back = i.modifiers.alt && i.key_pressed(egui::Key::ArrowLeft);
+      let forward = i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight);
+      let tab_delta = (cmd_or_ctrl && i.key_pressed(egui::Key::Tab)).then(|| {
+        if i.modifiers.shift { -1isize } else { 1isize }
+      });
+      (new_tab, close_tab, reload, back, forward, tab_delta)
+    });
+
+    if new_tab {
+      actions.push(ChromeAction::NewTab);
+    }
+    if close_tab {
+      if let Some(tab_id) = app.active_tab_id() {
+        actions.push(ChromeAction::CloseTab(tab_id));
+      }
+    }
+    if reload {
+      actions.push(ChromeAction::Reload);
+    }
+    if back {
+      actions.push(ChromeAction::Back);
+    }
+    if forward {
+      actions.push(ChromeAction::Forward);
+    }
+    if let Some(delta) = tab_delta {
+      let active = app.active_tab_id();
+      let len = app.tabs.len();
+      if len >= 2 {
+        if let Some(active) = active {
+          if let Some(idx) = app.tabs.iter().position(|t| t.id == active) {
+            let new_idx = (idx as isize + delta).rem_euclid(len as isize) as usize;
+            actions.push(ChromeAction::ActivateTab(app.tabs[new_idx].id));
+          }
+        }
+      }
+    }
+  }
 
   egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
     // Tabs row.
@@ -123,13 +163,11 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
 
       if loading {
         ui.add(egui::Spinner::new());
-        ui.label("Loading…");
-      }
-
-      if loading {
-        if let Some(stage) = stage.filter(|s| *s != StageHeartbeat::Done) {
-          ui.label(format!("{}…", stage_label(stage)));
-        }
+        let stage = stage.filter(|s| *s != StageHeartbeat::Done);
+        match stage {
+          Some(stage) => ui.label(egui::RichText::new(format!("Loading… {}", stage.as_str())).small()),
+          None => ui.label(egui::RichText::new("Loading…").small()),
+        };
       }
 
       if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
