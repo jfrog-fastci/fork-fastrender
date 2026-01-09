@@ -26524,6 +26524,62 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn padding_inline_resolves_custom_property_with_max_calc_expression() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "html".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("class".to_string(), "target".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        :root {
+          --layout-side-padding-min: 1rem;
+          --layout-side-padding: max(var(--layout-side-padding-min), calc(50vw - 720px + 1rem));
+        }
+        .target {
+          padding-inline: var(--layout-side-padding);
+        }
+      "#,
+    )
+    .expect("stylesheet");
+
+    let styled = apply_styles(&dom, &stylesheet);
+    let child = styled.children.first().expect("child");
+
+    let viewport = Size::new(1200.0, 800.0);
+    let left = child.styles.padding_left.resolve_with_context(
+      None,
+      viewport.width,
+      viewport.height,
+      child.styles.font_size,
+      child.styles.root_font_size,
+    );
+    let right = child.styles.padding_right.resolve_with_context(
+      None,
+      viewport.width,
+      viewport.height,
+      child.styles.font_size,
+      child.styles.root_font_size,
+    );
+
+    assert_eq!(left, Some(16.0));
+    assert_eq!(right, Some(16.0));
+    assert_eq!(child.styles.padding_top, Length::px(0.0));
+    assert_eq!(child.styles.padding_bottom, Length::px(0.0));
+  }
+
+  #[test]
   fn type_and_class_selector_applies_properties() {
     let dom = DomNode {
       node_type: DomNodeType::Element {

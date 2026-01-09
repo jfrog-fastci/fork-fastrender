@@ -692,27 +692,39 @@ fn build_gradient_lut(
         break;
       }
     }
-    let (r, g, b, a) = if let Some(segment) = window.peek() {
+    // NOTE: Interpolate in *premultiplied* alpha space. Interpolating unpremultiplied RGB then
+    // multiplying by the interpolated alpha incorrectly squares the alpha contribution (e.g.
+    // white->transparent becomes gray->transparent).
+    let (pr, pg, pb, a) = if let Some(segment) = window.peek() {
       let (p0, c0) = segment[0];
       let (p1, c1) = segment[1];
+      let a0 = c0.a.clamp(0.0, 1.0);
+      let a1 = c1.a.clamp(0.0, 1.0);
+      let pr0 = c0.r as f32 * a0;
+      let pg0 = c0.g as f32 * a0;
+      let pb0 = c0.b as f32 * a0;
+      let pr1 = c1.r as f32 * a1;
+      let pg1 = c1.g as f32 * a1;
+      let pb1 = c1.b as f32 * a1;
       if (p1 - p0).abs() < f32::EPSILON {
-        (c0.r as f32, c0.g as f32, c0.b as f32, c0.a.clamp(0.0, 1.0))
+        (pr0, pg0, pb0, a0)
       } else {
         let frac = ((pos - p0) / (p1 - p0)).clamp(0.0, 1.0);
         (
-          c0.r as f32 + (c1.r as f32 - c0.r as f32) * frac,
-          c0.g as f32 + (c1.g as f32 - c0.g as f32) * frac,
-          c0.b as f32 + (c1.b as f32 - c0.b as f32) * frac,
-          (c0.a + (c1.a - c0.a) * frac).clamp(0.0, 1.0),
+          pr0 + (pr1 - pr0) * frac,
+          pg0 + (pg1 - pg0) * frac,
+          pb0 + (pb1 - pb0) * frac,
+          (a0 + (a1 - a0) * frac).clamp(0.0, 1.0),
         )
       }
     } else if let Some((_, c)) = stops.last() {
-      (c.r as f32, c.g as f32, c.b as f32, c.a.clamp(0.0, 1.0))
+      let a = c.a.clamp(0.0, 1.0);
+      (c.r as f32 * a, c.g as f32 * a, c.b as f32 * a, a)
     } else {
       (0.0, 0.0, 0.0, 0.0)
     };
     let a255 = a * 255.0;
-    colors.push([r * a, g * a, b * a, a255]);
+    colors.push([pr, pg, pb, a255]);
   }
 
   let colors = Arc::new(colors);
@@ -1220,6 +1232,18 @@ mod tests {
       GradientPixmapCacheKey::linear(10, 10, start_neg, end_neg, SpreadMode::Pad, stops, 0, 0)
         .unwrap();
     assert!(pixmap_key == pixmap_key_neg);
+  }
+
+  #[test]
+  fn gradient_lut_interpolates_premultiplied_alpha() {
+    // White fading to transparent should fade out white (decreasing alpha) rather than darkening.
+    // This requires interpolating premultiplied RGB, not unpremultiplied RGB.
+    let stops = &[(0.0, Rgba::WHITE), (1.0, Rgba::TRANSPARENT)];
+    let lut = build_gradient_lut(stops, SpreadMode::Pad, 1.0, 16);
+    let mid = lut.sample_pad(0.5);
+    let expected =
+      PremultipliedColorU8::from_rgba(128, 128, 128, 128).expect("valid premultiplied color");
+    assert_eq!(mid, expected);
   }
 
   fn naive_conic(
