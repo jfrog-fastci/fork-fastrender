@@ -88,6 +88,21 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     f(&mut parser.tokenizer.sink.sink)
   }
 
+  /// Borrow the underlying tree sink.
+  ///
+  /// # Panics
+  /// Panics if called after the parser has finished (after `pump` returned
+  /// [`Html5everPump::Finished`]).
+  pub fn sink(&self) -> &Sink {
+    &self
+      .parser
+      .as_ref()
+      .expect("sink called after parser finished")
+      .tokenizer
+      .sink
+      .sink
+  }
+
   /// Run the tokenizer/tree-builder until it either needs a script, needs more
   /// input, or finishes.
   pub fn pump(&mut self) -> Html5everPump<Sink::Handle, Sink::Output> {

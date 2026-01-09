@@ -10,6 +10,7 @@ pub mod images;
 pub mod meta_refresh;
 pub mod pausable_html5ever;
 pub mod referrer_policy;
+pub mod streaming_parser;
 pub mod title;
 pub mod viewport;
 

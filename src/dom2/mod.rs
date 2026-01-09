@@ -10,10 +10,12 @@ mod class_list;
 mod error;
 pub mod import;
 pub mod events;
+mod html5ever_tree_sink;
 mod traversal;
 mod shadow_dom;
 
 pub use error::DomError;
+pub use html5ever_tree_sink::Dom2TreeSink;
 
 #[cfg(test)]
 mod class_list_tests;
