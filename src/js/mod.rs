@@ -29,6 +29,7 @@ pub mod html_scripting;
 pub mod options;
 pub mod orchestrator;
 pub mod browser_tab;
+pub mod page_load;
 pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
 pub mod runtime;
@@ -66,6 +67,9 @@ pub use runtime::{JsObject, JsRuntime, NativeFunction};
 pub use script_scheduler::{
   ClassicScriptScheduler, DiscoveredScript, ScriptExecutor, ScriptId, ScriptLoader,
   ScriptScheduler, ScriptSchedulerAction,
+};
+pub use page_load::{
+  HtmlLoadOrchestrator, ScriptExecutor as PageLoadScriptExecutor, ScriptFetcher as PageLoadScriptFetcher,
 };
 pub use time::{install_time_bindings, TimeBindings, WebTime};
 pub use url::{Url, UrlError, UrlLimits, UrlSearchParams};
