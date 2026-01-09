@@ -5,7 +5,7 @@
 // - tools/webidl/bindings_allowlist.toml
 
 use super::DomHost;
-use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+use webidl_js_runtime::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 use vm_js::{PropertyKey, Value, VmError};
 
 pub fn install_dom_bindings(rt: &mut VmJsRuntime, host: &mut impl DomHost) -> Result<(), VmError> {

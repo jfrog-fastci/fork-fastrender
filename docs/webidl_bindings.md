@@ -12,6 +12,12 @@ how to update it.
 - **Runtime WebIDL “world” representation**: `src/webidl/mod.rs`
   - This is *metadata only* (names, members, extended attributes, inheritance).
   - It is intentionally **not** a full WebIDL semantic model.
+- **Authoritative WebIDL conversion/runtime layer**: `engines/ecma-rs/webidl`
+  - This is the shared implementation of WebIDL conversion helpers (e.g. `DOMString`) and the
+    `JsRuntime` trait boundary those helpers are defined against.
+  - FastRender re-exports this API surface as `fastrender::js::webidl` so generated bindings can
+    depend on a single path and we do not fork/duplicate WebIDL algorithms between repos.
+  - The `vm-js` embedding adapter lives in `engines/ecma-rs/webidl-vm-js`.
 - **Committed generated snapshot**: `src/webidl/generated/mod.rs`
   - Contains `pub const WORLD: WebIdlWorld = ...`.
   - Marked `@generated` and must not be edited by hand.

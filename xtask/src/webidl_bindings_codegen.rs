@@ -1055,7 +1055,7 @@ fn generate_bindings_module_unformatted(
   out.push_str("  value: BindingValue<R::JsValue>,\n");
   out.push_str(") -> Result<R::JsValue, R::Error>\n");
   out.push_str("where\n");
-  out.push_str("  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,\n");
+  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
   out.push_str("{\n");
   out.push_str("  match value {\n");
   out.push_str("    BindingValue::Undefined => Ok(rt.js_undefined()),\n");
@@ -1123,7 +1123,7 @@ fn generate_bindings_module_unformatted(
   // Install entrypoint.
   out.push_str("pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>\n");
   out.push_str("where\n");
-  out.push_str("  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,\n");
+  out.push_str("  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n");
   out.push_str("  Host: WebHostBindings<R>,\n");
   out.push_str("{\n");
   out.push_str("  let global = rt.global_object()?;\n");
@@ -1412,7 +1412,7 @@ fn write_dictionary_converter(
 ) {
   let fn_name = format!("js_to_dict_{}", to_snake_ident(&dict.name));
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, value: R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, value: R::JsValue) -> Result<BindingValue<R::JsValue>, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n{{\n",
   ));
   out.push_str("  if rt.is_undefined(value) || rt.is_null(value) {\n");
   out.push_str("    return Ok(BindingValue::Dictionary(BTreeMap::new()));\n");
@@ -1496,7 +1496,7 @@ fn write_operation_wrapper(
   let _ = config;
   let fn_name = op_wrapper_fn_name(interface, op_name);
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   let receiver_expr = if interface == "Window" || is_static {
@@ -1773,7 +1773,7 @@ fn write_constructor_wrapper(
 ) {
   let fn_name = ctor_wrapper_fn_name(interface);
   out.push_str(&format!(
-    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, _this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
+    "#[allow(dead_code)]\nfn {fn_name}<Host, R>(rt: &mut R, host: &mut Host, _this: R::JsValue, args: &[R::JsValue]) -> Result<R::JsValue, R::Error>\nwhere\n  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,\n  Host: WebHostBindings<R>,\n{{\n",
   ));
 
   if overloads.len() == 1 {

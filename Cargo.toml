@@ -109,6 +109,8 @@ walkdir = "2"
 webidl-js-runtime = { path = "crates/webidl-js-runtime" }
 vm-js = { path = "engines/ecma-rs/vm-js" }
 parse-js = { path = "engines/ecma-rs/parse-js", features = ["diagnostics"] }
+webidl = { path = "engines/ecma-rs/webidl" }
+webidl-vm-js = { path = "engines/ecma-rs/webidl-vm-js" }
 
 # Optional desktop UI stack (winit + wgpu + egui) used by `src/bin/browser.rs`.
 # Kept behind a feature gate so core renderer builds stay lean.

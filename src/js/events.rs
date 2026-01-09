@@ -7,9 +7,7 @@ use vm_js::{PropertyKey, RootId, Value, VmError};
 
 use crate::dom2;
 use crate::error::{Error, Result};
-use crate::js::webidl::{
-  JsRuntime as WebIdlJsRuntime, VmJsRuntime, WebIdlJsRuntime as WebIdlHooks,
-};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError as EventsDomError, Event, EventListenerInvoker,
   EventListenerRegistry, EventPhase, EventTargetId, ListenerId,

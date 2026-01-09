@@ -1,5 +1,4 @@
 use crate::dom2;
-use crate::js::webidl::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::events::{
   dispatch_event, AddEventListenerOptions, DomError, Event, EventInit, EventListenerInvoker,
   EventPhase, EventTargetId, ListenerId,
@@ -8,6 +7,7 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::rc::Rc;
 use vm_js::{GcObject, PropertyKey, RootId, Value, VmError};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 #[derive(Debug, Clone, Copy)]
 struct ListenerEntry {

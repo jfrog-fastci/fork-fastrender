@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use webidl_js_runtime::JsRuntime;
+use crate::js::webidl::WebIdlBindingsRuntime;
 
 /// A minimally-typed value container used by the generated binding shims when crossing into the
 /// host.
@@ -28,7 +28,10 @@ pub enum BindingValue<JsValue: Copy> {
 ///
 /// The host is responsible for implementing the actual DOM/Web API behavior and for maintaining
 /// any per-object state associated with `JsValue` handles.
-pub trait WebHostBindings<R: JsRuntime> {
+pub trait WebHostBindings<R>: Sized
+where
+  R: WebIdlBindingsRuntime<Self>,
+{
   fn call_operation(
     &mut self,
     rt: &mut R,

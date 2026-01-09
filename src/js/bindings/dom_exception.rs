@@ -1,4 +1,4 @@
-use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 use crate::web::dom::DomException;
 use vm_js::{GcString, PropertyKey, Value, VmError};
 

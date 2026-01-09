@@ -12,7 +12,7 @@ fn binding_value_to_js<Host, R>(
   value: BindingValue<R::JsValue>,
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
 {
   match value {
     BindingValue::Undefined => Ok(rt.js_undefined()),
@@ -47,7 +47,7 @@ fn js_to_dict_add_event_listener_options<Host, R>(
   value: R::JsValue,
 ) -> Result<BindingValue<R::JsValue>, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
 {
   if rt.is_undefined(value) || rt.is_null(value) {
     return Ok(BindingValue::Dictionary(BTreeMap::new()));
@@ -97,7 +97,7 @@ fn js_to_dict_event_listener_options<Host, R>(
   value: R::JsValue,
 ) -> Result<BindingValue<R::JsValue>, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
 {
   if rt.is_undefined(value) || rt.is_null(value) {
     return Ok(BindingValue::Dictionary(BTreeMap::new()));
@@ -125,7 +125,7 @@ fn event_target_add_event_listener<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -179,7 +179,7 @@ fn event_target_dispatch_event<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -210,7 +210,7 @@ fn event_target_remove_event_listener<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -264,7 +264,7 @@ fn event_target_constructor<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -282,7 +282,7 @@ fn u_r_l_to_j_s_o_n<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -300,7 +300,7 @@ fn u_r_l_can_parse<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -340,7 +340,7 @@ fn u_r_l_parse<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -380,7 +380,7 @@ fn u_r_l_constructor<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -420,7 +420,7 @@ fn window_clear_interval<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -448,7 +448,7 @@ fn window_clear_timeout<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -476,7 +476,7 @@ fn window_queue_microtask<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -500,7 +500,7 @@ fn window_set_interval<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -539,7 +539,7 @@ fn window_set_timeout<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -572,7 +572,7 @@ where
 
 pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   let global = rt.global_object()?;

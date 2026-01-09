@@ -1,5 +1,5 @@
 use crate::js::url::{Url, UrlLimits, UrlSearchParams};
-use crate::js::webidl::{JsRuntime as _, WebIdlJsRuntime as _};
+use webidl_js_runtime::{JsRuntime as _, WebIdlJsRuntime as _};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

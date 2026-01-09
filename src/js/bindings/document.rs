@@ -1,9 +1,9 @@
 use crate::dom2::Document;
 use crate::js::bindings::DomExceptionClass;
-use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 use std::cell::RefCell;
 use std::rc::Rc;
 use vm_js::{PropertyKey, Value, VmError};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 /// Install a minimal `document` object exposing `querySelector` and `querySelectorAll`.
 ///

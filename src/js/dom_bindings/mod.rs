@@ -10,13 +10,13 @@
 
 use crate::dom2::{self, NodeId, NodeKind};
 use crate::js::orchestrator::CurrentScriptState;
-use crate::js::webidl::{JsRuntime, VmJsRuntime, WebIdlJsRuntime};
 use crate::web::events;
 use rustc_hash::FxHashMap;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 use vm_js::{GcObject, PropertyKey, RootId, Value, VmError};
+use webidl_js_runtime::{JsRuntime as _, VmJsRuntime, WebIdlJsRuntime as _};
 
 #[derive(Debug, Clone)]
 enum PlatformObjectKind {

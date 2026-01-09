@@ -17,7 +17,7 @@ fn binding_value_to_js<Host, R>(
   value: BindingValue<R::JsValue>,
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
 {
   match value {
     BindingValue::Undefined => Ok(rt.js_undefined()),
@@ -52,7 +52,7 @@ fn js_to_dict_foo_options<Host, R>(
   value: R::JsValue,
 ) -> Result<BindingValue<R::JsValue>, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
 {
   if rt.is_undefined(value) || rt.is_null(value) {
     return Ok(BindingValue::Dictionary(BTreeMap::new()));
@@ -80,7 +80,7 @@ fn foo_baz<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   if args.len() >= 1 && args.len() <= 1 && (rt.is_string(args[0]) || rt.is_string_object(args[0])) {
@@ -123,7 +123,7 @@ fn foo_qux<Host, R>(
   args: &[R::JsValue],
 ) -> Result<R::JsValue, R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   {
@@ -145,7 +145,7 @@ where
 
 pub fn install_window_bindings<Host, R>(rt: &mut R, host: &mut Host) -> Result<(), R::Error>
 where
-  R: webidl_js_runtime::WebIdlBindingsRuntime<Host>,
+  R: crate::js::webidl::WebIdlBindingsRuntime<Host>,
   Host: WebHostBindings<R>,
 {
   let global = rt.global_object()?;
