@@ -124,3 +124,59 @@ fn bundled_us_flag_emoji_shapes_as_single_glyph() {
     "flag emoji should shape as a single glyph (ligature)"
   );
 }
+
+#[test]
+fn bundled_emoji_shapes_pageset_sequences_without_notdef_glyphs() {
+  let mut pipeline = ShapingPipeline::new();
+  let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["emoji".to_string(), "sans-serif".to_string()].into();
+  style.font_size = 48.0;
+
+  let samples = [
+    ("single_codepoint", "😀"),
+    ("pageset_observed_face", "😍"),
+    ("pageset_observed_face_wink", "😉"),
+    ("pageset_observed_symbol", "💫"),
+    ("pageset_observed_ball", "🏀"),
+    ("pageset_observed_brain", "🧠"),
+    ("pageset_observed_point", "🫵"),
+    ("pageset_observed_selfie", "🤳"),
+    ("variation_sequence", "⚠️"),
+    ("zwj_sequence_family", "👨‍👩‍👧‍👦"),
+    ("zwj_sequence_profession", "👩‍🔬"),
+    ("zwj_sequence_profession_modifier", "👩🏻‍🔬"),
+    ("flag_sequence_us", "🇺🇸"),
+    ("flag_sequence_fi", "🇫🇮"),
+  ];
+
+  for (label, text) in samples {
+    let runs = pipeline
+      .shape(text, &style, &font_ctx)
+      .unwrap_or_else(|_| panic!("shape bundled emoji sample {label}"));
+    assert!(!runs.is_empty(), "{label} should produce shaped runs");
+
+    let notdef_glyphs: Vec<String> = runs
+      .iter()
+      .flat_map(|run| {
+        run
+          .glyphs
+          .iter()
+          .filter(|glyph| glyph.glyph_id == 0)
+          .map(|glyph| {
+            format!(
+              "font={} cluster={} glyph_id=0 text={:?}",
+              run.font.family, glyph.cluster, run.text
+            )
+          })
+          .collect::<Vec<_>>()
+      })
+      .collect();
+
+    assert!(
+      notdef_glyphs.is_empty(),
+      "{label} should not shape with .notdef glyphs; saw:\n{}",
+      notdef_glyphs.join("\n")
+    );
+  }
+}

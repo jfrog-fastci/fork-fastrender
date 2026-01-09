@@ -10,6 +10,8 @@ keeping the binary small while avoiding slow system-font fallback paths.
 from __future__ import annotations
 
 import pathlib
+import re
+from typing import Iterable
 
 try:
   from fontTools.colorLib.builder import buildCOLR, buildCPAL
@@ -28,6 +30,11 @@ except ImportError as exc:
 
 FIXTURES = pathlib.Path(__file__).parent
 OUTPUT = FIXTURES / "FastRenderEmoji.ttf"
+REPO_ROOT = FIXTURES.parent.parent.parent
+PAGESET_FIXTURES = REPO_ROOT / "tests/pages/fixtures"
+
+# Numeric HTML entities we see in the pageset fixtures (e.g. `&#x1F600;`).
+_HTML_ENTITY_RE = re.compile(r"&#(x[0-9a-fA-F]{1,8}|[0-9]{1,10});")
 
 
 def rect(pen: TTGlyphPen, x0: int, y0: int, x1: int, y1: int) -> None:
@@ -115,6 +122,80 @@ def england_cross_glyph():
   rect(pen, 470, 180, 530, 720)  # vertical bar
   rect(pen, 150, 420, 850, 480)  # horizontal bar
   return pen.glyph()
+
+
+def _is_emojiish_codepoint(cp: int) -> bool:
+  """Return True if this codepoint should be covered by the emoji fixture font.
+
+  We avoid importing the full Unicode emoji property tables; instead, we use the
+  common Unicode ranges that cover almost all emoji observed in pageset fixtures
+  plus the joiners/marks that participate in emoji sequences.
+  """
+
+  # ZWJ + keycap mark + variation selectors participate in emoji clusters.
+  if cp in (0x200D, 0x20E3) or 0xFE00 <= cp <= 0xFE0F:
+    return True
+
+  # Tag characters for subdivision flags (e.g. England).
+  if 0xE0020 <= cp <= 0xE007F:
+    return True
+
+  # Regional indicator letters.
+  if 0x1F1E6 <= cp <= 0x1F1FF:
+    return True
+
+  # Emoji modifiers (Fitzpatrick skin tones).
+  if 0x1F3FB <= cp <= 0x1F3FF:
+    return True
+
+  # The bulk emoji blocks.
+  if 0x1F000 <= cp <= 0x1FAFF:
+    return True
+
+  # Misc symbols/dingbats + arrows frequently used with emoji presentation.
+  if 0x2300 <= cp <= 0x23FF or 0x2600 <= cp <= 0x27BF or 0x2B00 <= cp <= 0x2BFF:
+    return True
+
+  return False
+
+
+def _iter_pageset_fixture_html_paths() -> Iterable[pathlib.Path]:
+  if not PAGESET_FIXTURES.is_dir():
+    return []
+  # Sort for deterministic output (cmap tables should not depend on filesystem order).
+  return sorted(PAGESET_FIXTURES.rglob("*.html"))
+
+
+def _collect_pageset_fixture_codepoints() -> set[int]:
+  """Extract emoji-ish codepoints from the offline pageset fixtures.
+
+  This is a best-effort scan: we look for both literal Unicode characters and
+  numeric HTML entities. It's intentionally conservative (only `.html`) to keep
+  the generator lightweight and deterministic.
+  """
+
+  codepoints: set[int] = set()
+
+  for path in _iter_pageset_fixture_html_paths():
+    text = path.read_text("utf-8", errors="replace")
+
+    # Literal characters.
+    for ch in text:
+      cp = ord(ch)
+      if _is_emojiish_codepoint(cp):
+        codepoints.add(cp)
+
+    # Numeric entities.
+    for match in _HTML_ENTITY_RE.finditer(text):
+      raw = match.group(1)
+      try:
+        cp = int(raw[1:], 16) if raw[0] in ("x", "X") else int(raw, 10)
+      except ValueError:
+        continue
+      if 0 <= cp <= 0x10FFFF and _is_emojiish_codepoint(cp):
+        codepoints.add(cp)
+
+  return codepoints
 
 
 def main() -> None:
@@ -208,8 +289,8 @@ def main() -> None:
   }
   for codepoint in range(0x30, 0x3A):
     cmap[codepoint] = "keycap_base"
-  # Pageset-derived emoji (from `bundled_font_coverage`) mapped onto the existing fixture glyphs
-  # so bundled-font runs avoid missing-emoji tofu.
+  # Pageset-driven emoji regressions (from `bundled_font_coverage`) mapped onto the existing fixture
+  # glyphs so bundled-font runs avoid missing-emoji tofu.
   for codepoint in [
     0x2602,  # ☂ (emoji variant ☂️)
     0x2636,  # ☶
@@ -276,6 +357,14 @@ def main() -> None:
     0x1FAAC,  # 🪬
   ]:
     cmap[codepoint] = "grin"
+  # Automatically harvest emoji-ish codepoints from offline pageset fixtures to keep the mapping
+  # in sync with pageset changes without having to maintain a giant hand-curated list.
+  for codepoint in sorted(_collect_pageset_fixture_codepoints()):
+    # Variation selectors are default-ignorable and are not rendered as standalone glyphs.
+    # Avoid mapping them to a visible glyph; HarfBuzz will consume/ignore them as needed.
+    if 0xFE00 <= codepoint <= 0xFE0F:
+      continue
+    cmap.setdefault(codepoint, "grin")
   # Pageset-derived icon/codepoint regressions (typically inserted via CSS `content:`) mapped onto
   # existing glyphs so bundled-font runs avoid last-resort tofu.
   for codepoint in [
@@ -301,6 +390,16 @@ def main() -> None:
   cmap[0x1F48E] = "heart"  # 💎
   cmap[0x1F525] = "heart"  # 🔥
   cmap[0x1F534] = "heart"  # 🔴
+  # Cover all regional indicator letters so arbitrary flag pairs don't turn into tofu in bundled
+  # runs. Keep 🇺🇸 using distinct component glyphs so our US ligature still applies.
+  for codepoint in range(0x1F1E6, 0x1F200):
+    cmap[codepoint] = "ri_generic"
+  cmap[0x1F1FA] = "ri_u"
+  cmap[0x1F1F8] = "ri_s"
+  # Tag characters (used for subdivision flags like England) live in the Unicode Tags block.
+  for codepoint in range(0xE0020, 0xE0080):
+    cmap[codepoint] = "tag"
+  cmap[0xE007F] = "tag_cancel"
   for codepoint in range(0x1F3FB, 0x1F400):
     cmap[codepoint] = "emoji_modifier"
   fb.setupCharacterMap(cmap)

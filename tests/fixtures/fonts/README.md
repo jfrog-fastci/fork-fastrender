@@ -94,8 +94,9 @@ pip install -r tests/fixtures/fonts/requirements.txt
 - `FastRenderEmoji.ttf`: COLR/CPAL emoji fixture that covers 😀 (U+1F600), ❤ (U+2764), 👍 (U+1F44D), 🇺🇸
     (U+1F1FA U+1F1F8 via a GSUB ligature), and 👨‍👩‍👧‍👦 (U+1F468 U+200D U+1F469 U+200D U+1F467 U+200D U+1F466 via a GSUB
     ligature). Pageset-derived emoji codepoints (including the Finland flag regional indicator letters U+1F1EB/U+1F1EE)
-    are mapped onto the fixture glyphs so hermetic runs avoid missing-emoji tofu; see `generate_fastrender_emoji_font.py`
-    for the authoritative list.
+    are mapped onto the fixture glyphs so hermetic runs avoid missing-emoji tofu; the generator also harvests emoji-ish
+    codepoints from `tests/pages/fixtures/**/*.html` to keep coverage in sync with fixture changes. See
+    `generate_fastrender_emoji_font.py` for the authoritative list.
   - `STIXTwoMath-Regular.otf`: Math operators and alphanumeric symbols preserved with the `MATH` table intact so math
     layout has a bundled fallback in hermetic runs.
 
