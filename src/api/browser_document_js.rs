@@ -98,6 +98,30 @@ impl BrowserDocumentJs {
     &mut self.js_runtime
   }
 
+  /// Execute a `<script>` element using the runtime's internal [`ScriptOrchestrator`].
+  ///
+  /// This is a convenience wrapper that avoids borrow-checker pitfalls from trying to call
+  /// `runtime.script_orchestrator_mut().execute_script_element(&mut runtime, ..)`.
+  pub fn execute_script_element<Exec>(
+    &mut self,
+    dom: &crate::dom2::Document,
+    script: crate::dom2::NodeId,
+    script_type: crate::js::ScriptType,
+    executor: &mut Exec,
+  ) -> Result<()>
+  where
+    Exec: crate::js::ScriptBlockExecutor<Self>,
+  {
+    let mut orchestrator = std::mem::take(&mut self.script_orchestrator);
+    let result = orchestrator.execute_script_element(self, dom, script, script_type, executor);
+    self.script_orchestrator = orchestrator;
+    result
+  }
+
+  /// Mutable access to the underlying [`ScriptOrchestrator`].
+  ///
+  /// Prefer [`BrowserDocumentJs::execute_script_element`] when executing scripts, as it avoids
+  /// borrow-checker issues with simultaneously borrowing the orchestrator and the host runtime.
   pub fn script_orchestrator_mut(&mut self) -> &mut ScriptOrchestrator {
     &mut self.script_orchestrator
   }
@@ -390,16 +414,13 @@ mod tests {
     assert_eq!(scripts.len(), 2);
 
     let mut executor = LoggingExecutor::default();
-    let mut orchestrator = ScriptOrchestrator::new();
-    orchestrator.execute_script_element(
-      &mut runtime,
+    runtime.execute_script_element(
       &dom,
       scripts[0],
       ScriptType::Classic,
       &mut executor,
     )?;
-    orchestrator.execute_script_element(
-      &mut runtime,
+    runtime.execute_script_element(
       &dom,
       scripts[1],
       ScriptType::Classic,
