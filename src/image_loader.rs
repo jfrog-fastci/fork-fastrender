@@ -124,6 +124,49 @@ fn trim_ascii_whitespace_start(value: &str) -> &str {
     .trim_start_matches(|c: char| matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | ' '))
 }
 
+fn svg_xml_base_chain_for_node<'a, 'input>(node: roxmltree::Node<'a, 'input>) -> Vec<&'a str> {
+  let mut chain = Vec::new();
+  for ancestor in node.ancestors().filter(|n| n.is_element()) {
+    // `roxmltree` exposes namespaced attributes via `{namespace, name}` (without the prefix). For
+    // `xml:base` the namespace is the standard XML namespace.
+    const XML_NS: &str = "http://www.w3.org/XML/1998/namespace";
+    let xml_base = ancestor.attribute("xml:base").or_else(|| {
+      ancestor
+        .attributes()
+        .find(|attr| attr.name() == "base" && attr.namespace() == Some(XML_NS))
+        .map(|attr| attr.value())
+    });
+    if let Some(value) = xml_base {
+      let value = trim_ascii_whitespace(value);
+      if !value.is_empty() {
+        chain.push(value);
+      }
+    }
+  }
+  chain.reverse();
+  chain
+}
+
+fn apply_svg_xml_base_chain(base: Option<&str>, chain: &[&str]) -> Option<String> {
+  let mut current = base.map(|base| base.to_string());
+  for value in chain {
+    let value = trim_ascii_whitespace(value);
+    if value.is_empty() {
+      continue;
+    }
+    // If `xml:base` is itself an absolute URL, it resets the base URI.
+    if Url::parse(value).is_ok() {
+      current = Some(value.to_string());
+      continue;
+    }
+    let Some(cur) = current.as_deref() else {
+      return None;
+    };
+    current = resolve_against_base(cur, value);
+  }
+  current
+}
+
 fn strip_url_fragment(url: &str) -> Cow<'_, str> {
   url
     .split_once('#')
@@ -656,11 +699,16 @@ fn inline_svg_use_references<'a>(
     }
 
     // Resolve the URL without the fragment for fetching.
-    let Some(resolved_base) = resolve_against_base(svg_url, href_url_part)
+    let xml_base_chain = svg_xml_base_chain_for_node(node);
+    let resolve_with_base = |base: Option<&str>| {
+      apply_svg_xml_base_chain(base, &xml_base_chain)
+        .and_then(|base| resolve_against_base(&base, href_url_part))
+    };
+    let Some(resolved_base) = resolve_with_base(Some(svg_url))
       .or_else(|| {
         ctx
           .and_then(|ctx| ctx.document_url.as_deref())
-          .and_then(|base| resolve_against_base(base, href_url_part))
+          .and_then(|base| resolve_with_base(Some(base)))
       })
       .or_else(|| Url::parse(href_url_part).ok().map(|u| u.to_string()))
     else {
@@ -1106,6 +1154,9 @@ fn inline_svg_image_references<'a>(
       continue;
     }
 
+    let xml_base_chain = svg_xml_base_chain_for_node(node);
+    let effective_base_url = apply_svg_xml_base_chain(base_url, &xml_base_chain);
+
     let tag = &svg_content[node_range.start..tag_end];
     let bytes = tag.as_bytes();
     let mut i = 0usize;
@@ -1201,7 +1252,8 @@ fn inline_svg_image_references<'a>(
           continue;
         }
 
-        let Some(resolved_base) = base_url
+        let Some(resolved_base) = effective_base_url
+          .as_deref()
           .and_then(|base| resolve_against_base(base, trimmed))
           .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
         else {
@@ -1343,7 +1395,8 @@ fn inline_svg_image_references<'a>(
         continue;
       }
 
-      let Some(resolved_base) = base_url
+      let Some(resolved_base) = effective_base_url
+        .as_deref()
         .and_then(|base| resolve_against_base(base, trimmed))
         .or_else(|| Url::parse(trimmed).ok().map(|u| u.to_string()))
       else {
@@ -9590,6 +9643,48 @@ mod tests {
   }
 
   #[test]
+  fn inline_svg_external_use_sprite_uses_xml_base_as_base() {
+    let doc_url = "https://example.test/page.html";
+    let sprite_url = "https://example.test/assets/sprite.svg";
+
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+    let main_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="assets/" width="1" height="1"><use href="sprite.svg#icon"/></svg>"#;
+
+    let mut sprite_res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    sprite_res.status = Some(200);
+    sprite_res.final_url = Some(sprite_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(sprite_url.to_string(), sprite_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(main_svg, 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == sprite_url && *dest == FetchDestination::Image),
+      "expected fetch for xml:base sprite href {sprite_url}, got: {requests:?}"
+    );
+
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
+    );
+  }
+
+  #[test]
   fn svg_external_image_href_is_fetched_and_renders() {
     let main_url = "https://example.test/main.svg";
     let img_url = "https://example.test/img.png";
@@ -9665,6 +9760,47 @@ mod tests {
         .iter()
         .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
       "expected fetch for inline svg image href {img_url}, got: {requests:?}"
+    );
+  }
+
+  #[test]
+  fn inline_svg_external_image_uses_xml_base_as_base() {
+    let doc_url = "https://example.test/page.html";
+    let img_url = "https://example.test/assets/img.png";
+
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" xml:base="assets/" width="1" height="1"><image href="img.png" width="1" height="1"/></svg>"#;
+
+    let mut img_res = FetchedResource::new(
+      encode_single_pixel_png([255, 0, 0, 255]),
+      Some("image/png".to_string()),
+    );
+    img_res.status = Some(200);
+    img_res.final_url = Some(img_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([(img_url.to_string(), img_res)]);
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    let pixmap = cache
+      .render_svg_pixmap_at_size(svg, 1, 1, "inline-svg", 1.0)
+      .expect("rendered pixmap");
+
+    let requests = fetcher.requests();
+    assert!(
+      requests
+        .iter()
+        .any(|(url, dest)| url == img_url && *dest == FetchDestination::Image),
+      "expected fetch for xml:base image href {img_url}, got: {requests:?}"
+    );
+
+    let pixel = pixmap.pixel(0, 0).expect("pixel");
+    assert_eq!(
+      (pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()),
+      (255, 0, 0, 255)
     );
   }
 
