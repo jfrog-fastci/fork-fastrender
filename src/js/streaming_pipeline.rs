@@ -201,6 +201,22 @@ impl ClassicScriptPipelineState {
     script_node_id: NodeId,
     base_url_at_discovery: Option<String>,
   ) -> Result<()> {
+    // HTML: "prepare a script" immediately returns when the script element is not connected.
+    //
+    // This is critical for scripts that appear inside inert `<template>` contents: html5ever still
+    // yields `</script>` pause points for those scripts, but they must not be scheduled, fetched, or
+    // allowed to block the parser.
+    //
+    // Note: we do this check *before* calling into `ScriptScheduler` because the scheduler can emit
+    // `BlockParserUntilExecuted` for external scripts, which would incorrectly stall parsing if the
+    // script is disconnected.
+    {
+      let dom = self.parser.document();
+      if !dom.is_connected_for_scripting(script_node_id) {
+        return Ok(());
+      }
+    }
+
     // HTML: When a parser-inserted script end tag is seen, perform a microtask checkpoint *before*
     // preparing the script, but only when the JS execution context stack is empty.
     if self.js_execution_depth.get() == 0 {
@@ -719,6 +735,32 @@ mod tests {
     assert_eq!(foreign_spec.script_type, ScriptType::Unknown);
     assert!(foreign_spec.src.is_none());
     assert_eq!(foreign_spec.inline_text, "");
+  }
+
+  #[test]
+  fn template_script_does_not_block_parser_or_start_fetch_and_live_inline_executes() -> Result<()> {
+    let mut host = Host::default();
+    let mut p = ClassicScriptPipeline::<Host>::new(Some("https://ex/doc.html"));
+    p.feed_str(
+      r#"<!doctype html><template><script src="/a.js"></script></template><script>LIVE</script>"#,
+    )?;
+    p.finish_input()?;
+    p.event_loop().run_until_idle(&mut host, RunLimits::unbounded())?;
+
+    assert!(
+      p.parsing_finished(),
+      "parser should not block on inert <template> script boundaries"
+    );
+    assert!(
+      p.blocked_on_script().is_none(),
+      "pipeline should not remain blocked after parsing completes"
+    );
+    assert!(
+      host.started_fetches.is_empty(),
+      "expected no fetch to be started for an inert <template> script"
+    );
+    assert_eq!(host.log, vec!["LIVE".to_string(), "mLIVE".to_string()]);
+    Ok(())
   }
 
   #[test]
