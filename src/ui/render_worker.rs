@@ -1057,6 +1057,15 @@ impl BrowserRuntime {
     select_node_id: usize,
     option_node_id: usize,
   ) {
+    // Close the dropdown popup deterministically for any UI: `SelectDropdownChoose` always
+    // corresponds to a user selecting an option in the dropdown overlay, so the popup should be
+    // dismissed even if the selection is a no-op (choosing the currently-selected option).
+    //
+    // Note: the browser egui UI also closes the popup locally, but emitting this message keeps the
+    // worker protocol symmetric with `SelectDropdownCancel` and `SelectDropdownPick` and supports
+    // other front-ends that rely on worker-driven close notifications.
+    let _ = self.ui_tx.send(WorkerToUi::SelectDropdownClosed { tab_id });
+
     let Some(tab) = self.tabs.get_mut(&tab_id) else {
       return;
     };

@@ -143,26 +143,41 @@ fn select_dropdown_choose_updates_dom_and_repaints() {
     .unwrap();
 
   let deadline = Instant::now() + TIMEOUT;
+  let mut saw_closed = false;
+  let mut saw_green_frame = false;
   loop {
     if Instant::now() >= deadline {
-      panic!("timed out waiting for select dropdown repaint");
+      panic!(
+        "timed out waiting for select dropdown repaint (saw_closed={saw_closed}, saw_green_frame={saw_green_frame})"
+      );
     }
     let msg = support::recv_for_tab(&ui_rx, tab_id, Duration::from_millis(250), |msg| {
-      matches!(msg, WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. })
+      matches!(
+        msg,
+        WorkerToUi::SelectDropdownClosed { .. }
+          | WorkerToUi::FrameReady { .. }
+          | WorkerToUi::NavigationFailed { .. }
+      )
     });
     let Some(msg) = msg else {
       continue;
     };
     match msg {
+      WorkerToUi::SelectDropdownClosed { .. } => {
+        saw_closed = true;
+      }
       WorkerToUi::FrameReady { frame, .. } => {
         if rgba_at_css(&frame, 10, 50) == [0, 255, 0, 255] {
-          break;
+          saw_green_frame = true;
         }
       }
       WorkerToUi::NavigationFailed { url, error, .. } => {
         panic!("navigation failed for {url}: {error}");
       }
       _ => {}
+    }
+    if saw_closed && saw_green_frame {
+      break;
     }
   }
 

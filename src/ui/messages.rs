@@ -199,6 +199,10 @@ pub enum UiToWorker {
   /// User chose an option in a dropdown `<select>` popup.
   ///
   /// The UI should send this after receiving [`WorkerToUi::SelectDropdownOpened`].
+  ///
+  /// Workers typically respond with [`WorkerToUi::SelectDropdownClosed`] so UIs can dismiss the
+  /// popup deterministically, even when the selection is a no-op (choosing the already-selected
+  /// option).
   SelectDropdownChoose {
     tab_id: TabId,
     select_node_id: usize,

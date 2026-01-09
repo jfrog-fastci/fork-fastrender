@@ -469,13 +469,18 @@ impl BrowserTabController {
     select_node_id: usize,
     option_node_id: usize,
   ) -> Result<Vec<WorkerToUi>> {
+    // Mirror the threaded worker semantics: choosing any option in the dropdown overlay should
+    // close the popup even if it results in no DOM mutation (e.g. choosing the currently-selected
+    // option).
+    let mut out = vec![WorkerToUi::SelectDropdownClosed { tab_id: self.tab_id }];
     let changed = self.document.mutate_dom(|dom| {
       crate::interaction::dom_mutation::activate_select_option(dom, select_node_id, option_node_id, false)
     });
     if changed {
-      self.paint_if_needed()
+      out.extend(self.paint_if_needed()?);
+      Ok(out)
     } else {
-      Ok(Vec::new())
+      Ok(out)
     }
   }
 
