@@ -81,6 +81,23 @@ cargo build --all-targets
 cargo check --all-features --tests
 ```
 
+### Listing tests (avoid broken pipes)
+
+Rust's test harness treats a closed stdout pipe as an error, so commands like:
+
+```bash
+bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | head
+```
+
+will often fail with `Broken pipe`. Prefer filtering without truncating the stream:
+
+```bash
+# OK (reads the full list, then filters)
+bash scripts/cargo_agent.sh test -p fastrender --lib -- --list | rg '^animation::'
+```
+
+or redirect to a file and inspect it.
+
 If you run unscoped cargo commands, you will compile 100+ binaries with LTO, spawn hundreds of parallel rustc/mold processes, exhaust all RAM, and render the machine unusable. **There are no exceptions.**
 
 ### Disk hygiene (`target/`)
