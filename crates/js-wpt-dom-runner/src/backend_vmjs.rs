@@ -1492,6 +1492,7 @@ impl JsWptRuntime {
       Value::Bool(true) => "true".to_string(),
       Value::Bool(false) => "false".to_string(),
       Value::Number(n) => n.to_string(),
+      Value::BigInt(b) => b.to_decimal_string(),
       Value::String(s) => self
         .heap
         .get_string(s)
@@ -1517,6 +1518,7 @@ fn to_boolean(heap: &mut Heap, value: Value) -> Result<bool, JsError> {
     Value::Undefined | Value::Null => false,
     Value::Bool(b) => b,
     Value::Number(n) => n != 0.0 && !n.is_nan(),
+    Value::BigInt(b) => !b.is_zero(),
     Value::String(s) => !heap.get_string(s)?.as_code_units().is_empty(),
     Value::Symbol(_) | Value::Object(_) => true,
   })
@@ -1528,6 +1530,7 @@ fn strict_equal(heap: &mut Heap, a: Value, b: Value) -> Result<bool, JsError> {
     (Value::Null, Value::Null) => true,
     (Value::Bool(x), Value::Bool(y)) => x == y,
     (Value::Number(x), Value::Number(y)) => x == y,
+    (Value::BigInt(x), Value::BigInt(y)) => x == y,
     (Value::String(x), Value::String(y)) => heap.get_string(x)? == heap.get_string(y)?,
     (Value::Symbol(x), Value::Symbol(y)) => x == y,
     (Value::Object(x), Value::Object(y)) => x == y,
