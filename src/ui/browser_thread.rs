@@ -825,7 +825,11 @@ impl BrowserRuntime {
       return;
     };
     let base_url = base_url_for_links(tab).to_string();
-    let document_url = tab.last_committed_url.clone().unwrap_or_default();
+    let document_url = tab
+      .last_committed_url
+      .as_deref()
+      .unwrap_or(about_pages::ABOUT_BASE_URL)
+      .to_string();
     let viewport_point = Point::new(pos_css.0, pos_css.1);
     let scroll = &tab.scroll_state;
     let engine = &mut tab.interaction;
@@ -980,7 +984,11 @@ impl BrowserRuntime {
         return;
       };
       let base_url = base_url_for_links(tab).to_string();
-      let document_url = tab.last_committed_url.clone().unwrap_or_default();
+      let document_url = tab
+        .last_committed_url
+        .as_deref()
+        .unwrap_or(about_pages::ABOUT_BASE_URL)
+        .to_string();
 
       let Some(doc) = tab.document.as_mut() else {
         return;

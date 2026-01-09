@@ -251,7 +251,7 @@ fn effective_base_url(tab: &TabState) -> &str {
     .document
     .base_url()
     .or_else(|| tab.url.as_deref())
-    .unwrap_or("")
+    .unwrap_or(about_pages::ABOUT_BASE_URL)
 }
 
 fn select_anchor_css(
@@ -1271,7 +1271,11 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let document_url = tab.url.clone().unwrap_or_default();
+        let document_url = tab
+          .url
+          .as_deref()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
         let base_url = effective_base_url(tab).to_string();
         let viewport_point = Point::new(pos_css.0, pos_css.1);
         let scroll = &tab.scroll;
@@ -1388,7 +1392,11 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>, cancel_g
           continue;
         };
         let base_url = effective_base_url(tab).to_string();
-        let document_url = tab.url.clone().unwrap_or_default();
+        let document_url = tab
+          .url
+          .as_deref()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
         let (doc, interaction) = (&mut tab.document, &mut tab.interaction);
         let mut action = InteractionAction::None;
         let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {

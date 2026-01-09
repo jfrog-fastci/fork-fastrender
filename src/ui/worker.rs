@@ -680,8 +680,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let scroll = &tab.scroll_state;
         // Avoid borrowing from `tab` across the DOM mutation call below (we need mutable borrows for
         // `tab.document` and `tab.interaction`).
-        let document_url = tab.current_url.as_deref().unwrap_or("").to_string();
-        let base_url = tab.effective_base_url().unwrap_or("").to_string();
+        let document_url = tab
+          .current_url
+          .as_deref()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
+        let base_url = tab
+          .effective_base_url()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
@@ -790,8 +797,15 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let Some(tab) = tabs.get_mut(&tab_id) else {
           continue;
         };
-        let base_url = tab.effective_base_url().unwrap_or("").to_string();
-        let document_url = tab.current_url.clone().unwrap_or_default();
+        let base_url = tab
+          .effective_base_url()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
+        let document_url = tab
+          .current_url
+          .as_deref()
+          .unwrap_or(about_pages::ABOUT_BASE_URL)
+          .to_string();
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };

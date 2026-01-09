@@ -711,8 +711,11 @@ impl BrowserRenderThread {
         .base_url
         .as_deref()
         .or_else(|| tab.url.as_deref())
-        .unwrap_or("");
-      let document_url = tab.url.as_deref().unwrap_or("");
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
+      let document_url = tab
+        .url
+        .as_deref()
+        .unwrap_or(about_pages::ABOUT_BASE_URL);
 
       let result = doc.mutate_dom_with_layout_artifacts(|dom, box_tree, _fragment_tree| {
         let (dom_changed, act) = tab.interaction.key_activate_with_box_tree(
