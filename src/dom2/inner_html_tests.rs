@@ -31,6 +31,25 @@ fn find_first_element_by_tag(doc: &Document, tag_name: &str) -> NodeId {
     .unwrap_or_else(|| panic!("missing <{tag_name}> element"))
 }
 
+fn find_descendant_by_id(doc: &Document, root: NodeId, id: &str) -> Option<NodeId> {
+  let mut stack = vec![root];
+  while let Some(node_id) = stack.pop() {
+    let node = doc.node(node_id);
+    if let NodeKind::Element { attributes, .. } | NodeKind::Slot { attributes, .. } = &node.kind {
+      if attributes
+        .iter()
+        .any(|(name, value)| name.eq_ignore_ascii_case("id") && value == id)
+      {
+        return Some(node_id);
+      }
+    }
+    for &child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+  None
+}
+
 #[test]
 fn inner_html_round_trip_basic() {
   let root = parse_html("<!doctype html><html><body><div id=target></div></body></html>").unwrap();
@@ -211,5 +230,61 @@ fn inner_html_preserves_template_contents_and_marks_inert() {
   assert!(
     matches!(&doc.node(first_child).kind, NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("span")),
     "template contents should include the <span> element"
+  );
+}
+
+#[test]
+fn inner_html_skips_shadow_root_children() {
+  let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
+  let root = parse_html(html).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  let host = find_element_by_id(&doc, "host");
+  assert_eq!(doc.inner_html(host).unwrap(), r#"<p id="light">light</p>"#);
+}
+
+#[test]
+fn set_inner_html_preserves_shadow_root() {
+  let html = r#"<div id=host><template shadowroot=open><span id=shadow>shadow</span></template><p id=light>light</p></div>"#;
+  let root = parse_html(html).unwrap();
+  let mut doc = Document::from_renderer_dom(&root);
+
+  let host = find_element_by_id(&doc, "host");
+  let shadow_root = doc
+    .node(host)
+    .children
+    .iter()
+    .copied()
+    .find(|&child| matches!(doc.node(child).kind, NodeKind::ShadowRoot { .. }))
+    .expect("expected a ShadowRoot child under the host element");
+  let shadow_span = find_descendant_by_id(&doc, shadow_root, "shadow")
+    .expect("expected <span id=shadow> inside the shadow root");
+
+  // ShadowRoot has no outerHTML in the web platform.
+  assert_eq!(doc.outer_html(shadow_root), Err(super::DomError::InvalidNodeType));
+
+  doc.set_inner_html(host, "<b>new</b>").unwrap();
+
+  let host_children = doc.node(host).children.clone();
+  assert_eq!(
+    host_children.first().copied(),
+    Some(shadow_root),
+    "shadow root should remain first in host.children"
+  );
+
+  let b_child = host_children
+    .iter()
+    .copied()
+    .find(|&child| match &doc.node(child).kind {
+      NodeKind::Element { tag_name, .. } => tag_name.eq_ignore_ascii_case("b"),
+      _ => false,
+    })
+    .expect("expected newly inserted <b> child");
+  assert_eq!(doc.node(b_child).parent, Some(host));
+
+  assert_eq!(doc.inner_html(host).unwrap(), "<b>new</b>");
+  assert_eq!(
+    doc.outer_html(shadow_span).unwrap(),
+    r#"<span id="shadow">shadow</span>"#
   );
 }

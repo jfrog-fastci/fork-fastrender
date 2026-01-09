@@ -1,7 +1,7 @@
 use crate::web::dom::DomException;
 use crate::dom::HTML_NAMESPACE;
 
-use super::{Document, NodeId, NodeKind};
+use super::{Document, DomError, DomResult, NodeId, NodeKind};
 
 fn validate_element_like(doc: &Document, element: NodeId) -> Result<(), DomException> {
   let Some(node) = doc.nodes.get(element.index()) else {
@@ -15,6 +15,37 @@ fn validate_element_like(doc: &Document, element: NodeId) -> Result<(), DomExcep
 }
 
 impl Document {
+  /// Serialize the element's light DOM children as HTML.
+  ///
+  /// Unlike [`Document::get_inner_html`], this variant uses `dom2`'s deterministic [`DomError`]
+  /// codes. Shadow roots stored under the element are excluded from serialization (matching the
+  /// platform `Element.innerHTML` semantics).
+  pub fn inner_html(&self, element: NodeId) -> DomResult<String> {
+    let Some(node) = self.nodes.get(element.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+    match node.kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => {}
+      _ => return Err(DomError::InvalidNodeType),
+    }
+    Ok(super::serialization::serialize_children(self, element))
+  }
+
+  /// Serialize an element as HTML (the equivalent of platform `Element.outerHTML`).
+  ///
+  /// Shadow roots are not elements and have no `outerHTML` in the web platform; attempting to
+  /// serialize a `NodeKind::ShadowRoot` yields `Err(DomError::InvalidNodeType)`.
+  pub fn outer_html(&self, node: NodeId) -> DomResult<String> {
+    let Some(n) = self.nodes.get(node.index()) else {
+      return Err(DomError::NotFoundError);
+    };
+    match n.kind {
+      NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(super::serialization::serialize_outer(self, node)),
+      NodeKind::ShadowRoot { .. } => Err(DomError::InvalidNodeType),
+      _ => Err(DomError::InvalidNodeType),
+    }
+  }
+
   pub fn get_inner_html(&self, element: NodeId) -> Result<String, DomException> {
     validate_element_like(self, element)?;
     Ok(super::serialization::serialize_children(self, element))
@@ -26,8 +57,13 @@ impl Document {
     let new_children = super::dom_parsing::parse_html_fragment(self, element, html)?;
 
     let old_children = std::mem::take(&mut self.nodes[element.index()].children);
+    let mut preserved_shadow_roots: Vec<NodeId> = Vec::new();
     for child in old_children {
-      if let Some(node) = self.nodes.get_mut(child.index()) {
+      if matches!(self.node(child).kind, NodeKind::ShadowRoot { .. }) {
+        // Preserve any attached shadow roots (and their subtree) when setting innerHTML; the setter
+        // replaces only the host element's light DOM children.
+        preserved_shadow_roots.push(child);
+      } else if let Some(node) = self.nodes.get_mut(child.index()) {
         node.parent = None;
       }
     }
@@ -37,7 +73,8 @@ impl Document {
         node.parent = Some(element);
       }
     }
-    self.nodes[element.index()].children = new_children;
+    preserved_shadow_roots.extend(new_children);
+    self.nodes[element.index()].children = preserved_shadow_roots;
 
     Ok(())
   }

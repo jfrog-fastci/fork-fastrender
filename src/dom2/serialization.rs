@@ -129,6 +129,14 @@ pub(super) fn serialize_node(doc: &Document, root: NodeId, out: &mut String) {
 
           stack.push((id, true));
           for &child in node.children.iter().rev() {
+            // Shadow roots are stored as element children for renderer traversal, but they are not
+            // part of the light DOM tree and must not appear in Element.innerHTML/outerHTML output.
+            if matches!(
+              doc.nodes.get(child.index()).map(|n| &n.kind),
+              Some(NodeKind::ShadowRoot { .. })
+            ) {
+              continue;
+            }
             stack.push((child, false));
           }
         } else {
@@ -154,6 +162,12 @@ pub(super) fn serialize_node(doc: &Document, root: NodeId, out: &mut String) {
 
           stack.push((id, true));
           for &child in node.children.iter().rev() {
+            if matches!(
+              doc.nodes.get(child.index()).map(|n| &n.kind),
+              Some(NodeKind::ShadowRoot { .. })
+            ) {
+              continue;
+            }
             stack.push((child, false));
           }
         } else {
@@ -177,6 +191,13 @@ pub(super) fn serialize_children(doc: &Document, parent: NodeId) -> String {
 
   let mut out = String::new();
   for &child in &node.children {
+    // Skip ShadowRoot nodes stored for renderer traversal; they are not part of the light DOM.
+    if matches!(
+      doc.nodes.get(child.index()).map(|n| &n.kind),
+      Some(NodeKind::ShadowRoot { .. })
+    ) {
+      continue;
+    }
     serialize_node(doc, child, &mut out);
   }
   out
@@ -187,4 +208,3 @@ pub(super) fn serialize_outer(doc: &Document, node: NodeId) -> String {
   serialize_node(doc, node, &mut out);
   out
 }
-
