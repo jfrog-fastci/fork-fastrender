@@ -124,6 +124,13 @@ pub enum RunUntilIdleOutcome {
   Stopped(RunUntilIdleStopReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpinOutcome {
+  ConditionMet,
+  Idle,
+  Stopped(RunUntilIdleStopReason),
+}
+
 /// JS-visible timer ID returned by `setTimeout`/`setInterval`.
 ///
 /// The HTML Standard uses integer handles for timers; we use `i32` so this can be exposed to JS
@@ -338,6 +345,7 @@ impl<Host: 'static> EventLoop<Host> {
       self.timer_nesting_level = 0;
     }
 
+    let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
       source: task.source,
       is_microtask: false,
@@ -345,10 +353,10 @@ impl<Host: 'static> EventLoop<Host> {
     let task_result = task.run(host, self);
     // Always clear running-task state so errors don't leave the event loop in a "running" state.
     self.currently_running_task = None;
-    task_result?;
-
-    self.perform_microtask_checkpoint(host)?;
+    let task_result = task_result.and_then(|()| self.perform_microtask_checkpoint(host));
     self.timer_nesting_level = previous_timer_nesting_level;
+    self.currently_running_task = previous_running_task;
+    task_result?;
     Ok(true)
   }
 
@@ -405,16 +413,19 @@ impl<Host: 'static> EventLoop<Host> {
       self.timer_nesting_level = 0;
     }
 
+    let previous_running_task = self.currently_running_task;
     self.currently_running_task = Some(RunningTask {
       source: task.source,
       is_microtask: false,
     });
     let task_result = task.run(host, self);
     self.currently_running_task = None;
-    task_result.map_err(RunStepError::Error)?;
-
-    self.perform_microtask_checkpoint_limited(host, run_state)?;
+    let task_result = task_result.map_err(RunStepError::Error).and_then(|()| {
+      self.perform_microtask_checkpoint_limited(host, run_state)
+    });
     self.timer_nesting_level = previous_timer_nesting_level;
+    self.currently_running_task = previous_running_task;
+    task_result?;
     Ok(true)
   }
 
@@ -637,6 +648,47 @@ impl<Host: 'static> EventLoop<Host> {
       }
     }
     Ok(())
+  }
+
+  pub fn spin_until(
+    &mut self,
+    host: &mut Host,
+    limits: RunLimits,
+    mut condition: impl FnMut(&Host) -> bool,
+  ) -> Result<SpinOutcome> {
+    let mut run_state = RunState::new(limits, Arc::clone(&self.clock));
+    match self.spin_until_inner(host, &mut run_state, &mut condition) {
+      Ok(outcome) => Ok(outcome),
+      Err(RunStepError::Stop(reason)) => Ok(SpinOutcome::Stopped(reason)),
+      Err(RunStepError::Error(err)) => Err(err),
+    }
+  }
+
+  fn spin_until_inner(
+    &mut self,
+    host: &mut Host,
+    run_state: &mut RunState,
+    condition: &mut impl FnMut(&Host) -> bool,
+  ) -> RunStepResult<SpinOutcome> {
+    loop {
+      run_state.check_deadline()?;
+      self.queue_due_timers().map_err(RunStepError::Error)?;
+
+      if !condition(host) {
+        return Ok(SpinOutcome::ConditionMet);
+      }
+
+      if !self.microtask_queue.is_empty() {
+        self.perform_microtask_checkpoint_limited(host, run_state)?;
+        continue;
+      }
+
+      if self.run_next_task_limited(host, run_state)? {
+        continue;
+      }
+
+      return Ok(SpinOutcome::Idle);
+    }
   }
 }
 

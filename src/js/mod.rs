@@ -19,7 +19,9 @@
 pub mod dom_scripts;
 pub mod clock;
 pub mod event_loop;
+pub mod html_scripting;
 pub mod orchestrator;
+pub mod script_blocking_stylesheets;
 pub mod script_scheduler;
 pub mod runtime;
 pub mod time;
@@ -32,8 +34,8 @@ pub mod webidl;
 pub use dom_scripts::extract_script_elements;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use event_loop::{
-  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, Task, TaskSource,
-  TimerId,
+  EventLoop, QueueLimits, RunLimits, RunUntilIdleOutcome, RunUntilIdleStopReason, SpinOutcome, Task,
+  TaskSource, TimerId,
 };
 pub use orchestrator::{
   CurrentScriptHost, CurrentScriptState, ScriptBlockExecutor, ScriptOrchestrator,
@@ -48,6 +50,7 @@ pub use url::{Url, UrlError, UrlSearchParams};
 pub use window_timers::{
   clearInterval, clearTimeout, queueMicrotask, setInterval, setTimeout, JsValue, TimerHandler,
 };
+pub use script_blocking_stylesheets::ScriptBlockingStyleSheetSet;
 
 /// The script processing mode for a `<script>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
