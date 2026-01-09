@@ -377,7 +377,7 @@ pub struct ScriptScheduler<NodeId> {
   parsing_completed: bool,
 }
 
-impl<NodeId: Copy> Default for ScriptScheduler<NodeId> {
+impl<NodeId> Default for ScriptScheduler<NodeId> {
   fn default() -> Self {
     Self {
       next_script_id: 1,
@@ -389,7 +389,7 @@ impl<NodeId: Copy> Default for ScriptScheduler<NodeId> {
   }
 }
 
-impl<NodeId: Copy> ScriptScheduler<NodeId> {
+impl<NodeId: Clone> ScriptScheduler<NodeId> {
   pub fn new() -> Self {
     Self::default()
   }
@@ -446,7 +446,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
       self.scripts.insert(
         id,
         ExternalScriptEntry {
-          node_id,
+          node_id: node_id.clone(),
           base_url_at_discovery,
           url: url.clone(),
           async_attr: element.async_attr,
@@ -461,12 +461,15 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
 
       actions.push(ScriptSchedulerAction::StartFetch {
         script_id: id,
-        node_id,
+        node_id: node_id.clone(),
         url,
       });
 
       if mode == ExternalMode::Blocking {
-        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted { script_id: id, node_id });
+        actions.push(ScriptSchedulerAction::BlockParserUntilExecuted {
+          script_id: id,
+          node_id,
+        });
       }
     } else {
       // Inline classic scripts execute immediately and block parsing.
@@ -508,7 +511,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
           return Ok(Vec::new());
         }
         entry.queued_for_execution = true;
-        let node_id = entry.node_id;
+        let node_id = entry.node_id.clone();
         let source_text = entry.source_text.take().ok_or_else(|| {
           Error::Other("internal error: missing source text after fetch_completed".to_string())
         })?;
@@ -523,7 +526,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
           return Ok(Vec::new());
         }
         entry.queued_for_execution = true;
-        let node_id = entry.node_id;
+        let node_id = entry.node_id.clone();
         let source_text = entry.source_text.take().ok_or_else(|| {
           Error::Other("internal error: missing source text after fetch_completed".to_string())
         })?;
@@ -568,7 +571,7 @@ impl<NodeId: Copy> ScriptScheduler<NodeId> {
       }
 
       entry.queued_for_execution = true;
-      let node_id = entry.node_id;
+      let node_id = entry.node_id.clone();
       let source_text = entry.source_text.take().ok_or_else(|| {
         Error::Other(
           "internal error: missing source text when queueing deferred scripts".to_string(),

@@ -97,7 +97,10 @@ fn convert_add_event_listener_options_union(
     ));
   }
 
-  Ok((convert_add_event_listener_options_dict(rt, v)?, OptionsSource::Dict))
+  Ok((
+    convert_add_event_listener_options_dict(rt, v)?,
+    OptionsSource::Dict,
+  ))
 }
 
 fn get_optional_bool_member(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Result<bool, VmError> {
@@ -117,9 +120,9 @@ fn convert_add_event_listener_options_dict(
     return Ok(AddEventListenerOptions::default());
   }
   if !rt.is_object(v) {
-    return Err(rt.throw_type_error(
-      "addEventListener options must be an object (dictionary) or boolean",
-    ));
+    return Err(
+      rt.throw_type_error("addEventListener options must be an object (dictionary) or boolean"),
+    );
   }
 
   Ok(AddEventListenerOptions {
@@ -164,7 +167,10 @@ fn assert_type_error(rt: &mut VmJsRuntime, err: VmError, expected_message: &str)
   assert_eq!(message, expected_message);
 }
 
-fn install_bindings(rt: &mut VmJsRuntime, host: Rc<RefCell<FakeHost>>) -> Result<InstalledBindings, VmError> {
+fn install_bindings(
+  rt: &mut VmJsRuntime,
+  host: Rc<RefCell<FakeHost>>,
+) -> Result<InstalledBindings, VmError> {
   let global = rt.alloc_object_value()?;
 
   // EventTarget + EventTarget.prototype.addEventListener.
@@ -173,16 +179,19 @@ fn install_bindings(rt: &mut VmJsRuntime, host: Rc<RefCell<FakeHost>>) -> Result
   let host_for_add = host.clone();
   let add_event_listener = rt.alloc_function_value(move |rt, _this, args| {
     if args.len() < 2 {
-      return Err(rt.throw_type_error(
-        "EventTarget.addEventListener requires at least 2 arguments",
-      ));
+      return Err(
+        rt.throw_type_error("EventTarget.addEventListener requires at least 2 arguments"),
+      );
     }
 
     let type_ = to_dom_string(rt, args[0])?;
     let callback_is_null = matches!(args[1], Value::Null | Value::Undefined);
 
     let (options, options_source) = if args.len() < 3 {
-      (AddEventListenerOptions::default(), OptionsSource::DefaultDict)
+      (
+        AddEventListenerOptions::default(),
+        OptionsSource::DefaultDict,
+      )
     } else {
       convert_add_event_listener_options_union(rt, args[2])?
     };
@@ -201,7 +210,12 @@ fn install_bindings(rt: &mut VmJsRuntime, host: Rc<RefCell<FakeHost>>) -> Result
   })?;
 
   let add_event_listener_key = pk(rt, "addEventListener")?;
-  rt.define_data_property(event_target_proto, add_event_listener_key, add_event_listener, true)?;
+  rt.define_data_property(
+    event_target_proto,
+    add_event_listener_key,
+    add_event_listener,
+    true,
+  )?;
 
   let event_target_ctor = rt.alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))?;
   let prototype_key = pk(rt, "prototype")?;
@@ -227,10 +241,7 @@ fn install_bindings(rt: &mut VmJsRuntime, host: Rc<RefCell<FakeHost>>) -> Result
     host_for_url
       .borrow_mut()
       .url_constructor_calls
-      .push(UrlConstructorCall {
-        url,
-        base,
-      });
+      .push(UrlConstructorCall { url, base });
 
     let obj = rt.alloc_object_value()?;
     rt.set_prototype(obj, Some(url_proto_for_ctor))?;
@@ -387,6 +398,8 @@ fn bytestring_and_usvstring_conversion_failures_throw_type_error() {
   let url_key = pk(&mut rt, "URL").unwrap();
   let url_ctor = rt.get(bindings.global, url_key).unwrap();
   let sym = alloc_symbol(&mut rt, "sym").unwrap();
-  let err = rt.call_function(url_ctor, Value::Undefined, &[sym]).unwrap_err();
+  let err = rt
+    .call_function(url_ctor, Value::Undefined, &[sym])
+    .unwrap_err();
   assert_type_error(&mut rt, err, "Cannot convert a Symbol value to a string");
 }

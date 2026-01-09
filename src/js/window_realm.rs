@@ -134,10 +134,6 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
     self.heap()
   }
 
-  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
-    &mut self.heap
-  }
-
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
     self.vm_and_heap_mut()
   }
@@ -176,7 +172,6 @@ impl vm_js::VmJobContext for WindowRealm {
     self.heap.remove_root(id);
   }
 }
-
 fn default_heap_limits() -> HeapLimits {
   const DEFAULT_HEAP_MAX_BYTES: usize = 32 * 1024 * 1024;
   const MIN_HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;

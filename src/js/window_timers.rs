@@ -13,7 +13,9 @@ use crate::js::runtime::{current_event_loop_mut, with_event_loop};
 use crate::js::window_realm::WindowRealmHost;
 use crate::render_control;
 use std::time::{Duration, Instant};
-use vm_js::{Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError};
+use vm_js::{
+  Budget, Heap, PropertyDescriptor, PropertyKey, PropertyKind, Scope, Value, Vm, VmError,
+};
 
 const TIMER_REGISTRY_KEY: &str = "__fastrender_timer_registry";
 const TIMER_RECORD_CALLBACK_KEY: &str = "__callback";
@@ -69,7 +71,13 @@ fn value_to_number(heap: &Heap, value: Value) -> Result<f64, VmError> {
   Ok(match value {
     Value::Undefined => f64::NAN,
     Value::Null => 0.0,
-    Value::Bool(b) => if b { 1.0 } else { 0.0 },
+    Value::Bool(b) => {
+      if b {
+        1.0
+      } else {
+        0.0
+      }
+    }
     Value::Number(n) => n,
     Value::String(s) => match heap.get_string(s) {
       Ok(js) => {
@@ -130,7 +138,10 @@ fn is_callable(scope: &Scope<'_>, value: Value) -> bool {
   scope.heap().is_callable(value).unwrap_or(false)
 }
 
-fn get_timer_registry(scope: &mut Scope<'_>, global: vm_js::GcObject) -> Result<vm_js::GcObject, VmError> {
+fn get_timer_registry(
+  scope: &mut Scope<'_>,
+  global: vm_js::GcObject,
+) -> Result<vm_js::GcObject, VmError> {
   let key_s = scope.alloc_string(TIMER_REGISTRY_KEY)?;
   scope.push_root(Value::String(key_s))?;
   let key = PropertyKey::from_string(key_s);
@@ -139,7 +150,9 @@ fn get_timer_registry(scope: &mut Scope<'_>, global: vm_js::GcObject) -> Result<
     .object_get_own_data_property_value(global, &key)?
   {
     Some(Value::Object(obj)) => Ok(obj),
-    _ => Err(VmError::Unimplemented("timer registry missing on global object")),
+    _ => Err(VmError::Unimplemented(
+      "timer registry missing on global object",
+    )),
   }
 }
 
@@ -212,7 +225,11 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let delay_ms = normalize_delay_ms(scope.heap(), delay_value)?;
   let delay = Duration::from_millis(delay_ms);
-  let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
+  let extra_args: Vec<Value> = if args.len() > 2 {
+    args[2..].to_vec()
+  } else {
+    Vec::new()
+  };
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("setTimeout called with invalid this value"));
@@ -241,7 +258,12 @@ fn set_timeout_native<Host: WindowRealmHost + 'static>(
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
           vm.tick()?;
-          let _ = vm.call(&mut scope, callback, Value::Object(global_obj), &extra_args_for_cb)?;
+          let _ = vm.call(
+            &mut scope,
+            callback,
+            Value::Object(global_obj),
+            &extra_args_for_cb,
+          )?;
           Ok(())
         })();
         vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
@@ -321,7 +343,11 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
   let delay_value = args.get(1).copied().unwrap_or(Value::Undefined);
   let interval_ms = normalize_delay_ms(scope.heap(), delay_value)?;
   let interval = Duration::from_millis(interval_ms);
-  let extra_args: Vec<Value> = if args.len() > 2 { args[2..].to_vec() } else { Vec::new() };
+  let extra_args: Vec<Value> = if args.len() > 2 {
+    args[2..].to_vec()
+  } else {
+    Vec::new()
+  };
 
   let Value::Object(global_obj) = this else {
     return Err(throw_type_error("setInterval called with invalid this value"));
@@ -350,7 +376,12 @@ fn set_interval_native<Host: WindowRealmHost + 'static>(
         let mut scope = heap.scope();
         let call_result = (|| -> Result<(), VmError> {
           vm.tick()?;
-          let _ = vm.call(&mut scope, callback, Value::Object(global_obj), &extra_args_for_cb)?;
+          let _ = vm.call(
+            &mut scope,
+            callback,
+            Value::Object(global_obj),
+            &extra_args_for_cb,
+          )?;
           Ok(())
         })();
         vm.set_budget(Budget::unlimited(DEFAULT_CHECK_TIME_EVERY));
@@ -487,11 +518,7 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let registry = scope.alloc_object()?;
   scope.push_root(Value::Object(registry))?;
   let registry_key = alloc_key(&mut scope, TIMER_REGISTRY_KEY)?;
-  scope.define_property(
-    global,
-    registry_key,
-    data_desc(Value::Object(registry)),
-  )?;
+  scope.define_property(global, registry_key, data_desc(Value::Object(registry)))?;
 
   let set_timeout_id = vm.register_native_call(set_timeout_native::<Host>)?;
   let set_timeout_name = scope.alloc_string("setTimeout")?;
@@ -546,7 +573,11 @@ pub fn install_window_timers_bindings<Host: WindowRealmHost + 'static>(
   let clear_interval_key = alloc_key(&mut scope, "clearInterval")?;
   let queue_microtask_key = alloc_key(&mut scope, "queueMicrotask")?;
 
-  scope.define_property(global, set_timeout_key, data_desc(Value::Object(set_timeout)))?;
+  scope.define_property(
+    global,
+    set_timeout_key,
+    data_desc(Value::Object(set_timeout)),
+  )?;
   scope.define_property(
     global,
     clear_timeout_key,
@@ -772,7 +803,12 @@ mod tests {
       _ => 0,
     };
     let new_count = count + 1;
-    set_prop(scope, global, "__interval_count", Value::Number(new_count as f64));
+    set_prop(
+      scope,
+      global,
+      "__interval_count",
+      Value::Number(new_count as f64),
+    );
 
     if new_count == 3 {
       // Call clearInterval(id).
@@ -1002,12 +1038,7 @@ mod tests {
           )
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         let _ = vm
-          .call(
-            &mut scope,
-            clear_timeout,
-            Value::Object(global),
-            &[id],
-          )
+          .call(&mut scope, clear_timeout, Value::Object(global), &[id])
           .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
       })
@@ -1138,7 +1169,10 @@ mod tests {
       let (_, realm, heap) = host.window.vm_realm_and_heap_mut();
       let mut scope = heap.scope();
       let global = realm.global_object();
-      (get_prop(&mut scope, global, "__arg0"), get_prop(&mut scope, global, "__arg1"))
+      (
+        get_prop(&mut scope, global, "__arg0"),
+        get_prop(&mut scope, global, "__arg1"),
+      )
     };
     assert_eq!(arg0, Value::Number(1.0));
     match arg1 {
