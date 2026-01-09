@@ -20,6 +20,35 @@ use vm_js::{
   StackFrame, TerminationReason as VmTerminationReason, Value, Vm, VmError, VmOptions,
 };
 
+const DEFAULT_HEAP_MAX_BYTES: usize = 64 * 1024 * 1024;
+const MIN_HEAP_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+fn default_heap_limits() -> HeapLimits {
+  let mut max = DEFAULT_HEAP_MAX_BYTES;
+
+  // If the process is constrained by `RLIMIT_AS` (typically applied by FastRender CLI flags or
+  // an outer `prlimit`/cgroup), keep JS heap usage to a small fraction of that ceiling so other
+  // renderer subsystems still have headroom.
+  #[cfg(target_os = "linux")]
+  {
+    if let Ok((cur, _max)) = crate::process_limits::get_address_space_limit_bytes() {
+      if cur > 0 && cur < u64::MAX {
+        // Stay conservative: scripts are untrusted, and the renderer has many other heaps (DOM,
+        // CSS, layout, display list, etc.).
+        let suggested = cur / 8;
+        if let Ok(suggested) = usize::try_from(suggested) {
+          max = max.min(suggested.max(MIN_HEAP_MAX_BYTES));
+        }
+      }
+    }
+  }
+
+  // Keep the pre-existing "GC at half the max heap" behavior, but scale it down when the max is
+  // derived from process limits.
+  let gc_threshold = (max / 2).min(max);
+  HeapLimits::new(max, gc_threshold)
+}
+
 /// Per-realm configuration for the embedded JS engine.
 #[derive(Debug, Clone)]
 pub struct ScriptRealmOptions {
@@ -40,7 +69,7 @@ impl Default for ScriptRealmOptions {
   fn default() -> Self {
     // Conservative defaults suitable for running untrusted inline scripts without hanging the host.
     Self {
-      heap_limits: HeapLimits::new(64 * 1024 * 1024, 32 * 1024 * 1024),
+      heap_limits: default_heap_limits(),
       default_fuel: Some(100_000),
       default_deadline: Some(Duration::from_millis(50)),
       check_time_every: 64,
