@@ -96,6 +96,83 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
     _ => panic!("createElement should return an object"),
   };
 
+  // Identity/shape getters.
+  let key_is_connected = PropertyKey::from_string(scope.alloc_string("isConnected")?);
+  let is_connected_get = get_accessor_getter(scope.heap(), el_obj, &key_is_connected)
+    .expect("isConnected getter should exist");
+  let key_node_name = PropertyKey::from_string(scope.alloc_string("nodeName")?);
+  let node_name_get = get_accessor_getter(scope.heap(), el_obj, &key_node_name)
+    .expect("nodeName getter should exist");
+  let key_node_value = PropertyKey::from_string(scope.alloc_string("nodeValue")?);
+  let node_value_get = get_accessor_getter(scope.heap(), el_obj, &key_node_value)
+    .expect("nodeValue getter should exist");
+  let node_value_set = get_accessor_setter(scope.heap(), el_obj, &key_node_value)
+    .expect("nodeValue setter should exist");
+  let key_tag_name = PropertyKey::from_string(scope.alloc_string("tagName")?);
+  let tag_name_get = get_accessor_getter(scope.heap(), el_obj, &key_tag_name)
+    .expect("tagName getter should exist");
+  let key_id_prop = PropertyKey::from_string(scope.alloc_string("id")?);
+  let id_get = get_accessor_getter(scope.heap(), el_obj, &key_id_prop).expect("id getter exists");
+  let key_class_name = PropertyKey::from_string(scope.alloc_string("className")?);
+  let class_name_get =
+    get_accessor_getter(scope.heap(), el_obj, &key_class_name).expect("className getter exists");
+  let class_name_set = get_accessor_setter(scope.heap(), el_obj, &key_class_name)
+    .expect("className setter exists");
+  let key_text_content = PropertyKey::from_string(scope.alloc_string("textContent")?);
+  let text_content_get =
+    get_accessor_getter(scope.heap(), el_obj, &key_text_content).expect("textContent getter exists");
+  let text_content_set =
+    get_accessor_setter(scope.heap(), el_obj, &key_text_content).expect("textContent setter exists");
+
+  // A freshly created element is not yet connected to the document tree.
+  assert_eq!(
+    vm.call_without_host(&mut scope, is_connected_get, el_val, &[])?,
+    Value::Bool(false)
+  );
+
+  let node_name = vm.call_without_host(&mut scope, node_name_get, document_val, &[])?;
+  let Value::String(node_name_str) = node_name else {
+    panic!("expected nodeName string");
+  };
+  assert_eq!(scope.heap().get_string(node_name_str)?.to_utf8_lossy(), "#document");
+
+  let node_name = vm.call_without_host(&mut scope, node_name_get, el_val, &[])?;
+  let Value::String(node_name_str) = node_name else {
+    panic!("expected nodeName string");
+  };
+  assert_eq!(scope.heap().get_string(node_name_str)?.to_utf8_lossy(), "DIV");
+
+  let tag_name = vm.call_without_host(&mut scope, tag_name_get, el_val, &[])?;
+  let Value::String(tag_name_str) = tag_name else {
+    panic!("expected tagName string");
+  };
+  assert_eq!(scope.heap().get_string(tag_name_str)?.to_utf8_lossy(), "DIV");
+
+  assert!(matches!(
+    vm.call_without_host(&mut scope, node_value_get, document_val, &[])?,
+    Value::Null
+  ));
+  assert!(matches!(
+    vm.call_without_host(&mut scope, node_value_get, el_val, &[])?,
+    Value::Null
+  ));
+
+  let id = vm.call_without_host(&mut scope, id_get, el_val, &[])?;
+  let Value::String(id_str) = id else {
+    panic!("expected id string");
+  };
+  assert!(scope.heap().get_string(id_str)?.to_utf8_lossy().is_empty());
+
+  let class_name = vm.call_without_host(&mut scope, class_name_get, el_val, &[])?;
+  let Value::String(class_name_str) = class_name else {
+    panic!("expected className string");
+  };
+  assert!(scope
+    .heap()
+    .get_string(class_name_str)?
+    .to_utf8_lossy()
+    .is_empty());
+
   // Element wrappers should also expose Node.hasChildNodes.
   let el_has_children = vm.call_without_host(&mut scope, has_child_nodes, el_val, &[])?;
   assert_eq!(el_has_children, Value::Bool(false));
@@ -109,6 +186,12 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   let r = vm.call_without_host(&mut scope, set_attribute, el_val, &[arg_id, arg_foo])?;
   assert!(matches!(r, Value::Undefined));
 
+  let id = vm.call_without_host(&mut scope, id_get, el_val, &[])?;
+  let Value::String(id_str) = id else {
+    panic!("expected id string");
+  };
+  assert_eq!(scope.heap().get_string(id_str)?.to_utf8_lossy(), "foo");
+
   // document.appendChild(el)
   let key_append_child = PropertyKey::from_string(scope.alloc_string("appendChild")?);
   let append_child = get_data_property_value(scope.heap(), document_obj, &key_append_child)
@@ -116,10 +199,24 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   let appended = vm.call_without_host(&mut scope, append_child, document_val, &[el_val])?;
   assert_eq!(appended, el_val, "appendChild should return the child");
 
+  assert_eq!(
+    vm.call_without_host(&mut scope, is_connected_get, el_val, &[])?,
+    Value::Bool(true)
+  );
+
   // document.hasChildNodes() should now return true.
   let doc_has_children =
     vm.call_without_host(&mut scope, has_child_nodes, document_val, &[])?;
   assert_eq!(doc_has_children, Value::Bool(true));
+
+  // className setter updates the backing attribute.
+  let arg_class = Value::String(scope.alloc_string("a b")?);
+  vm.call_without_host(&mut scope, class_name_set, el_val, &[arg_class])?;
+  let class_name = vm.call_without_host(&mut scope, class_name_get, el_val, &[])?;
+  let Value::String(class_name_str) = class_name else {
+    panic!("expected className string");
+  };
+  assert_eq!(scope.heap().get_string(class_name_str)?.to_utf8_lossy(), "a b");
 
   // Basic Node navigation getters.
   let key_parent_node = PropertyKey::from_string(scope.alloc_string("parentNode")?);
@@ -226,6 +323,77 @@ fn dom_bindings_smoke() -> Result<(), VmError> {
   assert_eq!(
     vm.call_without_host(&mut scope, previous_sibling_get, child2, &[])?,
     child1
+  );
+
+  // nodeValue behavior for Text nodes.
+  let arg_hello = Value::String(scope.alloc_string("hello")?);
+  vm.call_without_host(&mut scope, text_content_set, child1, &[arg_hello])?;
+
+  let text_node = vm.call_without_host(&mut scope, first_child_get, child1, &[])?;
+  assert_eq!(
+    vm.call_without_host(&mut scope, node_type_get, text_node, &[])?,
+    Value::Number(3.0)
+  );
+
+  let text_node_name = vm.call_without_host(&mut scope, node_name_get, text_node, &[])?;
+  let Value::String(text_node_name_str) = text_node_name else {
+    panic!("expected nodeName string");
+  };
+  assert_eq!(
+    scope.heap().get_string(text_node_name_str)?.to_utf8_lossy(),
+    "#text"
+  );
+
+  let text_node_value = vm.call_without_host(&mut scope, node_value_get, text_node, &[])?;
+  let Value::String(text_node_value_str) = text_node_value else {
+    panic!("expected nodeValue string");
+  };
+  assert_eq!(
+    scope
+      .heap()
+      .get_string(text_node_value_str)?
+      .to_utf8_lossy(),
+    "hello"
+  );
+
+  let arg_bye = Value::String(scope.alloc_string("bye")?);
+  vm.call_without_host(&mut scope, node_value_set, text_node, &[arg_bye])?;
+
+  let text_node_value = vm.call_without_host(&mut scope, node_value_get, text_node, &[])?;
+  let Value::String(text_node_value_str) = text_node_value else {
+    panic!("expected nodeValue string");
+  };
+  assert_eq!(
+    scope
+      .heap()
+      .get_string(text_node_value_str)?
+      .to_utf8_lossy(),
+    "bye"
+  );
+
+  let child_text = vm.call_without_host(&mut scope, text_content_get, child1, &[])?;
+  let Value::String(child_text_str) = child_text else {
+    panic!("expected textContent string");
+  };
+  assert_eq!(
+    scope.heap().get_string(child_text_str)?.to_utf8_lossy(),
+    "bye"
+  );
+
+  // Inert template contents: `<template>` should not expose children via Node navigation.
+  let tag_template = Value::String(scope.alloc_string("template")?);
+  let template = vm.call_without_host(&mut scope, create_element, document_val, &[tag_template])?;
+  vm.call_without_host(&mut scope, append_child, el_val, &[template])?;
+
+  let arg_inert = Value::String(scope.alloc_string("INERT")?);
+  vm.call_without_host(&mut scope, text_content_set, template, &[arg_inert])?;
+
+  let template_has_children =
+    vm.call_without_host(&mut scope, has_child_nodes, template, &[])?;
+  assert_eq!(template_has_children, Value::Bool(false));
+  assert_eq!(
+    vm.call_without_host(&mut scope, first_child_get, template, &[])?,
+    Value::Null
   );
 
   // Validate DOM mutation.

@@ -338,7 +338,7 @@ fn to_dom_string<'a>(scope: &mut Scope<'a>, host: &DomHost, value: Value) -> Res
   }
 }
 
-fn to_dom_string_nullable_for_text_content<'a>(
+fn to_dom_string_nullable<'a>(
   scope: &mut Scope<'a>,
   host: &DomHost,
   value: Value,
@@ -1193,10 +1193,16 @@ fn dom_node_has_child_nodes(
   let host = host_mut(vm)?;
   let node_id = require_this_node(scope, host, this)?;
 
-  match host.dom.borrow().children(node_id) {
-    Ok(children) => Ok(Value::Bool(!children.is_empty())),
-    Err(err) => throw_dom_error(scope, host, err),
-  }
+  let has_children = {
+    let dom = host.dom.borrow();
+    let node = dom.node(node_id);
+    if node.inert_subtree {
+      false
+    } else {
+      !node.children.is_empty()
+    }
+  };
+  Ok(Value::Bool(has_children))
 }
 
 fn dom_node_parent_node_getter(
@@ -1218,6 +1224,12 @@ fn dom_node_parent_node_getter(
   let Some(parent_id) = parent else {
     return Ok(Value::Null);
   };
+
+  // Template contents are stored under the `<template>` element in `dom2` but should behave like a
+  // disconnected subtree for scripting and navigation. (See `dom2::Node::inert_subtree`.)
+  if host.dom.borrow().node(parent_id).inert_subtree {
+    return Ok(Value::Null);
+  }
 
   let kind = dom_kind_for_node_kind(&host.dom.borrow().node(parent_id).kind);
   wrap_node(host, scope, parent_id, kind)
@@ -1242,6 +1254,10 @@ fn dom_node_parent_element_getter(
   let Some(parent_id) = parent else {
     return Ok(Value::Null);
   };
+
+  if host.dom.borrow().node(parent_id).inert_subtree {
+    return Ok(Value::Null);
+  }
 
   let is_element_parent = {
     let dom = host.dom.borrow();
@@ -1269,15 +1285,18 @@ fn dom_node_first_child_getter(
   let host = host_mut(vm)?;
   let node_id = require_this_node(scope, host, this)?;
 
-  let first = match host.dom.borrow().children(node_id) {
-    Ok(children) => children.first().copied(),
-    Err(err) => return throw_dom_error(scope, host, err),
+  let (first_id, kind) = {
+    let dom = host.dom.borrow();
+    let node = dom.node(node_id);
+    if node.inert_subtree {
+      return Ok(Value::Null);
+    }
+    let Some(first_id) = node.children.first().copied() else {
+      return Ok(Value::Null);
+    };
+    let kind = dom_kind_for_node_kind(&dom.node(first_id).kind);
+    (first_id, kind)
   };
-  let Some(first_id) = first else {
-    return Ok(Value::Null);
-  };
-
-  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(first_id).kind);
   wrap_node(host, scope, first_id, kind)
 }
 
@@ -1293,15 +1312,18 @@ fn dom_node_last_child_getter(
   let host = host_mut(vm)?;
   let node_id = require_this_node(scope, host, this)?;
 
-  let last = match host.dom.borrow().children(node_id) {
-    Ok(children) => children.last().copied(),
-    Err(err) => return throw_dom_error(scope, host, err),
+  let (last_id, kind) = {
+    let dom = host.dom.borrow();
+    let node = dom.node(node_id);
+    if node.inert_subtree {
+      return Ok(Value::Null);
+    }
+    let Some(last_id) = node.children.last().copied() else {
+      return Ok(Value::Null);
+    };
+    let kind = dom_kind_for_node_kind(&dom.node(last_id).kind);
+    (last_id, kind)
   };
-  let Some(last_id) = last else {
-    return Ok(Value::Null);
-  };
-
-  let kind = dom_kind_for_node_kind(&host.dom.borrow().node(last_id).kind);
   wrap_node(host, scope, last_id, kind)
 }
 
@@ -1324,6 +1346,10 @@ fn dom_node_previous_sibling_getter(
   let Some(parent_id) = parent else {
     return Ok(Value::Null);
   };
+
+  if host.dom.borrow().node(parent_id).inert_subtree {
+    return Ok(Value::Null);
+  }
 
   let sibling_id = {
     let dom = host.dom.borrow();
@@ -1365,6 +1391,10 @@ fn dom_node_next_sibling_getter(
   let Some(parent_id) = parent else {
     return Ok(Value::Null);
   };
+
+  if host.dom.borrow().node(parent_id).inert_subtree {
+    return Ok(Value::Null);
+  }
 
   let sibling_id = {
     let dom = host.dom.borrow();
@@ -1411,6 +1441,264 @@ fn dom_node_node_type_getter(
   };
 
   Ok(Value::Number(node_type as f64))
+}
+
+fn dom_node_node_name_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let name = {
+    let dom = host.dom.borrow();
+    let node = dom.node(node_id);
+    match &node.kind {
+      NodeKind::Document { .. } => "#document".to_string(),
+      NodeKind::DocumentFragment | NodeKind::ShadowRoot { .. } => "#document-fragment".to_string(),
+      NodeKind::Text { .. } => "#text".to_string(),
+      NodeKind::Comment { .. } => "#comment".to_string(),
+      NodeKind::ProcessingInstruction { target, .. } => target.to_string(),
+      NodeKind::Doctype { name, .. } => name.to_string(),
+      NodeKind::Slot { namespace, .. } => {
+        if is_html_namespace(namespace) {
+          "SLOT".to_string()
+        } else {
+          "slot".to_string()
+        }
+      }
+      NodeKind::Element { tag_name, namespace, .. } => {
+        if is_html_namespace(namespace) {
+          tag_name.to_ascii_uppercase()
+        } else {
+          tag_name.to_string()
+        }
+      }
+    }
+  };
+
+  Ok(Value::String(scope.alloc_string(&name)?))
+}
+
+fn dom_node_node_value_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let dom = host.dom.borrow();
+  match &dom.node(node_id).kind {
+    NodeKind::Text { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::Comment { content } => Ok(Value::String(scope.alloc_string(content)?)),
+    NodeKind::ProcessingInstruction { data, .. } => Ok(Value::String(scope.alloc_string(data)?)),
+    _ => Ok(Value::Null),
+  }
+}
+
+fn dom_node_node_value_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let new_value = to_dom_string_nullable(scope, host, value)?;
+
+  enum TargetKind {
+    Text,
+    Comment,
+    ProcessingInstruction,
+    None,
+  }
+
+  let target = {
+    let dom = host.dom.borrow();
+    match &dom.node(node_id).kind {
+      NodeKind::Text { .. } => TargetKind::Text,
+      NodeKind::Comment { .. } => TargetKind::Comment,
+      NodeKind::ProcessingInstruction { .. } => TargetKind::ProcessingInstruction,
+      _ => TargetKind::None,
+    }
+  };
+
+  let mut dom = host.dom.borrow_mut();
+  match target {
+    TargetKind::Text => {
+      if let Err(err) = dom.set_text_data(node_id, &new_value) {
+        return throw_dom_error(scope, host, err);
+      }
+    }
+    TargetKind::Comment => {
+      let node = dom.node_mut(node_id);
+      let NodeKind::Comment { content } = &mut node.kind else {
+        return Ok(Value::Undefined);
+      };
+      content.clear();
+      content.push_str(&new_value);
+    }
+    TargetKind::ProcessingInstruction => {
+      let node = dom.node_mut(node_id);
+      let NodeKind::ProcessingInstruction { data, .. } = &mut node.kind else {
+        return Ok(Value::Undefined);
+      };
+      data.clear();
+      data.push_str(&new_value);
+    }
+    TargetKind::None => {}
+  }
+
+  Ok(Value::Undefined)
+}
+
+fn dom_node_is_connected_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let node_id = require_this_node(scope, host, this)?;
+  Ok(Value::Bool(host.dom.borrow().is_connected_for_scripting(node_id)))
+}
+
+fn dom_element_tag_name_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let tag_name = {
+    let dom = host.dom.borrow();
+    match &dom.node(element_id).kind {
+      NodeKind::Element { tag_name, namespace, .. } => {
+        if is_html_namespace(namespace) {
+          tag_name.to_ascii_uppercase()
+        } else {
+          tag_name.to_string()
+        }
+      }
+      NodeKind::Slot { namespace, .. } => {
+        if is_html_namespace(namespace) {
+          "SLOT".to_string()
+        } else {
+          "slot".to_string()
+        }
+      }
+      _ => return throw_type_error(scope, host, "Element.tagName called on non-Element node"),
+    }
+  };
+
+  Ok(Value::String(scope.alloc_string(&tag_name)?))
+}
+
+fn dom_element_id_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let id = match host.dom.borrow().id(element_id) {
+    Ok(Some(id)) => id.to_string(),
+    Ok(None) => String::new(),
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  Ok(Value::String(scope.alloc_string(&id)?))
+}
+
+fn dom_element_id_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let id = to_dom_string_nullable(scope, host, value)?;
+  if let Err(err) = host.dom.borrow_mut().set_attribute(element_id, "id", &id) {
+    return throw_dom_error(scope, host, err);
+  }
+  Ok(Value::Undefined)
+}
+
+fn dom_element_class_name_getter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let class_name = match host.dom.borrow().class_name(element_id) {
+    Ok(Some(v)) => v.to_string(),
+    Ok(None) => String::new(),
+    Err(err) => return throw_dom_error(scope, host, err),
+  };
+  Ok(Value::String(scope.alloc_string(&class_name)?))
+}
+
+fn dom_element_class_name_setter(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let host = host_mut(vm)?;
+  let element_id = require_this_element(scope, host, this)?;
+
+  let value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let class_name = to_dom_string_nullable(scope, host, value)?;
+  if let Err(err) = host
+    .dom
+    .borrow_mut()
+    .set_attribute(element_id, "class", &class_name)
+  {
+    return throw_dom_error(scope, host, err);
+  }
+  Ok(Value::Undefined)
 }
 
 fn dom_element_set_attribute(
@@ -1583,7 +1871,7 @@ fn dom_node_text_content_setter(
   let node_id = require_this_node(scope, host, this)?;
 
   let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let new_text = to_dom_string_nullable_for_text_content(scope, host, value)?;
+  let new_text = to_dom_string_nullable(scope, host, value)?;
 
   // Mutate the underlying DOM tree.
   let mut dom = host.dom.borrow_mut();
@@ -1940,6 +2228,15 @@ pub fn install_dom_bindings_with_limits(
   let call_previous_sibling = vm.register_native_call(dom_node_previous_sibling_getter)?;
   let call_next_sibling = vm.register_native_call(dom_node_next_sibling_getter)?;
   let call_node_type = vm.register_native_call(dom_node_node_type_getter)?;
+  let call_node_name = vm.register_native_call(dom_node_node_name_getter)?;
+  let call_node_value_get = vm.register_native_call(dom_node_node_value_getter)?;
+  let call_node_value_set = vm.register_native_call(dom_node_node_value_setter)?;
+  let call_is_connected = vm.register_native_call(dom_node_is_connected_getter)?;
+  let call_tag_name = vm.register_native_call(dom_element_tag_name_getter)?;
+  let call_id_get = vm.register_native_call(dom_element_id_getter)?;
+  let call_id_set = vm.register_native_call(dom_element_id_setter)?;
+  let call_class_name_get = vm.register_native_call(dom_element_class_name_getter)?;
+  let call_class_name_set = vm.register_native_call(dom_element_class_name_setter)?;
   let call_set_attribute = vm.register_native_call(dom_element_set_attribute)?;
   let call_inner_html_get = vm.register_native_call(dom_element_inner_html_getter)?;
   let call_inner_html_set = vm.register_native_call(dom_element_inner_html_setter)?;
@@ -1995,6 +2292,24 @@ pub fn install_dom_bindings_with_limits(
   install_getter(&mut scope, proto_node, "previousSibling", call_previous_sibling)?;
   install_getter(&mut scope, proto_node, "nextSibling", call_next_sibling)?;
   install_getter(&mut scope, proto_node, "nodeType", call_node_type)?;
+  install_getter(&mut scope, proto_node, "nodeName", call_node_name)?;
+  install_accessor(
+    &mut scope,
+    proto_node,
+    "nodeValue",
+    call_node_value_get,
+    call_node_value_set,
+  )?;
+  install_getter(&mut scope, proto_node, "isConnected", call_is_connected)?;
+  install_getter(&mut scope, proto_element, "tagName", call_tag_name)?;
+  install_accessor(&mut scope, proto_element, "id", call_id_get, call_id_set)?;
+  install_accessor(
+    &mut scope,
+    proto_element,
+    "className",
+    call_class_name_get,
+    call_class_name_set,
+  )?;
   install_method(&mut scope, proto_element, "setAttribute", call_set_attribute, 2)?;
   install_method(
     &mut scope,

@@ -22,7 +22,7 @@ use rquickjs::class::{Trace, Tracer};
 use rquickjs::function::{Opt, This};
 use rquickjs::{Class, Ctx, FromJs, Function, IntoJs, JsLifetime, Object, Result as JsResult, Value};
 
-use crate::js::resolve_url;
+use fastrender::js::resolve_url;
 
 use fastrender::resource::{
   DocumentOrigin, FetchDestination, PolicyError, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher,
