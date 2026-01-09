@@ -33,6 +33,9 @@ scripts/run_limited.sh --as 64G -- cargo run --release --features browser_ui --b
 The `browser` binary also supports an in-process, best-effort address-space cap via
 `FASTR_BROWSER_MEM_LIMIT_MB` (see [env-vars.md](env-vars.md)).
 
+For CI environments without a display/GPU, the `browser` binary also supports a test-only headless
+smoke mode (`FASTR_TEST_BROWSER_HEADLESS_SMOKE=1`; see [env-vars.md](env-vars.md)).
+
 ## Code layout
 
 - Entry point + winit/egui/wgpu integration: [`src/bin/browser.rs`](../src/bin/browser.rs)
