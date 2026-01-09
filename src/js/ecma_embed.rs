@@ -150,8 +150,19 @@ impl Env {
         Ok(())
       }
       None => {
+        // Avoid aborting on OOM: pre-allocate the key string + HashMap capacity before rooting.
+        let mut owned = String::new();
+        owned
+          .try_reserve(name.len())
+          .map_err(|_| VmError::OutOfMemory)?;
+        owned.push_str(name);
+        self
+          .globals
+          .try_reserve(1)
+          .map_err(|_| VmError::OutOfMemory)?;
+
         let root = heap.add_root(value)?;
-        self.globals.insert(name.to_string(), root);
+        self.globals.insert(owned, root);
         Ok(())
       }
     }

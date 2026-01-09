@@ -388,6 +388,10 @@ impl JsDomEvents {
     if self.listeners.contains_key(&listener_id) {
       return Ok(());
     }
+    self
+      .listeners
+      .try_reserve(1)
+      .map_err(|_| Error::Other("out of memory".to_string()))?;
     let callback_root = self
       .runtime
       .heap_mut()
