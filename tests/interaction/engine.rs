@@ -3187,6 +3187,52 @@ fn tab_focuses_first_focusable_element_when_nothing_focused() {
 }
 
 #[test]
+fn shift_tab_focuses_last_focusable_element_when_nothing_focused() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![
+        el("div", vec![("id", "plain")], vec![]),
+        el("button", vec![("id", "btn")], vec![]),
+        el("input", vec![("id", "inp")], vec![]),
+      ],
+    )],
+  )]);
+
+  let mut engine = InteractionEngine::new();
+  assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  // Traverse backward.
+  assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
+  assert_eq!(
+    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+  assert_eq!(
+    attr_value(&dom, "btn", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+
+  // Wrap backward.
+  assert!(engine.key_action(&mut dom, KeyAction::ShiftTab));
+  assert_eq!(
+    attr_value(&dom, "inp", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
 fn tab_focuses_area_href_elements() {
   let mut dom = doc(vec![el(
     "html",

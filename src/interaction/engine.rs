@@ -41,6 +41,7 @@ pub enum KeyAction {
   Backspace,
   Enter,
   Tab,
+  ShiftTab,
   Space,
   ArrowUp,
   ArrowDown,
@@ -535,6 +536,23 @@ fn next_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize>
     .copied()
     .find(|id| *id > current)
     .or_else(|| focusables.first().copied())
+}
+
+fn prev_tab_focus(current: Option<usize>, focusables: &[usize]) -> Option<usize> {
+  if focusables.is_empty() {
+    return None;
+  }
+  let Some(current) = current else {
+    return focusables.last().copied();
+  };
+  let Some(pos) = focusables.iter().position(|id| *id == current) else {
+    return focusables.last().copied();
+  };
+  if pos == 0 {
+    focusables.last().copied()
+  } else {
+    Some(focusables[pos - 1])
+  }
 }
 
 fn node_is_disabled(index: &DomIndexMut, node_id: usize) -> bool {
@@ -1688,11 +1706,17 @@ impl InteractionEngine {
     key: KeyAction,
   ) -> bool {
     self.modality = InputModality::Keyboard;
-    if key == KeyAction::Tab {
-      // Forward-only focus traversal (wraps at end).
+
+    if matches!(key, KeyAction::Tab | KeyAction::ShiftTab) {
+      // Focus traversal (wraps at ends).
       let mut index = DomIndexMut::new(dom);
       let focusables = collect_tab_focusables(&index);
-      let Some(next_focus) = next_tab_focus(self.focused, &focusables) else {
+      let next_focus = match key {
+        KeyAction::Tab => next_tab_focus(self.focused, &focusables),
+        KeyAction::ShiftTab => prev_tab_focus(self.focused, &focusables),
+        _ => None,
+      };
+      let Some(next_focus) = next_focus else {
         return false;
       };
       return self.set_focus(&mut index, Some(next_focus), true);
@@ -1922,7 +1946,7 @@ impl InteractionEngine {
       KeyAction::Space => {
         // Handled by `key_activate` (may trigger navigation).
       }
-      KeyAction::Tab => {
+      KeyAction::Tab | KeyAction::ShiftTab => {
         unreachable!("handled above")
       }
     }
@@ -1968,8 +1992,8 @@ impl InteractionEngine {
           InteractionAction::None,
         );
       }
-      KeyAction::Tab => {
-        let dom_changed = self.key_action_with_box_tree(dom, box_tree, KeyAction::Tab);
+      KeyAction::Tab | KeyAction::ShiftTab => {
+        let dom_changed = self.key_action_with_box_tree(dom, box_tree, key);
         let action = if self.focused != prev_focus {
           InteractionAction::FocusChanged {
             node_id: self.focused,
