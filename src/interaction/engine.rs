@@ -369,13 +369,7 @@ fn is_disabled_or_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
     if node.get_attribute_ref("disabled").is_some() {
       return true;
     }
-    if node.get_attribute_ref("inert").is_some() {
-      return true;
-    }
-    if node
-      .get_attribute_ref("data-fastr-inert")
-      .is_some_and(|v| v.eq_ignore_ascii_case("true"))
-    {
+    if node_is_inert_like(node) {
       return true;
     }
 
@@ -432,6 +426,10 @@ fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) ->
 }
 
 fn node_is_inert_like(node: &DomNode) -> bool {
+  // Template contents are always inert and should never be interactable.
+  if node.template_contents_are_inert() {
+    return true;
+  }
   if node.get_attribute_ref("inert").is_some() {
     return true;
   }
@@ -455,8 +453,7 @@ fn node_or_ancestor_is_inert(index: &DomIndexMut, mut node_id: usize) -> bool {
 
 fn node_self_is_tab_inert(node: &DomNode) -> bool {
   // `<template>` contents are inert and should not be reachable via Tab.
-  node.template_contents_are_inert()
-    || node_is_inert_like(node)
+  node_is_inert_like(node)
     // MVP: treat `disabled` as making the subtree unreachable via Tab, matching our other
     // interaction pruning which skips disabled ancestors.
     || node.get_attribute_ref("disabled").is_some()
@@ -1299,7 +1296,7 @@ fn build_get_form_submission_url(
           .map(trim_ascii_whitespace)
           .filter(|v| !v.is_empty())
         {
-          let value = submitter.get_attribute_ref("value").unwrap_or("on");
+          let value = submitter.get_attribute_ref("value").unwrap_or("");
           serializer.append_pair(name, value);
         }
       }
@@ -1312,6 +1309,30 @@ fn build_get_form_submission_url(
   }
 
   Some(url.to_string())
+}
+
+fn find_default_form_submitter(index: &DomIndexMut, form_id: usize) -> Option<usize> {
+  // Spec-ish: choose the first submit control in tree order whose form owner matches `form_id`.
+  // This is used for implicit submission (Enter in a text input).
+  for node_id in 1..index.id_to_node.len() {
+    let Some(node) = index.node(node_id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    if !is_submit_control(node) {
+      continue;
+    }
+    if resolve_form_owner(index, node_id) != Some(form_id) {
+      continue;
+    }
+    if is_disabled_or_inert(index, node_id) {
+      continue;
+    }
+    return Some(node_id);
+  }
+  None
 }
 
 fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_id: usize, key: KeyAction) -> bool {
@@ -2263,7 +2284,7 @@ impl InteractionEngine {
             }
           }
         } else if index.node(focused).is_some_and(is_text_input) {
-          if node_is_disabled(&index, focused) {
+          if is_disabled_or_inert(&index, focused) {
             // Disabled controls do not submit.
           } else {
             // Pressing Enter in a text field can submit the form; flip user validity as well.
@@ -2272,7 +2293,10 @@ impl InteractionEngine {
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
             if let Some(form_id) = resolve_form_owner(&index, focused) {
-              if let Some(url) = build_get_form_submission_url(&index, form_id, None, document_url, base_url) {
+              let submitter_id = find_default_form_submitter(&index, form_id);
+              if let Some(url) =
+                build_get_form_submission_url(&index, form_id, submitter_id, document_url, base_url)
+              {
                 action = InteractionAction::Navigate { href: url };
               }
             }

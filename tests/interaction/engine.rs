@@ -3652,6 +3652,58 @@ fn enter_on_text_input_submits_get_form() {
 }
 
 #[test]
+fn enter_on_text_input_includes_default_submitter_name_value() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "form"), ("action", "/search")],
+        vec![
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "abc")],
+            vec![],
+          ),
+          el(
+            "button",
+            vec![
+              ("id", "submit"),
+              ("type", "submit"),
+              ("name", "go"),
+              ("value", "1"),
+            ],
+            vec![],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let input_id = node_id(&dom, "q");
+
+  let mut engine = InteractionEngine::new();
+  engine.focus_node_id(&mut dom, Some(input_id), false);
+
+  let (_changed, action) = engine.key_activate(
+    &mut dom,
+    KeyAction::Enter,
+    "https://example.com/doc",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=abc&go=1".to_string()
+    }
+  );
+}
+
+#[test]
 fn range_input_drag_updates_value_and_clamps_to_max() {
   let mut dom = doc(vec![el(
     "html",
