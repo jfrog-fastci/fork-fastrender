@@ -1,6 +1,7 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom;
 use fastrender::style::cascade::{apply_styles_with_media, StyledNode};
+use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaContext;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -124,4 +125,44 @@ fn wildcard_namespace_prefix_overrides_default_namespace() {
   let svg_rect = find_by_id(&styled, "s").expect("svg rect");
   assert_eq!(display(html_div), "flex");
   assert_eq!(display(svg_rect), "none");
+}
+
+#[test]
+fn prefixed_namespace_does_not_set_default_namespace() {
+  let html = r#"<rect id="html"></rect><svg><rect id="svg"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace svg url("http://www.w3.org/2000/svg");
+    rect { display: flex; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let html_rect = find_by_id(&styled, "html").expect("html rect");
+  let svg_rect = find_by_id(&styled, "svg").expect("svg rect");
+  assert_eq!(display(html_rect), "flex");
+  assert_eq!(display(svg_rect), "flex");
+}
+
+#[test]
+fn explicit_any_namespace_universal_matches_any_namespace_under_default_namespace() {
+  let html = r#"<div id="h"></div><svg><rect id="s"></rect></svg>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace url("http://www.w3.org/2000/svg");
+    /* `*` should respect the default namespace (SVG) and not match HTML. */
+    * { display: none !important; }
+    *|div { display: block; }
+    /* `*|*` must match both HTML and SVG. */
+    *|* { color: rgb(1, 2, 3); }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let html_div = find_by_id(&styled, "h").expect("html div");
+  let svg_rect = find_by_id(&styled, "s").expect("svg rect");
+  assert_eq!(display(html_div), "block");
+  assert_eq!(html_div.styles.color, Rgba::rgb(1, 2, 3));
+  assert_eq!(display(svg_rect), "none");
+  assert_eq!(svg_rect.styles.color, Rgba::rgb(1, 2, 3));
 }
