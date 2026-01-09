@@ -327,6 +327,7 @@ const CURRENT_SCRIPT_SOURCE_ID_KEY: &str = "__fastrender_current_script_source_i
 const NODE_WRAPPER_CACHE_KEY: &str = "__fastrender_node_wrapper_cache";
 const NODE_ID_KEY: &str = "__fastrender_node_id";
 const DOM_SOURCE_ID_KEY: &str = "__fastrender_dom_source_id";
+const WRAPPER_DOCUMENT_KEY: &str = "__fastrender_wrapper_document";
 const ELEMENT_CLASS_NAME_GET_KEY: &str = "__fastrender_element_class_name_get";
 const ELEMENT_CLASS_NAME_SET_KEY: &str = "__fastrender_element_class_name_set";
 const ELEMENT_ID_GET_KEY: &str = "__fastrender_element_id_get";
@@ -341,6 +342,10 @@ const ELEMENT_OUTER_HTML_SET_KEY: &str = "__fastrender_element_outer_html_set";
 const ELEMENT_INSERT_ADJACENT_HTML_KEY: &str = "__fastrender_element_insert_adjacent_html";
 const ELEMENT_INSERT_ADJACENT_ELEMENT_KEY: &str = "__fastrender_element_insert_adjacent_element";
 const ELEMENT_INSERT_ADJACENT_TEXT_KEY: &str = "__fastrender_element_insert_adjacent_text";
+const ELEMENT_QUERY_SELECTOR_KEY: &str = "__fastrender_element_query_selector";
+const ELEMENT_QUERY_SELECTOR_ALL_KEY: &str = "__fastrender_element_query_selector_all";
+const ELEMENT_MATCHES_KEY: &str = "__fastrender_element_matches";
+const ELEMENT_CLOSEST_KEY: &str = "__fastrender_element_closest";
 
 static NEXT_CURRENT_SCRIPT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1012,6 +1017,23 @@ fn get_or_create_node_wrapper(
     .object_get_own_data_property_value(document_obj, &dom_source_id_key)?
     .unwrap_or(Value::Undefined);
 
+  let element_query_selector = {
+    let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_query_selector_all = {
+    let key = alloc_key(scope, ELEMENT_QUERY_SELECTOR_ALL_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_matches = {
+    let key = alloc_key(scope, ELEMENT_MATCHES_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+  let element_closest = {
+    let key = alloc_key(scope, ELEMENT_CLOSEST_KEY)?;
+    scope.heap().object_get_own_data_property_value(document_obj, &key)?
+  };
+
   let class_name_get = {
     let key = alloc_key(scope, ELEMENT_CLASS_NAME_GET_KEY)?;
     scope.heap().object_get_own_data_property_value(document_obj, &key)?
@@ -1079,8 +1101,42 @@ fn get_or_create_node_wrapper(
     data_desc(Value::Number(node_id.index() as f64)),
   )?;
 
+  let wrapper_document_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  scope.define_property(
+    wrapper,
+    wrapper_document_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Object(document_obj),
+        writable: false,
+      },
+    },
+  )?;
+
   if let Value::Number(_) = dom_source_id_value {
     scope.define_property(wrapper, dom_source_id_key, data_desc(dom_source_id_value))?;
+  }
+
+  if let Some(Value::Object(func)) = element_query_selector {
+    let key = alloc_key(scope, "querySelector")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = element_query_selector_all {
+    let key = alloc_key(scope, "querySelectorAll")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = element_matches {
+    let key = alloc_key(scope, "matches")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
+  }
+
+  if let Some(Value::Object(func)) = element_closest {
+    let key = alloc_key(scope, "closest")?;
+    scope.define_property(wrapper, key, data_desc(Value::Object(func)))?;
   }
 
   if let (Some(Value::Object(get)), Some(Value::Object(set))) = (class_name_get, class_name_set) {
@@ -1369,6 +1425,471 @@ fn document_query_selector_native(
 
   match dom.query_selector(&selector, None) {
     Ok(Some(node_id)) => get_or_create_node_wrapper(scope, document_obj, node_id),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
+      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+    }
+  }
+}
+
+fn document_query_selector_all_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(document_obj) = this else {
+    return Ok(Value::Null);
+  };
+
+  let id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(document_obj, &id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => return Ok(Value::Null),
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let matches = match dom.query_selector_all(&selector, None) {
+    Ok(nodes) => nodes,
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
+      return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+    }
+  };
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, node_id) in matches.iter().copied().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let wrapper = get_or_create_node_wrapper(scope, document_obj, node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(matches.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
+fn element_query_selector_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.querySelector must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelector requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelector must be called on a node object",
+      ));
+    }
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelector requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Ok(Value::Null);
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = match dom.node_id_from_index(node_index) {
+    Ok(id) => id,
+    Err(_) => {
+      return Err(VmError::TypeError(
+        "Element.querySelector must be called on a node object",
+      ));
+    }
+  };
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  match dom.query_selector(&selector, Some(node_id)) {
+    Ok(Some(found)) => get_or_create_node_wrapper(scope, document_obj, found),
+    Ok(None) => Ok(Value::Null),
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
+      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+    }
+  }
+}
+
+fn element_query_selector_all_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.querySelectorAll must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelectorAll requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelectorAll must be called on a node object",
+      ));
+    }
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.querySelectorAll requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.querySelectorAll requires a DOM-backed element",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.querySelectorAll must be called on a node object"))?;
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  let matches = match dom.query_selector_all(&selector, Some(node_id)) {
+    Ok(nodes) => nodes,
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
+      return Err(VmError::Throw(make_dom_exception(scope, name, &message)?));
+    }
+  };
+
+  let array = scope.alloc_array(0)?;
+  scope.push_root(Value::Object(array))?;
+  if let Some(intrinsics) = vm.intrinsics() {
+    scope
+      .heap_mut()
+      .object_set_prototype(array, Some(intrinsics.array_prototype()))?;
+  }
+
+  for (idx, node_id) in matches.iter().copied().enumerate() {
+    let key = alloc_key(scope, &idx.to_string())?;
+    let wrapper = get_or_create_node_wrapper(scope, document_obj, node_id)?;
+    scope.define_property(array, key, data_desc(wrapper))?;
+  }
+
+  let length_key = alloc_key(scope, "length")?;
+  scope.define_property(
+    array,
+    length_key,
+    PropertyDescriptor {
+      enumerable: false,
+      configurable: false,
+      kind: PropertyKind::Data {
+        value: Value::Number(matches.len() as f64),
+        writable: true,
+      },
+    },
+  )?;
+
+  Ok(Value::Object(array))
+}
+
+fn element_matches_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.matches must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.matches requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.matches must be called on a node object",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.matches requires a DOM-backed element",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.matches must be called on a node object"))?;
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  match dom.matches_selector(node_id, &selector) {
+    Ok(result) => Ok(Value::Bool(result)),
+    Err(err) => {
+      let (name, message) = match err {
+        crate::web::dom::DomException::SyntaxError { message } => ("SyntaxError", message),
+        crate::web::dom::DomException::NoModificationAllowedError { message } => {
+          ("NoModificationAllowedError", message)
+        }
+        crate::web::dom::DomException::NotSupportedError { message } => ("NotSupportedError", message),
+        crate::web::dom::DomException::InvalidStateError { message } => ("InvalidStateError", message),
+      };
+      Err(VmError::Throw(make_dom_exception(scope, name, &message)?))
+    }
+  }
+}
+
+fn element_closest_native(
+  _vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
+  _callee: GcObject,
+  this: Value,
+  args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(wrapper_obj) = this else {
+    return Err(VmError::TypeError(
+      "Element.closest must be called on a node object",
+    ));
+  };
+
+  let source_id_key = alloc_key(scope, DOM_SOURCE_ID_KEY)?;
+  let source_id = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &source_id_key)?
+  {
+    Some(Value::Number(n)) => n as u64,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.closest requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let node_id_key = alloc_key(scope, NODE_ID_KEY)?;
+  let node_index = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &node_id_key)?
+  {
+    Some(Value::Number(n)) if n.is_finite() && n >= 0.0 => n as usize,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.closest must be called on a node object",
+      ));
+    }
+  };
+
+  let document_obj_key = alloc_key(scope, WRAPPER_DOCUMENT_KEY)?;
+  let document_obj = match scope
+    .heap()
+    .object_get_own_data_property_value(wrapper_obj, &document_obj_key)?
+  {
+    Some(Value::Object(obj)) => obj,
+    _ => {
+      return Err(VmError::TypeError(
+        "Element.closest requires a DOM-backed element",
+      ));
+    }
+  };
+
+  let Some(mut dom_ptr) = dom_for_source(source_id) else {
+    return Err(VmError::TypeError(
+      "Element.closest requires a DOM-backed element",
+    ));
+  };
+  // SAFETY: DOM sources are registered/unregistered by the Rust host; the pointer is valid for the
+  // lifetime of the associated host document.
+  let dom = unsafe { dom_ptr.as_mut() };
+  let node_id = dom
+    .node_id_from_index(node_index)
+    .map_err(|_| VmError::TypeError("Element.closest must be called on a node object"))?;
+
+  let selector_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let selector_value = scope.heap_mut().to_string(selector_value)?;
+  let selector = scope
+    .heap()
+    .get_string(selector_value)
+    .map(|s| s.to_utf8_lossy())
+    .unwrap_or_default();
+
+  match dom.closest(node_id, &selector) {
+    Ok(Some(found)) => get_or_create_node_wrapper(scope, document_obj, found),
     Ok(None) => Ok(Value::Null),
     Err(err) => {
       let (name, message) = match err {
@@ -2837,6 +3358,26 @@ fn init_window_globals(
     data_desc(Value::Object(query_selector_func)),
   )?;
 
+  // document.querySelectorAll
+  let query_selector_all_key = alloc_key(&mut scope, "querySelectorAll")?;
+  let query_selector_all_call_id = vm.register_native_call(document_query_selector_all_native)?;
+  let query_selector_all_name = scope.alloc_string("querySelectorAll")?;
+  scope.push_root(Value::String(query_selector_all_name))?;
+  let query_selector_all_func =
+    scope.alloc_native_function(query_selector_all_call_id, None, query_selector_all_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      query_selector_all_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(query_selector_all_func))?;
+  scope.define_property(
+    document_obj,
+    query_selector_all_key,
+    data_desc(Value::Object(query_selector_all_func)),
+  )?;
+
   // document.createElement
   let create_element_key = alloc_key(&mut scope, "createElement")?;
   let create_element_call_id = vm.register_native_call(document_create_element_native)?;
@@ -2875,6 +3416,79 @@ fn init_window_globals(
     document_obj,
     append_child_key,
     data_desc(Value::Object(append_child_func)),
+  )?;
+
+  // Store shared Element selector traversal APIs on `document` so wrappers can reuse them.
+  let element_query_selector_call_id = vm.register_native_call(element_query_selector_native)?;
+  let element_query_selector_name = scope.alloc_string("querySelector")?;
+  scope.push_root(Value::String(element_query_selector_name))?;
+  let element_query_selector_func =
+    scope.alloc_native_function(element_query_selector_call_id, None, element_query_selector_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      element_query_selector_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(element_query_selector_func))?;
+  let element_query_selector_key = alloc_key(&mut scope, ELEMENT_QUERY_SELECTOR_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_query_selector_key,
+    data_desc(Value::Object(element_query_selector_func)),
+  )?;
+
+  let element_query_selector_all_call_id = vm.register_native_call(element_query_selector_all_native)?;
+  let element_query_selector_all_name = scope.alloc_string("querySelectorAll")?;
+  scope.push_root(Value::String(element_query_selector_all_name))?;
+  let element_query_selector_all_func = scope.alloc_native_function(
+    element_query_selector_all_call_id,
+    None,
+    element_query_selector_all_name,
+    1,
+  )?;
+  scope
+    .heap_mut()
+    .object_set_prototype(
+      element_query_selector_all_func,
+      Some(realm.intrinsics().function_prototype()),
+    )?;
+  scope.push_root(Value::Object(element_query_selector_all_func))?;
+  let element_query_selector_all_key = alloc_key(&mut scope, ELEMENT_QUERY_SELECTOR_ALL_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_query_selector_all_key,
+    data_desc(Value::Object(element_query_selector_all_func)),
+  )?;
+
+  let element_matches_call_id = vm.register_native_call(element_matches_native)?;
+  let element_matches_name = scope.alloc_string("matches")?;
+  scope.push_root(Value::String(element_matches_name))?;
+  let element_matches_func = scope.alloc_native_function(element_matches_call_id, None, element_matches_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(element_matches_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(element_matches_func))?;
+  let element_matches_key = alloc_key(&mut scope, ELEMENT_MATCHES_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_matches_key,
+    data_desc(Value::Object(element_matches_func)),
+  )?;
+
+  let element_closest_call_id = vm.register_native_call(element_closest_native)?;
+  let element_closest_name = scope.alloc_string("closest")?;
+  scope.push_root(Value::String(element_closest_name))?;
+  let element_closest_func = scope.alloc_native_function(element_closest_call_id, None, element_closest_name, 1)?;
+  scope
+    .heap_mut()
+    .object_set_prototype(element_closest_func, Some(realm.intrinsics().function_prototype()))?;
+  scope.push_root(Value::Object(element_closest_func))?;
+  let element_closest_key = alloc_key(&mut scope, ELEMENT_CLOSEST_KEY)?;
+  scope.define_property(
+    document_obj,
+    element_closest_key,
+    data_desc(Value::Object(element_closest_func)),
   )?;
 
   // Store shared Element.getAttribute/setAttribute functions on `document` so wrappers can reuse them.

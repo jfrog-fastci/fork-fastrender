@@ -526,6 +526,132 @@ fn document_query_selector_returns_stable_wrapper() -> Result<()> {
 }
 
 #[test]
+fn element_query_selector_all_and_matches_closest_work() -> Result<()> {
+  let renderer_dom = fastrender::dom::parse_html(
+    "<!doctype html><html><head></head><body>\
+     <div id=a class=wrap><span id=a_inner class='inner other'></span></div>\
+     <div id=b class=wrap><span id=b_inner class=inner></span></div>\
+     </body></html>",
+  )?;
+  let mut host = WindowHostState::from_renderer_dom(&renderer_dom, "https://example.com/")?;
+
+  {
+    let realm = host.window_mut();
+    let res = realm.exec_script(
+      r###"
+  const a = document.getElementById("a");
+  const inner = a.querySelector(".inner");
+  globalThis.__el_qs_id = inner && inner.id;
+
+  const doc_all = document.querySelectorAll(".inner");
+  globalThis.__doc_all_len = doc_all.length;
+  globalThis.__doc_all_0 = doc_all[0] && doc_all[0].id;
+  globalThis.__doc_all_1 = doc_all[1] && doc_all[1].id;
+
+  const a_all = a.querySelectorAll(".inner");
+  globalThis.__a_all_len = a_all.length;
+  globalThis.__a_all_0 = a_all[0] && a_all[0].id;
+
+  globalThis.__scope_same = (a.querySelector(":scope") === a);
+  globalThis.__a_matches = a.matches("div.wrap");
+  globalThis.__inner_matches = inner.matches("div span.inner");
+  globalThis.__closest_ok = (inner.closest("#a") === a);
+
+  try {
+    a.querySelectorAll("##");
+    globalThis.__bad_qsa = "no";
+  } catch (e) {
+    globalThis.__bad_qsa = e.name;
+  }
+  try {
+    inner.matches("##");
+    globalThis.__bad_matches = "no";
+  } catch (e) {
+    globalThis.__bad_matches = e.name;
+  }
+  try {
+    inner.closest("##");
+    globalThis.__bad_closest = "no";
+  } catch (e) {
+    globalThis.__bad_closest = e.name;
+  }
+  "###,
+    );
+    if let Err(err) = res {
+      let (_vm, heap) = realm.vm_and_heap_mut();
+      return Err(Error::Other(format_vm_error(heap, err)));
+    }
+  }
+
+  let (
+    el_qs_id,
+    doc_all_len,
+    doc_all_0,
+    doc_all_1,
+    a_all_len,
+    a_all_0,
+    scope_same,
+    a_matches,
+    inner_matches,
+    closest_ok,
+    bad_qsa,
+    bad_matches,
+    bad_closest,
+  ) = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    let el_qs_id_v = get_data_prop(&mut scope, global, "__el_qs_id");
+    let doc_all_len = get_data_prop(&mut scope, global, "__doc_all_len");
+    let doc_all_0_v = get_data_prop(&mut scope, global, "__doc_all_0");
+    let doc_all_1_v = get_data_prop(&mut scope, global, "__doc_all_1");
+    let a_all_len = get_data_prop(&mut scope, global, "__a_all_len");
+    let a_all_0_v = get_data_prop(&mut scope, global, "__a_all_0");
+    let scope_same = get_data_prop(&mut scope, global, "__scope_same");
+    let a_matches = get_data_prop(&mut scope, global, "__a_matches");
+    let inner_matches = get_data_prop(&mut scope, global, "__inner_matches");
+    let closest_ok = get_data_prop(&mut scope, global, "__closest_ok");
+    let bad_qsa_v = get_data_prop(&mut scope, global, "__bad_qsa");
+    let bad_matches_v = get_data_prop(&mut scope, global, "__bad_matches");
+    let bad_closest_v = get_data_prop(&mut scope, global, "__bad_closest");
+
+    let heap = scope.heap();
+    (
+      get_string(heap, el_qs_id_v),
+      doc_all_len,
+      get_string(heap, doc_all_0_v),
+      get_string(heap, doc_all_1_v),
+      a_all_len,
+      get_string(heap, a_all_0_v),
+      scope_same,
+      a_matches,
+      inner_matches,
+      closest_ok,
+      get_string(heap, bad_qsa_v),
+      get_string(heap, bad_matches_v),
+      get_string(heap, bad_closest_v),
+    )
+  };
+
+  assert_eq!(el_qs_id, "a_inner");
+  assert_eq!(doc_all_len, Value::Number(2.0));
+  assert_eq!(doc_all_0, "a_inner");
+  assert_eq!(doc_all_1, "b_inner");
+  assert_eq!(a_all_len, Value::Number(1.0));
+  assert_eq!(a_all_0, "a_inner");
+  assert_eq!(scope_same, Value::Bool(true));
+  assert_eq!(a_matches, Value::Bool(true));
+  assert_eq!(inner_matches, Value::Bool(true));
+  assert_eq!(closest_ok, Value::Bool(true));
+  assert_eq!(bad_qsa, "SyntaxError");
+  assert_eq!(bad_matches, "SyntaxError");
+  assert_eq!(bad_closest, "SyntaxError");
+
+  Ok(())
+}
+
+#[test]
 fn document_create_element_and_append_child_update_dom() -> Result<()> {
   let renderer_dom =
     fastrender::dom::parse_html("<!doctype html><html><head></head><body></body></html>")?;
