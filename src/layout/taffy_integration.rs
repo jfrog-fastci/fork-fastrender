@@ -516,6 +516,7 @@ fn hash_enum_discriminant<T>(value: &T, hasher: &mut FxHasher) {
 }
 
 fn hash_calc_length(calc: &CalcLength, hasher: &mut FxHasher) {
+  calc.kind_id().hash(hasher);
   let terms = calc.terms();
   (terms.len() as u8).hash(hasher);
   for term in terms {

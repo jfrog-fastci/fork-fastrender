@@ -3524,6 +3524,7 @@ fn hash_length_fingerprint(state: &mut impl Hasher, length: &Length) {
 }
 
 fn hash_calc_length_fingerprint(state: &mut impl Hasher, calc: &crate::style::values::CalcLength) {
+  calc.kind_id().hash(state);
   let terms = calc.terms();
   terms.len().hash(state);
   for term in terms {

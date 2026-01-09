@@ -14019,6 +14019,7 @@ fn f32_to_canonical_bits(value: f32) -> u32 {
 }
 
 fn hash_calc_length(calc: &crate::style::values::CalcLength, hasher: &mut DefaultHasher) {
+  calc.kind_id().hash(hasher);
   let terms = calc.terms();
   (terms.len() as u8).hash(hasher);
   for term in terms {

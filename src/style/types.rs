@@ -2020,6 +2020,7 @@ fn hash_length_for_intrinsic_size_keyword<H: Hasher>(len: &Length, state: &mut H
   match &len.calc {
     Some(calc) => {
       1u8.hash(state);
+      calc.kind_id().hash(state);
       let terms = calc.terms();
       (terms.len() as u8).hash(state);
       for term in terms {

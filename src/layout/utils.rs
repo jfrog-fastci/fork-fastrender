@@ -156,9 +156,8 @@ fn resolve_calc_length_with_percentage_metrics(
   let percentage_base = percentage_base.filter(|b| b.is_finite());
   let mut line_height_px: Option<f32> = None;
 
-  let mut total = 0.0;
-  for term in calc.terms() {
-    let resolved = match term.unit {
+  let mut resolve_term = |term: &crate::style::values::CalcTerm| -> Option<f32> {
+    match term.unit {
       LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
       unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
       unit if unit.is_viewport_relative() => {
@@ -185,11 +184,72 @@ fn resolve_calc_length_with_percentage_metrics(
       },
       LengthUnit::Calc => None,
       _ => None,
-    }?;
-    total += resolved;
-  }
+    }
+  };
 
-  Some(total)
+  match calc.kind() {
+    crate::style::values::CalcLengthKind::Linear => {
+      let mut total = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          return None;
+        }
+        total += resolve_term(term)?;
+      }
+      Some(total)
+    }
+    crate::style::values::CalcLengthKind::Min | crate::style::values::CalcLengthKind::Max => {
+      let mut extremum = match calc.kind() {
+        crate::style::values::CalcLengthKind::Min => f32::INFINITY,
+        crate::style::values::CalcLengthKind::Max => f32::NEG_INFINITY,
+        _ => unreachable!(),
+      };
+      let mut current = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          extremum = match calc.kind() {
+            crate::style::values::CalcLengthKind::Min => extremum.min(current),
+            crate::style::values::CalcLengthKind::Max => extremum.max(current),
+            _ => extremum,
+          };
+          current = 0.0;
+          continue;
+        }
+        current += resolve_term(term)?;
+      }
+      extremum = match calc.kind() {
+        crate::style::values::CalcLengthKind::Min => extremum.min(current),
+        crate::style::values::CalcLengthKind::Max => extremum.max(current),
+        _ => extremum,
+      };
+      Some(extremum)
+    }
+    crate::style::values::CalcLengthKind::Clamp => {
+      let mut values = [0.0f32; 3];
+      let mut idx = 0usize;
+      let mut current = 0.0;
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Calc {
+          if idx >= 3 {
+            return None;
+          }
+          values[idx] = current;
+          idx += 1;
+          current = 0.0;
+          continue;
+        }
+        current += resolve_term(term)?;
+      }
+      if idx != 2 {
+        return None;
+      }
+      values[2] = current;
+      let min = values[0];
+      let preferred = values[1];
+      let max = values[2];
+      Some(min.max(preferred.min(max)))
+    }
+  }
 }
 
 fn resolve_lh(

@@ -6322,7 +6322,10 @@ fn parse_calc_factor<'i, 't>(
       let inner = parse_calc_factor(input)?;
       match inner {
         CalcComponent::Number(v) => Ok(CalcComponent::Number(-v)),
-        CalcComponent::Length(len) => Ok(CalcComponent::Length(len.scale(-1.0))),
+        CalcComponent::Length(len) => len
+          .scale(-1.0)
+          .map(CalcComponent::Length)
+          .ok_or_else(|| location.new_custom_error(())),
         CalcComponent::Angle(v) => Ok(CalcComponent::Angle(-v)),
       }
     }
@@ -6421,25 +6424,25 @@ fn parse_clamp<'i, 't>(
       Ok(CalcComponent::Angle(b.max(a).min(upper)))
     }
     (CalcComponent::Length(a), CalcComponent::Length(b), CalcComponent::Length(c)) => {
-      let Some((min_value, unit)) = extract_simple_length(&a) else {
-        return Ok(CalcComponent::Length(b));
-      };
-      let Some((pref_value, pref_unit)) = extract_simple_length(&b) else {
-        return Ok(CalcComponent::Length(b));
-      };
-      let Some((max_value, max_unit)) = extract_simple_length(&c) else {
-        return Ok(CalcComponent::Length(b));
-      };
-      if unit != pref_unit || unit != max_unit {
-        return Ok(CalcComponent::Length(b));
+      if let (Some((min_value, unit)), Some((pref_value, pref_unit)), Some((max_value, max_unit))) = (
+        extract_simple_length(&a),
+        extract_simple_length(&b),
+        extract_simple_length(&c),
+      ) {
+        if unit == pref_unit && unit == max_unit {
+          let upper = if max_value < min_value {
+            min_value
+          } else {
+            max_value
+          };
+          let clamped = pref_value.max(min_value).min(upper);
+          return Ok(CalcComponent::Length(CalcLength::single(unit, clamped)));
+        }
       }
-      let upper = if max_value < min_value {
-        min_value
-      } else {
-        max_value
-      };
-      let clamped = pref_value.max(min_value).min(upper);
-      Ok(CalcComponent::Length(CalcLength::single(unit, clamped)))
+
+      CalcLength::clamp_function(a, b, c)
+        .map(CalcComponent::Length)
+        .ok_or_else(|| location.new_custom_error(()))
     }
     _ => Err(location.new_custom_error(())),
   }
@@ -6479,30 +6482,46 @@ fn reduce_components<'i>(
       Ok(CalcComponent::Angle(result))
     }
     CalcDimension::Length => {
-      let mut iter = values.into_iter();
-      let first = match iter.next().unwrap() {
-        CalcComponent::Length(l) => l,
-        _ => return Err(location.new_custom_error(())),
-      };
-      let Some((mut extremum, unit)) = extract_simple_length(&first) else {
-        return Err(location.new_custom_error(()));
-      };
-      for comp in iter {
-        let CalcComponent::Length(calc) = comp else {
-          continue;
-        };
-        let Some((value, this_unit)) = extract_simple_length(&calc) else {
-          return Err(location.new_custom_error(()));
-        };
-        if this_unit != unit {
-          return Err(location.new_custom_error(()));
+      let mut lengths: Vec<CalcLength> = Vec::with_capacity(values.len());
+      for comp in values {
+        match comp {
+          CalcComponent::Length(calc) => lengths.push(calc),
+          _ => return Err(location.new_custom_error(())),
         }
-        extremum = match func {
-          MathFn::Min => extremum.min(value),
-          MathFn::Max => extremum.max(value),
-        };
       }
-      Ok(CalcComponent::Length(CalcLength::single(unit, extremum)))
+
+      // If all arguments reduce to a single term in the same unit, evaluate the extremum at parse
+      // time. This keeps simple `min(10px, 20px)` cases cheap.
+      if let Some((first_value, unit)) = extract_simple_length(&lengths[0]) {
+        let mut extremum = first_value;
+        let mut ok = true;
+        for calc in lengths.iter().skip(1) {
+          let Some((value, this_unit)) = extract_simple_length(calc) else {
+            ok = false;
+            break;
+          };
+          if this_unit != unit {
+            ok = false;
+            break;
+          }
+          extremum = match func {
+            MathFn::Min => extremum.min(value),
+            MathFn::Max => extremum.max(value),
+          };
+        }
+        if ok {
+          return Ok(CalcComponent::Length(CalcLength::single(unit, extremum)));
+        }
+      }
+
+      // Otherwise, preserve the `min()`/`max()` function so it can be resolved later with viewport
+      // and font metrics.
+      let calc = match func {
+        MathFn::Min => CalcLength::min_function(&lengths),
+        MathFn::Max => CalcLength::max_function(&lengths),
+      }
+      .ok_or_else(|| location.new_custom_error(()))?;
+      Ok(CalcComponent::Length(calc))
     }
   }
 }
@@ -6522,7 +6541,9 @@ fn combine_sum<'i>(
       .ok_or_else(|| location.new_custom_error(())),
     (CalcComponent::Length(l), CalcComponent::Number(0.0)) => Ok(CalcComponent::Length(l)),
     (CalcComponent::Number(0.0), CalcComponent::Length(l)) => {
-      Ok(CalcComponent::Length(l.scale(sign)))
+      l.scale(sign)
+        .map(CalcComponent::Length)
+        .ok_or_else(|| location.new_custom_error(()))
     }
     (CalcComponent::Angle(a), CalcComponent::Number(0.0)) => Ok(CalcComponent::Angle(a)),
     (CalcComponent::Number(0.0), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * sign)),
@@ -6541,7 +6562,9 @@ fn combine_product<'i>(
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a * b)),
       (CalcComponent::Length(l), CalcComponent::Number(n))
       | (CalcComponent::Number(n), CalcComponent::Length(l)) => {
-        Ok(CalcComponent::Length(l.scale(n)))
+        l.scale(n)
+          .map(CalcComponent::Length)
+          .ok_or_else(|| location.new_custom_error(()))
       }
       (CalcComponent::Angle(a), CalcComponent::Number(n))
       | (CalcComponent::Number(n), CalcComponent::Angle(a)) => Ok(CalcComponent::Angle(a * n)),
@@ -6551,7 +6574,9 @@ fn combine_product<'i>(
       (_, CalcComponent::Number(0.0)) => Err(location.new_custom_error(())),
       (CalcComponent::Number(a), CalcComponent::Number(b)) => Ok(CalcComponent::Number(a / b)),
       (CalcComponent::Length(l), CalcComponent::Number(n)) => {
-        Ok(CalcComponent::Length(l.scale(1.0 / n)))
+        l.scale(1.0 / n)
+          .map(CalcComponent::Length)
+          .ok_or_else(|| location.new_custom_error(()))
       }
       (CalcComponent::Angle(a), CalcComponent::Number(n)) => Ok(CalcComponent::Angle(a / n)),
       _ => Err(location.new_custom_error(())),

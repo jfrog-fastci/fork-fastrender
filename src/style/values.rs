@@ -255,19 +255,47 @@ const EMPTY_TERM: CalcTerm = CalcTerm {
   value: 0.0,
 };
 
-/// Linear combination of length units produced by `calc()`, `min()`, `max()`, or `clamp()`.
+/// Calculated `<length>` value produced by CSS math functions such as `calc()`, `min()`, `max()`,
+/// and `clamp()`.
 ///
-/// Terms are stored as unit coefficients (e.g., `50% + 10px - 2vw`), and resolved later with
-/// the appropriate percentage base, viewport, and font metrics.
+/// FastRender stores most math as a **linear combination** of unit coefficients (e.g.
+/// `50% + 10px - 2vw`). Modern sites also rely on non-linear selection functions like `max()`,
+/// which cannot be represented as a single linear combination. To support those without heap
+/// allocation, `CalcLength` can also encode a `min()`/`max()`/`clamp()` function whose arguments are
+/// themselves linear combinations.
+///
+/// The encoding uses the same fixed-size term array, with `LengthUnit::Calc` acting as an
+/// **argument separator** between linear argument term lists. This keeps `CalcLength` `Copy` while
+/// still allowing common responsive expressions such as:
+/// `max(1rem, calc(50vw - 720px + 1rem))`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CalcLength {
+  kind: CalcLengthKind,
   terms: [CalcTerm; MAX_CALC_TERMS],
   term_count: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CalcLengthKind {
+  /// A plain `calc()` sum (linear combination of units).
+  Linear,
+  /// `min(<calc-sum>#)`
+  Min,
+  /// `max(<calc-sum>#)`
+  Max,
+  /// `clamp(<calc-sum>, <calc-sum>, <calc-sum>)`
+  Clamp,
+}
+
+const ARG_SEPARATOR_TERM: CalcTerm = CalcTerm {
+  unit: LengthUnit::Calc,
+  value: 0.0,
+};
+
 impl CalcLength {
   pub const fn empty() -> Self {
     Self {
+      kind: CalcLengthKind::Linear,
       terms: [EMPTY_TERM; MAX_CALC_TERMS],
       term_count: 0,
     }
@@ -279,11 +307,154 @@ impl CalcLength {
     calc
   }
 
+  #[inline]
+  pub(crate) fn kind(&self) -> CalcLengthKind {
+    self.kind
+  }
+
+  #[inline]
+  pub(crate) fn kind_id(&self) -> u8 {
+    match self.kind {
+      CalcLengthKind::Linear => 0,
+      CalcLengthKind::Min => 1,
+      CalcLengthKind::Max => 2,
+      CalcLengthKind::Clamp => 3,
+    }
+  }
+
+  pub(crate) fn min_function(args: &[CalcLength]) -> Option<Self> {
+    Self::build_function(CalcLengthKind::Min, args)
+  }
+
+  pub(crate) fn max_function(args: &[CalcLength]) -> Option<Self> {
+    Self::build_function(CalcLengthKind::Max, args)
+  }
+
+  pub(crate) fn clamp_function(min: CalcLength, preferred: CalcLength, max: CalcLength) -> Option<Self> {
+    Self::build_function(CalcLengthKind::Clamp, &[min, preferred, max])
+  }
+
+  fn build_function(kind: CalcLengthKind, args: &[CalcLength]) -> Option<Self> {
+    debug_assert!(kind != CalcLengthKind::Linear);
+    if args.is_empty() {
+      return None;
+    }
+    if kind == CalcLengthKind::Clamp && args.len() != 3 {
+      return None;
+    }
+    if args.len() == 1 {
+      // `min()`/`max()` with one argument behaves as identity.
+      return Some(args[0]);
+    }
+
+    let mut out = Self {
+      kind,
+      terms: [EMPTY_TERM; MAX_CALC_TERMS],
+      term_count: 0,
+    };
+
+    let mut len = 0usize;
+    for (idx, arg) in args.iter().enumerate() {
+      if arg.kind != CalcLengthKind::Linear {
+        // Avoid recursive function trees for now. Callers should flatten when possible.
+        return None;
+      }
+
+      if idx > 0 {
+        if len >= MAX_CALC_TERMS {
+          return None;
+        }
+        out.terms[len] = ARG_SEPARATOR_TERM;
+        len += 1;
+      }
+
+      for term in arg.terms() {
+        if term.unit == LengthUnit::Calc {
+          return None;
+        }
+        if len >= MAX_CALC_TERMS {
+          return None;
+        }
+        out.terms[len] = *term;
+        len += 1;
+      }
+    }
+
+    out.term_count = len as u8;
+    Some(out)
+  }
+
+  fn map_linear_args(
+    &self,
+    out_kind: CalcLengthKind,
+    mut map: impl FnMut(CalcLength) -> Option<CalcLength>,
+  ) -> Option<Self> {
+    debug_assert!(self.kind != CalcLengthKind::Linear);
+    debug_assert!(out_kind != CalcLengthKind::Linear);
+
+    let mut out = Self {
+      kind: out_kind,
+      terms: [EMPTY_TERM; MAX_CALC_TERMS],
+      term_count: 0,
+    };
+
+    let src = self.terms();
+    let mut start = 0usize;
+    let mut arg_index = 0usize;
+    let mut len = 0usize;
+
+    for i in 0..=src.len() {
+      let is_boundary = i == src.len() || src[i].unit == LengthUnit::Calc;
+      if !is_boundary {
+        continue;
+      }
+
+      let mut arg = CalcLength::empty();
+      for term in &src[start..i] {
+        arg.push(term.unit, term.value).ok()?;
+      }
+
+      let mapped = map(arg)?;
+      if mapped.kind != CalcLengthKind::Linear {
+        return None;
+      }
+
+      if arg_index > 0 {
+        if len >= MAX_CALC_TERMS {
+          return None;
+        }
+        out.terms[len] = ARG_SEPARATOR_TERM;
+        len += 1;
+      }
+
+      for term in mapped.terms() {
+        if len >= MAX_CALC_TERMS {
+          return None;
+        }
+        out.terms[len] = *term;
+        len += 1;
+      }
+
+      arg_index += 1;
+      start = i + 1;
+    }
+
+    out.term_count = len as u8;
+    Some(out)
+  }
+
   pub fn terms(&self) -> &[CalcTerm] {
     &self.terms[..self.term_count as usize]
   }
 
   fn push(&mut self, unit: LengthUnit, value: f32) -> Result<(), ()> {
+    if self.kind != CalcLengthKind::Linear {
+      return Err(());
+    }
+    if unit == LengthUnit::Calc {
+      // Reserved for argument separators in non-linear min/max/clamp encodings.
+      return Err(());
+    }
     if value == 0.0 {
       return Ok(());
     }
@@ -310,22 +481,143 @@ impl CalcLength {
     Ok(())
   }
 
-  pub fn scale(&self, factor: f32) -> Self {
-    let mut out = Self::empty();
-    for term in self.terms() {
-      let _ = out.push(term.unit, term.value * factor);
+  pub fn scale(&self, factor: f32) -> Option<Self> {
+    if factor == 0.0 {
+      return Some(Self::empty());
     }
-    out
+
+    match self.kind {
+      CalcLengthKind::Linear => {
+        let mut out = Self::empty();
+        for term in self.terms() {
+          out.push(term.unit, term.value * factor).ok()?;
+        }
+        Some(out)
+      }
+      CalcLengthKind::Min | CalcLengthKind::Max => {
+        let mut kind = self.kind;
+        if factor.is_sign_negative() {
+          kind = match kind {
+            CalcLengthKind::Min => CalcLengthKind::Max,
+            CalcLengthKind::Max => CalcLengthKind::Min,
+            _ => kind,
+          };
+        }
+
+        let mut out = Self {
+          kind,
+          terms: [EMPTY_TERM; MAX_CALC_TERMS],
+          term_count: 0,
+        };
+        let mut len = 0usize;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if len >= MAX_CALC_TERMS {
+              return None;
+            }
+            out.terms[len] = ARG_SEPARATOR_TERM;
+            len += 1;
+            continue;
+          }
+
+          let value = term.value * factor;
+          if value == 0.0 {
+            continue;
+          }
+          if len >= MAX_CALC_TERMS {
+            return None;
+          }
+          out.terms[len] = CalcTerm {
+            unit: term.unit,
+            value,
+          };
+          len += 1;
+        }
+        out.term_count = len as u8;
+        Some(out)
+      }
+      CalcLengthKind::Clamp => {
+        if factor.is_sign_negative() {
+          // `clamp()` is not closed under negative scaling without introducing nested min/max.
+          // Reject so callers treat the expression as invalid rather than computing the wrong value.
+          return None;
+        }
+
+        let mut out = Self {
+          kind: CalcLengthKind::Clamp,
+          terms: [EMPTY_TERM; MAX_CALC_TERMS],
+          term_count: 0,
+        };
+        let mut len = 0usize;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if len >= MAX_CALC_TERMS {
+              return None;
+            }
+            out.terms[len] = ARG_SEPARATOR_TERM;
+            len += 1;
+            continue;
+          }
+
+          let value = term.value * factor;
+          if value == 0.0 {
+            continue;
+          }
+          if len >= MAX_CALC_TERMS {
+            return None;
+          }
+          out.terms[len] = CalcTerm {
+            unit: term.unit,
+            value,
+          };
+          len += 1;
+        }
+        out.term_count = len as u8;
+        Some(out)
+      }
+    }
   }
 
   pub fn add_scaled(&self, other: &CalcLength, scale: f32) -> Option<Self> {
-    let mut out = *self;
-    for term in other.terms() {
-      if out.push(term.unit, term.value * scale).is_err() {
-        return None;
-      }
+    if scale == 0.0 {
+      return Some(*self);
     }
-    Some(out)
+
+    match (self.kind, other.kind) {
+      (CalcLengthKind::Linear, CalcLengthKind::Linear) => {
+        let mut out = *self;
+        for term in other.terms() {
+          if out.push(term.unit, term.value * scale).is_err() {
+            return None;
+          }
+        }
+        Some(out)
+      }
+      (CalcLengthKind::Linear, CalcLengthKind::Min | CalcLengthKind::Max | CalcLengthKind::Clamp) => {
+        // `L + s * f(args)` where `L` is linear and `f` is min/max/clamp.
+        // Distribute the affine transform into the function arguments when possible.
+        if other.kind == CalcLengthKind::Clamp && scale.is_sign_negative() {
+          // `clamp()` is not closed under negative scaling without nesting.
+          return None;
+        }
+
+        let mut out_kind = other.kind;
+        if scale.is_sign_negative() {
+          out_kind = match out_kind {
+            CalcLengthKind::Min => CalcLengthKind::Max,
+            CalcLengthKind::Max => CalcLengthKind::Min,
+            _ => out_kind,
+          };
+        }
+
+        other.map_linear_args(out_kind, |arg| self.add_scaled(&arg, scale))
+      }
+      (CalcLengthKind::Min | CalcLengthKind::Max | CalcLengthKind::Clamp, CalcLengthKind::Linear) => {
+        // `f(args) + s * L` where `L` is linear. Translation is closed for min/max/clamp.
+        self.map_linear_args(self.kind, |arg| arg.add_scaled(other, scale))
+      }
+      _ => None,
+    }
   }
 
   pub fn is_zero(&self) -> bool {
@@ -369,39 +661,83 @@ impl CalcLength {
     let cqmin_base = cqi_base.min(cqb_base);
     let cqmax_base = cqi_base.max(cqb_base);
 
-    let mut out = Self::empty();
-    for term in self.terms() {
-      match term.unit {
-        LengthUnit::Cqw => {
-          let px = (term.value / 100.0) * cqw_base;
-          let _ = out.push(LengthUnit::Px, px);
+    match self.kind {
+      CalcLengthKind::Linear => {
+        let mut out = Self::empty();
+        for term in self.terms() {
+          match term.unit {
+            LengthUnit::Cqw => {
+              let px = (term.value / 100.0) * cqw_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            LengthUnit::Cqh => {
+              let px = (term.value / 100.0) * cqh_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            LengthUnit::Cqi => {
+              let px = (term.value / 100.0) * cqi_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            LengthUnit::Cqb => {
+              let px = (term.value / 100.0) * cqb_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            LengthUnit::Cqmin => {
+              let px = (term.value / 100.0) * cqmin_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            LengthUnit::Cqmax => {
+              let px = (term.value / 100.0) * cqmax_base;
+              let _ = out.push(LengthUnit::Px, px);
+            }
+            _ => {
+              let _ = out.push(term.unit, term.value);
+            }
+          }
         }
-        LengthUnit::Cqh => {
-          let px = (term.value / 100.0) * cqh_base;
-          let _ = out.push(LengthUnit::Px, px);
+        out
+      }
+      _ => {
+        let mut out = Self {
+          kind: self.kind,
+          terms: [EMPTY_TERM; MAX_CALC_TERMS],
+          term_count: 0,
+        };
+
+        let mut len = 0usize;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if len < MAX_CALC_TERMS {
+              out.terms[len] = ARG_SEPARATOR_TERM;
+              len += 1;
+            }
+            continue;
+          }
+
+          let (unit, value) = match term.unit {
+            LengthUnit::Cqw => (LengthUnit::Px, (term.value / 100.0) * cqw_base),
+            LengthUnit::Cqh => (LengthUnit::Px, (term.value / 100.0) * cqh_base),
+            LengthUnit::Cqi => (LengthUnit::Px, (term.value / 100.0) * cqi_base),
+            LengthUnit::Cqb => (LengthUnit::Px, (term.value / 100.0) * cqb_base),
+            LengthUnit::Cqmin => (LengthUnit::Px, (term.value / 100.0) * cqmin_base),
+            LengthUnit::Cqmax => (LengthUnit::Px, (term.value / 100.0) * cqmax_base),
+            _ => (term.unit, term.value),
+          };
+
+          if value == 0.0 {
+            continue;
+          }
+          if len >= MAX_CALC_TERMS {
+            break;
+          }
+          out.terms[len] = CalcTerm { unit, value };
+          len += 1;
         }
-        LengthUnit::Cqi => {
-          let px = (term.value / 100.0) * cqi_base;
-          let _ = out.push(LengthUnit::Px, px);
-        }
-        LengthUnit::Cqb => {
-          let px = (term.value / 100.0) * cqb_base;
-          let _ = out.push(LengthUnit::Px, px);
-        }
-        LengthUnit::Cqmin => {
-          let px = (term.value / 100.0) * cqmin_base;
-          let _ = out.push(LengthUnit::Px, px);
-        }
-        LengthUnit::Cqmax => {
-          let px = (term.value / 100.0) * cqmax_base;
-          let _ = out.push(LengthUnit::Px, px);
-        }
-        _ => {
-          let _ = out.push(term.unit, term.value);
-        }
+
+        out.term_count = len as u8;
+        out
       }
     }
-    out
   }
 
   pub fn resolve(
@@ -421,9 +757,9 @@ impl CalcLength {
     }
 
     let percentage_base = percentage_base.filter(|b| b.is_finite());
-    let mut total = 0.0;
-    for term in self.terms() {
-      let resolved = match term.unit {
+
+    let resolve_term = |term: &CalcTerm| -> Option<f32> {
+      match term.unit {
         LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
         u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
         u if u.is_viewport_relative() => {
@@ -437,14 +773,87 @@ impl CalcLength {
         LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
-      }?;
-      total += resolved;
+      }
+    };
+
+    match self.kind {
+      CalcLengthKind::Linear => {
+        let mut total = 0.0;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            return None;
+          }
+          total += resolve_term(term)?;
+        }
+        Some(total)
+      }
+      CalcLengthKind::Min | CalcLengthKind::Max => {
+        let mut extremum = match self.kind {
+          CalcLengthKind::Min => f32::INFINITY,
+          CalcLengthKind::Max => f32::NEG_INFINITY,
+          _ => unreachable!(),
+        };
+        let mut current = 0.0;
+        let mut saw_any = false;
+
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            extremum = match self.kind {
+              CalcLengthKind::Min => extremum.min(current),
+              CalcLengthKind::Max => extremum.max(current),
+              _ => extremum,
+            };
+            current = 0.0;
+            saw_any = true;
+            continue;
+          }
+          current += resolve_term(term)?;
+        }
+
+        // Final argument
+        extremum = match self.kind {
+          CalcLengthKind::Min => extremum.min(current),
+          CalcLengthKind::Max => extremum.max(current),
+          _ => extremum,
+        };
+        if !saw_any && !extremum.is_finite() {
+          return None;
+        }
+        Some(extremum)
+      }
+      CalcLengthKind::Clamp => {
+        let mut values = [0.0f32; 3];
+        let mut arg_index = 0usize;
+        let mut current = 0.0;
+
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if arg_index >= 3 {
+              return None;
+            }
+            values[arg_index] = current;
+            arg_index += 1;
+            current = 0.0;
+            continue;
+          }
+          current += resolve_term(term)?;
+        }
+
+        if arg_index != 2 {
+          return None;
+        }
+        values[2] = current;
+
+        let min = values[0];
+        let preferred = values[1];
+        let max = values[2];
+        Some(min.max(preferred.min(max)))
+      }
     }
-    Some(total)
   }
 
   pub fn single_term(&self) -> Option<CalcTerm> {
-    if self.term_count == 1 {
+    if self.kind == CalcLengthKind::Linear && self.term_count == 1 {
       Some(self.terms[0])
     } else {
       None
@@ -456,25 +865,123 @@ impl CalcLength {
       t.unit.is_percentage()
         || t.unit.is_viewport_relative()
         || t.unit.is_font_relative()
-        || matches!(t.unit, LengthUnit::Calc)
     })
   }
 
   pub fn absolute_sum(&self) -> Option<f32> {
-    let mut total = 0.0;
-    for term in self.terms() {
-      match term.unit {
-        u if u.is_absolute() => total += Length::new(term.value, u).to_px(),
-        _ => return None,
+    match self.kind {
+      CalcLengthKind::Linear => {
+        let mut total = 0.0;
+        for term in self.terms() {
+          match term.unit {
+            u if u.is_absolute() => total += Length::new(term.value, u).to_px(),
+            _ => return None,
+          }
+        }
+        Some(total)
+      }
+      CalcLengthKind::Min | CalcLengthKind::Max => {
+        let mut extremum = match self.kind {
+          CalcLengthKind::Min => f32::INFINITY,
+          CalcLengthKind::Max => f32::NEG_INFINITY,
+          _ => unreachable!(),
+        };
+        let mut current = 0.0;
+        let mut saw_sep = false;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            extremum = match self.kind {
+              CalcLengthKind::Min => extremum.min(current),
+              CalcLengthKind::Max => extremum.max(current),
+              _ => extremum,
+            };
+            current = 0.0;
+            saw_sep = true;
+            continue;
+          }
+          if !term.unit.is_absolute() {
+            return None;
+          }
+          current += Length::new(term.value, term.unit).to_px();
+        }
+        extremum = match self.kind {
+          CalcLengthKind::Min => extremum.min(current),
+          CalcLengthKind::Max => extremum.max(current),
+          _ => extremum,
+        };
+        if !saw_sep && !extremum.is_finite() {
+          return None;
+        }
+        Some(extremum)
+      }
+      CalcLengthKind::Clamp => {
+        let mut values = [0.0f32; 3];
+        let mut arg_index = 0usize;
+        let mut current = 0.0;
+        for term in self.terms() {
+          if term.unit == LengthUnit::Calc {
+            if arg_index >= 3 {
+              return None;
+            }
+            values[arg_index] = current;
+            arg_index += 1;
+            current = 0.0;
+            continue;
+          }
+          if !term.unit.is_absolute() {
+            return None;
+          }
+          current += Length::new(term.value, term.unit).to_px();
+        }
+        if arg_index != 2 {
+          return None;
+        }
+        values[2] = current;
+        let min = values[0];
+        let preferred = values[1];
+        let max = values[2];
+        Some(min.max(preferred.min(max)))
       }
     }
-    Some(total)
   }
 
   fn write_css(&self, out: &mut impl fmt::Write) -> fmt::Result {
     if self.is_zero() {
       // Unitless zero is valid for `<length>` and `<length-percentage>`.
       return out.write_str("0");
+    }
+
+    if self.kind != CalcLengthKind::Linear {
+      let func_name = match self.kind {
+        CalcLengthKind::Min => "min(",
+        CalcLengthKind::Max => "max(",
+        CalcLengthKind::Clamp => "clamp(",
+        CalcLengthKind::Linear => unreachable!(),
+      };
+
+      out.write_str(func_name)?;
+
+      let mut first = true;
+      let mut current = CalcLength::empty();
+      for term in self.terms() {
+        if term.unit == LengthUnit::Calc {
+          if !first {
+            out.write_str(", ")?;
+          }
+          current.write_css(out)?;
+          current = CalcLength::empty();
+          first = false;
+          continue;
+        }
+        let _ = current.push(term.unit, term.value);
+      }
+
+      if !first {
+        out.write_str(", ")?;
+      }
+      current.write_css(out)?;
+      out.write_str(")")?;
+      return Ok(());
     }
 
     if let Some(term) = self.single_term() {
