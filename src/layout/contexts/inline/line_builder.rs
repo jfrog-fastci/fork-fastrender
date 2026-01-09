@@ -472,6 +472,27 @@ fn allows_soft_wrap(style: &ComputedStyle) -> bool {
     && !matches!(style.text_wrap, TextWrap::NoWrap)
 }
 
+fn item_allows_soft_wrap(item: &InlineItem) -> bool {
+  match item {
+    InlineItem::Text(text) => allows_soft_wrap(text.style.as_ref()),
+    InlineItem::InlineBox(inline_box) => allows_soft_wrap(inline_box.style.as_ref()),
+    InlineItem::InlineBlock(inline_block) => inline_block
+      .fragment
+      .style
+      .as_deref()
+      .map_or(true, allows_soft_wrap),
+    InlineItem::Ruby(ruby) => allows_soft_wrap(ruby.style.as_ref()),
+    InlineItem::Replaced(replaced) => allows_soft_wrap(replaced.style.as_ref()),
+    // Tabs already memoize whether wrapping is allowed for the active inline context.
+    InlineItem::Tab(tab) => tab.allow_wrap(),
+    // Soft breaks are inserted deliberately (e.g. `text-wrap`), so honor them regardless of
+    // `white-space`. Hard breaks are handled earlier.
+    InlineItem::SoftBreak | InlineItem::HardBreak => true,
+    // Floats/anchors do not participate in line breaking the way normal in-flow items do.
+    InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => true,
+  }
+}
+
 pub(crate) fn log_line_width_enabled() -> bool {
   runtime::runtime_toggles().truthy("FASTR_LOG_LINE_WIDTH")
 }
@@ -2218,6 +2239,10 @@ pub struct InlineBlockItem {
   pub margin_left: f32,
   pub margin_right: f32,
 
+  /// Vertical margins
+  pub margin_top: f32,
+  pub margin_bottom: f32,
+
   /// Baseline metrics
   pub metrics: BaselineMetrics,
 
@@ -2239,6 +2264,8 @@ impl InlineBlockItem {
     unicode_bidi: UnicodeBidi,
     margin_left: f32,
     margin_right: f32,
+    margin_top: f32,
+    margin_bottom: f32,
     has_line_baseline: bool,
   ) -> Self {
     let width = fragment.bounds.width();
@@ -2259,13 +2286,31 @@ impl InlineBlockItem {
       last_baseline
     };
 
+    let margin_height = height + margin_top + margin_bottom;
     let metrics = chosen_baseline.map_or_else(
-      || BaselineMetrics::for_replaced(height),
+      || {
+        // No in-flow line boxes: baseline is the bottom *margin* edge.
+        // (CSS 2.1 §10.8.1 / inline-block baseline rules)
+        let height = margin_height;
+        BaselineMetrics::for_replaced(height)
+      },
       |baseline| {
+        // Baseline from the inline-block's last in-flow line box. Convert from border-box
+        // coordinates to margin-box coordinates so vertical margins contribute to line box
+        // metrics.
         let upper = height.max(0.0);
         let clamped_baseline = baseline.max(0.0).min(upper);
-        let descent = (height - clamped_baseline).max(0.0);
-        BaselineMetrics::new(clamped_baseline, height, clamped_baseline, descent)
+        let baseline_offset = margin_top + clamped_baseline;
+        let height = margin_height;
+        BaselineMetrics {
+          baseline_offset,
+          height,
+          ascent: baseline_offset,
+          descent: (height - baseline_offset).max(0.0),
+          line_gap: 0.0,
+          line_height: height,
+          x_height: Some(baseline_offset * 0.5),
+        }
       },
     );
 
@@ -2275,6 +2320,8 @@ impl InlineBlockItem {
       height,
       margin_left,
       margin_right,
+      margin_top,
+      margin_bottom,
       metrics,
       vertical_align: VerticalAlign::Baseline,
       direction,
@@ -2398,6 +2445,16 @@ fn collect_line_baselines(
   first: &mut Option<f32>,
   last: &mut Option<f32>,
 ) {
+  // When computing an inline-block's baseline (CSS 2.1 §10.8.1), we must consider only the last
+  // *in-flow* line box. Out-of-flow positioned descendants (e.g. dropdown menus that are
+  // `position: absolute`) must not contribute; including them can cause inline-block baselines to
+  // clamp to the bottom edge, inflating line box heights.
+  if let Some(style) = fragment.style.as_deref() {
+    if matches!(style.position, crate::style::position::Position::Absolute | crate::style::position::Position::Fixed)
+    {
+      return;
+    }
+  }
   let current_offset = y_offset + fragment.bounds.y();
   if let Some(baseline) = fragment.baseline {
     let absolute = current_offset + baseline;
@@ -2433,6 +2490,10 @@ pub struct ReplacedItem {
   /// Horizontal margins
   pub margin_left: f32,
   pub margin_right: f32,
+
+  /// Vertical margins
+  pub margin_top: f32,
+  pub margin_bottom: f32,
 
   /// Baseline metrics
   pub metrics: BaselineMetrics,
@@ -2471,14 +2532,18 @@ impl ReplacedItem {
     style: Arc<ComputedStyle>,
     margin_left: f32,
     margin_right: f32,
+    margin_top: f32,
+    margin_bottom: f32,
   ) -> Self {
-    let metrics = BaselineMetrics::for_replaced(size.height);
+    let metrics = BaselineMetrics::for_replaced(size.height + margin_top + margin_bottom);
     Self {
       box_id,
       width: size.width,
       height: size.height,
       margin_left,
       margin_right,
+      margin_top,
+      margin_bottom,
       metrics,
       vertical_align: VerticalAlign::Baseline,
       layout_advance: size.width + margin_left + margin_right,
@@ -2520,6 +2585,8 @@ impl ReplacedItem {
     }
     self.margin_left = 0.0;
     self.margin_right = 0.0;
+    self.margin_top = 0.0;
+    self.margin_bottom = 0.0;
     self.is_marker = true;
     self
   }
@@ -3055,8 +3122,8 @@ impl<'a> LineBuilder<'a> {
       self.add_breakable_item(item)?;
     } else {
       // Item doesn't fit and can't be broken
-      if self.current_line.is_empty() {
-        // No break possible; overflow this line
+      if self.current_line.is_empty() || !item_allows_soft_wrap(&item) {
+        // No break possible (or wrapping is disabled); overflow this line.
         self.place_item_with_width(item, item_width);
       } else {
         self.finish_line()?;
@@ -6048,6 +6115,8 @@ mod tests {
       Arc::new(ComputedStyle::default()),
       0.0,
       0.0,
+      0.0,
+      0.0,
     );
     builder.add_item(InlineItem::Replaced(replaced)).unwrap();
 
@@ -6067,6 +6136,8 @@ mod tests {
       UnicodeBidi::Normal,
       0.0,
       0.0,
+      0.0,
+      0.0,
       true,
     );
     builder
@@ -6076,6 +6147,104 @@ mod tests {
     let lines = builder.finish().unwrap().lines;
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0].items[0].item.width(), 80.0);
+  }
+
+  #[test]
+  fn inline_block_items_do_not_wrap_when_white_space_nowrap() {
+    let mut builder = make_builder(100.0);
+
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Nowrap;
+    let style = Arc::new(style);
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      style,
+    );
+    let inline_block = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      true,
+    );
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      FragmentContent::Block { box_id: None },
+      vec![],
+      Arc::new({
+        let mut style = ComputedStyle::default();
+        style.white_space = WhiteSpace::Nowrap;
+        style
+      }),
+    );
+    let inline_block2 = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      true,
+    );
+
+    builder
+      .add_item(InlineItem::InlineBlock(inline_block))
+      .unwrap();
+    builder
+      .add_item(InlineItem::InlineBlock(inline_block2))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(
+      lines.len(),
+      1,
+      "nowrap inline-blocks should overflow instead of wrapping"
+    );
+    assert!(
+      lines[0].width > 100.0,
+      "line width should reflect overflow (got {})",
+      lines[0].width
+    );
+  }
+
+  #[test]
+  fn inline_block_vertical_margins_affect_line_height() {
+    // GitLab's desktop nav uses `padding-bottom` with `margin-bottom: -Npx` on inline-block
+    // dropdown wrappers to keep the visual hit area without inflating the header height.
+    //
+    // Ensure inline-block vertical margins contribute to the line box metrics so negative margins
+    // can cancel padding.
+    let mut builder = make_builder(200.0);
+    let fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 80.0, 30.0), vec![]);
+    let inline_block = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      -10.0,
+      true,
+    );
+    builder
+      .add_item(InlineItem::InlineBlock(inline_block))
+      .unwrap();
+    let lines = builder.finish().unwrap().lines;
+
+    // Border box is 30px tall; margin-bottom:-10 shrinks the margin box to 20px.
+    // With the default strut (ascent=12, descent=4), line height becomes 20 + 4 = 24.
+    assert!(
+      (lines[0].height - 24.0).abs() < 0.01,
+      "unexpected line height: {}",
+      lines[0].height
+    );
   }
 
   #[test]
@@ -6090,12 +6259,58 @@ mod tests {
       UnicodeBidi::Normal,
       0.0,
       0.0,
+      0.0,
+      0.0,
       true,
     );
 
     // Baseline should be derived from the line (5 + 8 = 13) rather than the bottom border edge (20).
     assert!((inline_block.metrics.baseline_offset - 13.0).abs() < 0.001);
     assert!((inline_block.metrics.descent - 7.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn inline_block_baseline_ignores_out_of_flow_positioned_descendants() {
+    use crate::style::position::Position;
+
+    // Inline-block with an in-flow line box at baseline 8, plus an absolutely positioned subtree
+    // whose baselines should not affect the inline-block baseline.
+    let in_flow_line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 60.0, 10.0), 8.0, vec![]);
+
+    let abs_style = Arc::new({
+      let mut style = ComputedStyle::default();
+      style.position = Position::Absolute;
+      style
+    });
+    let abs_line = FragmentNode::new_line(Rect::from_xywh(0.0, 0.0, 40.0, 8.0), 6.0, vec![]);
+    let abs_block = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 100.0, 40.0, 8.0),
+      FragmentContent::Block { box_id: None },
+      vec![abs_line],
+      abs_style,
+    );
+
+    let fragment = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      vec![in_flow_line, abs_block],
+    );
+
+    let inline_block = InlineBlockItem::new(
+      fragment,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      true,
+    );
+
+    assert!(
+      (inline_block.metrics.baseline_offset - 8.0).abs() < 0.001,
+      "expected baseline from in-flow line box, got {}",
+      inline_block.metrics.baseline_offset
+    );
   }
 
   #[test]
@@ -6107,6 +6322,8 @@ mod tests {
       fragment,
       Direction::Ltr,
       UnicodeBidi::Normal,
+      0.0,
+      0.0,
       0.0,
       0.0,
       false, // overflow != visible
@@ -6124,6 +6341,8 @@ mod tests {
       fragment,
       Direction::Ltr,
       UnicodeBidi::Normal,
+      0.0,
+      0.0,
       0.0,
       0.0,
       true,
@@ -6158,6 +6377,8 @@ mod tests {
       fragment,
       Direction::Ltr,
       UnicodeBidi::Normal,
+      0.0,
+      0.0,
       0.0,
       0.0,
       true,
@@ -6225,9 +6446,9 @@ mod tests {
     builder.add_item(InlineItem::Text(item)).unwrap();
     let lines = builder.finish().unwrap().lines;
 
-    // With parent x-height 6, middle shift = 12 - 8 + 3 = 7.
+    // With parent x-height 6, middle shift = 12 - 8 - 3 = 1.
     let first = &lines[0].items[0];
-    assert!((first.baseline_offset - 7.0).abs() < 1e-3);
+    assert!((first.baseline_offset - 1.0).abs() < 1e-3);
   }
 
   #[test]

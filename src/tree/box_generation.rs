@@ -4713,6 +4713,21 @@ fn input_label(node: &DomNode, input_type: &str) -> String {
   }
 }
 
+fn button_label(node: &StyledNode) -> String {
+  let text = collect_text_content(node);
+  let trimmed = trim_ascii_whitespace(&text);
+  if !trimmed.is_empty() {
+    return trimmed.to_string();
+  }
+
+  node
+    .node
+    .get_attribute_ref("value")
+    .filter(|v| !v.is_empty())
+    .map(|v| v.to_string())
+    .unwrap_or_default()
+}
+
 fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
   let appearance = styled.styles.appearance.clone();
@@ -4720,6 +4735,18 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   if !tag.eq_ignore_ascii_case("input")
     && !tag.eq_ignore_ascii_case("textarea")
     && !tag.eq_ignore_ascii_case("select")
+    && !tag.eq_ignore_ascii_case("button")
+  {
+    return None;
+  }
+
+  // Buttons can contain arbitrary HTML (icons, rich text). Treat them as form controls only when
+  // they have no element children so we can still lay out icon buttons correctly.
+  if tag.eq_ignore_ascii_case("button")
+    && styled
+      .children
+      .iter()
+      .any(|child| child.node.tag_name().is_some())
   {
     return None;
   }

@@ -2402,6 +2402,32 @@ impl InlineFormattingContext {
         )
       })
       .unwrap_or(0.0);
+    let margin_top = style
+      .margin_top
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
+    let margin_bottom = style
+      .margin_bottom
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
     let available_for_box = if available_width.is_finite() {
       (available_width - margin_left - margin_right).max(0.0)
     } else {
@@ -2749,6 +2775,8 @@ impl InlineFormattingContext {
         box_node.style.unicode_bidi,
         margin_left,
         margin_right,
+        margin_top,
+        margin_bottom,
         matches!(style.overflow_x, crate::style::types::Overflow::Visible)
           && matches!(style.overflow_y, crate::style::types::Overflow::Visible),
       )
@@ -4606,6 +4634,32 @@ impl InlineFormattingContext {
         )
       })
       .unwrap_or(0.0);
+    let margin_top = style
+      .margin_top
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
+    let margin_bottom = style
+      .margin_bottom
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          percentage_base,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
 
     let va = self.convert_vertical_align(
       style.vertical_align,
@@ -4621,6 +4675,8 @@ impl InlineFormattingContext {
       box_node.style.clone(),
       margin_left,
       margin_right,
+      margin_top,
+      margin_bottom,
     )
     .with_vertical_align(va);
 
@@ -4668,13 +4724,14 @@ impl InlineFormattingContext {
         let baseline_offset_from_box_top =
           (border_top + padding_top + vertical_offset + text_baseline_from_content_top).max(0.0);
         let baseline_offset_from_box_top = baseline_offset_from_box_top.min(box_height);
-        let descent = (box_height - baseline_offset_from_box_top).max(0.0);
 
+        let height = box_height + margin_top + margin_bottom;
+        let baseline_offset = margin_top + baseline_offset_from_box_top;
         item = item.with_metrics(BaselineMetrics {
-          baseline_offset: baseline_offset_from_box_top,
-          height: box_height,
-          ascent: baseline_offset_from_box_top,
-          descent,
+          baseline_offset,
+          height,
+          ascent: baseline_offset,
+          descent: (height - baseline_offset).max(0.0),
           line_gap,
           line_height,
           x_height,
@@ -4689,10 +4746,16 @@ impl InlineFormattingContext {
         } else {
           1.0
         };
-        let baseline = layout.baseline * content_scale_y + padding_top + border_top;
-        let ascent = baseline;
-        let descent = (box_height - baseline).max(0.0);
-        item = item.with_metrics(BaselineMetrics::new(baseline, box_height, ascent, descent));
+        let baseline_from_box_top = layout.baseline * content_scale_y + padding_top + border_top;
+        let height = box_height + margin_top + margin_bottom;
+        let baseline_offset = margin_top + baseline_from_box_top;
+        let descent = (height - baseline_offset).max(0.0);
+        item = item.with_metrics(BaselineMetrics::new(
+          baseline_offset,
+          height,
+          baseline_offset,
+          descent,
+        ));
       }
     }
 
@@ -6097,6 +6160,7 @@ impl InlineFormattingContext {
       InlineItem::Ruby(_) => self.create_item_fragment(item, inline_pos, block_pos),
       InlineItem::InlineBlock(block_item) => {
         let mut fragment = block_item.fragment.clone();
+        let block_pos = block_pos + block_item.margin_top;
         if inline_vertical {
           fragment.bounds = Rect::from_xywh(
             block_pos + block_item.margin_left,
@@ -6117,6 +6181,7 @@ impl InlineFormattingContext {
       InlineItem::Replaced(replaced_item) => {
         let paint_offset = replaced_item.paint_offset;
         let box_id = (replaced_item.box_id != 0).then_some(replaced_item.box_id);
+        let block_pos = block_pos + replaced_item.margin_top;
         if inline_vertical {
           let bounds = Rect::from_xywh(
             block_pos + replaced_item.margin_left,

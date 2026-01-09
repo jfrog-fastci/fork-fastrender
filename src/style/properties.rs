@@ -17966,6 +17966,14 @@ fn parse_font_size_token(
   root_font_size: f32,
   viewport: crate::geometry::Size,
 ) -> Option<f32> {
+  // CSS `<length>` allows unitless `0` (but not other unitless numbers) for font-size.
+  // This is commonly used for icon-only buttons (`font-size: 0`).
+  if let Token::Number { value, .. } = token {
+    if *value == 0.0 {
+      return Some(0.0);
+    }
+  }
+
   if let Token::Ident(ref ident) = token {
     if let Some(size) = parse_font_size_keyword(ident.as_ref(), parent_font_size) {
       return Some(size);

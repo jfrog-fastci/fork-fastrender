@@ -602,9 +602,17 @@ impl AnonymousBoxCreator {
       }
 
       let style = inline_style.get_or_insert_with(|| {
-        let mut inherited = inherited_style(parent_style.as_ref());
-        inherited.display = Display::Inline;
-        Arc::new(inherited)
+        // Anonymous inline boxes inherit inheritable properties from their parent, but must not
+        // copy non-inherited box properties like padding/borders/positioning. Cloning the full
+        // computed style here can significantly inflate inline content sizes (e.g. text nodes
+        // inside `display: inline-flex` buttons inheriting the button padding).
+        //
+        // CSS 2.1 §9.2.2.1:
+        // "Any text that is directly contained inside a block container element (not inside an
+        // inline element) must be treated as an anonymous inline element."
+        let mut style = inherited_style(parent_style.as_ref());
+        style.display = Display::Inline;
+        Arc::new(style)
       });
 
       Self::wrap_text_in_anonymous_inline_in_place(child, style.clone());
@@ -1038,6 +1046,34 @@ mod tests {
     let fixed = fixup_tree(root);
     assert_eq!(fixed.children.len(), 1);
     assert!(fixed.children[0].is_block_level());
+  }
+
+  #[test]
+  fn anonymous_inline_wrapper_does_not_copy_parent_padding() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::InlineFlex;
+    parent_style.position = Position::Relative;
+    parent_style.padding_top = Length::px(8.0);
+    parent_style.padding_right = Length::px(8.0);
+    parent_style.padding_bottom = Length::px(8.0);
+    parent_style.padding_left = Length::px(8.0);
+    let parent_style = Arc::new(parent_style);
+
+    let text = BoxNode::new_text(default_style(), "Platform".to_string());
+    let inline_flex = BoxNode::new_inline_block(parent_style, FormattingContextType::Flex, vec![text]);
+    let fixed = AnonymousBoxCreator::fixup_tree(inline_flex).expect("anonymous fixup");
+
+    let wrapper = fixed.children.first().expect("wrapped text");
+    assert!(
+      wrapper.is_anonymous(),
+      "expected text node to be wrapped in an anonymous inline box"
+    );
+    assert_eq!(wrapper.style.display, Display::Inline);
+    assert_eq!(wrapper.style.position, Position::Static);
+    assert_eq!(wrapper.style.padding_top, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_right, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_bottom, Length::px(0.0));
+    assert_eq!(wrapper.style.padding_left, Length::px(0.0));
   }
 
   #[test]

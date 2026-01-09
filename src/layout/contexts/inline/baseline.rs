@@ -252,8 +252,13 @@ impl LineBaselineAccumulator {
     let baseline_shift = self.compute_baseline_shift(alignment, metrics, parent_metrics);
 
     // Compute this item's contribution to ascent/descent
-    let item_ascent = metrics.baseline_offset + baseline_shift;
-    let item_descent = (metrics.height - metrics.baseline_offset) - baseline_shift;
+    // `baseline_shift` is stored on the positioned item and later used as:
+    // `item_top = line_baseline + baseline_shift - item.baseline_offset`.
+    //
+    // Therefore, positive shift moves the item's baseline *down* relative to the line baseline,
+    // reducing the amount of the box that sits above the baseline and increasing what sits below.
+    let item_ascent = metrics.baseline_offset - baseline_shift;
+    let item_descent = (metrics.height - metrics.baseline_offset) + baseline_shift;
 
     self.max_ascent = self.max_ascent.max(item_ascent);
     self.max_descent = self.max_descent.max(item_descent);
@@ -288,13 +293,16 @@ impl LineBaselineAccumulator {
       VerticalAlign::Baseline => 0.0,
 
       VerticalAlign::Middle => {
-        // Align center of box with parent baseline + x-height/2.
-        // Spec: middle aligns the box midpoint with the parent's x-height midpoint.
+        // Align the vertical midpoint of the box with the parent's baseline plus half the
+        // parent's x-height (CSS 2.1 §10.8.1).
+        //
+        // The x-height is measured *above* the baseline, so the target point is
+        // `-x_height/2` in the line's coordinate system.
         let x_height_half = parent_metrics
           .and_then(|m| m.x_height.map(|xh| xh * 0.5))
           .or_else(|| parent_metrics.map(|m| m.ascent * 0.5))
           .unwrap_or(0.0);
-        metrics.baseline_offset - (metrics.height * 0.5) + x_height_half
+        metrics.baseline_offset - (metrics.height * 0.5) - x_height_half
       }
 
       VerticalAlign::Sub => {
@@ -302,7 +310,7 @@ impl LineBaselineAccumulator {
         let shift = parent_metrics
           .map(|m| m.ascent * 0.3)
           .unwrap_or(metrics.ascent * 0.3);
-        -shift
+        shift
       }
 
       VerticalAlign::Super => {
@@ -310,13 +318,13 @@ impl LineBaselineAccumulator {
         let shift = parent_metrics
           .map(|m| m.ascent * 0.4)
           .unwrap_or(metrics.ascent * 0.4);
-        shift
+        -shift
       }
 
       VerticalAlign::TextTop => {
         // Align top with parent's text top
         if let Some(parent) = parent_metrics {
-          parent.ascent - metrics.baseline_offset
+          metrics.baseline_offset - parent.ascent
         } else {
           0.0
         }
@@ -325,17 +333,18 @@ impl LineBaselineAccumulator {
       VerticalAlign::TextBottom => {
         // Align bottom with parent's text bottom
         if let Some(parent) = parent_metrics {
-          -(parent.descent - (metrics.height - metrics.baseline_offset))
+          parent.descent - (metrics.height - metrics.baseline_offset)
         } else {
           0.0
         }
       }
 
-      VerticalAlign::Length(len) => len,
+      // Positive lengths/percentages raise the box (so the baseline moves up relative to the line).
+      VerticalAlign::Length(len) => -len,
 
       VerticalAlign::Percentage(pct) => {
-        // Percentage of line-height
-        metrics.line_height * (pct / 100.0)
+        // Percentage of line-height (positive = up)
+        -(metrics.line_height * (pct / 100.0))
       }
 
       // Top/Bottom are handled separately
@@ -603,16 +612,16 @@ mod tests {
       acc.add_baseline_relative(&item, VerticalAlign::Middle, Some(&parent_no_x));
 
     assert!(
-      (shift_with_x - 6.0).abs() < 1e-3,
+      (shift_with_x - 0.0).abs() < 1e-3,
       "middle should use parent x-height midpoint"
     );
     assert!(
-      (shift_without_x - 13.0).abs() < 1e-3,
+      (shift_without_x - -7.0).abs() < 1e-3,
       "fallback uses 0.5em proxy when x-height is absent"
     );
     assert!(
-      shift_with_x < shift_without_x,
-      "x-height should produce a smaller shift than half-ascent"
+      shift_with_x > shift_without_x,
+      "x-height should require less upward adjustment than the half-ascent fallback"
     );
   }
 
@@ -634,9 +643,9 @@ mod tests {
     let mut acc = LineBaselineAccumulator::new(&parent);
     let shift = acc.add_baseline_relative(&replaced, VerticalAlign::Middle, Some(&parent));
 
-    // Expected shift: x-height/2 (3) minus half the box height (6) plus baseline_offset (12) = 9
+    // Expected shift: baseline_offset (12) minus half the box height (6) minus x-height/2 (3) = 3
     assert!(
-      (shift - 9.0).abs() < 1e-3,
+      (shift - 3.0).abs() < 1e-3,
       "unexpected middle shift for replaced element: {}",
       shift
     );
@@ -658,9 +667,9 @@ mod tests {
     let child = BaselineMetrics::for_replaced(20.0); // baseline at bottom edge
     let mut acc = LineBaselineAccumulator::new(&parent);
     let shift = acc.add_baseline_relative(&child, VerticalAlign::Middle, Some(&parent));
-    // parent x-height midpoint = 4; child midpoint (baseline_offset - height/2) = 10; shift = 10 + 4 = 14.
+    // parent x-height midpoint = 4; child midpoint (baseline_offset - height/2) = 10; shift = 10 - 4 = 6.
     assert!(
-      (shift - 14.0).abs() < 1e-3,
+      (shift - 6.0).abs() < 1e-3,
       "middle shift should reflect parent x-height midpoint and child height"
     );
   }
@@ -740,8 +749,8 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Super, Some(&parent));
 
-    // Super should raise the baseline (positive shift)
-    assert!(shift > 0.0);
+    // Super should raise the baseline (negative shift).
+    assert!(shift < 0.0);
   }
 
   #[test]
@@ -753,8 +762,8 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Sub, Some(&parent));
 
-    // Sub should lower the baseline (negative shift)
-    assert!(shift < 0.0);
+    // Sub should lower the baseline (positive shift).
+    assert!(shift > 0.0);
   }
 
   #[test]
@@ -765,7 +774,7 @@ mod tests {
     let item = BaselineMetrics::new(8.0, 10.0, 8.0, 2.0);
     let shift = acc.add_baseline_relative(&item, VerticalAlign::Length(5.0), None);
 
-    assert_eq!(shift, 5.0);
+    assert_eq!(shift, -5.0);
   }
 
   #[test]
