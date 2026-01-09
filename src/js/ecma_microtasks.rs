@@ -242,9 +242,9 @@ mod tests {
         vm_js::Job::new(vm_js::JobKind::Promise, move |_ctx, _hooks| {
           log2.lock().unwrap().push("job2");
           Ok(())
-          }),
-          None,
-        );
+        }),
+        None,
+      );
       let enqueue_err = hooks.finish(host);
       if let Some(err) = enqueue_err {
         return Err(err);
@@ -356,5 +356,47 @@ mod tests {
     assert_eq!(host.heap.get_root(root1), None);
     assert_eq!(host.heap.get_root(root2), None);
     Ok(())
+  }
+
+  #[test]
+  fn vm_js_promise_job_failure_is_propagated_to_the_event_loop() {
+    struct Host {
+      vm: vm_js::Vm,
+      heap: vm_js::Heap,
+    }
+
+    impl VmJsEngineHost for Host {
+      fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap) {
+        (&mut self.vm, &mut self.heap)
+      }
+    }
+
+    let limits = vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024);
+    let mut host = Host {
+      vm: vm_js::Vm::new(vm_js::VmOptions::default()),
+      heap: vm_js::Heap::new(limits),
+    };
+
+    let mut event_loop = EventLoop::<Host>::new();
+    let mut hooks = VmJsHostHooks::new(&mut event_loop);
+    hooks.host_enqueue_promise_job(
+      vm_js::Job::new(vm_js::JobKind::Promise, |_ctx, _hooks| {
+        Err(vm_js::VmError::TypeError("boom"))
+      }),
+      None,
+    );
+    assert!(hooks.finish(&mut host).is_none());
+
+    let err = event_loop
+      .perform_microtask_checkpoint(&mut host)
+      .expect_err("expected job failure to surface via microtask checkpoint");
+    let msg = match err {
+      Error::Other(msg) => msg,
+      other => panic!("expected Error::Other, got {other:?}"),
+    };
+    assert!(
+      msg.contains("vm-js job failed: type error: boom"),
+      "msg={msg}"
+    );
   }
 }
