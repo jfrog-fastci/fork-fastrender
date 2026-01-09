@@ -125,14 +125,16 @@ impl Node {
   // ===========================================================================
 
   #[qjs(get, rename = "nodeType")]
-  fn node_type<'js>(&self, _ctx: Ctx<'js>) -> JsResult<i32> {
+  fn node_type<'js>(&self, ctx: Ctx<'js>) -> JsResult<i32> {
     let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
     Ok(node_type(&dom, self.node_id))
   }
 
   #[qjs(get, rename = "nodeName")]
-  fn node_name<'js>(&self, _ctx: Ctx<'js>) -> JsResult<String> {
+  fn node_name<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
     Ok(node_name(&dom, self.node_id))
   }
 
@@ -245,14 +247,16 @@ impl Node {
   // ===========================================================================
 
   #[qjs(get, rename = "textContent")]
-  fn text_content_get<'js>(&self, _ctx: Ctx<'js>) -> JsResult<String> {
+  fn text_content_get<'js>(&self, ctx: Ctx<'js>) -> JsResult<String> {
     let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
     Ok(text_content(&dom, self.node_id))
   }
 
   #[qjs(set, rename = "textContent")]
   fn text_content_set<'js>(&self, ctx: Ctx<'js>, value: String) -> JsResult<()> {
     let mut dom = self.state.dom.borrow_mut();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
 
     match &mut dom.node_mut(self.node_id).kind {
       NodeKind::Text { content } | NodeKind::Comment { content } => {
@@ -517,6 +521,7 @@ impl Node {
 
   fn ensure_document<'js>(&self, ctx: Ctx<'js>) -> JsResult<()> {
     let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
     if matches!(&dom.node(self.node_id).kind, NodeKind::Document { .. }) {
       return Ok(());
     }
@@ -525,6 +530,7 @@ impl Node {
 
   fn ensure_element<'js>(&self, ctx: Ctx<'js>) -> JsResult<()> {
     let dom = self.state.dom.borrow();
+    ensure_node_exists(&ctx, &dom, self.node_id)?;
     match &dom.node(self.node_id).kind {
       NodeKind::Element { .. } | NodeKind::Slot { .. } => Ok(()),
       _ => Err(dom_error_to_js(&ctx, DomError::InvalidNodeType)),
@@ -727,11 +733,10 @@ fn throw_dom_exception<'js>(ctx: &Ctx<'js>, name: &str, message: &str) -> rquick
 
 fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
   match err {
-    DomError::HierarchyRequestError | DomError::NotFoundError => {
+    DomError::HierarchyRequestError | DomError::NotFoundError | DomError::InvalidNodeType => {
       let name = err.code();
       throw_dom_exception(ctx, name, name)
     }
-    DomError::InvalidNodeType => throw_type_error(ctx, err.code()),
     DomError::SyntaxError => throw_syntax_error(ctx, err.code()),
   }
 }
@@ -740,6 +745,13 @@ fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Erro
   match err {
     DomException::SyntaxError { message } => throw_syntax_error(ctx, &message),
   }
+}
+
+fn ensure_node_exists<'js>(ctx: &Ctx<'js>, dom: &Document, node_id: NodeId) -> JsResult<()> {
+  if node_id.index() >= dom.nodes_len() {
+    return Err(dom_error_to_js(ctx, DomError::NotFoundError));
+  }
+  Ok(())
 }
 
 fn node_type(dom: &Document, node_id: NodeId) -> i32 {
@@ -812,5 +824,65 @@ fn validate_token_or_throw<'js>(ctx: &Ctx<'js>, token: &str) -> JsResult<()> {
     Ok(())
   } else {
     Err(throw_syntax_error(ctx, "InvalidToken"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use rquickjs::{Context, Runtime};
+
+  fn make_dom(html: &str) -> Rc<RefCell<Document>> {
+    let root = fastrender::dom::parse_html(html).unwrap();
+    Rc::new(RefCell::new(Document::from_renderer_dom(&root)))
+  }
+
+  #[test]
+  fn invalid_node_ids_throw_not_found_domexception_instead_of_panicking() {
+    let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+    let small_len = dom.borrow().nodes_len();
+
+    // `NodeId` values are only meaningful within a single dom2 document. To exercise the bindings'
+    // bounds checks, intentionally smuggle a NodeId from a *different* document that has a larger
+    // backing node vector.
+    let bigger_dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+    let mut node_id = bigger_dom.borrow().root();
+    while node_id.index() <= small_len + 4 {
+      node_id = bigger_dom.borrow_mut().create_element("div", "");
+    }
+
+    let rt = Runtime::new().unwrap();
+    let ctx = Context::full(&rt).unwrap();
+    ctx.with(|ctx| {
+      // Use the same DOMException surface as `install_dom_bindings`, but without installing the
+      // full binding set (this is a unit test for node id validation).
+      ctx.eval::<(), _>(DOM_EXCEPTION_SHIM).unwrap();
+
+      let state = Rc::new(DomState { dom });
+      let bogus = Node {
+        state,
+        node_id,
+      };
+      let inst = rquickjs::Class::instance(ctx.clone(), bogus).unwrap();
+      let obj: Object<'_> = inst.into_inner();
+      ctx.globals().set("bogus", obj).unwrap();
+
+      let outcome: String = ctx
+        .eval(
+          r#"(() => {
+            try {
+              // Any property that consults the underlying dom2 node list should throw a consistent
+              // NotFoundError DOMException for invalid ids.
+              void bogus.nodeType;
+              return "no throw";
+            } catch (e) {
+              return String(e.name) + "|" + String(e instanceof DOMException);
+            }
+          })()"#,
+        )
+        .unwrap();
+      assert_eq!(outcome, "NotFoundError|true");
+    });
   }
 }
