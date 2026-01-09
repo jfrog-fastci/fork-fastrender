@@ -2126,7 +2126,7 @@ fn policy_error(reason: impl Into<String>) -> Error {
 }
 
 /// Strip a leading "User-Agent:" prefix so logs don't double-prefix when callers
-/// pass a full header value. Case-insensitive and trims surrounding whitespace after the prefix.
+/// pass a full header value. Case-insensitive and trims HTTP OWS (SP/HTAB) after the prefix.
 pub fn normalize_user_agent_for_log(ua: &str) -> &str {
   const PREFIX: &str = "user-agent:";
   if ua
@@ -2134,7 +2134,7 @@ pub fn normalize_user_agent_for_log(ua: &str) -> &str {
     .map(|prefix| prefix.eq_ignore_ascii_case(PREFIX))
     .unwrap_or(false)
   {
-    let trimmed = ua[PREFIX.len()..].trim();
+    let trimmed = trim_http_whitespace(&ua[PREFIX.len()..]);
     if !trimmed.is_empty() {
       return trimmed;
     }
@@ -14475,6 +14475,17 @@ mod tests {
     );
     assert_eq!(normalize_user_agent_for_log("Mozilla/5.0"), "Mozilla/5.0");
     assert_eq!(normalize_user_agent_for_log(""), "");
+  }
+
+  #[test]
+  fn non_ascii_whitespace_normalize_user_agent_for_log_does_not_trim_nbsp() {
+    let nbsp = "\u{00A0}";
+    let ua = format!("User-Agent:{nbsp}Foo/1.0");
+    assert_eq!(
+      normalize_user_agent_for_log(&ua),
+      format!("{nbsp}Foo/1.0"),
+      "NBSP must not be treated as HTTP OWS when stripping the User-Agent: prefix"
+    );
   }
 
   #[test]
