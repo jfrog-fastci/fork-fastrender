@@ -8,7 +8,8 @@ use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-// Rendering + worker startup can take a few seconds under load when tests run in parallel (CI).
+// These tests can be CPU-heavy (layout + paint) and run in parallel with other integration tests
+// (CI), so keep a generous timeout to avoid flakiness.
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 fn fixture() -> (support::TempSite, String) {

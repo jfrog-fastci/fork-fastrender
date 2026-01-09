@@ -15,6 +15,7 @@ mod js_rendering;
 mod support;
 mod tab;
 mod ui_input_routing;
+mod ui_navigation_messages;
 mod ui_render_thread;
 mod ui_browser_worker_live_tab;
 mod ui_fragment_navigation;

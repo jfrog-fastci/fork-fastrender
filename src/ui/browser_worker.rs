@@ -120,6 +120,37 @@ impl BrowserTab {
   }
 }
 
+struct LoadingStateGuard {
+  tab_id: TabId,
+  tx: Sender<WorkerToUi>,
+  armed: bool,
+}
+
+impl LoadingStateGuard {
+  fn new(tab_id: TabId, tx: Sender<WorkerToUi>) -> Self {
+    Self {
+      tab_id,
+      tx,
+      armed: true,
+    }
+  }
+
+  fn disarm(&mut self) {
+    self.armed = false;
+  }
+}
+
+impl Drop for LoadingStateGuard {
+  fn drop(&mut self) {
+    if self.armed {
+      let _ = self.tx.send(WorkerToUi::LoadingState {
+        tab_id: self.tab_id,
+        loading: false,
+      });
+    }
+  }
+}
+
 pub struct BrowserWorker {
   factory: FastRenderFactory,
   ui_tx: Sender<WorkerToUi>,
@@ -148,6 +179,7 @@ impl BrowserWorker {
   /// On navigation errors, the worker tries to render `about:error` with the error message.
   pub fn navigate(&mut self, tab_id: TabId, url: &str, options: RenderOptions) -> Result<()> {
     let url = url.trim();
+    let url_string = url.to_string();
     let fragment_target = Url::parse(url)
       .ok()
       .and_then(|parsed| {
@@ -156,14 +188,32 @@ impl BrowserWorker {
           .filter(|frag| !frag.is_empty())
           .map(|frag| percent_decode_str(frag).decode_utf8_lossy().into_owned())
       });
+ 
     let _ = self.ui_tx.send(WorkerToUi::NavigationStarted {
       tab_id,
-      url: url.to_string(),
+      url: url_string.clone(),
     });
+    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+      tab_id,
+      loading: true,
+    });
+    let mut loading_guard = LoadingStateGuard::new(tab_id, self.ui_tx.clone());
+
+    // Forward render pipeline stage heartbeats to the UI for this navigation+paint.
     let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
 
     let (mut tab, mut navigation_failure, navigation_diagnostics) =
-      self.create_tab_for_url(url, options.clone())?;
+      match self.create_tab_for_url(url, options.clone()) {
+        Ok(parts) => parts,
+        Err(err) => {
+          let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+            tab_id,
+            url: url_string.clone(),
+            error: err.to_string(),
+          });
+          return Err(err);
+        }
+      };
 
     // Best-effort: surface JS errors/console output in the UI debug log so pages can be debugged
     // without attaching a debugger.
@@ -233,31 +283,53 @@ impl BrowserWorker {
       }
     }
 
-    let frame = tab.render_frame()?;
+    let committed_url = tab
+      .host
+      .document
+      .document_url()
+      .map(str::to_string)
+      .unwrap_or_else(|| url_string.clone());
+    let title = find_document_title(tab.host.document.dom());
+
+    let frame = match tab.render_frame() {
+      Ok(frame) => frame,
+      Err(err) => {
+        let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
+          tab_id,
+          url: url_string,
+          error: err.to_string(),
+        });
+        return Err(err);
+      }
+    };
     self.tabs.insert(tab_id, tab);
+
+    let _ = self.ui_tx.send(WorkerToUi::FrameReady { tab_id, frame });
 
     match navigation_failure {
       Some(error) => {
         let _ = self.ui_tx.send(WorkerToUi::NavigationFailed {
           tab_id,
-          url: url.to_string(),
+          url: url_string,
           error,
         });
       }
       None => {
         let _ = self.ui_tx.send(WorkerToUi::NavigationCommitted {
           tab_id,
-          url: url.to_string(),
-          title: None,
+          url: committed_url,
+          title,
           can_go_back: false,
           can_go_forward: false,
         });
       }
     }
 
-    let _ = self
-      .ui_tx
-      .send(WorkerToUi::FrameReady { tab_id, frame });
+    let _ = self.ui_tx.send(WorkerToUi::LoadingState {
+      tab_id,
+      loading: false,
+    });
+    loading_guard.disarm();
 
     Ok(())
   }

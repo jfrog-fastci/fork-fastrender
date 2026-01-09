@@ -418,12 +418,13 @@ struct App {
   open_select_dropdown: Option<OpenSelectDropdown>,
   open_select_dropdown_rect: Option<egui::Rect>,
 
-  address_bar_id: Option<egui::Id>,
-  address_bar_select_all_pending: bool,
+  debug_log: std::collections::VecDeque<String>,
 }
 
 #[cfg(feature = "browser_ui")]
 impl App {
+  const DEBUG_LOG_MAX_LINES: usize = 200;
+
   async fn new<T: 'static>(
     window: winit::window::Window,
     event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
@@ -524,8 +525,7 @@ impl App {
       last_cursor_pos_points: None,
       open_select_dropdown: None,
       open_select_dropdown_rect: None,
-      address_bar_id: None,
-      address_bar_select_all_pending: false,
+      debug_log: std::collections::VecDeque::new(),
     })
   }
 
@@ -811,10 +811,20 @@ impl App {
       fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
         if let Some(tab) = self.browser_state.tab_mut(tab_id) {
           tab.loading = loading;
+          if !loading {
+            tab.stage = None;
+          }
         }
       }
       fastrender::ui::WorkerToUi::DebugLog { tab_id, line } => {
         eprintln!("[worker:{tab_id:?}] {line}");
+        let line = line.trim_end();
+        if !line.is_empty() {
+          if self.debug_log.len() >= Self::DEBUG_LOG_MAX_LINES {
+            self.debug_log.pop_front();
+          }
+          self.debug_log.push_back(format!("[tab {}] {}", tab_id.0, line));
+        }
       }
       fastrender::ui::WorkerToUi::SelectDropdownOpened { .. } => {}
     }
@@ -843,120 +853,6 @@ impl App {
         viewport_css,
         dpr,
       });
-  }
-
-  fn render_chrome_ui(&mut self, ctx: &egui::Context) -> Vec<fastrender::ui::ChromeAction> {
-    use fastrender::ui::ChromeAction;
-
-    let mut actions = Vec::new();
-
-    egui::TopBottomPanel::top("chrome").show(ctx, |ui| {
-      // Tabs row.
-      ui.horizontal_wrapped(|ui| {
-        for tab in &self.browser_state.tabs {
-          let is_active = self.browser_state.active_tab_id() == Some(tab.id);
-          let title = tab.display_title();
-
-          if ui.selectable_label(is_active, title).clicked() {
-            actions.push(ChromeAction::ActivateTab(tab.id));
-          }
-
-          if ui.button("×").clicked() {
-            actions.push(ChromeAction::CloseTab(tab.id));
-          }
-
-          ui.separator();
-        }
-
-        if ui.button("+").clicked() {
-          actions.push(ChromeAction::NewTab);
-        }
-      });
-
-      ui.separator();
-
-      // Navigation + address bar row.
-      ui.horizontal(|ui| {
-        let active = self.browser_state.active_tab();
-        let (can_back, can_forward, loading) = active
-          .map(|t| (t.can_go_back, t.can_go_forward, t.loading))
-          .unwrap_or((false, false, false));
-        let stage = active.and_then(|t| t.stage);
-
-        if ui.add_enabled(can_back, egui::Button::new("←")).clicked() {
-          actions.push(ChromeAction::Back);
-        }
-        if ui
-          .add_enabled(can_forward, egui::Button::new("→"))
-          .clicked()
-        {
-          actions.push(ChromeAction::Forward);
-        }
-        if ui.button("⟳").clicked() {
-          actions.push(ChromeAction::Reload);
-        }
-
-        if self.address_bar_select_all_pending {
-          // Ctrl/Cmd+L should select all text in the address bar. egui does not expose a stable
-          // "select all" API on `TextEditState` in 0.23, so we inject a synthetic Ctrl/Cmd+A key
-          // event for the focused text edit.
-          //
-          // We only do this once we have seen a valid `address_bar_id` from a previous frame.
-          if let Some(address_bar_id) = self.address_bar_id {
-            ctx.memory_mut(|mem| mem.request_focus(address_bar_id));
-            ctx.input_mut(|i| {
-              let mut modifiers = egui::Modifiers::default();
-              modifiers.command = true;
-              i.events.push(egui::Event::Key {
-                key: egui::Key::A,
-                pressed: true,
-                modifiers,
-                repeat: false,
-              });
-            });
-            self.address_bar_select_all_pending = false;
-          }
-        }
-
-        let response = ui.add(
-          egui::TextEdit::singleline(&mut self.browser_state.chrome.address_bar_text)
-            .desired_width(f32::INFINITY)
-            .hint_text("Enter URL…"),
-        );
-
-        self.address_bar_id = Some(response.id);
-
-        let has_focus = response.has_focus();
-        if has_focus != self.browser_state.chrome.address_bar_has_focus {
-          self.browser_state.chrome.address_bar_has_focus = has_focus;
-          actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
-        }
-
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-          actions.push(ChromeAction::NavigateTo(
-            self.browser_state.chrome.address_bar_text.clone(),
-          ));
-        }
-
-        if loading {
-          let stage =
-            stage.filter(|s| *s != fastrender::render_control::StageHeartbeat::Done);
-          match stage {
-            Some(stage) => ui.label(egui::RichText::new(format!("Stage: {stage:?}")).small()),
-            None => ui.label(egui::RichText::new("Loading…").small()),
-          };
-        }
-      });
-
-      if let Some(active) = self.browser_state.active_tab() {
-        if let Some(err) = active.error.as_ref().filter(|s| !s.trim().is_empty()) {
-          ui.separator();
-          ui.colored_label(egui::Color32::LIGHT_RED, err);
-        }
-      }
-    });
-
-    actions
   }
 
   fn render_select_dropdown(&mut self, ctx: &egui::Context) {
@@ -1122,15 +1018,10 @@ impl App {
     self.close_select_dropdown();
     self.window.request_redraw();
   }
-
   fn focus_address_bar_select_all(&mut self) {
     self.page_has_focus = false;
-    self.address_bar_select_all_pending = true;
-    if let Some(address_bar_id) = self.address_bar_id {
-      self
-        .egui_ctx
-        .memory_mut(|mem| mem.request_focus(address_bar_id));
-    }
+    self.browser_state.chrome.request_focus_address_bar = true;
+    self.browser_state.chrome.request_select_all_address_bar = true;
   }
 
   fn cycle_active_tab_id(&self, delta: isize) -> Option<fastrender::ui::TabId> {
@@ -1593,6 +1484,7 @@ impl App {
               continue;
             }
           };
+
           if let UiToWorker::Navigate { url, .. } = &msg {
             self.browser_state.chrome.address_bar_text = url.clone();
           }
@@ -1703,9 +1595,28 @@ impl App {
 
     let ctx = self.egui_ctx.clone();
 
-    let chrome_actions = self.render_chrome_ui(&ctx);
+    let chrome_actions = fastrender::ui::chrome_ui(&ctx, &mut self.browser_state);
     self.handle_chrome_actions(chrome_actions);
     self.sync_window_title();
+
+    if !self.debug_log.is_empty() {
+      egui::TopBottomPanel::bottom("debug_log")
+        .resizable(true)
+        .default_height(140.0)
+        .show(&ctx, |ui| {
+          egui::CollapsingHeader::new("Debug log")
+            .default_open(false)
+            .show(ui, |ui| {
+              egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                  for line in &self.debug_log {
+                    ui.label(line);
+                  }
+                });
+            });
+        });
+    }
 
     egui::CentralPanel::default().show(&ctx, |ui| {
       let logical_viewport_points = ui.available_size();
