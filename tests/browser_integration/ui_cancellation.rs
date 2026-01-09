@@ -237,21 +237,31 @@ fn cancellation_on_scroll_drops_stale_frames() {
     }
   }
 
-  while let Ok(msg) = ui_rx.recv_timeout(Duration::from_secs(30)) {
-    if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = &msg {
-      if *msg_id == tab_id {
-        let y = frame.scroll_state.viewport.y;
-        if (y - 200.0).abs() < 5.0 {
-          saw_scroll1_frame = true;
+  let deadline = std::time::Instant::now() + LONG_WAIT;
+  while std::time::Instant::now() < deadline {
+    match ui_rx.recv_timeout(WAIT_SLICE) {
+      Ok(msg) => {
+        let mut done = false;
+        if let WorkerToUi::FrameReady { tab_id: msg_id, frame } = &msg {
+          if *msg_id == tab_id {
+            let y = frame.scroll_state.viewport.y;
+            if (y - 200.0).abs() < 5.0 {
+              saw_scroll1_frame = true;
+            }
+            if (y - 400.0).abs() < 5.0 {
+              saw_scroll2_frame = true;
+              done = true;
+            }
+          }
         }
-        if (y - 400.0).abs() < 5.0 {
-          saw_scroll2_frame = true;
-          messages.push(msg);
+        messages.push(msg);
+        if done {
           break;
         }
       }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
     }
-    messages.push(msg);
   }
 
   assert!(
