@@ -3,6 +3,7 @@ use fastrender::style::media::MediaType;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use fastrender::Rgba;
+use regex::Regex;
 
 fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
   let mut roots = vec![&tree.root];
@@ -97,6 +98,29 @@ fn collected_text_compacted(node: &FragmentNode) -> String {
   }
   out.retain(|c| !c.is_whitespace());
   out
+}
+
+fn collected_page_content_texts_compacted(page_roots: &[&FragmentNode]) -> Vec<String> {
+  page_roots
+    .iter()
+    .map(|page| {
+      let content = page.children.first().expect("page content");
+      collected_text_compacted(content)
+    })
+    .collect()
+}
+
+fn collect_label_sequence(page_roots: &[&FragmentNode], re: &Regex) -> Vec<String> {
+  let mut labels = Vec::new();
+  for page in page_roots {
+    let content = page.children.first().expect("page content");
+    let text = collected_text_compacted(content);
+    labels.extend(
+      re.captures_iter(&text)
+        .map(|cap| cap.get(1).expect("label group").as_str().to_string()),
+    );
+  }
+  labels
 }
 
 fn count_text_fragments_by_column(page: &FragmentNode, needle: &str) -> (usize, usize) {
@@ -370,6 +394,66 @@ fn line_wrapping_respects_page_side_widths() {
 }
 
 #[test]
+fn left_right_page_relayout_does_not_skip_or_duplicate_text() {
+  let mut tokens = String::new();
+  for idx in 0..100 {
+    tokens.push_str(&format!(r#"<span class="label">[L{idx:03}]</span> "#));
+    // Keep the filler consistent so every page reflow produces a stable ordering, while still
+    // causing substantial wrapping changes between left/right pages.
+    tokens.push_str(
+      "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ",
+    );
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 240px 120px; margin-top: 10px; margin-bottom: 10px; }}
+          @page :right {{ margin-left: 10px; margin-right: 10px; }}
+          @page :left {{ margin-left: 90px; margin-right: 10px; }}
+          body {{ margin: 0; font-size: 14px; line-height: 16px; }}
+          p {{ margin: 0; }}
+          .label {{ white-space: nowrap; }}
+        </style>
+      </head>
+      <body><p>{tokens}</p></body>
+    </html>
+  "#,
+    tokens = tokens
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 800, 600, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 4,
+    "expected multiple pages with alternating sides; got {} pages",
+    page_roots.len()
+  );
+
+  let width_right = page_roots[0].children.first().unwrap().bounds.width();
+  let width_left = page_roots[1].children.first().unwrap().bounds.width();
+  assert!(
+    width_right > width_left + 40.0,
+    "expected :right page content to be significantly wider than :left (right={width_right}, left={width_left})"
+  );
+
+  let re = Regex::new(r"\[(L\d{3})\]").unwrap();
+  let labels = collect_label_sequence(&page_roots, &re);
+  let expected: Vec<String> = (0..100).map(|idx| format!("L{idx:03}")).collect();
+  assert_eq!(
+    labels,
+    expected,
+    "pagination must not skip/duplicate or reorder labels; page_texts={:?}",
+    collected_page_content_texts_compacted(&page_roots)
+  );
+}
+
+#[test]
 fn named_pages_change_page_size() {
   let html = r#"
     <html>
@@ -431,6 +515,115 @@ fn page_name_change_forces_page_boundary() {
 
   let second_page = page_roots[1];
   assert!(find_text(second_page, "Chapter").is_some());
+}
+
+#[test]
+fn named_page_size_change_mid_document_does_not_skip_or_duplicate_text() {
+  let mut preface = String::new();
+  for idx in 0..50 {
+    preface.push_str(&format!(r#"<span class="label">[P{idx:03}]</span> "#));
+    preface.push_str(
+      "preface words that wrap differently depending on the used page size and margins ",
+    );
+  }
+
+  let mut chapter = String::new();
+  for idx in 0..50 {
+    chapter.push_str(&format!(r#"<span class="label">[C{idx:03}]</span> "#));
+    chapter.push_str(
+      "chapter words that wrap differently depending on the used page size and margins ",
+    );
+  }
+
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 220px 130px; margin: 10px; }}
+          @page chapter {{ size: 320px 180px; margin: 20px; }}
+          body {{ margin: 0; font-size: 14px; line-height: 16px; }}
+          p {{ margin: 0; }}
+          #chapter {{ page: chapter; }}
+          .label {{ white-space: nowrap; }}
+        </style>
+      </head>
+      <body>
+        <p>{preface}</p>
+        <div id="chapter"><p>{chapter}</p></div>
+      </body>
+    </html>
+  "#,
+    preface = preface,
+    chapter = chapter
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 800, 600, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+  assert!(
+    page_roots.len() >= 4,
+    "expected multiple pages before and after the page-name transition; got {} pages",
+    page_roots.len()
+  );
+
+  let re = Regex::new(r"\[([PC]\d{3})\]").unwrap();
+  let labels = collect_label_sequence(&page_roots, &re);
+  let mut expected: Vec<String> = (0..50).map(|idx| format!("P{idx:03}")).collect();
+  expected.extend((0..50).map(|idx| format!("C{idx:03}")));
+  assert_eq!(
+    labels,
+    expected,
+    "pagination must preserve content across page-size changes; page_texts={:?}",
+    collected_page_content_texts_compacted(&page_roots)
+  );
+
+  for (idx, page) in page_roots.iter().enumerate() {
+    let content = page.children.first().expect("page content");
+    let text = collected_text_compacted(content);
+    let has_preface = text.contains("[P");
+    let has_chapter = text.contains("[C");
+    assert!(
+      !(has_preface && has_chapter),
+      "page {} should not mix preface + chapter content; text={}",
+      idx + 1,
+      text
+    );
+    if has_preface {
+      assert!(
+        (page.bounds.width() - 220.0).abs() < 0.1,
+        "preface pages should use default @page size"
+      );
+    }
+    if has_chapter {
+      assert!(
+        (page.bounds.width() - 320.0).abs() < 0.1,
+        "chapter pages should use named @page size"
+      );
+    }
+  }
+
+  let preface_last_page = page_roots
+    .iter()
+    .position(|page| {
+      let content = page.children.first().unwrap();
+      find_text(content, "P049").is_some()
+    })
+    .expect("last preface label should exist");
+  let chapter_first_page = page_roots
+    .iter()
+    .position(|page| {
+      let content = page.children.first().unwrap();
+      find_text(content, "C000").is_some()
+    })
+    .expect("first chapter label should exist");
+  assert!(
+    chapter_first_page > preface_last_page,
+    "named page transition should force a clean page boundary (preface ends on page {}, chapter starts on page {})",
+    preface_last_page + 1,
+    chapter_first_page + 1
+  );
 }
 
 #[test]

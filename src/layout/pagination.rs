@@ -275,6 +275,51 @@ fn split_atomic_ranges_at_forced_boundaries(
   normalize_atomic_ranges(atomic_ranges);
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BoxAxisRange {
+  start: f32,
+  end: f32,
+}
+
+fn fragment_box_id_for_axis_range(node: &FragmentNode) -> Option<usize> {
+  match &node.content {
+    FragmentContent::Block { box_id } => *box_id,
+    FragmentContent::Inline { box_id, .. } => *box_id,
+    FragmentContent::Text { box_id, .. } => *box_id,
+    FragmentContent::Replaced { box_id, .. } => *box_id,
+    _ => None,
+  }
+}
+
+fn collect_box_axis_ranges(
+  node: &FragmentNode,
+  abs_start: f32,
+  parent_block_size: f32,
+  axes: FragmentAxes,
+  out: &mut HashMap<usize, BoxAxisRange>,
+) {
+  let logical = node.logical_bounds();
+  let start = axes.abs_block_start(&logical, abs_start, parent_block_size);
+  let block_size = axes.block_size(&logical).max(0.0);
+  let end = start + block_size;
+
+  if let Some(box_id) = fragment_box_id_for_axis_range(node) {
+    if box_id != 0 {
+      out
+        .entry(box_id)
+        .and_modify(|range| {
+          range.start = range.start.min(start);
+          range.end = range.end.max(end);
+        })
+        .or_insert(BoxAxisRange { start, end });
+    }
+  }
+
+  for child in node.children.iter() {
+    collect_box_axis_ranges(child, start, block_size, axes, out);
+  }
+}
+
 #[derive(Debug, Clone)]
 struct CachedLayout {
   root: FragmentNode,
@@ -282,6 +327,7 @@ struct CachedLayout {
   forced_boundaries: Vec<ForcedBoundary>,
   atomic_ranges: Vec<AtomicRange>,
   page_name_transitions: Vec<PageNameTransition>,
+  box_axis_ranges: HashMap<usize, BoxAxisRange>,
 }
 
 impl CachedLayout {
@@ -347,12 +393,22 @@ impl CachedLayout {
     // over forced boundaries so pagination doesn't incorrectly skip mandated breaks.
     split_atomic_ranges_at_forced_boundaries(&mut atomic_ranges, &forced);
 
+    let mut box_axis_ranges = HashMap::new();
+    collect_box_axis_ranges(
+      &root,
+      0.0,
+      axes.block_size(&root.logical_bounds()),
+      axes,
+      &mut box_axis_ranges,
+    );
+
     Self {
       root,
       total_height,
       forced_boundaries: forced,
       atomic_ranges,
       page_name_transitions,
+      box_axis_ranges,
     }
   }
 }
@@ -383,6 +439,161 @@ impl PageLayoutKey {
       font_generation,
     }
   }
+}
+
+#[derive(Debug, Clone)]
+struct BlockAxisMapping {
+  base_total: f32,
+  target_total: f32,
+  /// Anchor points sorted by base position (monotonic in both base + target coordinates).
+  base_to_target: Vec<(f32, f32)>,
+  /// Anchor points sorted by target position (monotonic in both target + base coordinates).
+  target_to_base: Vec<(f32, f32)>,
+}
+
+impl BlockAxisMapping {
+  fn identity(total: f32) -> Self {
+    Self {
+      base_total: total,
+      target_total: total,
+      base_to_target: vec![(0.0, 0.0), (total, total)],
+      target_to_base: vec![(0.0, 0.0), (total, total)],
+    }
+  }
+
+  fn new(
+    base_total: f32,
+    target_total: f32,
+    base_ranges: &HashMap<usize, BoxAxisRange>,
+    target_ranges: &HashMap<usize, BoxAxisRange>,
+  ) -> Self {
+    let mut anchors: Vec<(f32, f32)> = Vec::new();
+    anchors.push((0.0, 0.0));
+    anchors.push((base_total, target_total));
+
+    for (box_id, base) in base_ranges {
+      if let Some(target) = target_ranges.get(box_id) {
+        anchors.push((base.start, target.start));
+        anchors.push((base.end, target.end));
+      }
+    }
+
+    let base_to_target = build_monotonic_mapping(anchors, base_total, target_total);
+    let target_to_base = build_monotonic_mapping(
+      base_to_target.iter().map(|(b, t)| (*t, *b)).collect(),
+      target_total,
+      base_total,
+    );
+
+    Self {
+      base_total,
+      target_total,
+      base_to_target,
+      target_to_base,
+    }
+  }
+
+  fn map_base_to_target(&self, pos: f32) -> f32 {
+    map_piecewise(&self.base_to_target, pos, self.target_total)
+  }
+
+  fn map_target_to_base(&self, pos: f32) -> f32 {
+    map_piecewise(&self.target_to_base, pos, self.base_total)
+  }
+}
+
+fn build_monotonic_mapping(
+  mut points: Vec<(f32, f32)>,
+  max_x: f32,
+  max_y: f32,
+) -> Vec<(f32, f32)> {
+  points.retain(|(x, y)| x.is_finite() && y.is_finite());
+  for (x, y) in points.iter_mut() {
+    *x = x.clamp(0.0, max_x);
+    *y = y.clamp(0.0, max_y);
+  }
+
+  points.sort_by(|a, b| {
+    a.0
+      .partial_cmp(&b.0)
+      .unwrap_or(std::cmp::Ordering::Equal)
+  });
+
+  // Deduplicate by x, keeping the maximum y for each x to preserve monotonicity.
+  let mut deduped: Vec<(f32, f32)> = Vec::new();
+  for (x, y) in points {
+    if let Some(last) = deduped.last_mut() {
+      if (x - last.0).abs() < EPSILON {
+        last.1 = last.1.max(y);
+        continue;
+      }
+    }
+    deduped.push((x, y));
+  }
+
+  if deduped.is_empty() {
+    return vec![(0.0, 0.0), (max_x, max_y)];
+  }
+
+  // Ensure there is a 0 -> 0 anchor.
+  if deduped[0].0 > EPSILON {
+    deduped.insert(0, (0.0, 0.0));
+  } else {
+    deduped[0] = (0.0, deduped[0].1);
+  }
+
+  // Ensure there is an end anchor.
+  if (deduped.last().unwrap().0 - max_x).abs() > EPSILON {
+    deduped.push((max_x, max_y));
+  } else if let Some(last) = deduped.last_mut() {
+    last.0 = max_x;
+    last.1 = max_y;
+  }
+
+  // Enforce monotonicity in y.
+  let mut out: Vec<(f32, f32)> = Vec::with_capacity(deduped.len());
+  let mut last_y = 0.0f32;
+  for (x, y) in deduped {
+    last_y = last_y.max(y);
+    out.push((x, last_y));
+  }
+
+  // Ensure final anchor reaches max_y.
+  if let Some(last) = out.last_mut() {
+    last.0 = max_x;
+    last.1 = max_y;
+  }
+  out
+}
+
+fn map_piecewise(points: &[(f32, f32)], x: f32, max_y: f32) -> f32 {
+  if !x.is_finite() {
+    return 0.0;
+  }
+  if points.is_empty() {
+    return x.clamp(0.0, max_y);
+  }
+  if points.len() == 1 {
+    return points[0].1.clamp(0.0, max_y);
+  }
+
+  if x <= points[0].0 + EPSILON {
+    return points[0].1.clamp(0.0, max_y);
+  }
+  let last = points.len() - 1;
+  if x >= points[last].0 - EPSILON {
+    return points[last].1.clamp(0.0, max_y);
+  }
+
+  let idx = points
+    .partition_point(|(px, _)| *px < x)
+    .saturating_sub(1)
+    .min(points.len().saturating_sub(2));
+  let (x0, y0) = points[idx];
+  let (x1, y1) = points[idx + 1];
+  let dx = (x1 - x0).max(EPSILON);
+  let t = ((x - x0) / dx).clamp(0.0, 1.0);
+  (y0 + t * (y1 - y0)).clamp(0.0, max_y)
 }
 
 /// Split a laid out fragment tree into pages using the provided @page rules.
@@ -446,7 +657,7 @@ pub fn paginate_fragment_tree(
     PageSide::Left
   };
 
-  let (base_total_height, base_page_names, base_forced, base_root) = loop {
+  let (base_key, base_total_height, base_page_names, base_forced, base_root, base_box_axis_ranges) = loop {
     let base_style = resolve_page_style(
       rules,
       0,
@@ -480,10 +691,12 @@ pub fn paginate_fragment_tree(
     }
 
     break (
+      base_key,
       base_layout.total_height.max(EPSILON),
       base_layout.page_name_transitions.clone(),
       base_layout.forced_boundaries.clone(),
       base_layout.root.clone(),
+      base_layout.box_axis_ranges.clone(),
     );
   };
 
@@ -495,6 +708,9 @@ pub fn paginate_fragment_tree(
   });
   let mut string_event_idx = 0usize;
   let mut string_set_carry: HashMap<String, String> = HashMap::new();
+
+  let mut block_axis_mappings: HashMap<PageLayoutKey, BlockAxisMapping> = HashMap::new();
+  block_axis_mappings.insert(base_key, BlockAxisMapping::identity(base_total_height));
 
   let mut pages: Vec<(
     FragmentNode,
@@ -559,7 +775,17 @@ pub fn paginate_fragment_tree(
     let mut end_in_base = start_in_base;
 
     if !is_blank_page {
-      let mut start = ((consumed_base / base_total_height) * total_height).min(total_height);
+      let mut start = {
+        let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
+          BlockAxisMapping::new(
+            base_total_height,
+            total_height,
+            &base_box_axis_ranges,
+            &layout.box_axis_ranges,
+          )
+        });
+        mapping.map_base_to_target(consumed_base).min(total_height)
+      };
       let actual_page_name =
         page_name_for_position(&layout.page_name_transitions, start, fallback_page_name);
       if actual_page_name != page_name {
@@ -586,7 +812,17 @@ pub fn paginate_fragment_tree(
           enable_layout_cache,
         )?;
         total_height = layout.total_height;
-        start = ((consumed_base / base_total_height) * total_height).min(total_height);
+        start = {
+          let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
+            BlockAxisMapping::new(
+              base_total_height,
+              total_height,
+              &base_box_axis_ranges,
+              &layout.box_axis_ranges,
+            )
+          });
+          mapping.map_base_to_target(consumed_base).min(total_height)
+        };
       }
 
       if start >= total_height - EPSILON {
@@ -814,8 +1050,25 @@ pub fn paginate_fragment_tree(
         }
       }
 
-      let base_advance = ((end - start).max(0.0) / total_height) * base_total_height;
-      end_in_base = (consumed_base + base_advance).min(base_total_height);
+      let mut mapped_end_in_base = {
+        let mapping = block_axis_mappings.entry(key).or_insert_with(|| {
+          BlockAxisMapping::new(
+            base_total_height,
+            total_height,
+            &base_box_axis_ranges,
+            &layout.box_axis_ranges,
+          )
+        });
+        mapping.map_target_to_base(end).min(base_total_height)
+      };
+
+      // Fall back to proportional mapping if the anchor map cannot make forward progress.
+      if mapped_end_in_base <= consumed_base + EPSILON {
+        let base_advance = ((end - start).max(0.0) / total_height) * base_total_height;
+        mapped_end_in_base = (consumed_base + base_advance).min(base_total_height);
+      }
+
+      end_in_base = mapped_end_in_base;
     }
 
     for mut fixed in fixed_fragments {
