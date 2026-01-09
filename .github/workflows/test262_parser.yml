@@ -48,9 +48,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          git config --global core.longpaths true
-
-          git submodule update --init engines/ecma-rs
+          bash scripts/ci_init_ecma_rs_submodule.sh
 
           if ! grep -q "test262/data" engines/ecma-rs/.gitmodules; then
             echo "::error::Missing test262 parser corpus submodule entry (engines/ecma-rs/test262/data). Update the ecma-rs submodule pointer to a revision that includes it." >&2
