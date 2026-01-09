@@ -5888,7 +5888,12 @@ impl DisplayListBuilder {
           // placeholder.
           let try_iframe_fallback =
             matches!(replaced_type, ReplacedType::Embed { .. } | ReplacedType::Object { .. });
-          if let Some(image) = sources.iter().find_map(|s| {
+          // Once an `<img>`/`<picture>` candidate has been selected, browsers do not fall back to
+          // the `<img src>` (or other candidates) when the chosen resource fails to decode (e.g.
+          // `srcset` points at markup). Instead they render the "broken image" placeholder (+alt).
+          //
+          // Only attempt to decode the selected candidate (the first entry in `sources`).
+          let decoded = sources.first().and_then(|s| {
             self.decode_image(
               s.url,
               style_for_image,
@@ -5897,7 +5902,8 @@ impl DisplayListBuilder {
               referrer_policy,
               reject_placeholder_image,
             )
-          }) {
+          });
+          if let Some(image) = decoded {
             let (content_rect, clip_radii) =
               self.replaced_content_rect_and_radii(rect, style_for_image);
             let (dest_x, dest_y, dest_w, dest_h) = {
