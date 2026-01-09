@@ -124,6 +124,10 @@ Current message types live in [`src/ui/messages.rs`](../src/ui/messages.rs):
 - `Scroll { tab_id, delta_css, pointer_css }`
 - pointer/key/text events (`PointerDown/Up/Move`, `TextInput`, `KeyAction`)
 
+Coordinate convention: `pos_css` / `pointer_css` fields are **viewport-relative CSS pixels** (origin
+at the top-left of the viewport). They must **not** include the current scroll offset; worker loops
+add `scroll_state.viewport` when converting to page coordinates for hit-testing.
+
 **Worker → UI** (`WorkerToUi`) includes:
 
 - `FrameReady { tab_id, frame }` — a rendered `tiny_skia::Pixmap` + viewport/scroll metadata

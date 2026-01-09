@@ -683,7 +683,7 @@ impl App {
     }
   }
 
-  fn active_input_transform(&self) -> Option<(fastrender::ui::TabId, f32, fastrender::Point)> {
+  fn active_input_transform(&self) -> Option<(fastrender::ui::TabId, f32)> {
     let tab_id = self.browser_state.active_tab_id()?;
     let Some(tab) = self.browser_state.tab(tab_id) else {
       return None;
@@ -695,7 +695,7 @@ impl App {
       .map(|m| m.dpr)
       .filter(|dpr| dpr.is_finite() && *dpr > 0.0)
       .unwrap_or(self.pixels_per_point.max(1.0));
-    Some((tab_id, frame_dpr, tab.scroll_state.viewport))
+    Some((tab_id, frame_dpr))
   }
 
   fn send_viewport_changed_if_needed(&mut self, viewport_css: (u32, u32), dpr: f32) {
@@ -742,11 +742,11 @@ impl App {
             .page_rect_points
             .is_some_and(|rect| rect.contains(pos_points))
         {
-          if let Some((tab_id, frame_dpr, scroll)) = self.active_input_transform() {
+          if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
             if let Some(rect) = self.page_rect_points {
               let local = pos_points - rect.min;
               let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor + scroll.x, local.y * factor + scroll.y);
+              let pos_css = (local.x * factor, local.y * factor);
               let button = if self.pointer_captured {
                 self.captured_button
               } else {
@@ -783,10 +783,10 @@ impl App {
             self.pointer_captured = true;
             self.captured_button = mapped_button;
 
-            if let Some((tab_id, frame_dpr, scroll)) = self.active_input_transform() {
+            if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
               let local = pos_points - rect.min;
               let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor + scroll.x, local.y * factor + scroll.y);
+              let pos_css = (local.x * factor, local.y * factor);
               let _ = self
                 .ui_to_worker_tx
                 .send(fastrender::ui::UiToWorker::PointerDown {
@@ -802,10 +802,10 @@ impl App {
             }
             self.pointer_captured = false;
 
-            if let Some((tab_id, frame_dpr, scroll)) = self.active_input_transform() {
+            if let Some((tab_id, frame_dpr)) = self.active_input_transform() {
               let local = pos_points - rect.min;
               let factor = self.pixels_per_point / frame_dpr;
-              let pos_css = (local.x * factor + scroll.x, local.y * factor + scroll.y);
+              let pos_css = (local.x * factor, local.y * factor);
               let _ = self
                 .ui_to_worker_tx
                 .send(fastrender::ui::UiToWorker::PointerUp {
@@ -828,7 +828,7 @@ impl App {
           return;
         }
 
-        let Some((tab_id, frame_dpr, scroll)) = self.active_input_transform() else {
+        let Some((tab_id, frame_dpr)) = self.active_input_transform() else {
           return;
         };
 
@@ -846,7 +846,7 @@ impl App {
         let delta_css = (dx_points * factor, dy_points * factor);
 
         let local = pos_points - rect.min;
-        let pointer_css = Some((local.x * factor + scroll.x, local.y * factor + scroll.y));
+        let pointer_css = Some((local.x * factor, local.y * factor));
 
         let _ = self.ui_to_worker_tx.send(fastrender::ui::UiToWorker::Scroll {
           tab_id,
