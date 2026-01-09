@@ -111,6 +111,7 @@ mod ui_worker_viewport_changed;
 mod worker_harness;
 mod worker_runtime;
 mod ui_worker_protocol_smoke;
+mod ui_worker_unsupported_scheme;
 
 // -----------------------------------------------------------------------------
 // Global integration test environment

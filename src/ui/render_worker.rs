@@ -19,6 +19,7 @@ use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
+use crate::ui::validate_user_navigation_url_scheme;
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -340,18 +341,6 @@ fn collect_select_rows(
   }
 
   rows
-}
-
-fn is_allowed_navigation_url(url: &str) -> Result<(), String> {
-  if about_pages::is_about_url(url) {
-    return Ok(());
-  }
-  let parsed = url::Url::parse(url).map_err(|e| e.to_string())?;
-  let scheme = parsed.scheme().to_ascii_lowercase();
-  match scheme.as_str() {
-    "http" | "https" | "file" => Ok(()),
-    _ => Err(format!("unsupported URL scheme: {scheme}")),
-  }
 }
 
 enum Job {
@@ -1623,7 +1612,7 @@ impl BrowserRuntime {
         }
       }
     } else {
-      match is_allowed_navigation_url(&original_url) {
+      match validate_user_navigation_url_scheme(&original_url) {
         Ok(()) => {
           let report = {
             let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
