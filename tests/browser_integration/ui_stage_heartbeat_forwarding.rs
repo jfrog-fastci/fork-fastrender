@@ -8,7 +8,9 @@ use fastrender::ui::worker_loop::spawn_ui_worker as spawn_ui_worker_loop;
 use fastrender::{FastRender, PreparedPaintOptions, RenderOptions};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
+use super::support::{
+  create_tab_msg, format_messages, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+};
 
 fn assert_stage_order(stages: &[StageHeartbeat], expected: &[StageHeartbeat]) {
   let mut next = 0usize;
@@ -151,7 +153,10 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT;
+  // Rendering can take a few seconds under contention (CI runs integration tests in parallel and
+  // the browser UI worker does real HTML/CSS/layout/paint work). Use a more generous timeout than
+  // the default to reduce flakiness.
+  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
   let mut messages = Vec::new();
   let mut saw_frame = false;
 
@@ -234,9 +239,7 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
     .into_parts();
   let tab_id = TabId::new();
 
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .expect("ViewportChanged");
@@ -244,7 +247,7 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
     .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
-  let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+  let deadline = std::time::Instant::now() + DEFAULT_TIMEOUT * 2;
   let mut messages = Vec::new();
   let mut saw_frame = false;
 
@@ -270,7 +273,11 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
     messages.push(msg);
   }
 
-  assert!(saw_frame, "expected FrameReady message for navigation");
+  assert!(
+    saw_frame,
+    "expected FrameReady message for navigation; got:\n{}",
+    format_messages(&messages)
+  );
 
   let stages: Vec<StageHeartbeat> = messages
     .iter()
