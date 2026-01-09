@@ -171,13 +171,15 @@ This is the bridge between the tokenizer/tree-builder and our mutable DOM.
 DOM. That is correct for post-parse utilities, but wrong for parser-inserted script `src`
 resolution timing.
 
-**Proposed home:** `src/html/base_url_tracker.rs` (new).
+**Home:** `src/html/base_url_tracker.rs`.
 
-**Interface sketch:**
+**Interface:**
 
 - `BaseUrlTracker::new(document_url: Option<&str>)`
-- `on_element_inserted(node_id)` — observe `<base href>` as it is inserted into the tree.
-- `current_base_url()` — returns the base URL to use when preparing the *next* script.
+- `BaseUrlTracker::current_base_url() -> Option<String>`
+- `BaseUrlTracker::on_element_inserted(tag_name, namespace, attrs, in_head, in_foreign_namespace, in_template)`
+- `BaseUrlTracker::resolve_script_src(raw_src)` — resolve `<script src>` using the base URL in effect
+  at preparation time.
 
 ### 4) `ScriptScheduler` (state machine + external fetch integration)
 **Responsibility:** implement the classic-script subset of the HTML processing model:
@@ -288,4 +290,3 @@ Modules/import maps extend the same pipeline by adding new “prepare” + “ex
 
 Keeping base URL tracking, DOM mutability, and event loop semantics consistent is what keeps these
 extensions from becoming a rewrite.
-

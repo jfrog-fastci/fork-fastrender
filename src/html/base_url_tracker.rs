@@ -228,4 +228,66 @@ mod tests {
       Some("https://example.com/dir/a.js")
     );
   }
+
+  #[test]
+  fn base_in_foreign_namespace_is_ignored_and_does_not_freeze_base() {
+    let mut tracker = BaseUrlTracker::new(Some("https://example.com/dir/page.html"));
+
+    tracker.on_element_inserted(
+      "base",
+      HTML_NAMESPACE,
+      &[("href".to_string(), "https://bad.example/".to_string())],
+      true,
+      /* in_foreign_namespace */ true,
+      false,
+    );
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+
+    tracker.on_element_inserted(
+      "base",
+      HTML_NAMESPACE,
+      &[("href".to_string(), "https://good.example/".to_string())],
+      true,
+      false,
+      false,
+    );
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://good.example/")
+    );
+  }
+
+  #[test]
+  fn base_in_template_is_ignored_and_does_not_freeze_base() {
+    let mut tracker = BaseUrlTracker::new(Some("https://example.com/dir/page.html"));
+
+    tracker.on_element_inserted(
+      "base",
+      HTML_NAMESPACE,
+      &[("href".to_string(), "https://bad.example/".to_string())],
+      true,
+      false,
+      /* in_template */ true,
+    );
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://example.com/dir/page.html")
+    );
+
+    tracker.on_element_inserted(
+      "base",
+      HTML_NAMESPACE,
+      &[("href".to_string(), "https://good.example/".to_string())],
+      true,
+      false,
+      false,
+    );
+    assert_eq!(
+      tracker.current_base_url().as_deref(),
+      Some("https://good.example/")
+    );
+  }
 }
