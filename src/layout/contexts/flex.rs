@@ -766,6 +766,9 @@ impl FormattingContext for FlexFormattingContext {
       }
     }
     // Keep block axis as provided; many flex containers legitimately size-to-content.
+    // Cache the flex container's definite content-box width (when known). Percentage padding/margin
+    // on flex items resolve against this size, not the item's own width.
+    let flex_item_inline_percentage_base = self.flex_container_inner_size(style, &constraints).width;
 
     let mut deadline_counter = 0usize;
     let mut has_running_children = false;
@@ -1347,15 +1350,15 @@ impl FormattingContext for FlexFormattingContext {
             &mut resolved_style,
           )?;
           let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_nodes);
-          self.apply_flex_auto_min_size(
-            child,
-            false,
-            Some(style),
-            container_inner_main_size,
-            container_inner_cross_size,
-            skip_contents,
-            &mut resolved_style,
-          )?;
+           self.apply_flex_auto_min_size(
+             child,
+             false,
+             Some(style),
+             container_inner_main_size,
+             container_inner_cross_size,
+             skip_contents,
+             &mut resolved_style,
+           )?;
           self.apply_flex_fit_content_keywords(
             child,
             false,
@@ -1506,28 +1509,57 @@ impl FormattingContext for FlexFormattingContext {
                         }
 
                         // For content-based flex base sizing, prefer intrinsic max-content sizing
-                        // instead of forcing the container's definite width into the measurement
-                        // constraints. This matches CSS Flexbox §4.5 (auto main size uses max-content)
-                        // and the `flex-basis: content` override.
-                        if known_dimensions.width.is_none()
+                        // instead of forcing the container's definite *main-axis* size into the
+                        // measurement constraints. This matches CSS Flexbox §4.5 (auto main size
+                        // uses max-content) and the `flex-basis: content` override.
+                        //
+                        // Note: The main axis is not always the physical width. In `flex-direction:
+                        // column`, for example, the flex base size is computed from the (block)
+                        // height, while the width is the cross size. Overriding the cross size here
+                        // breaks `aspect-ratio` items whose auto height depends on a stretched width
+                        // (e.g. Forbes homepage hero images).
+                        let flex_basis_is_auto = matches!(box_node.style.flex_basis, FlexBasis::Auto);
+                        let flex_basis_is_content =
+                          matches!(box_node.style.flex_basis, FlexBasis::Content);
+                        if container_main_axis_is_horizontal {
+                          if known_dimensions.width.is_none()
                             && matches!(avail.width, AvailableSpace::Definite(_))
-                            && ((matches!(
-                                box_node.style.flex_basis,
-                                crate::style::types::FlexBasis::Auto
-                              ) && physical_width_is_auto(box_node.style.as_ref()))
-                              || matches!(
-                                box_node.style.flex_basis,
-                                crate::style::types::FlexBasis::Content
-                              ))
-                        {
+                            && ((flex_basis_is_auto
+                              && physical_width_is_auto(box_node.style.as_ref()))
+                              || flex_basis_is_content)
+                          {
                             avail.width = AvailableSpace::MaxContent;
+                          }
+                        } else if known_dimensions.height.is_none()
+                          && matches!(avail.height, AvailableSpace::Definite(_))
+                          && ((flex_basis_is_auto
+                            && physical_height_is_auto(box_node.style.as_ref()))
+                            || flex_basis_is_content)
+                        {
+                          avail.height = AvailableSpace::MaxContent;
                         }
                     }
                     // Fast path: when both dimensions are already known (typically from definite
                     // authored sizes or a previous cached measurement), we don't need any cache-key
                     // bookkeeping or intrinsic/layout work. This is a very hot path on large pages
                     // where most flex items resolve to fixed sizes.
-                    if !force_full_measure {
+                    // However, when baseline alignment is in effect (`align-items/align-self:
+                    // baseline`), Taffy still needs accurate baseline metadata even if the size is
+                    // already known. Skipping measurement would return `None` baselines and cause
+                    // baseline-aligned items to drift.
+                    let needs_baseline = if style.align_items == AlignItems::Baseline {
+                      true
+                    } else {
+                      node_context
+                        .as_ref()
+                        .map(|ptr| {
+                          let box_ptr: *const BoxNode = **ptr;
+                          let box_node = unsafe { &*box_ptr };
+                          box_node.style.align_self.unwrap_or(style.align_items) == AlignItems::Baseline
+                        })
+                        .unwrap_or(false)
+                    };
+                    if !force_full_measure && !needs_baseline {
                       if let (Some(w), Some(h)) = (known_dimensions.width, known_dimensions.height) {
                         let size = taffy::geometry::Size { width: w, height: h };
                         flex_profile::record_measure_time(measure_timer);
@@ -2140,11 +2172,12 @@ impl FormattingContext for FlexFormattingContext {
                     let mut constraints = this.constraints_from_taffy(known_dimensions, avail, None);
                     // When Taffy asks for a flex item's size without a known inline size, it can
                     // pass the container's definite available width. For items that establish a
-                    // *flex/grid formatting context* and have `width:auto`, feeding that definite width into the nested flex/grid
-                    // layout causes the item to "fill" the available width instead of returning
-                    // its max-content contribution. Override this to max-content so the parent
-                    // flex algorithm sees the correct flex base size; the final used size is
-                    // computed later when Taffy calls measure again with a known width.
+                    // *flex/grid formatting context* and have `width:auto`, feeding that definite
+                    // width into the nested flex/grid layout causes the item to "fill" the
+                    // available width instead of returning its max-content contribution. Override
+                    // this to max-content so the parent flex algorithm sees the correct flex base
+                    // size; the final used size is computed later when Taffy calls measure again
+                    // with a known width.
                     if container_main_axis_is_horizontal
                       && matches!(fc_type, FormattingContextType::Flex | FormattingContextType::Grid)
                       && constraints.used_border_box_width.is_none()
@@ -2156,6 +2189,127 @@ impl FormattingContext for FlexFormattingContext {
                       )
                     {
                       constraints.available_width = CrateAvailableSpace::MaxContent;
+                    }
+
+                    // Flex item percentage padding/borders resolve against the flex container's
+                    // content-box width (CSS Sizing / Flexbox). Preserve that base even when the
+                    // item has its own definite width so downstream formatting contexts don't
+                    // accidentally resolve percentages against the item's used width.
+                    if let Some(base) = flex_item_inline_percentage_base.filter(|b| b.is_finite()) {
+                      constraints.inline_percentage_base = Some(base.max(0.0));
+                    }
+                    let percentage_base =
+                      constraints.inline_percentage_base.unwrap_or(this.viewport_size.width).max(0.0);
+                    let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
+                      || (measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_x,
+                          CssOverflow::Auto | CssOverflow::Scroll
+                        ));
+                    let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
+                      || (measure_style.scrollbar_gutter.stable
+                        && matches!(
+                          measure_style.overflow_y,
+                          CssOverflow::Auto | CssOverflow::Scroll
+                        ));
+                    let scrollbar_width = resolve_scrollbar_width(measure_style);
+                    let mut padding_left =
+                      this.resolve_length_for_width(measure_style.padding_left, percentage_base, measure_style);
+                    let mut padding_right =
+                      this.resolve_length_for_width(measure_style.padding_right, percentage_base, measure_style);
+                    let mut padding_top =
+                      this.resolve_length_for_width(measure_style.padding_top, percentage_base, measure_style);
+                    let mut padding_bottom = this.resolve_length_for_width(
+                      measure_style.padding_bottom,
+                      percentage_base,
+                      measure_style,
+                    );
+                    let border_left = this.resolve_length_for_width(
+                      measure_style.used_border_left_width(),
+                      percentage_base,
+                      measure_style,
+                    );
+                    let border_right = this.resolve_length_for_width(
+                      measure_style.used_border_right_width(),
+                      percentage_base,
+                      measure_style,
+                    );
+                    let border_top = this.resolve_length_for_width(
+                      measure_style.used_border_top_width(),
+                      percentage_base,
+                      measure_style,
+                    );
+                    let border_bottom = this.resolve_length_for_width(
+                      measure_style.used_border_bottom_width(),
+                      percentage_base,
+                      measure_style,
+                    );
+                    if reserve_scroll_y {
+                      let gutter = scrollbar_width;
+                      if gutter > 0.0 {
+                        if measure_style.scrollbar_gutter.both_edges {
+                          padding_left += gutter;
+                        }
+                        padding_right += gutter;
+                      }
+                    }
+                    if reserve_scroll_x {
+                      let gutter = scrollbar_width;
+                      if gutter > 0.0 {
+                        if measure_style.scrollbar_gutter.both_edges {
+                          padding_top += gutter;
+                        }
+                        padding_bottom += gutter;
+                      }
+                    }
+                    let horizontal_edges = padding_left + padding_right + border_left + border_right;
+                    let vertical_edges = padding_top + padding_bottom + border_top + border_bottom;
+
+                    // When Taffy provides a definite available content-box size (width/height),
+                    // also expose the corresponding used border-box size to block layout. Block
+                    // formatting contexts treat `height:auto` + a definite used border-box height
+                    // as a definite containing block, which is required for resolving percentage
+                    // heights (e.g. `img { height:100% }` inside an aspect-ratio box).
+                    if constraints.used_border_box_width.is_none() {
+                      if let CrateAvailableSpace::Definite(w) = constraints.available_width {
+                        constraints.used_border_box_width = Some((w + horizontal_edges).max(0.0));
+                      }
+                    }
+                    if constraints.used_border_box_height.is_none() {
+                      if let CrateAvailableSpace::Definite(h) = constraints.available_height {
+                        constraints.used_border_box_height = Some((h + vertical_edges).max(0.0));
+                      }
+                    }
+
+                    // Taffy does not pass the aspect-ratio-derived size for auto axes through
+                    // `known_dimensions` in `RunMode::PerformLayout` (it applies the ratio after the
+                    // measurement callback returns). Track the aspect-ratio-derived border-box size
+                    // so we can re-run layout for percentage descendants when the ratio expands the
+                    // used size beyond the content.
+                    let mut aspect_ratio_candidate_width: Option<f32> = None;
+                    let mut aspect_ratio_candidate_height: Option<f32> = None;
+                    if let AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio) = measure_style.aspect_ratio
+                    {
+                      if ratio.is_finite() && ratio > 0.0 {
+                        let width_auto = physical_width_is_auto(measure_style);
+                        let height_auto = physical_height_is_auto(measure_style);
+                        if height_auto && constraints.used_border_box_height.is_none() {
+                          if let Some(border_box_width) = constraints.used_border_box_width {
+                            let content_width = (border_box_width - horizontal_edges).max(0.0);
+                            let content_height = content_width / ratio;
+                            aspect_ratio_candidate_height =
+                              Some((content_height + vertical_edges).max(0.0));
+                          }
+                        }
+                        if width_auto && constraints.used_border_box_width.is_none() {
+                          if let Some(border_box_height) = constraints.used_border_box_height {
+                            let content_height = (border_box_height - vertical_edges).max(0.0);
+                            let content_width = content_height * ratio;
+                            aspect_ratio_candidate_width =
+                              Some((content_width + horizontal_edges).max(0.0));
+                          }
+                        }
+                      }
                     }
                     if log_small_avail {
                         if let CrateAvailableSpace::Definite(w) = constraints.available_width {
@@ -2221,6 +2375,13 @@ impl FormattingContext for FlexFormattingContext {
                           percentage_base,
                           this.viewport_size,
                         );
+                        let outer_w = (size.width + horizontal_edges).max(0.0);
+                        let outer_h = (size.height + vertical_edges).max(0.0);
+                        measured_baseline_y = Some(outer_h);
+                        if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                          let block_positive = crate::style::block_axis_positive(measure_style.writing_mode);
+                          measured_baseline_x = Some(if block_positive { outer_w } else { 0.0 });
+                        }
                         flex_profile::record_measure_time(measure_timer);
                         return taffy::geometry::Size {
                             width: size.width,
@@ -2509,6 +2670,7 @@ impl FormattingContext for FlexFormattingContext {
                       );
                     if width_is_intrinsic_probe
                       && crate::style::inline_axis_is_horizontal(measure_style.writing_mode)
+                      && !needs_baseline
                     {
                       let mode = match avail.width {
                         AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
@@ -2720,50 +2882,102 @@ impl FormattingContext for FlexFormattingContext {
                       .and_then(|_| measure_box.debug_info.as_ref().map(|d| d.to_selector()));
                     #[cfg(test)]
                     record_flex_measure_layout_call(measure_box.id);
-                    let layout_result = if let Some(style) = override_style.clone() {
-                      crate::layout::style_override::with_style_override(measure_box.id, style, || {
-                        fc.layout(measure_box, &constraints)
-                      })
-                    } else {
-                      fc.layout(measure_box, &constraints)
-                    };
-                    let fragment = match layout_result {
-                         Ok(f) => {
-                               flex_profile::record_node_layout(
-                                     measure_box.id,
-                                    selector_for_profile.as_deref(),
-                                   node_timer,
-                              );
-                             f
-                         }
-                         Err(LayoutError::Timeout { .. }) => {
-                             flex_profile::record_node_layout(
-                                 measure_box.id,
-                                 selector_for_profile.as_deref(),
-                                 node_timer,
-                             );
-                             flex_profile::record_measure_time(measure_timer);
-                             taffy::abort_layout_now();
-                         }
-                         Err(_) => {
-                             flex_profile::record_node_layout(
-                                 measure_box.id,
-                                 selector_for_profile.as_deref(),
-                                node_timer,
-                            );
-                            let size = taffy::geometry::Size {
-                                width: fallback_size(known_dimensions.width, avail.width),
-                                height: fallback_size(known_dimensions.height, avail.height),
-                            };
-                            flex_profile::record_measure_time(measure_timer);
-                            return size;
+
+                    let layout_with_constraints =
+                      |constraints: &LayoutConstraints| -> Result<FragmentNode, LayoutError> {
+                        if let Some(style) = override_style.clone() {
+                          crate::layout::style_override::with_style_override(
+                            measure_box.id,
+                            style,
+                            || fc.layout(measure_box, constraints),
+                          )
+                        } else {
+                          fc.layout(measure_box, constraints)
                         }
+                      };
+
+                    let mut fragment = match layout_with_constraints(&constraints) {
+                      Ok(f) => {
+                        flex_profile::record_node_layout(
+                          measure_box.id,
+                          selector_for_profile.as_deref(),
+                          node_timer,
+                        );
+                        f
+                      }
+                      Err(LayoutError::Timeout { .. }) => {
+                        flex_profile::record_node_layout(
+                          measure_box.id,
+                          selector_for_profile.as_deref(),
+                          node_timer,
+                        );
+                        flex_profile::record_measure_time(measure_timer);
+                        taffy::abort_layout_now();
+                      }
+                      Err(_) => {
+                        flex_profile::record_node_layout(
+                          measure_box.id,
+                          selector_for_profile.as_deref(),
+                          node_timer,
+                        );
+                        let size = taffy::geometry::Size {
+                          width: fallback_size(known_dimensions.width, avail.width),
+                          height: fallback_size(known_dimensions.height, avail.height),
+                        };
+                        flex_profile::record_measure_time(measure_timer);
+                        return size;
+                      }
                     };
 
-                    let percentage_base = match avail.width {
-                        AvailableSpace::Definite(w) => w,
-                        _ => constraints.width().unwrap_or_else(|| fragment.bounds.width()),
-                    };
+                    // When an auto axis is expanded by `aspect-ratio`, re-run layout with the
+                    // aspect-ratio-derived used border-box size exposed via `used_border_box_*` so
+                    // percentage descendants can resolve against a definite containing block.
+                    if aspect_ratio_candidate_width.is_some() || aspect_ratio_candidate_height.is_some() {
+                      let mut span_counter = 0usize;
+                      let descendant_span = match Self::fragment_descendant_span(&fragment, &mut span_counter) {
+                        Ok(span) => span.unwrap_or(Size::ZERO),
+                        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                        Err(_) => Size::ZERO,
+                      };
+                      let rerun_eps = 0.5;
+                      let mut rerun_constraints = constraints;
+                      let mut should_rerun = false;
+                      if let Some(candidate_h) = aspect_ratio_candidate_height {
+                        if candidate_h.is_finite()
+                          && candidate_h > descendant_span.height + rerun_eps
+                          && rerun_constraints.used_border_box_height.is_none()
+                        {
+                          rerun_constraints.used_border_box_height = Some(candidate_h);
+                          should_rerun = true;
+                        }
+                      }
+                      if let Some(candidate_w) = aspect_ratio_candidate_width {
+                        if candidate_w.is_finite()
+                          && candidate_w > descendant_span.width + rerun_eps
+                          && rerun_constraints.used_border_box_width.is_none()
+                        {
+                          rerun_constraints.used_border_box_width = Some(candidate_w);
+                          should_rerun = true;
+                        }
+                      }
+                      if should_rerun {
+                        constraints = rerun_constraints;
+                        match layout_with_constraints(&constraints) {
+                          Ok(new_fragment) => fragment = new_fragment,
+                          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                          Err(_) => {}
+                        }
+                      }
+                    }
+
+                    let percentage_base = constraints
+                      .inline_percentage_base
+                      .or_else(|| match avail.width {
+                        AvailableSpace::Definite(w) => Some(w),
+                        _ => None,
+                      })
+                      .or_else(|| constraints.width())
+                      .unwrap_or_else(|| fragment.bounds.width());
                     let mut content_size = this.content_box_size(&fragment, &box_node.style, percentage_base);
                     // For fit-content, the fit computation operates on border-box sizes. Override the
                     // measured content-box size so that Taffy sees the content size corresponding to
@@ -2987,7 +3201,7 @@ impl FormattingContext for FlexFormattingContext {
                           }
                       }
 
-                    let measured_size =
+                    let mut measured_size =
                       Size::new(content_size.width.max(0.0), content_size.height.max(0.0));
                     let border_size = {
                       let reserve_scroll_x = measure_style.scrollbar_gutter.stable
@@ -3112,6 +3326,21 @@ impl FormattingContext for FlexFormattingContext {
                     flex_profile::record_measure_time(measure_timer);
                     size
                     })();
+                    if !log_measure_ids.is_empty() {
+                      if let Some(box_ptr) = node_context.as_ref().map(|p| **p) {
+                        let box_node = unsafe { &*box_ptr };
+                        if log_measure_ids.contains(&box_node.id) {
+                          eprintln!(
+                            "[flex-measure-baseline] id={} size=({:.2},{:.2}) baseline=({:?},{:?})",
+                            box_node.id,
+                            measured.width,
+                            measured.height,
+                            measured_baseline_x,
+                            measured_baseline_y
+                          );
+                        }
+                      }
+                    }
                     taffy::tree::MeasureOutput::from_size_and_baselines(
                       measured,
                       taffy::geometry::Point {
@@ -3283,15 +3512,15 @@ impl FormattingContext for FlexFormattingContext {
           &mut resolved_style,
         )?;
         let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_nodes);
-        self.apply_flex_auto_min_size(
-          child,
-          false,
-          Some(style),
-          container_inner_main_size,
-          container_inner_cross_size,
-          skip_contents,
-          &mut resolved_style,
-        )?;
+         self.apply_flex_auto_min_size(
+           child,
+           false,
+           Some(style),
+           container_inner_main_size,
+           container_inner_cross_size,
+           skip_contents,
+           &mut resolved_style,
+         )?;
         self.apply_flex_fit_content_keywords(
           child,
           false,
@@ -4825,28 +5054,28 @@ fn measure_cache_key_and_snap(
     // while keeping typical sizes precise. Thresholds favor tighter precision for small
     // items while aggressively merging large, near-identical probes common on wide carousels.
     let abs = val.abs();
-     let step = if abs > 32768.0 {
-       512.0
-     } else if abs > 16384.0 {
-       256.0
-     } else if abs > 8192.0 {
-       128.0
-     } else if abs > 4096.0 {
-       64.0
-     } else if abs > 2048.0 {
-       32.0
-     } else if abs > 1024.0 {
-       16.0
-     } else if abs > 512.0 {
-       8.0
-     } else if abs > 256.0 {
-       4.0
-     } else {
-       // Avoid 2px snapping for small items: rounding a subpixel width down by ~1px can flip text
-       // wrapping decisions (e.g. "My Visit" in the si.edu header). Keep <=256px probes at 1px
-       // precision so cache coalescing doesn't materially change layout.
-       1.0
-     };
+    let step = if abs > 32768.0 {
+      512.0
+    } else if abs > 16384.0 {
+      256.0
+    } else if abs > 8192.0 {
+      128.0
+    } else if abs > 4096.0 {
+      64.0
+    } else if abs > 2048.0 {
+      32.0
+    } else if abs > 1024.0 {
+      16.0
+    } else if abs > 512.0 {
+      8.0
+    } else if abs > 256.0 {
+      4.0
+    } else {
+      // Avoid coarse snapping for small items: shifting the probe by ~1px can flip text wrapping
+      // decisions (e.g. "My Visit" in the si.edu header). Keep <=256px probes at subpixel
+      // granularity so cache coalescing merges float noise without materially changing layout.
+      0.5
+    };
     let quantized = (val / step).round() * step;
     if quantized == 0.0 {
       0.0
@@ -5171,7 +5400,14 @@ fn flex_cache_key_with_style(box_node: &BoxNode, style: &ComputedStyle) -> u64 {
   // different instances: their descendants may differ (e.g. different `<img src>`), and
   // reusing would clone the wrong subtree.
   if box_node.styled_node_id.is_none() {
-    box_node.id.hash(&mut h);
+    if box_node.id != 0 {
+      box_node.id.hash(&mut h);
+    } else {
+      // Some unit tests build ad-hoc box trees without running `BoxTree::new`, leaving every node
+      // with `id=0`. Fall back to the pointer identity so per-node caches remain correct in those
+      // scenarios. Real box trees always assign stable ids.
+      (box_node as *const BoxNode as usize).hash(&mut h);
+    }
   }
   let fingerprint = flex_style_fingerprint(style);
   fingerprint.hash(&mut h);
@@ -7072,37 +7308,60 @@ impl FlexFormattingContext {
           .width
           .as_ref()
           .and_then(|len| {
-          // Percentages on the flex item resolve against the flex container's inner size.
-          // Only treat the container inline size as definite when it resolves without percentages
-          // (so we don't accidentally resolve a percentage against an unknown base).
-          if len.has_percentage() {
-            return None;
-          }
-          let mut content =
-            self.resolve_length_for_width(*len, self.viewport_size.width, container);
-          if !content.is_finite() {
-            return None;
-          }
-          if container.box_sizing == BoxSizing::BorderBox {
-            content = (content - self.horizontal_edges_px(container)?).max(0.0);
-          }
-         Some(content.max(0.0))
-        })
+            // Percentages on the flex item resolve against the flex container's inner size.
+            // Only treat the container inline size as definite when it resolves without percentages
+            // (so we don't accidentally resolve a percentage against an unknown base).
+            if len.has_percentage() {
+              return None;
+            }
+            let mut content =
+              self.resolve_length_for_width(*len, self.viewport_size.width, container);
+            if !content.is_finite() {
+              return None;
+            }
+            if container.box_sizing == BoxSizing::BorderBox {
+              content = (content - self.horizontal_edges_px(container)?).max(0.0);
+            }
+            Some(content.max(0.0))
+          })
           .or(container_inner_main_size);
-        let container_content_height_base = container.height.as_ref().and_then(|len| {
-          if len.has_percentage() {
-            return None;
-          }
-          let mut content = self.resolve_length_for_width(*len, self.viewport_size.height, container);
-          if !content.is_finite() {
-            return None;
-          }
-          if container.box_sizing == BoxSizing::BorderBox {
-            content = (content - self.vertical_edges_px(container)?).max(0.0);
-          }
-          Some(content.max(0.0))
-        })
-        .or(container_inner_cross_size);
+        let container_content_height_base = container
+          .height
+          .as_ref()
+          .and_then(|len| {
+            if len.has_percentage() {
+              return None;
+            }
+            let mut content =
+              self.resolve_length_for_width(*len, self.viewport_size.height, container);
+            if !content.is_finite() {
+              return None;
+            }
+            if container.box_sizing == BoxSizing::BorderBox {
+              content = (content - self.vertical_edges_px(container)?).max(0.0);
+            }
+            Some(content.max(0.0))
+          })
+          .or(container_inner_cross_size);
+
+        // For aspect-ratio items, the flex auto-min-size algorithm uses the transferred size
+        // suggestion when a definite cross size is available. When the item is stretched in the
+        // cross axis, that cross size is definite even if the author wrote `height:auto`.
+        let effective_align_self = style.align_self.unwrap_or(container.align_items);
+        let cross_margins_auto = style.margin_top.is_none() || style.margin_bottom.is_none();
+        let stretch_cross_border_box = if effective_align_self == AlignItems::Stretch
+          && physical_height_is_auto(style)
+          && !cross_margins_auto
+        {
+          container_content_height_base.map(|v| v.max(0.0))
+        } else {
+          None
+        };
+
+        let cross_size_key = stretch_cross_border_box
+          .filter(|v| v.is_finite() && *v > 0.0)
+          .map(f32_to_canonical_bits)
+          .unwrap_or(0);
         let container_width_key = container_content_width_base
           .filter(|v| v.is_finite() && *v > 0.0)
           .map(f32_to_canonical_bits)
@@ -7131,7 +7390,7 @@ impl FlexFormattingContext {
           style_ptr,
           true,
           skip_contents,
-          0,
+          cross_size_key,
           container_width_key,
           container_height_key,
         ) {
@@ -7166,16 +7425,16 @@ impl FlexFormattingContext {
           AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio)
             if ratio > 0.0 && ratio.is_finite() =>
           {
-            style.height.as_ref().and_then(|len| {
+            let resolve_cross_border_box = |len: &Length| -> Option<f32> {
               let cross_px = if len.has_percentage() {
                 let base = container_content_height_base?;
-                Some(self.resolve_length_for_width(*len, base, style))
+                self.resolve_length_for_width(*len, base, style)
               } else {
                 self.resolve_length_px(len, style).or_else(|| {
                   (!len.has_percentage())
                     .then(|| self.resolve_length_for_width(*len, self.viewport_size.height, style))
-                })
-              }?;
+                })?
+              };
               if !cross_px.is_finite() {
                 return None;
               }
@@ -7183,9 +7442,14 @@ impl FlexFormattingContext {
               if style.box_sizing == BoxSizing::ContentBox {
                 cross_border_box += self.vertical_edges_px(style)?;
               }
-              if !cross_border_box.is_finite() {
-                return None;
-              }
+              cross_border_box.is_finite().then_some(cross_border_box.max(0.0))
+            };
+            let cross_border_box = style
+              .height
+              .as_ref()
+              .and_then(resolve_cross_border_box)
+              .or(stretch_cross_border_box);
+            cross_border_box.and_then(|cross_border_box| {
               let transferred = cross_border_box * ratio;
               if transferred.is_finite() {
                 Some(transferred.max(0.0))
@@ -7251,7 +7515,7 @@ impl FlexFormattingContext {
             style_ptr,
             true,
             skip_contents,
-            0,
+            cross_size_key,
             container_width_key,
             container_height_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
@@ -7332,7 +7596,7 @@ impl FlexFormattingContext {
               style_ptr,
               true,
               skip_contents,
-              0,
+              cross_size_key,
               container_width_key,
               container_height_key,
               (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
@@ -7345,7 +7609,7 @@ impl FlexFormattingContext {
               style_ptr,
               true,
               skip_contents,
-              0,
+              cross_size_key,
               container_width_key,
               container_height_key,
               None,
@@ -7385,20 +7649,25 @@ impl FlexFormattingContext {
           percentage_base_for_edges,
         )
       };
-      let container_content_height_base = container.height.as_ref().and_then(|len| {
-        if len.has_percentage() {
-          return None;
-        }
-        let mut content = self.resolve_length_for_width(*len, self.viewport_size.height, container);
-        if !content.is_finite() {
-          return None;
-        }
-        if container.box_sizing == BoxSizing::BorderBox {
-          content = (content - self.vertical_edges_px(container)?).max(0.0);
-        }
-        Some(content.max(0.0))
-      })
-      .or(container_inner_main_size);
+      let container_content_height_base = container
+        .height
+        .as_ref()
+        .and_then(|len| {
+          if len.has_percentage() {
+            return None;
+          }
+          let mut content =
+            self.resolve_length_for_width(*len, self.viewport_size.height, container);
+          if !content.is_finite() {
+            return None;
+          }
+          if container.box_sizing == BoxSizing::BorderBox {
+            content = (content - self.vertical_edges_px(container)?).max(0.0);
+          }
+          Some(content.max(0.0))
+        })
+        .or(container_inner_main_size);
+
       let container_width_key = container_content_width_base
         .filter(|v| v.is_finite() && *v > 0.0)
         .map(f32_to_canonical_bits)
@@ -7408,28 +7677,33 @@ impl FlexFormattingContext {
         .map(f32_to_canonical_bits)
         .unwrap_or(0);
 
-      let effective_align = style.align_self.unwrap_or(container.align_items);
+      // For a vertical main axis, the content size suggestion depends on the cross size when the
+      // item is stretched (e.g. because wrapping changes the block size). Use the stretched cross
+      // size as part of the cache key and when probing intrinsic block sizes.
+      let effective_align_self = style.align_self.unwrap_or(container.align_items);
       let cross_margins_auto = style.margin_left.is_none() || style.margin_right.is_none();
-      let cross_size_is_auto = physical_width_is_auto(style);
-      let stretch_cross_size = (matches!(effective_align, AlignItems::Stretch)
-        && cross_size_is_auto
-        && !cross_margins_auto)
-        .then_some(container_inner_cross_size)
-        .flatten();
-      let stretch_cross_key = stretch_cross_size
+      let stretch_cross_size = if effective_align_self == AlignItems::Stretch
+        && physical_width_is_auto(style)
+        && !cross_margins_auto
+      {
+        container_content_width_base.map(|v| v.max(0.0))
+      } else {
+        None
+      };
+      let cross_size_key = stretch_cross_size
         .filter(|v| v.is_finite() && *v > 0.0)
         .map(f32_to_canonical_bits)
         .unwrap_or(0);
-      if let Some(cached) =
-        flex_auto_min_cache_lookup(
-          box_id,
-          style_ptr,
-          false,
-          skip_contents,
-          stretch_cross_key,
-          container_width_key,
-          container_height_key,
-        )
+
+      if let Some(cached) = flex_auto_min_cache_lookup(
+        box_id,
+        style_ptr,
+        false,
+        skip_contents,
+        cross_size_key,
+        container_width_key,
+        container_height_key,
+      )
       {
         if let Some(min_candidate) = cached {
           if min_candidate.is_finite() && min_candidate > 0.0 {
@@ -7461,16 +7735,16 @@ impl FlexFormattingContext {
         AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio)
           if ratio > 0.0 && ratio.is_finite() =>
         {
-          style.width.as_ref().and_then(|len| {
+          let resolve_cross_border_box = |len: &Length| -> Option<f32> {
             let cross_px = if len.has_percentage() {
               let base = container_content_width_base?;
-              Some(self.resolve_length_for_width(*len, base, style))
+              self.resolve_length_for_width(*len, base, style)
             } else {
               self.resolve_length_px(len, style).or_else(|| {
                 (!len.has_percentage())
                   .then(|| self.resolve_length_for_width(*len, self.viewport_size.width, style))
-              })
-            }?;
+              })?
+            };
             if !cross_px.is_finite() {
               return None;
             }
@@ -7478,9 +7752,14 @@ impl FlexFormattingContext {
             if style.box_sizing == BoxSizing::ContentBox {
               cross_border_box += self.horizontal_edges_px(style)?;
             }
-            if !cross_border_box.is_finite() {
-              return None;
-            }
+            cross_border_box.is_finite().then_some(cross_border_box.max(0.0))
+          };
+          let cross_border_box = style
+            .width
+            .as_ref()
+            .and_then(resolve_cross_border_box)
+            .or(stretch_cross_size);
+          cross_border_box.and_then(|cross_border_box| {
             let transferred = cross_border_box / ratio;
             if transferred.is_finite() {
               Some(transferred.max(0.0))
@@ -7546,7 +7825,7 @@ impl FlexFormattingContext {
           style_ptr,
           false,
           skip_contents,
-          stretch_cross_key,
+          cross_size_key,
           container_width_key,
           container_height_key,
           (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
@@ -7649,7 +7928,7 @@ impl FlexFormattingContext {
             style_ptr,
             false,
             skip_contents,
-            stretch_cross_key,
+            cross_size_key,
             container_width_key,
             container_height_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
@@ -7662,7 +7941,7 @@ impl FlexFormattingContext {
             style_ptr,
             false,
             skip_contents,
-            stretch_cross_key,
+            cross_size_key,
             container_width_key,
             container_height_key,
             None,
@@ -8303,8 +8582,18 @@ impl FlexFormattingContext {
           .map(|l| l.unit.is_absolute() && l.value.abs() <= eps && !l.unit.is_percentage())
           .unwrap_or(false)
       };
+      let skip_contents = match child_box.style.content_visibility {
+        crate::style::types::ContentVisibility::Hidden => true,
+        crate::style::types::ContentVisibility::Auto => {
+          self.content_visibility_auto_has_definite_placeholder(child_box)
+            && auto_unskipped
+              .map(|set| !set.contains(&(child_box as *const BoxNode)))
+              .unwrap_or(false)
+        }
+        crate::style::types::ContentVisibility::Visible => false,
+      };
       let zero_main_size_is_legitimate = if main_size_is_zero {
-        if explicit_zero_main_size {
+        if explicit_zero_main_size || skip_contents {
           true
         } else {
           let fc_type = child_box
@@ -8348,16 +8637,6 @@ impl FlexFormattingContext {
         zero_main_size_is_legitimate,
       });
 
-      let skip_contents = match child_box.style.content_visibility {
-        crate::style::types::ContentVisibility::Hidden => true,
-        crate::style::types::ContentVisibility::Auto => {
-          self.content_visibility_auto_has_definite_placeholder(child_box)
-            && auto_unskipped
-              .map(|set| !set.contains(&(child_box as *const BoxNode)))
-              .unwrap_or(false)
-        }
-        crate::style::types::ContentVisibility::Visible => false,
-      };
       if skip_contents {
         child_plans[dom_idx] = ChildPlan::ContentVisibilityPlaceholder;
         continue;
@@ -10344,7 +10623,14 @@ impl FlexFormattingContext {
     let remembered_width = remembered.map(|size| size.width).filter(|v| v.is_finite());
     let remembered_height = remembered.map(|size| size.height).filter(|v| v.is_finite());
 
-    let width = known_dimensions.width.unwrap_or_else(|| {
+    // Taffy may pass `known_dimensions` derived from flex alignment/stretch rather than authored
+    // sizing. For content-visibility placeholders we only treat a known dimension as authoritative
+    // when it came from an explicit size/keyword on that axis.
+    let width = if known_dimensions.width.is_some()
+      && (style.width.is_some() || style.width_keyword.is_some())
+    {
+      known_dimensions.width.unwrap()
+    } else {
       let base = constraints
         .inline_percentage_base
         .or_else(|| constraints.width())
@@ -10357,9 +10643,13 @@ impl FlexFormattingContext {
         style.font_size,
         style.root_font_size,
       )
-    });
+    };
 
-    let height = known_dimensions.height.unwrap_or_else(|| {
+    let height = if known_dimensions.height.is_some()
+      && (style.height.is_some() || style.height_keyword.is_some())
+    {
+      known_dimensions.height.unwrap()
+    } else {
       let base = constraints.height().filter(|b| b.is_finite());
       crate::layout::utils::resolve_contain_intrinsic_size_axis(
         style.contain_intrinsic_height,
@@ -10369,7 +10659,7 @@ impl FlexFormattingContext {
         style.font_size,
         style.root_font_size,
       )
-    });
+    };
 
     Size::new(sanitize(width), sanitize(height))
   }
@@ -11195,6 +11485,31 @@ mod tests {
         _ => false,
       })
       .unwrap_or_else(|| panic!("missing fragment for box_id={box_id}"))
+  }
+
+  fn find_fragment_by_box_id<'a>(
+    fragment: &'a FragmentNode,
+    box_id: usize,
+  ) -> Option<&'a FragmentNode> {
+    let matches_id = match &fragment.content {
+      FragmentContent::Block {
+        box_id: Some(child_id),
+      } => *child_id == box_id,
+      FragmentContent::Replaced {
+        box_id: Some(child_id),
+        ..
+      } => *child_id == box_id,
+      _ => false,
+    };
+    if matches_id {
+      return Some(fragment);
+    }
+    for child in &fragment.children {
+      if let Some(found) = find_fragment_by_box_id(child, box_id) {
+        return Some(found);
+      }
+    }
+    None
   }
 
   fn content_visibility_test_guard() -> crate::debug::runtime::ThreadRuntimeTogglesGuard {
@@ -14594,11 +14909,33 @@ mod tests {
 
     let small_baseline = baseline_position(&fragment.children[0]);
     let large_baseline = baseline_position(&fragment.children[1]);
+    let (small_y, small_offset) = {
+      let mut deadline_counter = 0usize;
+      let offset = fragment_first_baseline(&fragment.children[0], &mut deadline_counter)
+        .expect("baseline computation")
+        .expect("fragment has no baseline");
+      (fragment.children[0].bounds.y(), offset)
+    };
+    let (large_y, large_offset) = {
+      let mut deadline_counter = 0usize;
+      let offset = fragment_first_baseline(&fragment.children[1], &mut deadline_counter)
+        .expect("baseline computation")
+        .expect("fragment has no baseline");
+      (fragment.children[1].bounds.y(), offset)
+    };
+    let small_h = fragment.children[0].bounds.height();
+    let large_h = fragment.children[1].bounds.height();
     assert!(
       (small_baseline - large_baseline).abs() < 0.5,
-      "baselines misaligned: {:.2} vs {:.2}",
+      "baselines misaligned: {:.2} vs {:.2} (small_y={:.2} h={:.2} offset={:.2}, large_y={:.2} h={:.2} offset={:.2})",
       small_baseline,
-      large_baseline
+      large_baseline,
+      small_y,
+      small_h,
+      small_offset,
+      large_y,
+      large_h,
+      large_offset
     );
   }
 
@@ -14641,11 +14978,33 @@ mod tests {
 
     let text_baseline = baseline_position(&fragment.children[0]);
     let replaced_baseline = baseline_position(&fragment.children[1]);
+    let (text_y, text_offset) = {
+      let mut deadline_counter = 0usize;
+      let offset = fragment_first_baseline(&fragment.children[0], &mut deadline_counter)
+        .expect("baseline computation")
+        .expect("fragment has no baseline");
+      (fragment.children[0].bounds.y(), offset)
+    };
+    let (replaced_y, replaced_offset) = {
+      let mut deadline_counter = 0usize;
+      let offset = fragment_first_baseline(&fragment.children[1], &mut deadline_counter)
+        .expect("baseline computation")
+        .expect("fragment has no baseline");
+      (fragment.children[1].bounds.y(), offset)
+    };
+    let text_h = fragment.children[0].bounds.height();
+    let replaced_h = fragment.children[1].bounds.height();
     assert!(
       (text_baseline - replaced_baseline).abs() < 0.5,
-      "replaced baseline not aligned: {:.2} vs {:.2}",
+      "replaced baseline not aligned: {:.2} vs {:.2} (text_y={:.2} h={:.2} offset={:.2}, replaced_y={:.2} h={:.2} offset={:.2})",
       text_baseline,
-      replaced_baseline
+      replaced_baseline,
+      text_y,
+      text_h,
+      text_offset,
+      replaced_y,
+      replaced_h,
+      replaced_offset
     );
   }
 
@@ -15034,6 +15393,331 @@ mod tests {
 
     assert_eq!(fragment.children[0].bounds.width(), 120.0);
     assert_eq!(fragment.children[0].bounds.height(), 40.0);
+  }
+
+  #[test]
+  fn flex_item_aspect_ratio_expansion_makes_percentage_heights_definite() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.align_items = AlignItems::FlexStart;
+
+    let mut item_style = ComputedStyle::default();
+    // Let the flex container resolve the item's width (similar to real-world `aspect-ratio`
+    // placeholders). Pick a ratio that yields an exact integer height so the assertions are robust
+    // across float rounding.
+    item_style.flex_grow = 1.0;
+    item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+
+    // A percentage-sized replaced element should resolve against the aspect-ratio-expanded height,
+    // even though the flex container itself has an auto (indefinite) block size.
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
+    let mut replaced =
+      BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
+    replaced.id = 4242;
+
+    let item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![replaced],
+    );
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+
+    // Keep the flex container's block axis indefinite so the aspect ratio is the only source of a
+    // definite height.
+    let constraints = LayoutConstraints::definite_width(512.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    assert_eq!(fragment.children[0].bounds.width(), 512.0);
+    let expected_height = 512.0 / 2.0;
+    let actual_height = fragment.children[0].bounds.height();
+    assert!(
+      (actual_height - expected_height).abs() < 0.1,
+      "expected flex item height {expected_height}, got {actual_height}"
+    );
+
+    let replaced_fragment =
+      find_fragment_by_box_id(&fragment, 4242).expect("expected replaced element fragment");
+    assert!(
+      (replaced_fragment.bounds.height() - expected_height).abs() < 0.1,
+      "expected percentage-sized replaced element height {expected_height}, got {:.2}",
+      replaced_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn flex_column_item_aspect_ratio_uses_stretched_width_for_auto_height() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::Stretch;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Flex;
+    item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
+    let mut replaced =
+      BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
+    replaced.id = 4343;
+
+    let item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Flex,
+      vec![replaced],
+    );
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+
+    // Keep the flex container's block axis indefinite so the aspect ratio is the only source of a
+    // definite height.
+    let constraints = LayoutConstraints::definite_width(512.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    assert_eq!(fragment.children[0].bounds.width(), 512.0);
+    let expected_height = 512.0 / 2.0;
+    let actual_height = fragment.children[0].bounds.height();
+    assert!(
+      (actual_height - expected_height).abs() < 0.1,
+      "expected flex item height {expected_height}, got {actual_height}"
+    );
+
+    let replaced_fragment =
+      find_fragment_by_box_id(&fragment, 4343).expect("expected replaced element fragment");
+    assert!(
+      (replaced_fragment.bounds.height() - expected_height).abs() < 0.1,
+      "expected percentage-sized replaced element height {expected_height}, got {:.2}",
+      replaced_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn flex_column_aspect_ratio_item_uses_stretched_width_for_main_size_with_percent_max_width() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::Stretch;
+    // Mirror Forbes: column flex with a gap between the image and the following content.
+    container_style.grid_row_gap = Length::px(8.0);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Flex;
+    // Pick a ratio/width combination that yields an exact integer height so the assertions are
+    // robust across float rounding.
+    item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+    // Forbes sets `max-width: 100%` on the media wrapper. Ensure the flex item's max-width is
+    // resolved against the stretched width rather than an intrinsic probe width.
+    item_style.max_width = Some(Length::percent(100.0));
+    item_style.max_width_keyword = None;
+
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
+    let mut replaced =
+      BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
+    replaced.id = 4444;
+
+    let item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Flex,
+      vec![replaced],
+    );
+
+    // Add a second flex item so the container resembles real-world stacked hero content.
+    let mut sibling_style = ComputedStyle::default();
+    sibling_style.height = Some(Length::px(24.0));
+    sibling_style.height_keyword = None;
+    let sibling =
+      BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item, sibling],
+    );
+
+    // Prime the flex measure cache with a smaller stretched width (mirrors real-world intrinsic
+    // sizing probes where a component is first measured in a narrow column before being laid out
+    // at its final size). The final layout must still recompute the aspect-ratio-derived height.
+    let _ = fc
+      .layout(&container, &LayoutConstraints::definite_width(256.0))
+      .unwrap();
+
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite_width(512.0))
+      .unwrap();
+
+    let item_fragment = &fragment.children[0];
+    assert_eq!(item_fragment.bounds.width(), 512.0);
+
+    let expected_height = 512.0 / 2.0;
+    let actual_height = item_fragment.bounds.height();
+    assert!(
+      (actual_height - expected_height).abs() < 0.1,
+      "expected flex item height {expected_height}, got {actual_height}"
+    );
+
+    let replaced_fragment =
+      find_fragment_by_box_id(&fragment, 4444).expect("expected replaced element fragment");
+    assert!(
+      (replaced_fragment.bounds.height() - expected_height).abs() < 0.1,
+      "expected percentage-sized replaced element height {expected_height}, got {:.2}",
+      replaced_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_size_transfers_aspect_ratio_from_stretched_cross_size() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::Stretch;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Flex;
+    item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+    item_style.max_width = Some(Length::percent(100.0));
+    item_style.max_width_keyword = None;
+
+    // Give the flex item real content so its min-content height suggestion is smaller than the
+    // transferred size suggestion (which should be derived from the stretched width + aspect
+    // ratio).
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
+    let mut replaced =
+      BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
+    replaced.id = 4555;
+
+    let item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Flex,
+      vec![replaced],
+    );
+
+    let mut sibling_style = ComputedStyle::default();
+    sibling_style.height = Some(Length::px(100.0));
+    sibling_style.height_keyword = None;
+    let sibling =
+      BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item, sibling],
+    );
+
+    // Force flex-shrink by providing a definite container height smaller than the natural content
+    // height. The aspect-ratio item should not shrink below its auto-min-size.
+    let constraints = LayoutConstraints::definite(512.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    let item_fragment = &fragment.children[0];
+    assert_eq!(item_fragment.bounds.width(), 512.0);
+    assert!(
+      (item_fragment.bounds.height() - 256.0).abs() < 0.1,
+      "expected aspect-ratio item to keep transferred auto-min-size height 256, got {:.2}",
+      item_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_size_recomputes_transferred_size_for_stretched_cross_size_changes() {
+    let fc = FlexFormattingContext::new();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    container_style.align_items = AlignItems::Stretch;
+    // Give the flex container a definite height so flex-shrink has to resolve negative free space.
+    container_style.height = Some(Length::px(200.0));
+    container_style.height_keyword = None;
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Flex;
+    item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+    item_style.max_width = Some(Length::percent(100.0));
+    item_style.max_width_keyword = None;
+
+    // Use a canvas so the item's content size suggestion is 300x150, making it smaller than the
+    // transferred size suggestion when the item is stretched to wider widths.
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.width = Some(Length::percent(100.0));
+    replaced_style.height = Some(Length::percent(100.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
+    let mut replaced =
+      BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
+    replaced.id = 4666;
+
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Flex,
+      vec![replaced],
+    );
+    item.id = 4667;
+
+    let mut sibling_style = ComputedStyle::default();
+    sibling_style.height = Some(Length::px(100.0));
+    sibling_style.height_keyword = None;
+    let mut sibling =
+      BoxNode::new_block(Arc::new(sibling_style), FormattingContextType::Block, vec![]);
+    sibling.id = 4668;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item, sibling],
+    );
+
+    // First lay out the subtree in a narrow container. This primes the flex auto-min-size cache
+    // with a transferred suggestion derived from the smaller stretched width.
+    let _ = fc
+      .layout(&container, &LayoutConstraints::definite_width(300.0))
+      .unwrap();
+
+    // When the container is later laid out at a wider size, the aspect-ratio item should recompute
+    // its transferred size suggestion from the new stretched width, rather than reusing the cached
+    // 150px value from the 300px-wide layout.
+    let fragment = fc
+      .layout(&container, &LayoutConstraints::definite_width(512.0))
+      .unwrap();
+
+    let item_fragment = &fragment.children[0];
+    assert_eq!(item_fragment.bounds.width(), 512.0);
+    assert!(
+      (item_fragment.bounds.height() - 256.0).abs() < 0.1,
+      "expected aspect-ratio item to keep transferred auto-min-size height 256, got {:.2}",
+      item_fragment.bounds.height()
+    );
   }
 
   #[test]

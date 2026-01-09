@@ -346,8 +346,28 @@ static INTRINSIC_CACHE_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
   LazyLock::new(|| parking_lot::ReentrantMutex::new(()));
 
 #[cfg(test)]
-pub(crate) fn intrinsic_cache_test_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
-  INTRINSIC_CACHE_TEST_LOCK.lock()
+static INTRINSIC_CACHE_TEST_LOCK_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) struct IntrinsicCacheTestLockGuard {
+  guard: std::mem::ManuallyDrop<parking_lot::ReentrantMutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for IntrinsicCacheTestLockGuard {
+  fn drop(&mut self) {
+    unsafe { std::mem::ManuallyDrop::drop(&mut self.guard) };
+    INTRINSIC_CACHE_TEST_LOCK_DEPTH.fetch_sub(1, Ordering::SeqCst);
+  }
+}
+
+#[cfg(test)]
+pub(crate) fn intrinsic_cache_test_lock() -> IntrinsicCacheTestLockGuard {
+  INTRINSIC_CACHE_TEST_LOCK_DEPTH.fetch_add(1, Ordering::SeqCst);
+  let guard = INTRINSIC_CACHE_TEST_LOCK.lock();
+  IntrinsicCacheTestLockGuard {
+    guard: std::mem::ManuallyDrop::new(guard),
+  }
 }
 
 #[cfg(test)]
@@ -605,6 +625,17 @@ pub(crate) fn count_block_intrinsic_call() {
 }
 
 pub(crate) fn count_flex_intrinsic_call() {
+  #[cfg(test)]
+  let _test_lock_guard = {
+    if INTRINSIC_CACHE_TEST_LOCK_DEPTH.load(Ordering::Relaxed) > 0 {
+      match INTRINSIC_CACHE_TEST_LOCK.try_lock() {
+        Some(guard) => Some(guard),
+        None => return,
+      }
+    } else {
+      None
+    }
+  };
   FLEX_INTRINSIC_CALLS.inc();
 }
 
