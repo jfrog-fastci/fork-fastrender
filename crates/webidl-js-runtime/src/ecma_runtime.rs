@@ -634,6 +634,18 @@ impl VmJsRuntime {
       return Ok(f64::NAN);
     }
 
+    // Rust's `f64::from_str` accepts spellings like "inf"/"infinity" (case-insensitive), which are
+    // *not* valid under ECMA-262 `StringToNumber`. For decimal numeric strings, the only permitted
+    // alphabetic character is the exponent marker `e`/`E`. Reject anything else before delegating
+    // to Rust's parser so `Number("inf")` correctly yields NaN.
+    if trimmed
+      .as_bytes()
+      .iter()
+      .any(|b| b.is_ascii_alphabetic() && !matches!(b, b'e' | b'E'))
+    {
+      return Ok(f64::NAN);
+    }
+
     match trimmed.parse::<f64>() {
       Ok(v) => Ok(v),
       Err(_) => Ok(f64::NAN),
@@ -1650,6 +1662,13 @@ mod tests {
     assert!(rt.to_number(s).unwrap().is_nan());
     let s = rt.alloc_string_value("+0x10").unwrap();
     assert!(rt.to_number(s).unwrap().is_nan());
+
+    // Rust's float parser accepts spellings like "inf"/"infinity" which are not valid numeric
+    // literals in ECMA-262. Ensure we reject them so `Number("inf")` produces NaN.
+    for text in ["inf", "+inf", "-inf", "infinity", "INFINITY"] {
+      let s = rt.alloc_string_value(text).unwrap();
+      assert!(rt.to_number(s).unwrap().is_nan(), "Number({text:?})");
+    }
 
     // Radix-prefixed integer literals can exceed `u64`. Ensure they still parse to a Number (f64)
     // instead of incorrectly producing NaN.
