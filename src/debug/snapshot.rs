@@ -159,6 +159,18 @@ pub enum Dom2NodeKindSnapshot {
     #[serde(default)]
     quirks_mode: QuirksModeSnapshot,
   },
+  Comment {
+    content: String,
+  },
+  ProcessingInstruction {
+    target: String,
+    data: String,
+  },
+  Doctype {
+    name: String,
+    public_id: String,
+    system_id: String,
+  },
   ShadowRoot {
     mode: String,
     delegates_focus: bool,
@@ -478,6 +490,24 @@ fn snapshot_dom2_kind(kind: &crate::dom2::NodeKind) -> Dom2NodeKindSnapshot {
   match kind {
     crate::dom2::NodeKind::Document { quirks_mode } => Dom2NodeKindSnapshot::Document {
       quirks_mode: QuirksModeSnapshot::from(*quirks_mode),
+    },
+    crate::dom2::NodeKind::Comment { content } => Dom2NodeKindSnapshot::Comment {
+      content: truncate_dom2_snapshot_text(content),
+    },
+    crate::dom2::NodeKind::ProcessingInstruction { target, data } => {
+      Dom2NodeKindSnapshot::ProcessingInstruction {
+        target: truncate_dom2_snapshot_text(target),
+        data: truncate_dom2_snapshot_text(data),
+      }
+    }
+    crate::dom2::NodeKind::Doctype {
+      name,
+      public_id,
+      system_id,
+    } => Dom2NodeKindSnapshot::Doctype {
+      name: truncate_dom2_snapshot_text(name),
+      public_id: truncate_dom2_snapshot_text(public_id),
+      system_id: truncate_dom2_snapshot_text(system_id),
     },
     crate::dom2::NodeKind::ShadowRoot {
       mode,

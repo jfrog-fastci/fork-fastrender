@@ -60,6 +60,29 @@ pub enum NodeKind {
   Document {
     quirks_mode: QuirksMode,
   },
+  /// An HTML comment node.
+  ///
+  /// Comments are currently ignored when snapshotting back into the renderer's immutable `DomNode`
+  /// representation, to match `crate::dom::parse_html` behavior.
+  Comment {
+    content: String,
+  },
+  /// An XML processing instruction node.
+  ///
+  /// Like comments, processing instructions are ignored by renderer snapshots.
+  ProcessingInstruction {
+    target: String,
+    data: String,
+  },
+  /// A document type node.
+  ///
+  /// The renderer DOM representation currently drops doctypes, but html5ever's tree builder still
+  /// requires a place to store them.
+  Doctype {
+    name: String,
+    public_id: String,
+    system_id: String,
+  },
   ShadowRoot {
     mode: ShadowRootMode,
     delegates_focus: bool,
@@ -429,8 +452,8 @@ impl Document {
       next_child: usize,
     }
 
-    fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
-      match kind {
+    fn node_kind_to_dom_node_type(kind: &NodeKind) -> Option<DomNodeType> {
+      Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
         },
@@ -462,13 +485,18 @@ impl Document {
         NodeKind::Text { content } => DomNodeType::Text {
           content: content.clone(),
         },
-      }
+        // html5ever nodes that the renderer DOM representation currently drops.
+        NodeKind::Comment { .. }
+        | NodeKind::ProcessingInstruction { .. }
+        | NodeKind::Doctype { .. } => return None,
+      })
     }
 
     let root_id = self.root;
     let root_src = self.node(root_id);
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind),
+      node_type: node_kind_to_dom_node_type(&root_src.kind)
+        .expect("document root must be representable in renderer DOM snapshot"),
       children: Vec::with_capacity(root_src.children.len()),
     };
 
@@ -490,9 +518,15 @@ impl Document {
         stack.push(frame);
 
         let child_src = self.node(child_id);
+        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
+          // Skip non-renderer nodes like comments/doctype/PI so renderer snapshots match
+          // `crate::dom::parse_html` behavior.
+          continue;
+        };
+
         let extra_capacity = usize::from(self.should_inject_wbr_zwsp(child_id));
         dst.children.push(DomNode {
-          node_type: node_kind_to_dom_node_type(&child_src.kind),
+          node_type: child_node_type,
           children: Vec::with_capacity(child_src.children.len() + extra_capacity),
         });
         let child_dst = dst
@@ -528,8 +562,8 @@ impl Document {
       next_child: usize,
     }
 
-    fn node_kind_to_dom_node_type(kind: &NodeKind) -> DomNodeType {
-      match kind {
+    fn node_kind_to_dom_node_type(kind: &NodeKind) -> Option<DomNodeType> {
+      Some(match kind {
         NodeKind::Document { quirks_mode } => DomNodeType::Document {
           quirks_mode: *quirks_mode,
         },
@@ -561,12 +595,16 @@ impl Document {
         NodeKind::Text { content } => DomNodeType::Text {
           content: content.clone(),
         },
-      }
+        // html5ever-only node kinds that the renderer DOM representation currently drops.
+        NodeKind::Comment { .. }
+        | NodeKind::ProcessingInstruction { .. }
+        | NodeKind::Doctype { .. } => return None,
+      })
     }
 
     let root_src = self.nodes.get(root_id.index())?;
     let mut root = DomNode {
-      node_type: node_kind_to_dom_node_type(&root_src.kind),
+      node_type: node_kind_to_dom_node_type(&root_src.kind)?,
       children: Vec::with_capacity(root_src.children.len()),
     };
 
@@ -589,8 +627,11 @@ impl Document {
 
         let child_src = self.node(child_id);
         let extra_capacity = usize::from(self.should_inject_wbr_zwsp(child_id));
+        let Some(child_node_type) = node_kind_to_dom_node_type(&child_src.kind) else {
+          continue;
+        };
         dst.children.push(DomNode {
-          node_type: node_kind_to_dom_node_type(&child_src.kind),
+          node_type: child_node_type,
           children: Vec::with_capacity(child_src.children.len() + extra_capacity),
         });
         let child_dst = dst
@@ -632,6 +673,16 @@ impl Document {
     while let Some(item) = stack.pop() {
       match item {
         StackItem::Real(id) => {
+          // Skip nodes that are ignored by renderer snapshots.
+          if matches!(
+            &self.node(id).kind,
+            NodeKind::Comment { .. }
+              | NodeKind::ProcessingInstruction { .. }
+              | NodeKind::Doctype { .. }
+          ) {
+            continue;
+          }
+
           let preorder_id = preorder_to_node_id.len();
           preorder_to_node_id.push(Some(id));
           node_id_to_preorder[id.0] = preorder_id;

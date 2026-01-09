@@ -231,7 +231,12 @@ fn compute_final_base_url(doc: &Document, document_url: Option<&str>) -> Option<
           child_ctx.in_foreign_namespace = true;
         }
       }
-      NodeKind::Document { .. } | NodeKind::ShadowRoot { .. } | NodeKind::Text { .. } => {}
+      NodeKind::Document { .. }
+      | NodeKind::ShadowRoot { .. }
+      | NodeKind::Text { .. }
+      | NodeKind::Comment { .. }
+      | NodeKind::ProcessingInstruction { .. }
+      | NodeKind::Doctype { .. } => {}
     }
 
     for &child in doc.node(id).children.iter().rev() {
@@ -394,7 +399,9 @@ fn compute_final_base_url(doc: &Document, document_url: Option<&str>) -> Option<
   #[test]
   fn base_url_updates_only_after_base_is_inserted() {
     let mut parser = StreamingHtmlParser::new(Some("https://example.com/doc.html"));
-    parser.push_str("<head><script src=a.js></script><base href=https://ex/base/></head>");
+    parser.push_str(
+      "<head><script src=a.js></script><base href=https://ex/base/><script src=b.js></script></head>",
+    );
     parser.set_eof();
 
     match parser.pump() {
@@ -415,11 +422,20 @@ fn compute_final_base_url(doc: &Document, document_url: Option<&str>) -> Option<
     }
 
     match parser.pump() {
+      StreamingParserYield::Script {
+        base_url_at_this_point,
+        ..
+      } => {
+        assert_eq!(base_url_at_this_point.as_deref(), Some("https://ex/base/"));
+        assert_eq!(parser.current_base_url().as_deref(), Some("https://ex/base/"));
+      }
+      other => panic!("expected Script yield, got {other:?}"),
+    }
+
+    match parser.pump() {
       StreamingParserYield::Finished { .. } => {}
       other => panic!("expected Finished, got {other:?}"),
     }
-
-    assert_eq!(parser.current_base_url().as_deref(), Some("https://ex/base/"));
   }
 
   fn parse_and_collect_script_specs(

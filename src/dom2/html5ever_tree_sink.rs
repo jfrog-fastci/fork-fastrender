@@ -6,14 +6,11 @@ use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode as HtmlQuirks
 use markup5ever::interface::tree_builder::ElemName;
 use markup5ever::interface::Attribute;
 use markup5ever::{LocalName, Namespace, QualName};
-use rustc_hash::FxHashSet;
 use selectors::context::QuirksMode as SelectorQuirksMode;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
 
 use super::{Document, NodeId, NodeKind};
-
-const INVALID: NodeId = NodeId(usize::MAX);
 
 #[derive(Debug, Clone)]
 pub struct Dom2ElemName {
@@ -31,27 +28,17 @@ impl ElemName for Dom2ElemName {
   }
 }
 
-#[derive(Default)]
-struct SinkState {
-  /// Merge barrier between a node and its previous sibling.
-  ///
-  /// This is used to preserve text split points around ignored markup (comments / PI) without
-  /// keeping those nodes in the DOM.
-  merge_barrier_before: FxHashSet<NodeId>,
-  /// Merge barrier at the end of a parent's children list.
-  merge_barrier_at_end: FxHashSet<NodeId>,
-}
-
 /// html5ever [`TreeSink`] that incrementally builds a live [`dom2::Document`].
 ///
 /// Notes:
-/// - Comments / processing instructions / doctypes are ignored (not inserted into the tree).
+/// - Comments / processing instructions / doctypes are stored in the `dom2` arena but are currently
+///   ignored when snapshotting back into the renderer's immutable DOM representation (to match
+///   `crate::dom::parse_html`).
 /// - HTML namespace elements store `namespace=""` for compatibility with existing selector logic.
 /// - The sink performs parse-time `<base href>` tracking via an internal [`BaseUrlTracker`].
 pub struct Dom2TreeSink {
   document: RefCell<Document>,
   base_url_tracker: RefCell<BaseUrlTracker>,
-  state: RefCell<SinkState>,
 }
 
 impl Dom2TreeSink {
@@ -59,7 +46,6 @@ impl Dom2TreeSink {
     Self {
       document: RefCell::new(Document::new(SelectorQuirksMode::NoQuirks)),
       base_url_tracker: RefCell::new(BaseUrlTracker::new(document_url)),
-      state: RefCell::new(SinkState::default()),
     }
   }
 
@@ -135,7 +121,12 @@ impl Dom2TreeSink {
             in_foreign_namespace = true;
           }
         }
-        NodeKind::Document { .. } | NodeKind::ShadowRoot { .. } | NodeKind::Text { .. } => {}
+        NodeKind::Document { .. }
+        | NodeKind::Doctype { .. }
+        | NodeKind::Comment { .. }
+        | NodeKind::ProcessingInstruction { .. }
+        | NodeKind::ShadowRoot { .. }
+        | NodeKind::Text { .. } => {}
       }
       current = doc.node(id).parent;
     }
@@ -161,7 +152,7 @@ impl Dom2TreeSink {
     }
   }
 
-  fn detach_from_parent(state: &mut SinkState, doc: &mut Document, target: NodeId) {
+  fn detach_from_parent(doc: &mut Document, target: NodeId) {
     let Some(old_parent) = doc.node(target).parent else {
       return;
     };
@@ -170,33 +161,18 @@ impl Dom2TreeSink {
       return;
     };
 
-    // If there was a merge barrier directly before this node, move it to the next sibling (or the
-    // end of the parent) to mimic the ignored node remaining in-place.
-    if state.merge_barrier_before.remove(&target) {
-      if let Some(next) = doc.node(old_parent).children.get(pos + 1).copied() {
-        state.merge_barrier_before.insert(next);
-      } else {
-        state.merge_barrier_at_end.insert(old_parent);
-      }
-    }
-
     doc.node_mut(old_parent).children.remove(pos);
     doc.node_mut(target).parent = None;
   }
 
   fn insert_node_before(
-    state: &mut SinkState,
     doc: &mut Document,
     parent: NodeId,
     reference: Option<NodeId>,
     child: NodeId,
   ) -> bool {
-    if child == INVALID || parent == INVALID {
-      return false;
-    }
-
     if doc.node(child).parent.is_some() {
-      Self::detach_from_parent(state, doc, child);
+      Self::detach_from_parent(doc, child);
     }
 
     let insertion_idx = match reference {
@@ -206,15 +182,6 @@ impl Dom2TreeSink {
     let Some(insertion_idx) = insertion_idx else {
       return false;
     };
-
-    // If a merge barrier was at the insertion point, move it to before the inserted node.
-    if reference.is_none() && state.merge_barrier_at_end.remove(&parent) {
-      state.merge_barrier_before.insert(child);
-    } else if let Some(reference) = reference {
-      if state.merge_barrier_before.remove(&reference) {
-        state.merge_barrier_before.insert(child);
-      }
-    }
 
     // Avoid inserting the same node twice.
     if doc.node(parent).children.get(insertion_idx).copied() == Some(child) {
@@ -227,7 +194,6 @@ impl Dom2TreeSink {
   }
 
   fn append_text_at(
-    state: &mut SinkState,
     doc: &mut Document,
     parent: NodeId,
     reference: Option<NodeId>,
@@ -238,29 +204,20 @@ impl Dom2TreeSink {
     }
 
     if reference.is_none() {
-      let blocked_by_barrier = state.merge_barrier_at_end.contains(&parent);
-      if !blocked_by_barrier {
-        if let Some(last_child) = doc.node(parent).children.last().copied() {
-          if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
-            content.push_str(text);
-            return;
-          }
+      if let Some(last_child) = doc.node(parent).children.last().copied() {
+        if let NodeKind::Text { content } = &mut doc.node_mut(last_child).kind {
+          content.push_str(text);
+          return;
         }
       }
 
-      let text_id = doc.push_node(
+      doc.push_node(
         NodeKind::Text {
           content: text.to_string(),
         },
         Some(parent),
         /* inert_subtree */ false,
       );
-
-      // A barrier at end now becomes a barrier before the newly appended node.
-      if state.merge_barrier_at_end.remove(&parent) {
-        state.merge_barrier_before.insert(text_id);
-      }
-
       return;
     }
 
@@ -268,16 +225,13 @@ impl Dom2TreeSink {
     let Some(insert_pos) = doc.node(parent).children.iter().position(|&c| c == reference) else {
       return;
     };
-
-    let barrier = state.merge_barrier_before.contains(&reference);
     let prev = if insert_pos == 0 {
       None
     } else {
       doc.node(parent).children.get(insert_pos - 1).copied()
     };
 
-    let can_merge_prev = !barrier
-      && prev.is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }));
+    let can_merge_prev = prev.is_some_and(|id| matches!(&doc.node(id).kind, NodeKind::Text { .. }));
     let can_merge_next = matches!(&doc.node(reference).kind, NodeKind::Text { .. });
 
     if can_merge_prev {
@@ -295,7 +249,7 @@ impl Dom2TreeSink {
         if let NodeKind::Text { content } = &mut doc.node_mut(prev_id).kind {
           content.push_str(&next_content);
         }
-        Self::detach_from_parent(state, doc, reference);
+        Self::detach_from_parent(doc, reference);
       }
 
       return;
@@ -317,11 +271,6 @@ impl Dom2TreeSink {
     );
     doc.node_mut(text_id).parent = Some(parent);
     doc.node_mut(parent).children.insert(insert_pos, text_id);
-
-    // Preserve barrier-at-reference semantics by moving it to the new node.
-    if state.merge_barrier_before.remove(&reference) {
-      state.merge_barrier_before.insert(text_id);
-    }
   }
 
   fn note_element_inserted(&self, doc: &Document, parent: NodeId, child: NodeId) {
@@ -378,13 +327,6 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn elem_name(&self, target: &NodeId) -> Dom2ElemName {
-    if *target == INVALID {
-      return Dom2ElemName {
-        ns: Namespace::from(HTML_NAMESPACE),
-        local: LocalName::from(""),
-      };
-    }
-
     let doc = self.document.borrow();
     match &doc.node(*target).kind {
       NodeKind::Element {
@@ -451,34 +393,36 @@ impl TreeSink for Dom2TreeSink {
     id
   }
 
-  fn create_comment(&self, _text: StrTendril) -> NodeId {
-    INVALID
+  fn create_comment(&self, text: StrTendril) -> NodeId {
+    self.document.borrow_mut().push_node(
+      NodeKind::Comment {
+        content: text.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
   }
 
-  fn create_pi(&self, _target: StrTendril, _data: StrTendril) -> NodeId {
-    INVALID
+  fn create_pi(&self, target: StrTendril, data: StrTendril) -> NodeId {
+    self.document.borrow_mut().push_node(
+      NodeKind::ProcessingInstruction {
+        target: target.to_string(),
+        data: data.to_string(),
+      },
+      None,
+      /* inert_subtree */ false,
+    )
   }
 
   fn append(&self, parent: &NodeId, child: NodeOrText<NodeId>) {
-    if *parent == INVALID {
-      return;
-    }
-
     match child {
       NodeOrText::AppendText(text) => {
         let mut doc = self.document.borrow_mut();
-        let mut state = self.state.borrow_mut();
-        Self::append_text_at(&mut state, &mut doc, *parent, None, text.as_ref());
+        Self::append_text_at(&mut doc, *parent, None, text.as_ref());
       }
       NodeOrText::AppendNode(node) => {
-        if node == INVALID {
-          self.state.borrow_mut().merge_barrier_at_end.insert(*parent);
-          return;
-        }
-
         let mut doc = self.document.borrow_mut();
-        let mut state = self.state.borrow_mut();
-        if Self::insert_node_before(&mut state, &mut doc, *parent, None, node) {
+        if Self::insert_node_before(&mut doc, *parent, None, node) {
           self.note_element_inserted(&doc, *parent, node);
         }
       }
@@ -486,10 +430,6 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn append_before_sibling(&self, sibling: &NodeId, child: NodeOrText<NodeId>) {
-    if *sibling == INVALID {
-      return;
-    }
-
     let parent = {
       let doc = self.document.borrow();
       doc.node(*sibling).parent
@@ -501,18 +441,11 @@ impl TreeSink for Dom2TreeSink {
     match child {
       NodeOrText::AppendText(text) => {
         let mut doc = self.document.borrow_mut();
-        let mut state = self.state.borrow_mut();
-        Self::append_text_at(&mut state, &mut doc, parent, Some(*sibling), text.as_ref());
+        Self::append_text_at(&mut doc, parent, Some(*sibling), text.as_ref());
       }
       NodeOrText::AppendNode(node) => {
-        if node == INVALID {
-          self.state.borrow_mut().merge_barrier_before.insert(*sibling);
-          return;
-        }
-
         let mut doc = self.document.borrow_mut();
-        let mut state = self.state.borrow_mut();
-        if Self::insert_node_before(&mut state, &mut doc, parent, Some(*sibling), node) {
+        if Self::insert_node_before(&mut doc, parent, Some(*sibling), node) {
           self.note_element_inserted(&doc, parent, node);
         }
       }
@@ -520,21 +453,30 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn append_based_on_parent_node(&self, element: &NodeId, prev_element: &NodeId, child: NodeOrText<NodeId>) {
-    if *element != INVALID {
-      let parent = {
-        let doc = self.document.borrow();
-        doc.node(*element).parent
-      };
-      if parent.is_some() {
-        self.append_before_sibling(element, child);
-        return;
-      }
+    let parent = {
+      let doc = self.document.borrow();
+      doc.node(*element).parent
+    };
+    if parent.is_some() {
+      self.append_before_sibling(element, child);
+      return;
     }
-
-    self.append(prev_element, child);
+    self.append(prev_element, child)
   }
 
-  fn append_doctype_to_document(&self, _name: StrTendril, _public_id: StrTendril, _system_id: StrTendril) {}
+  fn append_doctype_to_document(&self, name: StrTendril, public_id: StrTendril, system_id: StrTendril) {
+    let mut doc = self.document.borrow_mut();
+    let root = doc.root();
+    doc.push_node(
+      NodeKind::Doctype {
+        name: name.to_string(),
+        public_id: public_id.to_string(),
+        system_id: system_id.to_string(),
+      },
+      Some(root),
+      /* inert_subtree */ false,
+    );
+  }
 
   fn get_template_contents(&self, target: &NodeId) -> NodeId {
     // FastRender represents template contents as children of the `<template>` element itself.
@@ -542,53 +484,53 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn remove_from_parent(&self, target: &NodeId) {
-    if *target == INVALID {
-      return;
-    }
     let mut doc = self.document.borrow_mut();
-    let mut state = self.state.borrow_mut();
-    Self::detach_from_parent(&mut state, &mut doc, *target);
+    Self::detach_from_parent(&mut doc, *target);
   }
 
   fn reparent_children(&self, node: &NodeId, new_parent: &NodeId) {
-    if *node == INVALID || *new_parent == INVALID {
+    let mut doc = self.document.borrow_mut();
+    let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
+
+    if moved_children.is_empty() {
       return;
     }
 
-    let moved_children = {
-      let mut doc = self.document.borrow_mut();
-      let mut state = self.state.borrow_mut();
-      let moved_children = std::mem::take(&mut doc.node_mut(*node).children);
+    let old_len = doc.node(*new_parent).children.len();
+    for &child in &moved_children {
+      doc.node_mut(child).parent = Some(*new_parent);
+    }
+    doc
+      .node_mut(*new_parent)
+      .children
+      .extend(moved_children.iter().copied());
 
-      if !moved_children.is_empty() && state.merge_barrier_at_end.remove(new_parent) {
-        state.merge_barrier_before.insert(moved_children[0]);
+    // Merge boundary text nodes if reparenting created a new adjacency.
+    if old_len > 0 {
+      let prev = doc.node(*new_parent).children[old_len - 1];
+      let next = doc.node(*new_parent).children[old_len];
+      if matches!(&doc.node(prev).kind, NodeKind::Text { .. })
+        && matches!(&doc.node(next).kind, NodeKind::Text { .. })
+      {
+        let next_content = match &mut doc.node_mut(next).kind {
+          NodeKind::Text { content } => std::mem::take(content),
+          _ => unreachable!("kind checked above"),
+        };
+        if let NodeKind::Text { content } = &mut doc.node_mut(prev).kind {
+          content.push_str(&next_content);
+        }
+        Self::detach_from_parent(&mut doc, next);
       }
-
-      for child in moved_children.iter().copied() {
-        doc.node_mut(child).parent = Some(*new_parent);
-      }
-      doc.node_mut(*new_parent).children.extend(moved_children.iter().copied());
-
-      if state.merge_barrier_at_end.remove(node) {
-        state.merge_barrier_at_end.insert(*new_parent);
-      }
-
-      moved_children
-    };
+    }
 
     // Reparenting is another insertion point (e.g. foster parenting). Notify the base URL tracker
     // for any `<base>` moved into/out of `<head>` during parsing.
-    let doc = self.document.borrow();
     for child in moved_children {
       self.note_element_inserted(&doc, *new_parent, child);
     }
   }
 
   fn add_attrs_if_missing(&self, target: &NodeId, attrs: Vec<Attribute>) {
-    if *target == INVALID {
-      return;
-    }
-
     let mut doc = self.document.borrow_mut();
     let kind = &mut doc.node_mut(*target).kind;
     let (existing, is_html) = match kind {
@@ -622,16 +564,10 @@ impl TreeSink for Dom2TreeSink {
   }
 
   fn mark_script_already_started(&self, node: &NodeId) {
-    if *node == INVALID {
-      return;
-    }
     self.document.borrow_mut().node_mut(*node).script_already_started = true;
   }
 
   fn is_mathml_annotation_xml_integration_point(&self, node: &NodeId) -> bool {
-    if *node == INVALID {
-      return false;
-    }
     self
       .document
       .borrow()
@@ -861,6 +797,60 @@ mod tests {
       "expected at least {} nodes, got {}",
       DEPTH + 5,
       doc.nodes_len()
+    );
+  }
+
+  #[test]
+  fn stores_doctype_and_comment_nodes_in_dom2() {
+    let html = "<!doctype html><div><!--c--></div>";
+    let expected = crate::dom::parse_html(html).unwrap();
+
+    let doc = parse_with_sink(html);
+    let snapshot = doc.to_renderer_dom();
+    assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
+
+    let doctype_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Doctype { .. } => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("doctype node not found");
+    let NodeKind::Doctype { name, .. } = &doc.node(doctype_id).kind else {
+      unreachable!("doctype_id must point at Doctype");
+    };
+    assert_eq!(name.to_ascii_lowercase(), "html");
+    assert_eq!(doc.node(doctype_id).parent, Some(doc.root()));
+
+    let div_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("<div> not found");
+
+    let comment_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Comment { .. } => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("comment node not found");
+    let NodeKind::Comment { content } = &doc.node(comment_id).kind else {
+      unreachable!("comment_id must point at Comment");
+    };
+    assert_eq!(content, "c");
+    assert_eq!(doc.node(comment_id).parent, Some(div_id));
+    assert!(
+      doc.node(div_id).children.contains(&comment_id),
+      "div should contain comment node"
     );
   }
 }
