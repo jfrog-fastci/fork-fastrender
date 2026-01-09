@@ -342,6 +342,30 @@ fn resolve_length_px(
     .unwrap_or_else(|| len.to_px())
 }
 
+fn finalize_registered_custom_properties_for_var_substitution(
+  style: &mut ComputedStyle,
+  viewport: Size,
+) {
+  let width = if viewport.width.is_finite() {
+    viewport.width.max(0.0)
+  } else {
+    0.0
+  };
+  let height = if viewport.height.is_finite() {
+    viewport.height.max(0.0)
+  } else {
+    0.0
+  };
+  let (inline, block) = if inline_axis_is_horizontal(style.writing_mode) {
+    (width, height)
+  } else {
+    (height, width)
+  };
+  crate::style::cascade::finalize_registered_custom_properties_with_bases(
+    style, viewport, width, height, inline, block,
+  );
+}
+
 fn transform_reference_size(style: &ComputedStyle, ctx: &AnimationResolveContext) -> (f32, f32) {
   let border_box_width = if ctx.element_size.width.is_finite() {
     ctx.element_size.width.max(0.0)
@@ -7685,6 +7709,7 @@ fn apply_animations_to_node_scoped(
       if child_style.color_is_inherited {
         child_style.color = parent_for_children.color;
       }
+      finalize_registered_custom_properties_for_var_substitution(child_style, viewport_size);
       child_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
       if child_style.color_is_inherited {
         child_style.recompute_current_color_dependent_properties(parent_for_children, viewport_size);
@@ -7720,6 +7745,7 @@ fn apply_animations_to_node_scoped(
       if snapshot_style.color_is_inherited {
         snapshot_style.color = parent_for_children.color;
       }
+      finalize_registered_custom_properties_for_var_substitution(snapshot_style, viewport_size);
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
       if snapshot_style.color_is_inherited {
         snapshot_style.recompute_current_color_dependent_properties(
@@ -8630,6 +8656,7 @@ fn apply_transitions_to_fragment(
       if child_style.color_is_inherited {
         child_style.color = parent_for_children.color;
       }
+      finalize_registered_custom_properties_for_var_substitution(child_style, viewport);
       child_style.recompute_var_dependent_properties(parent_for_children, viewport);
       if child_style.color_is_inherited {
         child_style.recompute_current_color_dependent_properties(parent_for_children, viewport);
@@ -8659,6 +8686,7 @@ fn apply_transitions_to_fragment(
       if snapshot_style.color_is_inherited {
         snapshot_style.color = parent_for_children.color;
       }
+      finalize_registered_custom_properties_for_var_substitution(snapshot_style, viewport);
       snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
       if snapshot_style.color_is_inherited {
         snapshot_style.recompute_current_color_dependent_properties(parent_for_children, viewport);

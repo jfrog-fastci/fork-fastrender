@@ -2110,6 +2110,112 @@ impl Length {
     }
   }
 
+  /// Resolves any non-percentage components of this `<length-percentage>` into absolute pixels,
+  /// preserving percentage terms.
+  ///
+  /// This is used for registered custom properties with `syntax: "<length-percentage>"` so their
+  /// computed value behaves like a real property: font-relative, viewport-relative, and container
+  /// query units are resolved in the declaration element's context, while `%` components are kept.
+  pub(crate) fn resolve_non_percentage_terms_to_px(
+    self,
+    viewport_width: f32,
+    viewport_height: f32,
+    font_size_px: f32,
+    root_font_size_px: f32,
+    cqw_base: f32,
+    cqh_base: f32,
+    cqi_base: f32,
+    cqb_base: f32,
+  ) -> Self {
+    let resolved =
+      self.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
+
+    // Always preserve percentage terms, but resolve all other units into px.
+    let mut pct_total: f32 = 0.0;
+    let mut px_total: f32 = 0.0;
+
+    let mut add_non_percent_term = |unit: LengthUnit, value: f32| -> Option<()> {
+      if !value.is_finite() {
+        return None;
+      }
+      let px = match unit {
+        u if u.is_absolute() => Length::new(value, u).to_px(),
+        u if u.is_viewport_relative() => {
+          Length::new(value, u).resolve_with_viewport(viewport_width, viewport_height)?
+        }
+        LengthUnit::Em => value * font_size_px,
+        LengthUnit::Ex | LengthUnit::Ch => value * font_size_px * 0.5,
+        LengthUnit::Rem => value * root_font_size_px,
+        // Treat `lh` as `normal` (1.2 * font-size) at computed-value time. This matches the
+        // existing `Length::resolve_with_context` fallback for lack of full font metrics.
+        LengthUnit::Lh => value * font_size_px * 1.2,
+        // At this point container query units should have been resolved via
+        // `resolve_container_query_units`. If any remain, bail out and preserve the original value.
+        u if u.is_container_query_relative() => return None,
+        LengthUnit::Calc => return None,
+        // Unknown units: preserve original.
+        _ => return None,
+      };
+
+      if !px.is_finite() {
+        return None;
+      }
+      px_total += px;
+      Some(())
+    };
+
+    if let Some(calc) = resolved.calc {
+      for term in calc.terms() {
+        if term.value == 0.0 {
+          continue;
+        }
+        if term.unit == LengthUnit::Percent {
+          pct_total += term.value;
+          continue;
+        }
+        if add_non_percent_term(term.unit, term.value).is_none() {
+          return resolved;
+        }
+      }
+    } else {
+      if resolved.unit == LengthUnit::Percent {
+        pct_total += resolved.value;
+      } else if resolved.value != 0.0 {
+        if add_non_percent_term(resolved.unit, resolved.value).is_none() {
+          return resolved;
+        }
+      }
+    }
+
+    // Normalize tiny floating point noise to deterministic zeros.
+    if px_total.abs() <= 1e-6 {
+      px_total = 0.0;
+    }
+    if pct_total.abs() <= 1e-6 {
+      pct_total = 0.0;
+    }
+
+    if pct_total == 0.0 {
+      return Length::px(px_total);
+    }
+    if px_total == 0.0 {
+      return Length::percent(pct_total);
+    }
+
+    let calc = CalcLength::single(LengthUnit::Px, px_total)
+      .add_scaled(&CalcLength::single(LengthUnit::Percent, pct_total), 1.0);
+    let Some(calc) = calc else {
+      return resolved;
+    };
+    if calc.is_zero() {
+      return Length::px(0.0);
+    }
+    if let Some(term) = calc.single_term() {
+      return Length::new(term.value, term.unit);
+    }
+    Length::calc(calc)
+  }
+
   /// Returns true if this length (or any calc term) uses a percentage component.
   ///
   /// Percentages in the block axis require a containing block height to resolve,

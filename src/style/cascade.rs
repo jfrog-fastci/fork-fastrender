@@ -15344,6 +15344,28 @@ fn compute_base_styles<'a>(
       false,
     );
 
+    // Non-element nodes cannot declare custom properties, but they can still receive registered
+    // properties via inheritance (including initial values for `inherits: false`). Ensure typed
+    // registrations are canonicalized so `var()` substitution is stable.
+    ua_styles.used_dark_color_scheme = parent_ua_styles.used_dark_color_scheme;
+    styles.used_dark_color_scheme = parent_styles.used_dark_color_scheme;
+    finalize_registered_custom_properties_for_node(
+      &mut ua_styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+    finalize_registered_custom_properties_for_node(
+      &mut styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+
     // Closed <details> elements suppress their "details contents" subtree (everything except the
     // first <summary> element). This is typically implemented via UA CSS, but direct text nodes
     // (including whitespace) are not targetable by selectors and still need to be suppressed.
@@ -15624,6 +15646,45 @@ fn compute_base_styles<'a>(
     &selected_scheme,
     is_root,
   );
+
+  let ua_typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
+    &mut ua_styles,
+    node_id,
+    container_query_ancestor_ids.as_ref(),
+    container_ctx,
+    viewport,
+    false,
+  );
+  let typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
+    &mut styles,
+    node_id,
+    container_query_ancestor_ids.as_ref(),
+    container_ctx,
+    viewport,
+    false,
+  );
+  if ua_typed_custom_properties_changed {
+    ua_styles.recompute_var_dependent_properties(parent_ua_styles, viewport);
+    resolve_container_query_lengths(
+      &mut ua_styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+  }
+  if typed_custom_properties_changed {
+    styles.recompute_var_dependent_properties(parent_styles, viewport);
+    resolve_container_query_lengths(
+      &mut styles,
+      node_id,
+      container_query_ancestor_ids.as_ref(),
+      container_ctx,
+      viewport,
+      false,
+    );
+  }
 
   styles.inert = node_is_inert(node, ancestors);
   if styles.inert {
@@ -34825,6 +34886,208 @@ fn resolve_container_query_font_size(
   }
 }
 
+pub(crate) fn finalize_registered_custom_properties_with_bases(
+  styles: &mut ComputedStyle,
+  viewport: Size,
+  cqw_base: f32,
+  cqh_base: f32,
+  cqi_base: f32,
+  cqb_base: f32,
+) -> bool {
+  use crate::style::values::CustomPropertyTypedValue;
+  use crate::style::values::CustomPropertyValue;
+
+  if styles.custom_properties.is_empty() {
+    return false;
+  }
+
+  fn canonicalize_typed_value(
+    typed: &CustomPropertyTypedValue,
+    styles: &ComputedStyle,
+    viewport: Size,
+    cqw_base: f32,
+    cqh_base: f32,
+    cqi_base: f32,
+    cqb_base: f32,
+  ) -> CustomPropertyTypedValue {
+    match typed {
+      // `<length>` and `<length-percentage>` share the same typed representation (`Length`).
+      // Canonicalize by resolving any non-% terms into px while preserving percentage components.
+      CustomPropertyTypedValue::Length(len) => CustomPropertyTypedValue::Length(
+        (*len).resolve_non_percentage_terms_to_px(
+          viewport.width,
+          viewport.height,
+          styles.font_size,
+          styles.root_font_size,
+          cqw_base,
+          cqh_base,
+          cqi_base,
+          cqb_base,
+        ),
+      ),
+      CustomPropertyTypedValue::Number(n) => CustomPropertyTypedValue::Number(*n),
+      CustomPropertyTypedValue::Percentage(p) => CustomPropertyTypedValue::Percentage(*p),
+      CustomPropertyTypedValue::Angle(deg) => CustomPropertyTypedValue::Angle(*deg),
+      CustomPropertyTypedValue::Color(color) => {
+        let rgba = color.to_rgba_with_scheme(styles.color, styles.used_dark_color_scheme);
+        CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
+      }
+      CustomPropertyTypedValue::List { separator, items } => {
+        let items = items
+          .iter()
+          .map(|item| {
+            canonicalize_typed_value(
+              item, styles, viewport, cqw_base, cqh_base, cqi_base, cqb_base,
+            )
+          })
+          .collect();
+        CustomPropertyTypedValue::List {
+          separator: *separator,
+          items,
+        }
+      }
+    }
+  }
+
+  let mut updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
+  let mut typed_changed = false;
+  for (name, value) in styles.custom_properties.iter() {
+    let Some(typed) = value.typed.as_ref() else {
+      continue;
+    };
+    // Defensive: typed values should only exist for registered properties, but avoid canonicalizing
+    // values when a tree-scope registry mismatch slipped through.
+    if styles.custom_property_registry.get(name.as_ref()).is_none() {
+      continue;
+    }
+
+    let computed_typed = canonicalize_typed_value(
+      typed, styles, viewport, cqw_base, cqh_base, cqi_base, cqb_base,
+    );
+    let this_typed_changed = computed_typed != *typed;
+    let computed = CustomPropertyValue::new(computed_typed.to_css(), Some(computed_typed));
+    if computed != *value {
+      typed_changed |= this_typed_changed;
+      updates.push((Arc::clone(name), computed));
+    }
+  }
+
+  if updates.is_empty() {
+    return false;
+  }
+
+  for (name, value) in updates {
+    styles.custom_properties.insert(name, value);
+  }
+  typed_changed
+}
+
+fn finalize_registered_custom_properties_for_node(
+  styles: &mut ComputedStyle,
+  node_id: usize,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
+  viewport: Size,
+  include_self: bool,
+) -> bool {
+  use crate::style::values::CustomPropertyTypedValue;
+
+  if styles.custom_properties.is_empty() {
+    return false;
+  }
+
+  fn length_needs_container_resolution(length: &Length) -> bool {
+    length.unit.is_container_query_relative()
+      || length
+        .calc
+        .is_some_and(|calc| calc.has_container_query_relative())
+  }
+
+  fn typed_needs_container_bases(
+    typed: &CustomPropertyTypedValue,
+    length_needs_container_resolution: &impl Fn(&Length) -> bool,
+  ) -> bool {
+    match typed {
+      CustomPropertyTypedValue::Length(len) => length_needs_container_resolution(len),
+      CustomPropertyTypedValue::List { items, .. } => items
+        .iter()
+        .any(|item| typed_needs_container_bases(item, length_needs_container_resolution)),
+      _ => false,
+    }
+  }
+
+  // Avoid computing container query unit bases unless we have at least one registered *typed*
+  // custom property that needs canonicalization. This is on a hot path (per-node cascade).
+  let mut needs_finalization = false;
+  let mut needs_container_bases = false;
+  for (name, _rule) in styles.custom_property_registry.iter() {
+    let Some(value) = styles.custom_properties.get(name.as_str()) else {
+      continue;
+    };
+    let Some(typed) = value.typed.as_ref() else {
+      continue;
+    };
+    needs_finalization = true;
+
+    if needs_container_bases {
+      continue;
+    }
+
+    if typed_needs_container_bases(typed, &length_needs_container_resolution) {
+      needs_container_bases = true;
+    }
+  }
+
+  if !needs_finalization {
+    return false;
+  }
+
+  let bases = if needs_container_bases {
+    container_query_unit_bases(
+      styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      viewport,
+      include_self,
+    )
+  } else {
+    // Cheap fallback: container query units are not needed, so only compute viewport-based bases.
+    // (Matches the defaults in `container_query_unit_bases`.)
+    let viewport_width = if viewport.width.is_finite() {
+      viewport.width.max(0.0)
+    } else {
+      0.0
+    };
+    let viewport_height = if viewport.height.is_finite() {
+      viewport.height.max(0.0)
+    } else {
+      0.0
+    };
+    let (viewport_inline, viewport_block) =
+      if crate::style::inline_axis_is_horizontal(styles.writing_mode) {
+        (viewport_width, viewport_height)
+      } else {
+        (viewport_height, viewport_width)
+      };
+    ContainerQueryUnitBases {
+      cqw: viewport_width,
+      cqh: viewport_height,
+      cqi: viewport_inline,
+      cqb: viewport_block,
+    }
+  };
+
+  finalize_registered_custom_properties_with_bases(
+    styles,
+    viewport,
+    bases.cqw,
+    bases.cqh,
+    bases.cqi,
+    bases.cqb,
+  )
+}
+
 fn resolve_container_query_lengths(
   styles: &mut ComputedStyle,
   node_id: usize,
@@ -36469,6 +36732,51 @@ fn compute_pseudo_element_styles(
     viewport,
     true,
   );
+
+  // Mirror base-style color-scheme bookkeeping so registered custom properties resolve `light-dark()`
+  // and `currentColor` correctly.
+  let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+  styles.used_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+  ua_styles.used_dark_color_scheme = styles.used_dark_color_scheme;
+
+  let ua_typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
+  let typed_custom_properties_changed = finalize_registered_custom_properties_for_node(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
+  if ua_typed_custom_properties_changed {
+    ua_styles.recompute_var_dependent_properties(ua_parent_styles, viewport);
+    resolve_container_query_lengths(
+      &mut ua_styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      viewport,
+      true,
+    );
+  }
+  if typed_custom_properties_changed {
+    styles.recompute_var_dependent_properties(parent_styles, viewport);
+    resolve_container_query_lengths(
+      &mut styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      viewport,
+      true,
+    );
+  }
 
   match pseudo {
     PseudoElement::Before | PseudoElement::After => {

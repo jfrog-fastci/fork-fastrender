@@ -725,7 +725,7 @@ impl Default for FastRenderConfig {
       allowed_subresource_origins: Vec::new(),
       compat_profile: CompatProfile::default(),
       dom_compat_mode: DomCompatibilityMode::Standard,
-      dom_scripting_enabled: true,
+      dom_scripting_enabled: false,
       apply_meta_viewport: false,
       apply_meta_color_scheme: false,
       fragmentation: None,

@@ -31,6 +31,7 @@ mod css_numeric_functions;
 mod custom_property_inheritance_test;
 mod custom_property_registration_test;
 mod custom_property_registration_union_syntax_test;
+mod registered_custom_property_computed_value_substitution_test;
 mod custom_property_wide_keywords_test;
 mod defaults_test;
 mod dynamic_range_limit_test;

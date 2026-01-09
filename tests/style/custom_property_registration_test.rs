@@ -102,7 +102,7 @@ fn initial_value_applied_without_declaration() {
     .custom_properties
     .get("--tone")
     .expect("initial value");
-  assert_eq!(value.value.trim(), "rgb(1 2 3)");
+  assert_eq!(value.value.trim(), "rgb(1, 2, 3)");
   match &value.typed {
     Some(CustomPropertyTypedValue::Color(color)) => {
       assert_eq!(color.to_rgba(Rgba::BLACK), Rgba::rgb(1, 2, 3));

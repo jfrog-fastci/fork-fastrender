@@ -6315,6 +6315,10 @@ impl DisplayListRenderer {
     let bottom_center = rect.y() + rect.height() - bottom.width * 0.5;
     let left_center = rect.x() + left.width * 0.5;
     let right_center = rect.x() + rect.width() - right.width * 0.5;
+
+    // Use the outer border box corners as endpoints so each edge meets cleanly at corners (avoids
+    // leaving 1px gaps when drawing each edge independently). Dotted borders are clipped to the
+    // border box above so round caps can't extend outside the border box.
     let outer_left = rect.x();
     let outer_top = rect.y();
     let outer_right = rect.x() + rect.width();
