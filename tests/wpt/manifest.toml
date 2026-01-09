@@ -69,6 +69,58 @@ width = 120
 height = 120
 
 [[tests]]
+id = "css/tables/fixed-layout-first-row-width-hint-001"
+path = "css/tables/fixed-layout-first-row-width-hint-001.html"
+reference = "css/tables/fixed-layout-first-row-width-hint-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 320
+height = 60
+
+[[tests]]
+id = "css/tables/auto-layout-uses-all-rows-001"
+path = "css/tables/auto-layout-uses-all-rows-001.html"
+reference = "css/tables/auto-layout-uses-all-rows-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 300
+height = 80
+
+[[tests]]
+id = "css/tables/caption-side-bottom-001"
+path = "css/tables/caption-side-bottom-001.html"
+reference = "css/tables/caption-side-bottom-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 80
+
+[[tests]]
+id = "css/tables/border-spacing-edge-offset-001"
+path = "css/tables/border-spacing-edge-offset-001.html"
+reference = "css/tables/border-spacing-edge-offset-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 60
+height = 60
+
+[[tests]]
 id = "css/subgrid/subgrid-gap-difference-001"
 path = "css/subgrid/subgrid-gap-difference-001.html"
 reference = "css/subgrid/subgrid-gap-difference-001-ref.html"

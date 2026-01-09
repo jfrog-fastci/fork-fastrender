@@ -5922,19 +5922,30 @@ impl FormattingContext for TableFormattingContext {
     let percent_base_width = table_width;
     // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
     // but we still track outer borders for percentage-height resolution.
-    let resolve_abs = |l: &crate::style::values::Length| match l.unit {
-      LengthUnit::Percent => 0.0,
-      _ if l.unit.is_absolute() => l.to_px(),
-      _ => l.value,
+    //
+    // Percentage padding on the table element resolves against the containing block's inline size
+    // (CSS2.1 §10.5/§10.6.1), not the used table width. Treat unresolved percentage terms as 0.
+    let resolve_len = |l: &Length, percentage_base: Option<f32>| {
+      l.resolve_with_context(
+        percentage_base,
+        self.viewport_size.width,
+        self.viewport_size.height,
+        font_size,
+        table_root_style.root_font_size,
+      )
+      .unwrap_or(0.0)
     };
-    let _outer_border_left = resolve_abs(&table_root_style.used_border_left_width());
-    let _outer_border_right = resolve_abs(&table_root_style.used_border_right_width());
-    let outer_border_top = resolve_abs(&table_root_style.used_border_top_width());
-    let outer_border_bottom = resolve_abs(&table_root_style.used_border_bottom_width());
+    let resolve_non_percent = |l: &Length| resolve_len(l, Some(0.0));
+    let resolve_table_padding = |l: &Length| resolve_len(l, containing_width);
+
+    let _outer_border_left = resolve_non_percent(&table_root_style.used_border_left_width());
+    let _outer_border_right = resolve_non_percent(&table_root_style.used_border_right_width());
+    let outer_border_top = resolve_non_percent(&table_root_style.used_border_top_width());
+    let outer_border_bottom = resolve_non_percent(&table_root_style.used_border_bottom_width());
     let outer_border_v = outer_border_top + outer_border_bottom;
-    let mut pad_left = resolve_abs(&table_root_style.padding_left);
-    let mut pad_right = resolve_abs(&table_root_style.padding_right);
-    let mut pad_top = resolve_abs(&table_root_style.padding_top);
+    let mut pad_left = resolve_table_padding(&table_root_style.padding_left);
+    let mut pad_right = resolve_table_padding(&table_root_style.padding_right);
+    let mut pad_top = resolve_table_padding(&table_root_style.padding_top);
     // In the collapsing border model, the table box has no padding (CSS 2.2 §17.6.2).
     let pad_bottom = if structure.border_collapse == BorderCollapse::Collapse {
       pad_left = 0.0;
@@ -5942,17 +5953,17 @@ impl FormattingContext for TableFormattingContext {
       pad_top = 0.0;
       0.0
     } else {
-      resolve_abs(&table_root_style.padding_bottom)
+      resolve_table_padding(&table_root_style.padding_bottom)
     };
     let (border_left, border_right, border_top, border_bottom) =
       if structure.border_collapse == BorderCollapse::Collapse {
         (0.0, 0.0, 0.0, 0.0)
       } else {
         (
-          resolve_abs(&table_root_style.used_border_left_width()),
-          resolve_abs(&table_root_style.used_border_right_width()),
-          resolve_abs(&table_root_style.used_border_top_width()),
-          resolve_abs(&table_root_style.used_border_bottom_width()),
+          resolve_non_percent(&table_root_style.used_border_left_width()),
+          resolve_non_percent(&table_root_style.used_border_right_width()),
+          resolve_non_percent(&table_root_style.used_border_top_width()),
+          resolve_non_percent(&table_root_style.used_border_bottom_width()),
         )
       };
     let padding_h = pad_left + pad_right;
@@ -8359,18 +8370,23 @@ impl FormattingContext for TableFormattingContext {
       .as_deref()
       .unwrap_or_else(|| table_box.style.as_ref());
     if table_root_style.containment.isolates_inline_size() {
-      let resolve_abs_no_pct = |l: &crate::style::values::Length| match l.unit {
-        LengthUnit::Percent => 0.0,
-        _ if l.unit.is_absolute() => l.to_px(),
-        _ => l.value,
+      let resolve_len_no_pct = |l: &Length| {
+        l.resolve_with_context(
+          Some(0.0),
+          self.viewport_size.width,
+          self.viewport_size.height,
+          table_root_style.font_size,
+          table_root_style.root_font_size,
+        )
+        .unwrap_or(0.0)
       };
       let edges = if table_root_style.border_collapse == BorderCollapse::Collapse {
         0.0
       } else {
-        resolve_abs_no_pct(&table_root_style.padding_left)
-          + resolve_abs_no_pct(&table_root_style.padding_right)
-          + resolve_abs_no_pct(&table_root_style.border_left_width)
-          + resolve_abs_no_pct(&table_root_style.border_right_width)
+        resolve_len_no_pct(&table_root_style.padding_left)
+          + resolve_len_no_pct(&table_root_style.padding_right)
+          + resolve_len_no_pct(&table_root_style.border_left_width)
+          + resolve_len_no_pct(&table_root_style.border_right_width)
       };
 
       let font_size = table_root_style.font_size;
@@ -8398,15 +8414,20 @@ impl FormattingContext for TableFormattingContext {
       .width
       .as_ref()
       .and_then(|len| resolve_length_against(len, font_size, root_font_size, None));
-    let resolve_abs_no_pct = |l: &crate::style::values::Length| match l.unit {
-      LengthUnit::Percent => 0.0,
-      _ if l.unit.is_absolute() => l.to_px(),
-      _ => l.value,
+    let resolve_len_no_pct = |l: &Length| {
+      l.resolve_with_context(
+        Some(0.0),
+        self.viewport_size.width,
+        self.viewport_size.height,
+        font_size,
+        root_font_size,
+      )
+      .unwrap_or(0.0)
     };
-    let padding_h_base = resolve_abs_no_pct(&table_root_style.padding_left)
-      + resolve_abs_no_pct(&table_root_style.padding_right);
-    let border_h_base = resolve_abs_no_pct(&table_root_style.used_border_left_width())
-      + resolve_abs_no_pct(&table_root_style.used_border_right_width());
+    let padding_h_base = resolve_len_no_pct(&table_root_style.padding_left)
+      + resolve_len_no_pct(&table_root_style.padding_right);
+    let border_h_base = resolve_len_no_pct(&table_root_style.used_border_left_width())
+      + resolve_len_no_pct(&table_root_style.used_border_right_width());
     let edge_consumption = if structure.border_collapse == BorderCollapse::Collapse {
       0.0
     } else {
@@ -8441,17 +8462,10 @@ impl FormattingContext for TableFormattingContext {
     let edges = if structure.border_collapse == BorderCollapse::Collapse {
       0.0
     } else {
-      let resolve_abs = |l: &crate::style::values::Length| match l.unit {
-        LengthUnit::Percent => percent_base
-          .map(|base| (l.value / 100.0) * base)
-          .unwrap_or(0.0),
-        _ if l.unit.is_absolute() => l.to_px(),
-        _ => l.value,
-      };
-      resolve_abs(&table_root_style.padding_left)
-        + resolve_abs(&table_root_style.padding_right)
-        + resolve_abs(&table_root_style.used_border_left_width())
-        + resolve_abs(&table_root_style.used_border_right_width())
+      resolve_len_no_pct(&table_root_style.padding_left)
+        + resolve_len_no_pct(&table_root_style.padding_right)
+        + resolve_len_no_pct(&table_root_style.used_border_left_width())
+        + resolve_len_no_pct(&table_root_style.used_border_right_width())
     };
     let min_sum: f32 = column_constraints.iter().map(|c| c.min_width).sum();
     let raw_max_sum: f32 = column_constraints.iter().map(|c| c.max_width).sum();

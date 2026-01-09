@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fixed table layout: first-row width hints distribute remaining width</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  table {
+    table-layout: fixed;
+    width: 300px;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 0;
+    padding: 0;
+  }
+  td {
+    padding: 0;
+    border: 0;
+    height: 20px;
+  }
+  td.a { background: rgb(255, 0, 0); }
+  td.b { background: rgb(0, 255, 0); }
+  td.c { background: rgb(0, 0, 255); }
+</style>
+<table>
+  <tr>
+    <td class="a" style="width: 50px"></td>
+    <td class="b"></td>
+    <td class="c"></td>
+  </tr>
+</table>
+

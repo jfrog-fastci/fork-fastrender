@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Auto table layout: later rows contribute to intrinsic column widths</title>
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  table {
+    display: inline-table;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 0;
+    padding: 0;
+  }
+  td {
+    padding: 0;
+    border: 0;
+    height: 20px;
+  }
+  td.col1 { background: rgb(255, 0, 0); }
+  td.col2 { background: rgb(0, 255, 0); }
+  .wide1 { width: 200px; height: 20px; }
+  .wide2 { width: 50px; height: 20px; }
+</style>
+<table>
+  <tr>
+    <td class="col1"></td>
+    <td class="col2"><div class="wide2"></div></td>
+  </tr>
+  <tr>
+    <td class="col1"><div class="wide1"></div></td>
+    <td class="col2"><div class="wide2"></div></td>
+  </tr>
+</table>
+
