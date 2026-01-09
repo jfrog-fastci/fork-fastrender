@@ -781,6 +781,43 @@ mod tests {
   }
 
   #[test]
+  fn ignored_comment_prevents_text_merge_across_boundary_when_streaming_input() {
+    let html = "<!doctype html><div>a<!--c-->b</div>";
+    let expected = crate::dom::parse_html(html).unwrap();
+
+    let sink = Dom2TreeSink::new(None);
+    let mut parser = html5ever::parse_document(sink, ParseOpts::default());
+    parser.process("<!doctype html><div>".into());
+    parser.process("a".into());
+    parser.process("<!--c-->".into());
+    parser.process("b</div>".into());
+    let doc = parser.finish();
+
+    let snapshot = doc.to_renderer_dom();
+    assert_eq!(snapshot_dom(&expected), snapshot_dom(&snapshot));
+
+    let div_id = doc
+      .nodes()
+      .iter()
+      .enumerate()
+      .find_map(|(idx, node)| match &node.kind {
+        NodeKind::Element { tag_name, .. } if tag_name.eq_ignore_ascii_case("div") => Some(NodeId(idx)),
+        _ => None,
+      })
+      .expect("<div> not found");
+    let text_nodes: Vec<String> = doc
+      .node(div_id)
+      .children
+      .iter()
+      .filter_map(|&id| match &doc.node(id).kind {
+        NodeKind::Text { content } => Some(content.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(text_nodes, vec!["a".to_string(), "b".to_string()]);
+  }
+
+  #[test]
   fn wbr_snapshot_matches_legacy_parse_html() {
     let html = "<!doctype html><p>a<wbr>b</p>";
     let expected = crate::dom::parse_html(html).unwrap();
