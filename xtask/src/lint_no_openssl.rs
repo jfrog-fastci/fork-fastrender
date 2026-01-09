@@ -3,7 +3,6 @@ use clap::Args;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::process::Command;
 
 /// Fail CI if `openssl-sys` (and thus system OpenSSL headers) are pulled into the default
 /// `fastrender` dependency graph.
@@ -42,7 +41,8 @@ struct CargoNodeDep {
 }
 
 pub fn run_lint_no_openssl(repo_root: &Path, _args: LintNoOpenSslArgs) -> Result<()> {
-  let mut cmd = Command::new("cargo");
+  // Use the agent wrapper so local invocations don't spawn unbounded cargo compilations.
+  let mut cmd = crate::cmd::cargo_agent_command(repo_root);
   cmd.args(["metadata", "--locked", "--format-version", "1"]);
   cmd.current_dir(repo_root);
 
@@ -119,4 +119,3 @@ pub fn run_lint_no_openssl(repo_root: &Path, _args: LintNoOpenSslArgs) -> Result
   println!("✓ lint-no-openssl: openssl-sys not present in fastrender dependency graph");
   Ok(())
 }
-
