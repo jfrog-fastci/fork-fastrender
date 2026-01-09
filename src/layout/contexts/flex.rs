@@ -122,7 +122,7 @@ thread_local! {
   /// Scope this cache to the intrinsic/layout cache epoch so we do not retain stale pointers across
   /// renders.
   static FLEX_AUTO_MIN_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
-  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool, u32), Option<f32>>> =
+  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool, u32, u32, u32), Option<f32>>> =
     RefCell::new(FxHashMap::default());
 }
 
@@ -147,6 +147,8 @@ fn flex_auto_min_cache_lookup(
   main_axis_is_horizontal: bool,
   skip_contents: bool,
   cross_size_key: u32,
+  container_width_key: u32,
+  container_height_key: u32,
 ) -> Option<Option<f32>> {
   if box_id == 0 {
     return None;
@@ -155,7 +157,15 @@ fn flex_auto_min_cache_lookup(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     cache
       .borrow()
-      .get(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents, cross_size_key))
+      .get(&(
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        cross_size_key,
+        container_width_key,
+        container_height_key,
+      ))
       .cloned()
   })
 }
@@ -167,6 +177,8 @@ fn flex_auto_min_cache_store(
   main_axis_is_horizontal: bool,
   skip_contents: bool,
   cross_size_key: u32,
+  container_width_key: u32,
+  container_height_key: u32,
   value: Option<f32>,
 ) {
   if box_id == 0 {
@@ -176,12 +188,28 @@ fn flex_auto_min_cache_store(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     let mut map = cache.borrow_mut();
     if map.len() >= FLEX_AUTO_MIN_CACHE_MAX_ENTRIES
-      && !map.contains_key(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents, cross_size_key))
+      && !map.contains_key(&(
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        cross_size_key,
+        container_width_key,
+        container_height_key,
+      ))
     {
       map.clear();
     }
     map.insert(
-      (box_id, style_ptr, main_axis_is_horizontal, skip_contents, cross_size_key),
+      (
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        cross_size_key,
+        container_width_key,
+        container_height_key,
+      ),
       value,
     );
   });
@@ -1064,6 +1092,66 @@ impl FormattingContext for FlexFormattingContext {
     }
     let viewport_size = self.viewport_size;
     let measured_fragments = self.measured_fragments.clone();
+    let container_self_percentage_base = container_inline_base
+      .unwrap_or(viewport_size.width)
+      .max(0.0);
+    let scrollbar_width = resolve_scrollbar_width(style);
+    let reserve_scroll_x = matches!(style.overflow_x, CssOverflow::Scroll)
+      || (style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_x,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        ));
+    let reserve_scroll_y = matches!(style.overflow_y, CssOverflow::Scroll)
+      || (style.scrollbar_gutter.stable
+        && matches!(
+          style.overflow_y,
+          CssOverflow::Hidden | CssOverflow::Auto | CssOverflow::Scroll
+        ));
+    let mut horizontal_edges =
+      self.axis_padding_border_px(style, Axis::Horizontal, container_self_percentage_base);
+    let mut vertical_edges =
+      self.axis_padding_border_px(style, Axis::Vertical, container_self_percentage_base);
+    if reserve_scroll_y && scrollbar_width > 0.0 {
+      horizontal_edges +=
+        scrollbar_width * if style.scrollbar_gutter.both_edges { 2.0 } else { 1.0 };
+    }
+    if reserve_scroll_x && scrollbar_width > 0.0 {
+      vertical_edges +=
+        scrollbar_width * if style.scrollbar_gutter.both_edges { 2.0 } else { 1.0 };
+    }
+    let container_used_border_box_width =
+      constraints.used_border_box_width.or_else(|| constraints.width());
+    let container_used_border_box_height = constraints.used_border_box_height.or_else(|| {
+      let Some(specified) = style.height.as_ref() else {
+        return None;
+      };
+
+      let percentage_base = specified.has_percentage().then(|| constraints.height()).flatten();
+      let resolved = resolve_length_with_percentage_metrics(
+        *specified,
+        percentage_base,
+        viewport_size,
+        style.font_size,
+        style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
+      )?;
+      if !resolved.is_finite() {
+        return None;
+      }
+      let resolved = resolved.max(0.0);
+      Some(match style.box_sizing {
+        BoxSizing::ContentBox => (resolved + vertical_edges).max(0.0),
+        BoxSizing::BorderBox => resolved,
+      })
+    });
+    let container_content_width_for_children = container_used_border_box_width
+      .map(|w| (w - horizontal_edges).max(0.0))
+      .filter(|w| w.is_finite());
+    let container_content_height_for_children = container_used_border_box_height
+      .map(|h| (h - vertical_edges).max(0.0))
+      .filter(|h| h.is_finite());
 
     let establishes_fixed_cb = style.has_transform()
       || style.perspective.is_some()
@@ -2118,20 +2206,20 @@ impl FormattingContext for FlexFormattingContext {
                     // Replaced elements don't establish a formatting context; compute their
                     // intrinsic/used size directly to avoid block layout inflating widths.
                     if let crate::tree::box_tree::BoxType::Replaced(replaced_box) = &measure_box.box_type {
-                        let avail_width = known_dimensions.width.or(match avail.width {
-                            AvailableSpace::Definite(w) => Some(w),
-                            _ => None,
-                        }).unwrap_or(this.viewport_size.width);
-                        let avail_height = known_dimensions.height.or(match avail.height {
-                            AvailableSpace::Definite(h) => Some(h),
-                            _ => None,
-                        }).unwrap_or(this.viewport_size.height);
-                        let percentage_base = Some(Size::new(avail_width, avail_height));
+                        let base_width = container_content_width_for_children.filter(|w| *w > 0.0);
+                        let base_height = container_content_height_for_children.filter(|h| *h > 0.0);
+                        let percentage_base = match (base_width, base_height) {
+                          (None, None) => None,
+                          _ => Some(Size::new(
+                            base_width.unwrap_or(f32::NAN),
+                            base_height.unwrap_or(f32::NAN),
+                          )),
+                        };
                         let size = crate::layout::utils::compute_replaced_size(
-                            measure_style,
-                            replaced_box,
-                            percentage_base,
-                            this.viewport_size,
+                          measure_style,
+                          replaced_box,
+                          percentage_base,
+                          this.viewport_size,
                         );
                         flex_profile::record_measure_time(measure_timer);
                         return taffy::geometry::Size {
@@ -6454,10 +6542,6 @@ impl FlexFormattingContext {
       .used_border_box_width
       .or_else(|| constraints.width())
       .filter(|w| w.is_finite());
-    let border_box_height = constraints
-      .used_border_box_height
-      .or_else(|| constraints.height())
-      .filter(|h| h.is_finite());
 
     // Padding/border percentages resolve against the containing block's physical width.
     let inline_base = constraints
@@ -6495,10 +6579,38 @@ impl FlexFormattingContext {
     let padding_bottom =
       self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
 
+    let horizontal_edges = border_left + border_right + padding_left + padding_right;
+    let vertical_edges = border_top + border_bottom + padding_top + padding_bottom;
+
+    let border_box_height = constraints
+      .used_border_box_height
+      .filter(|h| h.is_finite())
+      .or_else(|| {
+        let specified = container_style.height.as_ref()?;
+        let percentage_base = specified.has_percentage().then(|| constraints.height()).flatten();
+        let resolved = resolve_length_with_percentage_metrics(
+          *specified,
+          percentage_base,
+          self.viewport_size,
+          container_style.font_size,
+          container_style.root_font_size,
+          Some(container_style),
+          Some(&self.font_context),
+        )?;
+        if !resolved.is_finite() {
+          return None;
+        }
+        let resolved = resolved.max(0.0);
+        Some(match container_style.box_sizing {
+          BoxSizing::ContentBox => (resolved + vertical_edges).max(0.0),
+          BoxSizing::BorderBox => resolved,
+        })
+      });
+
     let content_width = border_box_width
-      .map(|w| (w - border_left - border_right - padding_left - padding_right).max(0.0));
+      .map(|w| (w - horizontal_edges).max(0.0));
     let content_height = border_box_height
-      .map(|h| (h - border_top - border_bottom - padding_top - padding_bottom).max(0.0));
+      .map(|h| (h - vertical_edges).max(0.0));
 
     taffy::geometry::Size {
       width: content_width,
@@ -6900,9 +7012,31 @@ impl FlexFormattingContext {
           if container.box_sizing == BoxSizing::BorderBox {
             content = (content - self.horizontal_edges_px(container)?).max(0.0);
           }
-          Some(content.max(0.0))
+         Some(content.max(0.0))
         })
           .or(container_inner_main_size);
+        let container_content_height_base = container.height.as_ref().and_then(|len| {
+          if len.has_percentage() {
+            return None;
+          }
+          let mut content = self.resolve_length_for_width(*len, self.viewport_size.height, container);
+          if !content.is_finite() {
+            return None;
+          }
+          if container.box_sizing == BoxSizing::BorderBox {
+            content = (content - self.vertical_edges_px(container)?).max(0.0);
+          }
+          Some(content.max(0.0))
+        })
+        .or(container_inner_cross_size);
+        let container_width_key = container_content_width_base
+          .filter(|v| v.is_finite() && *v > 0.0)
+          .map(f32_to_canonical_bits)
+          .unwrap_or(0);
+        let container_height_key = container_content_height_base
+          .filter(|v| v.is_finite() && *v > 0.0)
+          .map(f32_to_canonical_bits)
+          .unwrap_or(0);
         // The flex auto-min-size algorithm computes a used *border-box* size (CSS Flexbox §4.5).
         // Convert that to the authored box for Taffy (content-box vs border-box) when writing it
         // into `Style::min_size`.
@@ -6918,7 +7052,15 @@ impl FlexFormattingContext {
           )
         };
 
-        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents, 0) {
+        if let Some(cached) = flex_auto_min_cache_lookup(
+          box_id,
+          style_ptr,
+          true,
+          skip_contents,
+          0,
+          container_width_key,
+          container_height_key,
+        ) {
           if let Some(min_candidate) = cached {
             if min_candidate.is_finite() && min_candidate > 0.0 {
               taffy_style.min_size.width = Dimension::length(min_size_for_taffy(min_candidate));
@@ -6951,7 +7093,15 @@ impl FlexFormattingContext {
             if ratio > 0.0 && ratio.is_finite() =>
           {
             style.height.as_ref().and_then(|len| {
-              let cross_px = self.resolve_length_px(len, style)?;
+              let cross_px = if len.has_percentage() {
+                let base = container_content_height_base?;
+                Some(self.resolve_length_for_width(*len, base, style))
+              } else {
+                self.resolve_length_px(len, style).or_else(|| {
+                  (!len.has_percentage())
+                    .then(|| self.resolve_length_for_width(*len, self.viewport_size.height, style))
+                })
+              }?;
               if !cross_px.is_finite() {
                 return None;
               }
@@ -7028,6 +7178,8 @@ impl FlexFormattingContext {
             true,
             skip_contents,
             0,
+            container_width_key,
+            container_height_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
           return Ok(());
@@ -7107,12 +7259,23 @@ impl FlexFormattingContext {
               true,
               skip_contents,
               0,
+              container_width_key,
+              container_height_key,
               (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
             );
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {
-            flex_auto_min_cache_store(box_id, style_ptr, true, skip_contents, 0, None);
+            flex_auto_min_cache_store(
+              box_id,
+              style_ptr,
+              true,
+              skip_contents,
+              0,
+              container_width_key,
+              container_height_key,
+              None,
+            );
           }
         }
       }
@@ -7148,29 +7311,6 @@ impl FlexFormattingContext {
           percentage_base_for_edges,
         )
       };
-
-      let effective_align = style.align_self.unwrap_or(container.align_items);
-      let cross_margins_auto = style.margin_left.is_none() || style.margin_right.is_none();
-      let cross_size_is_auto = physical_width_is_auto(style);
-      let stretch_cross_size = (matches!(effective_align, AlignItems::Stretch)
-        && cross_size_is_auto
-        && !cross_margins_auto)
-        .then_some(container_inner_cross_size)
-        .flatten();
-      let stretch_cross_key = stretch_cross_size
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .map(f32_to_canonical_bits)
-        .unwrap_or(0);
-      if let Some(cached) =
-        flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents, stretch_cross_key)
-      {
-        if let Some(min_candidate) = cached {
-          if min_candidate.is_finite() && min_candidate > 0.0 {
-            taffy_style.min_size.height = Dimension::length(min_size_for_taffy(min_candidate));
-          }
-        }
-        return Ok(());
-      }
       let container_content_height_base = container.height.as_ref().and_then(|len| {
         if len.has_percentage() {
           return None;
@@ -7185,6 +7325,45 @@ impl FlexFormattingContext {
         Some(content.max(0.0))
       })
       .or(container_inner_main_size);
+      let container_width_key = container_content_width_base
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(f32_to_canonical_bits)
+        .unwrap_or(0);
+      let container_height_key = container_content_height_base
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(f32_to_canonical_bits)
+        .unwrap_or(0);
+
+      let effective_align = style.align_self.unwrap_or(container.align_items);
+      let cross_margins_auto = style.margin_left.is_none() || style.margin_right.is_none();
+      let cross_size_is_auto = physical_width_is_auto(style);
+      let stretch_cross_size = (matches!(effective_align, AlignItems::Stretch)
+        && cross_size_is_auto
+        && !cross_margins_auto)
+        .then_some(container_inner_cross_size)
+        .flatten();
+      let stretch_cross_key = stretch_cross_size
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(f32_to_canonical_bits)
+        .unwrap_or(0);
+      if let Some(cached) =
+        flex_auto_min_cache_lookup(
+          box_id,
+          style_ptr,
+          false,
+          skip_contents,
+          stretch_cross_key,
+          container_width_key,
+          container_height_key,
+        )
+      {
+        if let Some(min_candidate) = cached {
+          if min_candidate.is_finite() && min_candidate > 0.0 {
+            taffy_style.min_size.height = Dimension::length(min_size_for_taffy(min_candidate));
+          }
+        }
+        return Ok(());
+      }
       let specified_size_suggestion = style.height.as_ref().and_then(|len| {
         let px = if len.has_percentage() {
           let base = container_content_height_base?;
@@ -7209,7 +7388,15 @@ impl FlexFormattingContext {
           if ratio > 0.0 && ratio.is_finite() =>
         {
           style.width.as_ref().and_then(|len| {
-            let cross_px = self.resolve_length_px(len, style)?;
+            let cross_px = if len.has_percentage() {
+              let base = container_content_width_base?;
+              Some(self.resolve_length_for_width(*len, base, style))
+            } else {
+              self.resolve_length_px(len, style).or_else(|| {
+                (!len.has_percentage())
+                  .then(|| self.resolve_length_for_width(*len, self.viewport_size.width, style))
+              })
+            }?;
             if !cross_px.is_finite() {
               return None;
             }
@@ -7286,6 +7473,8 @@ impl FlexFormattingContext {
           false,
           skip_contents,
           stretch_cross_key,
+          container_width_key,
+          container_height_key,
           (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
         );
         return Ok(());
@@ -7387,12 +7576,23 @@ impl FlexFormattingContext {
             false,
             skip_contents,
             stretch_cross_key,
+            container_width_key,
+            container_height_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => {
-          flex_auto_min_cache_store(box_id, style_ptr, false, skip_contents, stretch_cross_key, None);
+          flex_auto_min_cache_store(
+            box_id,
+            style_ptr,
+            false,
+            skip_contents,
+            stretch_cross_key,
+            container_width_key,
+            container_height_key,
+            None,
+          );
         }
       }
     }
