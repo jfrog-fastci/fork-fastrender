@@ -4,7 +4,9 @@ use fastrender::js::{
   EventLoop, RunLimits, RunUntilIdleOutcome, ScriptBlockExecutor, ScriptOrchestrator, ScriptType, TaskSource,
   VirtualClock, WindowHostState, WindowRealm, WindowRealmConfig,
 };
-use fastrender::resource::{FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher};
+use fastrender::resource::{
+  FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, HttpRequest, ResourceFetcher,
+};
 use fastrender::{Error, Result};
 use selectors::context::QuirksMode;
 use std::collections::HashMap;
@@ -414,6 +416,7 @@ struct InMemoryFetcher {
   routes: HashMap<String, StubResponse>,
   last_request_headers: Mutex<Vec<(String, String)>>,
   last_request_body: Mutex<Option<Vec<u8>>>,
+  last_request_credentials_mode: Mutex<Option<FetchCredentialsMode>>,
 }
 
 impl InMemoryFetcher {
@@ -422,6 +425,7 @@ impl InMemoryFetcher {
       routes: HashMap::new(),
       last_request_headers: Mutex::new(Vec::new()),
       last_request_body: Mutex::new(None),
+      last_request_credentials_mode: Mutex::new(None),
     }
   }
 
@@ -459,6 +463,13 @@ impl InMemoryFetcher {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .clone()
   }
+
+  fn last_request_credentials_mode(&self) -> Option<FetchCredentialsMode> {
+    *self
+      .last_request_credentials_mode
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+  }
 }
 
 impl Default for InMemoryFetcher {
@@ -471,6 +482,10 @@ impl ResourceFetcher for InMemoryFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
     let fetch = FetchRequest::new(url, FetchDestination::Fetch);
     self.fetch_http_request(HttpRequest::new(fetch, "GET"))
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    self.fetch_http_request(HttpRequest::new(req, "GET"))
   }
 
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
@@ -487,6 +502,13 @@ impl ResourceFetcher for InMemoryFetcher {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
       *lock = req.body.map(|body| body.to_vec());
+    }
+    {
+      let mut lock = self
+        .last_request_credentials_mode
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+      *lock = Some(req.fetch.credentials_mode);
     }
 
     let stub = self.lookup(req.fetch.url)?;
@@ -792,7 +814,7 @@ fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
         r#"
  const req = new Request("https://example.com/submit", { method: "POST", body: "payload" });
  fetch(req).then(() => {});
- "#,
+  "#,
       );
       if let Err(err) = res {
         let (_vm, heap) = realm.vm_and_heap_mut();
@@ -810,6 +832,89 @@ fn window_fetch_forwards_request_body_from_request_object() -> Result<()> {
     fetcher.last_request_body(),
     Some(b"payload".to_vec()),
     "expected Request body to reach the ResourceFetcher when passed to fetch()"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_forwards_request_credentials_mode() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  fetch("https://example.com/creds", { credentials: "include" }).then(() => {});
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.last_request_credentials_mode(),
+    Some(FetchCredentialsMode::Include),
+    "expected fetch init credentials to reach the ResourceFetcher"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_fetch_forwards_request_credentials_mode_from_request_object() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/creds", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  const req = new Request("https://example.com/creds", { credentials: "omit" });
+  fetch(req).then(() => {});
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert_eq!(
+    fetcher.last_request_credentials_mode(),
+    Some(FetchCredentialsMode::Omit),
+    "expected Request constructor credentials to reach the ResourceFetcher when passed to fetch()"
   );
   Ok(())
 }

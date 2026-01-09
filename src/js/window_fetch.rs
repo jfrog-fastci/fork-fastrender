@@ -17,7 +17,7 @@ use crate::js::window_realm::{WindowRealm, WindowRealmHost};
 use crate::render_control;
 use crate::resource::web_fetch::{
   execute_web_fetch, Body, Headers as CoreHeaders, HeadersGuard, Request as CoreRequest, Response as CoreResponse,
-  WebFetchExecutionContext, WebFetchError,
+  RequestCredentials, WebFetchExecutionContext, WebFetchError,
 };
 use crate::resource::{origin_from_url, DocumentOrigin, FetchDestination, ReferrerPolicy, ResourceFetcher};
 use std::collections::HashMap;
@@ -1129,6 +1129,25 @@ fn request_ctor_construct(
       request.headers = headers;
     }
 
+    let credentials_key = alloc_key(scope, "credentials")?;
+    let credentials_val = vm.get(scope, init_obj, credentials_key)?;
+    if !matches!(credentials_val, Value::Undefined | Value::Null) {
+      let credentials = to_rust_string(scope.heap_mut(), credentials_val)?;
+      request.credentials = match credentials.as_str() {
+        "omit" => RequestCredentials::Omit,
+        "same-origin" => RequestCredentials::SameOrigin,
+        "include" => RequestCredentials::Include,
+        _ => {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host_hooks,
+            "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
+          ));
+        }
+      };
+    }
+
     let body_key = alloc_key(scope, "body")?;
     let body_val = vm.get(scope, init_obj, body_key)?;
     if !matches!(body_val, Value::Undefined | Value::Null) {
@@ -1660,6 +1679,25 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
       let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
       fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
       request.headers = headers;
+    }
+
+    let credentials_key = alloc_key(scope, "credentials")?;
+    let credentials_val = vm.get(scope, init_obj, credentials_key)?;
+    if !matches!(credentials_val, Value::Undefined | Value::Null) {
+      let credentials = to_rust_string(scope.heap_mut(), credentials_val)?;
+      request.credentials = match credentials.as_str() {
+        "omit" => RequestCredentials::Omit,
+        "same-origin" => RequestCredentials::SameOrigin,
+        "include" => RequestCredentials::Include,
+        _ => {
+          return Err(throw_type_error(
+            vm,
+            scope,
+            host_hooks,
+            "Request.credentials must be \"omit\", \"same-origin\", or \"include\"",
+          ));
+        }
+      };
     }
 
     let body_key = alloc_key(scope, "body")?;
