@@ -1,5 +1,11 @@
 [
   {
+    "path": "src/accessibility.rs",
+    "kind": "expect",
+    "line": "let child_dst = dst.children.last_mut().expect(\"child was just pushed\") as *mut DomNode;",
+    "count": 1
+  },
+  {
     "path": "src/api.rs",
     "kind": "expect",
     "line": ".expect(\"build intrinsic probe pool\");",
@@ -18,6 +24,72 @@
     "count": 1
   },
   {
+    "path": "src/api.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"viewport gutter iteration should always return within bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepared checked by early return\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document2.rs",
+    "kind": "expect",
+    "line": "out.expect(\"DomHost::mutate_dom closure did not set a result\")",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document_dom2.rs",
+    "kind": "expect",
+    "line": ".expect(\"prepared checked by early return\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document_dom2.rs",
+    "kind": "expect",
+    "line": "out.expect(\"DomHost::mutate_dom closure did not set a result\")",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document_js.rs",
+    "kind": "expect",
+    "line": ".expect(\"BrowserDocumentJs should always have an event loop\");",
+    "count": 1
+  },
+  {
+    "path": "src/api/browser_document_js.rs",
+    "kind": "expect",
+    "line": "self.event_loop.as_mut().expect(",
+    "count": 1
+  },
+  {
+    "path": "src/bin/diff_snapshots.rs",
+    "kind": "unreachable",
+    "line": "(None, None) => unreachable!(\"stem discovered without any snapshots\"),",
+    "count": 1
+  },
+  {
+    "path": "src/bin/fetch_and_render.rs",
+    "kind": "expect",
+    "line": ".expect(\"valid regex\")",
+    "count": 2
+  },
+  {
+    "path": "src/bin/font_coverage.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"clap enforces one input source\")",
+    "count": 1
+  },
+  {
+    "path": "src/bin/inspect_frag.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"validated mutual exclusion above\"),",
+    "count": 1
+  },
+  {
     "path": "src/css/properties.rs",
     "kind": "expect",
     "line": "return Ok(values.pop().expect(\"length checked\"));",
@@ -33,12 +105,6 @@
     "path": "src/css/properties.rs",
     "kind": "unwrap",
     "line": "let digit = ch.to_digit(16).unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/css/properties.rs",
-    "kind": "unwrap",
-    "line": "let first = match iter.next().unwrap() {",
     "count": 1
   },
   {
@@ -78,9 +144,111 @@
     "count": 1
   },
   {
-    "path": "src/image_loader.rs",
+    "path": "src/debug/snapshot.rs",
     "kind": "expect",
-    "line": "Arc::new(new_pixmap(1, 1).expect(\"1x1 pixmap allocation must succeed\"))",
+    "line": "let actual_json = serde_json::to_string_pretty(actual).expect(\"serialize actual Dom2Snapshot\");",
+    "count": 1
+  },
+  {
+    "path": "src/debug/snapshot.rs",
+    "kind": "expect",
+    "line": "serde_json::to_string_pretty(expected).expect(\"serialize expected Dom2Snapshot\");",
+    "count": 1
+  },
+  {
+    "path": "src/debug/snapshot.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 5
+  },
+  {
+    "path": "src/debug/snapshot.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(",
+    "count": 2
+  },
+  {
+    "path": "src/debug/snapshot.rs",
+    "kind": "assert_eq",
+    "line": "assert_eq!(actual_json, expected_json);",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/html5ever_tree_sink.rs",
+    "kind": "unwrap",
+    "line": "let prev_id = prev.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/html5ever_tree_sink.rs",
+    "kind": "unwrap",
+    "line": "let reference = reference.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/html5ever_tree_sink.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"kind checked above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/mod.rs",
+    "kind": "expect",
+    "line": ".expect(\"child node missing after push\");",
+    "count": 2
+  },
+  {
+    "path": "src/dom2/mod.rs",
+    "kind": "expect",
+    "line": ".expect(\"document root must be representable in renderer DOM snapshot\"),",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/mod.rs",
+    "kind": "expect",
+    "line": ".expect(\"dom2 document root missing\")",
+    "count": 1
+  },
+  {
+    "path": "src/dom2/mod.rs",
+    "kind": "expect",
+    "line": "let scope_id = scope.expect(\"scope is Some when not using document snapshot\");",
+    "count": 2
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"pump called after parser finished\");",
+    "count": 2
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"push_front_str called after parser finished\");",
+    "count": 1
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"push_str called after parser finished\");",
+    "count": 1
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"sink called after parser finished\")",
+    "count": 1
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"sink_mut called after parser finished\")",
+    "count": 1
+  },
+  {
+    "path": "src/html/pausable_html5ever.rs",
+    "kind": "expect",
+    "line": ".expect(\"with_sink called after parser finished\");",
     "count": 1
   },
   {
@@ -90,9 +258,291 @@
     "count": 2
   },
   {
-    "path": "src/image_output.rs",
-    "kind": "panic",
-    "line": "panic!(",
+    "path": "src/interaction/engine.rs",
+    "kind": "expect",
+    "line": "changed |= dom_mutation::mark_user_validity(index.node_mut(focused).expect(\"node exists\"));",
+    "count": 1
+  },
+  {
+    "path": "src/interaction/engine.rs",
+    "kind": "expect",
+    "line": "dom_mutation::mark_user_validity(index.node_mut(focused).expect(\"node exists\"));",
+    "count": 1
+  },
+  {
+    "path": "src/interaction/engine.rs",
+    "kind": "expect",
+    "line": "index.node_mut(focused).expect(\"node exists\"),",
+    "count": 2
+  },
+  {
+    "path": "src/interaction/engine.rs",
+    "kind": "expect",
+    "line": "last_enabled_idx.expect(\"first_enabled implies at least one enabled option\");",
+    "count": 1
+  },
+  {
+    "path": "src/interaction/engine.rs",
+    "kind": "expect",
+    "line": "let last_enabled_idx = last_enabled_idx.expect(\"first_enabled implies at least one enabled option\");",
+    "count": 1
+  },
+  {
+    "path": "src/interaction/engine.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"handled above\")",
+    "count": 1
+  },
+  {
+    "path": "src/interaction/hit_test.rs",
+    "kind": "expect",
+    "line": ".expect(\"node_ids only yields valid ids\");",
+    "count": 2
+  },
+  {
+    "path": "src/js/dom_bindings/mod.rs",
+    "kind": "expect",
+    "line": "let event = unsafe { ptr.as_ptr().as_mut().expect(\"NonNull is never null\") };",
+    "count": 1
+  },
+  {
+    "path": "src/js/dom_bindings/mod.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"ToString must return a string\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/dom_bindings/mod.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"alloc_object_value must return an object\");",
+    "count": 4
+  },
+  {
+    "path": "src/js/dom_bindings/mod.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"alloc_string_value must return a string\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/ecma_embed.rs",
+    "kind": "expect",
+    "line": ".expect(\"checked host function exists above\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/ecma_vm_runtime.rs",
+    "kind": "expect",
+    "line": ".expect(\"vm-js Job should be present when microtask runs\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/ecma_vm_runtime.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/js/html_classic_scripts.rs",
+    "kind": "expect",
+    "line": ".expect(\"ClassicScriptRunner executor missing\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/html_classic_scripts.rs",
+    "kind": "expect",
+    "line": ".expect(\"parsing_finished implies finished_document\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/html_scripting.rs",
+    "kind": "expect",
+    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
+    "count": 1
+  },
+  {
+    "path": "src/js/page_load.rs",
+    "kind": "expect",
+    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": ".expect(\"delete\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": ".expect(\"pairs\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.append(&name, &value).expect(\"append\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.get(&name).expect(\"get\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.get_all(&name).expect(\"get_all\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.has(&name, value.0.as_deref()).expect(\"has\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.hash().expect(\"hash\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.host().expect(\"host\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.hostname().expect(\"hostname\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.href().expect(\"href\")",
+    "count": 2
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.pathname().expect(\"pathname\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.port().expect(\"port\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.protocol().expect(\"protocol\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.search().expect(\"search\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.serialize().expect(\"serialize\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.set(&name, &value).expect(\"set\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.size().expect(\"size\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.sort().expect(\"sort\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/quickjs_url.rs",
+    "kind": "expect",
+    "line": "self.inner.to_json().expect(\"to_json\")",
+    "count": 1
+  },
+  {
+    "path": "src/js/runtime.rs",
+    "kind": "expect",
+    "line": ".expect(\"event loop stack underflow\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/script_scheduler.rs",
+    "kind": "expect",
+    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
+    "count": 1
+  },
+  {
+    "path": "src/js/streaming_pipeline.rs",
+    "kind": "expect",
+    "line": ".expect(\"execute_script_now requires script node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/streaming_pipeline.rs",
+    "kind": "expect",
+    "line": ".expect(\"queue_script_task requires script node id\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/streaming_pipeline.rs",
+    "kind": "expect",
+    "line": ".set(cur.checked_sub(1).expect(\"js execution depth underflow\"));",
+    "count": 1
+  },
+  {
+    "path": "src/js/window_animation_frame.rs",
+    "kind": "expect",
+    "line": ".expect(\"requestAnimationFrame id should be set\");",
+    "count": 1
+  },
+  {
+    "path": "src/js/window_realm.rs",
+    "kind": "expect",
+    "line": "std::str::from_utf8(&buf[i..]).expect(\"decimal digits should be valid UTF-8\")",
+    "count": 1
+  },
+  {
+    "path": "src/layout/absolute_positioning.rs",
+    "kind": "unwrap",
+    "line": "let left = left.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/absolute_positioning.rs",
+    "kind": "unwrap",
+    "line": "let right = right.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/absolute_positioning.rs",
+    "kind": "unwrap",
+    "line": "let width = specified_width_for_overconstraint.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/block/mod.rs",
+    "kind": "expect",
+    "line": "Ok(last.expect(\"at least one layout pass\"))",
     "count": 1
   },
   {
@@ -110,13 +560,19 @@
   {
     "path": "src/layout/contexts/block/mod.rs",
     "kind": "unwrap",
-    "line": "let keyword = inline_keyword.unwrap();",
+    "line": "let keyword = style_for_width.width_keyword.unwrap();",
     "count": 1
   },
   {
     "path": "src/layout/contexts/block/mod.rs",
-    "kind": "unwrap",
-    "line": "let keyword = style_for_width.width_keyword.unwrap();",
+    "kind": "panic",
+    "line": ".unwrap_or_else(|| panic!(\"expected floating side for box_id={}\", child.id));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/flex.rs",
+    "kind": "expect",
+    "line": "Ok(last.expect(\"at least one layout pass\"))",
     "count": 1
   },
   {
@@ -126,9 +582,69 @@
     "count": 1
   },
   {
+    "path": "src/layout/contexts/flex.rs",
+    "kind": "assert",
+    "line": "assert!(",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/flex.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"width_is_intrinsic_probe guarded avail.width\"),",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/grid.rs",
+    "kind": "expect",
+    "line": "Ok(last.expect(\"at least one layout pass\"))",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/inline/mod.rs",
+    "kind": "expect",
+    "line": "Ok(last.expect(\"at least one layout pass\"))",
+    "count": 1
+  },
+  {
+    "path": "src/layout/contexts/inline/mod.rs",
+    "kind": "panic",
+    "line": ".unwrap_or_else(|| panic!(\"expected floating side for box_id={}\", float_node.id));",
+    "count": 1
+  },
+  {
+    "path": "src/layout/engine.rs",
+    "kind": "expect",
+    "line": "fragment.expect(\"root fragment should be produced\")",
+    "count": 1
+  },
+  {
+    "path": "src/layout/float_context.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
+    "count": 2
+  },
+  {
     "path": "src/layout/pagination.rs",
     "kind": "expect",
     "line": "Ok(cache.get(&key).expect(\"layout cache just populated\"))",
+    "count": 1
+  },
+  {
+    "path": "src/layout/pagination.rs",
+    "kind": "unwrap",
+    "line": "let token = target.take().unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "expect",
+    "line": ".expect(\"row index must be in bounds\");",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "expect",
+    "line": "Ok(last.expect(\"at least one layout pass\"))",
     "count": 1
   },
   {
@@ -140,19 +656,31 @@
   {
     "path": "src/layout/table.rs",
     "kind": "unwrap",
-    "line": "distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);",
-    "count": 2
-  },
-  {
-    "path": "src/layout/table.rs",
-    "kind": "unwrap",
     "line": "let base = percent_base.unwrap();",
-    "count": 2
+    "count": 1
   },
   {
     "path": "src/layout/table.rs",
     "kind": "unwrap",
     "line": "let row = row.unwrap();",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!(!metrics.has_baseline);",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!((metrics.baseline_height() - 15.0).abs() < 0.01);",
+    "count": 1
+  },
+  {
+    "path": "src/layout/table.rs",
+    "kind": "assert",
+    "line": "assert!((metrics.baseline_height() - 24.0).abs() < 0.01);",
     "count": 1
   },
   {
@@ -162,9 +690,15 @@
     "count": 2
   },
   {
-    "path": "src/paint/display_list_builder.rs",
-    "kind": "unwrap",
-    "line": "fallback.as_ref().unwrap().as_slice()",
+    "path": "src/layout/utils.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
+    "count": 1
+  },
+  {
+    "path": "src/math/mod.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
     "count": 1
   },
   {
@@ -193,12 +727,6 @@
   },
   {
     "path": "src/paint/display_list_renderer.rs",
-    "kind": "expect",
-    "line": "let sample_rect = sample_rect.expect(\"kernel backdrop filters should produce a rect\");",
-    "count": 1
-  },
-  {
-    "path": "src/paint/display_list_renderer.rs",
     "kind": "unwrap",
     "line": "converted_tile.as_ref().unwrap()",
     "count": 1
@@ -218,19 +746,7 @@
   {
     "path": "src/paint/display_list_renderer.rs",
     "kind": "unwrap",
-    "line": "let pending = record.pending_backdrop.take().unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/paint/display_list_renderer.rs",
-    "kind": "unwrap",
     "line": "return stops.last().unwrap().1;",
-    "count": 1
-  },
-  {
-    "path": "src/paint/display_list_renderer.rs",
-    "kind": "unwrap",
-    "line": "root_uncomposited.as_ref().unwrap()",
     "count": 1
   },
   {
@@ -252,6 +768,12 @@
     "count": 1
   },
   {
+    "path": "src/paint/preserve3d.rs",
+    "kind": "expect",
+    "line": ".expect(\"depth_sort returned index in-bounds\"),",
+    "count": 1
+  },
+  {
     "path": "src/paint/preserve_3d.rs",
     "kind": "unwrap",
     "line": "let da = a.depth.unwrap();",
@@ -270,6 +792,12 @@
     "count": 1
   },
   {
+    "path": "src/paint/svg_filter.rs",
+    "kind": "unreachable",
+    "line": "EdgeMode::Duplicate => unreachable!(),",
+    "count": 1
+  },
+  {
     "path": "src/resource.rs",
     "kind": "expect",
     "line": ".expect(\"failed to build reqwest HTTP client\"),",
@@ -283,8 +811,20 @@
   },
   {
     "path": "src/resource.rs",
+    "kind": "expect",
+    "line": "let ch = rest[i..].chars().next().expect(\"valid UTF-8\");",
+    "count": 1
+  },
+  {
+    "path": "src/resource.rs",
     "kind": "unwrap",
     "line": "guard.as_ref().unwrap().as_result()",
+    "count": 1
+  },
+  {
+    "path": "src/resource.rs",
+    "kind": "unreachable",
+    "line": "ReferrerPolicy::EmptyString => unreachable!(\"policy resolved above\"),",
     "count": 1
   },
   {
@@ -294,22 +834,22 @@
     "count": 1
   },
   {
-    "path": "src/resource/curl_backend.rs",
-    "kind": "expect",
-    "line": "let stderr = child.stderr.take().expect(\"stderr piped\");",
-    "count": 1
-  },
-  {
-    "path": "src/resource/curl_backend.rs",
-    "kind": "expect",
-    "line": "let stdout = child.stdout.take().expect(\"stdout piped\");",
-    "count": 1
-  },
-  {
     "path": "src/resource/disk_cache_index.rs",
     "kind": "expect",
     "line": "Ok(state.journal_append.as_mut().expect(\"just set\"))",
     "count": 1
+  },
+  {
+    "path": "src/resource/web_url/search_params.rs",
+    "kind": "expect",
+    "line": "out.push((new_key.take().expect(\"new_key set when !inserted\"), new_value));",
+    "count": 2
+  },
+  {
+    "path": "src/resource/web_url/url.rs",
+    "kind": "expect",
+    "line": "write!(&mut out, \"{port}\").expect(\"writing to String should not fail\");",
+    "count": 2
   },
   {
     "path": "src/style/cascade.rs",
@@ -320,14 +860,20 @@
   {
     "path": "src/style/cascade.rs",
     "kind": "expect",
-    "line": ".expect(\"deadline-free cascade should not fail\")",
-    "count": 2
+    "line": ".expect(\"custom layer base missing\")",
+    "count": 1
   },
   {
     "path": "src/style/cascade.rs",
     "kind": "expect",
     "line": ".expect(\"layer snapshot inserted\")",
-    "count": 4
+    "count": 2
+  },
+  {
+    "path": "src/style/cascade.rs",
+    "kind": "expect",
+    "line": ".expect(\"layer snapshot missing for important declarations\"),",
+    "count": 1
   },
   {
     "path": "src/style/cascade.rs",
@@ -344,50 +890,20 @@
   {
     "path": "src/style/cascade.rs",
     "kind": "expect",
-    "line": ".expect(\"selector fast-reject cache overflow\")",
-    "count": 2
+    "line": ".expect(\"shareable keys require a UA computed style snapshot\");",
+    "count": 1
+  },
+  {
+    "path": "src/style/cascade.rs",
+    "kind": "expect",
+    "line": ".expect(\"slot inheritance cache requires UA computed style snapshot\");",
+    "count": 1
   },
   {
     "path": "src/style/cascade.rs",
     "kind": "expect",
     "line": ".expect(\"style traversal stack must contain at least one frame\");",
     "count": 2
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "attr_len: u32::try_from(attr_len).expect(\"selector key cache overflow\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "attr_start: u32::try_from(attr_start).expect(\"selector key cache overflow\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "attr_value_len: u32::try_from(attr_value_len).expect(\"selector key cache overflow\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "attr_value_start: u32::try_from(attr_value_start).expect(\"selector key cache overflow\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "class_len: u32::try_from(class_len).expect(\"selector key cache overflow\"),",
-    "count": 1
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "class_start: u32::try_from(class_start).expect(\"selector key cache overflow\"),",
-    "count": 1
   },
   {
     "path": "src/style/cascade.rs",
@@ -402,22 +918,10 @@
     "count": 1
   },
   {
-    "path": "src/style/cascade.rs",
+    "path": "src/style/counters.rs",
     "kind": "expect",
-    "line": "let selector_idx = u32::try_from(selector_idx).expect(\"selector bucket index overflow\");",
-    "count": 3
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "u32::try_from(index.fast_rejects.len()).expect(\"selector fast-reject cache overflow\")",
-    "count": 2
-  },
-  {
-    "path": "src/style/cascade.rs",
-    "kind": "expect",
-    "line": "u32::try_from(index.metadatas.len()).expect(\"selector metadata cache overflow\")",
-    "count": 3
+    "line": ".expect(\"enter_scope always leaves at least one scope\");",
+    "count": 1
   },
   {
     "path": "src/style/grid.rs",
@@ -444,6 +948,12 @@
     "count": 2
   },
   {
+    "path": "src/style/media.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
+    "count": 3
+  },
+  {
     "path": "src/style/properties.rs",
     "kind": "expect",
     "line": ".expect(\"checked Some above\")",
@@ -464,12 +974,6 @@
   {
     "path": "src/style/properties.rs",
     "kind": "unwrap",
-    "line": "let end = *slice_indices.last().unwrap();",
-    "count": 2
-  },
-  {
-    "path": "src/style/properties.rs",
-    "kind": "unwrap",
     "line": "let end_x = xs[end].unwrap();",
     "count": 1
   },
@@ -484,6 +988,18 @@
     "kind": "unwrap",
     "line": "let y_comp = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());",
     "count": 1
+  },
+  {
+    "path": "src/style/values.rs",
+    "kind": "unreachable",
+    "line": "CalcLengthKind::Linear => unreachable!(),",
+    "count": 1
+  },
+  {
+    "path": "src/style/values.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(),",
+    "count": 2
   },
   {
     "path": "src/style/var_resolution.rs",
@@ -546,6 +1062,12 @@
     "count": 1
   },
   {
+    "path": "src/text/line_break.rs",
+    "kind": "expect",
+    "line": ".expect(\"ICU word segmenter data should be available\");",
+    "count": 1
+  },
+  {
     "path": "src/text/pipeline.rs",
     "kind": "unwrap",
     "line": "let cap = NonZeroUsize::new(shard_cap.max(1)).unwrap();",
@@ -564,15 +1086,15 @@
     "count": 1
   },
   {
-    "path": "src/tree/box_generation.rs",
-    "kind": "expect",
-    "line": ".expect(\"children state always has composed children\");",
+    "path": "src/tree/anonymous.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"split stack always returns from within the loop\");",
     "count": 1
   },
   {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
-    "line": ".expect(\"frame exists\")",
+    "line": ".expect(\"children state always has composed children\");",
     "count": 1
   },
   {
@@ -585,7 +1107,7 @@
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
     "line": "let frame = stack.last_mut().expect(\"frame exists\");",
-    "count": 2
+    "count": 3
   },
   {
     "path": "src/tree/box_generation.rs",
@@ -596,19 +1118,55 @@
   {
     "path": "src/tree/box_generation.rs",
     "kind": "expect",
-    "line": "let in_footnote = stack.last().expect(\"frame exists\").in_footnote;",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "expect",
-    "line": "let parent = stack.last().expect(\"frame exists\");",
-    "count": 1
-  },
-  {
-    "path": "src/tree/box_generation.rs",
-    "kind": "expect",
     "line": "let styled = stack.last().expect(\"frame exists\").styled;",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "expect",
+    "line": "stack.pop().expect(\"frame exists\");",
+    "count": 7
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Display::None => unreachable!(\"display:none pseudo-elements are filtered before counter scope\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Display::None => unreachable!(\"handled above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Display::None | Display::Contents => unreachable!(\"handled above\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "Visibility::Collapse => unreachable!(\"collapse is normalized to hidden\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"memchr2 returned non-matching byte\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "_ => unreachable!(\"memchr3 returned non-matching byte\"),",
+    "count": 1
+  },
+  {
+    "path": "src/tree/box_generation.rs",
+    "kind": "unreachable",
+    "line": "unreachable!(\"non-empty pseudo-element content values must be ContentValue::Items\");",
     "count": 1
   },
   {
@@ -622,5 +1180,11 @@
     "kind": "expect",
     "line": ".expect(\"at least one fragment root required\");",
     "count": 1
+  },
+  {
+    "path": "src/tree/fragment_tree.rs",
+    "kind": "expect",
+    "line": ".expect(\"stack non-empty in hit_test_path_within_root\");",
+    "count": 2
   }
 ]

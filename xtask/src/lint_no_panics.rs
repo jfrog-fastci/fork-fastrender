@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -130,7 +130,7 @@ pub fn run_lint_no_panics(repo_root: &Path, args: LintNoPanicsArgs) -> Result<()
   }
 
   eprintln!(
-    "lint-no-panics: found {} new violation(s) in src/ (excluding #[cfg(test)] code)\n",
+    "lint-no-panics: found {} new violation(s) in src/ (excluding #[cfg(test)] code and #[cfg(test)] module files)\n",
     new_violations.len()
   );
   for v in &new_violations {
@@ -156,6 +156,7 @@ pub fn lint_repo(repo_root: &Path) -> Result<Vec<Violation>> {
 
 pub fn lint_dir(repo_root: &Path, dir: &Path) -> Result<Vec<Violation>> {
   let mut violations = Vec::new();
+  let test_only_files = collect_cfg_test_module_files(dir)?;
 
   for entry in WalkDir::new(dir)
     .into_iter()
@@ -163,6 +164,9 @@ pub fn lint_dir(repo_root: &Path, dir: &Path) -> Result<Vec<Violation>> {
     .filter(|entry| entry.file_type().is_file())
   {
     if entry.path().extension().and_then(|ext| ext.to_str()) != Some("rs") {
+      continue;
+    }
+    if test_only_files.contains(entry.path()) {
       continue;
     }
 
@@ -179,6 +183,307 @@ pub fn lint_dir(repo_root: &Path, dir: &Path) -> Result<Vec<Violation>> {
 
   violations.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.line.cmp(&b.line)));
   Ok(violations)
+}
+
+/// Collect Rust source files that are only compiled when `cfg(test)` is enabled.
+///
+/// `lint-no-panics` wants to focus on production code, so we skip module files referenced exclusively
+/// via `#[cfg(test)] mod foo;` declarations (common for large test suites where keeping tests in
+/// their own file is nicer than an inline `mod tests { ... }` block).
+fn collect_cfg_test_module_files(src_dir: &Path) -> Result<HashSet<PathBuf>> {
+  let mut out = HashSet::new();
+
+  for entry in WalkDir::new(src_dir)
+    .into_iter()
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| entry.file_type().is_file())
+  {
+    if entry.path().extension().and_then(|ext| ext.to_str()) != Some("rs") {
+      continue;
+    }
+
+    let source = fs::read_to_string(entry.path())
+      .with_context(|| format!("read {}", entry.path().display()))?;
+    out.extend(find_cfg_test_module_files(entry.path(), &source));
+  }
+
+  Ok(out)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalModDecl {
+  name: String,
+  path_attr: Option<String>,
+}
+
+fn module_dir_for_file(path: &Path) -> Option<PathBuf> {
+  let parent = path.parent()?;
+  let name = path.file_name()?.to_str()?;
+  if name == "mod.rs" || name == "lib.rs" || name == "main.rs" {
+    Some(parent.to_path_buf())
+  } else {
+    Some(parent.join(path.file_stem()?))
+  }
+}
+
+fn resolve_mod_file(parent_path: &Path, decl: &ExternalModDecl) -> Option<PathBuf> {
+  let parent_dir = parent_path.parent()?;
+
+  if let Some(path_attr) = &decl.path_attr {
+    let candidate = parent_dir.join(path_attr);
+    return candidate.exists().then_some(candidate);
+  }
+
+  let module_dir = module_dir_for_file(parent_path)?;
+
+  let candidate_rs = module_dir.join(format!("{}.rs", decl.name));
+  if candidate_rs.exists() {
+    return Some(candidate_rs);
+  }
+
+  let candidate_mod_rs = module_dir.join(&decl.name).join("mod.rs");
+  candidate_mod_rs.exists().then_some(candidate_mod_rs)
+}
+
+fn find_cfg_test_module_files(parent_path: &Path, source: &str) -> Vec<PathBuf> {
+  let bytes = source.as_bytes();
+  let mut i = 0usize;
+  let mut in_line_comment = false;
+  let mut block_comment_depth = 0usize;
+  let mut pending_cfg_test = false;
+  let mut out = Vec::new();
+
+  while i < bytes.len() {
+    if pending_cfg_test && !in_line_comment && block_comment_depth == 0 {
+      let old = i;
+      let end = skip_cfg_item(bytes, i);
+      if let Some(decl) = parse_external_mod_decl(source.get(old..end).unwrap_or("")) {
+        if let Some(path) = resolve_mod_file(parent_path, &decl) {
+          out.push(path);
+        }
+      }
+      i = end;
+      pending_cfg_test = false;
+      continue;
+    }
+
+    let b = bytes[i];
+
+    if in_line_comment {
+      if b == b'\n' {
+        in_line_comment = false;
+      }
+      i += 1;
+      continue;
+    }
+
+    if block_comment_depth > 0 {
+      if bytes.get(i..i + 2) == Some(b"/*") {
+        block_comment_depth += 1;
+        i += 2;
+        continue;
+      }
+      if bytes.get(i..i + 2) == Some(b"*/") {
+        block_comment_depth = block_comment_depth.saturating_sub(1);
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    if bytes.get(i..i + 2) == Some(b"//") {
+      in_line_comment = true;
+      i += 2;
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"/*") {
+      block_comment_depth += 1;
+      i += 2;
+      continue;
+    }
+
+    // Skip attributes (and detect `#[cfg(test)]`).
+    if bytes.get(i..i + 2) == Some(b"#[") || bytes.get(i..i + 3) == Some(b"#![") {
+      if let Some((end_after, content)) = parse_attribute(source, bytes, i) {
+        if attribute_is_cfg_test(content) {
+          pending_cfg_test = true;
+        }
+        i = end_after;
+        continue;
+      }
+    }
+
+    if let Some((end_after, _prefix_len)) = skip_raw_string(bytes, i) {
+      i = end_after;
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"b\"") {
+      i = skip_string(bytes, i, 2);
+      continue;
+    }
+    if b == b'"' {
+      i = skip_string(bytes, i, 1);
+      continue;
+    }
+    if bytes.get(i..i + 2) == Some(b"b'") {
+      if let Some(end_after) = skip_char_literal(bytes, i + 1) {
+        i = end_after;
+        continue;
+      }
+    }
+    if b == b'\'' {
+      if let Some(end_after) = skip_char_literal(bytes, i) {
+        i = end_after;
+        continue;
+      }
+    }
+
+    i += 1;
+  }
+
+  out
+}
+
+fn parse_external_mod_decl(item: &str) -> Option<ExternalModDecl> {
+  let bytes = item.as_bytes();
+  let mut i = 0usize;
+  let mut path_attr = None;
+
+  // Skip doc/comments/whitespace + any attributes attached to the item.
+  loop {
+    i = skip_ws_and_comments(bytes, i);
+    if bytes.get(i..i + 2) == Some(b"#[") || bytes.get(i..i + 3) == Some(b"#![") {
+      if let Some((end_after, content)) = parse_attribute(item, bytes, i) {
+        if let Some(value) = parse_path_attribute(content) {
+          path_attr = Some(value);
+        }
+        i = end_after;
+        continue;
+      }
+    }
+    break;
+  }
+
+  i = skip_ws_and_comments(bytes, i);
+
+  // Optional `pub` visibility.
+  if starts_with_token(bytes, i, b"pub")
+    && !bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
+  {
+    i += 3;
+    i = skip_ws_and_comments(bytes, i);
+    if bytes.get(i) == Some(&b'(') {
+      let mut depth = 0i32;
+      while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+          b'(' => depth += 1,
+          b')' => {
+            depth -= 1;
+            if depth == 0 {
+              i += 1;
+              break;
+            }
+          }
+          _ => {}
+        }
+        i += 1;
+      }
+      i = skip_ws_and_comments(bytes, i);
+    }
+  }
+
+  if !starts_with_token(bytes, i, b"mod") || bytes.get(i + 3).is_some_and(|b| is_ident_continue(*b))
+  {
+    return None;
+  }
+  i += 3;
+  i = skip_ws_and_comments(bytes, i);
+
+  let start = i;
+  let first = *bytes.get(i)?;
+  if !(first.is_ascii_alphabetic() || first == b'_') {
+    return None;
+  }
+  i += 1;
+  while i < bytes.len() && is_ident_continue(bytes[i]) {
+    i += 1;
+  }
+  let name = item.get(start..i)?.to_string();
+
+  i = skip_ws_and_comments(bytes, i);
+  if bytes.get(i) != Some(&b';') {
+    return None;
+  }
+
+  Some(ExternalModDecl { name, path_attr })
+}
+
+fn parse_path_attribute(attr: &str) -> Option<String> {
+  let mut parser = CfgParser::new(attr);
+  let name = parser.parse_ident()?;
+  if name != "path" {
+    return None;
+  }
+  if !parser.consume_byte(b'=') {
+    return None;
+  }
+  let value = parser.parse_value_token()?;
+  parser.skip_ws();
+  if !parser.is_eof() {
+    return None;
+  }
+
+  unquote_rust_string_token(&value)
+}
+
+fn unquote_rust_string_token(token: &str) -> Option<String> {
+  let token = token.trim();
+  let token = token.strip_prefix('b').unwrap_or(token);
+
+  // Raw string: r#"..."# or br#"..."#
+  if let Some(rest) = token.strip_prefix('r') {
+    return unquote_raw_string(rest);
+  }
+  if let Some(rest) = token.strip_prefix("br") {
+    return unquote_raw_string(rest);
+  }
+
+  // Normal string: "..."
+  let content = token.strip_prefix('"')?.strip_suffix('"')?;
+  Some(content.replace("\\\"", "\"").replace("\\\\", "\\"))
+}
+
+fn unquote_raw_string(rest: &str) -> Option<String> {
+  // `rest` begins with `#*"...` (i.e. the raw string token with the leading `r` stripped).
+  let bytes = rest.as_bytes();
+  let mut hashes = 0usize;
+  while bytes.get(hashes) == Some(&b'#') {
+    hashes += 1;
+  }
+  if bytes.get(hashes) != Some(&b'"') {
+    return None;
+  }
+  let content_start = hashes + 1;
+
+  let mut i = content_start;
+  while i < bytes.len() {
+    if bytes[i] == b'"' {
+      if hashes == 0 {
+        return rest.get(content_start..i).map(|s| s.to_string());
+      }
+      if bytes
+        .get(i + 1..i + 1 + hashes)
+        .is_some_and(|tail| tail.iter().all(|c| *c == b'#'))
+      {
+        return rest.get(content_start..i).map(|s| s.to_string());
+      }
+    }
+    i += 1;
+  }
+
+  None
 }
 
 fn load_baseline(repo_root: &Path) -> Result<HashMap<BaselineKey, usize>> {
@@ -1117,6 +1422,7 @@ pub fn lint_source(path: &Path, source: &str) -> Vec<Violation> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::fs;
 
   #[test]
   fn flags_production_panics_and_unwraps_but_ignores_cfg_test_and_comments() {
@@ -1270,5 +1576,43 @@ pub fn demo() {
       violations.is_empty(),
       "expected trailing commas in cfg(all(test, ...)) to be ignored: {violations:#?}"
     );
+  }
+
+  #[test]
+  fn lint_dir_skips_cfg_test_external_module_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    fs::write(
+      root.join("mod.rs"),
+      r#"
+#[cfg(test)]
+mod foo_tests;
+
+pub fn prod() {
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+      root.join("foo_tests.rs"),
+      r#"
+pub fn test_only() {
+  panic!("boom");
+  let _ = Some(1).unwrap();
+}
+"#,
+    )
+    .unwrap();
+
+    let violations = lint_dir(root, root).unwrap();
+    assert_eq!(
+      violations.len(),
+      1,
+      "expected only the production file violation to be reported: {violations:#?}"
+    );
+    assert_eq!(violations[0].path, PathBuf::from("mod.rs"));
+    assert_eq!(violations[0].kind, ViolationKind::Unwrap);
   }
 }

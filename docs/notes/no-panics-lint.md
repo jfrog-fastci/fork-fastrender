@@ -20,6 +20,8 @@ This scans `src/` and reports any new occurrences of:
 The scan ignores:
 
 - `#[cfg(test)]` items/blocks
+- Rust module files that are only referenced via `#[cfg(test)] mod ...;` declarations (e.g.
+  `src/**/_tests.rs` or `src/**/tests.rs`)
 - `tests/` integration test files (not under `src/` anyway)
 
 Note: `debug_assert!` (and friends) are intentionally **not** flagged because they are compiled out
