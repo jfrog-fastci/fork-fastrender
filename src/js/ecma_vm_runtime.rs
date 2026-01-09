@@ -575,7 +575,7 @@ impl VmJobContext for FastRenderJobContext {
   ) -> std::result::Result<Value, VmError> {
     // SAFETY: `FastRenderJobContext` is only used while `EcmaVmRuntime` is alive. This uses raw
     // pointers so we can borrow the VM/heap mutably while also providing a `&mut dyn VmHostHooks`
-    // reference to `vm-js` jobs (needed for promise/microtask scheduling).
+    // implementation to `vm-js` jobs (needed for promise/microtask scheduling via host hooks).
     unsafe {
       let heap = &mut *self.heap;
       let vm = &mut *self.vm;

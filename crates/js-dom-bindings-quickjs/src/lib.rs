@@ -15,6 +15,28 @@ use rquickjs::function::{Args, Constructor, Rest};
 use rquickjs::{Ctx, Function, JsLifetime, Object, Result as JsResult, Value};
 
 const NODE_CACHE_GLOBAL: &str = "__fastrender_dom_node_cache";
+const DOM_EXCEPTION_GLOBAL: &str = "__fastrender_throw_dom_exception";
+
+// Minimal DOMException polyfill used for spec-shaped error reporting (e.g. HierarchyRequestError).
+//
+// QuickJS does not ship a DOMException intrinsic; we install a small JS class that matches
+// the Error shape used by WPT + real-world scripts.
+const DOM_EXCEPTION_SHIM: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  if (typeof g.DOMException !== "function") {
+    g.DOMException = class DOMException extends Error {
+      constructor(message, name) {
+        super(message === undefined ? "" : String(message));
+        this.name = name === undefined ? "Error" : String(name);
+      }
+    };
+  }
+  g.__fastrender_throw_dom_exception = function (name, message) {
+    throw new g.DOMException(message, name);
+  };
+})();
+"#;
 
 /// Install DOM bindings into a QuickJS context.
 ///
@@ -25,6 +47,7 @@ pub fn install_dom_bindings<'js>(
   dom: Rc<RefCell<Document>>,
 ) -> JsResult<()> {
   ensure_weakref_intrinsic(&ctx)?;
+  ctx.eval::<(), _>(DOM_EXCEPTION_SHIM)?;
 
   if ctx.globals().contains_key("document")? {
     return Err(throw_type_error(&ctx, "DOM bindings already installed"));
@@ -689,8 +712,28 @@ fn throw_syntax_error<'js>(ctx: &Ctx<'js>, msg: &str) -> rquickjs::Error {
   rquickjs::Error::Exception
 }
 
+fn throw_dom_exception<'js>(ctx: &Ctx<'js>, name: &str, message: &str) -> rquickjs::Error {
+  let globals = ctx.globals();
+  let Ok(thrower) = globals.get::<_, Function<'js>>(DOM_EXCEPTION_GLOBAL) else {
+    // If the shim was not installed for some reason, fall back to a TypeError so we still throw.
+    return throw_type_error(ctx, message);
+  };
+
+  match thrower.call::<_, ()>((name, message)) {
+    Ok(_) => throw_type_error(ctx, message),
+    Err(e) => e,
+  }
+}
+
 fn dom_error_to_js<'js>(ctx: &Ctx<'js>, err: DomError) -> rquickjs::Error {
-  throw_type_error(ctx, err.code())
+  match err {
+    DomError::HierarchyRequestError | DomError::NotFoundError => {
+      let name = err.code();
+      throw_dom_exception(ctx, name, name)
+    }
+    DomError::InvalidNodeType => throw_type_error(ctx, err.code()),
+    DomError::SyntaxError => throw_syntax_error(ctx, err.code()),
+  }
 }
 
 fn dom_exception_to_js<'js>(ctx: &Ctx<'js>, err: DomException) -> rquickjs::Error {

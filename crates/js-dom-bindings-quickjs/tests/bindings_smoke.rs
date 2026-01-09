@@ -269,3 +269,62 @@ fn node_remove_detaches_from_dom() {
   let doc = dom.borrow();
   assert!(doc.get_element_by_id("y").is_none());
 }
+
+#[test]
+fn error_mapping_and_invalid_selectors() {
+  let dom = make_dom(r#"<!doctype html><html><body></body></html>"#);
+
+  let rt = Runtime::new().unwrap();
+  let ctx = Context::full(&rt).unwrap();
+  ctx.with(|ctx| {
+    install_dom_bindings(ctx.clone(), Rc::clone(&dom)).unwrap();
+
+    // Wrapper identity: document.body === document.querySelector("body")
+    let same: bool = ctx.eval(r#"document.body === document.querySelector("body")"#).unwrap();
+    assert!(same);
+
+    // Invalid selector should throw SyntaxError.
+    let selector_out: String = ctx
+      .eval(
+        r#"(() => {
+          try { document.querySelector("["); return "no throw"; }
+          catch (e) { return String(e.name) + "|" + String(e instanceof SyntaxError); }
+        })()"#,
+      )
+      .unwrap();
+    assert_eq!(selector_out, "SyntaxError|true");
+
+    // DOM mutation errors should be surfaced as DOMException instances with the right name.
+    let hierarchy_out: String = ctx
+      .eval(
+        r#"(() => {
+          try {
+            const t = document.createTextNode("x");
+            const el = document.createElement("div");
+            t.appendChild(el);
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException);
+          }
+        })()"#,
+      )
+      .unwrap();
+    assert_eq!(hierarchy_out, "HierarchyRequestError|true");
+
+    let not_found_out: String = ctx
+      .eval(
+        r#"(() => {
+          try {
+            const parent = document.createElement("div");
+            const child = document.createElement("span");
+            parent.removeChild(child);
+            return "no throw";
+          } catch (e) {
+            return String(e.name) + "|" + String(e instanceof DOMException);
+          }
+        })()"#,
+      )
+      .unwrap();
+    assert_eq!(not_found_out, "NotFoundError|true");
+  });
+}
