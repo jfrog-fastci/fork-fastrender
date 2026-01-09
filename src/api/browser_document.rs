@@ -335,6 +335,25 @@ impl BrowserDocument {
     }
   }
 
+  /// Updates the animation/transition sampling timestamp in milliseconds since load.
+  ///
+  /// Unlike DOM mutations, updating time only marks the paint stage dirty. This allows callers to
+  /// advance the animation clock and request a new frame without rerunning cascade/layout.
+  pub fn set_animation_time_ms(&mut self, time_ms: f32) {
+    self.set_animation_time(Some(time_ms));
+  }
+
+  /// Updates (or clears) the animation/transition sampling timestamp.
+  ///
+  /// When set to `None`, time-based animations resolve to a deterministic settled state.
+  pub fn set_animation_time(&mut self, time_ms: Option<f32>) {
+    let sanitized = time_ms.map(|time_ms| if time_ms.is_finite() { time_ms.max(0.0) } else { 0.0 });
+    if sanitized != self.options.animation_time {
+      self.options.animation_time = sanitized;
+      self.paint_dirty = true;
+    }
+  }
+
   /// Updates the full scroll state (viewport + element scroll offsets), marking paint dirty.
   pub fn set_scroll_state(&mut self, state: ScrollState) {
     let ScrollState { viewport, elements } = state;
