@@ -46,6 +46,8 @@ pub enum KeyAction {
   Space,
   ArrowUp,
   ArrowDown,
+  Home,
+  End,
 }
 
 #[derive(Debug, Clone)]
@@ -1211,6 +1213,88 @@ fn build_get_form_submission_url(
   Some(url.to_string())
 }
 
+fn apply_select_keyboard_action(dom: &mut DomNode, index: &DomIndexMut, select_id: usize, key: KeyAction) -> bool {
+  if node_or_ancestor_is_inert(index, select_id) || node_is_disabled(index, select_id) {
+    return false;
+  }
+
+  let rows = collect_select_rows(index, select_id);
+  if rows.is_empty() {
+    return false;
+  }
+
+  // Build the `<option>` list in tree order, skipping disabled options when navigating.
+  let mut options: Vec<(usize, bool)> = Vec::new(); // (node_id, disabled)
+  let mut last_selected_idx: Option<usize> = None;
+  let mut first_enabled_idx: Option<usize> = None;
+  let mut last_enabled_idx: Option<usize> = None;
+
+  for row in rows {
+    let SelectRow::Option { node_id, disabled } = row else {
+      continue;
+    };
+
+    let idx = options.len();
+    options.push((node_id, disabled));
+
+    if index
+      .node(node_id)
+      .and_then(|node| node.get_attribute_ref("selected"))
+      .is_some()
+    {
+      last_selected_idx = Some(idx);
+    }
+
+    if !disabled {
+      if first_enabled_idx.is_none() {
+        first_enabled_idx = Some(idx);
+      }
+      last_enabled_idx = Some(idx);
+    }
+  }
+
+  let Some(first_enabled_idx) = first_enabled_idx else {
+    return false;
+  };
+  let last_enabled_idx = last_enabled_idx.expect("first_enabled implies at least one enabled option");
+
+  // Selection anchor: last `<option selected>` in tree order; fallback to first enabled option.
+  let anchor_idx = last_selected_idx.unwrap_or(first_enabled_idx);
+
+  let next_idx = match key {
+    KeyAction::ArrowDown => {
+      let mut found = None;
+      for idx in (anchor_idx + 1)..options.len() {
+        if !options[idx].1 {
+          found = Some(idx);
+          break;
+        }
+      }
+      found.unwrap_or(last_enabled_idx)
+    }
+    KeyAction::ArrowUp => {
+      let mut found = None;
+      for idx in (0..anchor_idx).rev() {
+        if !options[idx].1 {
+          found = Some(idx);
+          break;
+        }
+      }
+      found.unwrap_or(first_enabled_idx)
+    }
+    KeyAction::Home => first_enabled_idx,
+    KeyAction::End => last_enabled_idx,
+    _ => anchor_idx,
+  };
+
+  let option_id = options
+    .get(next_idx)
+    .copied()
+    .map(|(node_id, _)| node_id)
+    .unwrap_or_else(|| options[first_enabled_idx].0);
+
+  dom_mutation::activate_select_option(dom, select_id, option_id, false)
+}
 impl InteractionEngine {
   pub fn new() -> Self {
     Self {
@@ -1818,8 +1902,15 @@ impl InteractionEngine {
           }
         }
       }
-      KeyAction::ArrowUp | KeyAction::ArrowDown => {
-        if index.node(focused).is_some_and(is_range_input) {
+      KeyAction::Space => {
+        // Handled by `key_activate` (may trigger navigation).
+      }
+      KeyAction::Tab => {
+        unreachable!("handled above")
+      }
+      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
+        if matches!(key, KeyAction::ArrowUp | KeyAction::ArrowDown) && index.node(focused).is_some_and(is_range_input)
+        {
           if node_or_ancestor_is_inert(&index, focused)
             || node_is_disabled(&index, focused)
             || node_is_readonly(&index, focused)
@@ -1835,113 +1926,107 @@ impl InteractionEngine {
             changed |= dom_mutation::step_range_value(node_mut, delta);
           }
         } else if index.node(focused).is_some_and(is_select) && !is_disabled_or_inert(&index, focused) {
+          // Prefer the `BoxTree`'s `SelectControl` snapshot when available so keyboard navigation
+          // matches what is painted (e.g. skipping `display:none` options). Fall back to DOM order
+          // before the first render.
+          let mut options: Vec<(usize, bool)> = Vec::new(); // (option_node_id, disabled)
+          let mut computed_disabled = false;
+
           if let Some(box_tree) = box_tree {
-            if let Some((control, computed_disabled)) =
-              select_control_snapshot_from_box_tree(box_tree, focused)
-            {
-              if computed_disabled {
-                return changed;
-              }
-
-              let mut options: Vec<(usize, bool)> = Vec::new();
-              for item in control.items.iter() {
-                if let SelectItem::Option {
-                  node_id, disabled, ..
-                } = item
-                {
-                  options.push((*node_id, *disabled));
-                }
-              }
-
-              let mut current_idx = options.iter().position(|(id, _)| {
-                index
-                  .node(*id)
-                  .and_then(|node| node.get_attribute_ref("selected"))
-                  .is_some()
-              });
-              if current_idx.is_none() {
-                current_idx = options.iter().position(|(_, disabled)| !*disabled);
-              }
-
-              if let Some(current_idx) = current_idx {
-                let mut next_opt: Option<usize> = None;
-                match key {
-                  KeyAction::ArrowDown => {
-                    for (id, disabled) in options.iter().skip(current_idx + 1) {
-                      if !*disabled {
-                        next_opt = Some(*id);
-                        break;
-                      }
-                    }
+            if let Some((control, disabled)) = select_control_snapshot_from_box_tree(box_tree, focused) {
+              computed_disabled = disabled;
+              if !computed_disabled {
+                for item in control.items.iter() {
+                  if let SelectItem::Option {
+                    node_id, disabled, ..
+                  } = item
+                  {
+                    options.push((*node_id, *disabled));
                   }
-                  KeyAction::ArrowUp => {
-                    for (id, disabled) in options.iter().take(current_idx).rev() {
-                      if !*disabled {
-                        next_opt = Some(*id);
-                        break;
-                      }
-                    }
-                  }
-                  _ => {}
-                }
-
-                if let Some(next_id) = next_opt {
-                  changed |= dom_mutation::activate_select_option(dom, focused, next_id, false);
                 }
               }
-
-              return changed;
             }
           }
 
-          // Fallback: derive row ordering directly from the DOM when no box-tree snapshot is
-          // available (e.g. before the first render).
-          let rows = collect_select_rows(&index, focused);
-          let mut options = Vec::new();
-          for row in rows {
-            let SelectRow::Option { node_id, disabled } = row else {
-              continue;
-            };
-            options.push((node_id, disabled));
+          if computed_disabled {
+            return changed;
           }
 
-          let mut current_idx = options.iter().position(|(id, _)| {
-            index
+          if options.is_empty() {
+            for row in collect_select_rows(&index, focused) {
+              let SelectRow::Option { node_id, disabled } = row else {
+                continue;
+              };
+              options.push((node_id, disabled));
+            }
+          }
+
+          if options.is_empty() {
+            return changed;
+          }
+
+          let mut last_selected_idx: Option<usize> = None;
+          let mut first_enabled_idx: Option<usize> = None;
+          let mut last_enabled_idx: Option<usize> = None;
+          for (idx, (id, disabled)) in options.iter().enumerate() {
+            if index
               .node(*id)
               .and_then(|node| node.get_attribute_ref("selected"))
               .is_some()
-          });
-
-          if current_idx.is_none() {
-            current_idx = options.iter().position(|(_, disabled)| !*disabled);
-          }
-
-          if let Some(current_idx) = current_idx {
-            let mut next_opt: Option<usize> = None;
-            match key {
-              KeyAction::ArrowDown => {
-                for (id, disabled) in options.iter().skip(current_idx + 1) {
-                  if !*disabled {
-                    next_opt = Some(*id);
-                    break;
-                  }
-                }
-              }
-              KeyAction::ArrowUp => {
-                for (id, disabled) in options.iter().take(current_idx).rev() {
-                  if !*disabled {
-                    next_opt = Some(*id);
-                    break;
-                  }
-                }
-              }
-              _ => {}
+            {
+              last_selected_idx = Some(idx);
             }
-
-            if let Some(next_id) = next_opt {
-              changed |= dom_mutation::activate_select_option(dom, focused, next_id, false);
+            if !*disabled {
+              if first_enabled_idx.is_none() {
+                first_enabled_idx = Some(idx);
+              }
+              last_enabled_idx = Some(idx);
             }
           }
+
+          let Some(first_enabled_idx) = first_enabled_idx else {
+            return changed;
+          };
+          let last_enabled_idx =
+            last_enabled_idx.expect("first_enabled implies at least one enabled option");
+
+          // Anchor: last selected option; fallback to first enabled option.
+          let anchor_idx = last_selected_idx.unwrap_or(first_enabled_idx);
+
+          let next_idx = match key {
+            KeyAction::ArrowDown => {
+              let mut found = None;
+              for idx in (anchor_idx + 1)..options.len() {
+                if !options[idx].1 {
+                  found = Some(idx);
+                  break;
+                }
+              }
+              found.unwrap_or(last_enabled_idx)
+            }
+            KeyAction::ArrowUp => {
+              let mut found = None;
+              for idx in (0..anchor_idx).rev() {
+                if !options[idx].1 {
+                  found = Some(idx);
+                  break;
+                }
+              }
+              found.unwrap_or(first_enabled_idx)
+            }
+            KeyAction::Home => first_enabled_idx,
+            KeyAction::End => last_enabled_idx,
+            _ => anchor_idx,
+          };
+
+          // If we clamped and the anchor was already selected, treat as a no-op (avoids clearing
+          // unrelated selections in multi-select).
+          if next_idx == anchor_idx && last_selected_idx.is_some() {
+            return changed;
+          }
+
+          let option_node_id = options[next_idx].0;
+          changed |= dom_mutation::activate_select_option(dom, focused, option_node_id, false);
         }
       }
       KeyAction::Space => {
@@ -2004,12 +2089,6 @@ impl InteractionEngine {
         };
         return (dom_changed, action);
       }
-      KeyAction::ArrowUp | KeyAction::ArrowDown => {
-        return (
-          self.key_action_with_box_tree(dom, box_tree, key),
-          InteractionAction::None,
-        );
-      }
       KeyAction::Enter => {
         let Some(focused) = self.focused else {
           return (false, InteractionAction::None);
@@ -2023,6 +2102,12 @@ impl InteractionEngine {
         }
       }
       KeyAction::Space => {}
+      KeyAction::ArrowUp | KeyAction::ArrowDown | KeyAction::Home | KeyAction::End => {
+        return (
+          self.key_action_with_box_tree(dom, box_tree, key),
+          InteractionAction::None,
+        );
+      }
     }
 
     let Some(focused) = self.focused else {

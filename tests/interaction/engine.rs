@@ -3633,6 +3633,194 @@ fn tab_focuses_first_focusable_element_when_nothing_focused() {
     attr_value(&dom, "inp", "data-fastr-focus-visible").as_deref(),
     Some("true")
   );
+
+  // Wrap at the end.
+  assert!(engine.key_action(&mut dom, KeyAction::Tab));
+  assert_eq!(
+    attr_value(&dom, "btn", "data-fastr-focus").as_deref(),
+    Some("true")
+  );
+}
+
+#[test]
+fn select_keyboard_navigation_changes_selection_and_skips_disabled_options() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "select",
+        vec![("id", "sel")],
+        vec![
+          el("option", vec![("id", "o1"), ("selected", "")], vec![]),
+          el("option", vec![("id", "o2"), ("disabled", "")], vec![]),
+          el("option", vec![("id", "o3")], vec![]),
+          el(
+            "optgroup",
+            vec![("disabled", "")],
+            vec![el("option", vec![("id", "o4")], vec![])],
+          ),
+          el("option", vec![("id", "o5")], vec![]),
+        ],
+      )],
+    )],
+  )]);
+
+  let select_dom_id = node_id(&dom, "sel");
+
+  let control = FormControlKind::Select(SelectControl {
+    multiple: false,
+    size: 1,
+    items: Arc::new(vec![
+      SelectItem::Option {
+        node_id: node_id(&dom, "o1"),
+        label: "One".to_string(),
+        value: "1".to_string(),
+        selected: true,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: node_id(&dom, "o1"),
+      },
+      SelectItem::Option {
+        node_id: node_id(&dom, "o2"),
+        label: "Two".to_string(),
+        value: "2".to_string(),
+        selected: false,
+        disabled: true,
+        in_optgroup: false,
+        option_node_id: node_id(&dom, "o2"),
+      },
+      SelectItem::Option {
+        node_id: node_id(&dom, "o3"),
+        label: "Three".to_string(),
+        value: "3".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: node_id(&dom, "o3"),
+      },
+      SelectItem::OptGroupLabel {
+        label: "Group".to_string(),
+        disabled: true,
+      },
+      SelectItem::Option {
+        node_id: node_id(&dom, "o4"),
+        label: "Four".to_string(),
+        value: "4".to_string(),
+        selected: false,
+        disabled: true,
+        in_optgroup: true,
+        option_node_id: node_id(&dom, "o4"),
+      },
+      SelectItem::Option {
+        node_id: node_id(&dom, "o5"),
+        label: "Five".to_string(),
+        value: "5".to_string(),
+        selected: false,
+        disabled: false,
+        in_optgroup: false,
+        option_node_id: node_id(&dom, "o5"),
+      },
+    ]),
+    selected: vec![0],
+  });
+
+  let mut select_box = BoxNode::new_replaced(
+    default_style(),
+    ReplacedType::FormControl(FormControl {
+      control,
+      appearance: Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
+      file_selector_button_style: None,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    }),
+    None,
+    None,
+  );
+  select_box.styled_node_id = Some(select_dom_id);
+
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![select_box],
+  ));
+  let select_box_id = find_box_id_for_styled_node(&box_tree, select_dom_id);
+
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
+      select_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+    "https://x/",
+    "https://x/",
+  );
+
+  match action {
+    InteractionAction::FocusChanged { node_id } => {
+      assert_eq!(node_id, Some(select_dom_id));
+    }
+    InteractionAction::OpenSelectDropdown { select_node_id, .. } => {
+      assert_eq!(select_node_id, select_dom_id);
+    }
+    other => panic!("expected focus/dropdown action for <select>, got {other:?}"),
+  }
+
+  assert!(
+    !has_attr(&dom, "sel", "data-fastr-focus-visible"),
+    "pointer focus should not set focus-visible"
+  );
+
+  assert!(has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(!has_attr(&dom, "o3", "selected"));
+  assert!(!has_attr(&dom, "o4", "selected"));
+  assert!(!has_attr(&dom, "o5", "selected"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+  assert_eq!(
+    attr_value(&dom, "sel", "data-fastr-focus-visible").as_deref(),
+    Some("true")
+  );
+  assert!(!has_attr(&dom, "o1", "selected"));
+  assert!(!has_attr(&dom, "o2", "selected"));
+  assert!(has_attr(&dom, "o3", "selected"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::ArrowDown));
+  assert!(
+    has_attr(&dom, "o5", "selected"),
+    "optgroup-disabled option skipped"
+  );
+  assert!(!has_attr(&dom, "o4", "selected"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::ArrowUp));
+  assert!(has_attr(&dom, "o3", "selected"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::Home));
+  assert!(has_attr(&dom, "o1", "selected"));
+
+  assert!(engine.key_action(&mut dom, KeyAction::End));
+  assert!(has_attr(&dom, "o5", "selected"));
 }
 
 #[test]
