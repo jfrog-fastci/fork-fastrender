@@ -336,6 +336,17 @@ fn init_window_globals(
 mod tests {
   use super::*;
 
+  #[derive(Debug, Clone, PartialEq)]
+  enum CapturedConsoleArg {
+    Undefined,
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Object,
+    Symbol,
+  }
+
   fn get_string(heap: &Heap, value: Value) -> String {
     let Value::String(s) = value else {
       panic!("expected string value");
@@ -473,5 +484,57 @@ mod tests {
     let (ok, registered) = probe(succ_min.saturating_sub(1));
     assert!(!ok, "expected init to fail just below succ_min");
     assert!(registered, "expected init to register a console sink before failing");
+  }
+
+  #[test]
+  fn console_sink_receives_log_arguments() -> Result<(), VmError> {
+    let url = "https://example.com/path";
+    let captured: Arc<Mutex<Vec<Vec<CapturedConsoleArg>>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_sink = captured.clone();
+
+    let sink: ConsoleSink = Arc::new(move |heap, args| {
+      let entry: Vec<CapturedConsoleArg> = args
+        .iter()
+        .map(|value| match *value {
+          Value::Undefined => CapturedConsoleArg::Undefined,
+          Value::Null => CapturedConsoleArg::Null,
+          Value::Bool(b) => CapturedConsoleArg::Bool(b),
+          Value::Number(n) => CapturedConsoleArg::Number(n),
+          Value::String(s) => CapturedConsoleArg::String(
+            heap
+              .get_string(s)
+              .expect("string handle should be valid")
+              .to_utf8_lossy(),
+          ),
+          Value::Object(_) => CapturedConsoleArg::Object,
+          Value::Symbol(_) => CapturedConsoleArg::Symbol,
+        })
+        .collect();
+      captured_for_sink.lock().push(entry);
+    });
+
+    let mut config = WindowRealmConfig::new(url);
+    config.console_sink = Some(sink);
+    let mut realm = WindowRealm::new(config)?;
+
+    let global = realm.global_object();
+    let (vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+
+    let console = get_prop(&mut scope, global, "console");
+    let Value::Object(console_obj) = console else {
+      panic!("expected object");
+    };
+    let log = get_prop(&mut scope, console_obj, "log");
+
+    let call_result =
+      vm.call(&mut scope, log, Value::Object(console_obj), &[Value::Number(1.0), Value::Null])?;
+    assert_eq!(call_result, Value::Undefined);
+
+    assert_eq!(
+      &*captured.lock(),
+      &[vec![CapturedConsoleArg::Number(1.0), CapturedConsoleArg::Null]]
+    );
+    Ok(())
   }
 }
