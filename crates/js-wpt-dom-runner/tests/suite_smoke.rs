@@ -10,6 +10,18 @@ fn corpus_root() -> PathBuf {
     .expect("canonicalize corpus root")
 }
 
+fn backend_quickjs_or_vmjs() -> BackendSelection {
+  // Pick an explicit backend so local debugging env vars don't affect test results.
+  //
+  // Prefer QuickJS when it is available, but allow running the suite smoke tests with
+  // `--no-default-features --features vmjs` (i.e. vm-js only).
+  if cfg!(feature = "quickjs") {
+    BackendSelection::QuickJs
+  } else {
+    BackendSelection::VmJs
+  }
+}
+
 #[test]
 fn suite_smoke_report_classifies_expected_failures() {
   let corpus_root = corpus_root();
@@ -23,8 +35,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     timeout: Duration::from_millis(500),
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
-    // Use an explicit backend so local debugging env vars don't affect test results.
-    backend: BackendSelection::QuickJs,
+    backend: backend_quickjs_or_vmjs(),
   })
   .expect("run suite");
 
@@ -90,7 +101,7 @@ fn suite_event_loop_tests_pass() {
     timeout: Duration::from_millis(500),
     long_timeout: Duration::from_secs(2),
     fail_on: FailOn::New,
-    backend: BackendSelection::QuickJs,
+    backend: backend_quickjs_or_vmjs(),
   })
   .expect("run suite");
 
