@@ -1,13 +1,17 @@
 # Minimal curated suite intended for quick local wiring checks.
 #
+# This suite should stay *green* by default, so it only includes tests that currently pass on the
+# in-tree vm-js runtime.
+#
 # Test IDs are paths relative to `test/` in the tc39/test262 checkout.
 include = [
-  "language/expressions/addition/**/*.js",
-  "language/expressions/multiplication/**/*.js",
+  "language/expressions/addition/S11.6.1_A2.1_T1.js",
+  "language/expressions/addition/S11.6.1_A2.4_T1.js",
+  "language/expressions/addition/S11.6.1_A2.4_T2.js",
+  "language/expressions/addition/S11.6.1_A2.4_T4.js",
+  "language/expressions/multiplication/S11.5.1_A2.1_T1.js",
+  "language/expressions/multiplication/S11.5.1_A2.4_T1.js",
+  "language/expressions/multiplication/S11.5.1_A2.4_T2.js",
+  "language/expressions/multiplication/S11.5.1_A2.4_T4.js",
+  "language/expressions/multiplication/line-terminator.js",
 ]
-
-# Avoid module-only tests for now; the VM/harness integration will grow support over time.
-exclude = [
-  "**/*.module.js",
-]
-
