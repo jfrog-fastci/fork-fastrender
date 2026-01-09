@@ -151,7 +151,7 @@ Existing modules:
   spawned via `std::thread::Builder` (name + large stack size).
 - `ui_worker_*` (`browser_ui`): headless UI↔worker protocol tests using `spawn_ui_worker(...)`.
 - `ui_stage_heartbeat_forwarding.rs` (`browser_ui`): validates stage heartbeat forwarding and cleanup
-  is tab-scoped (requires the global stage listener lock).
+  is tab-scoped.
 
 Expected future additions (keep headless):
 
