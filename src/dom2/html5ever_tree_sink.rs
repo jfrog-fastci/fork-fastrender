@@ -315,9 +315,10 @@ impl TreeSink for Dom2TreeSink {
     // html5ever-driven `dom2` parses (including streaming/script-aware parsing) produce the same
     // final tree shape as the legacy parser.
     //
-    // Note: this only runs once parsing has finished. Mid-parse DOM snapshots (e.g. at `<script>`
-    // pause points) will still contain the original `<template>` nodes, which matches how other
-    // parts of the engine currently treat declarative shadow DOM.
+    // Note: this runs once parsing has finished. The streaming parser additionally performs this
+    // promotion at connected `<script>` pause points so scripts can observe the promoted tree shape.
+    // Other mid-parse snapshots (e.g. when driving html5ever directly) may still contain the
+    // original `<template>` nodes.
     let mut doc = self.document.into_inner();
     doc.attach_shadow_roots();
     doc

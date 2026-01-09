@@ -100,10 +100,28 @@ impl StreamingHtmlParser {
   /// Run the tokenizer/tree-builder until it either needs a script, needs more input, or finishes.
   pub fn pump(&mut self) -> StreamingParserYield {
     match self.parser.pump() {
-      Html5everPump::Script(script) => StreamingParserYield::Script {
-        script,
-        base_url_at_this_point: self.current_base_url(),
-      },
+      Html5everPump::Script(script) => {
+        // Ensure declarative shadow roots are attached before any connected script executes.
+        //
+        // `dom::parse_html` (legacy parser) attaches declarative shadow roots post-parse. For
+        // streaming parsing with script execution, we need scripts to observe the promoted tree
+        // shape once the relevant `<template shadowroot=...>` markup has been parsed.
+        //
+        // Only run this promotion when the yielded script is connected for scripting; scripts inside
+        // inert `<template>` contents must remain inert, and promoting while still parsing inside a
+        // template could invalidate html5ever's template state.
+        {
+          let mut doc = self.parser.sink().document_mut();
+          if doc.is_connected_for_scripting(script) {
+            doc.attach_shadow_roots();
+          }
+        }
+
+        StreamingParserYield::Script {
+          script,
+          base_url_at_this_point: self.current_base_url(),
+        }
+      }
       Html5everPump::NeedMoreInput => StreamingParserYield::NeedMoreInput,
       Html5everPump::Finished(document) => StreamingParserYield::Finished { document },
     }
@@ -455,5 +473,32 @@ mod tests {
       parser.current_base_url().as_deref(),
       Some("https://example.com/dir/page.html")
     );
+  }
+
+  #[test]
+  fn declarative_shadow_root_is_attached_before_script_yields() {
+    let mut parser = StreamingHtmlParser::new(None);
+    parser.push_str(
+      "<!doctype html>\
+       <div id=host><template shadowroot=open><span>shadow</span></template></div>\
+       <script>RUN</script>",
+    );
+
+    match parser.pump() {
+      StreamingParserYield::Script { .. } => {
+        let doc = parser.document();
+        let host = doc.get_element_by_id("host").expect("expected host element");
+        let first_child = *doc
+          .node(host)
+          .children
+          .first()
+          .expect("host should have a child node");
+        assert!(
+          matches!(doc.node(first_child).kind, NodeKind::ShadowRoot { .. }),
+          "expected host's first child to be a ShadowRoot before script execution"
+        );
+      }
+      other => panic!("expected Script yield, got {other:?}"),
+    }
   }
 }
