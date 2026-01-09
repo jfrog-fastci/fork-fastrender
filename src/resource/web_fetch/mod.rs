@@ -6,14 +6,24 @@
 mod body;
 mod adapter;
 mod headers;
+mod limits;
 mod request;
 mod response;
 
 pub use adapter::{execute_web_fetch, WebFetchExecutionContext};
 pub use body::Body;
 pub use headers::{Headers, HeadersGuard};
+pub use limits::WebFetchLimits;
 pub use request::{Request, RequestCredentials, RequestMode, RequestRedirect};
 pub use response::{Response, ResponseType};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebFetchLimitKind {
+  HeaderCount,
+  TotalHeaderBytes,
+  RequestBodyBytes,
+  ResponseBodyBytes,
+}
 
 /// Errors returned by the Fetch core types.
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +48,13 @@ pub enum WebFetchError {
 
   #[error("body is not valid JSON: {0}")]
   BodyInvalidJson(#[from] serde_json::Error),
+
+  #[error("limit exceeded ({kind:?}): attempted {attempted} (limit {limit})")]
+  LimitExceeded {
+    kind: WebFetchLimitKind,
+    limit: usize,
+    attempted: usize,
+  },
 }
 
 pub type Result<T> = std::result::Result<T, WebFetchError>;
@@ -174,7 +191,7 @@ mod tests {
 
   #[test]
   fn body_consumption_marks_body_used() {
-    let mut body = Body::new(b"hello".to_vec());
+    let mut body = Body::new(b"hello".to_vec()).unwrap();
     assert!(!body.body_used());
     assert_eq!(body.consume_bytes().unwrap(), b"hello".to_vec());
     assert!(body.body_used());
@@ -185,7 +202,7 @@ mod tests {
 
   #[test]
   fn body_clone_is_unconsumed() {
-    let mut body = Body::new(b"hello".to_vec());
+    let mut body = Body::new(b"hello".to_vec()).unwrap();
     let _ = body.consume_bytes().unwrap();
     assert!(body.body_used());
 
@@ -196,7 +213,7 @@ mod tests {
 
   #[test]
   fn body_as_bytes_does_not_mark_body_used() {
-    let body = Body::new(b"hello".to_vec());
+    let body = Body::new(b"hello".to_vec()).unwrap();
     assert_eq!(body.as_bytes(), b"hello");
     assert!(!body.body_used());
   }
@@ -221,5 +238,78 @@ mod tests {
       RequestCredentials::from(FetchCredentialsMode::Omit),
       RequestCredentials::Omit
     );
+  }
+
+  #[test]
+  fn headers_limit_header_count_exceeded() {
+    let limits = WebFetchLimits {
+      max_header_count: 1,
+      max_total_header_bytes: 1024,
+      ..WebFetchLimits::default()
+    };
+    let mut headers = Headers::new_with_limits(&limits);
+    headers.append("x-a", "1").unwrap();
+    let err = headers.append("x-b", "2").unwrap_err();
+    assert!(matches!(
+      err,
+      WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::HeaderCount,
+        ..
+      }
+    ));
+  }
+
+  #[test]
+  fn headers_limit_total_header_bytes_exceeded() {
+    let limits = WebFetchLimits {
+      max_header_count: 1024,
+      max_total_header_bytes: 4,
+      ..WebFetchLimits::default()
+    };
+    let mut headers = Headers::new_with_limits(&limits);
+    let err = headers.append("x-a", "123").unwrap_err();
+    assert!(matches!(
+      err,
+      WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        ..
+      }
+    ));
+  }
+
+  #[test]
+  fn headers_set_respects_total_header_bytes_limit() {
+    let limits = WebFetchLimits {
+      max_header_count: 1024,
+      max_total_header_bytes: 5,
+      ..WebFetchLimits::default()
+    };
+    let mut headers = Headers::new_with_limits(&limits);
+    headers.append("a", "b").unwrap();
+    let err = headers.set("a", "12345").unwrap_err();
+    assert!(matches!(
+      err,
+      WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        ..
+      }
+    ));
+    assert_eq!(headers.get("a").unwrap().as_deref(), Some("b"));
+  }
+
+  #[test]
+  fn body_limit_request_body_bytes_exceeded() {
+    let limits = WebFetchLimits {
+      max_request_body_bytes: 2,
+      ..WebFetchLimits::default()
+    };
+    let err = Body::new_with_limits(vec![0u8; 3], &limits).unwrap_err();
+    assert!(matches!(
+      err,
+      WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::RequestBodyBytes,
+        ..
+      }
+    ));
   }
 }

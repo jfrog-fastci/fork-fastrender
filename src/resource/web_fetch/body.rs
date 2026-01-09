@@ -1,4 +1,4 @@
-use super::{Result, WebFetchError};
+use super::{Result, WebFetchError, WebFetchLimitKind, WebFetchLimits};
 
 /// An in-memory Fetch Body implementation.
 ///
@@ -11,15 +11,45 @@ pub struct Body {
 }
 
 impl Body {
-  pub fn new(bytes: Vec<u8>) -> Self {
-    Self {
+  pub fn new(bytes: Vec<u8>) -> Result<Self> {
+    Self::new_with_limits(bytes, &WebFetchLimits::default())
+  }
+
+  pub fn new_with_limits(bytes: Vec<u8>, limits: &WebFetchLimits) -> Result<Self> {
+    let len = bytes.len();
+    if len > limits.max_request_body_bytes {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::RequestBodyBytes,
+        limit: limits.max_request_body_bytes,
+        attempted: len,
+      });
+    }
+    Ok(Self {
       bytes,
+      body_used: false,
+    })
+  }
+
+  pub fn empty() -> Self {
+    Self {
+      bytes: Vec::new(),
       body_used: false,
     }
   }
 
-  pub fn empty() -> Self {
-    Self::new(Vec::new())
+  pub(crate) fn new_response(bytes: Vec<u8>, limits: &WebFetchLimits) -> Result<Self> {
+    let len = bytes.len();
+    if len > limits.max_response_body_bytes {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::ResponseBodyBytes,
+        limit: limits.max_response_body_bytes,
+        attempted: len,
+      });
+    }
+    Ok(Self {
+      bytes,
+      body_used: false,
+    })
   }
 
   /// Return the underlying bytes without consuming the body.

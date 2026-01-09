@@ -1,4 +1,4 @@
-use super::{Body, Headers, HeadersGuard};
+use super::{Body, Headers, HeadersGuard, WebFetchLimits};
 use crate::resource::{FetchCredentialsMode, ReferrerPolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +69,14 @@ pub struct Request {
 
 impl Request {
   pub fn new(method: impl Into<String>, url: impl Into<String>) -> Self {
+    Self::new_with_limits(method, url, &WebFetchLimits::default())
+  }
+
+  pub fn new_with_limits(
+    method: impl Into<String>,
+    url: impl Into<String>,
+    limits: &WebFetchLimits,
+  ) -> Self {
     let mode = RequestMode::Cors;
     let headers_guard = match mode {
       RequestMode::NoCors => HeadersGuard::RequestNoCors,
@@ -78,7 +86,7 @@ impl Request {
     Self {
       method: method.into(),
       url: url.into(),
-      headers: Headers::new_with_guard(headers_guard),
+      headers: Headers::new_with_guard_and_limits(headers_guard, limits),
       mode,
       credentials: RequestCredentials::SameOrigin,
       redirect: RequestRedirect::Follow,

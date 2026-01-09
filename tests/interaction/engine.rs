@@ -1828,14 +1828,17 @@ fn listbox_select_click_accounts_for_element_scroll_offset() {
     option_ids
       .iter()
       .enumerate()
-      .map(|(idx, &id)| SelectItem::Option {
-        node_id: node_id(&dom, id),
-        label: format!("Option {idx}"),
-        value: idx.to_string(),
-        selected: idx == 0,
-        disabled: false,
-        in_optgroup: false,
-        option_node_id: node_id(&dom, id),
+      .map(|(idx, &id)| {
+        let option_node_id = node_id(&dom, id);
+        SelectItem::Option {
+          node_id: option_node_id,
+          label: format!("Option {idx}"),
+          value: idx.to_string(),
+          selected: idx == 0,
+          disabled: false,
+          in_optgroup: false,
+          option_node_id,
+        }
       })
       .collect::<Vec<_>>(),
   );

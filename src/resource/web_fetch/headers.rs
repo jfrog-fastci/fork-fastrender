@@ -1,4 +1,4 @@
-use super::{Result, WebFetchError};
+use super::{Result, WebFetchError, WebFetchLimitKind, WebFetchLimits};
 use http::header::HeaderName;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,7 @@ struct Header {
 pub struct Headers {
   header_list: Vec<Header>,
   guard: HeadersGuard,
+  limits: WebFetchLimits,
 }
 
 impl Default for Headers {
@@ -36,6 +37,15 @@ impl Headers {
     Self {
       header_list: Vec::new(),
       guard: HeadersGuard::None,
+      limits: WebFetchLimits::default(),
+    }
+  }
+
+  pub fn new_with_limits(limits: &WebFetchLimits) -> Self {
+    Self {
+      header_list: Vec::new(),
+      guard: HeadersGuard::None,
+      limits: limits.clone(),
     }
   }
 
@@ -43,11 +53,24 @@ impl Headers {
     Self {
       header_list: Vec::new(),
       guard,
+      limits: WebFetchLimits::default(),
+    }
+  }
+
+  pub fn new_with_guard_and_limits(guard: HeadersGuard, limits: &WebFetchLimits) -> Self {
+    Self {
+      header_list: Vec::new(),
+      guard,
+      limits: limits.clone(),
     }
   }
 
   pub fn guard(&self) -> HeadersGuard {
     self.guard
+  }
+
+  pub fn limits(&self) -> &WebFetchLimits {
+    &self.limits
   }
 
   pub fn set_guard(&mut self, guard: HeadersGuard) {
@@ -57,19 +80,19 @@ impl Headers {
   pub fn append(&mut self, name: &str, value: &str) -> Result<()> {
     let name = validate_header_name(name)?;
     let value = normalize_header_value(value);
-    validate_header_value(&value)?;
+    validate_header_value(value)?;
 
-    if !self.validate_mutation(&name, &value)? {
+    if !self.validate_mutation(&name, value)? {
       return Ok(());
     }
 
     if self.guard == HeadersGuard::RequestNoCors {
       let mut temporary_value = self.header_list_get(&name).unwrap_or_default();
       if temporary_value.is_empty() {
-        temporary_value = value.clone();
+        temporary_value = value.to_string();
       } else {
         temporary_value.push_str(", ");
-        temporary_value.push_str(&value);
+        temporary_value.push_str(value);
       }
 
       if !is_no_cors_safelisted_request_header(&name, &temporary_value) {
@@ -77,7 +100,51 @@ impl Headers {
       }
     }
 
-    self.header_list.push(Header { name, value });
+    let next_count = self
+      .header_list
+      .len()
+      .checked_add(1)
+      .ok_or(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::HeaderCount,
+        limit: self.limits.max_header_count,
+        attempted: usize::MAX,
+      })?;
+    if next_count > self.limits.max_header_count {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::HeaderCount,
+        limit: self.limits.max_header_count,
+        attempted: next_count,
+      });
+    }
+
+    let current_total = self.total_header_bytes();
+    let entry_bytes = name
+      .as_str()
+      .len()
+      .checked_add(value.len())
+      .ok_or(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        limit: self.limits.max_total_header_bytes,
+        attempted: usize::MAX,
+      })?;
+    let next_total = current_total
+      .checked_add(entry_bytes)
+      .ok_or(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        limit: self.limits.max_total_header_bytes,
+        attempted: usize::MAX,
+      })?;
+    if next_total > self.limits.max_total_header_bytes {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        limit: self.limits.max_total_header_bytes,
+        attempted: next_total,
+      });
+    }
+
+    self
+      .header_list
+      .push(Header { name, value: value.to_string() });
 
     if self.guard == HeadersGuard::RequestNoCors {
       self.remove_privileged_no_cors_request_headers();
@@ -137,17 +204,132 @@ impl Headers {
   pub fn set(&mut self, name: &str, value: &str) -> Result<()> {
     let name = validate_header_name(name)?;
     let value = normalize_header_value(value);
-    validate_header_value(&value)?;
+    validate_header_value(value)?;
 
-    if !self.validate_mutation(&name, &value)? {
+    if !self.validate_mutation(&name, value)? {
       return Ok(());
     }
 
-    if self.guard == HeadersGuard::RequestNoCors && !is_no_cors_safelisted_request_header(&name, &value) {
+    if self.guard == HeadersGuard::RequestNoCors && !is_no_cors_safelisted_request_header(&name, value) {
       return Ok(());
     }
 
-    self.header_list_set(name, value);
+    let current_total = self.total_header_bytes();
+
+    let name_len = name.as_str().len();
+    let next_value_len = value.len();
+
+    let mut first_index: Option<usize> = None;
+    let mut to_remove: Vec<usize> = Vec::new();
+    for (idx, header) in self.header_list.iter().enumerate() {
+      if header.name == name {
+        if first_index.is_none() {
+          first_index = Some(idx);
+        } else {
+          to_remove.push(idx);
+        }
+      }
+    }
+
+    let (next_count, next_total) = match first_index {
+      Some(first) => {
+        let mut removed_bytes: usize = 0;
+        for idx in &to_remove {
+          if let Some(header) = self.header_list.get(*idx) {
+            let entry_bytes = name_len
+              .checked_add(header.value.len())
+              .ok_or(WebFetchError::LimitExceeded {
+                kind: WebFetchLimitKind::TotalHeaderBytes,
+                limit: self.limits.max_total_header_bytes,
+                attempted: usize::MAX,
+              })?;
+            removed_bytes = removed_bytes
+              .checked_add(entry_bytes)
+              .ok_or(WebFetchError::LimitExceeded {
+                kind: WebFetchLimitKind::TotalHeaderBytes,
+                limit: self.limits.max_total_header_bytes,
+                attempted: usize::MAX,
+              })?;
+          }
+        }
+
+        let old_first_value_len = self
+          .header_list
+          .get(first)
+          .map(|h| h.value.len())
+          .unwrap_or(0);
+
+        let base = current_total
+          .checked_sub(removed_bytes)
+          .and_then(|v| v.checked_sub(old_first_value_len))
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::TotalHeaderBytes,
+            limit: self.limits.max_total_header_bytes,
+            attempted: usize::MAX,
+          })?;
+
+        let next_total = base
+          .checked_add(next_value_len)
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::TotalHeaderBytes,
+            limit: self.limits.max_total_header_bytes,
+            attempted: usize::MAX,
+          })?;
+        let next_count = self
+          .header_list
+          .len()
+          .checked_sub(to_remove.len())
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::HeaderCount,
+            limit: self.limits.max_header_count,
+            attempted: usize::MAX,
+          })?;
+        (next_count, next_total)
+      }
+      None => {
+        let next_count = self
+          .header_list
+          .len()
+          .checked_add(1)
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::HeaderCount,
+            limit: self.limits.max_header_count,
+            attempted: usize::MAX,
+          })?;
+        let entry_bytes = name_len
+          .checked_add(next_value_len)
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::TotalHeaderBytes,
+            limit: self.limits.max_total_header_bytes,
+            attempted: usize::MAX,
+          })?;
+        let next_total = current_total
+          .checked_add(entry_bytes)
+          .ok_or(WebFetchError::LimitExceeded {
+            kind: WebFetchLimitKind::TotalHeaderBytes,
+            limit: self.limits.max_total_header_bytes,
+            attempted: usize::MAX,
+          })?;
+        (next_count, next_total)
+      }
+    };
+
+    if next_count > self.limits.max_header_count {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::HeaderCount,
+        limit: self.limits.max_header_count,
+        attempted: next_count,
+      });
+    }
+    if next_total > self.limits.max_total_header_bytes {
+      return Err(WebFetchError::LimitExceeded {
+        kind: WebFetchLimitKind::TotalHeaderBytes,
+        limit: self.limits.max_total_header_bytes,
+        attempted: next_total,
+      });
+    }
+
+    self.header_list_set(name, value.to_string());
 
     if self.guard == HeadersGuard::RequestNoCors {
       self.remove_privileged_no_cors_request_headers();
@@ -330,6 +512,15 @@ impl Headers {
     let range = HeaderName::from_static("range");
     self.header_list_delete(&range);
   }
+
+  fn total_header_bytes(&self) -> usize {
+    let mut total = 0usize;
+    for header in &self.header_list {
+      total = total.saturating_add(header.name.as_str().len());
+      total = total.saturating_add(header.value.len());
+    }
+    total
+  }
 }
 
 fn validate_header_name(name: &str) -> Result<HeaderName> {
@@ -338,11 +529,10 @@ fn validate_header_name(name: &str) -> Result<HeaderName> {
   })
 }
 
-fn normalize_header_value(value: &str) -> String {
+fn normalize_header_value(value: &str) -> &str {
   // https://fetch.spec.whatwg.org/#concept-header-value-normalize
   value
     .trim_matches(|c| c == ' ' || c == '\t')
-    .to_string()
 }
 
 fn trim_http_whitespace(value: &str) -> &str {

@@ -196,6 +196,8 @@ fn test_ref_statistics_max_channel_diff() {
     psnr: 0.0,
     perceptual_similarity: 0.0,
     perceptual_distance: 0.0,
+    first_mismatch: None,
+    first_mismatch_rgba: None,
   };
 
   assert_eq!(stats.max_channel_diff(true), 100);

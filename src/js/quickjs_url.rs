@@ -260,10 +260,8 @@ fn url_create_search_params<'js>(
   ctx: Ctx<'js>,
   url: Class<'js, JsUrl>,
 ) -> Result<Class<'js, JsUrlSearchParams>, Error> {
-  let inner = url.borrow().inner.search_params();
-  Class::instance(ctx, JsUrlSearchParams {
-    inner: (*inner).clone(),
-  })
+  let inner = { url.borrow().inner.search_params() };
+  Class::instance(ctx, JsUrlSearchParams { inner })
 }
 
 fn url_set_href<'js>(

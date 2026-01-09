@@ -9,7 +9,7 @@ use url::Url;
 
 use super::{
   Body, Headers, HeadersGuard, Request, RequestCredentials, RequestMode, RequestRedirect, Response,
-  ResponseType,
+  ResponseType, WebFetchError,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -205,10 +205,16 @@ pub fn execute_web_fetch<'a>(
     }
   }
 
-  let mut headers = Headers::new_with_guard(HeadersGuard::Response);
+  let mut headers =
+    Headers::new_with_guard_and_limits(HeadersGuard::Response, request.headers.limits());
   if let Some(response_headers) = resource.response_headers.take() {
     for (name, value) in response_headers {
       if let Err(err) = headers.append(&name, &value) {
+        if matches!(err, WebFetchError::LimitExceeded { .. }) {
+          return Err(Error::Other(format!(
+            "web fetch response headers exceed configured limits: {err}"
+          )));
+        }
         if runtime::runtime_toggles().truthy("FASTR_WEB_FETCH_DEBUG") {
           eprintln!(
             "web fetch: skipping invalid response header {name:?}: {value:?} ({err})"
@@ -221,7 +227,11 @@ pub fn execute_web_fetch<'a>(
   let body = if method.eq_ignore_ascii_case("HEAD") {
     None
   } else {
-    Some(Body::new(std::mem::take(&mut resource.bytes)))
+    Some(
+      Body::new_response(std::mem::take(&mut resource.bytes), request.headers.limits()).map_err(
+        |err| Error::Other(format!("web fetch response body exceeds configured limits: {err}")),
+      )?,
+    )
   };
 
   let mut response = Response {
@@ -277,7 +287,7 @@ pub fn execute_web_fetch<'a>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::resource::web_fetch::WebFetchError;
+  use crate::resource::web_fetch::{WebFetchError, WebFetchLimits};
   use crate::resource::{origin_from_url, FetchedResource, HttpFetcher, HttpRetryPolicy};
   use std::io::{Read, Write};
   use std::net::TcpListener;
@@ -553,7 +563,7 @@ mod tests {
     request.headers.append("X-Test", "a").unwrap();
     request.headers.append("X-Other", "c").unwrap();
     request.headers.append("X-Test", "b").unwrap();
-    request.body = Some(Body::new(b"hello".to_vec()));
+    request.body = Some(Body::new(b"hello".to_vec()).unwrap());
 
     execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
@@ -563,7 +573,7 @@ mod tests {
   fn request_body_on_get_errors_before_fetching() {
     let fetcher = PanicFetcher;
     let mut request = Request::new("GET", "https://example.com/a");
-    request.body = Some(Body::new(b"x".to_vec()));
+    request.body = Some(Body::new(b"x".to_vec()).unwrap());
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
     assert!(matches!(err, Error::Other(_)));
@@ -573,10 +583,26 @@ mod tests {
   fn request_body_on_head_errors_before_fetching() {
     let fetcher = PanicFetcher;
     let mut request = Request::new("HEAD", "https://example.com/a");
-    request.body = Some(Body::new(b"x".to_vec()));
+    request.body = Some(Body::new(b"x".to_vec()).unwrap());
     let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect_err("expected error");
     assert!(matches!(err, Error::Other(_)));
+  }
+
+  #[test]
+  fn response_body_respects_web_fetch_limits() {
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(vec![0u8; 4], None),
+    };
+    let limits = WebFetchLimits {
+      max_response_body_bytes: 3,
+      ..WebFetchLimits::default()
+    };
+    let request = Request::new_with_limits("GET", "https://example.com/a", &limits);
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("ResponseBodyBytes"));
   }
 
   #[test]
@@ -995,7 +1021,7 @@ mod tests {
     let fetcher = test_http_fetcher();
     let url = format!("http://{addr}/submit");
     let mut request = Request::new("POST", &url);
-    request.body = Some(Body::new(b"hello".to_vec()));
+    request.body = Some(Body::new(b"hello".to_vec()).unwrap());
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
@@ -1038,7 +1064,7 @@ mod tests {
     let url = format!("http://{addr}/custom");
     let mut request = Request::new("PUT", &url);
     request.headers.append("X-Test", "hello").unwrap();
-    request.body = Some(Body::new(b"payload".to_vec()));
+    request.body = Some(Body::new(b"payload".to_vec()).unwrap());
     let mut response =
       execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default()).unwrap();
     assert_eq!(response.status, 200);
