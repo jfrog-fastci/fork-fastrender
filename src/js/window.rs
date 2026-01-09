@@ -9,8 +9,38 @@ use crate::js::{
   install_window_timers_bindings, DomHost, EventLoop, RunLimits, RunUntilIdleOutcome, TaskSource,
   WindowFetchBindings, WindowFetchEnv,
 };
+use crate::render_control;
 use crate::resource::{HttpFetcher, ResourceFetcher};
 use std::sync::Arc;
+use std::time::Instant;
+use vm_js::{Budget, VmError};
+
+fn callback_budget_from_render_deadline() -> Budget {
+  // Prefer the root (outermost) render deadline so JS does not inherit internal per-stage budgets.
+  let deadline = render_control::root_deadline().and_then(|d| d.remaining_timeout());
+  let deadline = deadline.and_then(|remaining| Instant::now().checked_add(remaining));
+  Budget {
+    fuel: Some(1_000_000),
+    deadline,
+    check_time_every: 100,
+  }
+}
+
+fn drain_vm_js_microtask_queue(host: &mut WindowHostState, event_loop: &mut EventLoop<WindowHostState>) -> Result<()> {
+  let window_realm = host.window_mut();
+  window_realm.reset_interrupt();
+
+  with_event_loop(event_loop, || {
+    let (vm, heap) = window_realm.vm_and_heap_mut();
+    vm.set_budget(callback_budget_from_render_deadline());
+    let result = vm.perform_microtask_checkpoint(heap);
+    vm.set_budget(Budget::unlimited(100));
+    result.map_err(|err| Error::Other(match err {
+      VmError::Throw(_) => "uncaught exception".to_string(),
+      other => other.to_string(),
+    }))
+  })
+}
 
 /// Host-owned "window" state for executing scripts against a single DOM document.
 ///
@@ -36,10 +66,11 @@ impl WindowHost {
     document_url: impl Into<String>,
     fetcher: Arc<dyn ResourceFetcher>,
   ) -> Result<Self> {
-    Ok(Self {
-      host: WindowHostState::new_with_fetcher(dom, document_url, fetcher)?,
-      event_loop: EventLoop::new(),
-    })
+    let host = WindowHostState::new_with_fetcher(dom, document_url, fetcher)?;
+    let mut event_loop = EventLoop::new();
+    // Drain the embedded `vm-js` Promise job queue during HTML microtask checkpoints.
+    event_loop.set_microtask_checkpoint_hook(Some(drain_vm_js_microtask_queue));
+    Ok(Self { host, event_loop })
   }
 
   pub fn from_renderer_dom(root: &crate::dom::DomNode, document_url: impl Into<String>) -> Result<Self> {

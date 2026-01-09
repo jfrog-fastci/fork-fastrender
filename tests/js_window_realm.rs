@@ -11,6 +11,21 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use vm_js::{Heap, PropertyKey, Scope, Value, Vm, VmError};
 
+fn install_vm_js_microtask_checkpoint_hook(event_loop: &mut EventLoop<WindowHostState>) {
+  fn drain(host: &mut WindowHostState, event_loop: &mut EventLoop<WindowHostState>) -> Result<()> {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      realm.reset_interrupt();
+      let (vm, heap) = realm.vm_and_heap_mut();
+      vm.perform_microtask_checkpoint(heap)
+        .map_err(|err| Error::Other(err.to_string()))?;
+      Ok(())
+    })
+  }
+
+  event_loop.set_microtask_checkpoint_hook(Some(drain));
+}
+
 fn get_string(heap: &Heap, value: Value) -> String {
   let Value::String(s) = value else {
     panic!("expected string value");
@@ -529,6 +544,7 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
   let mut host = WindowHostState::new_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
@@ -546,12 +562,12 @@ fn window_fetch_text_orders_microtasks_before_networking() -> Result<()> {
    globalThis.__log[globalThis.__log_len] = "micro";
    globalThis.__log_len = globalThis.__log_len + 1;
  });
- fetch("https://example.com/x")
-   .then(r => r.text())
-   .then(t => {
-     globalThis.__log[globalThis.__log_len] = t;
-     globalThis.__log_len = globalThis.__log_len + 1;
-   });
+  fetch("https://example.com/x")
+    .then(function (r) { return r.text(); })
+    .then(function (t) {
+      globalThis.__log[globalThis.__log_len] = t;
+      globalThis.__log_len = globalThis.__log_len + 1;
+    });
  globalThis.__log[globalThis.__log_len] = "sync";
  globalThis.__log_len = globalThis.__log_len + 1;
  "#,
@@ -587,6 +603,7 @@ fn window_fetch_forwards_request_headers() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
   let mut host = WindowHostState::new_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
@@ -804,6 +821,7 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
   );
   let clock = Arc::new(VirtualClock::new());
   let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
   let mut host = WindowHostState::new_with_fetcher(
     Dom2Document::new(QuirksMode::NoQuirks),
     "https://example.com/",
@@ -815,7 +833,9 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
       let realm = host.window_mut();
       let res = realm.exec_script(
         r#"
- fetch("https://example.com/json").then(r => r.json()).then(v => globalThis.__json_ok = v.ok);
+  fetch("https://example.com/json")
+    .then(function (r) { return r.json(); })
+    .then(function (v) { globalThis.__json_ok = v.ok; });
  "#,
       );
       if let Err(err) = res {
@@ -840,5 +860,156 @@ fn window_fetch_response_json_parses_body() -> Result<()> {
     get_data_prop(&mut scope, global, "__json_ok")
   };
   assert_eq!(json_ok, Value::Bool(true));
+  Ok(())
+}
+
+#[test]
+fn window_fetch_accepts_request_object() -> Result<()> {
+  let fetcher: Arc<InMemoryFetcher> = Arc::new(
+    InMemoryFetcher::new().with_response("https://example.com/headers2", b"ok", 200),
+  );
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    fetcher.clone(),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  let req = new Request("https://example.com/headers2", { headers: { "x-test": "2" } });
+  fetch(req).then(() => {});
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+  assert!(
+    fetcher
+      .last_request_headers()
+      .iter()
+      .any(|(name, value)| name == "x-test" && value == "2"),
+    "expected fetch(Request) to forward headers to ResourceFetcher::fetch_http_request"
+  );
+  Ok(())
+}
+
+#[test]
+fn window_response_clone_duplicates_body() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    Arc::new(InMemoryFetcher::new()),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__clone_text = "";
+  let r = new Response("hello");
+  let c = r.clone();
+  r.text().then(function (t1) {
+    return c.text().then(function (t2) {
+      globalThis.__clone_text = t1 + "," + t2;
+    });
+  });
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let clone_text = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let value = get_data_prop(&mut scope, global, "__clone_text");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(clone_text, "hello,hello");
+  Ok(())
+}
+
+#[test]
+fn window_response_clone_throws_when_body_used() -> Result<()> {
+  let clock = Arc::new(VirtualClock::new());
+  let mut event_loop = EventLoop::<WindowHostState>::with_clock(clock);
+  install_vm_js_microtask_checkpoint_hook(&mut event_loop);
+  let mut host = WindowHostState::new_with_fetcher(
+    Dom2Document::new(QuirksMode::NoQuirks),
+    "https://example.com/",
+    Arc::new(InMemoryFetcher::new()),
+  )?;
+
+  event_loop.queue_task(TaskSource::Script, |host, event_loop| {
+    with_event_loop(event_loop, || {
+      let realm = host.window_mut();
+      let res = realm.exec_script(
+        r#"
+  globalThis.__clone_error = "";
+  let r = new Response("hello");
+  r.text().then(() => {
+    try {
+      r.clone();
+      globalThis.__clone_error = "no error";
+    } catch (e) {
+      globalThis.__clone_error = e.name;
+    }
+  });
+  "#,
+      );
+      if let Err(err) = res {
+        let (_vm, heap) = realm.vm_and_heap_mut();
+        return Err(Error::Other(format_vm_error(heap, err)));
+      }
+      Ok(())
+    })
+  })?;
+
+  assert_eq!(
+    event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+    RunUntilIdleOutcome::Idle
+  );
+
+  let clone_error = {
+    let realm = host.window_mut();
+    let global = realm.global_object();
+    let (_vm, heap) = realm.vm_and_heap_mut();
+    let mut scope = heap.scope();
+    scope.push_root(Value::Object(global)).unwrap();
+    let value = get_data_prop(&mut scope, global, "__clone_error");
+    get_string(scope.heap(), value)
+  };
+  assert_eq!(clone_error, "TypeError");
   Ok(())
 }

@@ -9,6 +9,8 @@ use std::time::Duration;
 use super::clock::{Clock, RealClock};
 use super::time::duration_to_ms_f64;
 
+pub type MicrotaskCheckpointHook<Host> = fn(&mut Host, &mut EventLoop<Host>) -> Result<()>;
+
 /// HTML task sources (WHATWG terminology).
 ///
 /// This enum is intentionally small for now, but designed to be extended as more
@@ -189,6 +191,7 @@ pub struct EventLoop<Host: 'static> {
   default_deadline_stage: RenderStage,
   queue_limits: QueueLimits,
   trace: TraceHandle,
+  microtask_checkpoint_hook: Option<MicrotaskCheckpointHook<Host>>,
   task_queues: BTreeMap<TaskSource, VecDeque<Task<Host>>>,
   microtask_queue: VecDeque<Task<Host>>,
   next_task_seq: u64,
@@ -211,6 +214,7 @@ impl<Host: 'static> Default for EventLoop<Host> {
       default_deadline_stage: RenderStage::Script,
       queue_limits: QueueLimits::default(),
       trace: TraceHandle::default(),
+      microtask_checkpoint_hook: None,
       task_queues: BTreeMap::new(),
       microtask_queue: VecDeque::new(),
       next_task_seq: 0,
@@ -231,6 +235,10 @@ impl<Host: 'static> Default for EventLoop<Host> {
 impl<Host: 'static> EventLoop<Host> {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  pub fn set_microtask_checkpoint_hook(&mut self, hook: Option<MicrotaskCheckpointHook<Host>>) {
+    self.microtask_checkpoint_hook = hook;
   }
 
   pub fn default_deadline_stage(&self) -> RenderStage {
@@ -496,24 +504,34 @@ impl<Host: 'static> EventLoop<Host> {
     let mut trace_span = self.trace.span("js.microtask_checkpoint", "js");
     trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
     let mut drained: u64 = 0;
+    let hook = self.microtask_checkpoint_hook;
     let result = (|| {
       let mut first_err: Option<Error> = None;
-      while !self.microtask_queue.is_empty() {
-        let Some(task) = self.microtask_queue.pop_front() else {
-          // The emptiness check above and the `VecDeque` API guarantee this can't happen, but avoid
-          // panicking if an invariant is ever violated.
-          break;
-        };
-        self.currently_running_task = Some(RunningTask {
-          source: task.source,
-          is_microtask: true,
-        });
-        if let Err(err) = task.run(host, self) {
-          if first_err.is_none() {
-            first_err = Some(err);
+      loop {
+        while let Some(task) = self.microtask_queue.pop_front() {
+          self.currently_running_task = Some(RunningTask {
+            source: task.source,
+            is_microtask: true,
+          });
+          if let Err(err) = task.run(host, self) {
+            if first_err.is_none() {
+              first_err = Some(err);
+            }
+          }
+          drained = drained.saturating_add(1);
+        }
+
+        if let Some(hook) = hook {
+          if let Err(err) = hook(host, self) {
+            if first_err.is_none() {
+              first_err = Some(err);
+            }
           }
         }
-        drained = drained.saturating_add(1);
+
+        if self.microtask_queue.is_empty() {
+          break;
+        }
       }
       first_err.map_or(Ok(()), Err)
     })();
@@ -858,39 +876,65 @@ impl<Host: 'static> EventLoop<Host> {
     trace_span.arg_u64("queued_at_start", self.microtask_queue.len() as u64);
     let mut drained: u64 = 0;
 
+    let hook = self.microtask_checkpoint_hook;
     let result = (|| -> RunStepResult<()> {
       let mut first_err: Option<Error> = None;
-      while !self.microtask_queue.is_empty() {
-        // Continue draining even if a microtask fails, but still respect run limits/deadlines.
-        // If an error has already occurred, prefer surfacing that error over a stop reason, since
-        // the caller is already in an exceptional state.
-        if let Err(err) = run_state.check_deadline() {
-          return match first_err {
-            Some(err) => Err(RunStepError::Error(err)),
-            None => Err(err),
+
+      loop {
+        while !self.microtask_queue.is_empty() {
+          // Continue draining even if a microtask fails, but still respect run limits/deadlines.
+          // If an error has already occurred, prefer surfacing that error over a stop reason, since
+          // the caller is already in an exceptional state.
+          if let Err(err) = run_state.check_deadline() {
+            return match first_err {
+              Some(err) => Err(RunStepError::Error(err)),
+              None => Err(err),
+            };
+          }
+          if let Err(err) = run_state.before_microtask() {
+            return match first_err {
+              Some(err) => Err(RunStepError::Error(err)),
+              None => Err(err),
+            };
+          }
+
+          let Some(task) = self.microtask_queue.pop_front() else {
+            break;
           };
-        }
-        if let Err(err) = run_state.before_microtask() {
-          return match first_err {
-            Some(err) => Err(RunStepError::Error(err)),
-            None => Err(err),
-          };
+          self.currently_running_task = Some(RunningTask {
+            source: task.source,
+            is_microtask: true,
+          });
+          if let Err(err) = task.run(host, self) {
+            if first_err.is_none() {
+              first_err = Some(err);
+            }
+          }
+          drained = drained.saturating_add(1);
         }
 
-        let Some(task) = self.microtask_queue.pop_front() else {
-          break;
-        };
-        self.currently_running_task = Some(RunningTask {
-          source: task.source,
-          is_microtask: true,
-        });
-        if let Err(err) = task.run(host, self) {
-          if first_err.is_none() {
-            first_err = Some(err);
+        if let Some(hook) = hook {
+          // Respect deadlines even when the event loop microtask queue is empty: hooks may perform
+          // additional microtask work (e.g. draining JS engine Promise job queues).
+          if let Err(err) = run_state.check_deadline() {
+            return match first_err {
+              Some(err) => Err(RunStepError::Error(err)),
+              None => Err(err),
+            };
+          }
+
+          if let Err(err) = hook(host, self) {
+            if first_err.is_none() {
+              first_err = Some(err);
+            }
           }
         }
-        drained = drained.saturating_add(1);
+
+        if self.microtask_queue.is_empty() {
+          break;
+        }
       }
+
       if let Some(err) = first_err {
         return Err(RunStepError::Error(err));
       }
@@ -919,20 +963,34 @@ impl<Host: 'static> EventLoop<Host> {
     self.performing_microtask_checkpoint = true;
     let previous_running_task = self.currently_running_task.take();
 
+    let hook = self.microtask_checkpoint_hook;
     let result = (|| -> RunStepResult<()> {
-      while !self.microtask_queue.is_empty() {
-        run_state.check_deadline()?;
-        run_state.before_microtask()?;
+      loop {
+        while !self.microtask_queue.is_empty() {
+          run_state.check_deadline()?;
+          run_state.before_microtask()?;
 
-        let Some(task) = self.microtask_queue.pop_front() else {
+          let Some(task) = self.microtask_queue.pop_front() else {
+            break;
+          };
+          self.currently_running_task = Some(RunningTask {
+            source: task.source,
+            is_microtask: true,
+          });
+          if let Err(err) = task.run(host, self) {
+            on_error(err);
+          }
+        }
+
+        if let Some(hook) = hook {
+          run_state.check_deadline()?;
+          if let Err(err) = hook(host, self) {
+            on_error(err);
+          }
+        }
+
+        if self.microtask_queue.is_empty() {
           break;
-        };
-        self.currently_running_task = Some(RunningTask {
-          source: task.source,
-          is_microtask: true,
-        });
-        if let Err(err) = task.run(host, self) {
-          on_error(err);
         }
       }
       Ok(())

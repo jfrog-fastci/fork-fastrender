@@ -1099,14 +1099,15 @@ fn request_ctor_construct(
   let input = args.get(0).copied().unwrap_or(Value::Undefined);
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
-  let mut request = if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
-    with_env_state(other_env_id, |state| {
-      state
-        .requests
-        .get(&other_request_id)
-        .cloned()
-        .ok_or(VmError::TypeError("Request: invalid backing request"))
-    })?
+  let mut request =
+    if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
+      with_env_state(other_env_id, |state| {
+        state
+          .requests
+          .get(&other_request_id)
+          .cloned()
+          .ok_or(VmError::TypeError("Request: invalid backing request"))
+      })?
   } else {
     let url = to_rust_string(scope.heap_mut(), input)?;
     CoreRequest::new("GET", url)
@@ -1121,7 +1122,11 @@ fn request_ctor_construct(
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
-      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut request.headers, headers_val)?;
+      // `RequestInit.headers` replaces the existing header list.
+      let mut headers =
+        CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
+      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
+      request.headers = headers;
     }
 
     let body_key = alloc_key(scope, "body")?;
@@ -1180,6 +1185,67 @@ fn request_ctor_construct(
   // `headers` is a live wrapper backed by the request state.
   let headers_obj =
     make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, request_id)?;
+  set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
+
+  Ok(Value::Object(obj))
+}
+
+fn request_clone_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Request: illegal invocation"));
+  };
+  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
+  let request_id = number_to_u64(get_data_prop(scope, obj, REQUEST_ID_KEY)?)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+
+  let cloned = with_env_state(env_id, |state| {
+    let req = state
+      .requests
+      .get(&request_id)
+      .ok_or(VmError::TypeError("Request: invalid backing request"))?;
+    if req.body.as_ref().map_or(false, |b| b.body_used()) {
+      return Err(throw_type_error(vm, scope, host_hooks, "Request body is already used"));
+    }
+    Ok(req.clone())
+  })?;
+
+  let new_request_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.requests.insert(id, cloned);
+    Ok(id)
+  })?;
+
+  let proto = scope.heap().object_prototype(obj)?.ok_or(VmError::InvariantViolation(
+    "Request.prototype missing on instance",
+  ))?;
+  let obj = scope.alloc_object_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(obj))?;
+
+  set_data_prop(scope, obj, ENV_ID_KEY, Value::Number(env_id as f64), false)?;
+  set_data_prop(scope, obj, REQUEST_ID_KEY, Value::Number(new_request_id as f64), false)?;
+
+  let (method, url) = with_env_state(env_id, |state| {
+    let req = state
+      .requests
+      .get(&new_request_id)
+      .ok_or(VmError::InvariantViolation("Request state missing"))?;
+    Ok((req.method.clone(), req.url.clone()))
+  })?;
+  let method_s = scope.alloc_string(&method)?;
+  let url_s = scope.alloc_string(&url)?;
+  set_data_prop(scope, obj, "method", Value::String(method_s), false)?;
+  set_data_prop(scope, obj, "url", Value::String(url_s), false)?;
+
+  let headers_obj =
+    make_headers_wrapper(scope, env_id, headers_proto, HEADERS_KIND_REQUEST, new_request_id)?;
   set_data_prop(scope, obj, "headers", Value::Object(headers_obj), false)?;
 
   Ok(Value::Object(obj))
@@ -1327,6 +1393,86 @@ fn response_json_native(
   }
 
   Ok(cap.promise)
+}
+
+fn response_clone_native(
+  vm: &mut Vm,
+  scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
+  callee: GcObject,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, VmError> {
+  let Value::Object(obj) = this else {
+    return Err(VmError::TypeError("Response: illegal invocation"));
+  };
+  let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
+  let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
+  let headers_proto = headers_proto_from_callee(scope, callee)?;
+
+  let cloned = with_env_state(env_id, |state| {
+    let res = state
+      .responses
+      .get(&response_id)
+      .ok_or(VmError::TypeError("Response: invalid backing response"))?;
+    if res.body.as_ref().map_or(false, |b| b.body_used()) {
+      return Err(throw_type_error(vm, scope, host_hooks, "Response body is already used"));
+    }
+    Ok(res.clone())
+  })?;
+
+  let new_response_id = with_env_state_mut(env_id, |state| {
+    let id = state.alloc_id();
+    state.responses.insert(id, cloned);
+    Ok(id)
+  })?;
+
+  let proto = scope.heap().object_prototype(obj)?.ok_or(VmError::InvariantViolation(
+    "Response.prototype missing on instance",
+  ))?;
+  let resp_obj = scope.alloc_object_with_prototype(Some(proto))?;
+  scope.push_root(Value::Object(resp_obj))?;
+
+  set_data_prop(
+    scope,
+    resp_obj,
+    ENV_ID_KEY,
+    Value::Number(env_id as f64),
+    false,
+  )?;
+  set_data_prop(
+    scope,
+    resp_obj,
+    RESPONSE_ID_KEY,
+    Value::Number(new_response_id as f64),
+    false,
+  )?;
+
+  let (status, ok, url, status_text) = with_env_state(env_id, |state| {
+    let r = state
+      .responses
+      .get(&new_response_id)
+      .ok_or(VmError::InvariantViolation("Response state missing"))?;
+    Ok((r.status, (200..300).contains(&r.status), r.url.clone(), r.status_text.clone()))
+  })?;
+  set_data_prop(scope, resp_obj, "status", Value::Number(status as f64), false)?;
+  set_data_prop(scope, resp_obj, "ok", Value::Bool(ok), false)?;
+  let url_s = scope.alloc_string(&url)?;
+  let st_s = scope.alloc_string(&status_text)?;
+  set_data_prop(scope, resp_obj, "url", Value::String(url_s), false)?;
+  set_data_prop(scope, resp_obj, "statusText", Value::String(st_s), false)?;
+
+  let headers_obj = make_headers_wrapper(
+    scope,
+    env_id,
+    headers_proto,
+    HEADERS_KIND_RESPONSE,
+    new_response_id,
+  )?;
+  set_data_prop(scope, resp_obj, "headers", Value::Object(headers_obj), false)?;
+
+  Ok(Value::Object(resp_obj))
 }
 
 fn response_body_used_get_native(
@@ -1485,20 +1631,21 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
   let init = args.get(1).copied().unwrap_or(Value::Undefined);
 
   // Build request synchronously (invalid init should reject deterministically).
-  let mut request = if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
-    with_env_state(other_env_id, |state| {
-      state
-        .requests
-        .get(&other_request_id)
-        .cloned()
-        .ok_or(VmError::TypeError("Request: invalid backing request"))
-    })?
-  } else {
-    let url = to_rust_string(scope.heap_mut(), input)?;
-    let mut request = CoreRequest::new("GET", url);
-    request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
-    request
-  };
+  let mut request =
+    if let Some((other_env_id, other_request_id)) = request_info_from_value(scope, input) {
+      with_env_state(other_env_id, |state| {
+        state
+          .requests
+          .get(&other_request_id)
+          .cloned()
+          .ok_or(VmError::TypeError("Request: invalid backing request"))
+      })?
+    } else {
+      let url = to_rust_string(scope.heap_mut(), input)?;
+      let mut request = CoreRequest::new("GET", url);
+      request.set_mode(crate::resource::web_fetch::RequestMode::Cors);
+      request
+    };
 
   if let Value::Object(init_obj) = init {
     let method_key = alloc_key(scope, "method")?;
@@ -1509,7 +1656,10 @@ fn fetch_call<Host: WindowRealmHost + 'static>(
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
-      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut request.headers, headers_val)?;
+      // `RequestInit.headers` replaces the existing header list (Fetch `new Request(input, init)`).
+      let mut headers = CoreHeaders::new_with_guard_and_limits(request.headers.guard(), request.headers.limits());
+      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
+      request.headers = headers;
     }
 
     let body_key = alloc_key(scope, "body")?;
@@ -1981,6 +2131,25 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     scope.heap_mut().object_set_prototype(ctor, Some(func_proto))?;
     scope.push_root(Value::Object(ctor))?;
 
+    // Prototype methods.
+    let Value::Object(proto) = get_data_prop(&mut scope, ctor, "prototype")? else {
+      return Err(VmError::InvariantViolation("Request.prototype missing"));
+    };
+    scope.push_root(Value::Object(proto))?;
+
+    let clone_id = vm.register_native_call(request_clone_native)?;
+    let clone_name = scope.alloc_string("clone")?;
+    scope.push_root(Value::String(clone_name))?;
+    let clone_fn = scope.alloc_native_function_with_slots(
+      clone_id,
+      None,
+      clone_name,
+      0,
+      &[Value::Number(env_id as f64), Value::Object(headers_proto)],
+    )?;
+    scope.heap_mut().object_set_prototype(clone_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "clone", Value::Object(clone_fn), true)?;
+
     let key = alloc_key(&mut scope, "Request")?;
     scope.define_property(global, key, data_desc(Value::Object(ctor), true))?;
   }
@@ -2020,6 +2189,19 @@ pub fn install_window_fetch_bindings_with_guard<Host: WindowRealmHost + 'static>
     let json_fn = scope.alloc_native_function(json_id, None, json_name, 0)?;
     scope.heap_mut().object_set_prototype(json_fn, Some(func_proto))?;
     set_data_prop(&mut scope, proto, "json", Value::Object(json_fn), true)?;
+
+    let clone_id = vm.register_native_call(response_clone_native)?;
+    let clone_name = scope.alloc_string("clone")?;
+    scope.push_root(Value::String(clone_name))?;
+    let clone_fn = scope.alloc_native_function_with_slots(
+      clone_id,
+      None,
+      clone_name,
+      0,
+      &[Value::Number(env_id as f64), Value::Object(headers_proto)],
+    )?;
+    scope.heap_mut().object_set_prototype(clone_fn, Some(func_proto))?;
+    set_data_prop(&mut scope, proto, "clone", Value::Object(clone_fn), true)?;
 
     // bodyUsed accessor (getter only).
     let body_used_get_id = vm.register_native_call(response_body_used_get_native)?;
