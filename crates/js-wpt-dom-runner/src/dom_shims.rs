@@ -198,6 +198,12 @@ const DOM_SHIM: &str = r#"
     return child;
   };
 
+  Node.prototype.remove = function () {
+    nodeIdFromThis(this);
+    if (!this.parentNode) return;
+    this.parentNode.removeChild(this);
+  };
+
   Node.prototype.contains = function (other) {
     nodeIdFromThis(this);
     if (other === null || other === undefined) return false;

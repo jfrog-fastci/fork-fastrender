@@ -840,6 +840,8 @@ impl JsWptRuntime {
     rt.env.set("globalThis", global_value);
     rt.env.set("window", global_value);
     rt.env.set("self", global_value);
+    // Fundamental global binding: scripts frequently reference `undefined` as an identifier.
+    rt.env.set("undefined", Value::Undefined);
 
     // Report hook.
     let report_fn = rt.alloc_native_function(native_wpt_report).expect("alloc report fn");
@@ -926,6 +928,7 @@ impl JsWptRuntime {
       .object_set_prototype(node_proto, Some(event_target_proto))?;
     let append_child = self.alloc_native_function(native_node_append_child)?;
     let contains = self.alloc_native_function(native_node_contains)?;
+    let remove = self.alloc_native_function(native_node_remove)?;
     let remove_child = self.alloc_native_function(native_dom_remove_child)?;
     let matches = self.alloc_native_function(native_dom_element_matches)?;
     let closest = self.alloc_native_function(native_dom_element_closest)?;
@@ -942,6 +945,10 @@ impl JsWptRuntime {
     let contains_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("contains")?)
+    };
+    let remove_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("remove")?)
     };
     let matches_key = {
       let mut scope = self.heap.scope();
@@ -966,6 +973,7 @@ impl JsWptRuntime {
     )?;
     self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
     self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
+    self.define_data_prop(node_proto, remove_key, Value::Object(remove))?;
     self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
     self.define_data_prop(node_proto, matches_key, Value::Object(matches))?;
     self.define_data_prop(node_proto, closest_key, Value::Object(closest))?;
@@ -3117,6 +3125,48 @@ fn native_node_contains(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> R
     current = dom_parent_for_contains(rt, node);
   }
   Ok(Value::Bool(false))
+}
+
+fn native_node_remove(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "remove")?;
+
+  let parent = rt.dom_nodes.get(&node).and_then(|s| s.parent);
+  let Some(parent) = parent else {
+    return Ok(Value::Undefined);
+  };
+
+  let parent_tag = rt
+    .dom_nodes
+    .get(&parent)
+    .map(|s| s.tag_name.clone())
+    .unwrap_or_default();
+  let parent_is_template = parent_tag == "template";
+
+  if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+    if parent_is_template {
+      state.template_content.retain(|&c| c != node);
+    } else {
+      state.children.retain(|&c| c != node);
+    }
+  }
+
+  if let Some(state) = rt.dom_nodes.get_mut(&node) {
+    if state.parent == Some(parent) {
+      state.parent = None;
+    }
+  }
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
+  rt.define_data_prop(node, parent_node_key, Value::Null)?;
+  if let Some(state) = rt.event_targets.get_mut(&node) {
+    if state.parent == Some(parent) {
+      state.parent = None;
+    }
+  }
+  rt.update_dom_child_nodes(parent)?;
+  Ok(Value::Undefined)
 }
 
 fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {

@@ -102,6 +102,11 @@ fn runs_node_contains_smoke_test() {
 }
 
 #[test]
+fn runs_node_remove_smoke_test() {
+  assert_wpt_pass("smoke/node_remove.window.js");
+}
+
+#[test]
 #[cfg(feature = "quickjs")]
 fn runs_dom_shims_window_js() {
   let corpus_root = corpus_root();
