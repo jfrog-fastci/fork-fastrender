@@ -2004,7 +2004,7 @@ mod tests {
       .unwrap()
       .expect("expected Node.prototype.textContent");
     let set = match desc.kind {
-      crate::js::webidl::JsPropertyKind::Accessor { set, .. } => set,
+      webidl_js_runtime::JsPropertyKind::Accessor { set, .. } => set,
       other => panic!("expected accessor property, got {other:?}"),
     };
 
