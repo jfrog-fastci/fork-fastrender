@@ -181,6 +181,17 @@ pub trait CoreStyle {
   fn border(&self) -> Rect<LengthPercentage> {
     Style::<Self::CustomIdent>::DEFAULT.border
   }
+
+  /// Whether the CSS inline and block axes are swapped relative to Taffy's physical axes.
+  ///
+  /// FastRender uses this to map vertical writing modes into Taffy's physical coordinate system by
+  /// transposing writing-mode dependent axes at the style boundary. Most layout algorithms don't
+  /// need to know about this, but baseline alignment needs it to determine whether the inline axis
+  /// is parallel to the flex container's main axis.
+  #[inline(always)]
+  fn axes_swapped(&self) -> bool {
+    false
+  }
 }
 
 /// Sets the layout used for the children of this node
@@ -746,6 +757,12 @@ impl<S: CheapCloneStr> CoreStyle for Style<S> {
   fn border(&self) -> Rect<LengthPercentage> {
     self.border
   }
+
+  #[inline(always)]
+  #[cfg(feature = "grid")]
+  fn axes_swapped(&self) -> bool {
+    self.axes_swapped
+  }
 }
 
 impl<T: CoreStyle> CoreStyle for &'_ T {
@@ -810,6 +827,11 @@ impl<T: CoreStyle> CoreStyle for &'_ T {
   #[inline(always)]
   fn border(&self) -> Rect<LengthPercentage> {
     (*self).border()
+  }
+
+  #[inline(always)]
+  fn axes_swapped(&self) -> bool {
+    (*self).axes_swapped()
   }
 }
 

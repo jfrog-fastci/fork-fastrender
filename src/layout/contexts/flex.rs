@@ -451,6 +451,52 @@ fn fragment_first_baseline(
   }
 }
 
+fn fragment_first_baseline_x(
+  fragment: &FragmentNode,
+  block_positive: bool,
+  deadline_counter: &mut usize,
+) -> Result<Option<f32>, LayoutError> {
+  check_layout_deadline(deadline_counter)?;
+  // Baselines are defined by in-flow content. Ignore out-of-flow positioned fragments (and running
+  // elements), matching the table baseline logic in `layout/table.rs`.
+  if let Some(style) = fragment.style.as_deref() {
+    if style.running_position.is_some() || matches!(style.position, Position::Absolute | Position::Fixed) {
+      return Ok(None);
+    }
+  }
+
+  let resolve_from_block_start = |offset: f32, extent: f32| -> f32 {
+    if block_positive {
+      offset
+    } else if extent.is_finite() && extent > 0.0 {
+      (extent - offset).max(0.0)
+    } else {
+      offset
+    }
+  };
+
+  let extent = fragment.bounds.width();
+  if let Some(baseline) = fragment.baseline {
+    return Ok(Some(resolve_from_block_start(baseline, extent)));
+  }
+
+  match &fragment.content {
+    FragmentContent::Line { baseline } => Ok(Some(resolve_from_block_start(*baseline, extent))),
+    FragmentContent::Text {
+      baseline_offset, ..
+    } => Ok(Some(resolve_from_block_start(*baseline_offset, extent))),
+    FragmentContent::Replaced { .. } => Ok(Some(resolve_from_block_start(extent, extent))),
+    _ => {
+      for child in fragment.children.iter() {
+        if let Some(baseline) = fragment_first_baseline_x(child, block_positive, deadline_counter)? {
+          return Ok(Some(child.bounds.x() + baseline));
+        }
+      }
+      Ok(None)
+    }
+  }
+}
+
 #[derive(Clone, Copy)]
 enum Axis {
   Horizontal,
@@ -1234,7 +1280,8 @@ impl FormattingContext for FlexFormattingContext {
       let compute_result = taffy_tree.compute_layout_with_measure_and_cancel(
         root_node,
         available_space,
-        |mut known_dimensions, mut avail, _node_id, node_context, _style| {
+         |mut known_dimensions, mut avail, _node_id, node_context, _style| {
+                    let mut measured_baseline_x: Option<f32> = None;
                     let mut measured_baseline_y: Option<f32> = None;
                     let measured = (|| {
                     if taffy_perf_enabled {
@@ -1800,6 +1847,24 @@ impl FormattingContext for FlexFormattingContext {
                           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                           _ => {}
                         }
+                        if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                          let mut baseline_counter = 0usize;
+                          match fragment_first_baseline_x(
+                            cached.fragment.as_ref(),
+                            crate::style::block_axis_positive(measure_style.writing_mode),
+                            &mut baseline_counter,
+                          ) {
+                            Ok(Some(baseline)) if baseline.is_finite() => {
+                              let width = cached.border_size.width.max(0.0);
+                              let clamped = baseline.clamp(0.0, width);
+                              if clamped.is_finite() {
+                                measured_baseline_x = Some(clamped);
+                              }
+                            }
+                            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                            _ => {}
+                          }
+                        }
                         flex_profile::record_measure_time(measure_timer);
                         return taffy::geometry::Size {
                             width: cached.measured_size.width,
@@ -1812,25 +1877,43 @@ impl FormattingContext for FlexFormattingContext {
                         if let Some(cached) =
                              find_layout_cache_fragment(entry, Size::new(target_w, target_h))
                          {
-                             record_node_measure_hit(measure_box.id);
-                             flex_profile::record_measure_hit();
-                             flex_profile::record_measure_bucket_hit(w_state, h_state);
-                             let mut baseline_counter = 0usize;
-                             match fragment_first_baseline(cached.fragment.as_ref(), &mut baseline_counter) {
-                               Ok(Some(baseline)) if baseline.is_finite() => {
-                                 let height = cached.border_size.height.max(0.0);
-                                 let clamped = baseline.clamp(0.0, height);
-                                 if clamped.is_finite() {
-                                   measured_baseline_y = Some(clamped);
-                                 }
-                               }
-                               Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                               _ => {}
-                             }
-                             flex_profile::record_measure_time(measure_timer);
-                             pass_cache
-                                 .entry(cache_key)
-                                 .or_default()
+                              record_node_measure_hit(measure_box.id);
+                              flex_profile::record_measure_hit();
+                              flex_profile::record_measure_bucket_hit(w_state, h_state);
+                              let mut baseline_counter = 0usize;
+                              match fragment_first_baseline(cached.fragment.as_ref(), &mut baseline_counter) {
+                                Ok(Some(baseline)) if baseline.is_finite() => {
+                                  let height = cached.border_size.height.max(0.0);
+                                  let clamped = baseline.clamp(0.0, height);
+                                  if clamped.is_finite() {
+                                    measured_baseline_y = Some(clamped);
+                                  }
+                                }
+                                Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                                _ => {}
+                              }
+                              if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                                let mut baseline_counter = 0usize;
+                                match fragment_first_baseline_x(
+                                  cached.fragment.as_ref(),
+                                  crate::style::block_axis_positive(measure_style.writing_mode),
+                                  &mut baseline_counter,
+                                ) {
+                                  Ok(Some(baseline)) if baseline.is_finite() => {
+                                    let width = cached.border_size.width.max(0.0);
+                                    let clamped = baseline.clamp(0.0, width);
+                                    if clamped.is_finite() {
+                                      measured_baseline_x = Some(clamped);
+                                    }
+                                  }
+                                  Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                                  _ => {}
+                                }
+                              }
+                              flex_profile::record_measure_time(measure_timer);
+                              pass_cache
+                                  .entry(cache_key)
+                                  .or_default()
                                  .entry(key)
                                 .or_insert_with(|| cached.clone());
                             return taffy::geometry::Size {
@@ -1858,6 +1941,24 @@ impl FormattingContext for FlexFormattingContext {
                           }
                           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                           _ => {}
+                        }
+                        if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                          let mut baseline_counter = 0usize;
+                          match fragment_first_baseline_x(
+                            cached.fragment.as_ref(),
+                            crate::style::block_axis_positive(measure_style.writing_mode),
+                            &mut baseline_counter,
+                          ) {
+                            Ok(Some(baseline)) if baseline.is_finite() => {
+                              let width = cached.border_size.width.max(0.0);
+                              let clamped = baseline.clamp(0.0, width);
+                              if clamped.is_finite() {
+                                measured_baseline_x = Some(clamped);
+                              }
+                            }
+                            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                            _ => {}
+                          }
                         }
                         flex_profile::record_measure_time(measure_timer);
                         return taffy::geometry::Size {
@@ -2762,6 +2863,24 @@ impl FormattingContext for FlexFormattingContext {
                       Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
                       _ => {}
                     }
+                    if crate::style::block_axis_is_horizontal(measure_style.writing_mode) {
+                      let mut baseline_counter = 0usize;
+                      match fragment_first_baseline_x(
+                        &fragment,
+                        crate::style::block_axis_positive(measure_style.writing_mode),
+                        &mut baseline_counter,
+                      ) {
+                        Ok(Some(baseline)) if baseline.is_finite() => {
+                          let width = border_size.width.max(0.0);
+                          let clamped = baseline.clamp(0.0, width);
+                          if clamped.is_finite() {
+                            measured_baseline_x = Some(clamped);
+                          }
+                        }
+                        Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                        _ => {}
+                      }
+                    }
                     let pass_entry_vacant = node_ptr.is_some()
                       && !pass_cache
                         .get(&cache_key)
@@ -2831,7 +2950,7 @@ impl FormattingContext for FlexFormattingContext {
                     taffy::tree::MeasureOutput::from_size_and_baselines(
                       measured,
                       taffy::geometry::Point {
-                        x: None,
+                        x: measured_baseline_x,
                         y: measured_baseline_y,
                       },
                     )
@@ -5331,6 +5450,11 @@ impl FlexFormattingContext {
 
       ..Default::default()
     };
+
+    // Taffy operates in physical axes, but baseline alignment needs to know whether the CSS inline
+    // axis was vertical so it can determine whether "inline-axis parallel to main-axis" holds.
+    // Mirror the grid integration by recording this axis transposition on each node's Style.
+    taffy_style.axes_swapped = !crate::style::inline_axis_is_horizontal(style.writing_mode);
 
     if !is_root && matches!(style.flex_basis, FlexBasis::Content) {
       // CSS `flex-basis: content` explicitly requests content-based flex base sizing even when a

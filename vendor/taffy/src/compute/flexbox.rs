@@ -127,6 +127,8 @@ struct AlgoConstants {
   is_wrap: bool,
   /// Is the wrap direction inverted
   is_wrap_reverse: bool,
+  /// Whether the CSS inline axis is vertical (i.e. swapped relative to Taffy's physical axes).
+  axes_swapped: bool,
 
   /// The item's min_size style
   min_size: Size<Option<f32>>,
@@ -364,6 +366,7 @@ fn compute_preliminary(
   debug_log!("calculate_children_base_lines");
   calculate_children_base_lines(
     tree,
+    node,
     known_dimensions,
     available_space,
     &mut flex_lines,
@@ -492,6 +495,7 @@ fn compute_constants(
   let is_column = dir.is_column();
   let is_wrap = matches!(style.flex_wrap(), FlexWrap::Wrap | FlexWrap::WrapReverse);
   let is_wrap_reverse = style.flex_wrap() == FlexWrap::WrapReverse;
+  let axes_swapped = style.axes_swapped();
 
   let aspect_ratio = style.aspect_ratio();
   let margin = style
@@ -543,6 +547,7 @@ fn compute_constants(
     is_column,
     is_wrap,
     is_wrap_reverse,
+    axes_swapped,
     min_size: style
       .min_size()
       .maybe_resolve(parent_size, |val, basis| tree.calc(val, basis))
@@ -1649,15 +1654,19 @@ fn determine_hypothetical_cross_size(
 #[inline]
 fn calculate_children_base_lines(
   tree: &mut impl LayoutFlexboxContainer,
+  node: NodeId,
   node_size: Size<Option<f32>>,
   available_space: Size<AvailableSpace>,
   flex_lines: &mut [FlexLine],
   constants: &AlgoConstants,
 ) {
-  // Only compute baselines for flex rows because we only support baseline alignment in the cross axis
-  // where that axis is also the inline axis
-  // TODO: this may need revisiting if/when we support vertical writing modes
-  if !constants.is_row {
+  // Baseline alignment only applies when the inline axis is parallel to the main axis.
+  //
+  // FastRender maps writing-mode dependent axes into Taffy's physical axes using `Style::axes_swapped`.
+  // When the inline axis is vertical, a CSS `flex-direction: row` maps to a Taffy column container
+  // (`constants.is_row == false`), but baseline alignment still applies.
+  let axes_swapped = tree.get_flexbox_container_style(node).axes_swapped();
+  if constants.is_row == axes_swapped {
     return;
   }
 
@@ -1709,10 +1718,21 @@ fn calculate_children_base_lines(
         Line::FALSE,
       );
 
-      let baseline = measured_size_and_baselines.first_baselines.y;
-      let height = measured_size_and_baselines.size.height;
+      let (baseline, fallback_extent, margin_start) = if constants.is_row {
+        (
+          measured_size_and_baselines.first_baselines.y,
+          measured_size_and_baselines.size.height,
+          child.margin.top,
+        )
+      } else {
+        (
+          measured_size_and_baselines.first_baselines.x,
+          measured_size_and_baselines.size.width,
+          child.margin.left,
+        )
+      };
 
-      child.baseline = baseline.unwrap_or(height) + child.margin.top;
+      child.baseline = baseline.unwrap_or(fallback_extent) + margin_start;
     }
   }
 }
@@ -2077,11 +2097,9 @@ fn align_flex_items_along_cross_axis(
     }
     AlignSelf::Center => free_space / 2.0,
     AlignSelf::Baseline => {
-      if constants.is_row {
+      if constants.is_row != constants.axes_swapped {
         max_baseline - child.baseline
       } else {
-        // Until we support vertical writing modes, baseline alignment only makes sense if
-        // the constants.direction is row, so we treat it as flex-start alignment in columns.
         if constants.is_wrap_reverse {
           free_space
         } else {
