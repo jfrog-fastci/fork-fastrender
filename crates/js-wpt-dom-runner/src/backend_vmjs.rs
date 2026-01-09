@@ -1056,6 +1056,50 @@ impl JsWptRuntime {
       .object_set_prototype(document_fragment_proto, Some(node_proto))?;
     self.document_fragment_proto = Some(document_fragment_proto);
 
+    // `Node` constructor + constants (enough for the offline WPT DOM smoke corpus).
+    //
+    // Note: `Node` is not constructible in browsers; keep that invariant so tests don't accidentally
+    // fabricate hostless nodes that bypass `dom_nodes` bookkeeping.
+    let node_ctor = self.alloc_native_function(native_node_ctor)?;
+    let prototype_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("prototype")?)
+    };
+    self.define_data_prop(node_ctor, prototype_key, Value::Object(node_proto))?;
+    let constructor_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("constructor")?)
+    };
+    self.define_data_prop(node_proto, constructor_key, Value::Object(node_ctor))?;
+
+    for (name, value) in [
+      ("ELEMENT_NODE", 1.0),
+      ("ATTRIBUTE_NODE", 2.0),
+      ("TEXT_NODE", 3.0),
+      ("CDATA_SECTION_NODE", 4.0),
+      ("ENTITY_REFERENCE_NODE", 5.0),
+      ("ENTITY_NODE", 6.0),
+      ("PROCESSING_INSTRUCTION_NODE", 7.0),
+      ("COMMENT_NODE", 8.0),
+      ("DOCUMENT_NODE", 9.0),
+      ("DOCUMENT_TYPE_NODE", 10.0),
+      ("DOCUMENT_FRAGMENT_NODE", 11.0),
+      ("NOTATION_NODE", 12.0),
+    ] {
+      let key = {
+        let mut scope = self.heap.scope();
+        PropertyKey::from_string(scope.alloc_string(name)?)
+      };
+      self.define_data_prop(node_ctor, key, Value::Number(value))?;
+    }
+
+    self.env.set("Node", Value::Object(node_ctor));
+    let node_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("Node")?)
+    };
+    self.define_data_prop(self.global_object, node_key, Value::Object(node_ctor))?;
+
     // `document` object: Node + createElement + URL.
     let document = self.alloc_object()?;
     self.heap.object_set_prototype(document, Some(node_proto))?;
@@ -1067,6 +1111,25 @@ impl JsWptRuntime {
       },
     );
     self.define_data_prop(document, PropertyKey::from_string(self.keys.url), href_value)?;
+
+    // Node metadata for `document`.
+    let node_type_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeType")?)
+    };
+    let node_name_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeName")?)
+    };
+    let node_value_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeValue")?)
+    };
+    let document_node_name = self.alloc_string_value("#document")?;
+    self.define_data_prop(document, node_type_key, Value::Number(9.0))?;
+    self.define_data_prop(document, node_name_key, document_node_name)?;
+    self.define_data_prop(document, node_value_key, Value::Null)?;
+
     let create_element = self.alloc_native_function(native_document_create_element)?;
     let create_element_key = {
       let mut scope = self.heap.scope();
@@ -1501,6 +1564,23 @@ impl JsWptRuntime {
     let tag_value = self.alloc_string_value(&tag_name.to_ascii_uppercase())?;
     self.define_data_prop(obj, tag_key, tag_value)?;
 
+    // Node metadata.
+    let node_type_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeType")?)
+    };
+    let node_name_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeName")?)
+    };
+    let node_value_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeValue")?)
+    };
+    self.define_data_prop(obj, node_type_key, Value::Number(1.0))?;
+    self.define_data_prop(obj, node_name_key, tag_value)?;
+    self.define_data_prop(obj, node_value_key, Value::Null)?;
+
     // Minimal `parentNode` bookkeeping as a data property (this harness does not support accessor
     // properties yet).
     let parent_node_key = {
@@ -1540,6 +1620,24 @@ impl JsWptRuntime {
     // DocumentFragment is a Node but not an Element.
     let proto = self.document_fragment_proto()?;
     self.heap.object_set_prototype(obj, Some(proto))?;
+
+    // Node metadata.
+    let node_type_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeType")?)
+    };
+    let node_name_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeName")?)
+    };
+    let node_value_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("nodeValue")?)
+    };
+    let fragment_node_name = self.alloc_string_value("#document-fragment")?;
+    self.define_data_prop(obj, node_type_key, Value::Number(11.0))?;
+    self.define_data_prop(obj, node_name_key, fragment_node_name)?;
+    self.define_data_prop(obj, node_value_key, Value::Null)?;
 
     // Like other DOM nodes, fragments participate in event dispatch paths, but they start detached.
     self.event_targets.insert(
@@ -3427,6 +3525,12 @@ fn parse_listener_options(rt: &mut JsWptRuntime, value: Value) -> Result<Listene
   })
 }
 
+fn native_node_ctor(rt: &mut JsWptRuntime, _this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  Err(JsError::Vm(VmError::Throw(
+    rt.alloc_string_value("TypeError: Illegal constructor")?,
+  )))
+}
+
 fn native_document_create_element(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -5094,6 +5198,76 @@ mod tests {
 
   fn noop_native(_rt: &mut JsWptRuntime, _this: Value, _args: &[Value]) -> Result<Value, JsError> {
     Ok(Value::Undefined)
+  }
+
+  fn get_data_prop(rt: &mut JsWptRuntime, obj: GcObject, name: &str) -> Value {
+    let key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string(name).expect("alloc key"))
+    };
+    let desc = rt
+      .heap
+      .get_property(obj, &key)
+      .expect("get property")
+      .unwrap_or_else(|| panic!("missing property {name}"));
+    match desc.kind {
+      PropertyKind::Data { value, .. } => value,
+      PropertyKind::Accessor { .. } => panic!("unexpected accessor for {name}"),
+    }
+  }
+
+  #[test]
+  fn node_constants_and_metadata_exist() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(node_ctor) = rt.env.get("Node").expect("Node global") else {
+      panic!("Node binding should be an object");
+    };
+
+    assert_eq!(get_data_prop(&mut rt, node_ctor, "ELEMENT_NODE"), Value::Number(1.0));
+    assert_eq!(get_data_prop(&mut rt, node_ctor, "DOCUMENT_NODE"), Value::Number(9.0));
+    assert_eq!(
+      get_data_prop(&mut rt, node_ctor, "DOCUMENT_FRAGMENT_NODE"),
+      Value::Number(11.0)
+    );
+
+    // `window.Node` should reference the same constructor object.
+    let global_object = rt.global_object;
+    let window_node = get_data_prop(&mut rt, global_object, "Node");
+    assert_eq!(window_node, Value::Object(node_ctor));
+
+    // `Node.prototype` should be the shared DOM node prototype.
+    let node_proto_value = get_data_prop(&mut rt, node_ctor, "prototype");
+    assert_eq!(node_proto_value, Value::Object(rt.node_proto.expect("Node prototype")));
+
+    // Document node metadata.
+    let Value::Object(document) = rt.env.get("document").expect("document global") else {
+      panic!("document binding should be an object");
+    };
+    assert_eq!(get_data_prop(&mut rt, document, "nodeType"), Value::Number(9.0));
+    let node_name = get_data_prop(&mut rt, document, "nodeName");
+    assert_eq!(rt.value_to_string_lossy(node_name), "#document");
+    assert_eq!(get_data_prop(&mut rt, document, "nodeValue"), Value::Null);
+
+    // Element metadata (`document.body`).
+    let Value::Object(body) = get_data_prop(&mut rt, document, "body") else {
+      panic!("document.body should be an object");
+    };
+    assert_eq!(get_data_prop(&mut rt, body, "nodeType"), Value::Number(1.0));
+    assert_eq!(get_data_prop(&mut rt, body, "nodeName"), get_data_prop(&mut rt, body, "tagName"));
+    assert_eq!(get_data_prop(&mut rt, body, "nodeValue"), Value::Null);
+
+    // DocumentFragment metadata.
+    let Value::Object(fragment) =
+      native_document_create_document_fragment(&mut rt, Value::Object(document), &[])
+        .expect("createDocumentFragment")
+    else {
+      panic!("expected fragment object");
+    };
+    assert_eq!(get_data_prop(&mut rt, fragment, "nodeType"), Value::Number(11.0));
+    let fragment_name = get_data_prop(&mut rt, fragment, "nodeName");
+    assert_eq!(rt.value_to_string_lossy(fragment_name), "#document-fragment");
+    assert_eq!(get_data_prop(&mut rt, fragment, "nodeValue"), Value::Null);
   }
 
   #[test]
