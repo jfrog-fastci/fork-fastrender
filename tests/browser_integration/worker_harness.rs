@@ -78,7 +78,7 @@ fn split_message(msg: WorkerToUi) -> (WorkerToUiEvent, Option<RenderedFrame>) {
         viewport_css: frame.viewport_css,
         dpr: frame.dpr,
         scroll_state: frame.scroll_state.clone(),
-    };
+      };
       (event, Some(frame))
     }
     WorkerToUi::OpenSelectDropdown {

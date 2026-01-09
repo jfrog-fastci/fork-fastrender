@@ -57,8 +57,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("FastRender")
     .build(&event_loop)?;
 
-  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-ui-worker")?;
+  let worker = fastrender::ui::worker_loop::spawn_ui_worker("fastr-browser-ui-worker")?;
+  let (ui_to_worker_tx, worker_to_ui_rx, worker_join) = worker.split();
 
   let mut app = pollster::block_on(App::new(
     window,
@@ -198,7 +198,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   use fastrender::ui::cancel::CancelGens;
   use fastrender::ui::messages::{NavigationReason, TabId, UiToWorker, WorkerToUi};
-  use std::sync::mpsc;
+  use std::sync::mpsc::RecvTimeoutError;
   use std::time::{Duration, Instant};
 
   // Keep the smoke test cheap and deterministic: when Rayon is allowed to auto-initialize its
@@ -217,11 +217,13 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
   // Use a DPR != 1.0 so the smoke test validates viewport↔device-pixel scaling.
   const DPR: f32 = 2.0;
   const TIMEOUT: Duration = Duration::from_secs(20);
-  let (ui_to_worker_tx, worker_to_ui_rx, handle) =
-    fastrender::ui::spawn_browser_ui_worker("fastr-browser-headless-smoke-worker")?;
 
   let expected_pixmap_w = ((VIEWPORT_CSS.0 as f32) * DPR).round().max(1.0) as u32;
   let expected_pixmap_h = ((VIEWPORT_CSS.1 as f32) * DPR).round().max(1.0) as u32;
+
+  let worker =
+    fastrender::ui::worker_loop::spawn_ui_worker("fastr-browser-headless-smoke-worker")?;
+  let (ui_to_worker_tx, worker_to_ui_rx, join) = worker.split();
 
   let tab_id = TabId::new();
   ui_to_worker_tx.send(UiToWorker::CreateTab {
@@ -267,8 +269,8 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
         }
       }
       Ok(_) => {}
-      Err(mpsc::RecvTimeoutError::Timeout) => break,
-      Err(mpsc::RecvTimeoutError::Disconnected) => {
+      Err(RecvTimeoutError::Timeout) => break,
+      Err(RecvTimeoutError::Disconnected) => {
         return Err("headless smoke worker disconnected before FrameReady".into());
       }
     }
@@ -309,7 +311,7 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
     return Err(format!("unexpected dpr from FrameReady: got {dpr}, expected {DPR}").into());
   }
 
-  match handle.join() {
+  match join.join() {
     Ok(()) => {}
     Err(_) => return Err("headless smoke worker panicked".into()),
   }
