@@ -785,7 +785,8 @@ impl<Host: 'static> EventLoop<Host> {
     };
 
     let delay = self.clamp_timer_delay(requested_delay);
-    let due = self.clock.now() + delay;
+    let now = self.clock.now();
+    let due = now.checked_add(delay).unwrap_or(Duration::MAX);
 
     let schedule_seq = self.next_timer_seq;
     self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
@@ -893,7 +894,7 @@ impl<Host: 'static> EventLoop<Host> {
         };
         let now = self.clock.now();
         let delay = self.clamp_timer_delay(interval);
-        let due = now + delay;
+        let due = now.checked_add(delay).unwrap_or(Duration::MAX);
 
         let nesting_level = self.timer_nesting_level;
         let schedule_seq = self.next_timer_seq;
@@ -1449,6 +1450,73 @@ mod tests {
     let _ = event_loop.set_timeout(Duration::from_secs(60), |_host, _event_loop| Ok(()))?;
     assert_eq!(event_loop.timers.len(), 1);
     assert_eq!(event_loop.timer_queue.len(), 1);
+    Ok(())
+  }
+
+  #[test]
+  fn timer_due_saturates_at_duration_max_on_overflow() -> Result<()> {
+    struct HugeClock;
+
+    impl Clock for HugeClock {
+      fn now(&self) -> Duration {
+        Duration::MAX.saturating_sub(Duration::from_secs(1))
+      }
+    }
+
+    let clock: Arc<dyn Clock> = Arc::new(HugeClock);
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock);
+
+    let id = event_loop.set_timeout(Duration::from_secs(10), |_host, _event_loop| Ok(()))?;
+    let due = event_loop
+      .timers
+      .get(&id)
+      .expect("timer should be stored")
+      .due;
+    assert_eq!(due, Duration::MAX);
+    Ok(())
+  }
+
+  #[test]
+  fn interval_reschedule_saturates_at_duration_max_on_overflow() -> Result<()> {
+    struct MutableClock {
+      now: Mutex<Duration>,
+    }
+
+    impl MutableClock {
+      fn new(now: Duration) -> Self {
+        Self {
+          now: Mutex::new(now),
+        }
+      }
+
+      fn set(&self, now: Duration) {
+        *self.now.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = now;
+      }
+    }
+
+    impl Clock for MutableClock {
+      fn now(&self) -> Duration {
+        *self.now.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+      }
+    }
+
+    let clock = Arc::new(MutableClock::new(Duration::MAX.saturating_sub(Duration::from_secs(1))));
+    let clock_for_loop: Arc<dyn Clock> = clock.clone();
+    let mut event_loop = EventLoop::<TestHost>::with_clock(clock_for_loop);
+    let mut host = TestHost::default();
+
+    let id = event_loop.set_interval(Duration::from_secs(1), |host, _event_loop| {
+      host.count += 1;
+      Ok(())
+    })?;
+    assert_eq!(event_loop.timers.get(&id).unwrap().due, Duration::MAX);
+
+    clock.set(Duration::MAX);
+    assert!(event_loop.run_next_task(&mut host)?);
+    assert_eq!(host.count, 1);
+
+    let due = event_loop.timers.get(&id).unwrap().due;
+    assert_eq!(due, Duration::MAX);
     Ok(())
   }
 
