@@ -1,5 +1,5 @@
 use conformance_harness::FailOn;
-use js_wpt_dom_runner::{run_suite, SuiteConfig, TestOutcome};
+use js_wpt_dom_runner::{run_suite, BackendSelection, SuiteConfig, TestOutcome};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ fn suite_smoke_report_classifies_expected_failures() {
     timeout: Duration::from_millis(100),
     long_timeout: Duration::from_millis(500),
     fail_on: FailOn::New,
+    backend: BackendSelection::Auto,
   })
   .expect("run suite");
 

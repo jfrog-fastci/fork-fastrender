@@ -1,5 +1,6 @@
 use crate::{
-  discover_tests, RunError, RunOutcome, Runner, RunnerConfig, TestCase, TestKind, WptFs, WptReport,
+  discover_tests, BackendSelection, RunError, RunOutcome, Runner, RunnerConfig, TestCase, TestKind,
+  WptFs, WptReport,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use conformance_harness::{AppliedExpectation, ExpectationKind, Expectations, FailOn, Shard};
@@ -112,6 +113,8 @@ pub struct SuiteConfig {
   pub timeout: Duration,
   pub long_timeout: Duration,
   pub fail_on: FailOn,
+  /// Which JS backend to execute tests with.
+  pub backend: BackendSelection,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +197,7 @@ pub fn run_suite(config: &SuiteConfig) -> Result<Report> {
     RunnerConfig {
       default_timeout: config.timeout,
       long_timeout: config.long_timeout,
+      backend: config.backend,
       ..RunnerConfig::default()
     },
   );

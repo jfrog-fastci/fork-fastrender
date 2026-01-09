@@ -271,17 +271,15 @@ Notes:
 - The suite runner lives in the `engines/ecma-rs` submodule; `xtask` just drives it.
 - See [`docs/js_test262.md`](js_test262.md) for flags and interpreting results.
 
-### (Future) `cargo xtask js wpt-dom` (Web API behavior)
+### `cargo xtask js wpt-dom` (Web API behavior)
 
 There is an in-tree minimal WPT DOM runner:
 
 - `crates/js-wpt-dom-runner`
 
-It is not yet wired up as an xtask subcommand, so `cargo xtask js wpt-dom` does not exist yet. The
-intended shape is:
+It is wired up as an xtask subcommand:
 
 ```bash
-# planned:
 scripts/cargo_agent.sh xtask js wpt-dom
 ```
 

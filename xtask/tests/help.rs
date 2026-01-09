@@ -59,6 +59,33 @@ fn js_test262_help_mentions_flags() {
 }
 
 #[test]
+fn js_wpt_dom_help_mentions_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args(["js", "wpt-dom", "--help"])
+    .output()
+    .expect("run cargo xtask js wpt-dom --help");
+
+  assert!(
+    output.status.success(),
+    "js wpt-dom help should exit successfully"
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("--wpt-root")
+      && stdout.contains("--manifest")
+      && stdout.contains("--shard")
+      && stdout.contains("--filter")
+      && stdout.contains("--timeout-ms")
+      && stdout.contains("--long-timeout-ms")
+      && stdout.contains("--fail-on")
+      && stdout.contains("--report")
+      && stdout.contains("--backend"),
+    "help output should mention key flags; got:\n{stdout}"
+  );
+}
+
+#[test]
 fn chrome_baseline_fixtures_help_mentions_flags() {
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .args(["chrome-baseline-fixtures", "--help"])

@@ -3,9 +3,8 @@
 This directory is a **small, curated, fully offline** subset of Web Platform Tests (WPT)
 focused on DOM and event-loop behavior.
 
-It is intended to be run by a future `cargo xtask js wpt-dom` runner (not implemented
-yet). The goal is to land the **directory layout + fixtures** early so the runner can be
-developed against a stable on-disk corpus.
+It is intended to be run by `cargo xtask js wpt-dom`. The goal is to keep the **directory
+layout + fixtures** stable so the runner can be developed against a predictable on-disk corpus.
 
 ## Directory layout
 

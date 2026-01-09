@@ -5189,9 +5189,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "conformance-harness",
  "cssparser",
  "fastrender",
  "image",
+ "js-wpt-dom-runner",
  "pathdiff",
  "regex",
  "serde",

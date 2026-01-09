@@ -19,3 +19,5 @@ tempfile = "3.10"
 cssparser = "0.35"
 image = { version = "0.25", default-features = false, features = ["png"] }
 pathdiff = "0.2"
+js-wpt-dom-runner = { path = "../crates/js-wpt-dom-runner" }
+conformance-harness = { path = "../engines/ecma-rs/conformance-harness" }
