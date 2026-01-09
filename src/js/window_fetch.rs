@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use vm_js::{
   Budget, ExecutionContext, GcObject, Heap, Job, JobCallback, PropertyDescriptor, PropertyKey, PropertyKind,
-  NativeFunctionId, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHostHooks, VmJobContext,
+  NativeFunctionId, Realm, RealmId, RootId, Scope, Value, Vm, VmError, VmHost, VmHostHooks, VmJobContext,
 };
 
 const SLOT_ENV_ID: usize = 0;
@@ -594,7 +594,8 @@ struct JsPromiseCapability {
 fn promise_capability_executor_call(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
   args: &[Value],
@@ -840,7 +841,8 @@ fn fill_headers_from_init(
 fn headers_append_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -853,7 +855,7 @@ fn headers_append_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .append(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -863,7 +865,8 @@ fn headers_append_native(
 fn headers_set_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -876,7 +879,7 @@ fn headers_set_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .set(&name, &value)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -886,7 +889,8 @@ fn headers_set_native(
 fn headers_delete_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -898,7 +902,7 @@ fn headers_delete_native(
     let headers = get_headers_mut(state, kind, owner)?;
     headers
       .delete(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))?;
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))?;
     Ok(())
   })?;
 
@@ -908,7 +912,8 @@ fn headers_delete_native(
 fn headers_has_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -919,7 +924,7 @@ fn headers_has_native(
     let headers = get_headers_ref(state, kind, owner)?;
     headers
       .has(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))
   })?;
   Ok(Value::Bool(has))
 }
@@ -927,7 +932,8 @@ fn headers_has_native(
 fn headers_get_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -938,7 +944,7 @@ fn headers_get_native(
     let headers = get_headers_ref(state, kind, owner)?;
     headers
       .get(&name)
-      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host, err))
+      .map_err(|err| map_web_fetch_error_to_throw(vm, scope, host_hooks, err))
   })?;
   match value {
     Some(v) => {
@@ -952,7 +958,8 @@ fn headers_get_native(
 fn headers_for_each_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
@@ -962,7 +969,12 @@ fn headers_for_each_native(
   let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
 
   if !scope.heap().is_callable(callback).unwrap_or(false) {
-    return Err(throw_type_error(vm, scope, host, "Headers.forEach callback is not callable"));
+    return Err(throw_type_error(
+      vm,
+      scope,
+      host_hooks,
+      "Headers.forEach callback is not callable",
+    ));
   }
 
   let pairs = with_env_state(env_id, |state| {
@@ -981,7 +993,7 @@ fn headers_for_each_native(
     scope.push_root(Value::String(name_s))?;
     vm.call_with_host(
       scope,
-      host,
+      host_hooks,
       callback,
       this_arg,
       &[Value::String(value_s), Value::String(name_s), Value::Object(headers_obj)],
@@ -994,18 +1006,20 @@ fn headers_for_each_native(
 fn headers_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host, "Illegal constructor"))
+  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
 }
 
 fn headers_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -1015,7 +1029,7 @@ fn headers_ctor_construct(
   let mut core = CoreHeaders::new_with_guard(HeadersGuard::None);
   if let Some(init) = args.get(0).copied() {
     // Fill before installing into the env state so errors don't leave partial state behind.
-    fill_headers_from_init(vm, scope, host, env_id, &mut core, init)?;
+    fill_headers_from_init(vm, scope, host_hooks, env_id, &mut core, init)?;
   }
 
   let headers_id = with_env_state_mut(env_id, |state| {
@@ -1051,18 +1065,20 @@ fn headers_ctor_construct(
 fn request_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host, "Illegal constructor"))
+  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
 }
 
 fn request_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -1083,7 +1099,7 @@ fn request_ctor_construct(
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
-      fill_headers_from_init(vm, scope, host, env_id, &mut request.headers, headers_val)?;
+      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut request.headers, headers_val)?;
     }
   }
 
@@ -1136,18 +1152,20 @@ fn request_ctor_construct(
 fn response_ctor_call(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   _this: Value,
   _args: &[Value],
 ) -> Result<Value, VmError> {
-  Err(throw_type_error(vm, scope, host, "Illegal constructor"))
+  Err(throw_type_error(vm, scope, host_hooks, "Illegal constructor"))
 }
 
 fn response_text_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -1158,7 +1176,7 @@ fn response_text_native(
   let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
   let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
 
   let result: std::result::Result<String, WebFetchError> = with_env_state_mut(env_id, |state| {
     let res = state
@@ -1175,11 +1193,11 @@ fn response_text_native(
   match result {
     Ok(text) => {
       let s = scope.alloc_string(&text)?;
-      vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[Value::String(s)])?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[Value::String(s)])?;
     }
     Err(err) => {
-      let err_value = create_type_error(vm, scope, host, &err.to_string())?;
-      vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, host_hooks, &err.to_string())?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
     }
   }
 
@@ -1227,7 +1245,8 @@ fn json_to_js(vm: &mut Vm, scope: &mut Scope<'_>, value: &serde_json::Value) -> 
 fn response_json_native(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -1238,7 +1257,7 @@ fn response_json_native(
   let env_id = number_to_u64(get_data_prop(scope, obj, ENV_ID_KEY)?)?;
   let response_id = number_to_u64(get_data_prop(scope, obj, RESPONSE_ID_KEY)?)?;
 
-  let cap = new_promise_capability_for_env(vm, scope, host, env_id)?;
+  let cap = new_promise_capability_for_env(vm, scope, host_hooks, env_id)?;
 
   let parsed: Option<std::result::Result<serde_json::Value, WebFetchError>> =
     with_env_state_mut(env_id, |state| {
@@ -1253,21 +1272,21 @@ fn response_json_native(
   match parsed {
     Some(Ok(value)) => {
       let js_value = json_to_js(vm, scope, &value)?;
-      vm.call_with_host(scope, host, cap.resolve, Value::Undefined, &[js_value])?;
+      vm.call_with_host(scope, host_hooks, cap.resolve, Value::Undefined, &[js_value])?;
     }
     Some(Err(err)) => match err {
       WebFetchError::BodyInvalidJson(e) => {
-        let err_value = create_syntax_error(vm, scope, host, &e.to_string())?;
-        vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_syntax_error(vm, scope, host_hooks, &e.to_string())?;
+        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
       }
       other => {
-        let err_value = create_type_error(vm, scope, host, &other.to_string())?;
-        vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[err_value])?;
+        let err_value = create_type_error(vm, scope, host_hooks, &other.to_string())?;
+        vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
       }
     },
     None => {
-      let err_value = create_type_error(vm, scope, host, "Response body is null")?;
-      vm.call_with_host(scope, host, cap.reject, Value::Undefined, &[err_value])?;
+      let err_value = create_type_error(vm, scope, host_hooks, "Response body is null")?;
+      vm.call_with_host(scope, host_hooks, cap.reject, Value::Undefined, &[err_value])?;
     }
   }
 
@@ -1277,7 +1296,8 @@ fn response_json_native(
 fn response_body_used_get_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  _hooks: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   _args: &[Value],
@@ -1315,7 +1335,8 @@ fn make_headers_wrapper(
 fn response_ctor_construct(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
-  host: &mut dyn VmHostHooks,
+  _host: &mut dyn VmHost,
+  host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   args: &[Value],
   _new_target: Value,
@@ -1351,7 +1372,7 @@ fn response_ctor_construct(
     let headers_key = alloc_key(scope, "headers")?;
     let headers_val = vm.get(scope, init_obj, headers_key)?;
     if !matches!(headers_val, Value::Undefined | Value::Null) {
-      fill_headers_from_init(vm, scope, host, env_id, &mut headers, headers_val)?;
+      fill_headers_from_init(vm, scope, host_hooks, env_id, &mut headers, headers_val)?;
     }
   }
 
@@ -1361,7 +1382,7 @@ fn response_ctor_construct(
   if let Some(bytes) = body_bytes {
     response.body = Some(
       crate::resource::web_fetch::Body::new_response(bytes, response.headers.limits())
-        .map_err(|e| map_web_fetch_error_to_throw(vm, scope, host, e))?,
+        .map_err(|e| map_web_fetch_error_to_throw(vm, scope, host_hooks, e))?,
     );
   }
 
@@ -1415,6 +1436,7 @@ fn response_ctor_construct(
 fn fetch_call<Host: WindowRealmHost + 'static>(
   vm: &mut Vm,
   scope: &mut Scope<'_>,
+  _host: &mut dyn VmHost,
   host_hooks: &mut dyn VmHostHooks,
   callee: GcObject,
   _this: Value,
