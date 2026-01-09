@@ -2744,11 +2744,33 @@ impl Painter {
     // Some test helpers construct a synthetic viewport fragment with a single real root child. In
     // renderer-produced trees the root fragment is the root element itself (which may still have a
     // single child), so only treat a single-child root as a wrapper when it has no originating box.
-    let html = if fragment.box_id().is_none() && fragment.children.len() == 1 {
+    let mut html = if fragment.box_id().is_none() && fragment.children.len() == 1 {
       fragment.children.first().unwrap_or(fragment)
     } else {
       fragment
     };
+
+    // Some renderer-produced trees wrap the `<html>` element in an anonymous root box (e.g. when
+    // fixed-position roots are hoisted). That wrapper is DOM-less but still has a `box_id` and
+    // typically carries the default `ComputedStyle` (`display: inline`). Treat it like a wrapper
+    // and locate the first non-fixed DOM-backed child so HTML canvas background propagation can
+    // still find `<html>`/`<body>`.
+    if html.box_id().is_some()
+      && html
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.display, crate::style::display::Display::Inline))
+    {
+      if let Some(child) = html.children.iter().find(|child| {
+        child.box_id().is_some()
+          && !child
+            .style
+            .as_deref()
+            .is_some_and(|style| style.position == Position::Fixed)
+      }) {
+        html = child;
+      }
+    }
 
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
@@ -2756,26 +2778,32 @@ impl Painter {
       }
     }
 
-    // HTML canvas background propagation: when the root element background is transparent,
-    // propagate the body element background. The layout tree may flatten the body box when it has
-    // no paintable background, so avoid falling back to "first paintable child" heuristics for
-    // renderer-produced trees (it can incorrectly promote a descendant background to the canvas).
-    if let Some(html_id) = html.box_id() {
-      if let Some(body_id) = html_id.checked_add(1) {
-        if let Some(body) = html
-          .children
-          .iter()
-          .find(|child| child.box_id() == Some(body_id))
-        {
-          if let Some(style) = body.style.clone() {
-            if Self::has_paintable_background(&style) {
-              return Some(style);
+      // HTML canvas background propagation: when the root element background is transparent,
+      // propagate the body element background. The layout tree may flatten the body box when it has
+      // no paintable background, so avoid falling back to "first paintable child" heuristics for
+      // renderer-produced trees (it can incorrectly promote a descendant background to the canvas).
+      if let Some(html_id) = html.box_id() {
+        if let Some(body_id) = html_id.checked_add(1) {
+          // `<body>` is normally the first child of `<html>` (and therefore `box_id == html_id+1`),
+          // but it may not be a direct fragment child in all layout modes. Search by box id rather
+          // than assuming a fixed tree shape.
+          let mut stack: Vec<&FragmentNode> = vec![html];
+          while let Some(node) = stack.pop() {
+            if node.box_id() == Some(body_id) {
+              if let Some(style) = node.style.clone() {
+                if Self::has_paintable_background(&style) {
+                  return Some(style);
+                }
+              }
+              break;
+            }
+            for child in node.children.iter().rev() {
+              stack.push(child);
             }
           }
         }
+        return fragment.style.clone();
       }
-      return fragment.style.clone();
-    }
 
     // Fallback for fragment trees without box IDs (mostly unit tests): treat the first paintable
     // child as the body element.

@@ -6243,7 +6243,31 @@ impl DisplayListBuilder {
     // paginated pages while ignoring margin boxes.
     let mut html = fragment;
     let mut html_origin = origin;
-    if Self::get_box_id(fragment).is_none() {
+
+    // Some renderer-produced trees wrap the actual `<html>` element in an anonymous root box.
+    // That wrapper is DOM-less but *does* have a `box_id` (assigned during box-tree fixup) and
+    // typically carries the default `ComputedStyle` (`display: inline`). Treat it like a wrapper
+    // and locate the first non-fixed DOM-backed child instead so HTML canvas background
+    // propagation still finds `<html>`/`<body>`.
+    if Self::get_box_id(fragment).is_some()
+      && fragment
+        .style
+        .as_deref()
+        .is_some_and(|style| matches!(style.display, crate::style::display::Display::Inline))
+    {
+      if let Some(child) = fragment.children.iter().find(|child| {
+        Self::get_box_id(child).is_some()
+          && !child
+            .style
+            .as_deref()
+            .is_some_and(|style| style.position == Position::Fixed)
+      }) {
+        html = child;
+        html_origin = origin.translate(child.bounds.origin);
+      }
+    }
+
+    if Self::get_box_id(html).is_none() {
       if fragment.children.len() == 1 {
         // Some unit tests construct a synthetic viewport fragment with a single child representing
         // the root element. Renderer-produced fragment trees always use the root element itself as
@@ -6329,16 +6353,23 @@ impl DisplayListBuilder {
       // background. Avoid treating arbitrary descendants as the canvas background in that case by
       // only considering the body box (which is expected to be the root element's first child).
       if let Some(body_id) = html_id.checked_add(1) {
-        if let Some(body) = html
-          .children
-          .iter()
-          .find(|child| Self::get_box_id(child) == Some(body_id))
-        {
-          if let Some(style) = body.style.clone() {
-            if Self::has_paintable_background(&style) {
-              let rect = Rect::new(html_origin.translate(body.bounds.origin), body.bounds.size);
-              return Some((style, body_id, rect));
+        // In some layout modes the `<body>` fragment may not be a direct child of `<html>` (e.g.
+        // anonymous wrappers for scrolling/overflow). Search by box id rather than assuming a
+        // specific tree shape.
+        let mut stack: Vec<(&FragmentNode, Point)> = Vec::new();
+        stack.push((html, html_origin));
+        while let Some((node, node_origin)) = stack.pop() {
+          if Self::get_box_id(node) == Some(body_id) {
+            if let Some(style) = node.style.clone() {
+              if Self::has_paintable_background(&style) {
+                return Some((style, body_id, Rect::new(node_origin, node.bounds.size)));
+              }
             }
+            break;
+          }
+
+          for child in node.children.iter().rev() {
+            stack.push((child, node_origin.translate(child.bounds.origin)));
           }
         }
       }
