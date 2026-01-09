@@ -939,6 +939,21 @@ impl Default for ForcedColorAdjust {
   }
 }
 
+/// CSS `print-color-adjust` (and deprecated shorthand `color-adjust`).
+///
+/// Reference: CSS Color Adjustment Module Level 1
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrintColorAdjust {
+  Economy,
+  Exact,
+}
+
+impl Default for PrintColorAdjust {
+  fn default() -> Self {
+    PrintColorAdjust::Economy
+  }
+}
+
 /// Computed caret color (`caret-color`)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CaretColor {

@@ -284,7 +284,7 @@ impl DomJsRealm {
     };
     platform_objects
       .borrow_mut()
-      .insert(event_obj, PlatformObjectKind::Event { event_id });
+      .insert(event_obj.into(), PlatformObjectKind::Event { event_id });
 
     // Temporarily move the event out of the events table so we can hold an `&mut Event` for the
     // duration of dispatch.
@@ -307,8 +307,8 @@ impl DomJsRealm {
       rt: *mut VmJsRuntime,
       listener_callbacks: Rc<RefCell<FxHashMap<events::ListenerId, ListenerEntry>>>,
       dom: Rc<RefCell<dom2::Document>>,
-      platform_objects: Rc<RefCell<FxHashMap<GcObject, PlatformObjectKind>>>,
-      node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, GcObject>>>,
+      platform_objects: Rc<RefCell<FxHashMap<WeakGcObject, PlatformObjectKind>>>,
+      node_wrapper_cache: Rc<RefCell<FxHashMap<NodeId, WeakGcObject>>>,
       document_node_id: NodeId,
       window: Value,
       document: Value,

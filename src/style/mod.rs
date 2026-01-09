@@ -124,6 +124,7 @@ use types::FontVariantPosition;
 use types::FontVariationSetting;
 use types::FontWeight;
 use types::ForcedColorAdjust;
+use types::PrintColorAdjust;
 use types::GridTrack;
 use types::HyphensMode;
 use types::ImageOrientation;
@@ -1150,6 +1151,7 @@ pub struct ComputedStyle {
 
   // Color and background
   pub forced_color_adjust: ForcedColorAdjust,
+  pub print_color_adjust: PrintColorAdjust,
   /// Whether the UA is in forced-colors mode (`@media (forced-colors: active)`).
   ///
   /// This is copied from the [`crate::style::media::MediaContext`] used during cascade so paint-
@@ -1580,6 +1582,7 @@ impl Default for ComputedStyle {
       font_feature_values: Arc::new(FontFeatureValuesRegistry::default()),
       position_try_registry: Arc::new(PositionTryRegistry::default()),
       forced_color_adjust: ForcedColorAdjust::Auto,
+      print_color_adjust: PrintColorAdjust::Economy,
       forced_colors: false,
       color_scheme: ColorSchemePreference::Normal,
       used_dark_color_scheme: false,

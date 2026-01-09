@@ -4592,6 +4592,9 @@ fn is_inherited_property(name: &str) -> bool {
       | "-webkit-text-fill-color"
       | "color-scheme"
       | "dynamic-range-limit"
+      | "forced-color-adjust"
+      | "print-color-adjust"
+      | "color-adjust"
       | "caret-color"
       | "accent-color"
       | "cursor"
@@ -6759,6 +6762,7 @@ pub(crate) fn apply_property_from_source(
       styles.cursor_images = source.cursor_images.clone();
     }
     "forced-color-adjust" => styles.forced_color_adjust = source.forced_color_adjust,
+    "print-color-adjust" | "color-adjust" => styles.print_color_adjust = source.print_color_adjust,
     "accent-color" => styles.accent_color = source.accent_color,
     "caret-color" => styles.caret_color = source.caret_color,
     "color-scheme" => styles.color_scheme = source.color_scheme.clone(),
@@ -13174,6 +13178,17 @@ fn apply_declaration_with_base_internal_with_order(
           ForcedColorAdjust::PreserveParentColor
         } else {
           styles.forced_color_adjust
+        };
+      }
+    }
+    "print-color-adjust" | "color-adjust" => {
+      if let PropertyValue::Keyword(kw) = resolved_value {
+        styles.print_color_adjust = if kw.eq_ignore_ascii_case("economy") {
+          PrintColorAdjust::Economy
+        } else if kw.eq_ignore_ascii_case("exact") {
+          PrintColorAdjust::Exact
+        } else {
+          styles.print_color_adjust
         };
       }
     }
@@ -26925,7 +26940,7 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(style.forced_color_adjust, ForcedColorAdjust::Auto));
+    assert_eq!(style.forced_color_adjust, parent.forced_color_adjust);
   }
 
   #[test]
@@ -30498,7 +30513,7 @@ mod tests {
       16.0,
       16.0,
     );
-    assert!(matches!(style.forced_color_adjust, ForcedColorAdjust::Auto));
+    assert_eq!(style.forced_color_adjust, parent.forced_color_adjust);
   }
 
   #[test]

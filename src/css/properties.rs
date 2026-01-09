@@ -228,6 +228,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "clip-path",
   "clip-rule",
   "color",
+  "color-adjust",
   "color-scheme",
   "contain",
   "contain-intrinsic-block-size",
@@ -289,6 +290,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "font-variation-settings",
   "font-weight",
   "forced-color-adjust",
+  "print-color-adjust",
   "gap",
   "row-gap",
   "column-gap",
@@ -2792,6 +2794,10 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     | "text-decoration-color"
     | "text-emphasis-color"
     | "column-rule-color" => return Color::parse(raw_value).is_ok(),
+    "forced-color-adjust" => {
+      return keyword_in_list(parsed, &["auto", "none", "preserve-parent-color"])
+    }
+    "print-color-adjust" | "color-adjust" => return keyword_in_list(parsed, &["economy", "exact"]),
     "display" => return keyword_parse(parsed, |kw| Display::parse(kw).ok()),
     "-webkit-box-orient" | "box-orient" => {
       return keyword_in_list(parsed, &["horizontal", "vertical"])

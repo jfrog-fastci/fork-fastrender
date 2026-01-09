@@ -120,6 +120,7 @@ mod supports_selector_forgiving_list_test;
 mod supports_selector_namespace_test;
 mod supports_writing_mode_test;
 mod position_try_supports_test;
+mod print_color_adjust_test;
 mod svg_tag_selector_indexing_test;
 mod tab_size_test;
 mod text_combine_upright_case_insensitive_test;

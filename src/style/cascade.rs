@@ -17670,6 +17670,8 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   // `forced-color-adjust` is inherited (CSS Color Adjustment 1). This ensures opting out on a
   // container disables forced-colors overrides for text nodes and descendants as well.
   styles.forced_color_adjust = parent.forced_color_adjust;
+  // `print-color-adjust` is inherited (CSS Color Adjustment 1).
+  styles.print_color_adjust = parent.print_color_adjust;
 
   // Color inherits
   styles.color = parent.color;
