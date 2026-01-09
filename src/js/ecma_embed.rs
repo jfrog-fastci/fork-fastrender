@@ -511,7 +511,7 @@ impl Evaluator<'_> {
       Value::Number(n) => Ok(ScriptValue::Number(n)),
       // The embedding's stable value type does not model BigInt yet; surface it as a string so
       // callers can still inspect deterministic output.
-      Value::BigInt(b) => Ok(ScriptValue::String(b.to_decimal_string())),
+      Value::BigInt(n) => Ok(ScriptValue::String(n.to_decimal_string())),
       Value::String(s) => Ok(ScriptValue::String(
         heap
           .get_string(s)

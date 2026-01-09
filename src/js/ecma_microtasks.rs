@@ -245,7 +245,12 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     this_argument: vm_js::Value,
     arguments: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
-    ctx.call(self, vm_js::Value::Object(callback.callback()), this_argument, arguments)
+    ctx.call(
+      self,
+      vm_js::Value::Object(callback.callback()),
+      this_argument,
+      arguments,
+    )
   }
 
   fn host_promise_rejection_tracker(

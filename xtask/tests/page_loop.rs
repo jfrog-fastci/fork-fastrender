@@ -71,3 +71,25 @@ fn dry_run_with_chrome_enables_chrome_patching_and_diff_steps() {
     "expected diff_renders commands in plan; got:\n{stdout}"
   );
 }
+
+#[test]
+fn dry_run_accepts_pageset_url() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args(["page-loop", "--pageset", "https://example.com", "--dry-run"])
+    .output()
+    .expect("run cargo xtask page-loop --pageset --dry-run");
+
+  assert!(
+    output.status.success(),
+    "expected page-loop --pageset dry-run to succeed.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stdout = String::from_utf8_lossy(&output.stdout);
+  assert!(
+    stdout.contains("fixture: example.com"),
+    "expected pageset URL to resolve to fixture stem; got:\n{stdout}"
+  );
+}

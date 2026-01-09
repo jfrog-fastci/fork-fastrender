@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{ArgAction, Args, ValueEnum};
+use fastrender::pageset::{pageset_entries_with_collisions, PagesetFilter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,8 +29,14 @@ impl MediaMode {
 #[derive(Args, Debug)]
 pub struct PageLoopArgs {
   /// Offline fixture stem under tests/pages/fixtures (must contain an index.html).
-  #[arg(long, value_name = "STEM")]
-  pub fixture: String,
+  #[arg(long, value_name = "STEM", required_unless_present = "pageset")]
+  pub fixture: Option<String>,
+
+  /// Pageset page URL or stem (from `src/pageset.rs`) to render via its fixture directory.
+  ///
+  /// This is resolved to a collision-aware fixture name (cache stem) before running.
+  #[arg(long, value_name = "URL_OR_STEM", conflicts_with = "fixture")]
+  pub pageset: Option<String>,
 
   /// Viewport size as WxH (e.g. 1040x1240; forwarded to renderers).
   #[arg(long, value_parser = crate::parse_viewport, default_value = DEFAULT_VIEWPORT)]
@@ -133,20 +140,21 @@ impl Layout {
 }
 
 pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
-  validate_args(&args)?;
+  let fixture_stem = resolve_fixture_stem(&args)?;
+  validate_args(&args, &fixture_stem)?;
 
   let repo_root = crate::repo_root();
-  let out_root = resolve_out_root(&repo_root, &args)?;
-  let layout = Layout::new(&repo_root, &args.fixture, &out_root);
+  let out_root = resolve_out_root(&repo_root, &args, &fixture_stem)?;
+  let layout = Layout::new(&repo_root, &fixture_stem, &out_root);
 
   if !layout.fixture_html.is_file() {
     bail!(
       "fixture does not exist: {}\n\
        expected fixture HTML at: {}\n\
        hint: fixtures live under {DEFAULT_FIXTURES_DIR}/<stem>/index.html",
-       args.fixture,
-       layout.fixture_html.display()
-     );
+      layout.fixture_stem,
+      layout.fixture_html.display()
+    );
   }
 
   let run_chrome = args.chrome && !args.no_chrome;
@@ -254,14 +262,14 @@ pub fn run_page_loop(args: PageLoopArgs) -> Result<()> {
   Ok(())
 }
 
-fn validate_args(args: &PageLoopArgs) -> Result<()> {
-  if args.fixture.trim().is_empty() {
+fn validate_args(args: &PageLoopArgs, fixture_stem: &str) -> Result<()> {
+  if fixture_stem.trim().is_empty() {
     bail!("--fixture must not be empty");
   }
-  if args.fixture.contains('/') || args.fixture.contains('\\') || args.fixture.contains("..") {
+  if fixture_stem.contains('/') || fixture_stem.contains('\\') || fixture_stem.contains("..") {
     bail!(
       "invalid --fixture value {:?}; expected a single fixture stem (directory name) under {DEFAULT_FIXTURES_DIR}",
-      args.fixture
+      fixture_stem
     );
   }
   if args.dpr <= 0.0 || !args.dpr.is_finite() {
@@ -270,11 +278,11 @@ fn validate_args(args: &PageLoopArgs) -> Result<()> {
   Ok(())
 }
 
-fn resolve_out_root(repo_root: &Path, args: &PageLoopArgs) -> Result<PathBuf> {
+fn resolve_out_root(repo_root: &Path, args: &PageLoopArgs, fixture_stem: &str) -> Result<PathBuf> {
   let out_dir = args
     .out_dir
     .clone()
-    .unwrap_or_else(|| PathBuf::from(DEFAULT_OUT_BASE).join(&args.fixture));
+    .unwrap_or_else(|| PathBuf::from(DEFAULT_OUT_BASE).join(fixture_stem));
 
   if out_dir.as_os_str().is_empty() {
     bail!(
@@ -300,6 +308,59 @@ fn resolve_out_root(repo_root: &Path, args: &PageLoopArgs) -> Result<PathBuf> {
   }
 
   Ok(out_dir)
+}
+
+fn resolve_fixture_stem(args: &PageLoopArgs) -> Result<String> {
+  if let Some(fixture) = args.fixture.as_deref() {
+    return Ok(fixture.trim().to_string());
+  }
+  let pageset = args
+    .pageset
+    .as_deref()
+    .ok_or_else(|| anyhow::anyhow!("missing --fixture or --pageset argument"))?;
+  resolve_pageset_to_fixture_stem(pageset)
+}
+
+fn resolve_pageset_to_fixture_stem(raw: &str) -> Result<String> {
+  let pageset = raw.trim();
+  if pageset.is_empty() {
+    bail!("--pageset must not be empty");
+  }
+
+  let filter = PagesetFilter::from_inputs(&[pageset.to_string()])
+    .ok_or_else(|| anyhow::anyhow!("invalid pageset selector: {pageset:?}"))?;
+
+  let (entries, _collisions) = pageset_entries_with_collisions();
+  let selected: Vec<_> = entries
+    .into_iter()
+    .filter(|entry| filter.matches_entry(entry))
+    .collect();
+
+  let missing = filter.unmatched(&selected);
+  if selected.is_empty() || !missing.is_empty() {
+    let listed = if missing.is_empty() {
+      pageset.to_string()
+    } else {
+      missing.join(", ")
+    };
+    bail!("unknown pageset page(s): {listed}");
+  }
+
+  if selected.len() > 1 {
+    let mut options = selected
+      .iter()
+      .map(|entry| format!("{} ({})", entry.cache_stem, entry.url))
+      .collect::<Vec<_>>();
+    options.sort();
+    bail!(
+      "pageset selector {:?} matches multiple pages: {}\n\
+       hint: pass a full URL or the collision-aware cache stem (e.g. example.com--deadbeef) to disambiguate",
+      pageset,
+      options.join(", ")
+    );
+  }
+
+  Ok(selected[0].cache_stem.clone())
 }
 
 fn build_render_fixtures_command(

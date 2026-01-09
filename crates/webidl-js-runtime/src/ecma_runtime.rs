@@ -724,7 +724,7 @@ impl VmJsRuntime {
       .heap
       .object_get_own_data_property_value(obj, &PropertyKey::Symbol(sym))
     {
-      Ok(Some(Value::BigInt(b))) => Ok(Some(b)),
+      Ok(Some(Value::BigInt(n))) => Ok(Some(n)),
       Ok(_) => Ok(None),
       Err(_) => Ok(None),
     }
@@ -1474,6 +1474,26 @@ mod tests {
       .to_string(Value::BigInt(JsBigInt::from_u128(42).negate()))
       .unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "-42");
+  }
+
+  #[test]
+  fn to_string_bigint_primitive() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let s = rt
+      .to_string(Value::BigInt(vm_js::JsBigInt::from_u128(123)))
+      .unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "123");
+  }
+
+  #[test]
+  fn to_object_wraps_bigint_and_to_string_roundtrips() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let obj = rt
+      .to_object(Value::BigInt(vm_js::JsBigInt::from_u128(7)))
+      .unwrap();
+    assert!(rt.is_object(obj));
+    let s = rt.to_string(obj).unwrap();
+    assert_eq!(as_utf8_lossy(&rt, s), "7");
   }
 
   #[test]

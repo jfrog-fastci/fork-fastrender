@@ -15,7 +15,7 @@ const DEFAULT_LONG_TIMEOUT_MS: u64 = 30_000;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WptDomBackend {
-  /// Prefer the best backend available in the current build (vm-js when enabled).
+  /// Prefer the best backend available in the current build.
   Auto,
   /// vm-js backend (FastRender in-tree JS runtime).
   VmJs,
