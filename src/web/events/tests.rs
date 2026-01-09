@@ -45,6 +45,15 @@ enum Action {
     capture: bool,
     expect_removed: Option<bool>,
   },
+  RemoveAndReaddListener {
+    target: EventTargetId,
+    type_: &'static str,
+    listener_id: ListenerId,
+    capture: bool,
+    options: AddEventListenerOptions,
+    expect_removed: Option<bool>,
+    expect_added: Option<bool>,
+  },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,6 +114,29 @@ impl EventListenerInvoker for RecordingInvoker<'_> {
           .remove_event_listener(target, type_, listener_id, capture);
         if let Some(expect_removed) = expect_removed {
           assert_eq!(removed, expect_removed);
+        }
+      }
+      Action::RemoveAndReaddListener {
+        target,
+        type_,
+        listener_id,
+        capture,
+        options,
+        expect_removed,
+        expect_added,
+      } => {
+        let removed = self
+          .registry
+          .remove_event_listener(target, type_, listener_id, capture);
+        if let Some(expect_removed) = expect_removed {
+          assert_eq!(removed, expect_removed);
+        }
+
+        let added = self
+          .registry
+          .add_event_listener(target, type_, listener_id, options);
+        if let Some(expect_added) = expect_added {
+          assert_eq!(added, expect_added);
         }
       }
     }
@@ -650,6 +682,91 @@ fn remove_event_listener_during_dispatch_prevents_later_listener_in_current_disp
   .unwrap();
 
   assert_eq!(invoker.calls.as_slice(), &["l1", "l1"]);
+}
+
+#[test]
+fn remove_and_readd_listener_during_dispatch_does_not_fire_in_current_dispatch() {
+  let (doc, _a, _b, c) = make_dom_abc();
+  let registry = EventListenerRegistry::new();
+
+  let type_ = "x";
+  let id_remove_and_readd = ListenerId::new(1);
+  let id_removed = ListenerId::new(2);
+
+  // First listener removes and re-adds the second listener while dispatch is in progress.
+  //
+  // DOM's algorithm snapshots the listener list but keeps a shared "removed" flag. This means the
+  // re-added listener must not run until a subsequent dispatch.
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_remove_and_readd,
+    AddEventListenerOptions {
+      once: true,
+      ..Default::default()
+    }
+  ));
+  assert!(registry.add_event_listener(
+    EventTargetId::Node(c),
+    type_,
+    id_removed,
+    AddEventListenerOptions::default()
+  ));
+
+  let mut invoker = RecordingInvoker::new(
+    &registry,
+    EventTargetId::Node(c),
+    [
+      (
+        id_remove_and_readd,
+        Behavior {
+          label: "remove_and_readd",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::RemoveAndReaddListener {
+            target: EventTargetId::Node(c),
+            type_,
+            listener_id: id_removed,
+            capture: false,
+            options: AddEventListenerOptions::default(),
+            expect_removed: Some(true),
+            expect_added: Some(true),
+          },
+        },
+      ),
+      (
+        id_removed,
+        Behavior {
+          label: "removed",
+          expected_phase: EventPhase::AtTarget,
+          expected_current_target: EventTargetId::Node(c),
+          action: Action::None,
+        },
+      ),
+    ],
+  );
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  let mut event = Event::new(type_, EventInit::default());
+  dispatch_event(
+    EventTargetId::Node(c),
+    &mut event,
+    &doc,
+    &registry,
+    &mut invoker,
+  )
+  .unwrap();
+
+  assert_eq!(invoker.calls.as_slice(), &["remove_and_readd", "removed"]);
 }
 
 #[test]

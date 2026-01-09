@@ -64,6 +64,15 @@ pub struct VmJsRuntime {
 }
 
 impl VmJsRuntime {
+  fn value_is_valid_or_primitive(&self, value: Value) -> bool {
+    match value {
+      Value::Undefined | Value::Null | Value::Bool(_) | Value::Number(_) => true,
+      Value::String(s) => self.heap.is_valid_string(s),
+      Value::Symbol(s) => self.heap.is_valid_symbol(s),
+      Value::Object(o) => self.heap.is_valid_object(o),
+    }
+  }
+
   /// Creates a new runtime with conservative heap limits.
   pub fn new() -> Self {
     // Defaults should be conservative; real embeddings should plumb in renderer budgets via
@@ -126,15 +135,13 @@ impl VmJsRuntime {
     // removed immediately after `f` returns.
     let mut root_ids = Vec::new();
     for v in roots {
-      let id = match self.heap.add_root(v) {
-        Ok(id) => id,
-        Err(e) => {
-          for id in root_ids {
-            self.heap.remove_root(id);
-          }
-          return Err(e);
+      if !self.value_is_valid_or_primitive(v) {
+        for id in root_ids {
+          self.heap.remove_root(id);
         }
-      };
+        return Err(VmError::InvalidHandle);
+      }
+      let id = self.heap.add_root(v);
       root_ids.push(id);
     }
     let result = f(self);
@@ -155,7 +162,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("window")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
+    let _ = self.heap.add_root(Value::String(handle));
     self.interned_window = Some(handle);
     Ok(handle)
   }
@@ -166,7 +173,7 @@ impl VmJsRuntime {
     }
     let handle = self.alloc_string_handle("document")?;
     // Keep this handle alive for the lifetime of the runtime.
-    let _ = self.heap.add_root(Value::String(handle))?;
+    let _ = self.heap.add_root(Value::String(handle));
     self.interned_document = Some(handle);
     Ok(handle)
   }

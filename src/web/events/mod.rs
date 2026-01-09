@@ -11,7 +11,7 @@
 
 use crate::dom2;
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -176,16 +176,24 @@ pub struct EventPathEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegisteredListener {
+  record_id: u64,
   id: ListenerId,
   options: AddEventListenerOptions,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct EventListenerRegistry {
+  next_record_id: Cell<u64>,
   listeners: RefCell<FxHashMap<EventTargetId, FxHashMap<String, Vec<RegisteredListener>>>>,
 }
 
 impl EventListenerRegistry {
+  fn alloc_record_id(&self) -> u64 {
+    let id = self.next_record_id.get();
+    self.next_record_id.set(id.wrapping_add(1));
+    id
+  }
+
   pub fn new() -> Self {
     Self::default()
   }
@@ -209,6 +217,7 @@ impl EventListenerRegistry {
     }
 
     list.push(RegisteredListener {
+      record_id: self.alloc_record_id(),
       id: listener_id,
       options,
     });
@@ -307,12 +316,13 @@ fn invoke_listeners(
       continue;
     }
 
-    if !registry.listener_registered(
-      target,
-      &event.type_,
-      listener.id,
-      listener.options.capture,
-    ) {
+    // Honor removals that occur during dispatch.
+    //
+    // DOM clones the listener list, but retains shared "removed" state. This must be tracked per
+    // registration record (not just by `(listener_id, capture)`) so that:
+    // - removing a listener and re-adding the "same" callback does not make it run in the same
+    //   dispatch (the re-added listener is a new record that is not part of the snapshot).
+    if !registry.listener_record_registered(target, &event.type_, listener.record_id) {
       continue;
     }
 
@@ -399,6 +409,20 @@ pub fn dispatch_event(
 }
 
 impl EventListenerRegistry {
+  fn listener_record_registered(
+    &self,
+    target: EventTargetId,
+    type_: &str,
+    record_id: u64,
+  ) -> bool {
+    self
+      .listeners
+      .borrow()
+      .get(&target)
+      .and_then(|by_type| by_type.get(type_))
+      .is_some_and(|listeners| listeners.iter().any(|l| l.record_id == record_id))
+  }
+
   fn listeners_snapshot(&self, target: EventTargetId, type_: &str) -> Vec<RegisteredListener> {
     self
       .listeners
@@ -407,25 +431,6 @@ impl EventListenerRegistry {
       .and_then(|by_type| by_type.get(type_))
       .cloned()
       .unwrap_or_default()
-  }
-
-  fn listener_registered(
-    &self,
-    target: EventTargetId,
-    type_: &str,
-    listener_id: ListenerId,
-    capture: bool,
-  ) -> bool {
-    self
-      .listeners
-      .borrow()
-      .get(&target)
-      .and_then(|by_type| by_type.get(type_))
-      .is_some_and(|listeners| {
-        listeners
-          .iter()
-          .any(|l| l.id == listener_id && l.options.capture == capture)
-      })
   }
 
   pub(crate) fn contains_listener_id(&self, listener_id: ListenerId) -> bool {

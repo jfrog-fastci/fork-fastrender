@@ -295,7 +295,6 @@ impl Drop for ActiveEventGuard {
 pub struct JsDomEvents {
   runtime: VmJsRuntime,
   registry: Rc<EventListenerRegistry>,
-  next_listener_id: u64,
   listeners: HashMap<ListenerId, ListenerEntry>,
   event_wrapper: EventWrapper,
 }
@@ -307,7 +306,6 @@ impl JsDomEvents {
     Ok(Self {
       runtime,
       registry: Rc::new(EventListenerRegistry::new()),
-      next_listener_id: 1,
       listeners: HashMap::new(),
       event_wrapper,
     })
@@ -324,23 +322,26 @@ impl JsDomEvents {
     type_: &str,
     callback: JsFunctionHandle,
     options: AddEventListenerOptions,
-  ) -> ListenerId {
-    let id = self.listener_id_for_callback(callback);
+  ) -> Option<ListenerId> {
+    let id = self.listener_id_for_callback(callback)?;
 
     if self.registry.add_event_listener(target, type_, id, options) {
       self.ensure_listener_entry(id, callback);
     }
 
-    id
+    Some(id)
   }
 
   pub fn remove_js_event_listener(
     &mut self,
     target: EventTargetId,
     type_: &str,
-    listener_id: ListenerId,
+    callback: JsFunctionHandle,
     capture: bool,
   ) -> bool {
+    let Some(listener_id) = self.listener_id_for_callback(callback) else {
+      return false;
+    };
     let removed = self
       .registry
       .remove_event_listener(target, type_, listener_id, capture);
@@ -361,15 +362,16 @@ impl JsDomEvents {
       .map_err(|e| Error::Other(e.to_string()))
   }
 
-  fn listener_id_for_callback(&mut self, callback: Value) -> ListenerId {
-    if let Value::Object(obj) = callback {
-      let id = obj.id();
-      return ListenerId::new((id.index() as u64) | ((id.generation() as u64) << 32));
-    }
+  fn listener_id_for_callback(&self, callback: Value) -> Option<ListenerId> {
+    let Value::Object(obj) = callback else {
+      // Per DOM, `addEventListener(null, ...)` is a no-op.
+      return None;
+    };
 
-    let id = ListenerId::new(self.next_listener_id);
-    self.next_listener_id = self.next_listener_id.wrapping_add(1);
-    id
+    let id = obj.id();
+    Some(ListenerId::new(
+      (id.index() as u64) | ((id.generation() as u64) << 32),
+    ))
   }
 
   fn ensure_listener_entry(&mut self, listener_id: ListenerId, callback: Value) {
