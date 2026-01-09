@@ -37,6 +37,7 @@ mod flex_basis_content;
 mod flex_baseline_alignment;
 mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
+mod flex_fragmentation;
 mod flex_intrinsic_sizing_keywords;
 mod flex_justify_content_reverse;
 mod flex_justify_content_start_end;
