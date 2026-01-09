@@ -710,6 +710,56 @@ mod tests {
   }
 
   #[test]
+  fn microtasks_queued_before_first_script_run_before_script_when_parsing_inside_task() -> Result<()> {
+    // Regression test for the old heuristic that checked `EventLoop::currently_running_task()`:
+    // HTML parsing commonly occurs inside event-loop tasks, but the pre-`</script>` microtask
+    // checkpoint must still happen when the JS execution context stack is empty.
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    event_loop.queue_task(TaskSource::DOMManipulation, |host, event_loop| {
+      event_loop.queue_microtask(|host, _| {
+        host.log.push("microtask:pre".to_string());
+        Ok(())
+      })?;
+
+      let mut loader = ManualLoader::default();
+      let (_doc, outcome) = parse_html_with_classic_script_processing(
+        "<!doctype html><script>a</script>",
+        None,
+        host,
+        event_loop,
+        &mut loader,
+        RunLimits::unbounded(),
+        |host, _dom, _script, _ty, source, event_loop| {
+          host.log.push(format!("script:{source}"));
+          let micro = format!("microtask:{source}");
+          event_loop.queue_microtask(move |host, _| {
+            host.log.push(micro);
+            Ok(())
+          })?;
+          Ok(())
+        },
+      )?;
+      assert_eq!(outcome, RunUntilIdleOutcome::Idle);
+      Ok(())
+    })?;
+
+    assert_eq!(
+      event_loop.run_until_idle(&mut host, RunLimits::unbounded())?,
+      RunUntilIdleOutcome::Idle
+    );
+    assert_eq!(
+      host.log,
+      vec![
+        "microtask:pre".to_string(),
+        "script:a".to_string(),
+        "microtask:a".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn microtasks_do_not_drain_during_nested_script_execution() -> Result<()> {
     // HTML runs microtask checkpoints before and after executing a parser-inserted script only when
     // the JS execution context stack is empty. When script execution is re-entrant, inner script
