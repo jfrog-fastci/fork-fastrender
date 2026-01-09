@@ -12,3 +12,7 @@ id = "smoke/sync-fail.html"
 status = "xfail"
 reason = "Intentional failing smoke test used to validate xfail/failure plumbing in the future runner."
 
+[[expectations]]
+id = "smoke/assert_fail.window.js"
+status = "xfail"
+reason = "Intentional failing .window.js smoke test used to validate WPT report payload plumbing."

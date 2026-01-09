@@ -26,6 +26,12 @@ fn assert_wpt_pass(id: &str) {
   let runner = Runner::new(fs, RunnerConfig::default());
   let result = runner.run_test(test).expect("run test");
   assert_eq!(result.outcome, RunOutcome::Pass);
+  let report = result.wpt_report.expect("missing report payload");
+  assert_eq!(report.file_status, "pass");
+  assert!(
+    !report.subtests.is_empty(),
+    "expected non-empty subtests list"
+  );
 }
 
 #[test]
@@ -144,6 +150,41 @@ fn html_failure_reports_fail_outcome() {
     RunOutcome::Fail(_) => {}
     other => panic!("expected Fail, got {other:?}"),
   }
+}
+
+#[test]
+fn failing_assertions_include_subtest_message_in_report() {
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
+  let test = tests
+    .iter()
+    .find(|t| t.id == "smoke/assert_fail.window.js")
+    .expect("missing assert_fail.window.js");
+
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
+  let runner = Runner::new(fs, RunnerConfig::default());
+  let result = runner.run_test(test).expect("run test");
+  match result.outcome {
+    RunOutcome::Fail(_) => {}
+    other => panic!("expected Fail, got {other:?}"),
+  }
+
+  let report = result.wpt_report.expect("missing report payload");
+  assert_eq!(report.file_status, "fail");
+  let failing = report
+    .subtests
+    .iter()
+    .find(|st| st.status == "fail")
+    .expect("expected at least one failing subtest");
+  let msg = failing
+    .message
+    .as_ref()
+    .expect("failing subtest should include a message");
+  assert!(
+    msg.contains("intentional failure"),
+    "unexpected failing subtest message: {msg}"
+  );
 }
 
 #[test]

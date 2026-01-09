@@ -233,7 +233,10 @@ impl Runner {
     // Drive the minimal event loop until the reporter hook is called or we time out.
     let (outcome, wpt_report) = loop {
       if Instant::now() >= *deadline {
-        break (RunOutcome::Timeout, None);
+        break (
+          RunOutcome::Error("missing fastrender testharness report (hook not called)".to_string()),
+          None,
+        );
       }
 
       // Run any queued Promise jobs (microtasks).
@@ -267,14 +270,14 @@ impl Runner {
       };
 
       if did_report {
-        let report = ctx.with(|ctx| -> Result<Option<String>, RunError> {
+        let report_json = ctx.with(|ctx| -> Result<Option<String>, RunError> {
           let globals = ctx.globals();
           let json: Option<String> = globals
             .get("__fastrender_wpt_report_json")
             .map_err(|e| RunError::Js(e.to_string()))?;
           Ok(json)
         });
-        let json = match report {
+        let report_json = match report_json {
           Ok(v) => v,
           Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
             break (RunOutcome::Timeout, None)
@@ -283,22 +286,23 @@ impl Runner {
           Err(other) => return Err(other),
         };
 
-        let Some(json) = json else {
+        let Some(report_json) = report_json else {
           break (
-            RunOutcome::Error("missing fastrender testharness report".to_string()),
+            RunOutcome::Error("missing fastrender testharness report JSON".to_string()),
             None,
           );
         };
 
-        let parsed: WptReport = match serde_json::from_str(&json) {
+        let parsed: WptReport = match serde_json::from_str(&report_json) {
           Ok(v) => v,
           Err(err) => {
+            let raw = truncate_for_error(&report_json, 16 * 1024);
             break (
               RunOutcome::Error(format!(
-                "failed to parse fastrender testharness report: {err}"
+                "failed to parse fastrender testharness report JSON: {err}; raw={raw}"
               )),
               None,
-            )
+            );
           }
         };
 
@@ -537,6 +541,19 @@ fn extract_inline_script(handle: &Handle) -> String {
     }
   }
   out
+}
+
+fn truncate_for_error(input: &str, max_len: usize) -> String {
+  if input.len() <= max_len {
+    return input.to_string();
+  }
+
+  let mut end = max_len;
+  while end > 0 && !input.is_char_boundary(end) {
+    end -= 1;
+  }
+
+  format!("{}…(truncated, total {} bytes)", &input[..end], input.len())
 }
 
 fn id_dir(id: &str) -> String {
@@ -1065,11 +1082,18 @@ const FASTR_REPORT_HOOK: &str = r#"
   g.__fastrender_wpt_report_json = null;
 
   g.__fastrender_wpt_report = function (payload) {
+    if (g.__fastrender_wpt_report_called) return;
     g.__fastrender_wpt_report_called = true;
     try {
       g.__fastrender_wpt_report_json = JSON.stringify(payload);
     } catch (e) {
-      g.__fastrender_wpt_report_json = null;
+      g.__fastrender_wpt_report_json = JSON.stringify({
+        file_status: "error",
+        harness_status: "error",
+        message: String(e && e.message ? e.message : e),
+        stack: e && e.stack ? String(e.stack) : null,
+        subtests: []
+      });
     }
   };
 })();
