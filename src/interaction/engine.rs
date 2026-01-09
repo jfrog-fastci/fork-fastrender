@@ -2,6 +2,7 @@ use crate::dom::enumerate_dom_ids;
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
+use crate::geometry::Rect;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
 use std::collections::HashMap;
@@ -220,6 +221,12 @@ fn is_textarea(node: &DomNode) -> bool {
     .is_some_and(|tag| tag.eq_ignore_ascii_case("textarea"))
 }
 
+fn is_select(node: &DomNode) -> bool {
+  node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
+}
+
 fn input_type(node: &DomNode) -> &str {
   node.get_attribute_ref("type").unwrap_or("text")
 }
@@ -253,6 +260,10 @@ fn is_text_input(node: &DomNode) -> bool {
 
 fn is_focusable_text_control(node: &DomNode) -> bool {
   is_textarea(node) || is_text_input(node)
+}
+
+fn is_focusable_control(node: &DomNode) -> bool {
+  is_focusable_text_control(node) || is_select(node)
 }
 
 fn is_ancestor_or_self(index: &DomIndexMut, ancestor: usize, mut node: usize) -> bool {
@@ -430,6 +441,188 @@ fn set_textarea_text_children_value(node: &mut DomNode, value: &str) -> (bool, b
   (true, true)
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SelectRow {
+  OptGroupLabel { disabled: bool },
+  Option { node_id: usize, disabled: bool },
+}
+
+fn has_disabled_optgroup_ancestor(index: &DomIndexMut, mut node_id: usize, root_id: usize) -> bool {
+  while node_id != 0 && node_id != root_id {
+    let parent = *index.parent.get(node_id).unwrap_or(&0);
+    if parent == 0 || parent == root_id {
+      break;
+    }
+    if index.node(parent).is_some_and(|node| {
+      node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("optgroup"))
+        && node.get_attribute_ref("disabled").is_some()
+    }) {
+      return true;
+    }
+    node_id = parent;
+  }
+  false
+}
+
+fn collect_select_rows(index: &DomIndexMut, select_id: usize) -> Vec<SelectRow> {
+  // Like `build_select_control`, `<optgroup>` contributes a label row followed by its descendants.
+  // This function operates directly on the DOM so it can recover DOM node ids for `<option>` rows
+  // and mutate `selected` attributes.
+  let mut end = select_id;
+  for id in (select_id + 1)..index.id_to_node.len() {
+    if is_ancestor_or_self(index, select_id, id) {
+      end = id;
+    } else {
+      break;
+    }
+  }
+
+  let mut rows = Vec::new();
+  for id in (select_id + 1)..=end {
+    let Some(node) = index.node(id) else {
+      continue;
+    };
+    if !node.is_element() {
+      continue;
+    }
+    let Some(tag) = node.tag_name() else {
+      continue;
+    };
+
+    if tag.eq_ignore_ascii_case("optgroup") {
+      let disabled = node.get_attribute_ref("disabled").is_some()
+        || has_disabled_optgroup_ancestor(index, id, select_id);
+      rows.push(SelectRow::OptGroupLabel { disabled });
+      continue;
+    }
+
+    if tag.eq_ignore_ascii_case("option") {
+      let disabled = node.get_attribute_ref("disabled").is_some()
+        || has_disabled_optgroup_ancestor(index, id, select_id);
+      rows.push(SelectRow::Option {
+        node_id: id,
+        disabled,
+      });
+    }
+  }
+
+  rows
+}
+
+fn fragment_rect_for_box_id_at_point(
+  fragment_tree: &FragmentTree,
+  page_point: Point,
+  target_box_id: usize,
+) -> Option<Rect> {
+  struct Frame<'a> {
+    node: &'a crate::tree::fragment_tree::FragmentNode,
+    abs_origin: Point,
+  }
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  stack.push(Frame {
+    node: &fragment_tree.root,
+    abs_origin: fragment_tree.root.bounds.origin,
+  });
+  for root in &fragment_tree.additional_fragments {
+    stack.push(Frame {
+      node: root,
+      abs_origin: root.bounds.origin,
+    });
+  }
+
+  while let Some(Frame { node, abs_origin }) = stack.pop() {
+    let rect = Rect::from_xywh(abs_origin.x, abs_origin.y, node.bounds.width(), node.bounds.height());
+    if rect.contains_point(page_point) && node.box_id() == Some(target_box_id) {
+      return Some(rect);
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push(Frame {
+        node: child,
+        abs_origin: abs_origin.translate(child.bounds.origin),
+      });
+    }
+  }
+
+  None
+}
+
+fn apply_select_listbox_click(
+  index: &mut DomIndexMut,
+  fragment_tree: &FragmentTree,
+  page_point: Point,
+  select_id: usize,
+  hit_box_id: usize,
+) -> bool {
+  let Some(select_node) = index.node(select_id) else {
+    return false;
+  };
+
+  let multiple = select_node.get_attribute_ref("multiple").is_some();
+  let size = crate::dom::select_effective_size(select_node) as usize;
+  let is_listbox = multiple || size > 1;
+  if !is_listbox {
+    return false;
+  }
+
+  let Some(select_rect) = fragment_rect_for_box_id_at_point(fragment_tree, page_point, hit_box_id) else {
+    return false;
+  };
+
+  let rows = collect_select_rows(index, select_id);
+  if rows.is_empty() {
+    return false;
+  }
+
+  let row_height = if size == 0 {
+    0.0
+  } else {
+    select_rect.height() / size as f32
+  };
+  if row_height <= 0.0 || !row_height.is_finite() {
+    return false;
+  }
+
+  let local_y = page_point.y - select_rect.y();
+  let mut row_idx = (local_y / row_height).floor() as isize;
+  row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
+  let row = rows[row_idx as usize];
+
+  let mut changed = false;
+  match row {
+    SelectRow::OptGroupLabel { .. } => {}
+    SelectRow::Option { node_id, disabled } => {
+      if disabled {
+        return false;
+      }
+
+      if multiple {
+        let selected = index
+          .node(node_id)
+          .and_then(|node| node.get_attribute_ref("selected"))
+          .is_some();
+        if let Some(node_mut) = index.node_mut(node_id) {
+          changed |= dom_mutation::set_bool_attr(node_mut, "selected", !selected);
+        }
+      } else {
+        for row in rows {
+          let SelectRow::Option { node_id: id, .. } = row else {
+            continue;
+          };
+          if let Some(node_mut) = index.node_mut(id) {
+            changed |= dom_mutation::set_bool_attr(node_mut, "selected", id == node_id);
+          }
+        }
+      }
+    }
+  }
+
+  changed
+}
+
 impl InteractionEngine {
   pub fn new() -> Self {
     Self {
@@ -587,8 +780,8 @@ impl InteractionEngine {
   ) -> (bool, InteractionAction) {
     let prev_focus = self.focused;
 
-    let up_semantic =
-      hit_test_dom(dom, box_tree, fragment_tree, page_point).map(|hit| hit.dom_node_id);
+    let up_hit = hit_test_dom(dom, box_tree, fragment_tree, page_point);
+    let up_semantic = up_hit.as_ref().map(|hit| hit.dom_node_id);
     let mut index = DomIndexMut::new(dom);
 
     let down_semantic = self.pointer_down_target;
@@ -641,6 +834,20 @@ impl InteractionEngine {
           if !node_is_disabled(&index, target_id) {
             dom_changed |= dom_mutation::activate_radio(dom, target_id);
           }
+        } else if index.node(target_id).is_some_and(is_select) {
+          dom_changed |= self.set_focus(&mut index, Some(target_id), false);
+
+          if !node_is_disabled(&index, target_id) {
+            if let Some(hit) = up_hit.as_ref().filter(|hit| hit.dom_node_id == target_id) {
+              dom_changed |= apply_select_listbox_click(
+                &mut index,
+                fragment_tree,
+                page_point,
+                target_id,
+                hit.box_id,
+              );
+            }
+          }
         } else if index.node(target_id).is_some_and(is_focusable_text_control) {
           dom_changed |= self.set_focus(&mut index, Some(target_id), false);
         }
@@ -648,7 +855,7 @@ impl InteractionEngine {
 
       // Blur when clicking outside focusable controls.
       let clicked_focusable =
-        click_target.is_some_and(|id| index.node(id).is_some_and(is_focusable_text_control));
+        click_target.is_some_and(|id| index.node(id).is_some_and(is_focusable_control));
       if !clicked_focusable && prev_focus.is_some() {
         dom_changed |= self.set_focus(&mut index, None, false);
       }
