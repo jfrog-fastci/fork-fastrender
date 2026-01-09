@@ -4770,7 +4770,7 @@ impl ImageCache {
       (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
       (Some(w), None, None) => (w, DEFAULT_HEIGHT),
       (None, Some(h), None) => (DEFAULT_WIDTH, h),
-      (None, None, Some(r)) => (DEFAULT_WIDTH, (DEFAULT_WIDTH / r).max(1.0)),
+      (None, None, Some(_)) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
       (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
     };
 
@@ -6196,7 +6196,7 @@ impl ImageCache {
       (None, Some(h), Some(r)) => ((h * r).max(1.0), h),
       (Some(w), None, None) => (w, DEFAULT_HEIGHT),
       (None, Some(h), None) => (DEFAULT_WIDTH, h),
-      (None, None, Some(r)) => (DEFAULT_WIDTH, (DEFAULT_WIDTH / r).max(1.0)),
+      (None, None, Some(_)) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
       (None, None, None) => (DEFAULT_WIDTH, DEFAULT_HEIGHT),
     };
 
@@ -8844,6 +8844,31 @@ mod tests {
       Some(2.0)
     );
     assert!(!img.aspect_ratio_none);
+  }
+
+  #[test]
+  fn svg_viewbox_square_defaults_to_300x150_in_probe() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>"#;
+
+    let meta = cache
+      .probe_svg_content(svg, "inline viewBox-only svg")
+      .expect("probe svg");
+    assert_eq!(meta.width, 300);
+    assert_eq!(meta.height, 150);
+    assert_eq!(meta.intrinsic_ratio, Some(1.0));
+    assert!(!meta.aspect_ratio_none);
+  }
+
+  #[test]
+  fn svg_viewbox_square_defaults_to_300x150_in_render_svg_to_image() {
+    let cache = ImageCache::new();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>"#;
+
+    let (image, ratio, aspect_none) = cache.render_svg_to_image(svg).expect("render svg");
+    assert_eq!((image.width(), image.height()), (300, 150));
+    assert_eq!(ratio, Some(1.0));
+    assert!(!aspect_none);
   }
 
   #[test]
