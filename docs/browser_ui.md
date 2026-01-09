@@ -179,6 +179,9 @@ Note: not all worker implementations emit every message variant. For example, th
 app's worker thread (`spawn_browser_worker` via `spawn_browser_ui_worker`) emits `FrameReady`, select
 dropdown open messages (`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading
 events. Stage heartbeats are only sent when a stage listener is installed by the worker.
+The canonical browser UI worker loop installs a listener for the duration of each navigation prepare
+job and for each paint (including scroll/hover-driven repaints), tagging forwarded heartbeats with
+the current `tab_id`.
 
 Implementation detail: stage listeners are stored in a **thread-local stack** (see
 `push_stage_listener` / `StageListenerGuard` in [`src/render_control.rs`](../src/render_control.rs)).
