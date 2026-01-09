@@ -34503,8 +34503,21 @@ mod tests {
   }
 
   #[test]
-  fn font_variant_alternates_parses_numeric_arguments() {
+  fn font_variant_alternates_numeric_arguments_invalidates_declaration() {
     let mut style = ComputedStyle::default();
+    style.font_variant_alternates.historical_forms = true;
+    style.font_variant_alternates.stylistic =
+      Some(FontVariantAlternateValue::Name("KeepStylistic".to_string()));
+    style.font_variant_alternates.stylesets =
+      vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())];
+    style.font_variant_alternates.character_variants =
+      vec![FontVariantAlternateValue::Name("KeepCharacterVariant".to_string())];
+    style.font_variant_alternates.swash =
+      Some(FontVariantAlternateValue::Name("KeepSwash".to_string()));
+    style.font_variant_alternates.ornaments =
+      Some(FontVariantAlternateValue::Name("KeepOrnaments".to_string()));
+    style.font_variant_alternates.annotation =
+      Some(FontVariantAlternateValue::Name("KeepAnnotation".to_string()));
     let decl = Declaration {
       property: "font-variant-alternates".into(),
       value: PropertyValue::Keyword(
@@ -34516,35 +34529,32 @@ mod tests {
       important: false,
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(style.font_variant_alternates.historical_forms);
     assert_eq!(
       style.font_variant_alternates.stylistic,
-      Some(FontVariantAlternateValue::Number(2))
+      Some(FontVariantAlternateValue::Name("KeepStylistic".to_string()))
     );
     assert_eq!(
       style.font_variant_alternates.stylesets,
-      vec![
-        FontVariantAlternateValue::Number(3),
-        FontVariantAlternateValue::Number(4),
-      ]
+      vec![FontVariantAlternateValue::Name("KeepStyleset".to_string())]
     );
     assert_eq!(
       style.font_variant_alternates.character_variants,
-      vec![
-        FontVariantAlternateValue::Number(5),
-        FontVariantAlternateValue::Number(6),
-      ]
+      vec![FontVariantAlternateValue::Name(
+        "KeepCharacterVariant".to_string()
+      )]
     );
     assert_eq!(
       style.font_variant_alternates.swash,
-      Some(FontVariantAlternateValue::Number(7))
+      Some(FontVariantAlternateValue::Name("KeepSwash".to_string()))
     );
     assert_eq!(
       style.font_variant_alternates.ornaments,
-      Some(FontVariantAlternateValue::Number(8))
+      Some(FontVariantAlternateValue::Name("KeepOrnaments".to_string()))
     );
     assert_eq!(
       style.font_variant_alternates.annotation,
-      Some(FontVariantAlternateValue::Number(9))
+      Some(FontVariantAlternateValue::Name("KeepAnnotation".to_string()))
     );
   }
 
