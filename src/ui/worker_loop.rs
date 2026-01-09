@@ -488,12 +488,20 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
         let base_url = effective_base_url(tab).to_string();
         let page_point = page_point_for(tab, pos_css);
+        let scroll_state = tab.scroll.clone();
         let engine = &mut tab.interaction;
 
         let action = match tab
           .document
           .mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-            engine.pointer_up(dom, box_tree, fragment_tree, page_point, &base_url)
+            engine.pointer_up_with_scroll(
+              dom,
+              box_tree,
+              fragment_tree,
+              &scroll_state,
+              page_point,
+              &base_url,
+            )
           }) {
           Ok(action) => action,
           Err(_) => continue,

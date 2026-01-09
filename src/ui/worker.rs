@@ -347,13 +347,21 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         };
         let page_point = tab.page_point_for_viewport_pos(pos_css);
         let base_url = tab.effective_base_url().unwrap_or("").to_string();
+        let scroll_state = tab.scroll_state.clone();
         let engine = &mut tab.interaction;
         let Some(doc) = tab.document.as_mut() else {
           continue;
         };
 
         let action = match doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
-          engine.pointer_up(dom, box_tree, fragment_tree, page_point, &base_url)
+          engine.pointer_up_with_scroll(
+            dom,
+            box_tree,
+            fragment_tree,
+            &scroll_state,
+            page_point,
+            &base_url,
+          )
         }) {
           Ok(action) => action,
           Err(_) => continue,

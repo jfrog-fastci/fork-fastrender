@@ -3,6 +3,7 @@ use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
@@ -908,6 +909,7 @@ fn apply_select_listbox_click(
   page_point: Point,
   select_id: usize,
   hit_box_id: usize,
+  scroll_state: &ScrollState,
 ) -> bool {
   let Some(select_node) = index.node(select_id) else {
     return false;
@@ -929,6 +931,11 @@ fn apply_select_listbox_click(
     return false;
   }
 
+  let mut scroll_y = scroll_state.element_offset(hit_box_id).y;
+  if !scroll_y.is_finite() {
+    scroll_y = 0.0;
+  }
+
   let row_height = if size == 0 {
     0.0
   } else {
@@ -938,8 +945,14 @@ fn apply_select_listbox_click(
     return false;
   }
 
+  let viewport_height = select_rect.height().max(0.0);
+  let content_height = row_height * rows.len() as f32;
+  let max_scroll_y = (content_height - viewport_height).max(0.0);
+  scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+
   let local_y = page_point.y - select_rect.y();
-  let mut row_idx = (local_y / row_height).floor() as isize;
+  let content_y = local_y + scroll_y;
+  let mut row_idx = (content_y / row_height).floor() as isize;
   row_idx = row_idx.clamp(0, rows.len().saturating_sub(1) as isize);
   let row = rows[row_idx as usize];
 
@@ -1343,6 +1356,23 @@ impl InteractionEngine {
     page_point: Point,
     base_url: &str,
   ) -> (bool, InteractionAction) {
+    // This legacy convenience wrapper does not incorporate element scroll offsets. Call
+    // `pointer_up_with_scroll` when the embedding maintains a full `ScrollState`.
+    let scroll_state = ScrollState::default();
+    self.pointer_up_with_scroll(dom, box_tree, fragment_tree, &scroll_state, page_point, base_url)
+  }
+
+  /// Like [`InteractionEngine::pointer_up`], but also takes the current scroll state so listbox
+  /// `<select>` controls can map clicks through their scroll offset.
+  pub fn pointer_up_with_scroll(
+    &mut self,
+    dom: &mut DomNode,
+    box_tree: &BoxTree,
+    fragment_tree: &FragmentTree,
+    scroll_state: &ScrollState,
+    page_point: Point,
+    base_url: &str,
+  ) -> (bool, InteractionAction) {
     let range_drag = self.range_drag.take();
     let prev_focus = self.focused;
 
@@ -1407,6 +1437,7 @@ impl InteractionEngine {
                 page_point,
                 target_id,
                 hit.box_id,
+                scroll_state,
               );
             }
           }

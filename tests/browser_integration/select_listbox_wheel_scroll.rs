@@ -1,4 +1,6 @@
 use fastrender::tree::box_tree::{FormControlKind, ReplacedType};
+use fastrender::interaction::{fragment_tree_with_scroll, InteractionEngine};
+use fastrender::interaction::absolute_bounds_for_box_id;
 use fastrender::{BrowserDocument, BoxType, Overflow, Point, RenderOptions, Result};
 
 fn find_listbox_select_box_id(box_tree: &fastrender::BoxTree) -> Option<usize> {
@@ -81,3 +83,110 @@ fn select_listbox_wheel_scroll_updates_element_scroll_state() -> Result<()> {
   Ok(())
 }
 
+#[test]
+fn select_listbox_wheel_scroll_affects_click_row_mapping() -> Result<()> {
+  let html = r#"<!doctype html>
+    <html>
+      <head>
+        <style>
+          html, body { margin: 0; padding: 0; }
+          /* Keep the content rect aligned with the fragment bounds for deterministic hit-testing. */
+          select { border: 0; padding: 0; line-height: 20px; font-size: 20px; }
+        </style>
+      </head>
+      <body>
+        <select size="3">
+          <option>Option 1</option>
+          <option>Option 2</option>
+          <option>Option 3</option>
+          <option>Option 4</option>
+          <option>Option 5</option>
+          <option>Option 6</option>
+          <option>Option 7</option>
+          <option>Option 8</option>
+          <option>Option 9</option>
+          <option>Option 10</option>
+          <option>Option 11</option>
+          <option>Option 12</option>
+        </select>
+      </body>
+    </html>
+  "#;
+
+  let options = RenderOptions::new().with_viewport(200, 200);
+  let mut doc = BrowserDocument::from_html(html, options)?;
+  doc.render_frame_with_scroll_state()?;
+  let prepared = doc
+    .prepared()
+    .expect("expected BrowserDocument to have cached layout after render");
+
+  let select_box_id =
+    find_listbox_select_box_id(prepared.box_tree()).expect("expected box tree to contain <select>");
+
+  let select_rect =
+    absolute_bounds_for_box_id(prepared.fragment_tree(), select_box_id).expect("select rect");
+  let size_rows = 3.0_f32;
+  let row_height = select_rect.height() / size_rows;
+  assert!(
+    row_height.is_finite() && row_height > 0.0,
+    "expected non-zero row height"
+  );
+
+  // Scroll by ~2 rows, then click within the top visible row. The click should select the
+  // scrolled-to option, not the original first row.
+  doc.wheel_scroll_at_viewport_point(Point::new(5.0, 5.0), (0.0, row_height * 2.0))?;
+  let scroll_state = doc.scroll_state();
+  let scroll_y = scroll_state.element_offset(select_box_id).y;
+  assert!(scroll_y > 0.0, "expected listbox select to scroll");
+
+  let click_viewport_point = Point::new(10.0, row_height / 2.0);
+  let page_point = click_viewport_point.translate(scroll_state.viewport);
+
+  // Expected row index based on the same math as the select listbox painter.
+  let local_y = page_point.y - select_rect.y();
+  let expected_row_idx = ((local_y + scroll_y) / row_height).floor().max(0.0) as usize;
+
+  let mut engine = InteractionEngine::new();
+  doc.mutate_dom_with_layout_artifacts(|dom, box_tree, fragment_tree| {
+    let scrolled_fragments = fragment_tree_with_scroll(fragment_tree, &scroll_state);
+    let _ = engine.pointer_down(dom, box_tree, &scrolled_fragments, page_point);
+    let (changed, _action) = engine.pointer_up_with_scroll(
+      dom,
+      box_tree,
+      &scrolled_fragments,
+      &scroll_state,
+      page_point,
+      "",
+    );
+    (changed, ())
+  })?;
+
+  fn selected_option_indices(dom: &fastrender::dom::DomNode) -> Vec<usize> {
+    let mut indices = Vec::new();
+    let mut option_idx = 0usize;
+    let mut stack = vec![dom];
+    while let Some(node) = stack.pop() {
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+      {
+        if node.get_attribute_ref("selected").is_some() {
+          indices.push(option_idx);
+        }
+        option_idx += 1;
+      }
+      for child in node.children.iter().rev() {
+        stack.push(child);
+      }
+    }
+    indices
+  }
+
+  assert_eq!(
+    selected_option_indices(doc.dom()),
+    vec![expected_row_idx],
+    "expected click to select the scrolled-to option row"
+  );
+
+  Ok(())
+}
