@@ -1,12 +1,15 @@
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
 use crate::error::{Error, Result};
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
-use crate::js::{EventLoop, ScriptElementSpec, ScriptScheduler, ScriptSchedulerAction, TaskSource};
+use crate::js::{
+  DocumentLifecycle, DocumentLifecycleHost, EventLoop, ScriptElementSpec, ScriptScheduler,
+  ScriptSchedulerAction, ScriptType, TaskSource,
+};
 
 use html5ever::tree_builder::TreeBuilderOpts;
 use html5ever::ParseOpts;
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 struct JsExecutionGuard {
@@ -62,7 +65,9 @@ where
   fetcher: F,
   executor: E,
   script_nodes: HashMap<crate::js::ScriptId, NodeId>,
+  deferred_scripts: HashSet<crate::js::ScriptId>,
   js_execution_depth: Rc<Cell<usize>>,
+  lifecycle: DocumentLifecycle,
 }
 
 impl<F, E> HtmlLoadOrchestrator<F, E>
@@ -99,7 +104,9 @@ where
       fetcher,
       executor,
       script_nodes: HashMap::new(),
+      deferred_scripts: HashSet::new(),
       js_execution_depth: Rc::new(Cell::new(0)),
+      lifecycle: DocumentLifecycle::new(),
     }
   }
 
@@ -179,6 +186,7 @@ where
         self.finished_document = Some(doc);
         let actions = self.scheduler.parsing_completed()?;
         self.apply_actions(actions, event_loop)?;
+        self.lifecycle.parsing_completed(event_loop)?;
         Ok(false)
       }
     }
@@ -231,12 +239,19 @@ where
 
     let spec = self.build_script_spec(script_node)?;
     let base_url_at_discovery = self.parser.sink().and_then(|sink| sink.current_base_url());
-    let discovered = self.scheduler.discovered_parser_script(
-      spec,
-      script_node,
-      base_url_at_discovery,
-    )?;
+    let is_deferred = spec.script_type == ScriptType::Classic
+      && spec.src.is_some()
+      && spec.defer_attr
+      && !spec.async_attr;
+    let discovered =
+      self
+        .scheduler
+        .discovered_parser_script(spec, script_node, base_url_at_discovery)?;
     self.script_nodes.insert(discovered.id, script_node);
+    if is_deferred {
+      self.lifecycle.register_deferred_script();
+      self.deferred_scripts.insert(discovered.id);
+    }
     self.apply_actions(discovered.actions, event_loop)?;
     Ok(())
   }
@@ -286,13 +301,18 @@ where
           }
         }
         ScriptSchedulerAction::QueueTask {
-          script_id: _,
+          script_id,
           source_text,
           ..
         } => {
+          let is_deferred = self.deferred_scripts.contains(&script_id);
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let _guard = host.enter_js_execution();
-            host.executor.execute(&source_text, event_loop)
+            host.executor.execute(&source_text, event_loop)?;
+            if is_deferred {
+              host.lifecycle.deferred_script_executed(event_loop)?;
+            }
+            Ok(())
           })?;
         }
       }
@@ -315,6 +335,44 @@ where
       Ok(())
     })?;
     Ok(())
+  }
+}
+
+impl<F, E> DocumentLifecycleHost for HtmlLoadOrchestrator<F, E>
+where
+  F: ScriptFetcher,
+  E: ScriptExecutor<HtmlLoadOrchestrator<F, E>>,
+{
+  fn dom_mut(&mut self) -> &mut Document {
+    self
+      .finished_document
+      .as_mut()
+      .expect("HTML document lifecycle events require parsing to be complete")
+  }
+
+  fn dispatch_lifecycle_event(&mut self, target: crate::web::events::EventTargetId, event: &mut crate::web::events::Event) -> Result<()> {
+    use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
+
+    struct NoopInvoker;
+
+    impl EventListenerInvoker for NoopInvoker {
+      fn invoke(&mut self, _listener_id: ListenerId, _event: &mut crate::web::events::Event) -> std::result::Result<(), DomError> {
+        Ok(())
+      }
+    }
+
+    let dom = self
+      .finished_document
+      .as_ref()
+      .ok_or_else(|| Error::Other("cannot dispatch lifecycle event before parsing completes".to_string()))?;
+    let mut invoker = NoopInvoker;
+    dispatch_event(target, event, dom, dom.events(), &mut invoker)
+      .map(|_default_not_prevented| ())
+      .map_err(|err| Error::Other(err.to_string()))
+  }
+
+  fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
+    &mut self.lifecycle
   }
 }
 

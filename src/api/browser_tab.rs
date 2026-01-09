@@ -8,7 +8,7 @@ use crate::js::{
   CurrentScriptHost, CurrentScriptStateHandle, DomHost, EventLoop, JsExecutionOptions, RunLimits,
   RunAnimationFrameOutcome, RunUntilIdleOutcome, RunUntilIdleStopReason, ScriptBlockExecutor,
   ScriptElementSpec, ScriptId, ScriptOrchestrator, ScriptScheduler, ScriptSchedulerAction,
-  ScriptType, TaskSource,
+  ScriptType, TaskSource, DocumentLifecycle, DocumentLifecycleHost,
 };
 use crate::resource::{FetchDestination, FetchRequest};
 
@@ -71,12 +71,14 @@ pub struct BrowserTabHost {
   orchestrator: ScriptOrchestrator,
   scheduler: ScriptScheduler<NodeId>,
   scripts: HashMap<ScriptId, ScriptEntry>,
+  deferred_scripts: HashSet<ScriptId>,
   executed: HashSet<ScriptId>,
   parser_blocked_on: Option<ScriptId>,
   document_url: Option<String>,
   external_script_sources: HashMap<String, String>,
   js_execution_options: JsExecutionOptions,
   js_execution_depth: Rc<Cell<usize>>,
+  lifecycle: DocumentLifecycle,
 }
 
 impl BrowserTabHost {
@@ -94,12 +96,14 @@ impl BrowserTabHost {
       orchestrator: ScriptOrchestrator::new(),
       scheduler: ScriptScheduler::new(),
       scripts: HashMap::new(),
+      deferred_scripts: HashSet::new(),
       executed: HashSet::new(),
       parser_blocked_on: None,
       document_url: None,
       external_script_sources: HashMap::new(),
       js_execution_options,
       js_execution_depth: Rc::new(Cell::new(0)),
+      lifecycle: DocumentLifecycle::new(),
     }
   }
 
@@ -124,10 +128,12 @@ impl BrowserTabHost {
     self.orchestrator = ScriptOrchestrator::new();
     self.scheduler = ScriptScheduler::new();
     self.scripts.clear();
+    self.deferred_scripts.clear();
     self.executed.clear();
     self.parser_blocked_on = None;
     self.document_url = document_url;
     self.js_execution_depth.set(0);
+    self.lifecycle = DocumentLifecycle::new();
   }
 
   fn discover_scripts_best_effort(&self, document_url: Option<&str>) -> Vec<(NodeId, ScriptElementSpec)> {
@@ -264,6 +270,12 @@ impl BrowserTabHost {
     }
 
     let spec_for_table = spec.clone();
+    let is_deferred = spec_for_table.script_type == ScriptType::Classic
+      && spec_for_table.parser_inserted
+      && spec_for_table.src_attr_present
+      && spec_for_table.src.as_deref().is_some_and(|src| !src.is_empty())
+      && spec_for_table.defer_attr
+      && !spec_for_table.async_attr;
     if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
       self
         .js_execution_options
@@ -279,6 +291,10 @@ impl BrowserTabHost {
         spec: spec_for_table,
       },
     );
+    if is_deferred {
+      self.lifecycle.register_deferred_script();
+      self.deferred_scripts.insert(discovered.id);
+    }
     self.apply_scheduler_actions(discovered.actions, event_loop)?;
     Ok(discovered.id)
   }
@@ -312,14 +328,13 @@ impl BrowserTabHost {
           source_text,
           ..
         } => {
-          let result = {
+          let exec_result = {
             let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
-            let result = self.execute_script(script_id, &source_text, event_loop);
-            // Ensure a script failure doesn't leave parsing blocked forever.
-            self.finish_script_execution(script_id);
-            result
+            self.execute_script(script_id, &source_text, event_loop)
           };
-          result?;
+          // Ensure a script failure doesn't leave parsing blocked forever.
+          self.finish_script_execution(script_id, event_loop)?;
+          exec_result?;
 
           // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
           // execution context stack is empty. Nested (re-entrant) script execution must not drain
@@ -336,7 +351,7 @@ impl BrowserTabHost {
           event_loop.queue_task(TaskSource::Script, move |host, event_loop| {
             let _guard = JsExecutionGuard::enter(&host.js_execution_depth);
             let result = host.execute_script(script_id, &source_text, event_loop);
-            host.finish_script_execution(script_id);
+            host.finish_script_execution(script_id, event_loop)?;
             result
           })?;
         }
@@ -345,11 +360,19 @@ impl BrowserTabHost {
     Ok(())
   }
 
-  fn finish_script_execution(&mut self, script_id: ScriptId) {
-    self.executed.insert(script_id);
+  fn finish_script_execution(
+    &mut self,
+    script_id: ScriptId,
+    event_loop: &mut EventLoop<Self>,
+  ) -> Result<()> {
+    let newly_executed = self.executed.insert(script_id);
     if self.parser_blocked_on == Some(script_id) {
       self.parser_blocked_on = None;
     }
+    if newly_executed && self.deferred_scripts.contains(&script_id) {
+      self.lifecycle.deferred_script_executed(event_loop)?;
+    }
+    Ok(())
   }
 
   fn execute_script(
@@ -501,6 +524,42 @@ impl DomHost for BrowserTabHost {
     F: FnOnce(&mut Document) -> (R, bool),
   {
     <BrowserDocumentDom2 as DomHost>::mutate_dom(&mut self.document, f)
+  }
+}
+
+impl DocumentLifecycleHost for BrowserTabHost {
+  fn dom_mut(&mut self) -> &mut crate::dom2::Document {
+    self.document.dom_mut()
+  }
+
+  fn dispatch_lifecycle_event(
+    &mut self,
+    target: crate::web::events::EventTargetId,
+    event: &mut crate::web::events::Event,
+  ) -> Result<()> {
+    use crate::web::events::{dispatch_event, DomError, EventListenerInvoker, ListenerId};
+
+    struct NoopInvoker;
+
+    impl EventListenerInvoker for NoopInvoker {
+      fn invoke(
+        &mut self,
+        _listener_id: ListenerId,
+        _event: &mut crate::web::events::Event,
+      ) -> std::result::Result<(), DomError> {
+        Ok(())
+      }
+    }
+
+    let dom: &crate::dom2::Document = self.document.dom();
+    let mut invoker = NoopInvoker;
+    dispatch_event(target, event, dom, dom.events(), &mut invoker)
+      .map(|_default_not_prevented| ())
+      .map_err(|err| Error::Other(err.to_string()))
+  }
+
+  fn document_lifecycle_mut(&mut self) -> &mut DocumentLifecycle {
+    &mut self.lifecycle
   }
 }
 
@@ -908,6 +967,7 @@ impl BrowserTab {
   pub(crate) fn on_parsing_completed(&mut self) -> Result<()> {
     let actions = self.host.scheduler.parsing_completed()?;
     self.host.apply_scheduler_actions(actions, &mut self.event_loop)?;
+    self.host.lifecycle.parsing_completed(&mut self.event_loop)?;
     Ok(())
   }
 

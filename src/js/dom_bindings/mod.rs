@@ -2216,6 +2216,22 @@ fn install_constructors(
 
   // Document.prototype
   {
+    // `document.readyState`
+    let dom_for_ready_state = dom.clone();
+    let platform_objects_for_ready_state = platform_objects.clone();
+    let ready_state_get = rt.alloc_function_value(move |rt, this, _args| {
+      let _doc_id = extract_document_id(rt, &platform_objects_for_ready_state, this)?;
+      let state = dom_for_ready_state.borrow().ready_state().as_str();
+      rt.alloc_string_value(state)
+    })?;
+    define_accessor(
+      rt,
+      prototypes.document,
+      "readyState",
+      ready_state_get,
+      Value::Undefined,
+    )?;
+
     let dom_for_create_element = dom.clone();
     let platform_objects_for_create_element = platform_objects.clone();
     let node_wrapper_cache_for_create_element = node_wrapper_cache.clone();

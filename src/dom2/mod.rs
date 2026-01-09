@@ -1,5 +1,6 @@
 use crate::dom::HTML_NAMESPACE;
 use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
+use crate::web::dom::DocumentReadyState;
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
 use crate::web::dom::DomException;
 use crate::web::events as web_events;
@@ -110,6 +111,7 @@ pub struct Node {
 pub struct Document {
   nodes: Vec<Node>,
   root: NodeId,
+  ready_state: DocumentReadyState,
   events: web_events::EventListenerRegistry,
   scripting_enabled: bool,
 }
@@ -119,6 +121,7 @@ impl Clone for Document {
     Self {
       nodes: self.nodes.clone(),
       root: self.root,
+      ready_state: self.ready_state,
       // Cloning a DOM tree should not implicitly clone active event listeners. Start with an empty
       // registry so callers can snapshot structure without inheriting the old event graph.
       events: web_events::EventListenerRegistry::new(),
@@ -232,6 +235,7 @@ impl Document {
     Self {
       nodes: self.nodes.clone(),
       root: self.root,
+      ready_state: self.ready_state,
       events: self.events.clone(),
       scripting_enabled: self.scripting_enabled,
     }
@@ -293,6 +297,7 @@ impl Document {
     let mut doc = Self {
       nodes: Vec::new(),
       root: NodeId(0),
+      ready_state: DocumentReadyState::Loading,
       events: web_events::EventListenerRegistry::new(),
       scripting_enabled,
     };
@@ -312,6 +317,14 @@ impl Document {
 
   pub fn root(&self) -> NodeId {
     self.root
+  }
+
+  pub fn ready_state(&self) -> DocumentReadyState {
+    self.ready_state
+  }
+
+  pub fn set_ready_state(&mut self, state: DocumentReadyState) {
+    self.ready_state = state;
   }
 
   pub fn events(&self) -> &web_events::EventListenerRegistry {

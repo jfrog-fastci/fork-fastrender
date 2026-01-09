@@ -25,6 +25,7 @@ pub mod dom_bindings_context;
 pub mod events;
 pub mod ecma_embed;
 pub mod ecma_vm_runtime;
+pub mod document_lifecycle;
 pub mod event_loop;
 pub mod ecma_microtasks;
 pub mod host_document;
@@ -65,6 +66,8 @@ pub use dom_host::DomHost;
 pub use clock::{Clock, RealClock, VirtualClock};
 pub use events::{JsDomEvents, JsFunctionHandle};
 pub use ecma_vm_runtime::{EcmaVmRuntime, EcmaVmRuntimeConfig};
+pub use document_lifecycle::{DocumentLifecycle, DocumentLifecycleHost};
+pub use crate::web::dom::DocumentReadyState;
 pub use event_loop::{
   AnimationFrameId, EventLoop, QueueLimits, RunAnimationFrameOutcome, RunLimits, RunUntilIdleOutcome,
   RunUntilIdleStopReason, SpinOutcome, Task, TaskSource, TimerId,
