@@ -559,12 +559,12 @@ struct DomNodeState {
   attributes: HashMap<String, GcString>,
   /// Serialized character data for this node.
   ///
-  /// For `Text` nodes this stores the node's `data`.
+  /// For `Text` nodes, this stores the node's `data`/`nodeValue`.
   ///
-  /// For element nodes this is also used as a lightweight representation for cases where the shim
-  /// chooses not to allocate an explicit `Text` child (e.g. `innerHTML = "hello"`). This keeps the
-  /// DOM surface small while still supporting serialization (`innerHTML`/`outerHTML`) and
-  /// `textContent`.
+  /// For element nodes, this may be used as a fallback when the DOM shim chooses to treat markup as
+  /// literal text (e.g. unsupported `innerHTML` fragments). In the common cases covered by the
+  /// curated smoke corpus we allocate explicit `Text` child nodes so `childNodes` matches browser
+  /// semantics.
   text_content: Option<String>,
   parent: Option<GcObject>,
   children: Vec<GcObject>,
@@ -1012,7 +1012,7 @@ impl JsWptRuntime {
     self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
     self.define_data_prop(node_proto, replace_child_key, Value::Object(replace_child))?;
 
-    // Accessors.
+    // Basic Node accessors used by the offline WPT corpus.
     let text_content_get = self.alloc_native_function(native_node_get_text_content)?;
     let text_content_set = self.alloc_native_function(native_node_set_text_content)?;
     let owner_document_get = self.alloc_native_function(native_node_get_owner_document)?;
@@ -1030,7 +1030,6 @@ impl JsWptRuntime {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("isConnected")?)
     };
-
     self.define_accessor_prop(
       node_proto,
       text_content_key,
@@ -1399,6 +1398,10 @@ impl JsWptRuntime {
       PropertyKey::from_string(scope.alloc_string("Text")?)
     };
     self.define_data_prop(self.global_object, text_key, Value::Object(text_ctor))?;
+
+    let text_ctor = self.alloc_native_function(native_illegal_dom_constructor)?;
+    self.define_data_prop(text_ctor, prototype_key, Value::Object(text_proto))?;
+    self.env.set("Text", Value::Object(text_ctor));
 
     // Expose `window.document` and `window.location` for harness code that expects them.
     let document_key = {
@@ -1870,17 +1873,13 @@ impl JsWptRuntime {
       PropertyKey::from_string(scope.alloc_string("nodeValue")?)
     };
     let text_node_name = self.alloc_string_value("#text")?;
-    let node_value = self.alloc_string_value(data)?;
+    let text_node_value = self.alloc_string_value(data)?;
     self.define_data_prop(obj, node_type_key, Value::Number(3.0))?;
     self.define_data_prop(obj, node_name_key, text_node_name)?;
-    self.define_data_prop(obj, node_value_key, node_value)?;
+    // Keep nodeValue in sync with `data` for the minimal harness.
+    self.define_data_prop(obj, node_value_key, text_node_value)?;
 
-    let parent_node_key = {
-      let mut scope = self.heap.scope();
-      PropertyKey::from_string(scope.alloc_string("parentNode")?)
-    };
-    self.define_data_prop(obj, parent_node_key, Value::Null)?;
-
+    // Like other DOM nodes, text nodes participate in event dispatch paths, but start detached.
     self.event_targets.insert(
       obj,
       EventTargetState {
@@ -1889,20 +1888,25 @@ impl JsWptRuntime {
       },
     );
 
+    let parent_node_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+    self.define_data_prop(obj, parent_node_key, Value::Null)?;
+
     self.dom_nodes.insert(
       obj,
       DomNodeState {
         kind: DomNodeKind::Text,
         tag_name: String::new(),
         attributes: HashMap::new(),
-        text_content: Some(data.to_string()),
+        text_content: if data.is_empty() { None } else { Some(data.to_string()) },
         parent: None,
         children: Vec::new(),
         template_content: Vec::new(),
         child_nodes: None,
       },
     );
-
     self.update_dom_child_nodes(obj)?;
     Ok(obj)
   }
@@ -3778,7 +3782,7 @@ fn native_document_create_element(
       "TypeError: createElement called on non-object",
     )?)));
   };
-  if !rt.event_targets.contains_key(&document) {
+  if !matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == document) {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
       "TypeError: createElement called on non-document",
     )?)));
@@ -3800,7 +3804,7 @@ fn native_document_create_document_fragment(
       "TypeError: createDocumentFragment called on non-object",
     )?)));
   };
-  if !rt.event_targets.contains_key(&document) {
+  if !matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == document) {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
       "TypeError: createDocumentFragment called on non-document",
     )?)));
@@ -3820,16 +3824,15 @@ fn native_document_create_text_node(
       "TypeError: createTextNode called on non-object",
     )?)));
   };
-  if !rt.event_targets.contains_key(&document) {
+  if !matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == document) {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
       "TypeError: createTextNode called on non-document",
     )?)));
   }
 
-  let data_value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let data = string_from_value(rt, data_value)?;
-  let node = rt.alloc_dom_text_node(&data)?;
-  Ok(Value::Object(node))
+  let data = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+  let text = rt.alloc_dom_text_node(&data)?;
+  Ok(Value::Object(text))
 }
 
 fn native_document_get_element_by_id(
@@ -3993,6 +3996,7 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
         }
 
         if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          state.text_content = None;
           if parent_is_template {
             state.template_content.push(moved);
           } else {
@@ -4047,6 +4051,7 @@ fn native_node_append_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) 
     }
 
     if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+      state.text_content = None;
       if parent_is_template {
         state.template_content.push(child);
       } else {
@@ -4152,6 +4157,7 @@ fn native_node_insert_before(rt: &mut JsWptRuntime, this: Value, args: &[Value])
         }
 
         if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          state.text_content = None;
           if parent_is_template {
             state.template_content.insert(insert_idx + offset, moved);
           } else {
@@ -4256,6 +4262,7 @@ fn native_node_insert_before(rt: &mut JsWptRuntime, this: Value, args: &[Value])
     }
 
     if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+      state.text_content = None;
       if parent_is_template {
         state.template_content.insert(insert_idx, child);
       } else {
@@ -4379,6 +4386,7 @@ fn native_node_replace_child(rt: &mut JsWptRuntime, this: Value, args: &[Value])
         }
 
         if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+          state.text_content = None;
           if parent_is_template {
             state.template_content.insert(replace_idx + offset, moved);
           } else {
@@ -4456,6 +4464,7 @@ fn native_node_replace_child(rt: &mut JsWptRuntime, this: Value, args: &[Value])
 
     // Replace the old child in-place.
     if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+      state.text_content = None;
       if parent_is_template {
         if replace_idx < state.template_content.len() {
           state.template_content[replace_idx] = new_child;
@@ -4491,200 +4500,6 @@ fn native_node_replace_child(rt: &mut JsWptRuntime, this: Value, args: &[Value])
   }
 
   Ok(Value::Object(old_child))
-}
-
-fn native_node_get_owner_document(
-  rt: &mut JsWptRuntime,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "ownerDocument")?;
-  let Some(Value::Object(document)) = rt.env.get("document") else {
-    return Ok(Value::Null);
-  };
-  if node == document {
-    return Ok(Value::Null);
-  }
-  Ok(Value::Object(document))
-}
-
-fn native_node_get_is_connected(
-  rt: &mut JsWptRuntime,
-  this: Value,
-  _args: &[Value],
-) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "isConnected")?;
-  let Some(Value::Object(document)) = rt.env.get("document") else {
-    return Ok(Value::Bool(false));
-  };
-  if node == document {
-    return Ok(Value::Bool(true));
-  }
-
-  let mut current = Some(node);
-  while let Some(obj) = current {
-    if obj == document {
-      return Ok(Value::Bool(true));
-    }
-    current = rt.dom_nodes.get(&obj).and_then(|state| state.parent);
-  }
-  Ok(Value::Bool(false))
-}
-
-fn dom_collect_text_content(rt: &JsWptRuntime, node: GcObject, out: &mut String) {
-  let Some(state) = rt.dom_nodes.get(&node) else {
-    return;
-  };
-
-  match state.kind {
-    DomNodeKind::Text => {
-      if let Some(text) = &state.text_content {
-        out.push_str(text);
-      }
-    }
-    DomNodeKind::Element | DomNodeKind::DocumentFragment => {
-      let children = if state.tag_name == "template" {
-        &state.template_content
-      } else {
-        &state.children
-      };
-      if !children.is_empty() {
-        for &child in children {
-          dom_collect_text_content(rt, child, out);
-        }
-      } else if let Some(text) = &state.text_content {
-        out.push_str(text);
-      }
-    }
-  }
-}
-
-fn native_node_get_text_content(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "textContent")?;
-
-  // Document.textContent is always null.
-  if matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == node) {
-    return Ok(Value::Null);
-  }
-
-  let mut out = String::new();
-  dom_collect_text_content(rt, node, &mut out);
-  rt.alloc_string_value(&out)
-}
-
-fn native_node_set_text_content(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "textContent")?;
-
-  // Document.textContent setter is a no-op.
-  if matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == node) {
-    return Ok(Value::Undefined);
-  }
-
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let text = match value {
-    Value::Null | Value::Undefined => String::new(),
-    other => string_from_value(rt, other)?,
-  };
-
-  let Some(kind) = rt.dom_nodes.get(&node).map(|s| s.kind) else {
-    return Ok(Value::Undefined);
-  };
-  match kind {
-    DomNodeKind::Text => {
-      if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        state.text_content = Some(text.clone());
-      }
-      let node_value_key = {
-        let mut scope = rt.heap.scope();
-        PropertyKey::from_string(scope.alloc_string("nodeValue")?)
-      };
-      let node_value = rt.alloc_string_value(&text)?;
-      rt.define_data_prop(node, node_value_key, node_value)?;
-      Ok(Value::Undefined)
-    }
-    DomNodeKind::Element | DomNodeKind::DocumentFragment => {
-      // Detach existing children (and clear any element text content).
-      dom_detach_children(rt, node)?;
-
-      if text.is_empty() {
-        return Ok(Value::Undefined);
-      }
-
-      let child = rt.alloc_dom_text_node(&text)?;
-      let parent_tag = rt
-        .dom_nodes
-        .get(&node)
-        .map(|s| s.tag_name.clone())
-        .unwrap_or_default();
-      let parent_is_template = parent_tag == "template";
-
-      if let Some(state) = rt.event_targets.get_mut(&child) {
-        state.parent = Some(node);
-      }
-      if let Some(state) = rt.dom_nodes.get_mut(&child) {
-        state.parent = Some(node);
-      }
-      if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        if parent_is_template {
-          state.template_content.push(child);
-        } else {
-          state.children.push(child);
-        }
-      }
-      let parent_node_key = {
-        let mut scope = rt.heap.scope();
-        PropertyKey::from_string(scope.alloc_string("parentNode")?)
-      };
-      rt.define_data_prop(child, parent_node_key, Value::Object(node))?;
-
-      rt.update_dom_child_nodes(node)?;
-      Ok(Value::Undefined)
-    }
-  }
-}
-
-fn native_text_get_data(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "data")?;
-  let Some(state) = rt.dom_nodes.get(&node) else {
-    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
-      "TypeError: data called on unsupported Node",
-    )?)));
-  };
-  if state.kind != DomNodeKind::Text {
-    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
-      "TypeError: data called on non-Text",
-    )?)));
-  }
-  let text = state.text_content.clone().unwrap_or_default();
-  rt.alloc_string_value(&text)
-}
-
-fn native_text_set_data(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
-  let node = dom_require_node(rt, this, "data")?;
-  let Some(state) = rt.dom_nodes.get(&node) else {
-    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
-      "TypeError: data called on unsupported Node",
-    )?)));
-  };
-  if state.kind != DomNodeKind::Text {
-    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
-      "TypeError: data called on non-Text",
-    )?)));
-  }
-
-  let value = args.get(0).copied().unwrap_or(Value::Undefined);
-  let data = string_from_value(rt, value)?;
-  if let Some(state) = rt.dom_nodes.get_mut(&node) {
-    state.text_content = Some(data.clone());
-  }
-
-  let node_value_key = {
-    let mut scope = rt.heap.scope();
-    PropertyKey::from_string(scope.alloc_string("nodeValue")?)
-  };
-  let node_value = rt.alloc_string_value(&data)?;
-  rt.define_data_prop(node, node_value_key, node_value)?;
-  Ok(Value::Undefined)
 }
 
 fn native_node_contains(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
@@ -4753,6 +4568,183 @@ fn native_node_remove(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Re
   Ok(Value::Undefined)
 }
 
+fn dom_collect_text_content(rt: &JsWptRuntime, node: GcObject, out: &mut String) {
+  let Some(state) = rt.dom_nodes.get(&node) else {
+    return;
+  };
+
+  match state.kind {
+    DomNodeKind::Text => {
+      if let Some(text) = &state.text_content {
+        out.push_str(text);
+      }
+    }
+    DomNodeKind::DocumentFragment => {
+      for &child in dom_element_children_for_serialization(state) {
+        dom_collect_text_content(rt, child, out);
+      }
+    }
+    DomNodeKind::Element => {
+      let children = dom_element_children_for_serialization(state);
+      if !children.is_empty() {
+        for &child in children {
+          dom_collect_text_content(rt, child, out);
+        }
+      } else if let Some(text) = &state.text_content {
+        out.push_str(text);
+      }
+    }
+  }
+}
+
+fn native_node_get_text_content(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "textContent")?;
+  let document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "document global missing",
+      )))
+    }
+  };
+
+  if node == document {
+    return Ok(Value::Null);
+  }
+
+  let mut out = String::new();
+  dom_collect_text_content(rt, node, &mut out);
+  rt.alloc_string_value(&out)
+}
+
+fn native_node_set_text_content(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "textContent")?;
+  let document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "document global missing",
+      )))
+    }
+  };
+
+  // Spec-ish: treat null as the empty string; otherwise use ToString.
+  let raw_value = args.get(0).copied().unwrap_or(Value::Undefined);
+  let text = match raw_value {
+    Value::Null => String::new(),
+    v => string_from_value(rt, v)?,
+  };
+
+  // Document.textContent is null and ignores writes.
+  if node == document {
+    return Ok(Value::Undefined);
+  }
+
+  // Text node: update its data in-place.
+  if let Some(state) = rt.dom_nodes.get(&node) {
+    if state.kind == DomNodeKind::Text {
+      if let Some(state) = rt.dom_nodes.get_mut(&node) {
+        state.text_content = if text.is_empty() { None } else { Some(text.clone()) };
+      }
+      let node_value_key = {
+        let mut scope = rt.heap.scope();
+        PropertyKey::from_string(scope.alloc_string("nodeValue")?)
+      };
+      let node_value = rt.alloc_string_value(&text)?;
+      rt.define_data_prop(node, node_value_key, node_value)?;
+      return Ok(Value::Undefined);
+    }
+  }
+
+  // Elements / fragments: clear children and replace with a single text node.
+  dom_detach_children(rt, node)?;
+  if !text.is_empty() && rt.dom_nodes.contains_key(&node) {
+    let parent_tag = rt
+      .dom_nodes
+      .get(&node)
+      .map(|s| s.tag_name.clone())
+      .unwrap_or_default();
+    let parent_is_template = parent_tag == "template";
+    let parent_node_key = {
+      let mut scope = rt.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("parentNode")?)
+    };
+
+    let text_node = rt.alloc_dom_text_node(&text)?;
+    if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
+      state.parent = Some(node);
+    }
+    if let Some(et) = rt.event_targets.get_mut(&text_node) {
+      et.parent = Some(node);
+    }
+    rt.define_data_prop(text_node, parent_node_key, Value::Object(node))?;
+
+    if let Some(state) = rt.dom_nodes.get_mut(&node) {
+      if parent_is_template {
+        state.template_content.push(text_node);
+      } else {
+        state.children.push(text_node);
+      }
+    }
+    rt.update_dom_child_nodes(node)?;
+  }
+  Ok(Value::Undefined)
+}
+
+fn native_node_get_owner_document(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "ownerDocument")?;
+  let document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "document global missing",
+      )))
+    }
+  };
+
+  if node == document {
+    return Ok(Value::Null);
+  }
+  Ok(Value::Object(document))
+}
+
+fn native_node_get_is_connected(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "isConnected")?;
+  let document = match rt.env.get("document") {
+    Some(Value::Object(doc)) => doc,
+    _ => {
+      return Err(JsError::Vm(VmError::Unimplemented(
+        "document global missing",
+      )))
+    }
+  };
+
+  if node == document {
+    return Ok(Value::Bool(true));
+  }
+
+  let mut current = Some(node);
+  while let Some(cur) = current {
+    if cur == document {
+      return Ok(Value::Bool(true));
+    }
+    current = dom_parent_for_contains(rt, cur);
+  }
+  Ok(Value::Bool(false))
+}
+
 fn native_node_has_child_nodes(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -4769,7 +4761,13 @@ fn native_node_has_child_nodes(
   let Some(state) = rt.dom_nodes.get(&node) else {
     return Ok(Value::Bool(false));
   };
-  Ok(Value::Bool(!state.children.is_empty()))
+  Ok(Value::Bool(match state.kind {
+    DomNodeKind::Text => false,
+    DomNodeKind::DocumentFragment => !state.children.is_empty(),
+    DomNodeKind::Element => {
+      !dom_element_children_for_serialization(state).is_empty() || state.text_content.is_some()
+    }
+  }))
 }
 
 fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
@@ -5352,7 +5350,11 @@ fn dom_require_element(rt: &mut JsWptRuntime, value: Value, method: &str) -> Res
       "TypeError: {method} called on non-Element"
     ))?)));
   };
-  if !rt.dom_nodes.contains_key(&obj) {
+  if !rt
+    .dom_nodes
+    .get(&obj)
+    .is_some_and(|state| state.kind == DomNodeKind::Element)
+  {
     return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
       "TypeError: {method} called on non-Element"
     ))?)));
@@ -5523,12 +5525,17 @@ fn dom_subtree_preorder(rt: &JsWptRuntime, root: GcObject) -> Vec<GcObject> {
 
 fn native_dom_remove_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
   let parent = dom_require_node(rt, this, "removeChild")?;
-  let child = dom_require_node(rt, args.get(0).copied().unwrap_or(Value::Undefined), "removeChild")?;
+  let child = dom_require_node(
+    rt,
+    args.get(0).copied().unwrap_or(Value::Undefined),
+    "removeChild",
+  )?;
 
-  if !rt.dom_nodes.contains_key(&parent) || !rt.dom_nodes.contains_key(&child) {
-    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(
-      "TypeError: removeChild requires a Node",
-    )?)));
+  if !rt.dom_nodes.contains_key(&parent) {
+    return dom_throw_dom_exception(rt, "NotFoundError");
+  }
+  if !rt.dom_nodes.contains_key(&child) {
+    return dom_throw_dom_exception(rt, "NotFoundError");
   }
 
   let parent_tag = rt
@@ -5555,10 +5562,18 @@ fn native_dom_remove_child(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -
   }
 
   if let Some(state) = rt.dom_nodes.get_mut(&parent) {
-    if parent_is_template {
-      state.template_content.retain(|&c| c != child);
-    } else {
-      state.children.retain(|&c| c != child);
+    match state.kind {
+      DomNodeKind::Text => return dom_throw_dom_exception(rt, "NotFoundError"),
+      DomNodeKind::DocumentFragment => {
+        state.children.retain(|&c| c != child);
+      }
+      DomNodeKind::Element => {
+        if state.tag_name == "template" {
+          state.template_content.retain(|&c| c != child);
+        } else {
+          state.children.retain(|&c| c != child);
+        }
+      }
     }
   }
   if let Some(state) = rt.dom_nodes.get_mut(&child) {
@@ -5609,6 +5624,24 @@ fn dom_require_node(rt: &mut JsWptRuntime, value: Value, method: &str) -> Result
   }
   Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
     "TypeError: {method} called on non-Node"
+  ))?)))
+}
+
+fn dom_require_text(rt: &mut JsWptRuntime, value: Value, method: &str) -> Result<GcObject, JsError> {
+  let Value::Object(obj) = value else {
+    return Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+      "TypeError: {method} called on non-Text"
+    ))?)));
+  };
+  let is_text = rt
+    .dom_nodes
+    .get(&obj)
+    .is_some_and(|state| state.kind == DomNodeKind::Text);
+  if is_text {
+    return Ok(obj);
+  }
+  Err(JsError::Vm(VmError::Throw(rt.alloc_string_value(&format!(
+    "TypeError: {method} called on non-Text"
   ))?)))
 }
 
@@ -5760,38 +5793,124 @@ fn dom_serialize_node(rt: &JsWptRuntime, node: GcObject, out: &mut String) -> Re
   }
 }
 
-fn dom_parse_simple_element_list(html: &str) -> Result<Option<Vec<(String, String)>>, ()> {
+#[derive(Debug)]
+struct DomParsedSimpleElement {
+  tag: String,
+  attrs: Vec<(String, String)>,
+  text: String,
+}
+
+fn dom_parse_simple_element_list(html: &str) -> Result<Option<Vec<DomParsedSimpleElement>>, ()> {
   if !html.as_bytes().contains(&b'<') {
     return Ok(None);
   }
 
-  let mut out = Vec::new();
+  let mut out = Vec::<DomParsedSimpleElement>::new();
   let mut pos = 0usize;
   while pos < html.len() {
     if html.as_bytes()[pos] != b'<' {
       return Ok(None);
     }
-    // `<tag>`
+
+    // `<tag [attr="value"...]>`
     let open_end_rel = html[pos..].find('>').ok_or(())?;
     let open_end = pos + open_end_rel;
     if open_end <= pos + 1 {
       return Ok(None);
     }
-    let tag = &html[pos + 1..open_end];
-    if tag.starts_with('/') {
+    let open_tag = &html[pos + 1..open_end];
+    if open_tag.starts_with('/') {
       return Ok(None);
     }
-    if !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+
+    // Parse the tag name.
+    let bytes = open_tag.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() && (bytes[idx] as char).is_ascii_alphanumeric() {
+      idx += 1;
+    }
+    if idx == 0 {
       return Ok(None);
     }
+    let tag_raw = &open_tag[..idx];
+    let tag = tag_raw.to_ascii_lowercase();
+
+    // Parse attributes (very small subset: `name[="value"]`).
+    let mut attrs = Vec::<(String, String)>::new();
+    let mut rest_pos = idx;
+    while rest_pos < bytes.len() {
+      while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
+        rest_pos += 1;
+      }
+      if rest_pos >= bytes.len() {
+        break;
+      }
+
+      let name_start = rest_pos;
+      while rest_pos < bytes.len() {
+        let c = bytes[rest_pos] as char;
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+          rest_pos += 1;
+        } else {
+          break;
+        }
+      }
+      if rest_pos == name_start {
+        return Ok(None);
+      }
+      let name = open_tag[name_start..rest_pos].to_ascii_lowercase();
+
+      while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
+        rest_pos += 1;
+      }
+
+      let mut value = String::new();
+      if rest_pos < bytes.len() && bytes[rest_pos] == b'=' {
+        rest_pos += 1;
+        while rest_pos < bytes.len() && (bytes[rest_pos] as char).is_ascii_whitespace() {
+          rest_pos += 1;
+        }
+        if rest_pos >= bytes.len() {
+          return Ok(None);
+        }
+
+        match bytes[rest_pos] {
+          b'"' | b'\'' => {
+            let quote = bytes[rest_pos];
+            rest_pos += 1;
+            let val_start = rest_pos;
+            while rest_pos < bytes.len() && bytes[rest_pos] != quote {
+              rest_pos += 1;
+            }
+            if rest_pos >= bytes.len() {
+              return Ok(None);
+            }
+            value = open_tag[val_start..rest_pos].to_string();
+            rest_pos += 1;
+          }
+          _ => {
+            let val_start = rest_pos;
+            while rest_pos < bytes.len() && !(bytes[rest_pos] as char).is_ascii_whitespace() {
+              rest_pos += 1;
+            }
+            value = open_tag[val_start..rest_pos].to_string();
+          }
+        }
+      }
+      attrs.push((name, value));
+    }
+
     pos = open_end + 1;
 
     // `</tag>`
-    let close_seq = format!("</{tag}>");
+    let close_seq = format!("</{tag_raw}>");
     let close_rel = html[pos..].find(&close_seq).ok_or(())?;
     let close_start = pos + close_rel;
     let text = html[pos..close_start].to_string();
-    out.push((tag.to_ascii_lowercase(), text));
+    if text.contains('<') {
+      return Ok(None);
+    }
+    out.push(DomParsedSimpleElement { tag, attrs, text });
     pos = close_start + close_seq.len();
   }
 
@@ -5901,6 +6020,34 @@ fn native_dom_element_set_class_name(
   Ok(Value::Undefined)
 }
 
+fn native_text_get_data(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Result<Value, JsError> {
+  let node = dom_require_text(rt, this, "data")?;
+  let data = rt
+    .dom_nodes
+    .get(&node)
+    .and_then(|s| s.text_content.clone())
+    .unwrap_or_default();
+  rt.alloc_string_value(&data)
+}
+
+fn native_text_set_data(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
+  let node = dom_require_text(rt, this, "data")?;
+  let data = string_from_value(rt, args.get(0).copied().unwrap_or(Value::Undefined))?;
+
+  if let Some(state) = rt.dom_nodes.get_mut(&node) {
+    state.text_content = if data.is_empty() { None } else { Some(data.clone()) };
+  }
+
+  // Keep `nodeValue` in sync with `data`.
+  let node_value_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("nodeValue")?)
+  };
+  let node_value = rt.alloc_string_value(&data)?;
+  rt.define_data_prop(node, node_value_key, node_value)?;
+  Ok(Value::Undefined)
+}
+
 fn native_dom_element_get_inner_html(
   rt: &mut JsWptRuntime,
   this: Value,
@@ -5976,16 +6123,48 @@ fn native_dom_element_set_inner_html(
   };
 
   if let Some(items) = parsed {
-    for (tag, text) in items {
+    for DomParsedSimpleElement { tag, attrs, text } in items {
+      let mut stored_attrs = Vec::<(String, GcString)>::new();
+      for (name, value) in attrs {
+        let Value::String(value_handle) = rt.alloc_string_value(&value)? else {
+          continue;
+        };
+        stored_attrs.push((name, value_handle));
+      }
+
       let node = rt.alloc_dom_element(&tag)?;
+      let node_is_template = tag == "template";
       if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        state.text_content = if text.is_empty() { None } else { Some(text) };
+        for (name, value_handle) in stored_attrs {
+          state.attributes.insert(name, value_handle);
+        }
         state.parent = Some(element);
       }
       if let Some(et) = rt.event_targets.get_mut(&node) {
         et.parent = Some(element);
       }
       rt.define_data_prop(node, parent_node_key, Value::Object(element))?;
+
+      // Model text as an explicit child Text node so `childNodes` matches browser semantics.
+      if !text.is_empty() {
+        let text_node = rt.alloc_dom_text_node(&text)?;
+        if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
+          state.parent = Some(node);
+        }
+        if let Some(et) = rt.event_targets.get_mut(&text_node) {
+          et.parent = Some(node);
+        }
+        rt.define_data_prop(text_node, parent_node_key, Value::Object(node))?;
+        if let Some(state) = rt.dom_nodes.get_mut(&node) {
+          if node_is_template {
+            state.template_content.push(text_node);
+          } else {
+            state.children.push(text_node);
+          }
+        }
+        rt.update_dom_child_nodes(node)?;
+      }
+
       if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
         if parent_is_template {
           parent_state.template_content.push(node);
@@ -5994,8 +6173,23 @@ fn native_dom_element_set_inner_html(
         }
       }
     }
-  } else if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
-    parent_state.text_content = if html.is_empty() { None } else { Some(html) };
+  } else if !html.is_empty() {
+    // For the minimal DOM harness we treat any non-element innerHTML as a single text node.
+    let text_node = rt.alloc_dom_text_node(&html)?;
+    if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
+      state.parent = Some(element);
+    }
+    if let Some(et) = rt.event_targets.get_mut(&text_node) {
+      et.parent = Some(element);
+    }
+    rt.define_data_prop(text_node, parent_node_key, Value::Object(element))?;
+    if let Some(parent_state) = rt.dom_nodes.get_mut(&element) {
+      if parent_is_template {
+        parent_state.template_content.push(text_node);
+      } else {
+        parent_state.children.push(text_node);
+      }
+    }
   }
 
   rt.update_dom_child_nodes(element)?;
@@ -6033,14 +6227,48 @@ fn native_dom_element_set_outer_html(
     .map(|s| s.tag_name.clone())
     .unwrap_or_default();
   let parent_is_template = parent_tag == "template";
+  let parent_node_key = {
+    let mut scope = rt.heap.scope();
+    PropertyKey::from_string(scope.alloc_string("parentNode")?)
+  };
 
   let parsed = dom_parse_simple_element_list(&html).unwrap_or(None);
   let mut new_nodes = Vec::<GcObject>::new();
   if let Some(items) = parsed {
-    for (tag, text) in items {
+    for DomParsedSimpleElement { tag, attrs, text } in items {
+      let mut stored_attrs = Vec::<(String, GcString)>::new();
+      for (name, value) in attrs {
+        let Value::String(value_handle) = rt.alloc_string_value(&value)? else {
+          continue;
+        };
+        stored_attrs.push((name, value_handle));
+      }
+
       let node = rt.alloc_dom_element(&tag)?;
+      let node_is_template = tag == "template";
       if let Some(state) = rt.dom_nodes.get_mut(&node) {
-        state.text_content = if text.is_empty() { None } else { Some(text) };
+        for (name, value_handle) in stored_attrs {
+          state.attributes.insert(name, value_handle);
+        }
+      }
+
+      if !text.is_empty() {
+        let text_node = rt.alloc_dom_text_node(&text)?;
+        if let Some(state) = rt.dom_nodes.get_mut(&text_node) {
+          state.parent = Some(node);
+        }
+        if let Some(et) = rt.event_targets.get_mut(&text_node) {
+          et.parent = Some(node);
+        }
+        rt.define_data_prop(text_node, parent_node_key, Value::Object(node))?;
+        if let Some(state) = rt.dom_nodes.get_mut(&node) {
+          if node_is_template {
+            state.template_content.push(text_node);
+          } else {
+            state.children.push(text_node);
+          }
+        }
+        rt.update_dom_child_nodes(node)?;
       }
       new_nodes.push(node);
     }
@@ -6056,10 +6284,6 @@ fn native_dom_element_set_outer_html(
   if let Some(et) = rt.event_targets.get_mut(&element) {
     et.parent = None;
   }
-  let parent_node_key = {
-    let mut scope = rt.heap.scope();
-    PropertyKey::from_string(scope.alloc_string("parentNode")?)
-  };
   rt.define_data_prop(element, parent_node_key, Value::Null)?;
 
   // Replace in parent's child list.
@@ -6077,6 +6301,7 @@ fn native_dom_element_set_outer_html(
     .ok_or_else(|| JsError::Vm(VmError::TypeError("outerHTML target is not a child of its parent")))?;
 
   if let Some(state) = rt.dom_nodes.get_mut(&parent) {
+    state.text_content = None;
     let list = if parent_is_template {
       &mut state.template_content
     } else {
@@ -6402,6 +6627,7 @@ mod tests {
     };
 
     assert_eq!(get_data_prop(&mut rt, node_ctor, "ELEMENT_NODE"), Value::Number(1.0));
+    assert_eq!(get_data_prop(&mut rt, node_ctor, "TEXT_NODE"), Value::Number(3.0));
     assert_eq!(get_data_prop(&mut rt, node_ctor, "DOCUMENT_NODE"), Value::Number(9.0));
     assert_eq!(
       get_data_prop(&mut rt, node_ctor, "DOCUMENT_FRAGMENT_NODE"),
@@ -6506,6 +6732,57 @@ mod tests {
     assert_eq!(get_data_prop(&mut rt, arr, "1"), Value::Null);
     let outer_html = get_data_prop(&mut rt, arr, "2");
     assert_eq!(rt.value_to_string_lossy(outer_html), "<div></div>");
+  }
+
+  #[test]
+  fn inner_html_populates_child_nodes_including_text() {
+    let mut rt = JsWptRuntime::new("https://example.com/");
+
+    let Value::Object(arr) = rt
+      .exec_script(
+        r#"
+        const el = document.createElement("div");
+        el.innerHTML = '<span id="x" class="y">hi</span>';
+        const span = el.childNodes[0];
+        const text = span.childNodes[0];
+        [
+          span.childNodes.length,
+          text instanceof Text,
+          text.data,
+          text.nodeType,
+          span.firstChild === text,
+          span.lastChild === text,
+          text.previousSibling,
+          text.nextSibling,
+          el.innerHTML,
+          el.outerHTML,
+        ];
+      "#,
+      )
+      .expect("exec script")
+    else {
+      panic!("expected array return value");
+    };
+
+    assert_eq!(get_data_prop(&mut rt, arr, "0"), Value::Number(1.0));
+    assert_eq!(get_data_prop(&mut rt, arr, "1"), Value::Bool(true));
+    let data = get_data_prop(&mut rt, arr, "2");
+    assert_eq!(rt.value_to_string_lossy(data), "hi");
+    assert_eq!(get_data_prop(&mut rt, arr, "3"), Value::Number(3.0));
+    assert_eq!(get_data_prop(&mut rt, arr, "4"), Value::Bool(true));
+    assert_eq!(get_data_prop(&mut rt, arr, "5"), Value::Bool(true));
+    assert_eq!(get_data_prop(&mut rt, arr, "6"), Value::Null);
+    assert_eq!(get_data_prop(&mut rt, arr, "7"), Value::Null);
+    let inner_html = get_data_prop(&mut rt, arr, "8");
+    let outer_html = get_data_prop(&mut rt, arr, "9");
+    assert_eq!(
+      rt.value_to_string_lossy(inner_html),
+      r#"<span id="x" class="y">hi</span>"#
+    );
+    assert_eq!(
+      rt.value_to_string_lossy(outer_html),
+      r#"<div><span id="x" class="y">hi</span></div>"#
+    );
   }
 
   #[test]
