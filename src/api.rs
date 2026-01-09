@@ -2165,6 +2165,22 @@ impl PreparedDocument {
   /// snap), and can be used by UIs to synchronize their scroll position model with the rendered
   /// output.
   pub fn paint_with_options_frame(&self, options: PreparedPaintOptions) -> Result<PaintedFrame> {
+    self.paint_with_options_frame_internal(options, None)
+  }
+
+  pub(crate) fn paint_with_options_frame_with_animation_state_store(
+    &self,
+    options: PreparedPaintOptions,
+    animation_state_store: &mut animation::AnimationStateStore,
+  ) -> Result<PaintedFrame> {
+    self.paint_with_options_frame_internal(options, Some(animation_state_store))
+  }
+
+  fn paint_with_options_frame_internal(
+    &self,
+    options: PreparedPaintOptions,
+    animation_state_store: Option<&mut animation::AnimationStateStore>,
+  ) -> Result<PaintedFrame> {
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
       if let Some((w, h)) = options.viewport {
         if w == 0 || h == 0 {
@@ -2182,6 +2198,7 @@ impl PreparedDocument {
         .clone()
         .unwrap_or_else(|| self.default_scroll.clone());
       let animation_time = options.animation_time.or(self.animation_time);
+      let mut animation_state_store = animation_state_store;
       paint_fragment_tree_with_state(
         self.fragment_tree.clone(),
         scroll_state,
@@ -2193,6 +2210,7 @@ impl PreparedDocument {
         animation_time,
         self.paint_parallelism,
         self.max_iframe_depth,
+        animation_state_store.as_deref_mut(),
       )
     })
   }
@@ -4796,6 +4814,7 @@ fn paint_fragment_tree_with_state(
   animation_time: Option<f32>,
   paint_parallelism: PaintParallelism,
   max_iframe_depth: usize,
+  mut animation_state_store: Option<&mut animation::AnimationStateStore>,
 ) -> Result<PaintedFrame> {
   let expand_full_page = runtime::runtime_toggles().truthy("FASTR_FULL_PAGE");
 
@@ -4830,7 +4849,13 @@ fn paint_fragment_tree_with_state(
     animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
   }
   let animation_duration = animation_time_ms_to_duration(animation_time);
-  animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
+  if let (Some(duration), Some(store)) =
+    (animation_duration, animation_state_store.as_deref_mut())
+  {
+    animation::apply_animations_with_state(&mut fragment_tree, &scroll_state, duration, store);
+  } else {
+    animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
+  }
 
   let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
   let viewport_height_px = viewport_size.height.max(1.0).ceil() as u32;

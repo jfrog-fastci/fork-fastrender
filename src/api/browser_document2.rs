@@ -2,11 +2,14 @@ use crate::dom::DomNode;
 use crate::dom2::{Document, RendererDomSnapshot};
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
+use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::animation::TransitionState;
 
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Mutable, multi-frame renderer backed by a `dom2` live DOM tree.
 ///
@@ -20,6 +23,10 @@ pub struct BrowserDocument2 {
   options: RenderOptions,
   prepared: Option<PreparedDocument>,
   last_dom_mapping: Option<RendererDomSnapshot>,
+  animation_clock: Arc<dyn Clock>,
+  realtime_animations_enabled: bool,
+  animation_timeline_origin: Option<Duration>,
+  animation_state_store: crate::animation::AnimationStateStore,
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
@@ -37,6 +44,10 @@ impl BrowserDocument2 {
       options,
       prepared: None,
       last_dom_mapping: None,
+      animation_clock: Arc::new(RealClock::default()),
+      realtime_animations_enabled: false,
+      animation_timeline_origin: None,
+      animation_state_store: crate::animation::AnimationStateStore::default(),
       // First frame needs a full pipeline run.
       style_dirty: true,
       layout_dirty: true,
@@ -65,12 +76,41 @@ impl BrowserDocument2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.animation_timeline_origin = None;
+    self.animation_state_store = crate::animation::AnimationStateStore::default();
 
     Ok(super::BrowserNavigationReport {
       diagnostics,
       final_url,
       base_url,
     })
+  }
+
+  /// Overrides the clock used for real-time animation sampling.
+  ///
+  /// Changing the clock resets the document timeline origin so the next painted frame samples at
+  /// ~0ms.
+  pub fn set_animation_clock(&mut self, clock: Arc<dyn Clock>) {
+    self.animation_clock = clock;
+    self.animation_timeline_origin = None;
+    self.animation_state_store = crate::animation::AnimationStateStore::default();
+    self.paint_dirty = true;
+  }
+
+  /// Enables/disables real-time sampling of time-based animations.
+  ///
+  /// When enabled and no explicit `RenderOptions.animation_time` override is present, each paint
+  /// samples the document timeline based on the configured [`Clock`]. The origin is lazily
+  /// initialized so the first frame after enabling starts at ~0ms.
+  pub fn set_realtime_animations_enabled(&mut self, enabled: bool) {
+    if enabled && !self.realtime_animations_enabled {
+      self.animation_timeline_origin = None;
+      self.animation_state_store = crate::animation::AnimationStateStore::default();
+    }
+    if enabled != self.realtime_animations_enabled {
+      self.paint_dirty = true;
+    }
+    self.realtime_animations_enabled = enabled;
   }
 
   /// Returns an immutable reference to the live `dom2` document.
@@ -139,6 +179,8 @@ impl BrowserDocument2 {
       self.invalidate_all();
     }
 
+    let resolved_animation_time = self.resolve_animation_time_ms();
+
     let needs_layout = self.style_dirty || self.layout_dirty;
     if needs_layout {
       let prev_prepared = self.prepared.take();
@@ -152,7 +194,7 @@ impl BrowserDocument2 {
         }
       };
 
-      let now_ms = super::sanitize_animation_time_ms(self.options.animation_time);
+      let now_ms = resolved_animation_time;
       match now_ms {
         None => {
           prepared.fragment_tree.transition_state = None;
@@ -177,7 +219,9 @@ impl BrowserDocument2 {
       self.last_dom_mapping = Some(snapshot);
     }
 
-    let pixmap = self.paint_from_cache_with_deadline(None)?;
+    let frame =
+      self.paint_from_cache_frame_with_deadline_and_animation_time(None, resolved_animation_time)?;
+    let pixmap = frame.pixmap;
 
     // Clear flags only when a render was requested due to invalidation.
     if self.is_dirty() {
@@ -210,6 +254,15 @@ impl BrowserDocument2 {
     &mut self,
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
+    let animation_time = self.resolve_animation_time_ms();
+    self.paint_from_cache_frame_with_deadline_and_animation_time(deadline, animation_time)
+  }
+
+  fn paint_from_cache_frame_with_deadline_and_animation_time(
+    &mut self,
+    deadline: Option<&crate::render_control::RenderDeadline>,
+    animation_time: Option<f32>,
+  ) -> Result<super::PaintedFrame> {
     let Some(prepared) = self.prepared.as_ref() else {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocument2 has no cached layout; call render_frame() first".to_string(),
@@ -232,12 +285,21 @@ impl BrowserDocument2 {
       Point::new(self.options.scroll_x, self.options.scroll_y),
       self.options.element_scroll_offsets.clone(),
     );
-    let frame = prepared.paint_with_options_frame(PreparedPaintOptions {
+    let paint_options = PreparedPaintOptions {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
-      animation_time: self.options.animation_time,
-    })?;
+      animation_time,
+    };
+
+    let frame = if animation_time.is_some() {
+      prepared.paint_with_options_frame_with_animation_state_store(
+        paint_options,
+        &mut self.animation_state_store,
+      )?
+    } else {
+      prepared.paint_with_options_frame(paint_options)?
+    };
 
     self.options.scroll_x = frame.scroll_state.viewport.x;
     self.options.scroll_y = frame.scroll_state.viewport.y;
@@ -252,6 +314,22 @@ impl BrowserDocument2 {
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::Pixmap> {
     Ok(self.paint_from_cache_frame_with_deadline(deadline)?.pixmap)
+  }
+
+  fn resolve_animation_time_ms(&mut self) -> Option<f32> {
+    let manual = super::sanitize_animation_time_ms(self.options.animation_time);
+    if manual.is_some() {
+      return manual;
+    }
+    if !self.realtime_animations_enabled {
+      return None;
+    }
+
+    let now = self.animation_clock.now();
+    let origin = *self.animation_timeline_origin.get_or_insert(now);
+    let elapsed = now.checked_sub(origin).unwrap_or(Duration::ZERO);
+    let time_ms = (elapsed.as_secs_f64() * 1000.0).min(f32::MAX as f64) as f32;
+    Some(time_ms)
   }
 
   fn prepare_dom_with_options(&mut self, dom: &DomNode) -> Result<PreparedDocument> {
@@ -305,5 +383,139 @@ impl BrowserDocument2 {
   #[inline]
   fn is_dirty(&self) -> bool {
     self.style_dirty || self.layout_dirty || self.paint_dirty
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::js::clock::VirtualClock;
+  use std::sync::Once;
+
+  static INIT_ENV: Once = Once::new();
+
+  fn ensure_test_env() {
+    INIT_ENV.call_once(|| {
+      // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
+      // can exceed sandbox thread budgets and cause the global pool init to fail.
+      if std::env::var("RAYON_NUM_THREADS").is_err() {
+        std::env::set_var("RAYON_NUM_THREADS", "1");
+      }
+    });
+  }
+
+  fn pixel(pixmap: &super::super::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+    let px = pixmap.pixel(x, y).unwrap();
+    (px.red(), px.green(), px.blue(), px.alpha())
+  }
+
+  fn fixture_html() -> &'static str {
+    r#"
+      <style>
+        html, body { margin: 0; background: rgb(0, 0, 0); }
+        #box {
+          width: 1px;
+          height: 1px;
+          background: rgb(255, 0, 0);
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+      </style>
+      <div id="box"></div>
+    "#
+  }
+
+  #[test]
+  fn realtime_animation_sampling_progresses_with_virtual_clock() -> Result<()> {
+    ensure_test_env();
+    let mut doc =
+      BrowserDocument2::from_html(fixture_html(), RenderOptions::new().with_viewport(2, 2))?;
+
+    let clock = Arc::new(VirtualClock::new());
+    doc.set_animation_clock(clock.clone());
+    doc.set_realtime_animations_enabled(true);
+
+    let pixmap_0 = doc.render_frame()?;
+    assert_eq!(pixel(&pixmap_0, 0, 0), (0, 0, 0, 255));
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap_500 = doc.render_frame()?;
+    let (r, g, b, a) = pixel(&pixmap_500, 0, 0);
+    assert!(
+      (120..=135).contains(&r),
+      "expected ~50% blended red at 500ms, got rgba=({r},{g},{b},{a})"
+    );
+    assert_eq!((g, b, a), (0, 0, 255));
+
+    Ok(())
+  }
+
+  #[test]
+  fn realtime_animation_play_state_pauses_and_resumes_across_frames() -> Result<()> {
+    ensure_test_env();
+    let mut doc =
+      BrowserDocument2::from_html(fixture_html(), RenderOptions::new().with_viewport(2, 2))?;
+
+    let clock = Arc::new(VirtualClock::new());
+    doc.set_animation_clock(clock.clone());
+    doc.set_realtime_animations_enabled(true);
+
+    let box_id = doc
+      .dom_mut()
+      .query_selector("#box", None)
+      .unwrap()
+      .expect("fixture box element");
+
+    let _ = doc.render_frame()?;
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap_mid = doc.render_frame()?;
+    let (mid_r, mid_g, mid_b, mid_a) = pixel(&pixmap_mid, 0, 0);
+    assert!(
+      (120..=135).contains(&mid_r),
+      "expected ~50% blended red at 500ms, got rgba=({mid_r},{mid_g},{mid_b},{mid_a})"
+    );
+
+    {
+      let dom = doc.dom_mut();
+      dom
+        .set_attribute(box_id, "style", "animation-play-state: paused;")
+        .unwrap();
+    }
+
+    let pixmap_paused = doc.render_frame()?;
+    let (paused_r, paused_g, paused_b, paused_a) = pixel(&pixmap_paused, 0, 0);
+    assert!(
+      (120..=135).contains(&paused_r),
+      "expected paused animation to hold at ~50% opacity, got rgba=({paused_r},{paused_g},{paused_b},{paused_a})"
+    );
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap_paused_late = doc.render_frame()?;
+    let (paused_r, paused_g, paused_b, paused_a) = pixel(&pixmap_paused_late, 0, 0);
+    assert!(
+      (120..=135).contains(&paused_r),
+      "expected paused animation to hold at ~50% opacity, got rgba=({paused_r},{paused_g},{paused_b},{paused_a})"
+    );
+
+    {
+      let dom = doc.dom_mut();
+      dom
+        .set_attribute(box_id, "style", "animation-play-state: running;")
+        .unwrap();
+    }
+
+    let pixmap_resumed = doc.render_frame()?;
+    let (resumed_r, resumed_g, resumed_b, resumed_a) = pixel(&pixmap_resumed, 0, 0);
+    assert!(
+      (120..=135).contains(&resumed_r),
+      "expected resumed animation to continue from ~50% opacity, got rgba=({resumed_r},{resumed_g},{resumed_b},{resumed_a})"
+    );
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap_end = doc.render_frame()?;
+    assert_eq!(pixel(&pixmap_end, 0, 0), (255, 0, 0, 255));
+
+    Ok(())
   }
 }
