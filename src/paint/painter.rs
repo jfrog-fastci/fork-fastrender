@@ -4071,15 +4071,20 @@ impl Painter {
               continue;
             }
 
-            let render_w = css_bounds.width().ceil().max(1.0) as u32;
-            let render_h = css_bounds.height().ceil().max(1.0) as u32;
-            img_w = render_w as f32;
-            img_h = render_h as f32;
+            let view_w = css_bounds.width().ceil().max(1.0) as u32;
+            let view_h = css_bounds.height().ceil().max(1.0) as u32;
+            img_w = view_w as f32;
+            img_h = view_h as f32;
             let Some(svg) =
-              crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, id, render_w, render_h)
+              crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, id, view_w, view_h)
             else {
               continue;
             };
+
+            // Rasterize the SVG mask at device resolution so the mask tile isn't later upscaled by
+            // `device_pixel_ratio`.
+            let render_w = ((view_w as f32) * self.scale).ceil().max(1.0) as u32;
+            let render_h = ((view_h as f32) * self.scale).ceil().max(1.0) as u32;
 
             // The synthesized SVG always produces a white image with mask coverage in the alpha
             // channel, so interpret it as an alpha mask.
@@ -4091,18 +4096,18 @@ impl Painter {
               render_h,
             })
           } else {
-             let resolved_src = self.image_cache.resolve_url(src);
-             let image = match self.image_cache.load(&resolved_src) {
-               Ok(img) => img,
-               Err(_) => continue,
-             };
-             let orientation = style.image_orientation.resolve(image.orientation, true);
-             intrinsic_ratio = image.intrinsic_ratio(orientation);
-             let Some((w, h)) =
-               image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
-             else {
-               continue;
-             };
+            let resolved_src = self.image_cache.resolve_url(src);
+            let image = match self.image_cache.load(&resolved_src) {
+              Ok(img) => img,
+              Err(_) => continue,
+            };
+            let orientation = style.image_orientation.resolve(image.orientation, true);
+            intrinsic_ratio = image.intrinsic_ratio(orientation);
+            let Some((w, h)) =
+              image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
+            else {
+              continue;
+            };
             img_w = w;
             img_h = h;
 

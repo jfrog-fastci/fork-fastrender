@@ -4028,20 +4028,50 @@ impl DisplayListBuilder {
   ) -> Option<Arc<ImageData>> {
     let trimmed = trim_ascii_whitespace(src);
     if let Some(id) = trimmed.strip_prefix('#') {
-      if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
-        return self.decode_image(
-          &svg,
-          Some(style),
-          true,
-          CrossOriginAttribute::None,
-          None,
-          false,
-        );
+      let defs = self.svg_id_defs.as_ref()?;
+
+      let view_w = if bounds.width().is_finite() && bounds.width() > 0.0 {
+        bounds.width()
+      } else {
+        1.0
       }
-      // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
-      // the id via `svg_id_defs`, treat the mask image as missing instead of attempting an
-      // external fetch.
-      return None;
+      .ceil()
+      .max(1.0);
+      let view_h = if bounds.height().is_finite() && bounds.height() > 0.0 {
+        bounds.height()
+      } else {
+        1.0
+      }
+      .ceil()
+      .max(1.0);
+
+      let dpr = if self.device_pixel_ratio.is_finite() && self.device_pixel_ratio > 0.0 {
+        self.device_pixel_ratio
+      } else {
+        1.0
+      };
+      let render_w = (view_w * dpr).ceil().max(1.0) as u32;
+      let render_h = (view_h * dpr).ceil().max(1.0) as u32;
+
+      let svg = crate::paint::svg_mask_image::inline_svg_for_mask_id_with_view_box(
+        defs, id, view_w, view_h, render_w, render_h,
+      )?;
+      let decoded = self.decode_image(
+        &svg,
+        Some(style),
+        true,
+        CrossOriginAttribute::None,
+        None,
+        false,
+      )?;
+
+      // The mask image should keep its intrinsic size in CSS px (for `mask-size: auto`), but be
+      // rasterized at device resolution so it does not get upscaled by `device_pixel_ratio` during
+      // painting.
+      let mut adjusted = (*decoded).clone();
+      adjusted.css_width = view_w;
+      adjusted.css_height = view_h;
+      return Some(Arc::new(adjusted));
     }
     self.decode_image(
       src,
@@ -12631,6 +12661,28 @@ mod tests {
         .is_none(),
       "expected NBSP-suffixed fragment to not match existing SVG ids"
     );
+  }
+
+  #[test]
+  fn mask_image_fragment_only_urls_rasterize_at_device_pixel_ratio() {
+    let defs = HashMap::from([(
+      "mask".to_string(),
+      r#"<mask id="mask"><rect width="100%" height="100%" fill="white"/></mask>"#.to_string(),
+    )]);
+    let builder = DisplayListBuilder::new()
+      .with_svg_id_defs(Some(Arc::new(defs)))
+      .with_device_pixel_ratio(2.0);
+    let style = ComputedStyle::default();
+    let bounds = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+
+    let image = builder
+      .decode_mask_image_url("#mask", &style, bounds)
+      .expect("expected fragment-only mask to resolve");
+
+    assert_eq!(image.width, 32);
+    assert_eq!(image.height, 32);
+    assert_eq!(image.css_width, 16.0);
+    assert_eq!(image.css_height, 16.0);
   }
 
   #[test]

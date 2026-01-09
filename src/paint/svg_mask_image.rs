@@ -192,17 +192,43 @@ pub(crate) fn inline_svg_for_mask_id(
   width: u32,
   height: u32,
 ) -> Option<String> {
+  inline_svg_for_mask_id_with_view_box(
+    defs,
+    mask_id,
+    width.max(1) as f32,
+    height.max(1) as f32,
+    width.max(1),
+    height.max(1),
+  )
+}
+
+pub(crate) fn inline_svg_for_mask_id_with_view_box(
+  defs: &HashMap<String, String>,
+  mask_id: &str,
+  view_width: f32,
+  view_height: f32,
+  render_width: u32,
+  render_height: u32,
+) -> Option<String> {
+  if !view_width.is_finite() || !view_height.is_finite() || view_width <= 0.0 || view_height <= 0.0
+  {
+    return None;
+  }
+  if render_width == 0 || render_height == 0 {
+    return None;
+  }
+
   let include = svg_ids_to_inline(defs, mask_id)?;
 
   let mut out = String::new();
   out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-  out.push_str(&width.to_string());
+  out.push_str(&render_width.to_string());
   out.push_str("\" height=\"");
-  out.push_str(&height.to_string());
+  out.push_str(&render_height.to_string());
   out.push_str("\" viewBox=\"0 0 ");
-  out.push_str(&width.to_string());
+  out.push_str(&view_width.to_string());
   out.push(' ');
-  out.push_str(&height.to_string());
+  out.push_str(&view_height.to_string());
   out.push_str("\"><defs>");
   for id in include {
     if let Some(serialized) = defs.get(&id) {
@@ -275,6 +301,7 @@ mod tests {
   use super::{
     collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_clip_path_id,
     inline_svg_for_clip_path_id_with_view_box, inline_svg_for_mask_id,
+    inline_svg_for_mask_id_with_view_box,
   };
   use std::collections::HashMap;
 
@@ -402,6 +429,28 @@ mod tests {
     let defs = HashMap::from([("clip".to_string(), clip.to_string())]);
 
     let svg = inline_svg_for_clip_path_id_with_view_box(&defs, "clip", 10.5, 20.25, 21, 41)
+      .expect("expected svg");
+
+    assert!(
+      svg.contains("width=\"21\""),
+      "expected render width in root <svg>, got: {svg}"
+    );
+    assert!(
+      svg.contains("height=\"41\""),
+      "expected render height in root <svg>, got: {svg}"
+    );
+    assert!(
+      svg.contains("viewBox=\"0 0 10.5 20.25\""),
+      "expected viewBox to use unscaled CSS dimensions, got: {svg}"
+    );
+  }
+
+  #[test]
+  fn svg_mask_image_supports_separate_view_box_and_render_size() {
+    let mask = r##"<mask xmlns="http://www.w3.org/2000/svg" id="mask"><rect width="100%" height="100%" fill="white"/></mask>"##;
+    let defs = HashMap::from([("mask".to_string(), mask.to_string())]);
+
+    let svg = inline_svg_for_mask_id_with_view_box(&defs, "mask", 10.5, 20.25, 21, 41)
       .expect("expected svg");
 
     assert!(

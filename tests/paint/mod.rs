@@ -63,6 +63,7 @@ mod marker_shadow_order;
 mod marker_text_shadow_vertical;
 mod marker_underline_order;
 mod mask_multiple_layers_composite;
+mod mask_image_svg_url;
 mod mask_parallel_translation_golden;
 mod math_render;
 mod mix_blend_mode_backdrop_root_test;
