@@ -15,8 +15,18 @@ fn error_to_string(rt: &mut VmJsRuntime, err: VmError) -> String {
   let VmError::Throw(thrown) = err else {
     panic!("expected throw, got {err:?}");
   };
+  // These tests sometimes set extremely small `WebIdlLimits::max_string_code_units` values to
+  // validate that conversion limits are enforced. When that limit is tiny, the runtime's
+  // `string_to_utf8_lossy` helper will intentionally throw on *any* non-trivial string to avoid
+  // unbounded host allocations.
+  //
+  // For test diagnostics we still want to stringify thrown errors, so bypass `string_to_utf8_lossy`
+  // and read the string directly from the VM heap (these error strings are short, fixed messages).
   let s = rt.to_string(thrown).unwrap();
-  rt.string_to_utf8_lossy(s).unwrap()
+  let Value::String(handle) = s else {
+    panic!("expected ToString(thrown) to return a string");
+  };
+  rt.heap().get_string(handle).unwrap().to_utf8_lossy()
 }
 
 #[test]
