@@ -5,6 +5,7 @@ mod browser_mem_limit_env;
 mod browser_worker_cancel_gens;
 mod browser_worker_fragment_navigation;
 mod browser_worker_target_pseudoclass;
+mod browser_worker_thread;
 mod browser_thread_cancellation;
 mod browser_thread_select_dropdown;
 mod browser_thread_paint_cancellation;
