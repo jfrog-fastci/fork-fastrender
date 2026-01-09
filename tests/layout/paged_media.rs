@@ -294,6 +294,85 @@ fn page_rule_sets_size_and_margins() {
 }
 
 #[test]
+fn page_rule_important_overrides_non_important() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 200px; margin: 0; margin-top: 10px !important; }
+          @page { margin-top: 30px; }
+        </style>
+      </head>
+      <body>
+        <div style="height: 50px"></div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page = pages(&tree)[0];
+
+  let content = page.children.first().expect("page content");
+  assert!(
+    (content.bounds.y() - 10.0).abs() < 0.1,
+    "expected margin-top=10px from !important declaration; got {}",
+    content.bounds.y()
+  );
+}
+
+#[test]
+fn page_rule_layers_invert_for_important() {
+  let html_normal = r#"
+    <html>
+      <head>
+        <style>
+          @layer a, b;
+          @layer a { @page { size: 200px 200px; margin: 0; margin-top: 10px; } }
+          @layer b { @page { margin-top: 20px; } }
+        </style>
+      </head>
+      <body><div style="height: 50px"></div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html_normal).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page = pages(&tree)[0];
+  let content = page.children.first().expect("page content");
+  assert!(
+    (content.bounds.y() - 20.0).abs() < 0.1,
+    "expected later layer b to win for normal declarations; got {}",
+    content.bounds.y()
+  );
+
+  let html_important = r#"
+    <html>
+      <head>
+        <style>
+          @layer a, b;
+          @layer a { @page { size: 200px 200px; margin: 0; margin-top: 10px !important; } }
+          @layer b { @page { margin-top: 20px !important; } }
+        </style>
+      </head>
+      <body><div style="height: 50px"></div></body>
+    </html>
+  "#;
+
+  let dom = renderer.parse_html(html_important).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page = pages(&tree)[0];
+  let content = page.children.first().expect("page content");
+  assert!(
+    (content.bounds.y() - 10.0).abs() < 0.1,
+    "expected earlier layer a to win for !important declarations; got {}",
+    content.bounds.y()
+  );
+}
+
+#[test]
 fn page_rule_left_and_right_offsets_differ() {
   let html = r#"
     <html>

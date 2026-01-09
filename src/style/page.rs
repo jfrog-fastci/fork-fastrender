@@ -124,7 +124,15 @@ pub fn resolve_page_style(
     }
   }
 
-  matching.sort_by(|a, b| {
+  // CSS cascade for @page rules:
+  // 1) Apply normal (non-!important) declarations in normal layer order (later layers win).
+  // 2) Apply !important declarations with cascade layer order reversed (earlier layers win).
+  //
+  // Unlayered rules use a sentinel layer order of u32::MAX and therefore:
+  // - win over layered rules in the normal cascade (applied last),
+  // - lose to layered rules in the important cascade (applied first in reversed order).
+  let mut normal_matching = matching.clone();
+  normal_matching.sort_by(|a, b| {
     a.0
       .layer_order
       .as_ref()
@@ -132,9 +140,21 @@ pub fn resolve_page_style(
       .then(a.1.cmp(&b.1))
       .then(a.0.order.cmp(&b.0.order))
   });
+  let mut important_matching = matching;
+  important_matching.sort_by(|a, b| {
+    b.0
+      .layer_order
+      .as_ref()
+      .cmp(a.0.layer_order.as_ref())
+      .then(a.1.cmp(&b.1))
+      .then(a.0.order.cmp(&b.0.order))
+  });
 
-  for (rule, _) in &matching {
+  let mut apply_matching_rule = |rule: &CollectedPageRule<'_>, important: bool| {
     for decl in &rule.rule.declarations {
+      if decl.important != important {
+        continue;
+      }
       if apply_page_declaration(&mut props, decl) {
         continue;
       }
@@ -154,6 +174,9 @@ pub fn resolve_page_style(
         style
       });
       for decl in &margin_rule.declarations {
+        if decl.important != important {
+          continue;
+        }
         apply_declaration_with_base(
           style,
           decl,
@@ -167,6 +190,13 @@ pub fn resolve_page_style(
         );
       }
     }
+  };
+
+  for (rule, _) in &normal_matching {
+    apply_matching_rule(rule, false);
+  }
+  for (rule, _) in &important_matching {
+    apply_matching_rule(rule, true);
   }
 
   for style in margin_styles.values_mut() {
