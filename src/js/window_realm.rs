@@ -688,8 +688,8 @@ mod tests {
     Null,
     Bool(bool),
     Number(f64),
-    String(String),
     BigInt,
+    String(String),
     Object,
     Symbol,
   }

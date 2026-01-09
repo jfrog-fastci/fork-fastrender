@@ -1315,6 +1315,8 @@ mod query_tests;
 #[cfg(test)]
 mod selector_query_tests;
 #[cfg(test)]
+mod selectors_detached_tests;
+#[cfg(test)]
 mod wbr_tests;
 #[cfg(test)]
 mod html5ever_sink_tests;
