@@ -2,6 +2,8 @@
 
 mod report_helpers;
 
+mod browser_mem_limit_env_test;
+
 mod bundle_page_cache_alias_test;
 mod bundle_page_cache_help_test;
 mod bundle_page_cache_offline_test;
