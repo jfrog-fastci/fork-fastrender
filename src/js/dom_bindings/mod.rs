@@ -1581,6 +1581,19 @@ fn install_constructors(
     })?;
     define_method(rt, prototypes.node, "contains", contains)?;
 
+    // hasChildNodes
+    let dom_for_has_child_nodes = dom.clone();
+    let platform_objects_for_has_child_nodes = platform_objects.clone();
+    let has_child_nodes = rt.alloc_function_value(move |rt, this, _args| {
+      let node_id = extract_node_id(rt, &platform_objects_for_has_child_nodes, this)?;
+      let dom_ref = dom_for_has_child_nodes.borrow();
+      let has = !direct_child_nodes(&dom_ref, node_id)
+        .map_err(|e| rt.throw_type_error(&format!("hasChildNodes: {e}")))?
+        .is_empty();
+      Ok(Value::Bool(has))
+    })?;
+    define_method(rt, prototypes.node, "hasChildNodes", has_child_nodes)?;
+
     // parentNode
     let dom_for_parent = dom.clone();
     let platform_objects_for_parent = platform_objects.clone();
@@ -4571,6 +4584,57 @@ mod tests {
       .call_function(div_contains, div, &[Value::Number(1.0)])
       .unwrap_err();
     assert!(matches!(err, VmError::Throw(_)));
+  }
+
+  #[test]
+  fn node_has_child_nodes_reflects_dom2_tree() {
+    let dom = dom2::Document::new(QuirksMode::NoQuirks);
+    let mut realm = DomJsRealm::new(dom).unwrap();
+    let document = realm.document();
+
+    let create_element_key = pk(&mut realm.rt, "createElement");
+    let create_element = realm.rt.get(document, create_element_key).unwrap();
+    let append_child_key = pk(&mut realm.rt, "appendChild");
+    let remove_child_key = pk(&mut realm.rt, "removeChild");
+    let has_child_nodes_key = pk(&mut realm.rt, "hasChildNodes");
+
+    let div_tag = realm.rt.alloc_string_value("div").unwrap();
+    let div = realm
+      .rt
+      .call_function(create_element, document, &[div_tag])
+      .unwrap();
+    let span_tag = realm.rt.alloc_string_value("span").unwrap();
+    let span = realm
+      .rt
+      .call_function(create_element, document, &[span_tag])
+      .unwrap();
+
+    let div_has_child_nodes = realm.rt.get(div, has_child_nodes_key).unwrap();
+    assert_eq!(
+      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      Value::Bool(false)
+    );
+
+    let div_append_child = realm.rt.get(div, append_child_key).unwrap();
+    realm
+      .rt
+      .call_function(div_append_child, div, &[span])
+      .unwrap();
+
+    assert_eq!(
+      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      Value::Bool(true)
+    );
+
+    let div_remove_child = realm.rt.get(div, remove_child_key).unwrap();
+    realm
+      .rt
+      .call_function(div_remove_child, div, &[span])
+      .unwrap();
+    assert_eq!(
+      realm.rt.call_function(div_has_child_nodes, div, &[]).unwrap(),
+      Value::Bool(false)
+    );
   }
 
   #[test]

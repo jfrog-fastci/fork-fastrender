@@ -229,6 +229,10 @@ const DOM_SHIM: &str = r##"
     this.parentNode.removeChild(this);
   };
 
+  Node.prototype.hasChildNodes = function () {
+    return g.__fastrender_dom_has_child_nodes(nodeIdFromThis(this));
+  };
+
   Node.prototype.contains = function (other) {
     nodeIdFromThis(this);
     if (other === null || other === undefined) return false;
@@ -541,6 +545,10 @@ impl Dom {
     }
     // If we exceed `nodes.len()` steps we likely have a pre-existing cycle; reject insertion.
     Err(DomShimError::HierarchyRequestError)
+  }
+
+  fn has_child_nodes(&self, node: NodeId) -> Result<bool, DomShimError> {
+    Ok(!self.node_checked(node)?.children.is_empty())
   }
 
   fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), DomShimError> {
@@ -1244,6 +1252,19 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
     }
   })?;
 
+  let has_child_nodes = Function::new(ctx.clone(), {
+    let dom = Rc::clone(&dom);
+    move |node_id: i32| -> JsResult<bool> {
+      if node_id < 0 {
+        return Err(dom_error_to_js_error(DomShimError::NotFoundError));
+      }
+      dom
+        .borrow()
+        .has_child_nodes(NodeId(node_id as usize))
+        .map_err(dom_error_to_js_error)
+    }
+  })?;
+
   globals.set("__fastrender_dom_create_element", create_element)?;
   globals.set(
     "__fastrender_dom_create_document_fragment",
@@ -1263,6 +1284,7 @@ pub fn install_dom_shims<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> JsResult<
   globals.set("__fastrender_dom_set_outer_html", set_outer_html)?;
   globals.set("__fastrender_dom_append_child", append_child)?;
   globals.set("__fastrender_dom_remove_child", remove_child)?;
+  globals.set("__fastrender_dom_has_child_nodes", has_child_nodes)?;
 
   ctx.eval::<(), _>(DOM_SHIM)?;
   Ok(())

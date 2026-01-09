@@ -928,6 +928,7 @@ impl JsWptRuntime {
       .object_set_prototype(node_proto, Some(event_target_proto))?;
     let append_child = self.alloc_native_function(native_node_append_child)?;
     let contains = self.alloc_native_function(native_node_contains)?;
+    let has_child_nodes = self.alloc_native_function(native_node_has_child_nodes)?;
     let remove = self.alloc_native_function(native_node_remove)?;
     let remove_child = self.alloc_native_function(native_dom_remove_child)?;
     let matches = self.alloc_native_function(native_dom_element_matches)?;
@@ -945,6 +946,10 @@ impl JsWptRuntime {
     let contains_key = {
       let mut scope = self.heap.scope();
       PropertyKey::from_string(scope.alloc_string("contains")?)
+    };
+    let has_child_nodes_key = {
+      let mut scope = self.heap.scope();
+      PropertyKey::from_string(scope.alloc_string("hasChildNodes")?)
     };
     let remove_key = {
       let mut scope = self.heap.scope();
@@ -973,6 +978,7 @@ impl JsWptRuntime {
     )?;
     self.define_data_prop(node_proto, append_child_key, Value::Object(append_child))?;
     self.define_data_prop(node_proto, contains_key, Value::Object(contains))?;
+    self.define_data_prop(node_proto, has_child_nodes_key, Value::Object(has_child_nodes))?;
     self.define_data_prop(node_proto, remove_key, Value::Object(remove))?;
     self.define_data_prop(node_proto, remove_child_key, Value::Object(remove_child))?;
     self.define_data_prop(node_proto, matches_key, Value::Object(matches))?;
@@ -3167,6 +3173,25 @@ fn native_node_remove(rt: &mut JsWptRuntime, this: Value, _args: &[Value]) -> Re
   }
   rt.update_dom_child_nodes(parent)?;
   Ok(Value::Undefined)
+}
+
+fn native_node_has_child_nodes(
+  rt: &mut JsWptRuntime,
+  this: Value,
+  _args: &[Value],
+) -> Result<Value, JsError> {
+  let node = dom_require_node(rt, this, "hasChildNodes")?;
+
+  // The vm-js DOM shim does not track the document in `dom_nodes`, but the runner always builds a
+  // document with a `<html>` element.
+  if matches!(rt.env.get("document"), Some(Value::Object(doc)) if doc == node) {
+    return Ok(Value::Bool(true));
+  }
+
+  let Some(state) = rt.dom_nodes.get(&node) else {
+    return Ok(Value::Bool(false));
+  };
+  Ok(Value::Bool(!state.children.is_empty()))
 }
 
 fn native_eventtarget_ctor(rt: &mut JsWptRuntime, this: Value, args: &[Value]) -> Result<Value, JsError> {
