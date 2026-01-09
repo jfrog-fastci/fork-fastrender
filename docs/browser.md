@@ -15,8 +15,7 @@ Code lives in:
 - A cross-platform *desktop* app (Linux/macOS/Windows) built on `winit + wgpu + egui`.
 - A host for the FastRender HTML/CSS renderer, displaying a rendered `tiny_skia::Pixmap` inside the
   window.
-- A small interactive surface (navigation + scroll + hit-testing + basic form interactions) without
-  requiring JavaScript.
+- An experimental foundation for an interactive surface over the renderer (no JS required).
 
 **This is not:**
 
@@ -44,22 +43,18 @@ has `required-features = ["browser_ui"]`. See:
 - [`Cargo.toml`](../Cargo.toml)
 - Platform prerequisites + MSRV constraints + UI architecture details: [browser_ui.md](browser_ui.md)
 
-## Current capabilities (MVP)
+## Current UI status
 
-The desktop browser UI is intentionally minimal, but it provides a **real interactive surface** over
-the renderer (no JS required):
+The `browser` window UI is still intentionally minimal (early-stage wiring):
 
-- **Navigation**
-  - type a URL into the address bar and press Enter
-  - supports `about:*` pages (e.g. `about:newtab`, `about:blank`, `about:error`)
-  - supports `file://` URLs and filesystem paths (converted to `file://`)
-  - per-tab history: back/forward/reload
-- **Tabs**: create/close/switch tabs (each tab has its own navigation state)
-- **Scrolling**: mouse wheel/trackpad updates the viewport scroll offset and repaints
-- **Hit-testing + links**: click links (hit-test fragments → navigate)
-- **Basic forms (non-JS)**
-  - basic focus + text input for `<input>` / `<textarea>`
-  - checkbox/radio toggling
+- Top chrome bar with back/forward/reload buttons + an address bar text field.
+  - Note: the navigation buttons and address bar submission are not yet wired in the window UI.
+- Content area currently shows a dummy checkerboard pixmap.
+- Clicking in the page prints the local click position to stdout.
+
+The repository contains additional browser UI building blocks (tab history, URL normalization,
+interaction engine, etc.) under [`src/ui/`](../src/ui/) that are intended to be wired into the
+windowed UI; see [browser_ui.md](browser_ui.md) for details.
 
 ## Environment variables / resource limits
 

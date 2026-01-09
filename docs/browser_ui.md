@@ -45,6 +45,7 @@ The `browser` binary also supports an in-process, best-effort address-space cap 
   - Render worker wrapper + large-stack thread spawn:
     [`src/ui/worker.rs`](../src/ui/worker.rs)
   - Synchronous “navigate + render a frame” helper used by the worker: [`src/ui/browser_worker.rs`](../src/ui/browser_worker.rs)
+  - Headless UI worker loop used by browser UI integration tests: [`src/ui/worker_loop.rs`](../src/ui/worker_loop.rs)
   - Tab history helpers: [`src/ui/history.rs`](../src/ui/history.rs)
   - Pixmap → egui texture helpers:
     - [`src/ui/pixmap_texture.rs`](../src/ui/pixmap_texture.rs) (CPU conversion path)
