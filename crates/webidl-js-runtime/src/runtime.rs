@@ -48,6 +48,8 @@ pub trait JsRuntime {
   fn js_boolean(&self, value: bool) -> Self::JsValue;
   fn js_number(&self, value: f64) -> Self::JsValue;
   fn alloc_string(&mut self, value: &str) -> Result<Self::JsValue, Self::Error>;
+  fn is_undefined(&self, value: Self::JsValue) -> bool;
+  fn is_null(&self, value: Self::JsValue) -> bool;
 
   /// Constructs a property key from a Rust string.
   ///
@@ -107,6 +109,7 @@ pub trait JsRuntime {
   fn to_boolean(&mut self, value: Self::JsValue) -> Result<bool, Self::Error>;
   fn to_number(&mut self, value: Self::JsValue) -> Result<f64, Self::Error>;
   fn to_string(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
+  fn string_to_utf8_lossy(&mut self, string: Self::JsValue) -> Result<String, Self::Error>;
   fn to_bigint(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
   fn to_numeric(&mut self, value: Self::JsValue) -> Result<Self::JsValue, Self::Error>;
 
@@ -145,9 +148,9 @@ pub trait JsRuntime {
 /// Web IDL-specific runtime hooks that sit on top of the core ECMAScript operations.
 pub trait WebIdlJsRuntime: JsRuntime {
   /// `%Symbol.iterator%`.
-  fn symbol_iterator(&mut self) -> Result<Self::JsValue, Self::Error>;
+  fn symbol_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
   /// `%Symbol.asyncIterator%`.
-  fn symbol_async_iterator(&mut self) -> Result<Self::JsValue, Self::Error>;
+  fn symbol_async_iterator(&mut self) -> Result<Self::PropertyKey, Self::Error>;
 
   /// Returns true if the value is a platform object that implements the given WebIDL interface.
   fn implements_interface(&self, value: Self::JsValue, interface: &str) -> bool;

@@ -647,6 +647,14 @@ impl JsRuntime for VmJsRuntime {
   fn alloc_string(&mut self, value: &str) -> Result<Value, VmError> {
     self.alloc_string_value(value)
   }
+
+  fn is_undefined(&self, value: Value) -> bool {
+    matches!(value, Value::Undefined)
+  }
+
+  fn is_null(&self, value: Value) -> bool {
+    matches!(value, Value::Null)
+  }
   fn property_key_from_str(&mut self, s: &str) -> Result<PropertyKey, VmError> {
     self.prop_key_str(s)
   }
@@ -842,6 +850,18 @@ impl JsRuntime for VmJsRuntime {
     Ok(Value::String(s))
   }
 
+  fn string_to_utf8_lossy(&mut self, string: Value) -> Result<String, VmError> {
+    let handle = match string {
+      Value::String(s) => s,
+      Value::Object(obj) => match self.objects.get(&obj).map(|o| &o.kind) {
+        Some(HostObjectKind::StringObject { string_data }) => *string_data,
+        _ => return Err(self.throw_type_error("value is not a string")),
+      },
+      _ => return Err(self.throw_type_error("value is not a string")),
+    };
+    Ok(self.heap.get_string(handle)?.to_utf8_lossy())
+  }
+
   fn to_bigint(&mut self, _value: Value) -> Result<Value, VmError> {
     Err(self.throw_type_error("BigInt is not supported by vm-js yet"))
   }
@@ -1010,26 +1030,26 @@ impl JsRuntime for VmJsRuntime {
 }
 
 impl WebIdlJsRuntime for VmJsRuntime {
-  fn symbol_iterator(&mut self) -> Result<Value, VmError> {
+  fn symbol_iterator(&mut self) -> Result<PropertyKey, VmError> {
     if let Some(sym) = self.well_known_iterator {
-      return Ok(Value::Symbol(sym));
+      return Ok(PropertyKey::Symbol(sym));
     }
     let key = self.intern_string("Symbol.iterator")?;
     let sym = self.heap.symbol_for(key)?;
     root_value(&mut self.heap, Value::Symbol(sym));
     self.well_known_iterator = Some(sym);
-    Ok(Value::Symbol(sym))
+    Ok(PropertyKey::Symbol(sym))
   }
 
-  fn symbol_async_iterator(&mut self) -> Result<Value, VmError> {
+  fn symbol_async_iterator(&mut self) -> Result<PropertyKey, VmError> {
     if let Some(sym) = self.well_known_async_iterator {
-      return Ok(Value::Symbol(sym));
+      return Ok(PropertyKey::Symbol(sym));
     }
     let key = self.intern_string("Symbol.asyncIterator")?;
     let sym = self.heap.symbol_for(key)?;
     root_value(&mut self.heap, Value::Symbol(sym));
     self.well_known_async_iterator = Some(sym);
-    Ok(Value::Symbol(sym))
+    Ok(PropertyKey::Symbol(sym))
   }
 
   fn implements_interface(&self, value: Value, interface: &str) -> bool {
