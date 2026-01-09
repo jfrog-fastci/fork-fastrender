@@ -98,9 +98,10 @@ fn should_skip_crawl_url(url: &str) -> bool {
 
 fn default_credentials_mode_for_destination(destination: FetchDestination) -> FetchCredentialsMode {
   match destination {
-    FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors => {
-      FetchCredentialsMode::Omit
-    }
+    FetchDestination::Fetch
+    | FetchDestination::Font
+    | FetchDestination::ImageCors
+    | FetchDestination::StyleCors => FetchCredentialsMode::SameOrigin,
     _ => FetchCredentialsMode::Include,
   }
 }
@@ -2781,10 +2782,23 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
   }
 
   #[test]
-  fn default_credentials_mode_for_destination_omits_for_stylecors() {
+  fn default_credentials_mode_for_destination_defaults_same_origin_for_cors_resources() {
+    for destination in [
+      FetchDestination::Fetch,
+      FetchDestination::Font,
+      FetchDestination::ImageCors,
+      FetchDestination::StyleCors,
+    ] {
+      assert_eq!(
+        default_credentials_mode_for_destination(destination),
+        FetchCredentialsMode::SameOrigin,
+        "{destination:?} should default to same-origin credentials"
+      );
+    }
     assert_eq!(
-      default_credentials_mode_for_destination(FetchDestination::StyleCors),
-      FetchCredentialsMode::Omit
+      default_credentials_mode_for_destination(FetchDestination::Document),
+      FetchCredentialsMode::Include,
+      "document navigation defaults to include credentials"
     );
   }
 

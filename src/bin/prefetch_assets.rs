@@ -1835,8 +1835,7 @@ mod disk_cache_main {
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
           .with_referrer_url(stylesheet_url)
-          .with_referrer_policy(effective_referrer_policy)
-          .with_credentials_mode(FetchCredentialsMode::Omit);
+          .with_referrer_policy(effective_referrer_policy);
         if let Some(origin) = client_origin {
           request = request.with_client_origin(origin);
         }
