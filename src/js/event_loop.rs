@@ -1110,7 +1110,7 @@ impl<Host: 'static> EventLoop<Host> {
         interval,
         due,
         schedule_seq,
-        nesting_level: self.timer_nesting_level,
+        nesting_level: self.timer_nesting_level.saturating_add(1),
       },
     );
     self.timer_queue.push(Reverse((due, schedule_seq, id)));
@@ -1121,7 +1121,7 @@ impl<Host: 'static> EventLoop<Host> {
     const MIN_NESTED_DELAY: Duration = Duration::from_millis(4);
     // HTML timer nesting clamping: once a chain of nested timers reaches depth 5, further timers
     // are clamped to a minimum delay of 4ms.
-    if self.timer_nesting_level >= 5 {
+    if self.timer_nesting_level > 5 {
       requested.max(MIN_NESTED_DELAY)
     } else {
       requested
@@ -1172,7 +1172,7 @@ impl<Host: 'static> EventLoop<Host> {
 
     // Update nesting level for the duration of this task (including the microtask checkpoint that
     // `run_next_task` performs after this task returns).
-    self.timer_nesting_level = (nesting_level + 1).min(5);
+    self.timer_nesting_level = nesting_level;
 
     let callback_err = match (callback)(host, self) {
       Ok(()) => None,
@@ -1201,7 +1201,7 @@ impl<Host: 'static> EventLoop<Host> {
         let delay = self.clamp_timer_delay(interval);
         let due = now.checked_add(delay).unwrap_or(Duration::MAX);
 
-        let nesting_level = self.timer_nesting_level;
+        let nesting_level = self.timer_nesting_level.saturating_add(1);
         let schedule_seq = self.next_timer_seq;
         self.next_timer_seq = self.next_timer_seq.wrapping_add(1);
 
