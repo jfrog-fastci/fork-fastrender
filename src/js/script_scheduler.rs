@@ -166,8 +166,12 @@ where
           host.execute_classic_script(&spec.inline_text, &spec, event_loop)?;
         }
       }
-      // HTML: a microtask checkpoint is performed after script execution.
-      event_loop.perform_microtask_checkpoint(host)?;
+      // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+      // execution context stack is empty. Nested (re-entrant) script execution must not drain
+      // microtasks until the outermost script returns.
+      if self.js_execution_depth.get() == 0 {
+        event_loop.perform_microtask_checkpoint(host)?;
+      }
       return Ok(());
     }
 
@@ -223,7 +227,9 @@ where
         host.execute_classic_script(&script_text, &spec, event_loop)?;
       }
     }
-    event_loop.perform_microtask_checkpoint(host)?;
+    if self.js_execution_depth.get() == 0 {
+      event_loop.perform_microtask_checkpoint(host)?;
+    }
     Ok(())
   }
 

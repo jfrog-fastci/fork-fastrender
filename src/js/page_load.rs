@@ -268,7 +268,12 @@ where
             let executor = &mut self.executor;
             executor.execute(&source_text, event_loop)?;
           }
-          event_loop.perform_microtask_checkpoint(self)?;
+          // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+          // execution context stack is empty. Nested (re-entrant) script execution must not drain
+          // microtasks until the outermost script returns.
+          if self.js_execution_depth.get() == 0 {
+            event_loop.perform_microtask_checkpoint(self)?;
+          }
           if self.blocked_on == Some(script_id) {
             self.blocked_on = None;
             self.queue_parse_task(event_loop)?;
@@ -602,8 +607,15 @@ mod tests {
     };
 
     // Simulate being inside a currently-executing script.
-    let _outer_js = host.enter_js_execution();
-    host.handle_script_boundary(script_node, &mut event_loop)?;
+    {
+      let _outer_js = host.enter_js_execution();
+      host.handle_script_boundary(script_node, &mut event_loop)?;
+      assert_eq!(host.executor.log, vec!["script:RUN".to_string()]);
+    }
+
+    // Once the outer script returns, the JS execution context stack becomes empty and the pending
+    // microtasks can run.
+    event_loop.perform_microtask_checkpoint(&mut host)?;
 
     assert_eq!(
       host.executor.log,

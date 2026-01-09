@@ -345,8 +345,14 @@ impl ClassicScriptPipelineState {
             let _guard = JsExecutionGuard::enter(&self.js_execution_depth);
             self.execute_script_now(host, event_loop, script_id, &source_text)?;
           }
-          // Parser-blocking scripts must run an explicit microtask checkpoint before parsing resumes.
-          event_loop.perform_microtask_checkpoint(host)?;
+          // HTML: "clean up after running script" performs a microtask checkpoint only when the JS
+          // execution context stack is empty. Nested (re-entrant) script execution must not drain
+          // microtasks until the outermost script returns.
+          if self.js_execution_depth.get() == 0 {
+            // Parser-blocking scripts must run an explicit microtask checkpoint before parsing
+            // resumes.
+            event_loop.perform_microtask_checkpoint(host)?;
+          }
         }
         ScriptSchedulerAction::QueueTask {
           script_id,
@@ -780,13 +786,20 @@ mod tests {
       other => panic!("expected parser to yield Script, got {other:?}"),
     };
 
-    let _outer_js = JsExecutionGuard::enter(&state.js_execution_depth);
-    state.on_script_boundary(
-      &mut host,
-      &mut event_loop,
-      script_node_id,
-      base_url_at_this_point,
-    )?;
+    {
+      let _outer_js = JsExecutionGuard::enter(&state.js_execution_depth);
+      state.on_script_boundary(
+        &mut host,
+        &mut event_loop,
+        script_node_id,
+        base_url_at_this_point,
+      )?;
+      assert_eq!(host.log, vec!["RUN".to_string()]);
+    }
+
+    // Once the outer script returns, the JS execution context stack becomes empty and the pending
+    // microtasks can run.
+    event_loop.perform_microtask_checkpoint(&mut host)?;
 
     assert_eq!(
       host.log,
