@@ -44,6 +44,8 @@ pub trait VmJsEngineHost {
 /// - `call` / `construct` for invoking JavaScript values, and
 /// - `add_root` / `remove_root` for keeping GC handles alive while queued.
 ///
+/// The embedding supplies the underlying [`vm_js::Vm`] + [`vm_js::Heap`] via [`VmJsEngineHost`].
+///
 /// FastRender also stores the realm that a job was enqueued with so the eventual evaluator
 /// integration can re-establish the correct realm/settings object when running the job.
 pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {
@@ -62,7 +64,7 @@ impl<'a, Host: VmJsEngineHost> VmJsJobContext<'a, Host> {
 impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
   fn call(
     &mut self,
-    host: &mut dyn vm_js::VmHostHooks,
+    hooks: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     this: vm_js::Value,
     args: &[vm_js::Value],
@@ -77,15 +79,15 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      vm.call_with_host(&mut scope, host, callee, this, args)
+      vm.call_with_host(&mut scope, hooks, callee, this, args)
     } else {
-      vm.call_with_host(&mut scope, host, callee, this, args)
+      vm.call_with_host(&mut scope, hooks, callee, this, args)
     }
   }
 
   fn construct(
     &mut self,
-    host: &mut dyn vm_js::VmHostHooks,
+    hooks: &mut dyn vm_js::VmHostHooks,
     callee: vm_js::Value,
     args: &[vm_js::Value],
     new_target: vm_js::Value,
@@ -97,9 +99,9 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
         realm,
         script_or_module: None,
       });
-      vm.construct_with_host(&mut scope, host, callee, args, new_target)
+      vm.construct_with_host(&mut scope, hooks, callee, args, new_target)
     } else {
-      vm.construct_with_host(&mut scope, host, callee, args, new_target)
+      vm.construct_with_host(&mut scope, hooks, callee, args, new_target)
     }
   }
 
