@@ -26,9 +26,9 @@ pub fn build_parser_inserted_script_element_spec(
   let async_attr = script.get_attribute_ref("async").is_some();
   let defer_attr = script.get_attribute_ref("defer").is_some();
 
-  let src = script
-    .get_attribute_ref("src")
-    .and_then(|value| resolve_script_src_at_parse_time(base_url_ref, value));
+  let raw_src = script.get_attribute_ref("src");
+  let src_attr_present = raw_src.is_some();
+  let src = raw_src.and_then(|value| resolve_script_src_at_parse_time(base_url_ref, value));
 
   let mut inline_text = String::new();
   for child in &script.children {
@@ -40,6 +40,7 @@ pub fn build_parser_inserted_script_element_spec(
   ScriptElementSpec {
     base_url: base_url_at_this_point,
     src,
+    src_attr_present,
     inline_text,
     async_attr,
     defer_attr,

@@ -33,6 +33,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     return ScriptElementSpec {
       base_url,
       src: None,
+      src_attr_present: false,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
@@ -48,6 +49,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     return ScriptElementSpec {
       base_url,
       src: None,
+      src_attr_present: false,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
@@ -65,6 +67,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
     return ScriptElementSpec {
       base_url,
       src: None,
+      src_attr_present: false,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
@@ -76,11 +79,9 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   let async_attr = doc.has_attribute(script, "async").unwrap_or(false);
   let defer_attr = doc.has_attribute(script, "defer").unwrap_or(false);
 
-  let src = doc
-    .get_attribute(script, "src")
-    .ok()
-    .flatten()
-    .and_then(|raw_src| base.resolve_script_src(raw_src));
+  let raw_src = doc.get_attribute(script, "src").ok().flatten();
+  let src_attr_present = raw_src.is_some();
+  let src = raw_src.and_then(|raw_src| base.resolve_script_src(raw_src));
 
   let mut inline_text = String::new();
   for &child in &doc.node(script).children {
@@ -92,6 +93,7 @@ pub fn build_parser_inserted_script_element_spec_dom2(
   ScriptElementSpec {
     base_url,
     src,
+    src_attr_present,
     inline_text,
     async_attr,
     defer_attr,

@@ -120,6 +120,11 @@ pub struct ScriptElementSpec {
   pub base_url: Option<String>,
   /// The resolved `src` URL, if present and resolvable.
   pub src: Option<String>,
+  /// Whether the `src` attribute is present on the element (even if empty or not resolvable).
+  ///
+  /// HTML treats the presence of `src` as suppressing inline script execution: when present, the
+  /// element's child text content must be ignored even if the `src` value is empty/invalid.
+  pub src_attr_present: bool,
   /// The concatenated inline script text from child text nodes.
   pub inline_text: String,
   /// Whether the `async` boolean attribute is present.

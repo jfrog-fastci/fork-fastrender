@@ -15,14 +15,31 @@ fn trim_ascii_whitespace(value: &str) -> &str {
 /// yet), relative URLs are preserved (after ASCII whitespace trimming + scheme filtering) so the
 /// caller can defer resolution until a document URL becomes available.
 pub(crate) fn resolve_script_src_at_parse_time(base: Option<&str>, raw_src: &str) -> Option<String> {
-  match base {
-    Some(base) => resolve_href_with_base(Some(base), raw_src),
-    None => {
-      let trimmed = trim_ascii_whitespace(raw_src);
-      if trimmed.is_empty() || trimmed.starts_with('#') {
-        return None;
-      }
+  let trimmed = trim_ascii_whitespace(raw_src);
+  if trimmed.is_empty() {
+    return None;
+  }
 
+  // Fragment-only references (e.g. `#foo`) are valid script URLs per the HTML script element
+  // processing model. They resolve against the current base URL when available; otherwise keep the
+  // reference intact so callers can defer resolution.
+  if trimmed.starts_with('#') {
+    return match base {
+      Some(base) => {
+        let base_url = Url::parse(base)
+          .or_else(|_| Url::from_file_path(base).map_err(|()| url::ParseError::RelativeUrlWithoutBase))
+          .ok()?;
+        let mut url = base_url;
+        url.set_fragment(Some(&trimmed[1..]));
+        Some(url.to_string())
+      }
+      None => Some(trimmed.to_string()),
+    };
+  }
+
+  match base {
+    Some(base) => resolve_href_with_base(Some(base), trimmed),
+    None => {
       fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
       }
@@ -176,6 +193,23 @@ mod tests {
       tracker.current_base_url().as_deref(),
       Some("https://ex/base/")
     );
+  }
+
+  #[test]
+  fn fragment_only_script_src_resolves_against_document_url() {
+    let tracker = BaseUrlTracker::new(Some("https://example.com/dir/page.html"));
+    let resolved = tracker.resolve_script_src("#frag");
+    assert_eq!(
+      resolved.as_deref(),
+      Some("https://example.com/dir/page.html#frag")
+    );
+  }
+
+  #[test]
+  fn fragment_only_script_src_without_document_url_is_preserved() {
+    let tracker = BaseUrlTracker::new(None);
+    let resolved = tracker.resolve_script_src("#frag");
+    assert_eq!(resolved.as_deref(), Some("#frag"));
   }
 
   #[test]

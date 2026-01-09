@@ -71,9 +71,9 @@ pub fn extract_script_elements(
         let async_attr = node.get_attribute_ref("async").is_some();
         let defer_attr = node.get_attribute_ref("defer").is_some();
 
-        let src = node
-          .get_attribute_ref("src")
-          .and_then(|value| base_url_tracker.resolve_script_src(value));
+        let raw_src = node.get_attribute_ref("src");
+        let src_attr_present = raw_src.is_some();
+        let src = raw_src.and_then(|value| base_url_tracker.resolve_script_src(value));
 
         let mut inline_text = String::new();
         for child in &node.children {
@@ -85,6 +85,7 @@ pub fn extract_script_elements(
         out.push(ScriptElementSpec {
           base_url,
           src,
+          src_attr_present,
           inline_text,
           async_attr,
           defer_attr,

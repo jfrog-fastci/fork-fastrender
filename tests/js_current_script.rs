@@ -384,6 +384,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     fastrender::js::ScriptElementSpec {
       base_url: None,
       src: Some("https://example.com/a.js".to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,
@@ -407,6 +408,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     fastrender::js::ScriptElementSpec {
       base_url: None,
       src: None,
+      src_attr_present: false,
       inline_text: "log.push(document.currentScript);".to_string(),
       async_attr: false,
       defer_attr: false,
@@ -423,6 +425,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     fastrender::js::ScriptElementSpec {
       base_url: None,
       src: Some("https://example.com/c.js".to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr: true,
       defer_attr: false,
@@ -439,6 +442,7 @@ fn document_current_script_is_set_for_parser_blocking_async_and_defer() -> Resul
     fastrender::js::ScriptElementSpec {
       base_url: None,
       src: Some("https://example.com/d.js".to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: true,

@@ -145,7 +145,11 @@ where
     }
 
     // Inline scripts execute immediately (async/defer ignored).
-    if spec.src.is_none() {
+    //
+    // Note: the HTML script processing model treats the *presence* of the `src` attribute as
+    // suppressing inline execution, even if the value is empty/invalid. Therefore we key off
+    // `src_attr_present` instead of `src.is_none()`.
+    if !spec.src_attr_present {
       self
         .options
         .check_script_source(&spec.inline_text, "source=inline")?;
@@ -169,9 +173,9 @@ where
 
     // External script.
     let Some(src_url) = spec.src.as_deref() else {
-      return Err(Error::Other(
-        "internal error: external script spec missing src URL".to_string(),
-      ));
+      // `src` attribute present but empty/invalid/unresolvable: per HTML this fires an error event
+      // and does not fall back to inline execution.
+      return Ok(());
     };
 
     // Async takes priority over defer. Also: non-parser-inserted external scripts are (roughly)
@@ -483,8 +487,12 @@ impl<NodeId: Clone> ScriptScheduler<NodeId> {
 
     let mut actions: Vec<ScriptSchedulerAction<NodeId>> = Vec::new();
 
-    let src = element.src.filter(|s| !s.is_empty());
-    if let Some(url) = src {
+    if element.src_attr_present {
+      let Some(url) = element.src.filter(|s| !s.is_empty()) else {
+        // `src` attribute present but empty/invalid/unresolvable: HTML fires an error event and does
+        // not fall back to inline script execution.
+        return Ok(DiscoveredScript { id, actions });
+      };
       let mode = if !element.parser_inserted {
         // HTML: dynamically inserted classic external scripts are async by default.
         ExternalMode::Async
@@ -738,6 +746,7 @@ mod tests {
     ScriptElementSpec {
       base_url: None,
       src: None,
+      src_attr_present: false,
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
@@ -750,6 +759,7 @@ mod tests {
     ScriptElementSpec {
       base_url: None,
       src: Some(url.to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr,
       defer_attr,
@@ -773,6 +783,7 @@ mod tests {
       ScriptElementSpec {
         base_url: None,
         src: Some("dyn".to_string()),
+        src_attr_present: true,
         inline_text: String::new(),
         async_attr: false,
         defer_attr: true,
@@ -801,6 +812,7 @@ mod tests {
       ScriptElementSpec {
         base_url: None,
         src: Some("a1".to_string()),
+        src_attr_present: true,
         inline_text: String::new(),
         async_attr: true,
         defer_attr: true,
@@ -829,6 +841,38 @@ mod tests {
     assert_eq!(host.log, vec!["A".to_string(), "B".to_string()]);
     event_loop.run_until_idle(&mut host, RunLimits::unbounded())?;
     assert_eq!(host.log, vec!["A".to_string(), "B".to_string()]);
+    Ok(())
+  }
+
+  #[test]
+  fn src_attribute_present_suppresses_inline_fallback_when_src_url_is_missing() -> Result<()> {
+    let mut host = TestHost::new(false);
+    let mut event_loop = EventLoop::<TestHost>::new();
+    let mut scheduler = ClassicScriptScheduler::<TestHost>::new();
+
+    // HTML: if the `src` attribute is present but empty/invalid, the script element does not fall
+    // back to executing its inline child text content.
+    scheduler.handle_script(
+      &mut host,
+      &mut event_loop,
+      ScriptElementSpec {
+        base_url: None,
+        // Invalid/empty `src` -> no resolved URL.
+        src: None,
+        src_attr_present: true,
+        inline_text: "INLINE".to_string(),
+        async_attr: false,
+        defer_attr: false,
+        parser_inserted: true,
+        script_type: ScriptType::Classic,
+      },
+    )?;
+
+    assert_eq!(
+      host.log,
+      Vec::<String>::new(),
+      "expected no inline execution when src attribute is present"
+    );
     Ok(())
   }
 
@@ -1026,6 +1070,7 @@ mod state_machine_tests {
     ScriptElementSpec {
       base_url: None,
       src: None,
+      src_attr_present: false,
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
@@ -1038,6 +1083,7 @@ mod state_machine_tests {
     ScriptElementSpec {
       base_url: None,
       src: Some(src.to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr,
       defer_attr,
@@ -1050,6 +1096,7 @@ mod state_machine_tests {
     ScriptElementSpec {
       base_url: None,
       src: Some(src.to_string()),
+      src_attr_present: true,
       inline_text: String::new(),
       async_attr,
       defer_attr,
@@ -1062,6 +1109,7 @@ mod state_machine_tests {
     ScriptElementSpec {
       base_url: None,
       src: None,
+      src_attr_present: false,
       inline_text: text.to_string(),
       async_attr: false,
       defer_attr: false,
@@ -1241,6 +1289,34 @@ mod state_machine_tests {
       h.host.log,
       vec!["script:x".to_string(), "microtask:x".to_string()]
     );
+    Ok(())
+  }
+
+  #[test]
+  fn src_attribute_present_but_invalid_does_not_execute_inline_or_start_fetch() -> Result<()> {
+    let mut h = Harness::new();
+
+    h.discover(ScriptElementSpec {
+      base_url: None,
+      // `src` attribute present, but no fetchable URL (e.g. empty string or a rejected scheme).
+      src: None,
+      src_attr_present: true,
+      inline_text: "INLINE".to_string(),
+      async_attr: false,
+      defer_attr: false,
+      parser_inserted: true,
+      script_type: ScriptType::Classic,
+    })?;
+
+    assert!(
+      h.started_fetches.is_empty(),
+      "expected no fetch to be started for invalid src"
+    );
+    assert!(
+      h.host.log.is_empty(),
+      "expected no inline execution when src attribute is present"
+    );
+    assert!(h.blocked_parser_on.is_none(), "invalid external scripts must not block parsing");
     Ok(())
   }
 

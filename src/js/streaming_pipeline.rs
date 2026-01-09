@@ -246,6 +246,7 @@ impl ClassicScriptPipelineState {
       return ScriptElementSpec {
         base_url,
         src: None,
+        src_attr_present: false,
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
@@ -261,6 +262,7 @@ impl ClassicScriptPipelineState {
       return ScriptElementSpec {
         base_url,
         src: None,
+        src_attr_present: false,
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
@@ -274,6 +276,7 @@ impl ClassicScriptPipelineState {
       return ScriptElementSpec {
         base_url,
         src: None,
+        src_attr_present: false,
         inline_text: String::new(),
         async_attr: false,
         defer_attr: false,
@@ -289,6 +292,7 @@ impl ClassicScriptPipelineState {
       .ok()
       .flatten()
       .map(|v| v.to_string());
+    let src_attr_present = raw_src.is_some();
     let src =
       raw_src.as_deref().and_then(|raw| resolve_script_src_at_parse_time(base_url.as_deref(), raw));
 
@@ -309,6 +313,7 @@ impl ClassicScriptPipelineState {
     ScriptElementSpec {
       base_url,
       src,
+      src_attr_present,
       inline_text,
       async_attr,
       defer_attr,

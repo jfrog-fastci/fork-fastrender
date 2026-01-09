@@ -1096,6 +1096,7 @@ mod tests {
     ScriptElementSpec {
       base_url: None,
       src: None,
+      src_attr_present: false,
       inline_text: String::new(),
       async_attr: false,
       defer_attr: false,

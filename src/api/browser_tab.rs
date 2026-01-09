@@ -145,6 +145,7 @@ impl BrowserTabHost {
             let base_url = base_url_tracker.current_base_url();
             let async_attr = dom.has_attribute(id, "async").unwrap_or(false);
             let defer_attr = dom.has_attribute(id, "defer").unwrap_or(false);
+            let src_attr_present = dom.has_attribute(id, "src").unwrap_or(false);
             let src = dom
               .get_attribute(id, "src")
               .ok()
@@ -166,6 +167,7 @@ impl BrowserTabHost {
               ScriptElementSpec {
                 base_url,
                 src,
+                src_attr_present,
                 inline_text,
                 async_attr,
                 defer_attr,
@@ -221,7 +223,7 @@ impl BrowserTabHost {
     event_loop: &mut EventLoop<Self>,
   ) -> Result<ScriptId> {
     let spec_for_table = spec.clone();
-    if spec_for_table.script_type == ScriptType::Classic && spec_for_table.src.is_none() {
+    if spec_for_table.script_type == ScriptType::Classic && !spec_for_table.src_attr_present {
       self
         .js_execution_options
         .check_script_source(&spec_for_table.inline_text, "source=inline")?;
@@ -381,7 +383,7 @@ impl BrowserTabHost {
     let is_blocking = self
       .scripts
       .get(&script_id)
-      .is_some_and(|entry| entry.spec.src.is_some() && !entry.spec.async_attr && !entry.spec.defer_attr);
+      .is_some_and(|entry| entry.spec.src_attr_present && !entry.spec.async_attr && !entry.spec.defer_attr);
 
     if is_blocking {
       let source = self.fetch_script_source(script_id, &url)?;
