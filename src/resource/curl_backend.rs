@@ -132,6 +132,8 @@ pub(super) fn build_curl_args(
   url: &str,
   timeout: Option<Duration>,
   headers: &[(String, String)],
+  method: &str,
+  has_body: bool,
   force_http1: bool,
 ) -> Vec<String> {
   let mut args = Vec::new();
@@ -141,6 +143,16 @@ pub(super) fn build_curl_args(
   args.push("--show-error".to_string());
   args.push("--dump-header".to_string());
   args.push("-".to_string());
+  if method.eq_ignore_ascii_case("HEAD") {
+    args.push("--head".to_string());
+  } else if has_body || !method.eq_ignore_ascii_case("GET") {
+    args.push("--request".to_string());
+    args.push(method.to_string());
+  }
+  if has_body {
+    args.push("--data-binary".to_string());
+    args.push("@-".to_string());
+  }
   args.push("--output".to_string());
   args.push("-".to_string());
   if force_http1 {
@@ -353,14 +365,19 @@ fn run_curl(
   url: &str,
   timeout: Option<Duration>,
   headers: &[(String, String)],
+  method: &str,
+  body: Option<&[u8]>,
   body_limit: usize,
   force_http1: bool,
 ) -> std::result::Result<CurlResponse, CurlError> {
-  let args = build_curl_args(url, timeout, headers, force_http1);
+  let args = build_curl_args(url, timeout, headers, method, body.is_some(), force_http1);
   let mut command = Command::new("curl");
   command.args(&args);
   command.stdout(Stdio::piped());
   command.stderr(Stdio::piped());
+  if body.is_some() {
+    command.stdin(Stdio::piped());
+  }
 
   let mut child = match command.spawn() {
     Ok(child) => child,
@@ -399,6 +416,13 @@ fn run_curl(
       spawn_error: None,
     }));
   };
+  if let Some(body) = body {
+    if let Some(mut stdin) = child.stdin.take() {
+      let _ = stdin.write_all(body);
+      // Explicitly close stdin so curl knows the request body is complete.
+      drop(stdin);
+    }
+  }
   let mut reader = BufReader::new(stdout);
 
   let (status_line, status, headers) = match read_curl_headers(&mut reader) {
@@ -475,6 +499,10 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   url: &str,
   accept_encoding: Option<&str>,
   validators: Option<super::HttpCacheValidators<'a>>,
+  method: &str,
+  redirect: super::web_fetch::RequestRedirect,
+  user_headers: &[(String, String)],
+  body: Option<&[u8]>,
   client_origin: Option<&super::DocumentOrigin>,
   referrer_url: Option<&str>,
   referrer_policy: super::ReferrerPolicy,
@@ -483,6 +511,15 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   started: Instant,
 ) -> Result<super::FetchedResource> {
   let mut current = url.to_string();
+  let original_method = method;
+  let original_body = body;
+  let mut current_method = method;
+  let mut current_body = body;
+  let filtered_user_headers: Vec<(String, String)> = user_headers
+    .iter()
+    .filter(|(name, value)| !super::fetch_http_request_header_forbidden(name, value))
+    .cloned()
+    .collect();
   let mut validators = validators;
   let mut effective_referrer_policy = referrer_policy;
   let mut redirect_referrer_policy: Option<super::ReferrerPolicy> = None;
@@ -559,12 +596,17 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           headers.push(("Cookie".to_string(), value));
         }
       }
+      for (name, value) in &filtered_user_headers {
+        headers.push((name.clone(), value.clone()));
+      }
 
       let network_timer = super::start_network_fetch_diagnostics();
       let response = run_curl(
         &current,
         (!effective_timeout.is_zero()).then_some(effective_timeout),
         &headers,
+        current_method,
+        current_body,
         allowed_limit,
         force_http1,
       );
@@ -689,22 +731,99 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           .get("location")
           .and_then(|h| h.to_str().ok())
         {
-          if let Some(policy) = super::header_values_joined(&response.headers, "referrer-policy")
-            .as_deref()
-            .and_then(super::ReferrerPolicy::parse_value_list)
-          {
-            effective_referrer_policy = policy;
-            redirect_referrer_policy = Some(policy);
+          match redirect {
+            super::web_fetch::RequestRedirect::Follow => {
+              if let Some(policy) = super::header_values_joined(&response.headers, "referrer-policy")
+                .as_deref()
+                .and_then(super::ReferrerPolicy::parse_value_list)
+              {
+                effective_referrer_policy = policy;
+                redirect_referrer_policy = Some(policy);
+              }
+              let next = Url::parse(&current)
+                .ok()
+                .and_then(|base| base.join(loc).ok())
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| loc.to_string());
+
+              if status_code == 303
+                && !current_method.eq_ignore_ascii_case("GET")
+                && !current_method.eq_ignore_ascii_case("HEAD")
+              {
+                current_method = "GET";
+                current_body = None;
+              } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
+              {
+                current_method = "GET";
+                current_body = None;
+              }
+
+              fetcher.policy.ensure_url_allowed(&next)?;
+              current = next;
+              validators = None;
+              continue 'redirects;
+            }
+            super::web_fetch::RequestRedirect::Error => {
+              let err = ResourceError::new(
+                current.clone(),
+                format!(
+                  "redirect encountered but redirect mode is error (status {status_code})"
+                ),
+              )
+              .with_status(status_code)
+              .with_final_url(current.clone());
+              return Err(Error::Resource(err));
+            }
+            super::web_fetch::RequestRedirect::Manual => {
+              let encodings = super::parse_content_encodings(&response.headers);
+              let content_type = response
+                .headers
+                .get("content-type")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+              let nosniff = super::header_has_nosniff(&response.headers);
+              let etag = response
+                .headers
+                .get("etag")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+              let last_modified = response
+                .headers
+                .get("last-modified")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+              let (access_control_allow_origin, access_control_allow_credentials) =
+                super::parse_cors_response_headers(&response.headers);
+              let timing_allow_origin =
+                super::header_values_joined(&response.headers, "timing-allow-origin");
+              let response_referrer_policy =
+                super::header_values_joined(&response.headers, "referrer-policy")
+                  .as_deref()
+                  .and_then(super::ReferrerPolicy::parse_value_list);
+              let cache_policy = super::parse_http_cache_policy(&response.headers);
+              let vary = super::parse_vary_headers(&response.headers);
+              let response_headers = super::collect_response_headers(&response.headers);
+
+              fetcher.policy.reserve_budget(0)?;
+              let mut resource =
+                super::FetchedResource::with_final_url(Vec::new(), content_type, Some(current.clone()));
+              resource.response_headers = Some(response_headers);
+              if !encodings.is_empty() {
+                resource.content_encoding = Some(encodings.join(", "));
+              }
+              resource.nosniff = nosniff;
+              resource.status = Some(status_code);
+              resource.etag = etag;
+              resource.last_modified = last_modified;
+              resource.access_control_allow_origin = access_control_allow_origin;
+              resource.timing_allow_origin = timing_allow_origin;
+              resource.vary = vary;
+              resource.response_referrer_policy = response_referrer_policy;
+              resource.access_control_allow_credentials = access_control_allow_credentials;
+              resource.cache_policy = cache_policy;
+              return Ok(resource);
+            }
           }
-          let next = Url::parse(&current)
-            .ok()
-            .and_then(|base| base.join(loc).ok())
-            .map(|u| u.to_string())
-            .unwrap_or_else(|| loc.to_string());
-          fetcher.policy.ensure_url_allowed(&next)?;
-          current = next;
-          validators = None;
-          continue 'redirects;
         }
       }
 
@@ -773,6 +892,10 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             url,
             Some("identity"),
             validators,
+            original_method,
+            redirect,
+            user_headers,
+            original_body,
             client_origin,
             referrer_url,
             referrer_policy,
@@ -810,8 +933,11 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
       }
       let is_retryable_status = super::retryable_http_status(status_code);
-      let allows_empty_body =
+      let mut allows_empty_body =
         super::http_response_allows_empty_body(kind, status_code, &response.headers);
+      if current_method.eq_ignore_ascii_case("HEAD") {
+        allows_empty_body = true;
+      }
 
       if bytes.is_empty() && super::http_empty_body_is_error(status_code, allows_empty_body) {
         let mut can_retry = attempt < max_attempts;
@@ -1068,7 +1194,14 @@ mod tests {
       None,
       super::super::ReferrerPolicy::default(),
     );
-    let args = build_curl_args("https://example.com/", Some(Duration::from_secs(3)), &headers, false);
+    let args = build_curl_args(
+      "https://example.com/",
+      Some(Duration::from_secs(3)),
+      &headers,
+      "GET",
+      false,
+      false,
+    );
     assert!(args.contains(&"--silent".to_string()));
     assert!(args.contains(&"--show-error".to_string()));
     assert!(args.contains(&"--dump-header".to_string()));
@@ -1082,7 +1215,7 @@ mod tests {
   #[test]
   fn build_args_sanitizes_header_values() {
     let headers = vec![("X-Test".to_string(), "a\r\nb\0c".to_string())];
-    let args = build_curl_args("https://example.com/", None, &headers, false);
+    let args = build_curl_args("https://example.com/", None, &headers, "GET", false, false);
     let header_value = args
       .iter()
       .skip_while(|v| *v != "--header")
@@ -1097,7 +1230,7 @@ mod tests {
   fn build_args_does_not_trim_non_ascii_whitespace_in_header_values() {
     let nbsp = "\u{00A0}";
     let headers = vec![("X-Test".to_string(), format!("{nbsp}foo{nbsp}"))];
-    let args = build_curl_args("https://example.com/", None, &headers, false);
+    let args = build_curl_args("https://example.com/", None, &headers, "GET", false, false);
     let header_value = args
       .iter()
       .skip_while(|v| *v != "--header")
@@ -1123,7 +1256,7 @@ mod tests {
   #[test]
   fn build_args_can_force_http1() {
     let headers = vec![("User-Agent".to_string(), DEFAULT_USER_AGENT.to_string())];
-    let args = build_curl_args("https://example.com/", None, &headers, true);
+    let args = build_curl_args("https://example.com/", None, &headers, "GET", false, true);
     assert!(args.contains(&"--http1.1".to_string()));
   }
 
@@ -1178,7 +1311,14 @@ mod tests {
       .expect("create file:// URL")
       .to_string();
 
-    let args = build_curl_args(&file_url, Some(Duration::from_secs(5)), &[], false);
+    let args = build_curl_args(
+      &file_url,
+      Some(Duration::from_secs(5)),
+      &[],
+      "GET",
+      false,
+      false,
+    );
     let output = Command::new("curl")
       .args(&args)
       .output()

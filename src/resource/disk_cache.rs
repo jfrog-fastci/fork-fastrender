@@ -3700,7 +3700,10 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
 
     let method_is_get = req.method.eq_ignore_ascii_case("GET");
     let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
-    let cacheable = (method_is_get || method_is_head) && req.headers.is_empty() && req.body.is_none();
+    let cacheable = (method_is_get || method_is_head)
+      && req.headers.is_empty()
+      && req.body.is_none()
+      && req.redirect == crate::resource::web_fetch::RequestRedirect::Follow;
 
     if cacheable {
       let mut res = self.fetch_with_request(req.fetch)?;
@@ -4459,6 +4462,7 @@ mod tests {
     let post_req = HttpRequest {
       fetch,
       method: "POST",
+      redirect: crate::resource::web_fetch::RequestRedirect::Follow,
       headers: &[],
       body: Some(b"hello"),
     };

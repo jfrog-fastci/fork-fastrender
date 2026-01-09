@@ -1215,6 +1215,8 @@ pub struct HttpRequest<'a> {
   pub fetch: FetchRequest<'a>,
   /// HTTP method (e.g. `"GET"`, `"POST"`). Comparison must be ASCII case-insensitive.
   pub method: &'a str,
+  /// Redirect handling policy.
+  pub redirect: web_fetch::RequestRedirect,
   /// User-specified request headers.
   pub headers: &'a [(String, String)],
   /// Optional request body.
@@ -1227,8 +1229,57 @@ impl<'a> HttpRequest<'a> {
     Self {
       fetch,
       method,
+      redirect: web_fetch::RequestRedirect::Follow,
       headers: &[],
       body: None,
+    }
+  }
+}
+
+fn fetch_http_request_header_forbidden(name: &str, value: &str) -> bool {
+  // Mirrors Fetch's "forbidden request header" checks (see `web_fetch::Headers` guard rules).
+  // We keep this local to the resource layer so `HttpFetcher` can safely accept user header pairs
+  // without allowing `Cookie`, `Host`, etc. to be spoofed.
+  let name = name.trim().to_ascii_lowercase();
+  match name.as_str() {
+    "accept-charset"
+    | "accept-encoding"
+    | "access-control-request-headers"
+    | "access-control-request-method"
+    | "connection"
+    | "content-length"
+    | "cookie"
+    | "cookie2"
+    | "date"
+    | "dnt"
+    | "expect"
+    | "host"
+    | "keep-alive"
+    | "origin"
+    | "referer"
+    | "set-cookie"
+    | "te"
+    | "trailer"
+    | "transfer-encoding"
+    | "upgrade"
+    | "via" => true,
+    other => {
+      if other.starts_with("proxy-") || other.starts_with("sec-") {
+        return true;
+      }
+
+      if matches!(
+        other,
+        "x-http-method" | "x-http-method-override" | "x-method-override"
+      ) {
+        for method in value.split(',').map(trim_http_whitespace) {
+          if matches!(method.to_ascii_uppercase().as_str(), "CONNECT" | "TRACE" | "TRACK") {
+            return true;
+          }
+        }
+      }
+
+      false
     }
   }
 }
@@ -3107,21 +3158,21 @@ pub trait ResourceFetcher: Send + Sync {
   /// caching should ensure that non-GET methods bypass their caches.
   ///
   /// The default implementation only supports `GET`/`HEAD` requests with no user headers and no
-  /// body by delegating to [`ResourceFetcher::fetch_with_request`]. Other requests return an
-  /// error.
+  /// body (and `redirect=follow`) by delegating to [`ResourceFetcher::fetch_with_request`]. Other
+  /// requests return an error.
   fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
-    if !req.headers.is_empty() || req.body.is_some() {
-      return Err(Error::Resource(ResourceError::new(
-        req.fetch.url,
-        "fetch_http_request with custom headers/body is not supported by this fetcher",
-      )));
-    }
+    let legacy_fast_path = req.method.eq_ignore_ascii_case("GET")
+      || req.method.eq_ignore_ascii_case("HEAD");
 
-    if req.method.eq_ignore_ascii_case("GET") {
-      return self.fetch_with_request(req.fetch);
-    }
-
-    if req.method.eq_ignore_ascii_case("HEAD") {
+    if legacy_fast_path
+      && req.headers.is_empty()
+      && req.body.is_none()
+      && req.redirect == web_fetch::RequestRedirect::Follow
+    {
+      if req.method.eq_ignore_ascii_case("GET") {
+        return self.fetch_with_request(req.fetch);
+      }
+      // HEAD fast path: delegate to a GET-equivalent fetch then discard the body.
       let mut res = self.fetch_with_request(req.fetch)?;
       res.bytes.clear();
       return Ok(res);
@@ -3129,7 +3180,7 @@ pub trait ResourceFetcher: Send + Sync {
 
     Err(Error::Resource(ResourceError::new(
       req.fetch.url,
-      format!("unsupported HTTP method: {}", req.method),
+      "this fetcher does not support arbitrary HTTP requests (custom method/headers/body/redirect)",
     )))
   }
 
@@ -4015,6 +4066,244 @@ impl HttpFetcher {
     })
   }
 
+  fn fetch_http_request_with_context(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    method: &str,
+    redirect: web_fetch::RequestRedirect,
+    user_headers: &[(String, String)],
+    body: Option<&[u8]>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+  ) -> Result<FetchedResource> {
+    let deadline = render_control::root_deadline();
+    let started = Instant::now();
+    render_control::with_deadline(deadline.as_ref(), || {
+      self.fetch_http_request_with_context_inner(
+        kind,
+        destination,
+        url,
+        method,
+        redirect,
+        user_headers,
+        body,
+        client_origin,
+        referrer_url,
+        referrer_policy,
+        credentials_mode,
+        &deadline,
+        started,
+      )
+    })
+  }
+
+  fn fetch_http_request_with_context_inner(
+    &self,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    url: &str,
+    method: &str,
+    redirect: web_fetch::RequestRedirect,
+    user_headers: &[(String, String)],
+    body: Option<&[u8]>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
+    referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
+    deadline: &Option<render_control::RenderDeadline>,
+    started: Instant,
+  ) -> Result<FetchedResource> {
+    let mut effective_url = Cow::Borrowed(url);
+    let mut attempted_www_fallback = false;
+    let mut www_fallback_error: Option<Error> = None;
+
+    loop {
+      render_control::check_active(render_stage_hint_for_context(kind, effective_url.as_ref()))
+        .map_err(Error::Render)?;
+      let result = match http_backend_mode() {
+        HttpBackendMode::Curl => curl_backend::fetch_http_with_accept_inner(
+          self,
+          kind,
+          destination,
+          effective_url.as_ref(),
+          None,
+          None,
+          method,
+          redirect,
+          user_headers,
+          body,
+          client_origin,
+          referrer_url,
+          referrer_policy,
+          credentials_mode,
+          deadline,
+          started,
+        ),
+        HttpBackendMode::Ureq => self.fetch_http_with_accept_inner_ureq(
+          kind,
+          destination,
+          effective_url.as_ref(),
+          None,
+          None,
+          method,
+          redirect,
+          user_headers,
+          body,
+          client_origin,
+          referrer_url,
+          referrer_policy,
+          credentials_mode,
+          deadline,
+          started,
+          false,
+        ),
+        HttpBackendMode::Reqwest => self.fetch_http_with_accept_inner_reqwest(
+          kind,
+          destination,
+          effective_url.as_ref(),
+          None,
+          None,
+          method,
+          redirect,
+          user_headers,
+          body,
+          client_origin,
+          referrer_url,
+          referrer_policy,
+          credentials_mode,
+          deadline,
+          started,
+          false,
+        ),
+        HttpBackendMode::Auto => {
+          let curl_available = curl_backend::curl_available();
+          let prefer_reqwest = effective_url
+            .get(..8)
+            .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
+            .unwrap_or(false);
+          let result = if prefer_reqwest {
+            self.fetch_http_with_accept_inner_reqwest(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              None,
+              None,
+              method,
+              redirect,
+              user_headers,
+              body,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              curl_available,
+            )
+          } else {
+            self.fetch_http_with_accept_inner_ureq(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              None,
+              None,
+              method,
+              redirect,
+              user_headers,
+              body,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              curl_available,
+            )
+          };
+
+          match result {
+            Ok(res) => Ok(res),
+            Err(err) => {
+              if curl_available && should_fallback_to_curl(&err) {
+                match curl_backend::fetch_http_with_accept_inner(
+                  self,
+                  kind,
+                  destination,
+                  effective_url.as_ref(),
+                  None,
+                  None,
+                  method,
+                  redirect,
+                  user_headers,
+                  body,
+                  client_origin,
+                  referrer_url,
+                  referrer_policy,
+                  credentials_mode,
+                  deadline,
+                  started,
+                ) {
+                  Ok(res) => Ok(res),
+                  Err(curl_err) => {
+                    let mut err = err;
+                    if let Error::Resource(ref mut res) = err {
+                      res.message = format!("{}; curl fallback failed: {}", res.message, curl_err);
+                    }
+                    Err(err)
+                  }
+                }
+              } else {
+                Err(err)
+              }
+            }
+          }
+        }
+      };
+
+      match result {
+        Ok(res) => return Ok(res),
+        Err(err) => {
+          if attempted_www_fallback {
+            if let Some(mut original) = www_fallback_error.take() {
+              match &mut original {
+                Error::Resource(ref mut res) => {
+                  res.message = format!("{}; www fallback failed: {}", res.message, err);
+                }
+                Error::Other(ref mut msg) => {
+                  *msg = format!("{msg}; www fallback failed: {err}");
+                }
+                _ => {}
+              }
+              return Err(original);
+            }
+            return Err(err);
+          }
+
+          let fallback_url = if error_looks_like_dns_failure(&err) {
+            http_www_fallback_url(effective_url.as_ref())
+          } else if http_www_fallback_enabled() && is_timeout_or_no_response_error(&err) {
+            rewrite_url_host_with_www_prefix(effective_url.as_ref(), Some(destination))
+          } else {
+            None
+          };
+
+          if let Some(url) = fallback_url {
+            attempted_www_fallback = true;
+            www_fallback_error = Some(err);
+            effective_url = Cow::Owned(url);
+            continue;
+          }
+
+          return Err(err);
+        }
+      }
+    }
+  }
+
   fn fetch_http_with_context_inner<'a>(
     &self,
     kind: FetchContextKind,
@@ -4045,6 +4334,10 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           client_origin,
           referrer_url,
           referrer_policy,
@@ -4058,6 +4351,10 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           client_origin,
           referrer_url,
           referrer_policy,
@@ -4072,6 +4369,10 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           client_origin,
           referrer_url,
           referrer_policy,
@@ -4086,37 +4387,45 @@ impl HttpFetcher {
             .get(..8)
             .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
             .unwrap_or(false);
-          let result = if prefer_reqwest {
-            self.fetch_http_with_accept_inner_reqwest(
-              kind,
-              destination,
-              effective_url.as_ref(),
-              accept_encoding,
-              validators,
-              client_origin,
-              referrer_url,
-              referrer_policy,
-              credentials_mode,
-              deadline,
-              started,
-              curl_available,
-            )
-          } else {
-            self.fetch_http_with_accept_inner_ureq(
-              kind,
-              destination,
-              effective_url.as_ref(),
-              accept_encoding,
-              validators,
-              client_origin,
-              referrer_url,
-              referrer_policy,
-              credentials_mode,
-              deadline,
-              started,
-              curl_available,
-            )
-          };
+           let result = if prefer_reqwest {
+             self.fetch_http_with_accept_inner_reqwest(
+               kind,
+               destination,
+               effective_url.as_ref(),
+               accept_encoding,
+               validators,
+               "GET",
+               web_fetch::RequestRedirect::Follow,
+               &[],
+               None,
+               client_origin,
+               referrer_url,
+               referrer_policy,
+               credentials_mode,
+               deadline,
+               started,
+               curl_available,
+             )
+           } else {
+             self.fetch_http_with_accept_inner_ureq(
+               kind,
+               destination,
+               effective_url.as_ref(),
+               accept_encoding,
+               validators,
+               "GET",
+               web_fetch::RequestRedirect::Follow,
+               &[],
+               None,
+               client_origin,
+               referrer_url,
+               referrer_policy,
+               credentials_mode,
+               deadline,
+               started,
+               curl_available,
+             )
+           };
 
           match result {
             Ok(res) => Ok(res),
@@ -4129,6 +4438,10 @@ impl HttpFetcher {
                   effective_url.as_ref(),
                   accept_encoding,
                   validators,
+                  "GET",
+                  web_fetch::RequestRedirect::Follow,
+                  &[],
+                  None,
                   client_origin,
                   referrer_url,
                   referrer_policy,
@@ -4525,8 +4838,7 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body =
-          http_response_allows_empty_body(kind, status_code, response.headers());
+        let allows_empty_body = http_response_allows_empty_body(kind, status_code, response.headers());
 
         let substitute_empty_image_body =
           should_substitute_empty_image_body(kind, status_code, response.headers())
@@ -5040,8 +5352,7 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body =
-          http_response_allows_empty_body(kind, status_code, response.headers());
+        let allows_empty_body = http_response_allows_empty_body(kind, status_code, response.headers());
 
         let substitute_empty_image_body =
           should_substitute_empty_image_body(kind, status_code, response.headers())
@@ -5315,6 +5626,10 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
+    method: &str,
+    redirect: web_fetch::RequestRedirect,
+    user_headers: &[(String, String)],
+    body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
@@ -5324,6 +5639,15 @@ impl HttpFetcher {
     auto_fallback: bool,
   ) -> Result<FetchedResource> {
     let mut current = url.to_string();
+    let original_method = method;
+    let original_body = body;
+    let mut current_method = method;
+    let mut current_body = body;
+    let filtered_user_headers: Vec<(String, String)> = user_headers
+      .iter()
+      .filter(|(name, value)| !fetch_http_request_header_forbidden(name, value))
+      .cloned()
+      .collect();
     let mut validators = validators;
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
@@ -5405,20 +5729,54 @@ impl HttpFetcher {
             headers.push(("Cookie".to_string(), value));
           }
         }
-        let mut request = agent.get(&current);
-        for (name, value) in &headers {
-          request = request.header(name, value);
-        }
-
-        if !effective_timeout.is_zero() {
-          request = request
-            .config()
-            .timeout_global(Some(effective_timeout))
-            .build();
+        for (name, value) in &filtered_user_headers {
+          headers.push((name.clone(), value.clone()));
         }
 
         let mut network_timer = start_network_fetch_diagnostics();
-        let mut response = match request.call() {
+        let send_result = if current_method.eq_ignore_ascii_case("POST") {
+          let mut request = agent.post(&current);
+          for (name, value) in &headers {
+            request = request.header(name, value);
+          }
+          if !effective_timeout.is_zero() {
+            request = request
+              .config()
+              .timeout_global(Some(effective_timeout))
+              .build();
+          }
+          request.send(current_body.unwrap_or(&[]))
+        } else if current_method.eq_ignore_ascii_case("HEAD") {
+          let mut request = agent.head(&current);
+          for (name, value) in &headers {
+            request = request.header(name, value);
+          }
+          if !effective_timeout.is_zero() {
+            request = request
+              .config()
+              .timeout_global(Some(effective_timeout))
+              .build();
+          }
+          request.call()
+        } else if current_method.eq_ignore_ascii_case("GET") {
+          let mut request = agent.get(&current);
+          for (name, value) in &headers {
+            request = request.header(name, value);
+          }
+          if !effective_timeout.is_zero() {
+            request = request
+              .config()
+              .timeout_global(Some(effective_timeout))
+              .build();
+          }
+          request.call()
+        } else {
+          return Err(Error::Resource(ResourceError::new(
+            current.clone(),
+            format!("unsupported HTTP method {current_method:?}"),
+          )));
+        };
+        let mut response = match send_result {
           Ok(resp) => resp,
           Err(err) => {
             finish_network_fetch_diagnostics(network_timer.take());
@@ -5495,35 +5853,118 @@ impl HttpFetcher {
         }
 
         let status = response.status();
-        if (300..400).contains(&status.as_u16()) {
+        let status_code = status.as_u16();
+        if (300..400).contains(&status_code) {
           if let Some(loc) = response
             .headers()
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
-            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
-              .as_deref()
-              .and_then(ReferrerPolicy::parse_value_list)
-            {
-              effective_referrer_policy = policy;
-              redirect_referrer_policy = Some(policy);
+            match redirect {
+              web_fetch::RequestRedirect::Follow => {
+                if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+                  .as_deref()
+                  .and_then(ReferrerPolicy::parse_value_list)
+                {
+                  effective_referrer_policy = policy;
+                  redirect_referrer_policy = Some(policy);
+                }
+                let next = Url::parse(&current)
+                  .ok()
+                  .and_then(|base| base.join(loc).ok())
+                  .map(|u| u.to_string())
+                  .unwrap_or_else(|| loc.to_string());
+
+                // Match common web redirect behavior:
+                // - 303: switch to GET for non-GET/HEAD requests
+                // - 301/302: switch POST to GET
+                if status_code == 303
+                  && !current_method.eq_ignore_ascii_case("GET")
+                  && !current_method.eq_ignore_ascii_case("HEAD")
+                {
+                  current_method = "GET";
+                  current_body = None;
+                } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
+                {
+                  current_method = "GET";
+                  current_body = None;
+                }
+
+                finish_network_fetch_diagnostics(network_timer.take());
+                render_control::check_active(render_stage_hint_for_context(kind, &next))
+                  .map_err(Error::Render)?;
+                self.policy.ensure_url_allowed(&next)?;
+                current = next;
+                validators = None;
+                continue 'redirects;
+              }
+              web_fetch::RequestRedirect::Error => {
+                finish_network_fetch_diagnostics(network_timer.take());
+                let final_url = response.get_uri().to_string();
+                let err = ResourceError::new(
+                  current.clone(),
+                  format!(
+                    "redirect encountered but redirect mode is error (status {status_code})"
+                  ),
+                )
+                .with_status(status_code)
+                .with_final_url(final_url);
+                return Err(Error::Resource(err));
+              }
+              web_fetch::RequestRedirect::Manual => {
+                finish_network_fetch_diagnostics(network_timer.take());
+                let encodings = parse_content_encodings(response.headers());
+                let content_type = response
+                  .headers()
+                  .get("content-type")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let nosniff = header_has_nosniff(response.headers());
+                let etag = response
+                  .headers()
+                  .get("etag")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let last_modified = response
+                  .headers()
+                  .get("last-modified")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let (access_control_allow_origin, access_control_allow_credentials) =
+                  parse_cors_response_headers(response.headers());
+                let timing_allow_origin =
+                  header_values_joined(response.headers(), "timing-allow-origin");
+                let response_referrer_policy =
+                  header_values_joined(response.headers(), "referrer-policy")
+                    .as_deref()
+                    .and_then(ReferrerPolicy::parse_value_list);
+                let cache_policy = parse_http_cache_policy(response.headers());
+                let vary = parse_vary_headers(response.headers());
+                let final_url = response.get_uri().to_string();
+                let response_headers = collect_response_headers(response.headers());
+
+                self.policy.reserve_budget(0)?;
+                let mut resource =
+                  FetchedResource::with_final_url(Vec::new(), content_type, Some(final_url));
+                resource.response_headers = Some(response_headers);
+                if !encodings.is_empty() {
+                  resource.content_encoding = Some(encodings.join(", "));
+                }
+                resource.nosniff = nosniff;
+                resource.status = Some(status_code);
+                resource.etag = etag;
+                resource.last_modified = last_modified;
+                resource.access_control_allow_origin = access_control_allow_origin;
+                resource.timing_allow_origin = timing_allow_origin;
+                resource.vary = vary;
+                resource.response_referrer_policy = response_referrer_policy;
+                resource.access_control_allow_credentials = access_control_allow_credentials;
+                resource.cache_policy = cache_policy;
+                return Ok(resource);
+              }
             }
-            let next = Url::parse(&current)
-              .ok()
-              .and_then(|base| base.join(loc).ok())
-              .map(|u| u.to_string())
-              .unwrap_or_else(|| loc.to_string());
-            finish_network_fetch_diagnostics(network_timer.take());
-            render_control::check_active(render_stage_hint_for_context(kind, &next))
-              .map_err(Error::Render)?;
-            self.policy.ensure_url_allowed(&next)?;
-            current = next;
-            validators = None;
-            continue 'redirects;
           }
         }
-
-        let status_code = status.as_u16();
         let retry_after =
           if self.retry_policy.respect_retry_after && retryable_http_status(status_code) {
             parse_retry_after(response.headers())
@@ -5560,8 +6001,11 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.get_uri().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body =
+        let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
+        if current_method.eq_ignore_ascii_case("HEAD") {
+          allows_empty_body = true;
+        }
         let substitute_captcha_image =
           should_substitute_captcha_image_response(kind, status_code, &final_url);
 
@@ -5595,6 +6039,10 @@ impl HttpFetcher {
                     url,
                     Some("identity"),
                     validators,
+                    original_method,
+                    redirect,
+                    user_headers,
+                    original_body,
                     client_origin,
                     referrer_url,
                     referrer_policy,
@@ -5911,6 +6359,10 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
+    method: &str,
+    redirect: web_fetch::RequestRedirect,
+    user_headers: &[(String, String)],
+    body: Option<&[u8]>,
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
@@ -5920,6 +6372,15 @@ impl HttpFetcher {
     auto_fallback: bool,
   ) -> Result<FetchedResource> {
     let mut current = url.to_string();
+    let original_method = method;
+    let original_body = body;
+    let mut current_method = method;
+    let mut current_body = body;
+    let filtered_user_headers: Vec<(String, String)> = user_headers
+      .iter()
+      .filter(|(name, value)| !fetch_http_request_header_forbidden(name, value))
+      .cloned()
+      .collect();
     let mut validators = validators;
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
@@ -5988,9 +6449,25 @@ impl HttpFetcher {
             headers.push(("Cookie".to_string(), value));
           }
         }
-        let mut request = client.get(&current);
+        for (name, value) in &filtered_user_headers {
+          headers.push((name.clone(), value.clone()));
+        }
+
+        let reqwest_method = reqwest::Method::from_bytes(current_method.as_bytes()).map_err(|_| {
+          Error::Resource(
+            ResourceError::new(
+              current.clone(),
+              format!("invalid HTTP method: {}", current_method),
+            )
+            .with_final_url(current.clone()),
+          )
+        })?;
+        let mut request = client.request(reqwest_method, &current);
         for (name, value) in &headers {
           request = request.header(name, value);
+        }
+        if let Some(body) = current_body {
+          request = request.body(body.to_vec());
         }
 
         if !effective_timeout.is_zero() {
@@ -6072,35 +6549,115 @@ impl HttpFetcher {
         }
 
         let status = response.status();
-        if (300..400).contains(&status.as_u16()) {
+        let status_code = status.as_u16();
+        if (300..400).contains(&status_code) {
           if let Some(loc) = response
             .headers()
             .get("location")
             .and_then(|h| h.to_str().ok())
           {
-            if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
-              .as_deref()
-              .and_then(ReferrerPolicy::parse_value_list)
-            {
-              effective_referrer_policy = policy;
-              redirect_referrer_policy = Some(policy);
+            match redirect {
+              web_fetch::RequestRedirect::Follow => {
+                if let Some(policy) = header_values_joined(response.headers(), "referrer-policy")
+                  .as_deref()
+                  .and_then(ReferrerPolicy::parse_value_list)
+                {
+                  effective_referrer_policy = policy;
+                  redirect_referrer_policy = Some(policy);
+                }
+                let next = Url::parse(&current)
+                  .ok()
+                  .and_then(|base| base.join(loc).ok())
+                  .map(|u| u.to_string())
+                  .unwrap_or_else(|| loc.to_string());
+
+                if status_code == 303
+                  && !current_method.eq_ignore_ascii_case("GET")
+                  && !current_method.eq_ignore_ascii_case("HEAD")
+                {
+                  current_method = "GET";
+                  current_body = None;
+                } else if matches!(status_code, 301 | 302) && current_method.eq_ignore_ascii_case("POST")
+                {
+                  current_method = "GET";
+                  current_body = None;
+                }
+
+                finish_network_fetch_diagnostics(network_timer.take());
+                render_control::check_active(render_stage_hint_for_context(kind, &next))
+                  .map_err(Error::Render)?;
+                self.policy.ensure_url_allowed(&next)?;
+                current = next;
+                validators = None;
+                continue 'redirects;
+              }
+              web_fetch::RequestRedirect::Error => {
+                finish_network_fetch_diagnostics(network_timer.take());
+                let final_url = response.url().to_string();
+                let err = ResourceError::new(
+                  current.clone(),
+                  format!(
+                    "redirect encountered but redirect mode is error (status {status_code})"
+                  ),
+                )
+                .with_status(status_code)
+                .with_final_url(final_url);
+                return Err(Error::Resource(err));
+              }
+              web_fetch::RequestRedirect::Manual => {
+                finish_network_fetch_diagnostics(network_timer.take());
+                let encodings = parse_content_encodings(response.headers());
+                let content_type = response
+                  .headers()
+                  .get("content-type")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let nosniff = header_has_nosniff(response.headers());
+                let etag = response
+                  .headers()
+                  .get("etag")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let last_modified = response
+                  .headers()
+                  .get("last-modified")
+                  .and_then(|h| h.to_str().ok())
+                  .map(|s| s.to_string());
+                let (access_control_allow_origin, access_control_allow_credentials) =
+                  parse_cors_response_headers(response.headers());
+                let timing_allow_origin =
+                  header_values_joined(response.headers(), "timing-allow-origin");
+                let response_referrer_policy =
+                  header_values_joined(response.headers(), "referrer-policy")
+                    .as_deref()
+                    .and_then(ReferrerPolicy::parse_value_list);
+                let cache_policy = parse_http_cache_policy(response.headers());
+                let vary = parse_vary_headers(response.headers());
+                let final_url = response.url().to_string();
+                let response_headers = collect_response_headers(response.headers());
+
+                self.policy.reserve_budget(0)?;
+                let mut resource =
+                  FetchedResource::with_final_url(Vec::new(), content_type, Some(final_url));
+                resource.response_headers = Some(response_headers);
+                if !encodings.is_empty() {
+                  resource.content_encoding = Some(encodings.join(", "));
+                }
+                resource.nosniff = nosniff;
+                resource.status = Some(status_code);
+                resource.etag = etag;
+                resource.last_modified = last_modified;
+                resource.access_control_allow_origin = access_control_allow_origin;
+                resource.timing_allow_origin = timing_allow_origin;
+                resource.vary = vary;
+                resource.response_referrer_policy = response_referrer_policy;
+                resource.access_control_allow_credentials = access_control_allow_credentials;
+                resource.cache_policy = cache_policy;
+                return Ok(resource);
+              }
             }
-            let next = Url::parse(&current)
-              .ok()
-              .and_then(|base| base.join(loc).ok())
-              .map(|u| u.to_string())
-              .unwrap_or_else(|| loc.to_string());
-            finish_network_fetch_diagnostics(network_timer.take());
-            render_control::check_active(render_stage_hint_for_context(kind, &next))
-              .map_err(Error::Render)?;
-            self.policy.ensure_url_allowed(&next)?;
-            current = next;
-            validators = None;
-            continue 'redirects;
           }
         }
-
-        let status_code = status.as_u16();
         let retry_after =
           if self.retry_policy.respect_retry_after && retryable_http_status(status_code) {
             parse_retry_after(response.headers())
@@ -6137,8 +6694,11 @@ impl HttpFetcher {
         let vary = parse_vary_headers(response.headers());
         let final_url = response.url().to_string();
         let response_headers = collect_response_headers(response.headers());
-        let allows_empty_body =
+        let mut allows_empty_body =
           http_response_allows_empty_body(kind, status_code, response.headers());
+        if current_method.eq_ignore_ascii_case("HEAD") {
+          allows_empty_body = true;
+        }
         let substitute_empty_image_body =
           should_substitute_empty_image_body(kind, status_code, response.headers())
             || should_substitute_akamai_pixel_empty_image_body(
@@ -6207,6 +6767,10 @@ impl HttpFetcher {
                     url,
                     Some("identity"),
                     validators,
+                    original_method,
+                    redirect,
+                    user_headers,
+                    original_body,
                     client_origin,
                     referrer_url,
                     referrer_policy,
@@ -6773,6 +7337,82 @@ impl ResourceFetcher for HttpFetcher {
         req.credentials_mode,
       ),
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
+  }
+
+  fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.fetch.destination.into();
+    render_control::check_root(render_stage_hint_for_context(kind, req.fetch.url))
+      .map_err(Error::Render)?;
+    let scheme = self.policy.ensure_url_allowed(req.fetch.url)?;
+
+    let method_is_get = req.method.eq_ignore_ascii_case("GET");
+    let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
+    let method_is_post = req.method.eq_ignore_ascii_case("POST");
+
+    if !(method_is_get || method_is_head || method_is_post) {
+      return Err(Error::Resource(ResourceError::new(
+        req.fetch.url,
+        format!("unsupported HTTP method: {}", req.method),
+      )));
+    }
+
+    if (method_is_get || method_is_head) && req.body.is_some() {
+      return Err(Error::Resource(ResourceError::new(
+        req.fetch.url,
+        "HTTP request body is not allowed for GET/HEAD",
+      )));
+    }
+
+    match scheme {
+      ResourceScheme::Http | ResourceScheme::Https => {
+        // Preserve the existing fast path for plain GET requests.
+        if method_is_get
+          && req.redirect == web_fetch::RequestRedirect::Follow
+          && req.headers.is_empty()
+          && req.body.is_none()
+        {
+          return self.fetch_with_request(req.fetch);
+        }
+
+        let mut res = self.fetch_http_request_with_context(
+          kind,
+          req.fetch.destination,
+          req.fetch.url,
+          req.method,
+          req.redirect,
+          req.headers,
+          req.body,
+          req.fetch.client_origin,
+          req.fetch.referrer_url,
+          req.fetch.referrer_policy,
+          req.fetch.credentials_mode,
+        )?;
+        if method_is_head {
+          res.bytes.clear();
+        }
+        Ok(res)
+      }
+      // For non-HTTP(S) schemes we only support the legacy GET/HEAD, no-headers/no-body behaviour.
+      ResourceScheme::Data | ResourceScheme::File | ResourceScheme::Relative => {
+        if !req.headers.is_empty()
+          || req.body.is_some()
+          || req.redirect != web_fetch::RequestRedirect::Follow
+        {
+          return Err(Error::Resource(ResourceError::new(
+            req.fetch.url,
+            "non-HTTP fetch_http_request does not support custom headers/body/redirect",
+          )));
+        }
+        if method_is_get {
+          self.fetch_with_request(req.fetch)
+        } else {
+          let mut res = self.fetch_with_request(req.fetch)?;
+          res.bytes.clear();
+          Ok(res)
+        }
+      }
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
   }
@@ -9341,7 +9981,10 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     let method_is_get = req.method.eq_ignore_ascii_case("GET");
     let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
-    let cacheable = (method_is_get || method_is_head) && req.headers.is_empty() && req.body.is_none();
+    let cacheable = (method_is_get || method_is_head)
+      && req.headers.is_empty()
+      && req.body.is_none()
+      && req.redirect == web_fetch::RequestRedirect::Follow;
 
     if cacheable {
       let mut res = self.fetch_with_request(req.fetch)?;
@@ -10372,6 +11015,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -10432,6 +11079,10 @@ mod tests {
         FetchContextKind::Stylesheet.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -11258,6 +11909,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -11308,6 +11963,10 @@ mod tests {
         FetchContextKind::Other.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -11370,6 +12029,10 @@ mod tests {
         FetchContextKind::Other.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -11478,6 +12141,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -11523,6 +12190,10 @@ mod tests {
         FetchContextKind::Stylesheet.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -11577,6 +12248,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -11628,6 +12303,10 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           None,
+          None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
           None,
           None,
           None,
@@ -11708,6 +12387,10 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           None,
+          None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
           None,
           None,
           None,
@@ -11808,6 +12491,10 @@ mod tests {
           &url,
           None,
           None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           None,
           None,
           ReferrerPolicy::default(),
@@ -11889,6 +12576,10 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           None,
+          None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
           None,
           None,
           None,
@@ -11990,6 +12681,10 @@ mod tests {
           &url,
           None,
           None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           None,
           None,
           ReferrerPolicy::default(),
@@ -12065,6 +12760,10 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           None,
+          None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
           None,
           None,
           None,
@@ -12203,6 +12902,10 @@ mod tests {
           &url,
           None,
           None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
+          None,
           None,
           None,
           ReferrerPolicy::default(),
@@ -12283,6 +12986,10 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           None,
+          None,
+          "GET",
+          web_fetch::RequestRedirect::Follow,
+          &[],
           None,
           None,
           None,
@@ -12398,6 +13105,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -12485,6 +13196,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -12532,6 +13247,10 @@ mod tests {
         FetchContextKind::Font.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -12583,6 +13302,10 @@ mod tests {
         FetchContextKind::Font.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -12640,6 +13363,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -12666,6 +13393,10 @@ mod tests {
         FetchContextKind::Font.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -12724,6 +13455,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -12776,6 +13511,10 @@ mod tests {
         &url,
         None,
         None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -12821,6 +13560,10 @@ mod tests {
         FetchContextKind::Stylesheet.into(),
         &url,
         None,
+        None,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
         None,
         None,
         None,
@@ -15209,6 +15952,10 @@ mod tests {
         &url,
         None,
         validators,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -15228,6 +15975,10 @@ mod tests {
         &url,
         None,
         validators,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -15300,6 +16051,10 @@ mod tests {
         &url,
         None,
         validators,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -15324,6 +16079,10 @@ mod tests {
         &url,
         None,
         validators,
+        "GET",
+        web_fetch::RequestRedirect::Follow,
+        &[],
+        None,
         None,
         None,
         ReferrerPolicy::default(),
@@ -18033,6 +18792,7 @@ mod tests {
     let post_req = HttpRequest {
       fetch,
       method: "POST",
+      redirect: web_fetch::RequestRedirect::Follow,
       headers: &[],
       body: Some(b"hello"),
     };
