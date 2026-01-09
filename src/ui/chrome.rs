@@ -54,6 +54,23 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
     actions.push(ChromeAction::FocusAddressBar);
   }
 
+  // F5 is a common reload shortcut, and does not conflict with text editing, so handle it
+  // regardless of focus.
+  let f5_reload = ctx.input(|i| {
+    i.events.iter().any(|event| match event {
+      egui::Event::Key {
+        key: egui::Key::F5,
+        pressed: true,
+        repeat: false,
+        modifiers,
+      } => !(modifiers.command || modifiers.ctrl || modifiers.mac_cmd) && !modifiers.alt,
+      _ => false,
+    })
+  });
+  if f5_reload {
+    actions.push(ChromeAction::Reload);
+  }
+
   if !app.chrome.address_bar_has_focus && !ctx.wants_keyboard_input() {
     let (new_tab, close_tab, reload, back, forward, tab_delta) = ctx.input(|i| {
       // Guard against AltGr (often encoded as Ctrl+Alt).
@@ -252,6 +269,39 @@ mod tests {
         .iter()
         .any(|action| matches!(action, ChromeAction::FocusAddressBar)),
       "expected ChromeAction::FocusAddressBar, got {actions:?}"
+    );
+  }
+
+  #[test]
+  fn f5_emits_reload_action() {
+    let mut app = BrowserAppState::new();
+
+    let ctx = egui::Context::default();
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.events.push(egui::Event::Key {
+      key: egui::Key::F5,
+      pressed: true,
+      repeat: false,
+      modifiers: Default::default(),
+    });
+
+    ctx.begin_frame(raw);
+    assert!(
+      ctx.input(|i| i.key_pressed(egui::Key::F5)),
+      "test setup failure: egui input did not register Key::F5 as pressed"
+    );
+    let actions = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(
+      actions
+        .iter()
+        .any(|action| matches!(action, ChromeAction::Reload)),
+      "expected ChromeAction::Reload, got {actions:?}"
     );
   }
 }
