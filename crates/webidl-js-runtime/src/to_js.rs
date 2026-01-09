@@ -68,7 +68,10 @@ pub fn to_js_with_limits<R: WebIdlJsRuntime>(
         return Err(rt.throw_type_error("union return value must include a selected member type"));
       };
       let flattened = ty.flattened_union_member_types();
-      if !flattened.iter().any(|m| m == member_ty.innermost_type()) {
+      if !flattened
+        .iter()
+        .any(|m| union_member_matches(m, member_ty.innermost_type()))
+      {
         return Err(rt.throw_type_error("union return value member type is not part of the union"));
       }
       to_js_with_limits(rt, ctx, member_ty, value, limits)
@@ -207,6 +210,15 @@ fn numeric_value_to_f64(value: &WebIdlValue) -> Option<f64> {
     WebIdlValue::Double(v) | WebIdlValue::UnrestrictedDouble(v) => *v,
     _ => return None,
   })
+}
+
+fn union_member_matches(union_member: &IdlType, selected: &IdlType) -> bool {
+  let union_member = union_member.innermost_type();
+  let selected = selected.innermost_type();
+  match (union_member, selected) {
+    (IdlType::Named(a), IdlType::Named(b)) => a.name == b.name,
+    _ => union_member == selected,
+  }
 }
 
 fn to_js_string<R: WebIdlJsRuntime>(
