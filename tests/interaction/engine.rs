@@ -1389,6 +1389,230 @@ fn pointer_events_none_overlay_does_not_block_link_hover_or_click() {
 }
 
 #[test]
+fn form_submit_get_builds_expected_url() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("method", "get"), ("action", "/search")],
+        vec![
+          el(
+            "input",
+            vec![("id", "q"), ("name", "q"), ("value", "hello world")],
+            vec![],
+          ),
+          el(
+            "input",
+            vec![
+              ("id", "submit"),
+              ("type", "submit"),
+              ("name", "go"),
+              ("value", "1"),
+            ],
+            vec![],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+    "https://example.com/page1",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=hello+world&go=1".to_string()
+    }
+  );
+}
+
+#[test]
+fn form_submit_get_skips_unchecked_checkbox() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("method", "get"), ("action", "/search")],
+        vec![
+          el("input", vec![("id", "q"), ("name", "q"), ("value", "hi")], vec![]),
+          el(
+            "input",
+            vec![("id", "cb"), ("type", "checkbox"), ("name", "c"), ("value", "yes")],
+            vec![],
+          ),
+          el(
+            "input",
+            vec![
+              ("id", "submit"),
+              ("type", "submit"),
+              ("name", "go"),
+              ("value", "1"),
+            ],
+            vec![],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+    "https://example.com/page1",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=hi&go=1".to_string()
+    }
+  );
+}
+
+#[test]
+fn form_submit_get_includes_checked_checkbox() {
+  let mut dom = doc(vec![el(
+    "html",
+    vec![("id", "html")],
+    vec![el(
+      "body",
+      vec![("id", "body")],
+      vec![el(
+        "form",
+        vec![("id", "f"), ("method", "get"), ("action", "/search")],
+        vec![
+          el("input", vec![("id", "q"), ("name", "q"), ("value", "hi")], vec![]),
+          el(
+            "input",
+            vec![
+              ("id", "cb"),
+              ("type", "checkbox"),
+              ("name", "c"),
+              ("value", "yes"),
+              ("checked", ""),
+            ],
+            vec![],
+          ),
+          el(
+            "input",
+            vec![
+              ("id", "submit"),
+              ("type", "submit"),
+              ("name", "go"),
+              ("value", "1"),
+            ],
+            vec![],
+          ),
+        ],
+      )],
+    )],
+  )]);
+
+  let submit_dom_id = node_id(&dom, "submit");
+  let mut submit_box = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+  submit_box.styled_node_id = Some(submit_dom_id);
+  let box_tree = BoxTree::new(BoxNode::new_block(
+    default_style(),
+    FormattingContextType::Block,
+    vec![submit_box],
+  ));
+
+  let submit_box_id = find_box_id_for_styled_node(&box_tree, submit_dom_id);
+  let fragment_tree = FragmentTree::new(FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, 200.0, 200.0),
+    vec![FragmentNode::new_block_with_id(
+      Rect::from_xywh(0.0, 0.0, 80.0, 20.0),
+      submit_box_id,
+      vec![],
+    )],
+  ));
+
+  let mut engine = InteractionEngine::new();
+  let scroll = ScrollState::default();
+  engine.pointer_down(&mut dom, &box_tree, &fragment_tree, &scroll, Point::new(5.0, 5.0));
+  let (_, action) = engine.pointer_up(
+    &mut dom,
+    &box_tree,
+    &fragment_tree,
+    &scroll,
+    Point::new(5.0, 5.0),
+    "https://example.com/page1",
+    "https://example.com/base/",
+  );
+
+  assert_eq!(
+    action,
+    InteractionAction::Navigate {
+      href: "https://example.com/search?q=hi&c=yes&go=1".to_string()
+    }
+  );
+}
+
+#[test]
 fn dropdown_select_click_emits_open_dropdown_action_with_select_model() {
   let mut dom = doc(vec![el(
     "html",

@@ -17,6 +17,7 @@ use url::form_urlencoded;
 use url::Url;
 
 use super::dom_mutation;
+use super::form_submit;
 use super::hit_test::hit_test_dom;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1588,10 +1589,10 @@ impl InteractionEngine {
                 dom_changed |= dom_mutation::mark_user_validity(node_mut);
               }
               dom_changed |= dom_mutation::mark_form_user_validity(dom, target_id);
-              if let Some(url) =
-                super::form_submit::form_submission_get_url(dom, target_id, document_url, base_url)
+              if let Some(href) =
+                form_submit::form_submission_get_url(dom, target_id, document_url, base_url)
               {
-                action = InteractionAction::Navigate { href: url };
+                action = InteractionAction::Navigate { href };
               }
             }
           }
@@ -2059,7 +2060,7 @@ impl InteractionEngine {
             changed |= dom_mutation::activate_radio(dom, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
-          if node_is_disabled(&index, focused) {
+          if is_disabled_or_inert(&index, focused) {
             // Disabled submit controls do not submit.
           } else {
             // A form submission attempt flips HTML "user validity" so `:user-invalid` matches.
@@ -2067,16 +2068,10 @@ impl InteractionEngine {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(form_id) = find_ancestor_form(&index, focused) {
-              if let Some(url) = build_get_form_submission_url(
-                &index,
-                form_id,
-                Some(focused),
-                document_url,
-                base_url,
-              ) {
-                action = InteractionAction::Navigate { href: url };
-              }
+            if let Some(href) =
+              form_submit::form_submission_get_url(dom, focused, document_url, base_url)
+            {
+              action = InteractionAction::Navigate { href };
             }
           }
         } else if index.node(focused).is_some_and(is_text_input) {
@@ -2112,19 +2107,17 @@ impl InteractionEngine {
             changed |= dom_mutation::activate_radio(dom, focused);
           }
         } else if index.node(focused).is_some_and(is_submit_control) {
-          if node_is_disabled(&index, focused) {
+          if is_disabled_or_inert(&index, focused) {
             // Disabled submit controls do not submit.
           } else {
             if let Some(node_mut) = index.node_mut(focused) {
               changed |= dom_mutation::mark_user_validity(node_mut);
             }
             changed |= dom_mutation::mark_form_user_validity(dom, focused);
-            if let Some(form_id) = find_ancestor_form(&index, focused) {
-              if let Some(url) =
-                build_get_form_submission_url(&index, form_id, Some(focused), document_url, base_url)
-              {
-                action = InteractionAction::Navigate { href: url };
-              }
+            if let Some(href) =
+              form_submit::form_submission_get_url(dom, focused, document_url, base_url)
+            {
+              action = InteractionAction::Navigate { href };
             }
           }
         } else if index.node(focused).is_some_and(is_button) {
