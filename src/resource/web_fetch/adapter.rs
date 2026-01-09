@@ -57,6 +57,49 @@ fn effective_referrer_policy(request: &Request, ctx: WebFetchExecutionContext<'_
   }
 }
 
+fn url_base_for_origin(origin: &DocumentOrigin) -> Option<Url> {
+  // `DocumentOrigin` stores only scheme/host/port (no path), so the best we can do is treat the
+  // origin as the base directory.
+  if origin.scheme() == "file" {
+    return Url::parse("file:///").ok();
+  }
+  let host = origin.host()?;
+  let scheme = origin.scheme();
+  let url = match (scheme, origin.port()) {
+    ("http", Some(80)) | ("https", Some(443)) => format!("{scheme}://{host}/"),
+    (_, Some(port)) => format!("{scheme}://{host}:{port}/"),
+    (_, None) => format!("{scheme}://{host}/"),
+  };
+  Url::parse(&url).ok()
+}
+
+fn resolve_request_url<'a>(
+  candidate: &'a str,
+  base_url: Option<&str>,
+  client_origin: Option<&DocumentOrigin>,
+  storage: &'a mut Option<String>,
+) -> Option<&'a str> {
+  if Url::parse(candidate).is_ok() {
+    return Some(candidate);
+  }
+
+  if let Some(base) = base_url.and_then(|u| Url::parse(u).ok()) {
+    if let Ok(joined) = base.join(candidate) {
+      *storage = Some(joined.to_string());
+      return storage.as_deref();
+    }
+  }
+
+  if let Some(origin) = client_origin.and_then(url_base_for_origin) {
+    if let Ok(joined) = origin.join(candidate) {
+      *storage = Some(joined.to_string());
+      return storage.as_deref();
+    }
+  }
+
+  None
+}
+
 pub fn execute_web_fetch<'a>(
   fetcher: &dyn ResourceFetcher,
   request: &'a Request,
@@ -72,7 +115,29 @@ pub fn execute_web_fetch<'a>(
     ));
   }
 
-  let requested_url = request.url.as_str();
+  let referrer_url = effective_referrer_url(request, ctx);
+
+  let referrer_origin = ctx
+    .client_origin
+    .is_none()
+    .then(|| referrer_url.and_then(origin_from_url))
+    .flatten();
+  let client_origin = ctx.client_origin.or(referrer_origin.as_ref());
+
+  let mut requested_url_storage: Option<String> = None;
+  let requested_url = resolve_request_url(
+    request.url.as_str(),
+    referrer_url,
+    client_origin,
+    &mut requested_url_storage,
+  )
+  .ok_or_else(|| {
+    Error::Other(format!(
+      "web fetch request URL is invalid or missing base URL (got {:?})",
+      request.url
+    ))
+  })?;
+
   if let Some(csp) = ctx.csp {
     let parsed = Url::parse(requested_url).map_err(|_| {
       Error::Other(format!(
@@ -81,7 +146,7 @@ pub fn execute_web_fetch<'a>(
         requested_url
       ))
     })?;
-    if !csp.allows_url(CspDirective::ConnectSrc, ctx.client_origin, &parsed) {
+    if !csp.allows_url(CspDirective::ConnectSrc, client_origin, &parsed) {
       return Err(Error::Other(format!(
         "Blocked by Content-Security-Policy ({}) for requested URL: {}",
         CspDirective::ConnectSrc.as_str(),
@@ -90,7 +155,7 @@ pub fn execute_web_fetch<'a>(
     }
   }
   if request.mode == RequestMode::SameOrigin {
-    let Some(client_origin) = ctx.client_origin else {
+    let Some(client_origin) = client_origin else {
       return Err(Error::Other(
         "web fetch same-origin request requires a client origin".to_string(),
       ));
@@ -107,7 +172,6 @@ pub fn execute_web_fetch<'a>(
     }
   }
 
-  let referrer_url = effective_referrer_url(request, ctx);
   let referrer_policy = effective_referrer_policy(request, ctx);
   let credentials_mode = FetchCredentialsMode::from(request.credentials);
 
@@ -116,7 +180,7 @@ pub fn execute_web_fetch<'a>(
     url: requested_url,
     destination,
     referrer_url,
-    client_origin: ctx.client_origin,
+    client_origin,
     referrer_policy,
     credentials_mode,
   };
@@ -156,7 +220,7 @@ pub fn execute_web_fetch<'a>(
     // Fetch API `mode: "cors"` requests always validate CORS headers when we know the initiating
     // client origin. (Subresource CORS enforcement can be disabled via `FASTR_FETCH_ENFORCE_CORS`,
     // but `fetch()` should behave like browsers by default.)
-    if let Some(client_origin) = ctx.client_origin {
+    if let Some(client_origin) = client_origin {
       let cors_mode = match request.credentials {
         RequestCredentials::Include => CorsMode::UseCredentials,
         RequestCredentials::Omit | RequestCredentials::SameOrigin => CorsMode::Anonymous,
@@ -196,7 +260,7 @@ pub fn execute_web_fetch<'a>(
         url
       ))
     })?;
-    if !csp.allows_url(CspDirective::ConnectSrc, ctx.client_origin, &parsed) {
+    if !csp.allows_url(CspDirective::ConnectSrc, client_origin, &parsed) {
       return Err(Error::Other(format!(
         "Blocked by Content-Security-Policy ({}) for final URL: {}",
         CspDirective::ConnectSrc.as_str(),
@@ -1249,6 +1313,70 @@ mod tests {
       err.to_string().contains("blocked cross-origin"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn web_fetch_resolves_relative_url_against_referrer_url() {
+    struct UrlAssertingFetcher;
+
+    impl ResourceFetcher for UrlAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.fetch.url, "https://example.com/dir/sub");
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+    }
+
+    let fetcher = UrlAssertingFetcher;
+    let mut request = Request::new("GET", "sub");
+    request.mode = RequestMode::NoCors;
+    let ctx = WebFetchExecutionContext {
+      referrer_url: Some("https://example.com/dir/page"),
+      ..WebFetchExecutionContext::default()
+    };
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.url, "https://example.com/dir/sub");
+  }
+
+  #[test]
+  fn web_fetch_resolves_relative_url_against_client_origin() {
+    struct UrlAssertingFetcher;
+
+    impl ResourceFetcher for UrlAssertingFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.fetch.url, "https://client.example/res");
+        Ok(FetchedResource::new(b"ok".to_vec(), None))
+      }
+    }
+
+    let origin = origin_from_url("https://client.example/").expect("origin");
+    let fetcher = UrlAssertingFetcher;
+    let mut request = Request::new("GET", "/res");
+    request.mode = RequestMode::NoCors;
+    let ctx = WebFetchExecutionContext {
+      client_origin: Some(&origin),
+      ..WebFetchExecutionContext::default()
+    };
+    let response = execute_web_fetch(&fetcher, &request, ctx).expect("expected response");
+    assert_eq!(response.url, "https://client.example/res");
+  }
+
+  #[test]
+  fn web_fetch_relative_url_without_base_errors_before_fetching() {
+    let fetcher = PanicFetcher;
+    let mut request = Request::new("GET", "/res");
+    request.mode = RequestMode::NoCors;
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(err.to_string().contains("missing base URL"));
   }
 
   #[test]
