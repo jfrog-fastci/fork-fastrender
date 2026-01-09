@@ -672,6 +672,9 @@ impl TransitionState {
 
         // No existing transition: only start one if the property is listed in transition-property.
         let Some(idx) = eligible.get(&name_arc).copied() else {
+          // CSS Transitions 1 step 3: if there is no matching `transition-property` value, remove
+          // completed transitions.
+          element.completed.remove(&name_arc);
           continue;
         };
 
@@ -682,18 +685,27 @@ impl TransitionState {
         }
 
         let Some(before_value) = TransitionRecord::extract_value(before_style, name, &cmp_ctx) else {
+          // CSS Transitions 1 step 2: remove completed transitions if their end value no longer
+          // matches the after-change style.
+          element.completed.remove(&name_arc);
           continue;
         };
 
         if before_value == after_value {
+          element.completed.remove(&name_arc);
           continue;
         }
 
         let duration = super::pick(&after_style.transition_durations, idx, 0.0);
         if duration <= 0.0 {
+          element.completed.remove(&name_arc);
           continue;
         }
         let delay = super::pick(&after_style.transition_delays, idx, 0.0);
+        if duration.max(0.0) + delay <= 0.0 {
+          element.completed.remove(&name_arc);
+          continue;
+        }
         let timing = super::pick(
           &after_style.transition_timing_functions,
           idx,
@@ -707,6 +719,7 @@ impl TransitionState {
         let allow_discrete = matches!(behavior, TransitionBehavior::AllowDiscrete);
 
         if !allow_discrete && is_discrete_property(name) {
+          element.completed.remove(&name_arc);
           continue;
         }
 
@@ -735,6 +748,8 @@ impl TransitionState {
           &cmp_ctx,
         ) {
           element.running.insert(name_arc.clone(), record);
+          element.completed.remove(&name_arc);
+        } else {
           element.completed.remove(&name_arc);
         }
       }
@@ -1435,6 +1450,92 @@ mod tests {
     assert!(
       element.completed.get("opacity").is_some(),
       "expected completed transition to remain present"
+    );
+  }
+
+  #[test]
+  fn transition_state_removes_completed_transition_when_end_value_no_longer_matches() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_completed =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_b, 2000.0);
+
+    let mut style = make_opacity_style(0.0).as_ref().clone();
+    style.transition_durations = Arc::from([0.0]);
+    let tree_c = make_box_tree(Arc::new(style));
+
+    let next_state =
+      TransitionState::update_for_style_change(Some(&state_completed), Some(&tree_b), &tree_c, 2000.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    assert!(
+      next_state.elements.get(&key).is_none(),
+      "expected completed transition to be removed when end value changes"
+    );
+  }
+
+  #[test]
+  fn transition_state_removes_completed_transition_when_transition_property_no_longer_matches() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_completed =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_b, 2000.0);
+
+    let mut style = make_opacity_style(1.0).as_ref().clone();
+    style.transition_properties = Arc::from([TransitionProperty::None]);
+    let tree_none = make_box_tree(Arc::new(style));
+
+    let next_state =
+      TransitionState::update_for_style_change(Some(&state_completed), Some(&tree_b), &tree_none, 2000.0);
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    assert!(
+      next_state.elements.get(&key).is_none(),
+      "expected completed transition to be removed when transition-property no longer matches"
+    );
+  }
+
+  #[test]
+  fn transition_state_does_not_restart_transition_when_completed_end_matches_after_style() {
+    let tree_a = make_box_tree(make_opacity_style(0.0));
+    let tree_b = make_box_tree(make_opacity_style(1.0));
+
+    let state_ab = TransitionState::update_for_style_change(None, Some(&tree_a), &tree_b, 0.0);
+    let state_completed =
+      TransitionState::update_for_style_change(Some(&state_ab), Some(&tree_b), &tree_b, 2000.0);
+
+    let tree_prev = make_box_tree(make_opacity_style(0.5));
+    let tree_after = make_box_tree(make_opacity_style(1.0));
+
+    let next_state = TransitionState::update_for_style_change(
+      Some(&state_completed),
+      Some(&tree_prev),
+      &tree_after,
+      2500.0,
+    );
+
+    let key = ElementKey {
+      styled_node_id: 1,
+      pseudo: None,
+    };
+    let element = next_state.elements.get(&key).expect("element transition state");
+    assert!(
+      !element.running.contains_key("opacity"),
+      "expected no new running transition when completed end matches after-change style"
+    );
+    assert!(
+      element.completed.contains_key("opacity"),
+      "expected completed transition to be retained"
     );
   }
 }
