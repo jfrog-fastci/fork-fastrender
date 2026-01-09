@@ -16,6 +16,12 @@ fn main() {
 }
 
 #[cfg(feature = "browser_ui")]
+#[derive(Debug, Clone, Copy)]
+enum UserEvent {
+  WorkerWake,
+}
+
+#[cfg(feature = "browser_ui")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
   apply_address_space_limit_from_env();
 
@@ -38,36 +44,56 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
   }
 
   use winit::event::Event;
+  use winit::event::StartCause;
   use winit::event::WindowEvent;
   use winit::event_loop::ControlFlow;
-  use winit::event_loop::EventLoop;
+  use winit::event_loop::EventLoopBuilder;
   use winit::window::WindowBuilder;
 
-  let event_loop = EventLoop::new();
+  let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+  let event_loop_proxy = event_loop.create_proxy();
   let window = WindowBuilder::new()
     .with_title("FastRender (browser_ui)")
     .build(&event_loop)?;
 
   let (ui_to_worker_tx, ui_to_worker_rx) = std::sync::mpsc::channel::<fastrender::ui::UiToWorker>();
-  let (worker_to_ui_tx, worker_to_ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+  let (raw_tx, raw_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
+  let (ui_tx, ui_rx) = std::sync::mpsc::channel::<fastrender::ui::WorkerToUi>();
 
-  spawn_default_render_worker(ui_to_worker_rx, worker_to_ui_tx);
+  spawn_default_render_worker(ui_to_worker_rx, raw_tx);
 
-  let mut app = pollster::block_on(App::new(
-    window,
-    &event_loop,
-    ui_to_worker_tx,
-    worker_to_ui_rx,
-  ))?;
+  let mut app = pollster::block_on(App::new(window, &event_loop, ui_to_worker_tx))?;
   app.startup();
 
+  // Worker → UI messages are forwarded through a small bridge thread so that we can keep the winit
+  // event loop in `ControlFlow::Wait` (no busy polling), while still waking immediately when a new
+  // frame/message arrives.
+  std::thread::spawn({
+    let event_loop_proxy = event_loop_proxy.clone();
+    move || {
+      while let Ok(msg) = raw_rx.recv() {
+        if ui_tx.send(msg).is_err() {
+          break;
+        }
+        // Ignore failures during shutdown (event loop already dropped).
+        let _ = event_loop_proxy.send_event(UserEvent::WorkerWake);
+      }
+    }
+  });
+
+  // Kick the first frame so the window shows chrome immediately even before the worker responds.
+  app.window.request_redraw();
+
   event_loop.run(move |event, _, control_flow| {
-    *control_flow = ControlFlow::Poll;
+    *control_flow = ControlFlow::Wait;
 
     match event {
       Event::WindowEvent { window_id, event } if window_id == app.window.id() => {
-        let _ = app.egui_state.on_event(&app.egui_ctx, &event);
+        let response = app.egui_state.on_event(&app.egui_ctx, &event);
         app.handle_winit_input_event(&event);
+        if response.repaint {
+          app.window.request_redraw();
+        }
 
         match event {
           WindowEvent::CloseRequested => {
@@ -76,6 +102,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           }
           WindowEvent::Resized(new_size) => {
             app.resize(new_size);
+            app.window.request_redraw();
           }
           WindowEvent::ScaleFactorChanged {
             scale_factor,
@@ -83,14 +110,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
           } => {
             app.set_pixels_per_point(scale_factor as f32);
             app.resize(*new_inner_size);
+            app.window.request_redraw();
           }
           _ => {}
         }
       }
+      Event::UserEvent(UserEvent::WorkerWake) => {
+        // Drain all pending worker messages. The bridge thread emits one wake event per message but
+        // draining here ensures we coalesce renders if multiple arrive in quick succession.
+        while let Ok(msg) = ui_rx.try_recv() {
+          app.handle_worker_message(msg);
+        }
+        app.window.request_redraw();
+      }
       Event::RedrawRequested(window_id) if window_id == app.window.id() => {
         app.render_frame(control_flow);
       }
-      Event::MainEventsCleared => {
+      Event::NewEvents(StartCause::Init) => {
+        // Ensure we draw at least one frame on startup.
         app.window.request_redraw();
       }
       _ => {}
@@ -350,8 +387,6 @@ struct App {
   pixels_per_point: f32,
 
   ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
-  worker_to_ui_rx: std::sync::mpsc::Receiver<fastrender::ui::WorkerToUi>,
-
   browser_state: fastrender::ui::BrowserAppState,
 
   tab_textures: std::collections::HashMap<fastrender::ui::TabId, fastrender::ui::WgpuPixmapTexture>,
@@ -372,11 +407,10 @@ struct App {
 
 #[cfg(feature = "browser_ui")]
 impl App {
-  async fn new(
+  async fn new<T: 'static>(
     window: winit::window::Window,
-    event_loop: &winit::event_loop::EventLoopWindowTarget<()>,
+    event_loop: &winit::event_loop::EventLoopWindowTarget<T>,
     ui_to_worker_tx: std::sync::mpsc::Sender<fastrender::ui::UiToWorker>,
-    worker_to_ui_rx: std::sync::mpsc::Receiver<fastrender::ui::WorkerToUi>,
   ) -> Result<Self, Box<dyn std::error::Error>> {
     let pixels_per_point = window.scale_factor() as f32;
 
@@ -448,7 +482,6 @@ impl App {
       egui_renderer,
       pixels_per_point,
       ui_to_worker_tx,
-      worker_to_ui_rx,
       browser_state: fastrender::ui::BrowserAppState::new(),
       tab_textures: std::collections::HashMap::new(),
       checkerboard_texture: None,
@@ -562,96 +595,87 @@ impl App {
     }
   }
 
-  fn pump_worker_messages(&mut self) {
-    for msg in self.worker_to_ui_rx.try_iter() {
-      match msg {
-        fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.scroll_state = frame.scroll_state.clone();
-            tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
-              pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
-              viewport_css: frame.viewport_css,
-              dpr: frame.dpr,
-            });
-            tab.history.update_scroll(frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
-          }
+  fn handle_worker_message(&mut self, msg: fastrender::ui::WorkerToUi) {
+    match msg {
+      fastrender::ui::WorkerToUi::FrameReady { tab_id, frame } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.scroll_state = frame.scroll_state.clone();
+          tab.latest_frame_meta = Some(fastrender::ui::LatestFrameMeta {
+            pixmap_px: (frame.pixmap.width(), frame.pixmap.height()),
+            viewport_css: frame.viewport_css,
+            dpr: frame.dpr,
+          });
+          tab.history.update_scroll(frame.scroll_state.viewport.x, frame.scroll_state.viewport.y);
+        }
 
-          let pixmap = frame.pixmap;
-          if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
-            tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-          } else {
-            let mut tex = fastrender::ui::WgpuPixmapTexture::new(
-              &self.device,
-              &mut self.egui_renderer,
-              &pixmap,
-            );
-            tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
-            self.tab_textures.insert(tab_id, tex);
-          }
-
-          if self.browser_state.active_tab_id() == Some(tab_id) {
-            self.window.request_redraw();
-          }
+        let pixmap = frame.pixmap;
+        if let Some(tex) = self.tab_textures.get_mut(&tab_id) {
+          tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+        } else {
+          let mut tex =
+            fastrender::ui::WgpuPixmapTexture::new(&self.device, &mut self.egui_renderer, &pixmap);
+          tex.update(&self.device, &self.queue, &mut self.egui_renderer, &pixmap);
+          self.tab_textures.insert(tab_id, tex);
         }
-        fastrender::ui::WorkerToUi::Stage { tab_id, stage } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.stage = Some(stage);
-          }
+      }
+      fastrender::ui::WorkerToUi::Stage { tab_id, stage } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.stage = Some(stage);
         }
-        fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = true;
-            tab.error = None;
-            tab.pending_nav_url = Some(url.clone());
-          }
-          if self.browser_state.active_tab_id() == Some(tab_id) {
-            self.browser_state.chrome.address_bar_text = url;
-          }
+      }
+      fastrender::ui::WorkerToUi::NavigationStarted { tab_id, url } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.loading = true;
+          tab.error = None;
+          tab.pending_nav_url = Some(url.clone());
         }
-        fastrender::ui::WorkerToUi::NavigationCommitted {
-          tab_id,
-          url,
-          title,
-          can_go_back: _,
-          can_go_forward: _,
-        } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            if let Some(original) = tab.pending_nav_url.take() {
-              tab.history.commit_navigation(&original, Some(&url));
-            }
-            if let Some(title) = title {
-              tab.title = Some(title.clone());
-              tab.history.set_title(title);
-            }
-            tab.loading = false;
-            tab.error = None;
-            tab.sync_nav_flags_from_history();
-          }
-          if self.browser_state.active_tab_id() == Some(tab_id) {
-            self.browser_state.chrome.address_bar_text = url;
-          }
+        if self.browser_state.active_tab_id() == Some(tab_id) {
+          self.browser_state.chrome.address_bar_text = url;
         }
-        fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = false;
-            tab.error = Some(error);
-            tab.pending_nav_url = None;
+      }
+      fastrender::ui::WorkerToUi::NavigationCommitted {
+        tab_id,
+        url,
+        title,
+        can_go_back: _,
+        can_go_forward: _,
+      } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          if let Some(original) = tab.pending_nav_url.take() {
+            tab.history.commit_navigation(&original, Some(&url));
           }
-        }
-        fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.scroll_state = scroll.clone();
-            tab.history.update_scroll(scroll.viewport.x, scroll.viewport.y);
+          if let Some(title) = title {
+            tab.title = Some(title.clone());
+            tab.history.set_title(title);
           }
+          tab.loading = false;
+          tab.error = None;
+          tab.sync_nav_flags_from_history();
         }
-        fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
-          if let Some(tab) = self.browser_state.tab_mut(tab_id) {
-            tab.loading = loading;
-          }
+        if self.browser_state.active_tab_id() == Some(tab_id) {
+          self.browser_state.chrome.address_bar_text = url;
         }
-        fastrender::ui::WorkerToUi::DebugLog { tab_id, line } => {
-          eprintln!("[worker:{tab_id:?}] {line}");
+      }
+      fastrender::ui::WorkerToUi::NavigationFailed { tab_id, error, .. } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.loading = false;
+          tab.error = Some(error);
+          tab.pending_nav_url = None;
         }
+      }
+      fastrender::ui::WorkerToUi::ScrollStateUpdated { tab_id, scroll } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.scroll_state = scroll.clone();
+          tab.history.update_scroll(scroll.viewport.x, scroll.viewport.y);
+        }
+      }
+      fastrender::ui::WorkerToUi::LoadingState { tab_id, loading } => {
+        if let Some(tab) = self.browser_state.tab_mut(tab_id) {
+          tab.loading = loading;
+        }
+      }
+      fastrender::ui::WorkerToUi::DebugLog { tab_id, line } => {
+        eprintln!("[worker:{tab_id:?}] {line}");
       }
     }
   }
@@ -1050,7 +1074,6 @@ impl App {
   }
 
   fn render_frame(&mut self, control_flow: &mut winit::event_loop::ControlFlow) {
-    self.pump_worker_messages();
     let raw_input = {
       let mut raw = self.egui_state.take_egui_input(&self.window);
       raw.pixels_per_point = Some(self.pixels_per_point);
