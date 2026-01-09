@@ -25,9 +25,12 @@ mod style_attr;
 mod html;
 mod dom_parsing;
 mod serialization;
+mod scripting_parser;
 mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 pub use html_parse::{parse_html, parse_html_with_options};
+
+pub use scripting_parser::parse_html_with_scripting_dom2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
