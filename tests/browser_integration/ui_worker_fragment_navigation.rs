@@ -333,6 +333,173 @@ fn same_document_fragment_click_updates_url_and_scrolls_without_reload() {
 }
 
 #[test]
+fn same_document_fragment_click_with_percent_encoded_percent_scrolls_to_target_without_reload() {
+  let _lock = super::stage_listener_test_lock();
+
+  let site = support::TempSite::new();
+  let url = site.write(
+    "page.html",
+    r##"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            #link { display: block; width: 120px; height: 40px; background: rgb(255, 0, 0); }
+            .spacer { height: 2000px; }
+            div[id="%23foo"] { height: 20px; background: rgb(255, 0, 0); }
+            div[id="%23foo"]:target { background: rgb(0, 255, 0); }
+          </style>
+        </head>
+        <body>
+          <a href="#%2523foo" id="link">Go</a>
+          <div class="spacer"></div>
+          <div id="%23foo"></div>
+          <div class="spacer"></div>
+        </body>
+      </html>
+    "##,
+  );
+
+  let worker = spawn_ui_worker("fastr-ui-worker-fragment-same-doc-percent-escaped-percent")
+    .expect("spawn ui worker");
+  let tab_id = TabId(1);
+  worker
+    .ui_tx
+    .send(support::create_tab_msg(tab_id, None))
+    .expect("create tab");
+  worker
+    .ui_tx
+    .send(support::viewport_changed_msg(tab_id, (200, 120), 1.0))
+    .expect("viewport");
+  worker
+    .ui_tx
+    .send(support::navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
+    .expect("navigate");
+
+  // Wait for an initial frame so hit-testing has a layout cache.
+  let initial_frame = next_frame_ready(&worker.ui_rx, tab_id);
+  assert_eq!(
+    support::rgba_at(&initial_frame.pixmap, 10, 10),
+    [255, 0, 0, 255],
+    "expected link to render at top before fragment navigation"
+  );
+
+  // Drain any follow-up messages from the initial navigation.
+  let _ = support::drain_for(&worker.ui_rx, Duration::from_millis(50));
+
+  // Click the link at the top-left of the page.
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerDown {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .expect("pointer down");
+  worker
+    .ui_tx
+    .send(UiToWorker::PointerUp {
+      tab_id,
+      pos_css: (10.0, 10.0),
+      button: PointerButton::Primary,
+    })
+    .expect("pointer up");
+
+  let deadline = Instant::now() + TIMEOUT;
+  let mut saw_failed = false;
+  let mut committed_url = None::<String>;
+  let mut committed_can_go_back = None::<bool>;
+  let mut scroll_y = None::<f32>;
+  let mut final_pixel = None::<[u8; 4]>;
+  let mut captured: Vec<WorkerToUi> = Vec::new();
+
+  while Instant::now() < deadline {
+    match worker.ui_rx.recv_timeout(Duration::from_millis(200)) {
+      Ok(msg) => {
+        match &msg {
+          WorkerToUi::NavigationFailed { tab_id: got, .. } if *got == tab_id => {
+            saw_failed = true;
+          }
+          WorkerToUi::NavigationCommitted {
+            tab_id: got,
+            url,
+            can_go_back,
+            ..
+          } if *got == tab_id => {
+            if url.contains("#%2523foo") {
+              committed_url = Some(url.clone());
+              committed_can_go_back = Some(*can_go_back);
+            }
+          }
+          WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if *got == tab_id => {
+            if committed_url.is_some() {
+              scroll_y = Some(scroll.viewport.y);
+            }
+          }
+          WorkerToUi::FrameReady { tab_id: got, frame } if *got == tab_id => {
+            if committed_url.is_some() {
+              final_pixel = Some(support::rgba_at(&frame.pixmap, 10, 10));
+            }
+          }
+          _ => {}
+        }
+        captured.push(msg);
+
+        if saw_failed {
+          break;
+        }
+        if committed_url.is_some() && scroll_y.is_some() && final_pixel.is_some() {
+          break;
+        }
+      }
+      Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+      Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+    }
+  }
+
+  if committed_url.is_none() || scroll_y.is_none() || final_pixel.is_none() {
+    // Drain for a moment to provide better assertion errors.
+    captured.extend(support::drain_for(&worker.ui_rx, Duration::from_millis(200)));
+  }
+
+  assert!(
+    !saw_failed,
+    "did not expect NavigationFailed; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  let committed_url = committed_url.unwrap_or_default();
+  assert!(
+    committed_url.contains("#%2523foo"),
+    "expected NavigationCommitted with #%2523foo, got {committed_url}; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  // Same-document fragment navigations should create a history entry (allowing Back).
+  assert_eq!(
+    committed_can_go_back,
+    Some(true),
+    "expected can_go_back=true after fragment navigation, messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  let scroll_y = scroll_y.unwrap_or(0.0);
+  assert!(
+    scroll_y > 1000.0,
+    "expected viewport scroll y to increase after fragment navigation, got {scroll_y}; messages:\n{}",
+    support::format_messages(&captured)
+  );
+  assert_eq!(
+    final_pixel,
+    Some([0, 255, 0, 255]),
+    "expected :target styling to update after fragment click; messages:\n{}",
+    support::format_messages(&captured)
+  );
+
+  worker.join().expect("worker join");
+}
+
+#[test]
 fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   let _lock = super::stage_listener_test_lock();
   let site = support::TempSite::new();
