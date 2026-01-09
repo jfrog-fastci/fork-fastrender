@@ -1,7 +1,6 @@
-use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::dom::HTML_NAMESPACE;
+use crate::dom::{DomNode, DomNodeType, ShadowRootMode};
 use crate::web::dom::selectors::{node_matches_selector_list, parse_selector_list};
-use crate::web::events;
 use crate::web::dom::DomException;
 use selectors::context::QuirksMode;
 use selectors::matching::SelectorCaches;
@@ -12,13 +11,13 @@ mod class_list;
 mod error;
 pub use error::{DomError, Result as DomResult};
 
-mod mutation;
-mod js_shims;
-mod style_attr;
-pub mod import;
 mod html5ever_tree_sink;
-mod traversal;
+pub mod import;
+mod js_shims;
+mod mutation;
 mod shadow_dom;
+mod style_attr;
+mod traversal;
 pub use html5ever_tree_sink::Dom2TreeSink;
 
 #[cfg(test)]
@@ -127,11 +126,7 @@ impl RendererDomMapping {
   /// `NodeId` will be the corresponding real `dom2` node (e.g., the parent `<wbr>` element),
   /// meaning multiple renderer preorder ids can map to the same `NodeId`.
   pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
-    self
-      .preorder_to_node_id
-      .get(preorder_id)
-      .copied()
-      .flatten()
+    self.preorder_to_node_id.get(preorder_id).copied().flatten()
   }
 
   /// Translate a `dom2` [`NodeId`] to its 1-based renderer pre-order id.
@@ -157,11 +152,7 @@ struct SelectorDomMapping {
 
 impl SelectorDomMapping {
   pub fn node_id_for_preorder(&self, preorder_id: usize) -> Option<NodeId> {
-    self
-      .preorder_to_node_id
-      .get(preorder_id)
-      .copied()
-      .flatten()
+    self.preorder_to_node_id.get(preorder_id).copied().flatten()
   }
 
   pub fn preorder_for_node_id(&self, node_id: NodeId) -> Option<usize> {
@@ -326,7 +317,9 @@ impl Document {
         tag_name,
         namespace,
         ..
-      } if (namespace.is_empty() || namespace == HTML_NAMESPACE) && tag_name.eq_ignore_ascii_case(tag) => {
+      } if (namespace.is_empty() || namespace == HTML_NAMESPACE)
+        && tag_name.eq_ignore_ascii_case(tag) =>
+      {
         true
       }
       _ => false,
@@ -595,7 +588,7 @@ impl Document {
     let mut preorder_to_node_id: Vec<Option<NodeId>> = Vec::with_capacity(self.nodes.len() + 1);
     preorder_to_node_id.push(None);
     let mut node_id_to_preorder: Vec<usize> = vec![0; self.nodes.len()];
- 
+
     enum StackItem {
       Real(NodeId),
       SyntheticWbrZwsp(NodeId),
@@ -717,9 +710,13 @@ impl Document {
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let use_document_snapshot = scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
+    let use_document_snapshot =
+      scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
     let (snapshot_dom, mapping) = if use_document_snapshot {
-      (self.to_renderer_dom(), self.build_selector_preorder_mapping())
+      (
+        self.to_renderer_dom(),
+        self.build_selector_preorder_mapping(),
+      )
     } else {
       let scope_id = scope.expect("scope is Some when not using document snapshot");
       let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
@@ -755,8 +752,9 @@ impl Document {
     });
     let mut next_preorder_id = 1usize;
     let mut scope_active = scope.is_none() || !use_document_snapshot;
-    let mut scope_anchor: Option<OpaqueElement> =
-      (!use_document_snapshot && snapshot_dom.is_element()).then_some(OpaqueElement::new(&snapshot_dom));
+    let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
+      && snapshot_dom.is_element())
+    .then_some(OpaqueElement::new(&snapshot_dom));
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -835,9 +833,13 @@ impl Document {
     let mut selector_caches = SelectorCaches::default();
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
-    let use_document_snapshot = scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
+    let use_document_snapshot =
+      scope.is_none() || scope.is_some_and(|id| self.is_connected_for_scripting(id));
     let (snapshot_dom, mapping) = if use_document_snapshot {
-      (self.to_renderer_dom(), self.build_selector_preorder_mapping())
+      (
+        self.to_renderer_dom(),
+        self.build_selector_preorder_mapping(),
+      )
     } else {
       let scope_id = scope.expect("scope is Some when not using document snapshot");
       let Some(dom) = self.to_renderer_dom_subtree(scope_id) else {
@@ -872,8 +874,9 @@ impl Document {
     });
     let mut next_preorder_id = 1usize;
     let mut scope_active = scope.is_none() || !use_document_snapshot;
-    let mut scope_anchor: Option<OpaqueElement> =
-      (!use_document_snapshot && snapshot_dom.is_element()).then_some(OpaqueElement::new(&snapshot_dom));
+    let mut scope_anchor: Option<OpaqueElement> = (!use_document_snapshot
+      && snapshot_dom.is_element())
+    .then_some(OpaqueElement::new(&snapshot_dom));
 
     while let Some(item) = stack.pop() {
       if item.exiting {
@@ -961,7 +964,10 @@ impl Document {
     selector_caches.set_epoch(crate::dom::next_selector_cache_epoch());
 
     let (snapshot_dom, mapping) = if self.is_connected_for_scripting(element) {
-      (self.to_renderer_dom(), self.build_selector_preorder_mapping())
+      (
+        self.to_renderer_dom(),
+        self.build_selector_preorder_mapping(),
+      )
     } else {
       // If the element is disconnected (either detached or inside inert `<template>` contents), we
       // still want to be able to match selectors against it and its connected ancestors within that
