@@ -5,10 +5,7 @@
 //! per-tab state (document, interaction engine, history, cancellation) and renders on a dedicated
 //! large-stack thread.
 
-use crate::api::{
-  BrowserDocument, FastRender, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig,
-  PreparedDocumentReport, RenderOptions,
-};
+use crate::api::{BrowserDocument, FastRenderConfig, FastRenderFactory, FastRenderPoolConfig, RenderOptions};
 use crate::geometry::{Point, Rect};
 use crate::html::find_document_title;
 use crate::interaction::anchor_scroll::scroll_offset_for_fragment_target;
@@ -17,7 +14,7 @@ use crate::render_control::{push_stage_listener, StageHeartbeat, StageListenerGu
 use crate::scroll::ScrollState;
 use crate::text::font_db::FontConfig;
 use crate::ui::about_pages;
-use crate::ui::cancel::{CancelGens, CancelSnapshot};
+use crate::ui::cancel::{deadline_for, CancelGens, CancelSnapshot};
 use crate::ui::history::TabHistory;
 use crate::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
@@ -25,6 +22,31 @@ use crate::ui::messages::{
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
+#[cfg(feature = "browser_ui")]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+// -----------------------------------------------------------------------------
+// Test hooks
+// -----------------------------------------------------------------------------
+
+/// Global counter for how many `FastRender` instances were built by the UI worker.
+///
+/// This is a lightweight integration-test hook used to assert that tabs reuse a single renderer
+/// across navigations (instead of rebuilding one per navigation).
+#[cfg(feature = "browser_ui")]
+static UI_WORKER_RENDERER_BUILD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns the number of renderers built by the UI worker so far (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn renderer_build_count_for_test() -> usize {
+  UI_WORKER_RENDERER_BUILD_COUNT.load(Ordering::Relaxed)
+}
+
+/// Reset the per-process renderer build counter (test hook).
+#[cfg(feature = "browser_ui")]
+pub fn reset_renderer_build_count_for_test() {
+  UI_WORKER_RENDERER_BUILD_COUNT.store(0, Ordering::Relaxed);
+}
 
 /// Handle to a spawned UI render worker thread.
 ///
@@ -1408,58 +1430,35 @@ impl BrowserRuntime {
   }
 
   fn run_navigation(&mut self, tab_id: TabId, request: NavigationRequest) -> Option<JobOutput> {
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return None;
-    };
+    // Pull what we need out of `TabState` so we can release the borrow while running the expensive
+    // prepare+paint pipeline (and so we can reinsert the document on all exit paths).
+    let (snapshot, paint_snapshot, viewport_css, dpr, initial_scroll, apply_fragment_scroll, cancel, doc) =
+      {
+        let tab = self.tabs.get_mut(&tab_id)?;
+        (
+          tab.cancel.snapshot_prepare(),
+          tab.cancel.snapshot_paint(),
+          tab.viewport_css,
+          tab.dpr,
+          tab.history.current().map(|e| (e.scroll_x, e.scroll_y)),
+          request.apply_fragment_scroll,
+          tab.cancel.clone(),
+          tab.document.take(),
+        )
+      };
 
-    let snapshot = tab.cancel.snapshot_prepare();
-    // Capture the paint snapshot at the start of the navigation job so paint-gen bumps that occur
-    // while we're still preparing (e.g. viewport resize / scroll) can cancel the initial paint and
-    // avoid emitting a stale `FrameReady`.
-    let paint_snapshot = tab.cancel.snapshot_paint();
-    let cancel_callback = snapshot.cancel_callback_for_prepare(&tab.cancel);
+    // Capture the original URL before any redirects/mutations for history bookkeeping.
+    let original_url = request.url.clone();
 
-    let viewport_css = tab.viewport_css;
-    let dpr = tab.dpr;
-    let initial_scroll = tab.history.current().map(|e| (e.scroll_x, e.scroll_y));
-    let apply_fragment_scroll = request.apply_fragment_scroll;
-
-    // Drop the mutable borrow for the potentially expensive prepare+paint.
-    let (prepared, original_url) = {
-      let original_url = request.url.clone();
-      let mut options = RenderOptions::default()
-        .with_viewport(viewport_css.0, viewport_css.1)
-        .with_device_pixel_ratio(dpr);
-      options.cancel_callback = Some(cancel_callback.clone());
-
-      match is_allowed_navigation_url(&original_url) {
-        Ok(()) => (
-          self
-            .prepare_document(tab_id, &original_url, options)
-            .map_err(|e| e.to_string()),
-          original_url,
-        ),
-        Err(err) => (Err(err), original_url),
-      }
-    };
-
-    // If the tab was closed while we were preparing, drop the result.
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return None;
-    };
-
-    // If a new navigation was initiated while we were preparing, treat this result as cancelled.
-    if !snapshot.is_still_current_for_prepare(&tab.cancel) {
-      return None;
-    }
-
-    let mut msgs = Vec::new();
-
-    let (renderer, report) = match prepared {
-      Ok(r) => r,
-      Err(err) => {
-        // Unsupported URL schemes should fail fast without rendering an error page.
-        if err.starts_with("unsupported URL scheme:") {
+    // Ensure we always put the document back into the tab state before returning.
+    let mut doc = match doc {
+      Some(doc) => doc,
+      None => match self.build_initial_document(viewport_css, dpr) {
+        Ok(doc) => doc,
+        Err(err) => {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return None;
+          };
           tab.loading = false;
           tab.pending_history_entry = false;
           return Some(JobOutput {
@@ -1469,7 +1468,116 @@ impl BrowserRuntime {
             msgs: vec![
               WorkerToUi::NavigationFailed {
                 tab_id,
-                url: original_url.clone(),
+                url: original_url,
+                error: format!("failed to create initial BrowserDocument: {err}"),
+                can_go_back: tab.history.can_go_back(),
+                can_go_forward: tab.history.can_go_forward(),
+              },
+              WorkerToUi::LoadingState {
+                tab_id,
+                loading: false,
+              },
+            ],
+          });
+        }
+      },
+    };
+
+    let prepare_cancel_callback = snapshot.cancel_callback_for_prepare(&cancel);
+    let mut options = RenderOptions::default()
+      .with_viewport(viewport_css.0, viewport_css.1)
+      .with_device_pixel_ratio(dpr);
+    options.cancel_callback = Some(prepare_cancel_callback.clone());
+
+    // -----------------------------
+    // Prepare/navigation stage
+    // -----------------------------
+
+    let (reported_final_url, base_url) = if about_pages::is_about_url(&original_url) {
+      let html = about_pages::html_for_about_url(&original_url).unwrap_or_else(|| {
+        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {original_url}"))
+      });
+
+      // `about:` pages must never resolve relative URLs against the previously committed origin.
+      doc.set_navigation_urls(
+        Some(original_url.clone()),
+        Some(about_pages::ABOUT_BASE_URL.to_string()),
+      );
+      doc.set_document_url_without_invalidation(Some(original_url.clone()));
+
+      if let Err(err) = doc.reset_with_html(&html, options.clone()) {
+        let _ = self.reinsert_document(tab_id, doc);
+        return self.run_navigation_error(
+          tab_id,
+          &original_url,
+          &format!("failed to parse about page HTML: {err}"),
+          snapshot,
+        );
+      }
+
+      let prepared = {
+        let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+        match doc.prepare_dom_with_options() {
+          Ok(prepared) => prepared,
+          Err(err) => {
+            let _ = self.reinsert_document(tab_id, doc);
+            // Treat cancelled prepares as silent drops.
+            if !snapshot.is_still_current_for_prepare(&cancel) {
+              return None;
+            }
+            return self.run_navigation_error(
+              tab_id,
+              &original_url,
+              &format!("about page prepare failed: {err}"),
+              snapshot,
+            );
+          }
+        }
+      };
+
+      let base_url = doc.base_url().map(str::to_string);
+      doc.reset_with_prepared(prepared, options.clone());
+
+      (Some(original_url.clone()), base_url)
+    } else {
+      match is_allowed_navigation_url(&original_url) {
+        Ok(()) => {
+          let report = {
+            let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+            doc.navigate_url(&original_url, options.clone())
+          };
+          match report {
+            Ok(report) => (report.final_url, report.base_url),
+            Err(err) => {
+              // Restore the document before delegating to the navigation-error renderer.
+              let _ = self.reinsert_document(tab_id, doc);
+
+              // If the navigation was cancelled via nav bump, treat it as a silent drop.
+              if !snapshot.is_still_current_for_prepare(&cancel) {
+                return None;
+              }
+
+              return self.run_navigation_error(tab_id, &original_url, &err.to_string(), snapshot);
+            }
+          }
+        }
+        Err(err) => {
+          let _ = self.reinsert_document(tab_id, doc);
+
+          // Unsupported URL schemes should fail fast without rendering an error page.
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return None;
+          };
+          tab.loading = false;
+          tab.pending_history_entry = false;
+          return Some(JobOutput {
+            tab_id,
+            snapshot,
+            snapshot_kind: SnapshotKind::Prepare,
+            msgs: vec![
+              WorkerToUi::NavigationFailed {
+                tab_id,
+                url: original_url,
                 error: err,
                 can_go_back: tab.history.can_go_back(),
                 can_go_forward: tab.history.can_go_forward(),
@@ -1481,17 +1589,14 @@ impl BrowserRuntime {
             ],
           });
         }
-
-        return self.run_navigation_error(tab_id, &original_url, &err, snapshot);
       }
     };
 
-    let PreparedDocumentReport {
-      document,
-      final_url: reported_final_url,
-      base_url,
-      diagnostics: _,
-    } = report;
+    // If a new navigation was initiated while we were preparing, treat this result as cancelled.
+    if !snapshot.is_still_current_for_prepare(&cancel) {
+      let _ = self.reinsert_document(tab_id, doc);
+      return None;
+    }
 
     // Preserve fragments across redirects so:
     // - history keeps the original `#fragment`
@@ -1500,6 +1605,10 @@ impl BrowserRuntime {
       Some(final_url) => apply_original_fragment_to_final_url(&original_url, final_url),
       None => original_url.clone(),
     };
+
+    // Keep the document URL hint stable for `:target` evaluation and relative URL resolution.
+    doc.set_navigation_urls(Some(committed_url.clone()), base_url.clone());
+    doc.set_document_url_without_invalidation(Some(committed_url.clone()));
 
     // Compute initial scroll state (including fragment navigations like `#target`).
     let mut scroll_state = ScrollState::with_viewport(Point::new(
@@ -1512,73 +1621,56 @@ impl BrowserRuntime {
           Some(Point::ZERO)
         } else {
           // `scroll_offset_for_fragment_target` percent-decodes internally; do not pre-decode.
-          scroll_offset_for_fragment_target(
-            document.dom(),
-            document.box_tree(),
-            document.fragment_tree(),
-            fragment,
-            document.layout_viewport(),
-          )
+          doc.prepared().and_then(|prepared| {
+            scroll_offset_for_fragment_target(
+              prepared.dom(),
+              prepared.box_tree(),
+              prepared.fragment_tree(),
+              fragment,
+              prepared.layout_viewport(),
+            )
+          })
         };
         if let Some(offset) = offset {
           scroll_state.viewport = offset;
         }
       }
     }
-
-    let mut doc = match BrowserDocument::from_prepared(
-      renderer,
-      document,
-      RenderOptions::default()
-        .with_viewport(viewport_css.0, viewport_css.1)
-        .with_device_pixel_ratio(dpr),
-    ) {
-      Ok(doc) => doc,
-      Err(err) => {
-        if !snapshot.is_still_current_for_prepare(&tab.cancel) {
-          return None;
-        }
-        return self.run_navigation_error(
-          tab_id,
-          &original_url,
-          &format!("failed to create BrowserDocument: {err}"),
-          snapshot,
-        );
-      }
-    };
-
-    doc.set_navigation_urls(reported_final_url.clone(), base_url.clone());
     doc.set_scroll_state(scroll_state.clone());
 
-    // Ensure `:target` / `:target-within` selector matching uses the committed URL (including
-    // fragments that may not be present in `final_url`).
-    if url_fragment(&committed_url).is_some() && doc.document_url() != Some(committed_url.as_str()) {
-      doc.set_document_url(Some(committed_url.clone()));
-    }
-    let paint_cancel_callback = paint_snapshot.cancel_callback_for_paint(&tab.cancel);
-    doc.set_cancel_callback(Some(paint_cancel_callback.clone()));
+    // -----------------------------
+    // Initial paint stage
+    // -----------------------------
+    let paint_cancel_callback = paint_snapshot.cancel_callback_for_paint(&cancel);
+    let paint_deadline = deadline_for(paint_cancel_callback.clone(), None);
 
     let painted = {
       let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      match doc.render_if_needed_with_scroll_state() {
+      match doc.render_if_needed_with_deadlines(Some(&paint_deadline)) {
         Ok(Some(frame)) => Ok(Some(frame)),
-        // Newly-created documents should always require an initial paint, but be defensive: if
-        // `render_if_needed_*` returns `None`, force a paint so the navigation produces a frame.
-        Ok(None) => doc.render_frame_with_scroll_state().map(Some),
+        Ok(None) => doc.render_frame_with_deadlines(Some(&paint_deadline)).map(Some),
         Err(err) => Err(err),
       }
     };
+
+    let mut msgs = Vec::new();
 
     let painted = match painted {
       Ok(Some(frame)) => Some(frame),
       Ok(None) => None,
       Err(err) => {
-        if !snapshot.is_still_current_for_prepare(&tab.cancel) {
+        // If a new navigation was initiated while we were painting, drop this result silently.
+        if !snapshot.is_still_current_for_prepare(&cancel) {
+          let _ = self.reinsert_document(tab_id, doc);
           return None;
         }
+
         // If only paint was bumped (e.g. scroll/viewport change) while the initial paint was
         // in-flight, treat this as a cancelled paint rather than a navigation failure.
-        if !paint_snapshot.is_still_current_for_paint(&tab.cancel) {
+        if !paint_snapshot.is_still_current_for_paint(&cancel) {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return None;
+          };
           tab.scroll_state = scroll_state.clone();
           tab
             .history
@@ -1626,6 +1718,7 @@ impl BrowserRuntime {
           });
         }
 
+        let _ = self.reinsert_document(tab_id, doc);
         return self.run_navigation_error(
           tab_id,
           &original_url,
@@ -1636,9 +1729,14 @@ impl BrowserRuntime {
     };
 
     // If a new navigation was initiated while we were painting, drop the result.
-    if !snapshot.is_still_current_for_prepare(&tab.cancel) {
+    if !snapshot.is_still_current_for_prepare(&cancel) {
+      let _ = self.reinsert_document(tab_id, doc);
       return None;
     }
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return None;
+    };
 
     // Commit navigation state.
     match &painted {
@@ -1679,7 +1777,7 @@ impl BrowserRuntime {
     // Only emit FrameReady when the paint snapshot is still current. If the UI bumped paint while
     // we were rendering, skip this frame and let the subsequent repaint win.
     if let Some(frame) = painted {
-      if paint_snapshot.is_still_current_for_paint(&tab.cancel) {
+      if paint_snapshot.is_still_current_for_paint(&cancel) {
         msgs.push(WorkerToUi::FrameReady {
           tab_id,
           frame: RenderedFrame {
@@ -1746,24 +1844,140 @@ impl BrowserRuntime {
     let cancel_callback = snapshot.cancel_callback_for_prepare(&cancel);
 
     let html = about_pages::error_page_html("Navigation failed", error);
-    let prepared = {
-      let mut options = RenderOptions::default()
-        .with_viewport(viewport_css.0, viewport_css.1)
-        .with_device_pixel_ratio(dpr);
-      options.cancel_callback = Some(cancel_callback.clone());
-      self.prepare_about_html(tab_id, about_pages::ABOUT_ERROR, &html, options)
+    let mut options = RenderOptions::default()
+      .with_viewport(viewport_css.0, viewport_css.1)
+      .with_device_pixel_ratio(dpr);
+    options.cancel_callback = Some(cancel_callback.clone());
+
+    // Lazily create the long-lived document/renderer if we don't have one yet.
+    let needs_doc = self
+      .tabs
+      .get(&tab_id)
+      .is_some_and(|tab| tab.document.is_none());
+    if needs_doc {
+      match self.build_initial_document(viewport_css, dpr) {
+        Ok(doc) => {
+          let _ = self.reinsert_document(tab_id, doc);
+        }
+        Err(err) => {
+          let Some(tab) = self.tabs.get_mut(&tab_id) else {
+            return None;
+          };
+          tab.loading = false;
+          tab.pending_history_entry = false;
+          return Some(JobOutput {
+            tab_id,
+            snapshot,
+            snapshot_kind: SnapshotKind::Prepare,
+            msgs: vec![
+              WorkerToUi::NavigationFailed {
+                tab_id,
+                url: original_url.to_string(),
+                error: format!("{error} (and failed to create renderer: {err})"),
+                can_go_back,
+                can_go_forward,
+              },
+              WorkerToUi::LoadingState {
+                tab_id,
+                loading: false,
+              },
+            ],
+          });
+        }
+      }
+    }
+
+    let Some(tab) = self.tabs.get_mut(&tab_id) else {
+      return None;
     };
 
-    let (renderer, report) = match prepared {
-      Ok(r) => r,
+    if !snapshot.is_still_current_for_prepare(&tab.cancel) {
+      return None;
+    }
+
+    let Some(doc) = tab.document.as_mut() else {
+      return None;
+    };
+
+    // Ensure `about:` semantics: do not resolve relative URLs against the previous origin.
+    doc.set_navigation_urls(
+      Some(about_pages::ABOUT_ERROR.to_string()),
+      Some(about_pages::ABOUT_BASE_URL.to_string()),
+    );
+    doc.set_document_url_without_invalidation(Some(about_pages::ABOUT_ERROR.to_string()));
+
+    if let Err(err) = doc.reset_with_html(&html, options.clone()) {
+      tab.loading = false;
+      tab.pending_history_entry = false;
+      return Some(JobOutput {
+        tab_id,
+        snapshot,
+        snapshot_kind: SnapshotKind::Prepare,
+        msgs: vec![
+          WorkerToUi::NavigationFailed {
+            tab_id,
+            url: original_url.to_string(),
+            error: format!("{error} (and failed to parse error page HTML: {err})"),
+            can_go_back,
+            can_go_forward,
+          },
+          WorkerToUi::LoadingState {
+            tab_id,
+            loading: false,
+          },
+        ],
+      });
+    }
+
+    // Only cancel the error page render when the navigation itself is superseded (nav bump). We
+    // intentionally ignore paint bumps (e.g. scroll) so we still surface a deterministic error.
+    doc.set_cancel_callback(Some(cancel_callback.clone()));
+
+    let scroll_state = ScrollState::with_viewport(Point::ZERO);
+    doc.set_scroll_state(scroll_state.clone());
+
+    let painted = {
+      let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
+      match doc.render_if_needed_with_scroll_state() {
+        Ok(Some(frame)) => Ok(Some(frame)),
+        Ok(None) => doc.render_frame_with_scroll_state().map(Some),
+        Err(err) => Err(err),
+      }
+    };
+
+    let painted = match painted {
+      Ok(Some(frame)) => frame,
+      Ok(None) => {
+        if cancel_callback() {
+          return None;
+        }
+        tab.loading = false;
+        tab.pending_history_entry = false;
+        return Some(JobOutput {
+          tab_id,
+          snapshot,
+          snapshot_kind: SnapshotKind::Prepare,
+          msgs: vec![
+            WorkerToUi::NavigationFailed {
+              tab_id,
+              url: original_url.to_string(),
+              error: error.to_string(),
+              can_go_back,
+              can_go_forward,
+            },
+            WorkerToUi::LoadingState {
+              tab_id,
+              loading: false,
+            },
+          ],
+        });
+      }
       Err(err) => {
         if cancel_callback() {
           return None;
         }
-        if let Some(tab) = self.tabs.get_mut(&tab_id) {
-          tab.loading = false;
-          tab.pending_history_entry = false;
-        }
+        tab.loading = false;
+        tab.pending_history_entry = false;
         return Some(JobOutput {
           tab_id,
           snapshot,
@@ -1784,136 +1998,10 @@ impl BrowserRuntime {
         });
       }
     };
-
-    let Some(tab) = self.tabs.get_mut(&tab_id) else {
-      return None;
-    };
-
-    if !snapshot.is_still_current_for_prepare(&tab.cancel) {
-      return None;
-    }
-
-    let PreparedDocumentReport {
-      document,
-      final_url,
-      base_url,
-      diagnostics: _,
-    } = report;
-
-    let scroll_state = ScrollState::with_viewport(Point::ZERO);
-
-    let mut doc = match BrowserDocument::from_prepared(
-      renderer,
-      document,
-      RenderOptions::default()
-        .with_viewport(tab.viewport_css.0, tab.viewport_css.1)
-        .with_device_pixel_ratio(tab.dpr),
-    ) {
-      Ok(doc) => doc,
-      Err(err) => {
-        if cancel_callback() {
-          return None;
-        }
-        tab.loading = false;
-        tab.pending_history_entry = false;
-        return Some(JobOutput {
-          tab_id,
-          snapshot,
-          snapshot_kind: SnapshotKind::Prepare,
-          msgs: vec![
-            WorkerToUi::NavigationFailed {
-              tab_id,
-              url: original_url.to_string(),
-              error: format!("{error} (and failed to install error page: {err})"),
-              can_go_back: tab.history.can_go_back(),
-              can_go_forward: tab.history.can_go_forward(),
-            },
-            WorkerToUi::LoadingState {
-              tab_id,
-              loading: false,
-            },
-          ],
-        });
-      }
-    };
-
-    doc.set_navigation_urls(final_url.clone(), base_url.clone());
-    doc.set_scroll_state(scroll_state.clone());
-    // Only cancel the error page render when the navigation itself is superseded (nav bump). We
-    // intentionally ignore paint bumps (e.g. scroll) so we still surface a deterministic error.
-    doc.set_cancel_callback(Some(cancel_callback.clone()));
-
-    let painted = {
-      let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-      match doc.render_if_needed_with_scroll_state() {
-        Ok(Some(frame)) => Ok(Some(frame)),
-        Ok(None) => doc.render_frame_with_scroll_state().map(Some),
-        Err(err) => Err(err),
-      }
-    };
-    let painted = match painted {
-      Ok(Some(frame)) => frame,
-      Ok(None) => {
-        if cancel_callback() {
-          return None;
-        }
-        tab.loading = false;
-        tab.pending_history_entry = false;
-        return Some(JobOutput {
-          tab_id,
-          snapshot,
-          snapshot_kind: SnapshotKind::Prepare,
-          msgs: vec![
-            WorkerToUi::NavigationFailed {
-              tab_id,
-              url: original_url.to_string(),
-              error: error.to_string(),
-              can_go_back: tab.history.can_go_back(),
-              can_go_forward: tab.history.can_go_forward(),
-            },
-            WorkerToUi::LoadingState {
-              tab_id,
-              loading: false,
-            },
-          ],
-        });
-      }
-      Err(err) => {
-        if cancel_callback() {
-          return None;
-        }
-        tab.loading = false;
-        tab.pending_history_entry = false;
-        return Some(JobOutput {
-          tab_id,
-          snapshot,
-          snapshot_kind: SnapshotKind::Prepare,
-          msgs: vec![
-            WorkerToUi::NavigationFailed {
-              tab_id,
-              url: original_url.to_string(),
-              error: format!("{error} (and failed to render error page: {err})"),
-              can_go_back: tab.history.can_go_back(),
-              can_go_forward: tab.history.can_go_forward(),
-            },
-            WorkerToUi::LoadingState {
-              tab_id,
-              loading: false,
-            },
-          ],
-        });
-      }
-    };
-
-    tab.document = Some(doc);
     tab.interaction = InteractionEngine::new();
     tab.scroll_state = painted.scroll_state.clone();
-    tab.last_committed_url = Some(
-      final_url
-        .clone()
-        .unwrap_or_else(|| about_pages::ABOUT_ERROR.to_string()),
-    );
-    tab.last_base_url = base_url.or_else(|| Some(about_pages::ABOUT_BASE_URL.to_string()));
+    tab.last_committed_url = Some(about_pages::ABOUT_ERROR.to_string());
+    tab.last_base_url = Some(about_pages::ABOUT_BASE_URL.to_string());
 
     tab.loading = false;
     tab.pending_history_entry = false;
@@ -2028,38 +2116,35 @@ impl BrowserRuntime {
     })
   }
 
-  fn prepare_about_html(
-    &self,
-    tab_id: TabId,
-    document_url: &str,
-    html: &str,
-    options: RenderOptions,
-  ) -> crate::Result<(FastRender, PreparedDocumentReport)> {
+  fn build_initial_document(&self, viewport_css: (u32, u32), dpr: f32) -> crate::Result<BrowserDocument> {
     let mut renderer = self.factory.build_renderer()?;
+    #[cfg(feature = "browser_ui")]
+    UI_WORKER_RENDERER_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+
+    // Ensure a safe base URL hint from the start so subsequent `about:` renders don't accidentally
+    // resolve relative URLs against whatever the renderer last navigated to.
     renderer.set_base_url(about_pages::ABOUT_BASE_URL);
-    let dom = renderer.parse_html(html)?;
-    let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-    let report = renderer.prepare_dom_with_options(dom, Some(document_url), options)?;
-    Ok((renderer, report))
+
+    let html = about_pages::html_for_about_url(about_pages::ABOUT_BLANK)
+      .unwrap_or_else(|| "<!doctype html><html><head><meta charset=\"utf-8\"></head><body></body></html>".to_string());
+
+    let options = RenderOptions::default()
+      .with_viewport(viewport_css.0, viewport_css.1)
+      .with_device_pixel_ratio(dpr);
+
+    let mut doc = BrowserDocument::new(renderer, &html, options)?;
+    doc.set_navigation_urls(
+      Some(about_pages::ABOUT_BLANK.to_string()),
+      Some(about_pages::ABOUT_BASE_URL.to_string()),
+    );
+    doc.set_document_url_without_invalidation(Some(about_pages::ABOUT_BLANK.to_string()));
+    Ok(doc)
   }
 
-  fn prepare_document(
-    &self,
-    tab_id: TabId,
-    url: &str,
-    options: RenderOptions,
-  ) -> crate::Result<(FastRender, PreparedDocumentReport)> {
-    if about_pages::is_about_url(url) {
-      let html = about_pages::html_for_about_url(url).unwrap_or_else(|| {
-        about_pages::error_page_html("Unknown about page", &format!("Unknown URL: {url}"))
-      });
-      return self.prepare_about_html(tab_id, url, &html, options);
-    }
-
-    let mut renderer = self.factory.build_renderer()?;
-    let _guard = forward_stage_heartbeats(tab_id, self.ui_tx.clone());
-    let report = renderer.prepare_url(url, options)?;
-    Ok((renderer, report))
+  fn reinsert_document(&mut self, tab_id: TabId, doc: BrowserDocument) -> Option<()> {
+    let tab = self.tabs.get_mut(&tab_id)?;
+    tab.document = Some(doc);
+    Some(())
   }
 }
 

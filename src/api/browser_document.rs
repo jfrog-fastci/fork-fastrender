@@ -707,7 +707,7 @@ impl BrowserDocument {
     Some((time_ms.min(f32::MAX as f64)) as f32)
   }
 
-  fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
+  pub(crate) fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
     let options = self.options.clone();
     let dom = &self.dom;
     let document_url = self.document_url.clone();
