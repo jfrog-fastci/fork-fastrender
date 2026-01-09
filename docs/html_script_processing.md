@@ -107,8 +107,14 @@ For **inline classic scripts**, `async`/`defer` are effectively ignored because 
 already available; they execute when encountered.
 
 ### 3) Microtask checkpoints (Promises/jobs)
-After **any** script execution (parser-blocking, async, or deferred), run a **microtask checkpoint**
-until the microtask queue is empty.
+After running a script, run a **microtask checkpoint** (drain the microtask queue) **only if the
+JavaScript execution context stack is empty** (HTML “clean up after running script”).
+
+In practice:
+- For top-level script execution, the JS stack becomes empty immediately after the script returns,
+  so microtasks are drained right away.
+- For nested/re-entrant script execution (e.g. event dispatch while a script is still on the stack),
+  microtasks must not be drained until the outermost script returns.
 
 In code, this maps to `src/js/event_loop.rs`:
 - `EventLoop::run_next_task()` always follows a task with a checkpoint.
@@ -311,7 +317,8 @@ Parser blocking is represented explicitly via `ScriptSchedulerAction::BlockParse
 1. **before preparing/executing a parser-inserted script** at a `</script>` boundary when the
    JavaScript execution context stack is empty (this allows already-queued microtasks to run before
    the next parser-inserted script),
-2. after running any script (parser-blocking, async, deferred),
+2. after running a script, if the JavaScript execution context stack is empty (HTML “clean up after
+   running script”),
 3. after running any event loop task (already handled by `run_next_task()`),
 4. at “end of parsing” milestones (after running deferred scripts; before ready-state changes later).
 
@@ -348,7 +355,7 @@ When it is time to run a script (via `ExecuteNow` or `QueueTask`):
 1. Run the script body in the document’s JS realm (engine + WebIDL bindings; out-of-scope here).
 2. Run a microtask checkpoint:
    - for `ExecuteNow`, the orchestrator must call `EventLoop::perform_microtask_checkpoint()`
-     immediately after execution.
+     immediately after execution **if the JS execution context stack is empty**.
    - for `QueueTask`, the event loop itself runs a checkpoint after the task (see
      `EventLoop::run_next_task()`), which satisfies the HTML requirement.
 3. Continue:
