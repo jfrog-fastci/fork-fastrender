@@ -85,3 +85,18 @@ fn namespace_rules_after_qualified_rules_are_ignored() {
   let rect = find_by_id(&styled, "r").expect("rect");
   assert_eq!(display(rect), "block");
 }
+
+#[test]
+fn namespace_prefixed_selectors_match_mathml() {
+  let html = r#"<math><mi id="m"></mi></math>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let css = r#"
+    @namespace m url("http://www.w3.org/1998/Math/MathML");
+    m|mi { display: none; }
+  "#;
+  let stylesheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
+
+  let mi = find_by_id(&styled, "m").expect("mi");
+  assert_eq!(display(mi), "none");
+}
