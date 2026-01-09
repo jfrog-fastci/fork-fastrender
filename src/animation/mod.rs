@@ -10069,8 +10069,14 @@ mod tests {
     expected.sort_unstable();
 
     let mut actual: Vec<&'static str> = transition_longhand_names().iter().copied().collect();
+    let actual_len = actual.len();
     actual.sort_unstable();
     actual.dedup();
+    assert_eq!(
+      actual.len(),
+      actual_len,
+      "transition_longhand_names() must not contain duplicates"
+    );
 
     assert_eq!(actual, expected);
   }
