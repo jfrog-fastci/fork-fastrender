@@ -342,4 +342,56 @@ mod tests {
     // `vm-js` realms own persistent GC roots that must be explicitly removed.
     realm.teardown(&mut heap);
   }
+
+  #[test]
+  fn install_time_bindings_is_idempotent_per_heap_via_timebindings_drop() {
+    let clock = Arc::new(VirtualClock::new());
+    let clock_for_bindings: Arc<dyn Clock> = clock.clone();
+    let web_time = WebTime::default();
+
+    let mut vm = Vm::new(vm_js::VmOptions::default());
+    let mut heap = Heap::new(vm_js::HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let mut realm = Realm::new(&mut vm, &mut heap).expect("create realm");
+
+    let bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings.clone(),
+      web_time,
+    )
+    .expect("first install_time_bindings should succeed");
+
+    let err = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings.clone(),
+      web_time,
+    )
+    .expect_err("second install_time_bindings should fail for the same heap");
+    assert!(
+      matches!(
+        err,
+        VmError::Unimplemented(msg)
+          if msg == "install_time_bindings called more than once for the same heap"
+      ),
+      "unexpected error: {err:?}"
+    );
+
+    // Dropping the bindings must unregister the heap mapping so another realm on the same heap
+    // can install time bindings again.
+    drop(bindings);
+
+    let _bindings = install_time_bindings(
+      &mut vm,
+      &realm,
+      &mut heap,
+      clock_for_bindings,
+      web_time,
+    )
+    .expect("install_time_bindings after dropping the previous bindings should succeed");
+
+    realm.teardown(&mut heap);
+  }
 }
