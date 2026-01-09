@@ -87,6 +87,8 @@ pub struct Node {
   /// inert template contents by keeping template descendants in `children` while skipping them for
   /// selector matching and other traversals.
   pub inert_subtree: bool,
+  pub script_already_started: bool,
+  pub mathml_annotation_xml_integration_point: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +320,8 @@ impl Document {
       parent,
       children: Vec::new(),
       inert_subtree,
+      script_already_started: false,
+      mathml_annotation_xml_integration_point: false,
     });
     if let Some(parent_id) = parent {
       self.nodes[parent_id.0].children.push(id);
