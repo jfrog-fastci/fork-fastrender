@@ -5,10 +5,11 @@ use crate::test_support;
 use std::io::{Read, Write};
 use std::thread;
 use std::time::Duration;
-use test_support::net::try_bind_localhost;
+use test_support::net::{net_test_lock, try_bind_localhost};
 
 #[test]
 fn http_fetch_uses_root_deadline_under_nested_deadline() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_uses_root_deadline_under_nested_deadline")
   else {
     return;

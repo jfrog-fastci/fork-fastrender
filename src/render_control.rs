@@ -292,12 +292,25 @@ impl RenderDeadline {
 
   /// Check for timeout or cancellation at the given stage.
   pub fn check(&self, stage: RenderStage) -> Result<(), RenderError> {
-    #[cfg(any(test, feature = "browser_ui"))]
-    if let Some(delay) = TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
-      std::env::var("FASTR_TEST_RENDER_DELAY_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    }) {
+    // Enable `FASTR_TEST_RENDER_DELAY_MS` for integration tests too (they compile the library
+    // without `cfg(test)`), while keeping it out of non-browser_ui optimized release builds.
+    #[cfg(any(debug_assertions, test, feature = "browser_ui"))]
+    if let Some(delay) = {
+      #[cfg(any(test, feature = "browser_ui"))]
+      {
+        TEST_RENDER_DELAY_MS.with(|cell| cell.get()).or_else(|| {
+          std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        })
+      }
+      #[cfg(not(any(test, feature = "browser_ui")))]
+      {
+        std::env::var("FASTR_TEST_RENDER_DELAY_MS")
+          .ok()
+          .and_then(|v| v.parse::<u64>().ok())
+      }
+    } {
       std::thread::sleep(Duration::from_millis(delay));
     }
     if let Some(cb) = &self.cancel {

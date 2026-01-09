@@ -4,6 +4,7 @@ use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
   origin_from_url, CachingFetcher, FetchDestination, FetchRequest, HttpFetcher, ResourceFetcher,
 };
+use crate::test_support;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -11,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use test_support::net::net_test_lock;
 use url::Url;
 
 fn try_bind_localhost(context: &str) -> Option<TcpListener> {
@@ -151,6 +153,7 @@ fn wait_for_hits(server: &OriginEchoServer, expected: usize, context: &str) {
 
 #[test]
 fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     OriginEchoServer::start("in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced")
   else {
@@ -193,6 +196,7 @@ fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
 
 #[test]
 fn in_memory_cache_partitions_cors_mode_by_request_origin_when_not_enforced() {
+  let _net_guard = net_test_lock();
   let Some(server) = OriginEchoServer::start(
     "in_memory_cache_partitions_cors_mode_by_request_origin_when_not_enforced",
   ) else {
@@ -235,6 +239,7 @@ fn in_memory_cache_partitions_cors_mode_by_request_origin_when_not_enforced() {
 
 #[test]
 fn in_memory_cache_partitions_cors_mode_by_client_origin_even_when_referrer_differs() {
+  let _net_guard = net_test_lock();
   let Some(server) = OriginEchoServer::start(
     "in_memory_cache_partitions_cors_mode_by_client_origin_even_when_referrer_differs",
   ) else {
@@ -283,6 +288,7 @@ fn in_memory_cache_partitions_cors_mode_by_client_origin_even_when_referrer_diff
 #[cfg(feature = "disk_cache")]
 #[test]
 fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     OriginEchoServer::start("disk_cache_partitions_cors_mode_by_request_origin_when_enforced")
   else {
@@ -330,6 +336,7 @@ fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
 #[cfg(feature = "disk_cache")]
 #[test]
 fn disk_cache_partitions_cors_mode_by_request_origin_when_not_enforced() {
+  let _net_guard = net_test_lock();
   let Some(server) =
     OriginEchoServer::start("disk_cache_partitions_cors_mode_by_request_origin_when_not_enforced")
   else {

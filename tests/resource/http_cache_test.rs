@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
-use test_support::net::try_bind_localhost;
+use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 fn spawn_server<F>(
@@ -86,6 +86,7 @@ fn caching_fetcher_with_policy(policy: ResourcePolicy) -> CachingFetcher<HttpFet
 
 #[test]
 fn cache_control_max_age_skips_revalidation() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("cache_control_max_age_skips_revalidation") else {
     return;
   };
@@ -119,6 +120,7 @@ fn cache_control_max_age_skips_revalidation() {
 
 #[test]
 fn etag_revalidation_uses_validators() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("etag_revalidation_uses_validators") else {
     return;
   };
@@ -178,6 +180,7 @@ fn etag_revalidation_uses_validators() {
 
 #[test]
 fn revalidation_uses_budget_without_double_counting() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("revalidation_uses_budget_without_double_counting")
   else {
     return;
@@ -228,6 +231,7 @@ fn revalidation_uses_budget_without_double_counting() {
 
 #[test]
 fn no_store_responses_are_not_cached() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("no_store_responses_are_not_cached") else {
     return;
   };
@@ -262,6 +266,7 @@ fn no_store_responses_are_not_cached() {
 
 #[test]
 fn expires_header_controls_freshness() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("expires_header_controls_freshness") else {
     return;
   };
@@ -297,6 +302,7 @@ fn expires_header_controls_freshness() {
 
 #[test]
 fn http_fetch_respects_render_deadline() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_respects_render_deadline") else {
     return;
   };

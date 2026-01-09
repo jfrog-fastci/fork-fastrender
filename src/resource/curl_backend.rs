@@ -521,11 +521,6 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   let original_body = body;
   let mut current_method = method;
   let mut current_body = body;
-  let filtered_user_headers: Vec<(String, String)> = user_headers
-    .iter()
-    .filter(|(name, value)| !super::fetch_http_request_header_forbidden(name, value))
-    .cloned()
-    .collect();
   let mut validators = validators;
   let mut effective_referrer_policy = referrer_policy;
   let mut redirect_referrer_policy: Option<super::ReferrerPolicy> = None;
@@ -597,13 +592,12 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         referrer_url,
         effective_referrer_policy,
       );
+      super::merge_user_request_headers(&current, &mut headers, user_headers)?;
       if super::cookies_allowed_for_request(credentials_mode, &current, client_origin) {
         if let Some(value) = fetcher.cookie_header_value(&current) {
+          headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
           headers.push(("Cookie".to_string(), value));
         }
-      }
-      for (name, value) in &filtered_user_headers {
-        headers.push((name.clone(), value.clone()));
       }
 
       let network_timer = super::start_network_fetch_diagnostics();
@@ -884,63 +878,66 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           );
       let substitute_captcha_image =
         super::should_substitute_captcha_image_response(kind, status_code, &current);
-      let mut bytes = match super::decode_content_encodings(
-        response.body,
-        &encodings,
-        allowed_limit,
-        decode_stage,
-      ) {
-        Ok(decoded) => decoded,
-        Err(super::ContentDecodeError::DeadlineExceeded { stage, elapsed, .. }) => {
-          return Err(Error::Render(RenderError::Timeout { stage, elapsed }));
-        }
-        Err(super::ContentDecodeError::DecompressionFailed { .. }) if accept_encoding.is_none() => {
-          return fetch_http_with_accept_inner(
-            fetcher,
-            kind,
-            destination,
-            url,
-            Some("identity"),
-            validators,
-            original_method,
-            redirect,
-            user_headers,
-            original_body,
-            client_origin,
-            referrer_url,
-            referrer_policy,
-            credentials_mode,
-            deadline,
-            started,
-          );
-        }
-        Err(err) => {
-          let err = err.into_resource_error(current.clone(), status_code, current.clone());
-          return Err(Error::Resource(err));
+      let method_is_head = current_method.eq_ignore_ascii_case("HEAD");
+      let mut bytes = if method_is_head {
+        Vec::new()
+      } else {
+        match super::decode_content_encodings(response.body, &encodings, allowed_limit, decode_stage)
+        {
+          Ok(decoded) => decoded,
+          Err(super::ContentDecodeError::DeadlineExceeded { stage, elapsed, .. }) => {
+            return Err(Error::Render(RenderError::Timeout { stage, elapsed }));
+          }
+          Err(super::ContentDecodeError::DecompressionFailed { .. }) if accept_encoding.is_none() => {
+            return fetch_http_with_accept_inner(
+              fetcher,
+              kind,
+              destination,
+              url,
+              Some("identity"),
+              validators,
+              original_method,
+              redirect,
+              user_headers,
+              original_body,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+            );
+          }
+          Err(err) => {
+            let err = err.into_resource_error(current.clone(), status_code, current.clone());
+            return Err(Error::Resource(err));
+          }
         }
       };
 
       super::record_network_fetch_bytes(bytes.len());
-      if bytes.is_empty() && substitute_empty_image_body {
-        bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-        content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-        decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
-      }
-      if super::should_substitute_markup_image_body(
-        kind,
-        url,
-        &current,
-        content_type.as_deref(),
-        &bytes,
-      ) {
-        bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-        content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-        decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
-      }
-      if substitute_captcha_image {
-        bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-        content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-        decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
+      if !method_is_head {
+        if bytes.is_empty() && substitute_empty_image_body {
+          bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
+        }
+        if super::should_substitute_markup_image_body(
+          kind,
+          url,
+          &current,
+          content_type.as_deref(),
+          &bytes,
+        ) {
+          bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
+        }
+        if substitute_captcha_image {
+          bytes = super::OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+          content_type = Some(super::OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+          decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
+        }
       }
       let is_retryable_status = super::retryable_http_status(status_code);
       let mut allows_empty_body =
@@ -949,7 +946,10 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         allows_empty_body = true;
       }
 
-      if bytes.is_empty() && super::http_empty_body_is_error(status_code, allows_empty_body) {
+      if !method_is_head
+        && bytes.is_empty()
+        && super::http_empty_body_is_error(status_code, allows_empty_body)
+      {
         let mut can_retry = attempt < max_attempts;
         if can_retry {
           let mut backoff = super::compute_backoff(&fetcher.retry_policy, attempt, &current);

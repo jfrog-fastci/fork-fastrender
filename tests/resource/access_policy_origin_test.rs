@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::test_support;
-use test_support::net::try_bind_localhost;
+use test_support::net::{net_test_lock, try_bind_localhost};
 
 #[derive(Clone)]
 struct TestResponse {
@@ -142,6 +142,7 @@ impl Drop for TestServer {
 
 #[test]
 fn same_origin_stylesheet_allowed() {
+  let _net_guard = net_test_lock();
   let Some(server) = TestServer::start("same_origin_stylesheet_allowed", 1, |path| {
     if path == "/style.css" {
       return TestResponse {
@@ -186,6 +187,7 @@ fn same_origin_stylesheet_allowed() {
 
 #[test]
 fn cross_origin_stylesheet_blocked() {
+  let _net_guard = net_test_lock();
   let Some(origin_server) = TestServer::start(
     "cross_origin_stylesheet_blocked.origin_server",
     0,
@@ -250,6 +252,7 @@ fn cross_origin_stylesheet_blocked() {
 
 #[test]
 fn redirects_to_cross_origin_are_blocked() {
+  let _net_guard = net_test_lock();
   let Some(cross_origin) = TestServer::start(
     "redirects_to_cross_origin_are_blocked.cross_origin",
     1,

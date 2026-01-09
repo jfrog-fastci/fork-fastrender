@@ -1,19 +1,42 @@
 use fastrender::resource::{HttpFetcher, HttpRetryPolicy};
 use fastrender::ResourceFetcher;
+use crate::test_support;
 use std::io;
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv6Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use test_support::net::net_test_lock;
 
-const MAX_WAIT: Duration = Duration::from_secs(2);
+const MAX_WAIT: Duration = Duration::from_secs(3);
 
 #[track_caller]
-fn try_bind_localhost(context: &str) -> Option<TcpListener> {
+fn try_bind_localhost(context: &str) -> Option<(Vec<TcpListener>, u16)> {
   match TcpListener::bind("127.0.0.1:0") {
-    Ok(listener) => Some(listener),
+    Ok(listener) => {
+      let port = listener.local_addr().ok()?.port();
+      // `localhost` frequently resolves to both IPv4 and IPv6. Bind on both loopback addresses so
+      // the client can connect regardless of address resolution order.
+      let mut listeners = vec![listener];
+      match TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+        Ok(v6) => listeners.push(v6),
+        Err(err)
+          if matches!(
+            err.kind(),
+            io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
+          ) =>
+        {
+          // IPv6 isn't available in this environment; continue with IPv4 only.
+        }
+        Err(err) => {
+          let loc = std::panic::Location::caller();
+          panic!("bind IPv6 localhost {context} ({}:{}): {err}", loc.file(), loc.line());
+        }
+      }
+      Some((listeners, port))
+    }
     Err(err)
       if matches!(
         err.kind(),
@@ -48,7 +71,9 @@ fn read_request(stream: &mut TcpStream) -> Vec<u8> {
           break;
         }
       }
-      Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+      Err(ref e)
+        if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted =>
+      {
         thread::sleep(Duration::from_millis(5));
       }
       Err(_) => break,
@@ -68,11 +93,13 @@ fn extract_host_header(req: &[u8]) -> Option<String> {
   None
 }
 
-fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
+fn spawn_server(listeners: Vec<TcpListener>, port: u16) -> thread::JoinHandle<()> {
   let seen_www = Arc::new(AtomicBool::new(false));
   let seen_www_accept = Arc::clone(&seen_www);
   thread::spawn(move || {
-    let _ = listener.set_nonblocking(true);
+    for listener in &listeners {
+      let _ = listener.set_nonblocking(true);
+    }
     let start = Instant::now();
     let mut last_activity = Instant::now();
     let mut joins = Vec::new();
@@ -83,48 +110,63 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
       {
         break;
       }
-      match listener.accept() {
-        Ok((mut stream, _)) => {
-          last_activity = Instant::now();
-          let seen_www = Arc::clone(&seen_www_accept);
-          joins.push(thread::spawn(move || {
-            let _ = stream.set_nonblocking(true);
-            let req = read_request(&mut stream);
-            let _ = stream.set_nonblocking(false);
+      let mut accepted = false;
+      let mut fatal = false;
+      for listener in &listeners {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            accepted = true;
+            last_activity = Instant::now();
+            let seen_www = Arc::clone(&seen_www_accept);
+            joins.push(thread::spawn(move || {
+              let _ = stream.set_nonblocking(true);
+              let req = read_request(&mut stream);
+              let _ = stream.set_nonblocking(false);
 
-            let host = extract_host_header(&req).unwrap_or_default();
-            let expected_local = format!("localhost:{port}");
-            let expected_www = format!("www.localhost:{port}");
+              let host = extract_host_header(&req).unwrap_or_default();
+              let expected_local = format!("localhost:{port}");
+              let expected_www = format!("www.localhost:{port}");
 
-            if host.eq_ignore_ascii_case(&expected_www) {
-              seen_www.store(true, Ordering::Relaxed);
-              let body = b"www-ok";
-              let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-              );
+              if host.eq_ignore_ascii_case(&expected_www) {
+                seen_www.store(true, Ordering::Relaxed);
+                let body = b"www-ok";
+                let response = format!(
+                  "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                  body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
+                return;
+              }
+
+              if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost")
+              {
+                // Deliberately do not respond; hold the connection open long enough for the client to
+                // hit its timeout so the fetcher is forced to retry with the `www.` hostname.
+                thread::sleep(Duration::from_millis(450));
+                return;
+              }
+
+              let response =
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
               let _ = stream.write_all(response.as_bytes());
-              let _ = stream.write_all(body);
-              return;
-            }
-
-            if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost")
-            {
-              // Deliberately do not respond; hold the connection open long enough for the client to
-              // hit its timeout so the fetcher is forced to retry with the `www.` hostname.
-              thread::sleep(Duration::from_millis(450));
-              return;
-            }
-
-            let response =
-              "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            let _ = stream.write_all(response.as_bytes());
-          }));
+            }));
+          }
+          Err(ref e)
+            if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted =>
+          {
+          }
+          Err(_) => {
+            fatal = true;
+            break;
+          }
         }
-        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-          thread::sleep(Duration::from_millis(5));
-        }
-        Err(_) => break,
+      }
+      if fatal {
+        break;
+      }
+      if !accepted {
+        thread::sleep(Duration::from_millis(5));
       }
     }
 
@@ -136,11 +178,11 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
 
 #[test]
 fn http_fetch_www_fallback_on_timeout() {
-  let Some(listener) = try_bind_localhost("http_fetch_www_fallback_on_timeout") else {
+  let _net_guard = net_test_lock();
+  let Some((listeners, port)) = try_bind_localhost("http_fetch_www_fallback_on_timeout") else {
     return;
   };
-  let port = listener.local_addr().unwrap().port();
-  let handle = spawn_server(listener, port);
+  let handle = spawn_server(listeners, port);
 
   let fetcher = HttpFetcher::new()
     .with_timeout(Duration::from_millis(300))

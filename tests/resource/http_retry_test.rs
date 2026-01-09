@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::try_bind_localhost;
+use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
@@ -78,6 +78,7 @@ fn fast_retry_fetcher() -> HttpFetcher {
 
 #[test]
 fn http_fetch_retries_on_503() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_retries_on_503") else {
     return;
   };
@@ -111,6 +112,7 @@ fn http_fetch_retries_on_503() {
 
 #[test]
 fn http_fetch_retries_on_empty_body() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_retries_on_empty_body") else {
     return;
   };
@@ -141,6 +143,7 @@ fn http_fetch_retries_on_empty_body() {
 
 #[test]
 fn http_fetch_retries_on_202_empty_body() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_retries_on_202_empty_body") else {
     return;
   };
@@ -173,6 +176,7 @@ fn http_fetch_retries_on_202_empty_body() {
 
 #[test]
 fn http_fetch_empty_body_error_mentions_attempts() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_empty_body_error_mentions_attempts") else {
     return;
   };
@@ -200,6 +204,7 @@ fn http_fetch_empty_body_error_mentions_attempts() {
 
 #[test]
 fn http_fetch_retries_on_timeout() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_retries_on_timeout") else {
     return;
   };
@@ -239,6 +244,7 @@ fn http_fetch_retries_on_timeout() {
 
 #[test]
 fn http_fetch_timeout_budget_bounds_total_time() {
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetch_timeout_budget_bounds_total_time") else {
     return;
   };

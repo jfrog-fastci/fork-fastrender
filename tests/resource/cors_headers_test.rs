@@ -9,7 +9,7 @@ use std::net::TcpListener;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use test_support::net::try_bind_localhost;
+use test_support::net::{net_test_lock, try_bind_localhost};
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 
@@ -79,6 +79,7 @@ fn http_fetcher_captures_cors_response_headers() {
     return;
   }
 
+  let _net_guard = net_test_lock();
   let Some(listener) = try_bind_localhost("http_fetcher_captures_cors_response_headers") else {
     return;
   };

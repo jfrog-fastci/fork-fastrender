@@ -387,6 +387,69 @@ fn trim_http_whitespace(value: &str) -> &str {
   value.trim_matches(|c: char| matches!(c, ' ' | '\t'))
 }
 
+fn sanitize_request_header_value(value: &str) -> String {
+  let sanitized = value
+    .chars()
+    .map(|c| match c {
+      '\r' | '\n' | '\0' => ' ',
+      other => other,
+    })
+    .collect::<String>();
+  trim_http_whitespace(&sanitized).to_string()
+}
+
+/// Merge user-specified header pairs into the outbound request header list.
+///
+/// Semantics:
+/// - Forbidden Fetch request headers (e.g. `Cookie`, `Host`, `Origin`) are dropped.
+/// - User header names are validated and values are sanitized to avoid header injection.
+/// - User headers override any existing headers with the same name (case-insensitive).
+fn merge_user_request_headers(
+  url: &str,
+  headers: &mut Vec<(String, String)>,
+  user_headers: &[(String, String)],
+) -> Result<()> {
+  if user_headers.is_empty() {
+    return Ok(());
+  }
+
+  let mut removed_defaults: HashSet<String> = HashSet::new();
+  for (name, value) in user_headers {
+    if fetch_http_request_header_forbidden(name, value) {
+      continue;
+    }
+    if http::header::HeaderName::from_bytes(name.as_bytes()).is_err() {
+      return Err(Error::Resource(ResourceError::new(
+        url,
+        format!("invalid request header name: {name:?}"),
+      )));
+    }
+
+    let key = name.to_ascii_lowercase();
+    if removed_defaults.insert(key) {
+      headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
+    }
+    headers.push((name.clone(), sanitize_request_header_value(value)));
+  }
+  Ok(())
+}
+
+fn validate_http_method(url: &str, method: &str) -> Result<()> {
+  let Ok(parsed) = http::Method::from_bytes(method.as_bytes()) else {
+    return Err(Error::Resource(ResourceError::new(
+      url,
+      format!("invalid HTTP method: {method:?}"),
+    )));
+  };
+  match parsed.as_str() {
+    "CONNECT" | "TRACE" | "TRACK" => Err(Error::Resource(ResourceError::new(
+      url,
+      format!("forbidden HTTP method: {}", parsed.as_str()),
+    ))),
+    _ => Ok(()),
+  }
+}
+
 /// Normalize a URL into a filename-safe stem used for caches and outputs.
 pub fn url_to_filename(url: &str) -> String {
   let trimmed = trim_ascii_whitespace(url);
@@ -4267,10 +4330,24 @@ impl HttpFetcher {
           false,
         ),
         HttpBackendMode::Auto => {
-          let curl_available = curl_backend::curl_available();
+          let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+            deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+          });
+          // Avoid falling back to cURL when HTTP retries are disabled by an active render deadline:
+          // the whole point of disabling retries is to fail fast rather than spending the remaining
+          // budget on additional network attempts.
+          let allow_curl_fallback = if deadline_retries_disabled {
+            false
+          } else {
+            curl_backend::curl_available()
+          };
           let method_supported_by_ureq = method.eq_ignore_ascii_case("GET")
             || method.eq_ignore_ascii_case("HEAD")
-            || method.eq_ignore_ascii_case("POST");
+            || method.eq_ignore_ascii_case("POST")
+            || method.eq_ignore_ascii_case("PUT")
+            || method.eq_ignore_ascii_case("DELETE")
+            || method.eq_ignore_ascii_case("PATCH")
+            || method.eq_ignore_ascii_case("OPTIONS");
           let prefer_reqwest = effective_url
             .get(..8)
             .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
@@ -4293,7 +4370,7 @@ impl HttpFetcher {
               credentials_mode,
               deadline,
               started,
-              curl_available,
+              allow_curl_fallback,
             )
           } else {
             self.fetch_http_with_accept_inner_ureq(
@@ -4312,14 +4389,14 @@ impl HttpFetcher {
               credentials_mode,
               deadline,
               started,
-              curl_available,
+              allow_curl_fallback,
             )
           };
 
           match result {
             Ok(res) => Ok(res),
             Err(err) => {
-              if curl_available && should_fallback_to_curl(&err) {
+              if allow_curl_fallback && should_fallback_to_curl(&err) {
                 match curl_backend::fetch_http_with_accept_inner(
                   self,
                   kind,
@@ -4377,7 +4454,14 @@ impl HttpFetcher {
           let fallback_url = if error_looks_like_dns_failure(&err) {
             http_www_fallback_url(effective_url.as_ref())
           } else if http_www_fallback_enabled() && is_timeout_or_no_response_error(&err) {
-            rewrite_url_host_with_www_prefix(effective_url.as_ref(), Some(destination))
+            // `fetch()` uses `FetchDestination::Other`, but we still want the `www.` fallback for
+            // document-like URLs in CLI/test contexts (e.g. `http://example.com/`).
+            // When the destination is ambiguous, fall back to URL-based heuristics.
+            let destination = match destination {
+              FetchDestination::Other => None,
+              other => Some(other),
+            };
+            rewrite_url_host_with_www_prefix(effective_url.as_ref(), destination)
           } else {
             None
           };
@@ -4473,55 +4557,65 @@ impl HttpFetcher {
           false,
         ),
         HttpBackendMode::Auto => {
-          let curl_available = curl_backend::curl_available();
+          let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+            deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+          });
+          // Avoid falling back to cURL when HTTP retries are disabled by an active render deadline:
+          // the whole point of disabling retries is to fail fast rather than spending the remaining
+          // budget on additional network attempts.
+          let allow_curl_fallback = if deadline_retries_disabled {
+            false
+          } else {
+            curl_backend::curl_available()
+          };
           let prefer_reqwest = effective_url
             .get(..8)
             .map(|prefix| prefix.eq_ignore_ascii_case("https://"))
             .unwrap_or(false);
-           let result = if prefer_reqwest {
-             self.fetch_http_with_accept_inner_reqwest(
-               kind,
-               destination,
-               effective_url.as_ref(),
-               accept_encoding,
-               validators,
-               "GET",
-               web_fetch::RequestRedirect::Follow,
-               &[],
-               None,
-               client_origin,
-               referrer_url,
-               referrer_policy,
-               credentials_mode,
-               deadline,
-               started,
-               curl_available,
-             )
-           } else {
-             self.fetch_http_with_accept_inner_ureq(
-               kind,
-               destination,
-               effective_url.as_ref(),
-               accept_encoding,
-               validators,
-               "GET",
-               web_fetch::RequestRedirect::Follow,
-               &[],
-               None,
-               client_origin,
-               referrer_url,
-               referrer_policy,
-               credentials_mode,
-               deadline,
-               started,
-               curl_available,
-             )
-           };
+          let result = if prefer_reqwest {
+            self.fetch_http_with_accept_inner_reqwest(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              accept_encoding,
+              validators,
+              "GET",
+              web_fetch::RequestRedirect::Follow,
+              &[],
+              None,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              allow_curl_fallback,
+            )
+          } else {
+            self.fetch_http_with_accept_inner_ureq(
+              kind,
+              destination,
+              effective_url.as_ref(),
+              accept_encoding,
+              validators,
+              "GET",
+              web_fetch::RequestRedirect::Follow,
+              &[],
+              None,
+              client_origin,
+              referrer_url,
+              referrer_policy,
+              credentials_mode,
+              deadline,
+              started,
+              allow_curl_fallback,
+            )
+          };
 
           match result {
             Ok(res) => Ok(res),
             Err(err) => {
-              if curl_available && should_fallback_to_curl(&err) {
+              if allow_curl_fallback && should_fallback_to_curl(&err) {
                 match curl_backend::fetch_http_with_accept_inner(
                   self,
                   kind,
@@ -4579,7 +4673,14 @@ impl HttpFetcher {
           let fallback_url = if error_looks_like_dns_failure(&err) {
             http_www_fallback_url(effective_url.as_ref())
           } else if http_www_fallback_enabled() && is_timeout_or_no_response_error(&err) {
-            rewrite_url_host_with_www_prefix(effective_url.as_ref(), Some(destination))
+            // `fetch()` uses `FetchDestination::Other`, but we still want the `www.` fallback for
+            // document-like URLs in CLI/test contexts (e.g. `http://example.com/`).
+            // When the destination is ambiguous, fall back to URL-based heuristics.
+            let destination = match destination {
+              FetchDestination::Other => None,
+              other => Some(other),
+            };
+            rewrite_url_host_with_www_prefix(effective_url.as_ref(), destination)
           } else {
             None
           };
@@ -5752,11 +5853,6 @@ impl HttpFetcher {
     let original_body = body;
     let mut current_method = method;
     let mut current_body = body;
-    let filtered_user_headers: Vec<(String, String)> = user_headers
-      .iter()
-      .filter(|(name, value)| !fetch_http_request_header_forbidden(name, value))
-      .cloned()
-      .collect();
     let mut validators = validators;
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
@@ -5833,59 +5929,129 @@ impl HttpFetcher {
           referrer_url,
           effective_referrer_policy,
         );
+        merge_user_request_headers(&current, &mut headers, user_headers)?;
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          // Ensure the cookie jar is authoritative (user `Cookie` is forbidden, but keep the
+          // override semantics consistent).
           if let Some(value) = self.cookie_header_value(&current) {
+            headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
             headers.push(("Cookie".to_string(), value));
           }
         }
-        for (name, value) in &filtered_user_headers {
-          headers.push((name.clone(), value.clone()));
-        }
 
         let mut network_timer = start_network_fetch_diagnostics();
-        let send_result = if current_method.eq_ignore_ascii_case("POST") {
-          let mut request = agent.post(&current);
-          for (name, value) in &headers {
-            request = request.header(name, value);
+        let method_upper = current_method.to_ascii_uppercase();
+        let method_is_head = method_upper == "HEAD";
+        if method_is_head {
+          current_body = None;
+        }
+
+        let response_result = match method_upper.as_str() {
+          "GET" => {
+            let mut request = agent.get(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            request.call()
           }
-          if !effective_timeout.is_zero() {
-            request = request
-              .config()
-              .timeout_global(Some(effective_timeout))
-              .build();
+          "HEAD" => {
+            let mut request = agent.head(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            request.call()
           }
-          request.send(current_body.unwrap_or(&[]))
-        } else if current_method.eq_ignore_ascii_case("HEAD") {
-          let mut request = agent.head(&current);
-          for (name, value) in &headers {
-            request = request.header(name, value);
+          "POST" => {
+            let mut request = agent.post(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            let body = current_body.unwrap_or(&[]);
+            request.send(body)
           }
-          if !effective_timeout.is_zero() {
-            request = request
-              .config()
-              .timeout_global(Some(effective_timeout))
-              .build();
+          "PUT" => {
+            let mut request = agent.put(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            let body = current_body.unwrap_or(&[]);
+            request.send(body)
           }
-          request.call()
-        } else if current_method.eq_ignore_ascii_case("GET") {
-          let mut request = agent.get(&current);
-          for (name, value) in &headers {
-            request = request.header(name, value);
+          "DELETE" => {
+            let mut request = agent.delete(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            // ureq's `DELETE` builder does not support a body; ignore `current_body` for now.
+            request.call()
           }
-          if !effective_timeout.is_zero() {
-            request = request
-              .config()
-              .timeout_global(Some(effective_timeout))
-              .build();
+          "PATCH" => {
+            let mut request = agent.patch(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            let body = current_body.unwrap_or(&[]);
+            request.send(body)
           }
-          request.call()
-        } else {
-          return Err(Error::Resource(ResourceError::new(
-            current.clone(),
-            format!("unsupported HTTP method {current_method:?}"),
-          )));
+          "OPTIONS" => {
+            let mut request = agent.options(&current);
+            for (name, value) in &headers {
+              request = request.header(name, value);
+            }
+            if !effective_timeout.is_zero() {
+              request = request
+                .config()
+                .timeout_global(Some(effective_timeout))
+                .build();
+            }
+            request.call()
+          }
+          other => {
+            finish_network_fetch_diagnostics(network_timer.take());
+            return Err(Error::Resource(
+              ResourceError::new(current.clone(), format!("unsupported HTTP method: {other}"))
+                .with_final_url(current.clone()),
+            ));
+          }
         };
-        let mut response = match send_result {
+
+        let mut response = match response_result {
           Ok(resp) => resp,
           Err(err) => {
             finish_network_fetch_diagnostics(network_timer.take());
@@ -6121,12 +6287,17 @@ impl HttpFetcher {
         let substitute_captcha_image =
           should_substitute_captcha_image_response(kind, status_code, &final_url);
 
-        let body_result = response
-          .body_mut()
-          .with_config()
-          .limit(allowed_limit as u64)
-          .read_to_vec()
-          .map_err(|e| e.into_io());
+        let method_is_head = current_method.eq_ignore_ascii_case("HEAD");
+        let body_result = if method_is_head {
+          Ok(Vec::new())
+        } else {
+          response
+            .body_mut()
+            .with_config()
+            .limit(allowed_limit as u64)
+            .read_to_vec()
+            .map_err(|e| e.into_io())
+        };
 
         match body_result {
           Ok(bytes) => {
@@ -6134,7 +6305,9 @@ impl HttpFetcher {
               finish_network_fetch_diagnostics(network_timer.take());
               return Err(Error::Render(err));
             }
-            let mut bytes =
+            let mut bytes = if method_is_head {
+              Vec::new()
+            } else {
               match decode_content_encodings(bytes, &encodings, allowed_limit, decode_stage) {
                 Ok(decoded) => decoded,
                 Err(ContentDecodeError::DeadlineExceeded { stage, elapsed, .. }) => {
@@ -6173,41 +6346,47 @@ impl HttpFetcher {
                   );
                   return Err(Error::Resource(err));
                 }
-              };
+              }
+            };
 
             record_network_fetch_bytes(bytes.len());
-            if bytes.is_empty()
-              && (should_substitute_empty_image_body(kind, status_code, response.headers())
-                || should_substitute_akamai_pixel_empty_image_body(
-                  kind,
-                  &final_url,
-                  status_code,
-                  response.headers(),
-                ))
-            {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
-            }
-            if should_substitute_markup_image_body(
-              kind,
-              url,
-              &final_url,
-              content_type.as_deref(),
-              &bytes,
-            ) {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
-            }
-            if substitute_captcha_image {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
+            if !method_is_head {
+              if bytes.is_empty()
+                && (should_substitute_empty_image_body(kind, status_code, response.headers())
+                  || should_substitute_akamai_pixel_empty_image_body(
+                    kind,
+                    &final_url,
+                    status_code,
+                    response.headers(),
+                  ))
+              {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
+              if should_substitute_markup_image_body(
+                kind,
+                url,
+                &final_url,
+                content_type.as_deref(),
+                &bytes,
+              ) {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
+              if substitute_captcha_image {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
             }
             let is_retryable_status = retryable_http_status(status_code);
 
-            if bytes.is_empty() && http_empty_body_is_error(status_code, allows_empty_body) {
+            if !method_is_head
+              && bytes.is_empty()
+              && http_empty_body_is_error(status_code, allows_empty_body)
+            {
               finish_network_fetch_diagnostics(network_timer.take());
               let mut can_retry = attempt < max_attempts;
               if can_retry {
@@ -6495,11 +6674,6 @@ impl HttpFetcher {
     let original_body = body;
     let mut current_method = method;
     let mut current_body = body;
-    let filtered_user_headers: Vec<(String, String)> = user_headers
-      .iter()
-      .filter(|(name, value)| !fetch_http_request_header_forbidden(name, value))
-      .cloned()
-      .collect();
     let mut validators = validators;
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
@@ -6563,13 +6737,12 @@ impl HttpFetcher {
           referrer_url,
           effective_referrer_policy,
         );
+        merge_user_request_headers(&current, &mut headers, user_headers)?;
         if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
           if let Some(value) = self.cookie_header_value(&current) {
+            headers.retain(|(name, _)| !name.eq_ignore_ascii_case("cookie"));
             headers.push(("Cookie".to_string(), value));
           }
-        }
-        for (name, value) in &filtered_user_headers {
-          headers.push((name.clone(), value.clone()));
         }
 
         let reqwest_method = reqwest::Method::from_bytes(current_method.as_bytes()).map_err(|_| {
@@ -6832,13 +7005,18 @@ impl HttpFetcher {
         let substitute_captcha_image =
           should_substitute_captcha_image_response(kind, status_code, &final_url);
 
-        let read_limit = allowed_limit.saturating_add(1);
-        let mut limited_body = response.take(read_limit as u64);
-        let body_result = read_response_prefix(&mut limited_body, read_limit);
+        let method_is_head = current_method.eq_ignore_ascii_case("HEAD");
+        let body_result = if method_is_head {
+          Ok(Vec::new())
+        } else {
+          let read_limit = allowed_limit.saturating_add(1);
+          let mut limited_body = response.take(read_limit as u64);
+          read_response_prefix(&mut limited_body, read_limit)
+        };
 
         match body_result {
           Ok(body) => {
-            if body.len() > allowed_limit {
+            if !method_is_head && body.len() > allowed_limit {
               finish_network_fetch_diagnostics(network_timer.take());
               if let Some(remaining) = self.policy.remaining_budget() {
                 if body.len() > remaining {
@@ -6872,7 +7050,9 @@ impl HttpFetcher {
               finish_network_fetch_diagnostics(network_timer.take());
               return Err(Error::Render(err));
             }
-            let mut bytes =
+            let mut bytes = if method_is_head {
+              Vec::new()
+            } else {
               match decode_content_encodings(body, &encodings, allowed_limit, decode_stage) {
                 Ok(decoded) => decoded,
                 Err(ContentDecodeError::DeadlineExceeded { stage, elapsed, .. }) => {
@@ -6911,33 +7091,39 @@ impl HttpFetcher {
                   );
                   return Err(Error::Resource(err));
                 }
-              };
+              }
+            };
 
             record_network_fetch_bytes(bytes.len());
-            if bytes.is_empty() && substitute_empty_image_body {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
-            }
-            if should_substitute_markup_image_body(
-              kind,
-              url,
-              &final_url,
-              content_type.as_deref(),
-              &bytes,
-            ) {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
-            }
-            if substitute_captcha_image {
-              bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
-              content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
-              decode_stage = decode_stage_for_content_type(content_type.as_deref());
+            if !method_is_head {
+              if bytes.is_empty() && substitute_empty_image_body {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
+              if should_substitute_markup_image_body(
+                kind,
+                url,
+                &final_url,
+                content_type.as_deref(),
+                &bytes,
+              ) {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
+              if substitute_captcha_image {
+                bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
+                content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
+                decode_stage = decode_stage_for_content_type(content_type.as_deref());
+              }
             }
             let is_retryable_status = retryable_http_status(status_code);
 
-            if bytes.is_empty() && http_empty_body_is_error(status_code, allows_empty_body) {
+            if !method_is_head
+              && bytes.is_empty()
+              && http_empty_body_is_error(status_code, allows_empty_body)
+            {
               finish_network_fetch_diagnostics(network_timer.take());
               let mut can_retry = attempt < max_attempts;
               if can_retry {
@@ -7470,21 +7656,11 @@ impl ResourceFetcher for HttpFetcher {
     let kind: FetchContextKind = req.fetch.destination.into();
     render_control::check_root(render_stage_hint_for_context(kind, req.fetch.url))
       .map_err(Error::Render)?;
+    validate_http_method(req.fetch.url, req.method)?;
     let scheme = self.policy.ensure_url_allowed(req.fetch.url)?;
 
     let method_is_get = req.method.eq_ignore_ascii_case("GET");
     let method_is_head = req.method.eq_ignore_ascii_case("HEAD");
-    // Block methods that are explicitly forbidden by Fetch (and generally unsafe to expose).
-    // https://fetch.spec.whatwg.org/#forbidden-method
-    if req.method.eq_ignore_ascii_case("CONNECT")
-      || req.method.eq_ignore_ascii_case("TRACE")
-      || req.method.eq_ignore_ascii_case("TRACK")
-    {
-      return Err(Error::Resource(ResourceError::new(
-        req.fetch.url,
-        format!("forbidden HTTP method: {}", req.method),
-      )));
-    }
 
     if (method_is_get || method_is_head) && req.body.is_some() {
       return Err(Error::Resource(ResourceError::new(
@@ -7541,10 +7717,15 @@ impl ResourceFetcher for HttpFetcher {
         }
         if method_is_get {
           self.fetch_with_request(req.fetch)
-        } else {
+        } else if method_is_head {
           let mut res = self.fetch_with_request(req.fetch)?;
           res.bytes.clear();
           Ok(res)
+        } else {
+          Err(Error::Resource(ResourceError::new(
+            req.fetch.url,
+            format!("unsupported HTTP method: {}", req.method),
+          )))
         }
       }
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
