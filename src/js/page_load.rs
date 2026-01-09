@@ -576,4 +576,43 @@ mod tests {
     );
     Ok(())
   }
+
+  #[test]
+  fn pre_script_microtask_checkpoint_is_skipped_when_js_execution_context_stack_nonempty() -> Result<()> {
+    // Simulate re-entrant parsing (e.g. `document.write()` while a script is executing): the HTML
+    // spec requires that the pre-script microtask checkpoint at `</script>` boundaries is skipped
+    // when the JS execution context stack is not empty.
+    let mut host = TestHost::new(String::new(), None, 1, ManualFetcher::default(), LoggingExecutor::default());
+    let mut event_loop = EventLoop::<TestHost>::new();
+
+    // Queue a microtask before encountering the script boundary. It must *not* run before the
+    // script executes when we're already "in JS" (depth > 0).
+    event_loop.queue_microtask(|host, _event_loop| {
+      host.executor.log.push("microtask".to_string());
+      Ok(())
+    })?;
+
+    // Feed the parser manually and pump until it hits the `</script>` boundary.
+    host.parser.push_str("<!doctype html><script>RUN</script>");
+    host.parser.set_eof();
+    let script_node = match host.parser.pump() {
+      Html5everPump::Script(node) => node,
+      Html5everPump::NeedMoreInput => panic!("expected pump to yield Script, got NeedMoreInput"),
+      Html5everPump::Finished(_) => panic!("expected pump to yield Script, got Finished"),
+    };
+
+    // Simulate being inside a currently-executing script.
+    let _outer_js = host.enter_js_execution();
+    host.handle_script_boundary(script_node, &mut event_loop)?;
+
+    assert_eq!(
+      host.executor.log,
+      vec![
+        "script:RUN".to_string(),
+        "microtask".to_string(),
+        "microtask:RUN".to_string(),
+      ]
+    );
+    Ok(())
+  }
 }
