@@ -711,6 +711,112 @@ mod tests {
   }
 
   #[test]
+  fn microtasks_do_not_drain_during_nested_script_execution() -> Result<()> {
+    // HTML runs microtask checkpoints before and after executing a parser-inserted script only when
+    // the JS execution context stack is empty. When script execution is re-entrant, inner script
+    // execution must not drain microtasks until the outermost script returns.
+    let mut doc = Document::new(selectors::context::QuirksMode::NoQuirks);
+    let html = doc.create_element("html", "");
+    doc.append_child(doc.root(), html).expect("append_child");
+    let script_a = doc.create_element("script", "");
+    let script_b = doc.create_element("script", "");
+    doc.append_child(html, script_a).expect("append_child");
+    doc.append_child(html, script_b).expect("append_child");
+    let dom = Rc::new(RefCell::new(doc));
+
+    let js_execution_depth = Rc::new(Cell::new(0));
+    let runner_b = Rc::new(
+      |host: &mut Host,
+       _dom: &Document,
+       _script: NodeId,
+       _ty: ScriptType,
+       source: &str,
+       event_loop: &mut EventLoop<Host>| {
+        assert_eq!(source, "b");
+        host.log.push("script:b".to_string());
+        event_loop.queue_microtask(|host, _| {
+          host.log.push("microtask:b".to_string());
+          Ok(())
+        })?;
+        Ok(())
+      },
+    );
+
+    let runner_a = {
+      let dom = Rc::clone(&dom);
+      let js_execution_depth = Rc::clone(&js_execution_depth);
+      let runner_b = Rc::clone(&runner_b);
+      Rc::new(
+        move |host: &mut Host,
+              _dom: &Document,
+              _script: NodeId,
+              _ty: ScriptType,
+              source: &str,
+              event_loop: &mut EventLoop<Host>| {
+          assert_eq!(source, "a");
+          host.log.push("script:a:before".to_string());
+          event_loop.queue_microtask(|host, _| {
+            host.log.push("microtask:a".to_string());
+            Ok(())
+          })?;
+
+          // Nested script execution should not run microtasks even if it invokes `execute_now`.
+          {
+            let dom_ref = dom.borrow();
+            let dom_for_host = Rc::clone(&dom);
+            let mut host_wrapper = RcDomHost {
+              inner: host,
+              dom: dom_for_host,
+            };
+            execute_now(
+              &mut host_wrapper,
+              &dom_ref,
+              script_b,
+              "b",
+              event_loop,
+              Rc::clone(&runner_b),
+              &js_execution_depth,
+            )?;
+          }
+
+          host.log.push("script:a:after".to_string());
+          Ok(())
+        },
+      )
+    };
+
+    let mut host = Host::default();
+    let mut event_loop = EventLoop::<Host>::new();
+    let dom_ref = dom.borrow();
+    let dom_for_host = Rc::clone(&dom);
+    let mut host_wrapper = RcDomHost {
+      inner: &mut host,
+      dom: dom_for_host,
+    };
+    execute_now(
+      &mut host_wrapper,
+      &dom_ref,
+      script_a,
+      "a",
+      &mut event_loop,
+      runner_a,
+      &js_execution_depth,
+    )?;
+
+    assert_eq!(
+      host.log,
+      vec![
+        "script:a:before".to_string(),
+        "script:b".to_string(),
+        "script:a:after".to_string(),
+        "microtask:a".to_string(),
+        "microtask:b".to_string(),
+      ]
+    );
+    Ok(())
+  }
+
+  #[test]
   fn parser_pauses_at_script_end_before_parsing_later_markup() -> Result<()> {
     let html = "<!doctype html><script>a</script><div id=after></div>";
     let mut loader = ManualLoader::default();
