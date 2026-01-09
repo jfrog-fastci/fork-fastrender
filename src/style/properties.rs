@@ -8949,6 +8949,29 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
 
+    fn property_is_background_shorthand_subproperty(property: &str) -> bool {
+      matches!(
+        property,
+        "background-color"
+          | "background-image"
+          | "background-blend-mode"
+          | "background-position"
+          | "background-position-x"
+          | "background-position-y"
+          | "background-size"
+          | "background-repeat"
+          | "background-attachment"
+          | "background-origin"
+          | "background-clip"
+          | "-webkit-background-clip"
+      )
+    }
+
+    if property == "background" {
+      Arc::make_mut(&mut styles.var_dependent_declarations)
+        .retain(|property, _| !property_is_background_shorthand_subproperty(*property));
+    }
+
     let property_depends_on_current_color = matches!(
       property,
       "fill"
@@ -8974,7 +8997,11 @@ fn apply_declaration_with_base_internal_with_order(
 
     let depends_on_current_color =
       property_depends_on_current_color && value_contains_current_color(&decl.value);
-    if decl.contains_var || depends_on_current_color {
+    let depends_on_var_dependent_background_shorthand =
+      property_is_background_shorthand_subproperty(property)
+        && styles.var_dependent_declarations.contains_key("background");
+
+    if decl.contains_var || depends_on_current_color || depends_on_var_dependent_background_shorthand {
       Arc::make_mut(&mut styles.var_dependent_declarations).insert(
         property,
         crate::style::VarDependentDeclaration {
