@@ -1,24 +1,28 @@
-use js_wpt_dom_runner::{discover_tests, RunOutcome, Runner, RunnerConfig};
-use js_wpt_dom_runner::wpt_fs::WptFs;
+use js_wpt_dom_runner::{discover_tests, RunOutcome, Runner, RunnerConfig, WptFs};
 use std::path::PathBuf;
 
-fn fixtures_root() -> PathBuf {
+fn corpus_root() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("../../tests/wpt_dom/tests")
+    .join("../../tests/wpt_dom")
     .canonicalize()
-    .expect("canonicalize fixtures root")
+    .expect("canonicalize corpus root")
+}
+
+fn tests_root() -> PathBuf {
+  corpus_root().join("tests")
 }
 
 #[test]
 fn runs_window_js_smoke_test() {
-  let root = fixtures_root();
-  let tests = discover_tests(&root).expect("discover tests");
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
   let test = tests
     .iter()
     .find(|t| t.id == "smoke/meta_script.window.js")
     .expect("missing meta_script.window.js");
 
-  let fs = WptFs::new(&root).expect("wpt fs");
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
   let runner = Runner::new(fs, RunnerConfig::default());
   let result = runner.run_test(test).expect("run test");
   assert_eq!(result.outcome, RunOutcome::Pass);
@@ -26,14 +30,15 @@ fn runs_window_js_smoke_test() {
 
 #[test]
 fn discovers_worker_tests_but_skips_them() {
-  let root = fixtures_root();
-  let tests = discover_tests(&root).expect("discover tests");
+  let corpus_root = corpus_root();
+  let tests_root = tests_root();
+  let tests = discover_tests(&tests_root).expect("discover tests");
   let test = tests
     .iter()
     .find(|t| t.id == "smoke/unsupported.worker.js")
     .expect("missing unsupported.worker.js");
 
-  let fs = WptFs::new(&root).expect("wpt fs");
+  let fs = WptFs::new(&corpus_root).expect("wpt fs");
   let runner = Runner::new(fs, RunnerConfig::default());
   let result = runner.run_test(test).expect("run test");
   match result.outcome {
@@ -43,4 +48,3 @@ fn discovers_worker_tests_but_skips_them() {
     other => panic!("expected Skip, got {other:?}"),
   }
 }
-

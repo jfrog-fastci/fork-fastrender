@@ -97,10 +97,15 @@ impl Runner {
     let base_dir = id_dir(&test.id);
 
     let mut script_urls = Vec::new();
-    // Always load testharness.js first, but avoid double-loading if META already listed it.
+    // Always load testharness.js + FastRender reporter shim first.
     script_urls.push("/resources/testharness.js".to_string());
+    script_urls.push("/resources/fastrender_testharness_report.js".to_string());
     for url in meta.scripts {
-      if url == "/resources/testharness.js" || url == "resources/testharness.js" {
+      if url == "/resources/testharness.js"
+        || url == "resources/testharness.js"
+        || url == "/resources/fastrender_testharness_report.js"
+        || url == "resources/fastrender_testharness_report.js"
+      {
         continue;
       }
       script_urls.push(url);
@@ -119,9 +124,21 @@ impl Runner {
     let ctx = Context::full(&rt).map_err(|e| RunError::Js(e.to_string()))?;
 
     let test_url = test.url();
-    let run = ctx.with(|ctx| -> Result<RunOutcome, RunError> {
+
+    // One-time realm initialization + script execution.
+    let init = ctx.with(|ctx| -> Result<(), RunError> {
       let globals = ctx.globals();
       install_window_shims(ctx.clone(), &globals, &test_url)?;
+
+      // Provide basic timer shims required by our vendored `testharness.js` subset.
+      ctx
+        .eval::<(), _>(TIMER_SHIM)
+        .map_err(|e| RunError::Js(e.to_string()))?;
+
+      // Define the host hook used by `fastrender_testharness_report.js` to emit a result payload.
+      ctx
+        .eval::<(), _>(FASTR_REPORT_HOOK)
+        .map_err(|e| RunError::Js(e.to_string()))?;
 
       // Load scripts.
       for url in script_urls {
@@ -135,36 +152,89 @@ impl Runner {
         .eval::<(), _>(test_source)
         .map_err(|e| RunError::Js(e.to_string()))?;
 
-      // Reporter shim: derive a simple pass/fail status for the harness used by our smoke tests.
-      ctx
-        .eval::<(), _>(REPORTER_SHIM)
-        .map_err(|e| RunError::Js(e.to_string()))?;
-
-      let status: Option<String> = globals
-        .get("__fastrender_status")
-        .map_err(|e| RunError::Js(e.to_string()))?;
-      let outcome = match status.as_deref() {
-        Some("PASS") => RunOutcome::Pass,
-        Some("FAIL") => {
-          let msg: Option<String> = globals
-            .get("__fastrender_failure_message")
-            .map_err(|e| RunError::Js(e.to_string()))?;
-          RunOutcome::Fail(msg.unwrap_or_else(|| "test failed".to_string()))
-        }
-        Some(other) => RunOutcome::Error(format!("unknown status: {other}")),
-        None => RunOutcome::Error("missing __fastrender_status".to_string()),
-      };
-      Ok(outcome)
+      Ok(())
     });
 
-    // If the interrupt handler fired, QuickJS surfaces it as an eval error. Map it to Timeout.
-    match run {
-      Ok(outcome) => Ok(RunResult { outcome }),
-      Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => Ok(RunResult {
-        outcome: RunOutcome::Timeout,
-      }),
-      Err(err) => Err(err),
+    if let Err(err) = init {
+      let outcome = match err {
+        RunError::Js(msg) if msg.contains("interrupted") || msg.contains("Interrupt") => RunOutcome::Timeout,
+        RunError::Js(msg) => RunOutcome::Error(msg),
+        other => return Err(other),
+      };
+      return Ok(RunResult { outcome });
     }
+
+    // Drive the minimal event loop until the reporter hook is called or we time out.
+    let outcome = loop {
+      if Instant::now() >= *deadline {
+        break RunOutcome::Timeout;
+      }
+
+      // Run any queued Promise jobs (microtasks).
+      if let Err(msg) = drain_promise_jobs(&rt) {
+        if msg.contains("interrupted") || msg.contains("Interrupt") {
+          break RunOutcome::Timeout;
+        }
+        break RunOutcome::Error(msg);
+      }
+
+      let poll = ctx.with(|ctx| -> Result<(bool, i32), RunError> {
+        let globals = ctx.globals();
+        let ran_timers: i32 = ctx
+          .eval("__fastrender_poll_timers()")
+          .map_err(|e| RunError::Js(e.to_string()))?;
+        let did_report: Option<bool> = globals
+          .get("__fastrender_wpt_report_called")
+          .map_err(|e| RunError::Js(e.to_string()))?;
+        Ok((did_report.unwrap_or(false), ran_timers))
+      });
+      let (did_report, ran_timers) = match poll {
+        Ok(v) => v,
+        Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
+          break RunOutcome::Timeout
+        }
+        Err(RunError::Js(msg)) => break RunOutcome::Error(msg),
+        Err(other) => return Err(other),
+      };
+
+      if did_report {
+        let report = ctx.with(|ctx| -> Result<(Option<String>, Option<String>), RunError> {
+          let globals = ctx.globals();
+          let file_status: Option<String> = globals
+            .get("__fastrender_file_status")
+            .map_err(|e| RunError::Js(e.to_string()))?;
+          let message: Option<String> = globals
+            .get("__fastrender_message")
+            .map_err(|e| RunError::Js(e.to_string()))?;
+          Ok((file_status, message))
+        });
+        let (file_status, message) = match report {
+          Ok(v) => v,
+          Err(RunError::Js(msg)) if msg.contains("interrupted") || msg.contains("Interrupt") => {
+            break RunOutcome::Timeout
+          }
+          Err(RunError::Js(msg)) => break RunOutcome::Error(msg),
+          Err(other) => return Err(other),
+        };
+
+        break match file_status.as_deref() {
+          Some("pass") => RunOutcome::Pass,
+          Some("fail") => RunOutcome::Fail(message.unwrap_or_else(|| "test failed".to_string())),
+          Some("timeout") => RunOutcome::Timeout,
+          Some("error") => RunOutcome::Error(message.unwrap_or_else(|| "harness error".to_string())),
+          Some(other) => RunOutcome::Error(format!("unknown file_status: {other}")),
+          None => RunOutcome::Error("missing fastrender testharness report".to_string()),
+        };
+      }
+
+      if ran_timers == 0 {
+        // Avoid busy-looping; timers use wall clock time (Date.now()) so sleeping advances them.
+        std::thread::sleep(Duration::from_millis(1));
+      }
+    };
+
+    // If the interrupt handler fired, QuickJS surfaces it as an eval error. Map it to Timeout.
+    Ok(RunResult { outcome })
   }
 }
 
@@ -225,20 +295,104 @@ fn install_window_shims<'js>(
   Ok(())
 }
 
-const REPORTER_SHIM: &str = r#"
-(function() {
-  if (typeof __wpt_results !== "undefined") {
-    var failed = __wpt_results.filter(function(r) { return r.status !== 0; });
-    if (failed.length === 0) {
-      globalThis.__fastrender_status = "PASS";
-    } else {
-      globalThis.__fastrender_status = "FAIL";
-      globalThis.__fastrender_failure_message = failed[0].message || "test failed";
+fn drain_promise_jobs(rt: &Runtime) -> Result<(), String> {
+  // rquickjs exposes QuickJS's `JS_ExecutePendingJob`. The API is intentionally a bit low-level;
+  // we loop until no more jobs are queued.
+  loop {
+    match rt.execute_pending_job() {
+      Ok(true) => continue,
+      Ok(false) => return Ok(()),
+      Err(err) => return Err(err.to_string()),
     }
-    return;
+  }
+}
+
+const TIMER_SHIM: &str = r#"
+// Minimal timer/event-loop shims used by the offline WPT harness.
+//
+// Notes:
+// - Timers are tracked in JS (so we don't need Rust-side persistent handles).
+// - We only implement `setTimeout`/`clearTimeout`/`queueMicrotask` for now.
+// - `queueMicrotask` is implemented in terms of a 0ms timeout; QuickJS's native Promise job queue
+//   is still drained from Rust via `Runtime::execute_pending_job`.
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  if (typeof g.__fastrender_poll_timers === "function") return;
+
+  var next_id = 1;
+  var timers = new Map(); // id -> { cb, args, due }
+
+  function nowMs() {
+    return Date.now();
   }
 
-  // Fallback: if the harness didn't define results, treat successful evaluation as PASS.
-  globalThis.__fastrender_status = "PASS";
+  function normalizeDelay(ms) {
+    var n = Number(ms);
+    if (!isFinite(n) || isNaN(n)) n = 0;
+    if (n < 0) n = 0;
+    return n;
+  }
+
+  g.setTimeout = function (cb, ms /*, ...args */) {
+    var id = next_id++;
+    var delay = normalizeDelay(ms);
+    var args = [];
+    for (var i = 2; i < arguments.length; i++) args.push(arguments[i]);
+    timers.set(id, { cb: cb, args: args, due: nowMs() + delay });
+    return id;
+  };
+
+  g.clearTimeout = function (id) {
+    timers.delete(Number(id));
+  };
+
+  g.queueMicrotask = function (cb) {
+    // HTML queueMicrotask semantics are not modeled precisely yet; for the harness it is sufficient
+    // that the callback runs after the current job.
+    g.setTimeout(cb, 0);
+  };
+
+  g.__fastrender_poll_timers = function () {
+    var now = nowMs();
+    var due_ids = [];
+    timers.forEach(function (entry, id) {
+      if (entry.due <= now) due_ids.push(id);
+    });
+    due_ids.sort(function (a, b) { return a - b; });
+    for (var i = 0; i < due_ids.length; i++) {
+      var id = due_ids[i];
+      var entry = timers.get(id);
+      if (!entry) continue;
+      timers.delete(id);
+      if (typeof entry.cb === "function") {
+        entry.cb.apply(g, entry.args);
+      } else if (typeof entry.cb === "string") {
+        // String handlers are legacy and intentionally unsupported in FastRender's harness.
+        throw new Error("setTimeout string handler is not supported");
+      } else {
+        throw new Error("setTimeout callback is not callable");
+      }
+    }
+    return due_ids.length;
+  };
+})();
+"#;
+
+const FASTR_REPORT_HOOK: &str = r#"
+(function () {
+  var g = typeof globalThis !== "undefined" ? globalThis : this;
+  g.__fastrender_wpt_report_called = false;
+  g.__fastrender_file_status = null;
+  g.__fastrender_harness_status = null;
+  g.__fastrender_message = null;
+  g.__fastrender_stack = null;
+
+  g.__fastrender_wpt_report = function (payload) {
+    g.__fastrender_wpt_report_called = true;
+    g.__fastrender_file_status = payload && payload.file_status !== undefined ? payload.file_status : null;
+    g.__fastrender_harness_status = payload && payload.harness_status !== undefined ? payload.harness_status : null;
+    g.__fastrender_message = payload && payload.message !== undefined ? payload.message : null;
+    g.__fastrender_stack = payload && payload.stack !== undefined ? payload.stack : null;
+  };
 })();
 "#;
