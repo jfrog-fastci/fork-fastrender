@@ -6659,10 +6659,11 @@ pub(crate) fn apply_property_from_source(
       styles.rebuild_background_layers();
     }
     "background-repeat-x" => {
-      let mut xs: Vec<_> = source.background_repeats.iter().map(|rep| rep.x).collect();
-      if xs.is_empty() {
-        xs.push(BackgroundLayer::default().repeat.x);
-      }
+      let xs: Vec<_> = source.background_repeats.iter().map(|rep| rep.x).collect();
+      let fallback_x = xs
+        .last()
+        .copied()
+        .unwrap_or(BackgroundLayer::default().repeat.x);
       styles.ensure_background_lists();
       let layer_count = xs.len().max(styles.background_repeats.len()).max(1);
       let mut repeats = Vec::with_capacity(layer_count);
@@ -6673,7 +6674,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().repeat);
-        let x_kw = xs.get(idx).copied().unwrap_or_else(|| *xs.last().unwrap());
+        let x_kw = xs.get(idx).copied().unwrap_or(fallback_x);
         repeats.push(BackgroundRepeat {
           x: x_kw,
           y: source_rep.y,
@@ -6683,10 +6684,11 @@ pub(crate) fn apply_property_from_source(
       styles.rebuild_background_layers();
     }
     "background-repeat-y" => {
-      let mut ys: Vec<_> = source.background_repeats.iter().map(|rep| rep.y).collect();
-      if ys.is_empty() {
-        ys.push(BackgroundLayer::default().repeat.y);
-      }
+      let ys: Vec<_> = source.background_repeats.iter().map(|rep| rep.y).collect();
+      let fallback_y = ys
+        .last()
+        .copied()
+        .unwrap_or(BackgroundLayer::default().repeat.y);
       styles.ensure_background_lists();
       let layer_count = ys.len().max(styles.background_repeats.len()).max(1);
       let mut repeats = Vec::with_capacity(layer_count);
@@ -6697,7 +6699,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().repeat);
-        let y_kw = ys.get(idx).copied().unwrap_or_else(|| *ys.last().unwrap());
+        let y_kw = ys.get(idx).copied().unwrap_or(fallback_y);
         repeats.push(BackgroundRepeat {
           x: source_rep.x,
           y: y_kw,
@@ -6708,14 +6710,15 @@ pub(crate) fn apply_property_from_source(
     }
     "background-repeat-inline" => {
       let source_inline_horizontal = inline_axis_is_horizontal(source.writing_mode);
-      let mut inline_values: Vec<_> = source
+      let inline_values: Vec<_> = source
         .background_repeats
         .iter()
         .map(|rep| if source_inline_horizontal { rep.x } else { rep.y })
         .collect();
-      if inline_values.is_empty() {
-        inline_values.push(BackgroundLayer::default().repeat.x);
-      }
+      let fallback_inline = inline_values
+        .last()
+        .copied()
+        .unwrap_or(BackgroundLayer::default().repeat.x);
 
       styles.ensure_background_lists();
       let inline_horizontal = inline_axis_is_horizontal(styles.writing_mode);
@@ -6731,10 +6734,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().repeat);
-        let inline_kw = inline_values
-          .get(idx)
-          .copied()
-          .unwrap_or_else(|| *inline_values.last().unwrap());
+        let inline_kw = inline_values.get(idx).copied().unwrap_or(fallback_inline);
         let mut rep = source_rep;
         if inline_horizontal {
           rep.x = inline_kw;
@@ -6748,14 +6748,15 @@ pub(crate) fn apply_property_from_source(
     }
     "background-repeat-block" => {
       let source_block_horizontal = block_axis_is_horizontal(source.writing_mode);
-      let mut block_values: Vec<_> = source
+      let block_values: Vec<_> = source
         .background_repeats
         .iter()
         .map(|rep| if source_block_horizontal { rep.x } else { rep.y })
         .collect();
-      if block_values.is_empty() {
-        block_values.push(BackgroundLayer::default().repeat.x);
-      }
+      let fallback_block = block_values
+        .last()
+        .copied()
+        .unwrap_or(BackgroundLayer::default().repeat.x);
 
       styles.ensure_background_lists();
       let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
@@ -6768,10 +6769,7 @@ pub(crate) fn apply_property_from_source(
           .get(source_idx)
           .copied()
           .unwrap_or_else(|| BackgroundLayer::default().repeat);
-        let block_kw = block_values
-          .get(idx)
-          .copied()
-          .unwrap_or_else(|| *block_values.last().unwrap());
+        let block_kw = block_values.get(idx).copied().unwrap_or(fallback_block);
         let mut rep = source_rep;
         if block_horizontal {
           rep.x = block_kw;
@@ -14292,6 +14290,8 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let inline_horizontal = inline_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().repeat;
+        let default_kw = if inline_horizontal { default.x } else { default.y };
+        let fallback_kw = values.last().copied().unwrap_or(default_kw);
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -14301,10 +14301,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let inline_kw = values
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+          let inline_kw = values.get(idx).copied().unwrap_or(fallback_kw);
           let mut rep = source;
           if inline_horizontal {
             rep.x = inline_kw;
@@ -14326,6 +14323,8 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let block_horizontal = block_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().repeat;
+        let default_kw = if block_horizontal { default.x } else { default.y };
+        let fallback_kw = values.last().copied().unwrap_or(default_kw);
         let layer_count = values.len().max(styles.background_repeats.len()).max(1);
         let mut repeats = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -14335,10 +14334,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let block_kw = values
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+          let block_kw = values.get(idx).copied().unwrap_or(fallback_kw);
           let mut rep = source;
           if block_horizontal {
             rep.x = block_kw;
@@ -14411,6 +14407,12 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let horizontal_inline = inline_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().position;
+        let BackgroundPosition::Position {
+          x: default_x,
+          y: default_y,
+        } = default;
+        let default_component = if horizontal_inline { default_x } else { default_y };
+        let fallback_value = values.last().copied().unwrap_or(default_component);
         let layer_count = values.len().max(styles.background_positions.len()).max(1);
         let mut positions = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -14420,10 +14422,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let inline_value = values
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+          let inline_value = values.get(idx).copied().unwrap_or(fallback_value);
           let BackgroundPosition::Position { mut x, mut y } = source;
           if horizontal_inline {
             x = inline_value;
@@ -14442,6 +14441,12 @@ fn apply_declaration_with_base_internal_with_order(
         styles.ensure_background_lists();
         let horizontal_block = block_axis_is_horizontal(styles.writing_mode);
         let default = BackgroundLayer::default().position;
+        let BackgroundPosition::Position {
+          x: default_x,
+          y: default_y,
+        } = default;
+        let default_component = if horizontal_block { default_x } else { default_y };
+        let fallback_value = values.last().copied().unwrap_or(default_component);
         let layer_count = values.len().max(styles.background_positions.len()).max(1);
         let mut positions = Vec::with_capacity(layer_count);
         for idx in 0..layer_count {
@@ -14451,10 +14456,7 @@ fn apply_declaration_with_base_internal_with_order(
             .get(source_idx)
             .copied()
             .unwrap_or(default);
-          let block_value = values
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| values.last().copied().unwrap());
+          let block_value = values.get(idx).copied().unwrap_or(fallback_value);
           let BackgroundPosition::Position { mut x, mut y } = source;
           if horizontal_block {
             x = block_value;
@@ -14947,7 +14949,9 @@ fn apply_declaration_with_base_internal_with_order(
         return;
       }
 
-      let last = parsed_layers.last().expect("checked non-empty above");
+      let Some(last) = parsed_layers.last() else {
+        return;
+      };
       styles.background_color = last.color.unwrap_or(Rgba::TRANSPARENT);
       styles.background_color_is_system = last.color.is_some() && last.color_is_system;
 

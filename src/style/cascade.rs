@@ -34398,17 +34398,11 @@ fn apply_cascaded_declarations<'a, F>(
             if writing_mode_layer_snapshot_stratum != Some(stratum) {
               writing_mode_layer_snapshots.clear();
               writing_mode_layer_snapshot_stratum = Some(stratum);
-            }
-            let layer_order = &rule.layer_order;
-            let layer_base = match writing_mode_layer_snapshots.get_mut(layer_order.as_ref()) {
-              Some(existing) => existing,
-              None => {
-                writing_mode_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                writing_mode_layer_snapshots
-                  .get_mut(layer_order.as_ref())
-                  .expect("layer snapshot inserted")
-              }
-            };
+             }
+             let layer_order = &rule.layer_order;
+            let layer_base = writing_mode_layer_snapshots
+              .entry(Arc::clone(layer_order))
+              .or_insert_with(|| styles.clone());
             Some(&*layer_base)
           } else {
             None
@@ -34457,17 +34451,11 @@ fn apply_cascaded_declarations<'a, F>(
             if writing_mode_layer_snapshot_stratum != Some(stratum) {
               writing_mode_layer_snapshots.clear();
               writing_mode_layer_snapshot_stratum = Some(stratum);
-            }
-            let layer_order = &rule.layer_order;
-            let layer_base = match writing_mode_layer_snapshots.get_mut(layer_order.as_ref()) {
-              Some(existing) => existing,
-              None => {
-                writing_mode_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
-                writing_mode_layer_snapshots
-                  .get_mut(layer_order.as_ref())
-                  .expect("layer snapshot inserted")
-              }
-            };
+             }
+             let layer_order = &rule.layer_order;
+            let layer_base = writing_mode_layer_snapshots
+              .entry(Arc::clone(layer_order))
+              .or_insert_with(|| styles.clone());
             Some(&*layer_base)
           } else {
             None

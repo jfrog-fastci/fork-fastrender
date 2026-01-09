@@ -56,12 +56,6 @@
   {
     "path": "src/api/browser_document_js.rs",
     "kind": "expect",
-    "line": ".expect(\"BrowserDocumentJs should always have an event loop\");",
-    "count": 1
-  },
-  {
-    "path": "src/api/browser_document_js.rs",
-    "kind": "expect",
     "line": "self.event_loop.as_mut().expect(",
     "count": 1
   },
@@ -366,120 +360,6 @@
     "count": 1
   },
   {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": ".expect(\"delete\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": ".expect(\"pairs\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.append(&name, &value).expect(\"append\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.get(&name).expect(\"get\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.get_all(&name).expect(\"get_all\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.has(&name, value.0.as_deref()).expect(\"has\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.hash().expect(\"hash\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.host().expect(\"host\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.hostname().expect(\"hostname\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.href().expect(\"href\")",
-    "count": 2
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.pathname().expect(\"pathname\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.port().expect(\"port\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.protocol().expect(\"protocol\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.search().expect(\"search\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.serialize().expect(\"serialize\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.set(&name, &value).expect(\"set\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.size().expect(\"size\")",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.sort().expect(\"sort\");",
-    "count": 1
-  },
-  {
-    "path": "src/js/quickjs_url.rs",
-    "kind": "expect",
-    "line": "self.inner.to_json().expect(\"to_json\")",
-    "count": 1
-  },
-  {
     "path": "src/js/runtime.rs",
     "kind": "expect",
     "line": ".expect(\"event loop stack underflow\");",
@@ -609,12 +489,6 @@
     "path": "src/layout/contexts/inline/mod.rs",
     "kind": "panic",
     "line": ".unwrap_or_else(|| panic!(\"expected floating side for box_id={}\", float_node.id));",
-    "count": 1
-  },
-  {
-    "path": "src/layout/engine.rs",
-    "kind": "expect",
-    "line": "fragment.expect(\"root fragment should be produced\")",
     "count": 1
   },
   {

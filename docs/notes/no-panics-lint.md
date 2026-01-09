@@ -20,6 +20,7 @@ This scans `src/` and reports any new occurrences of:
 The scan ignores:
 
 - `#[cfg(test)]` items/blocks
+- Files gated by `#![cfg(test)]` (inner attribute; the entire module is test-only)
 - Rust module files that are only referenced via `#[cfg(test)] mod ...;` declarations (e.g.
   `src/**/_tests.rs` or `src/**/tests.rs`)
 - `tests/` integration test files (not under `src/` anyway)
