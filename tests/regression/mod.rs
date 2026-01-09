@@ -25,3 +25,4 @@ mod pseudo_element_generated_content;
 mod rayon_global_thread_pool;
 mod stretch_sizing_inline_block;
 mod vm_js_conversions_and_ops;
+mod vm_js_promise_rejection_tracker;
