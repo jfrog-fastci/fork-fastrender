@@ -247,6 +247,13 @@ pub fn chrome_ui(ctx: &egui::Context, app: &mut BrowserAppState) -> Vec<ChromeAc
         actions.push(ChromeAction::AddressBarFocusChanged(has_focus));
       }
 
+      // Some chrome actions (e.g. switching tabs via Ctrl/Cmd+Tab) cancel address bar editing while
+      // keeping focus in the widget. Ensure we re-enter "editing" mode as soon as the user starts
+      // typing, so worker navigation updates don't clobber in-progress input.
+      if has_focus && response.changed() {
+        app.chrome.address_bar_editing = true;
+      }
+
       if has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.chrome.address_bar_editing = false;
         app.sync_address_bar_to_active();
@@ -314,6 +321,16 @@ mod tests {
     });
     ctx.begin_frame(raw);
     ctx
+  }
+
+  fn begin_frame(ctx: &egui::Context, events: Vec<egui::Event>) {
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+      egui::Pos2::new(0.0, 0.0),
+      egui::vec2(800.0, 600.0),
+    ));
+    raw.events = events;
+    ctx.begin_frame(raw);
   }
 
   #[test]
@@ -603,5 +620,49 @@ mod tests {
       !actions.iter().any(|action| matches!(action, ChromeAction::Back)),
       "expected ChromeAction::Back to be suppressed, got {actions:?}"
     );
+  }
+
+  #[test]
+  fn address_bar_typing_sets_editing_even_when_focus_does_not_change() {
+    let mut app = BrowserAppState::new();
+    let tab_a = TabId(1);
+    let tab_b = TabId(2);
+    app.push_tab(BrowserTabState::new(tab_a, "https://a.example/".to_string()), true);
+    app.push_tab(BrowserTabState::new(tab_b, "https://b.example/".to_string()), false);
+
+    let ctx = egui::Context::default();
+
+    // Frame 1: focus the address bar (simulating Ctrl/Cmd+L).
+    app.chrome.request_focus_address_bar = true;
+    app.chrome.request_select_all_address_bar = true;
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    // Frame 2: let egui apply the focus request.
+    begin_frame(&ctx, Vec::new());
+    let _ = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_has_focus, "expected address bar to be focused");
+
+    // Switching tabs cancels editing but (in a real UI) focus may remain in the address bar.
+    assert!(app.set_active_tab(tab_b));
+    assert!(app.chrome.address_bar_has_focus);
+    assert!(
+      !app.chrome.address_bar_editing,
+      "expected tab switch to cancel address bar editing"
+    );
+
+    // Now type a character while focus stays in the address bar. This should re-enable the
+    // `address_bar_editing` flag so worker updates don't clobber the typed text.
+    begin_frame(
+      &ctx,
+      vec![egui::Event::Text("x".to_string())],
+    );
+    let _ = chrome_ui(&ctx, &mut app);
+    let _ = ctx.end_frame();
+
+    assert!(app.chrome.address_bar_editing);
   }
 }
