@@ -312,6 +312,9 @@ fn run_worker_loop(rx: Receiver<UiToWorker>, ui_tx: Sender<WorkerToUi>) {
         };
         navigate_tab(tab_id, tab, &ui_tx, url, reason);
       }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+        // This legacy worker loop does not implement history navigation.
+      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,

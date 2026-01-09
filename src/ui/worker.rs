@@ -185,6 +185,11 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         let tab = tabs.entry(tab_id).or_insert_with(TabState::new);
         navigate_tab(tab_id, tab, url, reason, &tx);
       }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+        // `TabEngine` owns the navigation history state machine for the real browser UI.
+        // This headless worker loop is primarily used for interaction wiring tests and expects the
+        // UI to issue explicit `Navigate` commands.
+      }
       UiToWorker::ViewportChanged {
         tab_id,
         viewport_css,

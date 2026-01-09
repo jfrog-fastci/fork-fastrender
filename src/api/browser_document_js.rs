@@ -32,7 +32,7 @@ pub enum RunUntilStableOutcome {
 /// - a live `dom2` document + render caching ([`BrowserDocumentDom2`]),
 /// - a JS realm/runtime instance (currently [`VmJsRuntime`] for Web IDL scaffolding),
 /// - an HTML-ish task/microtask event loop ([`EventLoop`]),
-/// - `Document.currentScript` bookkeeping ([`CurrentScriptState`]/[`ScriptOrchestrator`]).
+/// - `Document.currentScript` bookkeeping ([`CurrentScriptStateHandle`]/[`ScriptOrchestrator`]).
 ///
 /// The primary API is [`BrowserDocumentJs::run_until_stable`], which drives the JS event loop and
 /// conditionally re-renders when DOM mutations invalidate layout/paint.

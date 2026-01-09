@@ -102,6 +102,11 @@ impl UiWorker {
       } => {
         let _ = self.navigate(tab_id, url, reason);
       }
+      UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+        // Navigation history in this worker is driven through `UiToWorker::Navigate` with an
+        // explicit `NavigationReason`. The newer dedicated history commands are handled by the
+        // main browser tab engine.
+      }
       UiToWorker::Scroll {
         tab_id,
         delta_css,

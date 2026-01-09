@@ -226,6 +226,9 @@ fn run_headless_smoke_mode() -> Result<(), Box<dyn std::error::Error>> {
             tabs.remove(&tab_id);
           }
           UiToWorker::SetActiveTab { .. }
+          | UiToWorker::GoBack { .. }
+          | UiToWorker::GoForward { .. }
+          | UiToWorker::Reload { .. }
           | UiToWorker::Scroll { .. }
           | UiToWorker::PointerMove { .. }
           | UiToWorker::PointerDown { .. }
@@ -1471,6 +1474,9 @@ fn spawn_default_render_worker(
                 });
               }
             }
+          }
+          UiToWorker::GoBack { .. } | UiToWorker::GoForward { .. } | UiToWorker::Reload { .. } => {
+            // History navigation is not wired up in this legacy worker implementation yet.
           }
           UiToWorker::Scroll {
             tab_id,
