@@ -1222,6 +1222,28 @@ impl BlockFormattingContext {
       content_height_base + padding_top + padding_bottom,
     );
     let cb_block_base = specified_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
+    let child_border_origin = Point::new(computed_width.margin_left, box_y);
+    // Translate viewport-relative containing blocks into the child's coordinate space. Without
+    // this, absolute/fixed positioned descendants can mistakenly include the parent's placement
+    // offset (e.g. after parent/child margin collapsing shifts the child).
+    let cb_translation_origin =
+      if child_border_origin.x.is_finite() && child_border_origin.y.is_finite() {
+        child_border_origin
+      } else {
+        Point::ZERO
+      };
+    let child_cb_delta = Point::new(-cb_translation_origin.x, -cb_translation_origin.y);
+    let inherited_positioned_cb = nearest_positioned_cb.translate(child_cb_delta);
+    // Viewport-fixed positioned elements are represented in absolute (viewport) coordinates for
+    // paint. Keep the initial containing block un-translated so fixed descendants keep absolute
+    // bounds; fixed CB ancestors (e.g. transforms) still translate like normal CBs.
+    let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size);
+    let inherited_fixed_cb = if *nearest_fixed_cb == viewport_fixed_cb {
+      *nearest_fixed_cb
+    } else {
+      nearest_fixed_cb.translate(child_cb_delta)
+    };
+
     let descendant_nearest_positioned_cb = if establishes_positioned_cb {
       ContainingBlock::with_viewport_and_bases(
         Rect::new(padding_origin, padding_size),
@@ -1230,7 +1252,7 @@ impl BlockFormattingContext {
         cb_block_base,
       )
     } else {
-      *nearest_positioned_cb
+      inherited_positioned_cb
     };
     let descendant_nearest_fixed_cb = if establishes_fixed_cb {
       ContainingBlock::with_viewport_and_bases(
@@ -1240,7 +1262,7 @@ impl BlockFormattingContext {
         cb_block_base,
       )
     } else {
-      *nearest_fixed_cb
+      inherited_fixed_cb
     };
 
     let box_width = computed_width.border_box_width();
@@ -1249,7 +1271,6 @@ impl BlockFormattingContext {
     } else {
       0.0
     };
-    let child_border_origin = Point::new(computed_width.margin_left, box_y);
     let child_content_origin = Point::new(
       child_border_origin.x + content_origin.x,
       child_border_origin.y + content_origin.y,
@@ -1345,23 +1366,12 @@ impl BlockFormattingContext {
     if !skip_contents {
       if let Some(fc_type) = fc_type {
         if fc_type != FormattingContextType::Block {
-          let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-          // Layout skipping (`content-visibility:auto`) inside the child formatting context is
-          // viewport-relative, so translate the factory viewport scroll offset into the child’s
-          // local coordinate space before invoking layout. Without this, nested flex/grid contexts
-          // interpret the viewport as starting at (0, 0) and may incorrectly unskip offscreen
-          // descendants.
-          let parent_scroll = factory.viewport_scroll();
-          let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
-            parent_scroll
-          } else {
-            Point::ZERO
-          };
-          let child_scroll = Point::new(
-            parent_scroll.x - child_border_origin.x,
-            parent_scroll.y - child_border_origin.y,
-          );
-          let factory = factory.with_viewport_scroll(child_scroll);
+          // Translate viewport-relative state (scroll offset + positioned/fixed containing blocks)
+          // into the child's coordinate space so nested formatting contexts can correctly resolve
+          // absolute/fixed positioning and `content-visibility:auto` decisions.
+          let factory = self
+            .child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb)
+            .translated_for_child(child_border_origin);
           let fc = factory.get(fc_type);
 
           let used_border_box_inline = computed_width.border_box_width();
@@ -10750,6 +10760,171 @@ mod tests {
     assert_eq!(child_frag.bounds.y(), 9.0);
     assert_eq!(child_frag.bounds.width(), 50.0);
     assert_eq!(child_frag.bounds.height(), 20.0);
+  }
+
+  #[test]
+  fn absolutely_positioned_child_uses_viewport_cb_through_collapsed_margins() {
+    // Regression test for `layout/fixed-vs-viewport-001-ref.html`:
+    // an absolutely positioned element with no positioned ancestors should resolve against the
+    // initial containing block (viewport) even when an in-flow sibling's top margin collapses into
+    // the parent and shifts the parent's border box down.
+    let viewport = Size::new(200.0, 160.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    abs_style.left = crate::style::types::InsetValue::Length(Length::px(30.0));
+    abs_style.top = crate::style::types::InsetValue::Length(Length::px(20.0));
+    abs_style.width = Some(Length::px(40.0));
+    abs_style.height = Some(Length::px(30.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = 3;
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    outer_style.margin_top = Some(Length::px(90.0));
+    outer_style.margin_left = Some(Length::px(100.0));
+    outer_style.width = Some(Length::px(80.0));
+    outer_style.height = Some(Length::px(60.0));
+    outer_style.width_keyword = None;
+    outer_style.height_keyword = None;
+    let mut outer = BoxNode::new_block(
+      Arc::new(outer_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+    outer.id = 4;
+
+    let mut body_style = ComputedStyle::default();
+    body_style.display = Display::Block;
+    let mut body = BoxNode::new_block(
+      Arc::new(body_style),
+      FormattingContextType::Block,
+      vec![abs_child, outer],
+    );
+    body.id = 2;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![body],
+    );
+    // Root element margins never collapse with children; mimic the real HTML root.
+    root.id = 1;
+
+    fn find_bounds_global(
+      node: &FragmentNode,
+      id: usize,
+      offset: Point,
+    ) -> Option<Rect> {
+      let next_offset = Point::new(offset.x + node.bounds.x(), offset.y + node.bounds.y());
+      if node.box_id() == Some(id) {
+        return Some(Rect::new(next_offset, node.bounds.size));
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_bounds_global(child, id, next_offset) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let body_bounds = find_bounds_global(&fragment, 2, Point::ZERO).expect("body bounds");
+    assert!(
+      (body_bounds.y() - 90.0).abs() < 0.01,
+      "expected body to be shifted down by collapsed margin; got y={}",
+      body_bounds.y()
+    );
+
+    let abs_bounds = find_bounds_global(&fragment, 3, Point::ZERO).expect("abs bounds");
+    assert!(
+      (abs_bounds.x() - 30.0).abs() < 0.01 && (abs_bounds.y() - 20.0).abs() < 0.01,
+      "expected absolute child to stay at viewport position (30,20); got ({},{})",
+      abs_bounds.x(),
+      abs_bounds.y()
+    );
+  }
+
+  #[test]
+  fn fixed_positioned_child_uses_viewport_cb_through_offsets() {
+    let viewport = Size::new(200.0, 160.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut fixed_style = ComputedStyle::default();
+    fixed_style.display = Display::Block;
+    fixed_style.position = Position::Fixed;
+    fixed_style.left = crate::style::types::InsetValue::Length(Length::px(30.0));
+    fixed_style.top = crate::style::types::InsetValue::Length(Length::px(20.0));
+    fixed_style.width = Some(Length::px(40.0));
+    fixed_style.height = Some(Length::px(30.0));
+    fixed_style.width_keyword = None;
+    fixed_style.height_keyword = None;
+    let mut fixed_child =
+      BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
+    fixed_child.id = 4;
+
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    outer_style.margin_top = Some(Length::px(90.0));
+    outer_style.margin_left = Some(Length::px(100.0));
+    outer_style.width = Some(Length::px(80.0));
+    outer_style.height = Some(Length::px(60.0));
+    outer_style.width_keyword = None;
+    outer_style.height_keyword = None;
+    let mut outer = BoxNode::new_block(
+      Arc::new(outer_style),
+      FormattingContextType::Block,
+      vec![fixed_child],
+    );
+    outer.id = 3;
+
+    let mut body_style = ComputedStyle::default();
+    body_style.display = Display::Block;
+    let mut body =
+      BoxNode::new_block(Arc::new(body_style), FormattingContextType::Block, vec![outer]);
+    body.id = 2;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![body],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let fixed_fragment = find_block_fragment(&fragment, 4).expect("fixed fragment");
+    assert!(
+      (fixed_fragment.bounds.x() - 30.0).abs() < 0.01
+        && (fixed_fragment.bounds.y() - 20.0).abs() < 0.01,
+      "expected fixed fragment to use viewport coordinates (30,20); got ({},{})",
+      fixed_fragment.bounds.x(),
+      fixed_fragment.bounds.y()
+    );
   }
 
   #[test]

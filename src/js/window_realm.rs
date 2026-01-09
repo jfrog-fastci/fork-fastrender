@@ -897,6 +897,7 @@ mod tests {
           ),
           Value::Object(_) => CapturedConsoleArg::Object,
           Value::Symbol(_) => CapturedConsoleArg::Symbol,
+          Value::BigInt(_) => CapturedConsoleArg::Object,
         })
         .collect();
       captured_for_sink.lock().push(entry);

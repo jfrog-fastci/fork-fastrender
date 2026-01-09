@@ -303,7 +303,15 @@ impl FormattingContextFactory {
 
     let delta = Point::new(-child_origin.x, -child_origin.y);
     let translated_positioned_cb = self.nearest_positioned_cb().translate(delta);
-    let translated_fixed_cb = self.nearest_fixed_cb().translate(delta);
+    // Viewport-fixed elements are painted in absolute (viewport) coordinates, so keep the initial
+    // containing block un-translated when the nearest fixed CB is the viewport. Fixed-containing
+    // blocks established by ancestors (e.g. transforms) still need translation.
+    let viewport_fixed_cb = ContainingBlock::viewport(self.viewport_size());
+    let translated_fixed_cb = if self.nearest_fixed_cb() == viewport_fixed_cb {
+      viewport_fixed_cb
+    } else {
+      self.nearest_fixed_cb().translate(delta)
+    };
 
     if translated_scroll == self.viewport_scroll
       && translated_positioned_cb == self.nearest_positioned_cb
