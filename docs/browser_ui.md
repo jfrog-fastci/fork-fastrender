@@ -69,7 +69,9 @@ Note: the windowed `browser` app currently starts by navigating to `about:newtab
   - Renders a small egui popup for `<select>` dropdowns. Workers can request a popup via:
     - `WorkerToUi::OpenSelectDropdown` (legacy cursor-anchored message)
     - `WorkerToUi::SelectDropdownOpened` (preferred; includes an explicit `anchor_css` rect)
-    - The current windowed UI handles `OpenSelectDropdown` and ignores `SelectDropdownOpened`.
+    - The current windowed UI handles both; when `SelectDropdownOpened` is available it uses
+      `anchor_css` to position the popup relative to the rendered frame (instead of anchoring to the
+      cursor).
   - Includes a test-only headless smoke mode (see `FASTR_TEST_BROWSER_HEADLESS_SMOKE` in
     [env-vars.md](env-vars.md)).
 - Browser UI core (tabs/history model, cancellation helpers, worker wrapper):
@@ -184,8 +186,9 @@ add `scroll_state.viewport` when converting to page coordinates for hit-testing.
 Note: not all worker implementations emit every message variant. For example, the windowed `browser`
 app uses `spawn_browser_worker` and emits `FrameReady`, select dropdown open messages
 (`OpenSelectDropdown`/`SelectDropdownOpened`), and navigation/scroll/loading events. The current GUI
-handles `OpenSelectDropdown` and ignores `SelectDropdownOpened`. Stage heartbeats are only sent when
-a stage listener is installed by the worker.
+handles both dropdown-open message variants; when both are emitted the `SelectDropdownOpened`
+positioning data takes precedence. Stage heartbeats are only sent when a stage listener is installed
+by the worker.
 
 Implementation detail: stage listeners are currently **process-global** (see
 `GlobalStageListenerGuard` and `swap_stage_listener` in [`src/render_control.rs`](../src/render_control.rs)).
