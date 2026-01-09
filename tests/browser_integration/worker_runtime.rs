@@ -1,6 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::worker_harness::{assert_event_subsequence, WorkerEventKind, WorkerHarness, WorkerToUiEvent};
+use super::support;
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker};
 use std::path::Path;
@@ -32,6 +33,106 @@ fn create_tab(h: &WorkerHarness, viewport: (u32, u32)) -> TabId {
 fn drain_after_frame(h: &WorkerHarness, mut events: Vec<WorkerToUiEvent>) -> Vec<WorkerToUiEvent> {
   events.extend(h.drain_events(std::time::Duration::from_millis(200)));
   events
+}
+
+#[test]
+fn listbox_select_scroll_then_click_respects_element_scroll_offset() {
+  let dir = tempdir().expect("temp dir");
+  let path = dir.path().join("select.html");
+  std::fs::write(
+    &path,
+    r#"<!doctype html>
+      <html>
+        <head>
+          <style>
+            html, body { margin: 0; padding: 0; }
+            select { display: block; width: 180px; height: 60px; margin: 0; padding: 0; border: 0; font-size: 20px; line-height: 20px; }
+            #marker { width: 180px; height: 60px; background: rgb(255, 0, 0); }
+            select:has(option#opt3[selected]) + #marker { background: rgb(0, 0, 255); }
+          </style>
+        </head>
+        <body>
+          <select size="3">
+            <option id="opt1">Option 1</option>
+            <option id="opt2">Option 2</option>
+            <option id="opt3">Option 3</option>
+            <option id="opt4">Option 4</option>
+            <option id="opt5">Option 5</option>
+            <option id="opt6">Option 6</option>
+            <option id="opt7">Option 7</option>
+            <option id="opt8">Option 8</option>
+            <option id="opt9">Option 9</option>
+            <option id="opt10">Option 10</option>
+          </select>
+          <div id="marker"></div>
+        </body>
+      </html>
+    "#,
+  )
+  .unwrap();
+  let url = file_url(&path);
+
+  let h = WorkerHarness::spawn();
+  let tab_id = create_tab(&h, (200, 160));
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::Navigate {
+      tab_id,
+      url,
+      reason: NavigationReason::TypedUrl,
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 80),
+    [255, 0, 0, 255],
+    "expected marker to start red"
+  );
+
+  // Scroll the listbox down by ~2 rows.
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::Scroll {
+      tab_id,
+      delta_css: (0.0, 40.0),
+      pointer_css: Some((10.0, 10.0)),
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+  assert!(
+    frame
+      .scroll_state
+      .elements
+      .values()
+      .any(|offset| offset.y > 0.0),
+    "expected listbox select to scroll an element, got scroll state {:?}",
+    frame.scroll_state
+  );
+
+  // Click within the first visible row; the selection should account for the element scroll offset.
+  let click_pos = (10.0_f32, 10.0_f32);
+  h.send(UiToWorker::PointerDown {
+    tab_id,
+    pos_css: click_pos,
+    button: PointerButton::Primary,
+  });
+
+  let (frame, events) = h.send_and_wait_for_frame(
+    tab_id,
+    UiToWorker::PointerUp {
+      tab_id,
+      pos_css: click_pos,
+      button: PointerButton::Primary,
+    },
+  );
+  let _ = drain_after_frame(&h, events);
+
+  assert_eq!(
+    support::rgba_at(&frame.pixmap, 10, 80),
+    [0, 0, 255, 255],
+    "expected click after listbox scroll to select option 3 and turn marker blue"
+  );
 }
 
 #[test]

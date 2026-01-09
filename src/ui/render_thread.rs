@@ -578,10 +578,14 @@ impl BrowserRenderThread {
 
       let mut action = InteractionAction::None;
       let changed = doc.mutate_dom(|dom| {
-        let (dom_changed, act) =
-          tab
-            .interaction
-            .pointer_up(dom, &box_tree, &fragments, &scroll_state, viewport_point, base_url);
+        let (dom_changed, act) = tab.interaction.pointer_up(
+          dom,
+          &box_tree,
+          &fragments,
+          &scroll_state,
+          viewport_point,
+          base_url,
+        );
         action = act;
         dom_changed
       });

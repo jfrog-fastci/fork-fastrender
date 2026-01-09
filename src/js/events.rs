@@ -396,7 +396,7 @@ impl JsDomEvents {
       .runtime
       .heap_mut()
       .add_root(callback)
-      .map_err(|e| Error::Other(e.to_string()))?;
+      .map_err(|err| self.vm_error_to_error(err))?;
     self.listeners.insert(
       listener_id,
       ListenerEntry {
