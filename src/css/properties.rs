@@ -5972,6 +5972,14 @@ mod tests {
       parse_length("min(10%, 20%)").unwrap(),
       Length::percent(10.0)
     );
+
+    // Clamp polyfill: `max(MIN, min(VAL, MAX))`.
+    let polyfill = parse_length("max(1rem, min(3vw, 2rem))").expect("clamp polyfill");
+    assert_eq!(polyfill.to_css(), "clamp(1rem, 3vw, 2rem)");
+    let resolved = polyfill
+      .resolve_with_context(None, 1000.0, 800.0, 16.0, 16.0)
+      .expect("resolve clamp polyfill");
+    assert!((resolved - 30.0).abs() < 1e-6);
   }
 
   #[test]
@@ -6708,6 +6716,46 @@ fn parse_clamp<'i, 't>(
     _ => Err(location.new_custom_error(())),
   }
 }
+
+fn try_rewrite_max_min_length_to_clamp(args: &[CalcLength]) -> Option<CalcLength> {
+  use crate::style::values::CalcLengthKind;
+  use crate::style::values::LengthUnit;
+
+  // `clamp(MIN, VAL, MAX)` is defined as `max(MIN, min(VAL, MAX))`.
+  //
+  // Sites commonly use `max()` + nested `min()` as a clamp polyfill, e.g.
+  // `max(1rem, min(3vw, 2rem))`. Our `CalcLength` encoding intentionally avoids recursive
+  // function trees, so rewrite this pattern into a single `clamp()` encoding when possible.
+  if args.len() != 2 {
+    return None;
+  }
+
+  let (min_bound, inner_min) = match (args[0].kind(), args[1].kind()) {
+    (CalcLengthKind::Linear, CalcLengthKind::Min) => (args[0], args[1]),
+    (CalcLengthKind::Min, CalcLengthKind::Linear) => (args[1], args[0]),
+    _ => return None,
+  };
+
+  let mut extracted: Vec<CalcLength> = Vec::with_capacity(2);
+  let mut current = CalcLength::empty();
+  for term in inner_min.terms() {
+    if term.unit == LengthUnit::Calc {
+      extracted.push(current);
+      current = CalcLength::empty();
+      continue;
+    }
+    let term_calc = CalcLength::single(term.unit, term.value);
+    current = current.add_scaled(&term_calc, 1.0)?;
+  }
+  extracted.push(current);
+
+  if extracted.len() != 2 {
+    return None;
+  }
+
+  CalcLength::clamp_function(min_bound, extracted[0], extracted[1])
+}
+
 fn reduce_components<'i>(
   values: Vec<CalcComponent>,
   func: MathFn,
@@ -6772,6 +6820,12 @@ fn reduce_components<'i>(
         }
         if ok {
           return Ok(CalcComponent::Length(CalcLength::single(unit, extremum)));
+        }
+      }
+
+      if matches!(func, MathFn::Max) {
+        if let Some(clamp) = try_rewrite_max_min_length_to_clamp(&lengths) {
+          return Ok(CalcComponent::Length(clamp));
         }
       }
 
