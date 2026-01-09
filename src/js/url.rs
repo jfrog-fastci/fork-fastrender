@@ -33,12 +33,15 @@ pub enum UrlError {
     #[source]
     source: ::url::ParseError,
   },
-  #[error("failed to set href to {value:?}: {source}")]
+  #[error("failed to set {field} to {value:?}: {source}")]
   SetterFailure {
+    field: &'static str,
     value: String,
     #[source]
     source: ::url::ParseError,
   },
+  #[error("failed to set {field} to {value:?}")]
+  SetterFailureOpaque { field: &'static str, value: String },
 }
 
 #[derive(Debug)]
@@ -84,6 +87,18 @@ impl Url {
     })
   }
 
+  /// Equivalent to the WHATWG `URL.parse(url, base)` static method.
+  ///
+  /// Returns `None` on any parse failure (including an invalid base URL).
+  pub fn parse_static(input: &str, base: Option<&str>) -> Option<Self> {
+    Self::parse(input, base).ok()
+  }
+
+  /// Equivalent to the WHATWG `URL.canParse(url, base)` static method.
+  pub fn can_parse(input: &str, base: Option<&str>) -> bool {
+    Self::parse_static(input, base).is_some()
+  }
+
   /// Equivalent to the WHATWG `URL.href` getter.
   pub fn href(&self) -> String {
     self.inner.borrow().url.as_str().to_string()
@@ -92,6 +107,7 @@ impl Url {
   /// Equivalent to the WHATWG `URL.href` setter.
   pub fn set_href(&self, value: &str) -> Result<(), UrlError> {
     let parsed = ::url::Url::parse(value).map_err(|source| UrlError::SetterFailure {
+      field: "href",
       value: value.to_string(),
       source,
     })?;
@@ -109,6 +125,70 @@ impl Url {
     format!("{}:", self.inner.borrow().url.scheme())
   }
 
+  /// Equivalent to the WHATWG `URL.protocol` setter.
+  ///
+  /// Accepts both `"http"` and `"http:"` forms.
+  pub fn set_protocol(&self, value: &str) -> Result<(), UrlError> {
+    let scheme = value.strip_suffix(':').unwrap_or(value);
+    self
+      .inner
+      .borrow_mut()
+      .url
+      .set_scheme(scheme)
+      .map_err(|()| UrlError::SetterFailureOpaque {
+        field: "protocol",
+        value: value.to_string(),
+      })
+  }
+
+  /// Equivalent to the WHATWG `URL.username` getter.
+  pub fn username(&self) -> String {
+    self.inner.borrow().url.username().to_string()
+  }
+
+  /// Equivalent to the WHATWG `URL.username` setter.
+  pub fn set_username(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if cannot_have_username_password_port(&inner.url) {
+      return Ok(());
+    }
+
+    inner
+      .url
+      .set_username(value)
+      .map_err(|()| UrlError::SetterFailureOpaque {
+        field: "username",
+        value: value.to_string(),
+      })
+  }
+
+  /// Equivalent to the WHATWG `URL.password` getter.
+  pub fn password(&self) -> String {
+    self
+      .inner
+      .borrow()
+      .url
+      .password()
+      .unwrap_or_default()
+      .to_string()
+  }
+
+  /// Equivalent to the WHATWG `URL.password` setter.
+  pub fn set_password(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if cannot_have_username_password_port(&inner.url) {
+      return Ok(());
+    }
+
+    inner
+      .url
+      .set_password(if value.is_empty() { None } else { Some(value) })
+      .map_err(|()| UrlError::SetterFailureOpaque {
+        field: "password",
+        value: value.to_string(),
+      })
+  }
+
   /// Equivalent to the WHATWG `URL.host` getter.
   pub fn host(&self) -> String {
     let inner = self.inner.borrow();
@@ -122,6 +202,46 @@ impl Url {
     }
   }
 
+  /// Equivalent to the WHATWG `URL.host` setter.
+  ///
+  /// Accepts both `"example.com"` and `"example.com:8080"` forms. If the port component is omitted,
+  /// the URL's port is left unchanged (per the WHATWG URL Standard note).
+  pub fn set_host(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if inner.url.cannot_be_a_base() {
+      return Ok(());
+    }
+
+    let (host, port) = split_host_and_port(value);
+    set_host_impl(&mut inner.url, host, "host", value)?;
+
+    if let Some(port) = port {
+      if port.is_empty() {
+        inner
+          .url
+          .set_port(None)
+          .map_err(|()| UrlError::SetterFailureOpaque {
+            field: "host",
+            value: value.to_string(),
+          })?;
+      } else {
+        let port_num: u16 = port.parse().map_err(|_| UrlError::SetterFailureOpaque {
+          field: "host",
+          value: value.to_string(),
+        })?;
+        inner
+          .url
+          .set_port(Some(port_num))
+          .map_err(|()| UrlError::SetterFailureOpaque {
+            field: "host",
+            value: value.to_string(),
+          })?;
+      }
+    }
+
+    Ok(())
+  }
+
   /// Equivalent to the WHATWG `URL.hostname` getter.
   pub fn hostname(&self) -> String {
     self
@@ -131,6 +251,15 @@ impl Url {
       .host()
       .map(|h| h.to_string())
       .unwrap_or_default()
+  }
+
+  /// Equivalent to the WHATWG `URL.hostname` setter.
+  pub fn set_hostname(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if inner.url.cannot_be_a_base() {
+      return Ok(());
+    }
+    set_host_impl(&mut inner.url, value, "hostname", value)
   }
 
   /// Equivalent to the WHATWG `URL.port` getter.
@@ -144,9 +273,65 @@ impl Url {
       .unwrap_or_default()
   }
 
+  /// Equivalent to the WHATWG `URL.port` setter.
+  ///
+  /// - `""` clears the port.
+  /// - Otherwise, the value must be numeric.
+  pub fn set_port(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if cannot_have_username_password_port(&inner.url) {
+      return Ok(());
+    }
+
+    if value.is_empty() {
+      inner
+        .url
+        .set_port(None)
+        .map_err(|()| UrlError::SetterFailureOpaque {
+          field: "port",
+          value: value.to_string(),
+        })?;
+      return Ok(());
+    }
+
+    let port_num: u16 = value.parse().map_err(|_| UrlError::SetterFailureOpaque {
+      field: "port",
+      value: value.to_string(),
+    })?;
+    inner
+      .url
+      .set_port(Some(port_num))
+      .map_err(|()| UrlError::SetterFailureOpaque {
+        field: "port",
+        value: value.to_string(),
+      })?;
+    Ok(())
+  }
+
   /// Equivalent to the WHATWG `URL.pathname` getter.
   pub fn pathname(&self) -> String {
     self.inner.borrow().url.path().to_string()
+  }
+
+  /// Equivalent to the WHATWG `URL.pathname` setter.
+  pub fn set_pathname(&self, value: &str) -> Result<(), UrlError> {
+    let mut inner = self.inner.borrow_mut();
+    if inner.url.cannot_be_a_base() {
+      return Ok(());
+    }
+
+    if value.starts_with('/') {
+      inner.url.set_path(value);
+      return Ok(());
+    }
+
+    // WHATWG `pathname` setter uses the path start state, which effectively makes the path absolute
+    // for a URL with an authority.
+    let mut path = String::with_capacity(value.len() + 1);
+    path.push('/');
+    path.push_str(value);
+    inner.url.set_path(&path);
+    Ok(())
   }
 
   /// Equivalent to the WHATWG `URL.search` getter.
@@ -289,8 +474,14 @@ impl UrlSearchParams {
     self.mutate_pairs(|pairs| pairs.push((name, value)));
   }
 
-  pub fn delete(&self, name: &str) {
-    self.mutate_pairs(|pairs| pairs.retain(|(n, _)| n != name));
+  /// Equivalent to the WHATWG `URLSearchParams.delete(name, value?)`.
+  pub fn delete(&self, name: &str, value: Option<&str>) {
+    match value {
+      Some(value) => self.mutate_pairs(|pairs| {
+        pairs.retain(|(n, v)| !(n == name && v == value));
+      }),
+      None => self.mutate_pairs(|pairs| pairs.retain(|(n, _)| n != name)),
+    }
   }
 
   pub fn get(&self, name: &str) -> Option<String> {
@@ -308,8 +499,29 @@ impl UrlSearchParams {
       .collect()
   }
 
-  pub fn has(&self, name: &str) -> bool {
-    self.pairs().into_iter().any(|(n, _)| n == name)
+  /// Equivalent to the WHATWG `URLSearchParams.has(name, value?)`.
+  pub fn has(&self, name: &str, value: Option<&str>) -> bool {
+    match value {
+      Some(value) => self
+        .pairs()
+        .into_iter()
+        .any(|(n, v)| n == name && v == value),
+      None => self.pairs().into_iter().any(|(n, _)| n == name),
+    }
+  }
+
+  /// Equivalent to the WHATWG `URLSearchParams.size` getter.
+  pub fn len(&self) -> usize {
+    self.pairs().len()
+  }
+
+  /// Convenience alias for `len()` matching the WHATWG `size` name.
+  pub fn size(&self) -> usize {
+    self.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.len() == 0
   }
 
   /// Set the first matching pair's value and remove any remaining pairs with the same name.
@@ -340,7 +552,8 @@ impl UrlSearchParams {
     });
   }
 
-  fn pairs(&self) -> Vec<(String, String)> {
+  /// A snapshot of the underlying list, in list order.
+  pub fn pairs(&self) -> Vec<(String, String)> {
     match &self.inner {
       UrlSearchParamsInner::Standalone { pairs } => pairs.borrow().clone(),
       UrlSearchParamsInner::Associated { url } => {
@@ -348,6 +561,20 @@ impl UrlSearchParams {
         parse_urlencoded_pairs(inner.url.query().unwrap_or(""))
       }
     }
+  }
+
+  /// Equivalent to the WHATWG `URLSearchParams.sort()` method.
+  pub fn sort(&self) {
+    self.mutate_pairs(|pairs| pairs.sort_by(|(a, _), (b, _)| a.cmp(b)));
+  }
+
+  /// A sorted snapshot of the underlying list.
+  ///
+  /// This does not mutate the underlying storage; use [`UrlSearchParams::sort`] to mutate.
+  pub fn entries_sorted(&self) -> Vec<(String, String)> {
+    let mut pairs = self.pairs();
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    pairs
   }
 
   fn mutate_pairs<F>(&self, f: F)
@@ -400,6 +627,51 @@ fn serialize_urlencoded_pairs(pairs: &[(String, String)]) -> String {
   serializer.finish()
 }
 
+fn cannot_have_username_password_port(url: &::url::Url) -> bool {
+  url.scheme() == "file" || url.host_str().map_or(true, str::is_empty)
+}
+
+fn split_host_and_port(value: &str) -> (&str, Option<&str>) {
+  if let Some(rest) = value.strip_prefix('[') {
+    if let Some(end) = rest.find(']') {
+      let end = end + 1; // include leading '['
+      let host = &value[..=end];
+      let after = &value[end + 1..];
+      if let Some(port) = after.strip_prefix(':') {
+        return (host, Some(port));
+      }
+      return (value, None);
+    }
+  }
+
+  match value.rsplit_once(':') {
+    Some((host, port)) => (host, Some(port)),
+    None => (value, None),
+  }
+}
+
+fn set_host_impl(
+  url: &mut ::url::Url,
+  host: &str,
+  field: &'static str,
+  value_for_error: &str,
+) -> Result<(), UrlError> {
+  let host_arg = if host.is_empty() { Some("") } else { Some(host) };
+  match url.set_host(host_arg) {
+    Ok(()) => Ok(()),
+    Err(source) if host.is_empty() => url.set_host(None).map_err(|source| UrlError::SetterFailure {
+      field,
+      value: value_for_error.to_string(),
+      source,
+    }),
+    Err(source) => Err(UrlError::SetterFailure {
+      field,
+      value: value_for_error.to_string(),
+      source,
+    }),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::{Url, UrlError, UrlSearchParams};
@@ -421,7 +693,7 @@ mod tests {
     let params = UrlSearchParams::parse("a=1&a=2&b=3");
     assert_eq!(params.get("a"), Some("1".to_string()));
     assert_eq!(params.get_all("a"), vec!["1".to_string(), "2".to_string()]);
-    assert!(params.has("b"));
+    assert!(params.has("b", None));
     assert_eq!(params.to_string(), "a=1&a=2&b=3");
   }
 
@@ -476,7 +748,7 @@ mod tests {
 
     url.set_search("");
     assert_eq!(url.search(), "");
-    assert!(!params.has("q"));
+    assert!(!params.has("q", None));
   }
 
   #[test]
@@ -510,5 +782,75 @@ mod tests {
     url.set_hash("");
     assert_eq!(url.hash(), "");
     assert_eq!(url.href(), "https://example.com/");
+  }
+
+  #[test]
+  fn url_static_parse_matches_can_parse_and_null_on_failure() {
+    assert!(Url::parse_static("https://example.com/", None).is_some());
+    assert!(Url::can_parse("https://example.com/", None));
+
+    assert!(Url::parse_static("not a url", None).is_none());
+    assert!(!Url::can_parse("not a url", None));
+
+    let err = Url::parse("not a url", None).unwrap_err();
+    assert!(matches!(err, UrlError::Parse { .. }));
+  }
+
+  #[test]
+  fn url_attribute_setters_roundtrip_in_href() {
+    let url = Url::parse("https://example.com/dir/file?x=y#z", None).unwrap();
+
+    url.set_protocol("http").unwrap();
+    assert_eq!(url.protocol(), "http:");
+
+    url.set_host("example.org:8080").unwrap();
+    assert_eq!(url.host(), "example.org:8080");
+
+    url.set_port("9090").unwrap();
+    assert_eq!(url.port(), "9090");
+
+    url.set_pathname("a/b").unwrap();
+    assert_eq!(url.pathname(), "/a/b");
+
+    assert_eq!(url.href(), "http://example.org:9090/a/b?x=y#z");
+  }
+
+  #[test]
+  fn url_username_and_password_setters_update_href() {
+    let url = Url::parse("https://example.com/", None).unwrap();
+    url.set_username("alice").unwrap();
+    url.set_password("secret").unwrap();
+    assert_eq!(url.username(), "alice");
+    assert_eq!(url.password(), "secret");
+    assert_eq!(url.href(), "https://alice:secret@example.com/");
+
+    url.set_password("").unwrap();
+    assert_eq!(url.password(), "");
+    assert_eq!(url.href(), "https://alice@example.com/");
+  }
+
+  #[test]
+  fn urlsearchparams_delete_and_has_optional_value() {
+    let params = UrlSearchParams::parse("a=1&a=2&b=3");
+    assert!(params.has("a", None));
+    assert!(params.has("a", Some("1")));
+    assert!(!params.has("a", Some("9")));
+
+    params.delete("a", Some("1"));
+    assert_eq!(params.to_string(), "a=2&b=3");
+
+    params.delete("a", None);
+    assert_eq!(params.to_string(), "b=3");
+  }
+
+  #[test]
+  fn urlsearchparams_sort_is_stable_and_live() {
+    let url = Url::parse("https://example.com/?b=2&a=1&a=0", None).unwrap();
+    let params = url.search_params();
+    params.sort();
+
+    assert_eq!(params.to_string(), "a=1&a=0&b=2");
+    assert_eq!(url.search(), "?a=1&a=0&b=2");
+    assert_eq!(url.href(), "https://example.com/?a=1&a=0&b=2");
   }
 }
