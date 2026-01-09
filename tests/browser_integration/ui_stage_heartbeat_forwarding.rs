@@ -117,7 +117,7 @@ fn stage_heartbeats_forwarded_to_ui_with_tab_id() {
 }
 
 #[test]
-fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
+fn stage_heartbeats_forwarded_from_worker_loop_for_navigation_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
@@ -241,10 +241,7 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage {
-          tab_id: got,
-          stage,
-        } if got == tab_id => {
+        WorkerToUi::Stage { tab_id: got, stage } if got == tab_id => {
           stages_after_input.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, .. } if got == tab_id => {
@@ -262,6 +259,13 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
     "expected stage heartbeats during PointerMove repaint"
   );
   assert!(
+    stages_after_input.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    )),
+    "expected paint stage heartbeats during PointerMove repaint: {stages_after_input:?}"
+  );
+  assert!(
     !stages_after_input.iter().any(|stage| matches!(
       stage,
       StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects
@@ -274,7 +278,7 @@ fn stage_heartbeats_forwarded_from_worker_loop_and_listener_cleared() {
 }
 
 #[test]
-fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
+fn stage_heartbeats_forwarded_from_history_worker_loop_for_navigation_and_repaints() {
   let _lock = super::stage_listener_test_lock();
   let dir = tempdir().expect("temp dir");
 
@@ -397,10 +401,7 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     match ui_rx.recv_timeout(remaining.min(std::time::Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage {
-          tab_id: got,
-          stage,
-        } if got == tab_id => {
+        WorkerToUi::Stage { tab_id: got, stage } if got == tab_id => {
           stages_after_scroll.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
@@ -418,6 +419,13 @@ fn stage_heartbeats_forwarded_from_history_worker_loop_and_listener_cleared() {
   assert!(
     !stages_after_scroll.is_empty(),
     "expected stage heartbeats during scroll repaint"
+  );
+  assert!(
+    stages_after_scroll.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    )),
+    "expected paint stage heartbeats during scroll repaint: {stages_after_scroll:?}"
   );
   assert!(
     !stages_after_scroll.iter().any(|stage| matches!(

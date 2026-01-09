@@ -47,7 +47,7 @@ fn wait_for_navigation_complete(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> boo
 }
 
 #[test]
-fn stage_listener_is_cleared_after_navigation_job() {
+fn stage_heartbeats_forwarded_for_scroll_repaint_after_navigation() {
   let _lock = super::stage_listener_test_lock();
 
   let dir = tempdir().expect("temp dir");
@@ -107,10 +107,7 @@ fn stage_listener_is_cleared_after_navigation_job() {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match ui_rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
       Ok(msg) => match msg {
-        WorkerToUi::Stage {
-          tab_id: got,
-          stage,
-        } if got == tab_id => {
+        WorkerToUi::Stage { tab_id: got, stage } if got == tab_id => {
           stages_after_scroll.push(stage);
         }
         WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
@@ -128,6 +125,13 @@ fn stage_listener_is_cleared_after_navigation_job() {
   assert!(
     !stages_after_scroll.is_empty(),
     "expected stage heartbeats during scroll repaint"
+  );
+  assert!(
+    stages_after_scroll.iter().any(|stage| matches!(
+      stage,
+      StageHeartbeat::PaintBuild | StageHeartbeat::PaintRasterize
+    )),
+    "expected paint stage heartbeats during scroll repaint: {stages_after_scroll:?}"
   );
   assert!(
     !stages_after_scroll.iter().any(|stage| matches!(

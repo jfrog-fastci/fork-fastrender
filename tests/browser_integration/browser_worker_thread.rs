@@ -178,6 +178,16 @@ fn create_tab_triggers_initial_navigation_and_frame() {
     .send(UiToWorker::SetActiveTab { tab_id })
     .expect("SetActiveTab");
 
+  // Ensure we paint a small initial frame (faster + less memory under CI load).
+  worker
+    .tx()
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (160, 120),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
+
   let msg1 = worker
     .rx
     .recv_timeout(TIMEOUT)
@@ -309,6 +319,15 @@ fn cancellation_drops_stale_output() {
     .tx()
     .send(UiToWorker::SetActiveTab { tab_id })
     .expect("SetActiveTab");
+
+  worker
+    .tx()
+    .send(UiToWorker::ViewportChanged {
+      tab_id,
+      viewport_css: (200, 150),
+      dpr: 1.0,
+    })
+    .expect("ViewportChanged");
 
   let _ = wait_for_navigation_complete(&worker.rx, tab_id, TIMEOUT);
   let _ = wait_for_frame(&worker.rx, tab_id, TIMEOUT);
