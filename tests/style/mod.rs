@@ -56,6 +56,7 @@ mod nth_child_of_test;
 mod order_property_test;
 mod overflow_clip_margin_calc_percentage_ignored_test;
 mod radio_group_required_invalid_test;
+mod relative_color_syntax_test;
 mod overflow_axis_interaction_test;
 mod required_optional_pseudo_test;
 mod root_font_size_percent_test;

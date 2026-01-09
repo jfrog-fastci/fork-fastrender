@@ -13,7 +13,7 @@ fn css_coverage_classifies_known_unknown_and_vendor_prefixed_properties() {
     fixtures.join("fixture.css"),
     r#"
       .a {
-        color: rgb(from red r g b);
+        color: rgb(from red r g);
         -webkit-transform: translateX(1px);
         rotate: 10deg;
         unknown-prop: 1;
@@ -64,7 +64,7 @@ fn css_coverage_classifies_known_unknown_and_vendor_prefixed_properties() {
     samples
       .iter()
       .any(|s| s["accepted"].as_bool() == Some(false)),
-    "expected at least one sampled `color` value to be rejected (rgb(from ...)), got: {samples:?}"
+    "expected at least one sampled `color` value to be rejected (invalid rgb()), got: {samples:?}"
   );
 
   let vendor = lookup("-webkit-transform");

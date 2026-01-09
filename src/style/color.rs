@@ -801,6 +801,11 @@ pub struct RelativeColor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelativeColorSpace {
+  /// sRGB channels in the `rgb()`/`rgba()` numeric range (0-255 / percentage).
+  ///
+  /// Note: This is distinct from `Srgb`, which models the `color(srgb ...)` syntax where
+  /// channels are normalized to 0-1.
+  Rgb,
   Srgb,
   SrgbLinear,
   Hsl,
@@ -813,19 +818,85 @@ pub enum RelativeColorSpace {
   XyzD65,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelativeChannel {
+  C0,
+  C1,
+  C2,
+  Alpha,
+}
+
+impl RelativeChannel {
+  fn index(self) -> Option<usize> {
+    match self {
+      Self::C0 => Some(0),
+      Self::C1 => Some(1),
+      Self::C2 => Some(2),
+      Self::Alpha => None,
+    }
+  }
+}
+
+/// A relative color component expression.
+///
+/// This is used by CSS Color 5 relative colors (e.g. `rgb(from ...)`) and by `color(from ...)`.
+///
+/// Only a small subset of CSS numeric expressions is supported: `calc()` with `+ - * /` and
+/// nested parentheses.
+#[derive(Debug, Clone, PartialEq)]
 pub enum RelativeComponent {
-  Source,
+  /// The special keyword `none`.
+  ///
+  /// Per CSS Color, a missing component behaves as a zero value for most operations
+  /// (rendering, conversions, arithmetic), except for interpolation where "carried forward"
+  /// semantics apply.
+  None,
+  /// A constant value expressed in the target space's component units.
   Number(f32),
-  Percentage(f32),
+  /// A reference to a source channel (including `alpha`).
+  Channel(RelativeChannel),
+  Neg(Box<RelativeComponent>),
+  Add(Box<RelativeComponent>, Box<RelativeComponent>),
+  Sub(Box<RelativeComponent>, Box<RelativeComponent>),
+  Mul(Box<RelativeComponent>, Box<RelativeComponent>),
+  Div(Box<RelativeComponent>, Box<RelativeComponent>),
 }
 
 impl RelativeComponent {
-  fn resolve(self, source: f32, percent_scale: f32) -> f32 {
+  fn eval(&self, source_channels: [f32; 3], source_alpha: f32) -> Option<f32> {
+    fn eval_or_zero(expr: &RelativeComponent, source_channels: [f32; 3], source_alpha: f32) -> f32 {
+      expr.eval(source_channels, source_alpha).unwrap_or(0.0)
+    }
+
     match self {
-      RelativeComponent::Source => source,
-      RelativeComponent::Number(v) => v,
-      RelativeComponent::Percentage(p) => p * percent_scale,
+      RelativeComponent::None => None,
+      RelativeComponent::Number(v) => Some(*v),
+      RelativeComponent::Channel(channel) => match channel {
+        RelativeChannel::Alpha => Some(source_alpha),
+        other => other.index().map(|idx| source_channels[idx]),
+      },
+      // Per CSS Color, missing components behave as zero values for most computations
+      // (outside of interpolation/carry-forward rules).
+      RelativeComponent::Neg(expr) => Some(-eval_or_zero(expr, source_channels, source_alpha)),
+      RelativeComponent::Add(a, b) => {
+        Some(eval_or_zero(a, source_channels, source_alpha) + eval_or_zero(b, source_channels, source_alpha))
+      }
+      RelativeComponent::Sub(a, b) => {
+        Some(eval_or_zero(a, source_channels, source_alpha) - eval_or_zero(b, source_channels, source_alpha))
+      }
+      RelativeComponent::Mul(a, b) => {
+        Some(eval_or_zero(a, source_channels, source_alpha) * eval_or_zero(b, source_channels, source_alpha))
+      }
+      RelativeComponent::Div(a, b) => {
+        let denom = eval_or_zero(b, source_channels, source_alpha);
+        if denom == 0.0 {
+          // CSS calc() would treat division by zero as invalid at computed-value time.
+          // For rendering we treat it as missing (which resolves to 0 in our pipeline).
+          None
+        } else {
+          Some(eval_or_zero(a, source_channels, source_alpha) / denom)
+        }
+      }
     }
   }
 }
@@ -938,8 +1009,8 @@ impl Color {
       Color::Relative(relative) => Color::Relative(RelativeColor {
         base: Box::new(relative.base.resolve_light_dark(is_dark)),
         space: relative.space,
-        components: relative.components,
-        alpha: relative.alpha,
+        components: relative.components.clone(),
+        alpha: relative.alpha.clone(),
       }),
     }
   }
@@ -1065,13 +1136,16 @@ impl RelativeColor {
 
     let mut channels = [0.0; 3];
     for (idx, output) in channels.iter_mut().enumerate() {
-      *output = self.components[idx].resolve(
-        source_channels[idx],
-        relative_percent_scale(self.space, idx),
-      );
+      *output = self.components[idx]
+        .eval(source_channels, source_alpha)
+        .unwrap_or(0.0);
     }
 
-    let alpha = self.alpha.resolve(source_alpha, 1.0).clamp(0.0, 1.0);
+    let alpha = self
+      .alpha
+      .eval(source_channels, source_alpha)
+      .unwrap_or(0.0)
+      .clamp(0.0, 1.0);
     relative_space_to_rgba(self.space, channels, alpha)
   }
 }
@@ -1182,6 +1256,10 @@ fn parse_rgb(s: &str) -> Result<Color, ColorParseError> {
   let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
 
+  if starts_with_from_keyword(inner) {
+    return parse_relative_color_function(s, inner, RelativeColorSpace::Rgb);
+  }
+
   let mut input = cssparser::ParserInput::new(inner);
   let mut parser = cssparser::Parser::new(&mut input);
 
@@ -1232,6 +1310,10 @@ fn parse_hsl(s: &str) -> Result<Color, ColorParseError> {
   let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
 
+  if starts_with_from_keyword(inner) {
+    return parse_relative_color_function(s, inner, RelativeColorSpace::Hsl);
+  }
+
   let mut input = cssparser::ParserInput::new(inner);
   let mut parser = cssparser::Parser::new(&mut input);
 
@@ -1271,6 +1353,10 @@ fn parse_hsl(s: &str) -> Result<Color, ColorParseError> {
 fn parse_hwb(s: &str) -> Result<Color, ColorParseError> {
   let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
+
+  if starts_with_from_keyword(inner) {
+    return parse_relative_color_function(s, inner, RelativeColorSpace::Hwb);
+  }
 
   let mut input = cssparser::ParserInput::new(inner);
   let mut parser = cssparser::Parser::new(&mut input);
@@ -1408,6 +1494,18 @@ fn parse_lab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
   let inner = extract_single_function_inner(input)
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
 
+  if starts_with_from_keyword(inner) {
+    return parse_relative_color_function(
+      input,
+      inner,
+      if polar {
+        RelativeColorSpace::Lch
+      } else {
+        RelativeColorSpace::Lab
+      },
+    );
+  }
+
   let mut parser_input = cssparser::ParserInput::new(inner);
   let mut parser = cssparser::Parser::new(&mut parser_input);
 
@@ -1446,6 +1544,18 @@ fn parse_lab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
 fn parse_oklab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
   let inner = extract_single_function_inner(input)
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+
+  if starts_with_from_keyword(inner) {
+    return parse_relative_color_function(
+      input,
+      inner,
+      if polar {
+        RelativeColorSpace::Oklch
+      } else {
+        RelativeColorSpace::Oklab
+      },
+    );
+  }
 
   let mut parser_input = cssparser::ParserInput::new(inner);
   let mut parser = cssparser::Parser::new(&mut parser_input);
@@ -1963,13 +2073,95 @@ fn split_relative_color_source(input: &str) -> Option<(String, String)> {
   None
 }
 
+fn starts_with_from_keyword(input: &str) -> bool {
+  let mut parser_input = cssparser::ParserInput::new(input);
+  let mut parser = cssparser::Parser::new(&mut parser_input);
+  parser.skip_whitespace();
+  matches!(
+    parser.next(),
+    Ok(cssparser::Token::Ident(ident)) if ident.eq_ignore_ascii_case("from")
+  )
+}
+
+fn split_relative_function_source(input: &str) -> Option<(String, String)> {
+  let mut depth = 0i32;
+  for (idx, ch) in input.char_indices() {
+    match ch {
+      '(' => depth += 1,
+      ')' => depth -= 1,
+      c if is_css_ascii_whitespace(c) && depth == 0 => {
+        let before = trim_ascii_whitespace_end(&input[..idx]);
+        let after = trim_ascii_whitespace_start(&input[idx..]);
+        if before.is_empty() || after.is_empty() {
+          return None;
+        }
+        return Some((before.to_string(), after.to_string()));
+      }
+      _ => {}
+    }
+  }
+  None
+}
+
+fn parse_relative_color_function(
+  input: &str,
+  inner: &str,
+  space: RelativeColorSpace,
+) -> Result<Color, ColorParseError> {
+  let inner = trim_ascii_whitespace(inner);
+  if !starts_with_from_keyword(inner) {
+    return Err(ColorParseError::InvalidFormat(input.to_string()));
+  }
+
+  // SAFETY: `starts_with_from_keyword` ensures the first token is exactly `from`, so the first
+  // four bytes belong to the keyword (ASCII).
+  let body = trim_ascii_whitespace_start(&inner[4..]);
+  let (source_str, rest) =
+    split_relative_function_source(body).ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
+
+  let source_color = Color::parse(&source_str)?;
+
+  let mut parser_input = cssparser::ParserInput::new(&rest);
+  let mut parser = cssparser::Parser::new(&mut parser_input);
+
+  let mut components_vec = Vec::new();
+  for idx in 0..3 {
+    parser.skip_whitespace();
+    components_vec.push(parse_relative_component(&mut parser, space, idx)?);
+  }
+
+  parser.skip_whitespace();
+  let alpha = if parser.try_parse(|p| p.expect_delim('/')).is_ok() {
+    parser.skip_whitespace();
+    parse_relative_component(&mut parser, space, 3)?
+  } else {
+    RelativeComponent::Channel(RelativeChannel::Alpha)
+  };
+
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(ColorParseError::InvalidFormat(input.to_string()));
+  }
+
+  let components: [RelativeComponent; 3] = components_vec
+    .try_into()
+    .map_err(|_| ColorParseError::InvalidFormat(input.to_string()))?;
+
+  Ok(Color::Relative(RelativeColor {
+    base: Box::new(source_color),
+    space,
+    components,
+    alpha,
+  }))
+}
+
 fn parse_relative_color(input: &str) -> Result<Color, ColorParseError> {
   let inner = strip_prefix_ignore_ascii_case(input, "color(")
     .and_then(|rest| rest.strip_suffix(')'))
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
   let inner = trim_ascii_whitespace(inner);
 
-  if !starts_with_ignore_ascii_case(inner, "from") {
+  if !starts_with_from_keyword(inner) {
     return Err(ColorParseError::InvalidFormat(input.to_string()));
   }
   let body = trim_ascii_whitespace_start(&inner[4..]);
@@ -2001,7 +2193,7 @@ fn parse_relative_color(input: &str) -> Result<Color, ColorParseError> {
     parser.skip_whitespace();
     parse_relative_component(&mut parser, space, 3)?
   } else {
-    RelativeComponent::Source
+    RelativeComponent::Channel(RelativeChannel::Alpha)
   };
 
   parser.skip_whitespace();
@@ -2047,34 +2239,31 @@ fn parse_relative_component(
     .next()
     .map_err(|_| ColorParseError::InvalidFormat("relative color".to_string()))?;
   match token {
-    Token::Ident(ref ident)
-      if ident.eq_ignore_ascii_case("none")
-        || relative_component_matches_name(space, index, ident.as_ref())
-        || (index == 3 && ident.eq_ignore_ascii_case("alpha")) =>
-    {
-      Ok(RelativeComponent::Source)
-    }
+    Token::Ident(ref ident) => parse_relative_component_ident(space, index, ident.as_ref()),
     Token::Number { value, .. } => Ok(RelativeComponent::Number(*value)),
-    Token::Percentage { unit_value, .. } => Ok(RelativeComponent::Percentage(*unit_value)),
+    Token::Percentage { unit_value, .. } => Ok(RelativeComponent::Number(
+      unit_value * relative_percent_scale(space, index),
+    )),
     ref hue @ Token::Dimension { .. } if relative_component_is_hue(space, index) => {
-      Ok(RelativeComponent::Number(parse_hue_token(hue)?))
+      Ok(RelativeComponent::Number(parse_angle_token(hue)?))
     }
     Token::Function(ref name) if name.as_ref().eq_ignore_ascii_case("calc") => {
-      let value = parser
+      let expr = parser
         .parse_nested_block(|p| {
+          let expr = parse_relative_calc_sum(p, space, index).map_err(|e| p.new_custom_error(e))?;
           p.skip_whitespace();
-          let result = match p.next()? {
-            Token::Number { value, .. } => Ok(RelativeComponent::Number(*value)),
-            Token::Percentage { unit_value, .. } => Ok(RelativeComponent::Percentage(*unit_value)),
-            other => Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
-          };
-          result.map_err(|e| p.new_custom_error(e))
+          if !p.is_exhausted() {
+            return Err(p.new_custom_error(ColorParseError::InvalidFormat(
+              "calc trailing tokens".to_string(),
+            )));
+          }
+          Ok(expr)
         })
         .map_err(|e| match e.kind {
           cssparser::ParseErrorKind::Custom(c) => c,
           _ => ColorParseError::InvalidFormat("calc".to_string()),
         })?;
-      Ok(value)
+      Ok(expr)
     }
     other => Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
   }
@@ -2090,62 +2279,85 @@ fn relative_component_is_hue(space: RelativeColorSpace, index: usize) -> bool {
   )
 }
 
-fn relative_component_matches_name(space: RelativeColorSpace, index: usize, ident: &str) -> bool {
+fn parse_relative_component_ident(
+  space: RelativeColorSpace,
+  _index: usize,
+  ident: &str,
+) -> Result<RelativeComponent, ColorParseError> {
+  if ident.eq_ignore_ascii_case("none") {
+    return Ok(RelativeComponent::None);
+  }
+  if ident.eq_ignore_ascii_case("alpha") {
+    return Ok(RelativeComponent::Channel(RelativeChannel::Alpha));
+  }
+  if let Some(ch) = relative_channel_from_ident(space, ident) {
+    return Ok(RelativeComponent::Channel(ch));
+  }
+  Err(ColorParseError::InvalidComponent(ident.to_string()))
+}
+
+fn relative_channel_from_ident(space: RelativeColorSpace, ident: &str) -> Option<RelativeChannel> {
   let ident = ident.to_ascii_lowercase();
   match space {
-    RelativeColorSpace::Srgb | RelativeColorSpace::SrgbLinear => match index {
-      0 => ident == "r",
-      1 => ident == "g",
-      2 => ident == "b",
-      _ => false,
+    RelativeColorSpace::Rgb | RelativeColorSpace::Srgb | RelativeColorSpace::SrgbLinear => {
+      match ident.as_str() {
+        "r" => Some(RelativeChannel::C0),
+        "g" => Some(RelativeChannel::C1),
+        "b" => Some(RelativeChannel::C2),
+        _ => None,
+      }
+    }
+    RelativeColorSpace::Hsl => match ident.as_str() {
+      "h" => Some(RelativeChannel::C0),
+      "s" => Some(RelativeChannel::C1),
+      "l" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Hsl => match index {
-      0 => ident == "h",
-      1 => ident == "s",
-      2 => ident == "l",
-      _ => false,
+    RelativeColorSpace::Hwb => match ident.as_str() {
+      "h" => Some(RelativeChannel::C0),
+      "w" | "whiteness" => Some(RelativeChannel::C1),
+      "b" | "blackness" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Hwb => match index {
-      0 => ident == "h",
-      1 => ident == "w" || ident == "whiteness",
-      2 => ident == "b" || ident == "blackness",
-      _ => false,
+    RelativeColorSpace::Lab => match ident.as_str() {
+      "l" => Some(RelativeChannel::C0),
+      "a" => Some(RelativeChannel::C1),
+      "b" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Lab => match index {
-      0 => ident == "l",
-      1 => ident == "a",
-      2 => ident == "b",
-      _ => false,
+    RelativeColorSpace::Lch => match ident.as_str() {
+      "l" => Some(RelativeChannel::C0),
+      "c" => Some(RelativeChannel::C1),
+      "h" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Lch => match index {
-      0 => ident == "l",
-      1 => ident == "c",
-      2 => ident == "h",
-      _ => false,
+    RelativeColorSpace::Oklab => match ident.as_str() {
+      "l" => Some(RelativeChannel::C0),
+      "a" => Some(RelativeChannel::C1),
+      "b" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Oklab => match index {
-      0 => ident == "l",
-      1 => ident == "a",
-      2 => ident == "b",
-      _ => false,
+    RelativeColorSpace::Oklch => match ident.as_str() {
+      "l" => Some(RelativeChannel::C0),
+      "c" => Some(RelativeChannel::C1),
+      "h" => Some(RelativeChannel::C2),
+      _ => None,
     },
-    RelativeColorSpace::Oklch => match index {
-      0 => ident == "l",
-      1 => ident == "c",
-      2 => ident == "h",
-      _ => false,
-    },
-    RelativeColorSpace::XyzD50 | RelativeColorSpace::XyzD65 => match index {
-      0 => ident == "x",
-      1 => ident == "y",
-      2 => ident == "z",
-      _ => false,
+    RelativeColorSpace::XyzD50 | RelativeColorSpace::XyzD65 => match ident.as_str() {
+      "x" => Some(RelativeChannel::C0),
+      "y" => Some(RelativeChannel::C1),
+      "z" => Some(RelativeChannel::C2),
+      _ => None,
     },
   }
 }
 
 fn relative_percent_scale(space: RelativeColorSpace, index: usize) -> f32 {
+  if index == 3 {
+    return 1.0;
+  }
   match space {
+    RelativeColorSpace::Rgb => 255.0,
     RelativeColorSpace::Srgb | RelativeColorSpace::SrgbLinear => 1.0,
     RelativeColorSpace::Hsl => {
       if index == 0 {
@@ -2178,6 +2390,145 @@ fn relative_percent_scale(space: RelativeColorSpace, index: usize) -> f32 {
   }
 }
 
+fn parse_angle_token(token: &cssparser::Token) -> Result<f32, ColorParseError> {
+  match token {
+    cssparser::Token::Dimension {
+      value, ref unit, ..
+    } => {
+      let unit = unit.as_ref().to_ascii_lowercase();
+      match unit.as_str() {
+        "deg" => Ok(*value),
+        "grad" => Ok(*value * 0.9),
+        "turn" => Ok(*value * 360.0),
+        "rad" => Ok(*value * (180.0 / std::f32::consts::PI)),
+        _ => Err(ColorParseError::InvalidComponent(unit)),
+      }
+    }
+    cssparser::Token::Number { value, .. } => Ok(*value),
+    other => Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
+  }
+}
+
+fn parse_relative_calc_sum(
+  parser: &mut cssparser::Parser<'_, '_>,
+  space: RelativeColorSpace,
+  index: usize,
+) -> Result<RelativeComponent, ColorParseError> {
+  let mut left = parse_relative_calc_product(parser, space, index)?;
+  loop {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_delim('+')).is_ok() {
+      let right = parse_relative_calc_product(parser, space, index)?;
+      left = RelativeComponent::Add(Box::new(left), Box::new(right));
+      continue;
+    }
+    if parser.try_parse(|p| p.expect_delim('-')).is_ok() {
+      let right = parse_relative_calc_product(parser, space, index)?;
+      left = RelativeComponent::Sub(Box::new(left), Box::new(right));
+      continue;
+    }
+    break;
+  }
+  Ok(left)
+}
+
+fn parse_relative_calc_product(
+  parser: &mut cssparser::Parser<'_, '_>,
+  space: RelativeColorSpace,
+  index: usize,
+) -> Result<RelativeComponent, ColorParseError> {
+  let mut left = parse_relative_calc_unary(parser, space, index)?;
+  loop {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_delim('*')).is_ok() {
+      let right = parse_relative_calc_unary(parser, space, index)?;
+      left = RelativeComponent::Mul(Box::new(left), Box::new(right));
+      continue;
+    }
+    if parser.try_parse(|p| p.expect_delim('/')).is_ok() {
+      let right = parse_relative_calc_unary(parser, space, index)?;
+      left = RelativeComponent::Div(Box::new(left), Box::new(right));
+      continue;
+    }
+    break;
+  }
+  Ok(left)
+}
+
+fn parse_relative_calc_unary(
+  parser: &mut cssparser::Parser<'_, '_>,
+  space: RelativeColorSpace,
+  index: usize,
+) -> Result<RelativeComponent, ColorParseError> {
+  parser.skip_whitespace();
+  if parser.try_parse(|p| p.expect_delim('+')).is_ok() {
+    return parse_relative_calc_unary(parser, space, index);
+  }
+  if parser.try_parse(|p| p.expect_delim('-')).is_ok() {
+    let inner = parse_relative_calc_unary(parser, space, index)?;
+    return Ok(RelativeComponent::Neg(Box::new(inner)));
+  }
+  parse_relative_calc_value(parser, space, index)
+}
+
+fn parse_relative_calc_value(
+  parser: &mut cssparser::Parser<'_, '_>,
+  space: RelativeColorSpace,
+  index: usize,
+) -> Result<RelativeComponent, ColorParseError> {
+  use cssparser::Token;
+  let token = parser
+    .next()
+    .map_err(|_| ColorParseError::InvalidFormat("calc".to_string()))?;
+  match token {
+    Token::Number { value, .. } => Ok(RelativeComponent::Number(*value)),
+    Token::Percentage { unit_value, .. } => Ok(RelativeComponent::Number(
+      unit_value * relative_percent_scale(space, index),
+    )),
+    ref hue @ Token::Dimension { .. } if relative_component_is_hue(space, index) => {
+      Ok(RelativeComponent::Number(parse_angle_token(hue)?))
+    }
+    Token::Ident(ref ident) => parse_relative_component_ident(space, index, ident.as_ref()),
+    Token::ParenthesisBlock => {
+      let expr = parser
+        .parse_nested_block(|p| {
+          let expr = parse_relative_calc_sum(p, space, index).map_err(|e| p.new_custom_error(e))?;
+          p.skip_whitespace();
+          if !p.is_exhausted() {
+            return Err(p.new_custom_error(ColorParseError::InvalidFormat(
+              "calc trailing tokens".to_string(),
+            )));
+          }
+          Ok(expr)
+        })
+        .map_err(|e| match e.kind {
+          cssparser::ParseErrorKind::Custom(c) => c,
+          _ => ColorParseError::InvalidFormat("calc".to_string()),
+        })?;
+      Ok(expr)
+    }
+    Token::Function(ref name) if name.as_ref().eq_ignore_ascii_case("calc") => {
+      let expr = parser
+        .parse_nested_block(|p| {
+          let expr = parse_relative_calc_sum(p, space, index).map_err(|e| p.new_custom_error(e))?;
+          p.skip_whitespace();
+          if !p.is_exhausted() {
+            return Err(p.new_custom_error(ColorParseError::InvalidFormat(
+              "calc trailing tokens".to_string(),
+            )));
+          }
+          Ok(expr)
+        })
+        .map_err(|e| match e.kind {
+          cssparser::ParseErrorKind::Custom(c) => c,
+          _ => ColorParseError::InvalidFormat("calc".to_string()),
+        })?;
+      Ok(expr)
+    }
+    other => Err(ColorParseError::InvalidComponent(format!("{:?}", other))),
+  }
+}
+
 fn rgba_to_hwb(color: Rgba) -> (f32, f32, f32, f32) {
   let r = color.r as f32 / 255.0;
   let g = color.g as f32 / 255.0;
@@ -2192,6 +2543,10 @@ fn rgba_to_hwb(color: Rgba) -> (f32, f32, f32, f32) {
 
 fn rgba_to_relative_space(space: RelativeColorSpace, color: Rgba) -> ([f32; 3], f32) {
   match space {
+    RelativeColorSpace::Rgb => (
+      [color.r as f32, color.g as f32, color.b as f32],
+      color.a,
+    ),
     RelativeColorSpace::Srgb => (
       [
         color.r as f32 / 255.0,
@@ -2257,6 +2612,12 @@ fn rgba_to_relative_space(space: RelativeColorSpace, color: Rgba) -> ([f32; 3], 
 fn relative_space_to_rgba(space: RelativeColorSpace, values: [f32; 3], alpha: f32) -> Rgba {
   let alpha = alpha.clamp(0.0, 1.0);
   match space {
+    RelativeColorSpace::Rgb => Rgba::new(
+      values[0].round().clamp(0.0, 255.0) as u8,
+      values[1].round().clamp(0.0, 255.0) as u8,
+      values[2].round().clamp(0.0, 255.0) as u8,
+      alpha,
+    ),
     RelativeColorSpace::Srgb => Rgba::new(
       (values[0].clamp(0.0, 1.0) * 255.0)
         .round()
@@ -2277,12 +2638,14 @@ fn relative_space_to_rgba(space: RelativeColorSpace, values: [f32; 3], alpha: f3
     ),
     RelativeColorSpace::Hsl => Hsla::new(values[0], values[1], values[2], alpha).to_rgba(),
     RelativeColorSpace::Hwb => hwb_to_rgba(values[0], values[1], values[2], alpha),
-    RelativeColorSpace::Lab => lab_to_rgba(values[0], values[1], values[2], alpha),
+    RelativeColorSpace::Lab => lab_to_rgba(values[0].clamp(0.0, 100.0), values[1], values[2], alpha),
     RelativeColorSpace::Lch => {
+      let l = values[0].clamp(0.0, 100.0);
+      let c = values[1].max(0.0);
       let h_rad = normalize_hue(values[2]).to_radians();
-      let a = values[1] * h_rad.cos();
-      let b = values[1] * h_rad.sin();
-      lab_to_rgba(values[0], a, b, alpha)
+      let a = c * h_rad.cos();
+      let b = c * h_rad.sin();
+      lab_to_rgba(l, a, b, alpha)
     }
     RelativeColorSpace::Oklab => {
       let l = if values[0] > 1.0 {
