@@ -3653,7 +3653,6 @@ fn parse_font_feature_values_rule<'i, 't>(
 
                 match group_parser.next_including_whitespace() {
                   Ok(Token::Semicolon) => break,
-                  Ok(Token::Comma) => continue,
                   Ok(Token::Number {
                     int_value: Some(v), ..
                   }) => {

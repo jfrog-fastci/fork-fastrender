@@ -4,6 +4,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct FontFeatureValuesFamily {
   stylistic: HashMap<String, Vec<u32>>,
+  historical_forms: HashMap<String, Vec<u32>>,
   styleset: HashMap<String, Vec<u32>>,
   character_variant: HashMap<String, Vec<u32>>,
   swash: HashMap<String, Vec<u32>>,
@@ -15,6 +16,7 @@ impl FontFeatureValuesFamily {
   fn map_mut(&mut self, ty: FontFeatureValueType) -> &mut HashMap<String, Vec<u32>> {
     match ty {
       FontFeatureValueType::Stylistic => &mut self.stylistic,
+      FontFeatureValueType::HistoricalForms => &mut self.historical_forms,
       FontFeatureValueType::Styleset => &mut self.styleset,
       FontFeatureValueType::CharacterVariant => &mut self.character_variant,
       FontFeatureValueType::Swash => &mut self.swash,
@@ -26,6 +28,7 @@ impl FontFeatureValuesFamily {
   fn map(&self, ty: FontFeatureValueType) -> &HashMap<String, Vec<u32>> {
     match ty {
       FontFeatureValueType::Stylistic => &self.stylistic,
+      FontFeatureValueType::HistoricalForms => &self.historical_forms,
       FontFeatureValueType::Styleset => &self.styleset,
       FontFeatureValueType::CharacterVariant => &self.character_variant,
       FontFeatureValueType::Swash => &self.swash,

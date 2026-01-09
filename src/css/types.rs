@@ -592,8 +592,8 @@ impl StyleSheet {
           }
           CssRule::Page(_)
           | CssRule::CounterStyle(_)
-          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::Property(_)
           | CssRule::PositionTry(_)
           | CssRule::FontFace(_)
@@ -984,8 +984,8 @@ impl StyleSheet {
           | CssRule::Import(_)
           | CssRule::FontFace(_)
           | CssRule::Keyframes(_)
-          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::Property(_)
           | CssRule::PositionTry(_) => {}
         }
@@ -1037,8 +1037,8 @@ impl StyleSheet {
           | CssRule::Import(_)
           | CssRule::FontFace(_)
           | CssRule::Keyframes(_)
-          | CssRule::FontFeatureValues(_)
           | CssRule::FontPaletteValues(_)
+          | CssRule::FontFeatureValues(_)
           | CssRule::Property(_)
           | CssRule::PositionTry(_) => {}
         }
@@ -1422,8 +1422,8 @@ fn set_font_face_source_stylesheet_url_in_rules(rules: &mut [CssRule], styleshee
         CssRule::Scope(rule) => visit_rules(&mut rule.rules, stylesheet_url),
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
-        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::Property(_)
         | CssRule::PositionTry(_)
         | CssRule::Import(_)
@@ -1453,8 +1453,8 @@ fn set_font_face_source_referrer_policy_in_rules(rules: &mut [CssRule], policy: 
         CssRule::Scope(rule) => visit_rules(&mut rule.rules, policy),
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
-        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::Property(_)
         | CssRule::PositionTry(_)
         | CssRule::Import(_)
@@ -1729,8 +1729,8 @@ fn collect_css_metadata_recursive(
       CssRule::Page(_)
       | CssRule::CounterStyle(_)
       | CssRule::Import(_)
-      | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
+      | CssRule::FontFeatureValues(_)
       | CssRule::Property(_)
       | CssRule::PositionTry(_) => {}
     }
@@ -2131,7 +2131,12 @@ fn collect_font_palette_rules_recursive<'a>(
           out,
         );
       }
-      CssRule::Import(_) | CssRule::Page(_) | CssRule::FontFace(_) | CssRule::CounterStyle(_) => {}
+      CssRule::Import(_)
+      | CssRule::Page(_)
+      | CssRule::FontFace(_)
+      | CssRule::CounterStyle(_)
+      | CssRule::FontFeatureValues(_)
+      | CssRule::PositionTry(_) => {}
       CssRule::Keyframes(_) => {}
       CssRule::StartingStyle(starting_rule) => {
         collect_font_palette_rules_recursive(
@@ -2144,8 +2149,6 @@ fn collect_font_palette_rules_recursive<'a>(
         );
       }
       CssRule::Property(_) => {}
-      CssRule::FontFeatureValues(_) => {}
-      CssRule::PositionTry(_) => {}
     }
   }
 }
@@ -2867,8 +2870,8 @@ mod tests {
         CssRule::Import(_)
         | CssRule::Page(_)
         | CssRule::CounterStyle(_)
-        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::Property(_)
         | CssRule::PositionTry(_)
         | CssRule::FontFace(_)
@@ -2919,8 +2922,8 @@ mod tests {
         }
         CssRule::Page(_)
         | CssRule::CounterStyle(_)
-        | CssRule::FontFeatureValues(_)
         | CssRule::FontPaletteValues(_)
+        | CssRule::FontFeatureValues(_)
         | CssRule::Property(_)
         | CssRule::PositionTry(_)
         | CssRule::FontFace(_)
@@ -4017,6 +4020,7 @@ pub struct KeyframesRule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FontFeatureValueType {
   Stylistic,
+  HistoricalForms,
   Styleset,
   CharacterVariant,
   Swash,
@@ -4028,6 +4032,8 @@ impl FontFeatureValueType {
   pub fn from_at_keyword(keyword: &str) -> Option<Self> {
     if keyword.eq_ignore_ascii_case("stylistic") {
       Some(Self::Stylistic)
+    } else if keyword.eq_ignore_ascii_case("historical-forms") {
+      Some(Self::HistoricalForms)
     } else if keyword.eq_ignore_ascii_case("styleset") {
       Some(Self::Styleset)
     } else if keyword.eq_ignore_ascii_case("character-variant") {
@@ -4460,8 +4466,8 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
       CssRule::FontFace(_)
       | CssRule::Keyframes(_)
       | CssRule::CounterStyle(_)
-      | CssRule::FontFeatureValues(_)
       | CssRule::FontPaletteValues(_)
+      | CssRule::FontFeatureValues(_)
       | CssRule::Property(_)
       | CssRule::PositionTry(_)
       | CssRule::Page(_) => out.push(rule),
