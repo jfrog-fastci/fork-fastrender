@@ -262,3 +262,12 @@ fn runs_eventtarget_smoke_tests() {
   assert_wpt_pass("events/document_eventtarget_path.window.js");
   assert_wpt_pass("events/passive_listener.window.js");
 }
+
+#[test]
+fn runs_event_loop_tests() {
+  assert_wpt_pass("event_loop/promise_then_before_timeout.window.js");
+  assert_wpt_pass("event_loop/queue_microtask_before_timeout.window.js");
+  assert_wpt_pass("event_loop/queue_microtask_order.window.js");
+  assert_wpt_pass("event_loop/settimeout_args.window.js");
+  assert_wpt_pass("event_loop/setinterval_cancel.window.js");
+}
