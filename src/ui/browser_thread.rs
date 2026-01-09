@@ -380,24 +380,17 @@ impl BrowserRuntime {
 
           if let Some(prepared) = doc.prepared() {
             let viewport = prepared.fragment_tree().viewport_size();
-            let content = prepared.fragment_tree().content_size();
-            let max_scroll_x = (content.width() - viewport.width).max(0.0);
-            let max_scroll_y = (content.height() - viewport.height).max(0.0);
-
-            let apply_axis = |current: f32, delta: f32, max: f32| {
-              if delta == 0.0 || !delta.is_finite() {
-                return current;
-              }
-              let value = current + delta;
-              if value.is_finite() {
-                value.clamp(0.0, max)
-              } else {
-                current
-              }
-            };
-
-            next.viewport.x = apply_axis(next.viewport.x, delta_x, max_scroll_x);
-            next.viewport.y = apply_axis(next.viewport.y, delta_y, max_scroll_y);
+            let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+              .first()
+              .map(|state| state.bounds);
+            let delta = Point::new(delta_x, delta_y);
+            let target = Point::new(next.viewport.x + delta.x, next.viewport.y + delta.y);
+            if let Some(bounds) = bounds {
+              next.viewport = bounds.clamp(target);
+            } else {
+              next.viewport.x = target.x.max(0.0);
+              next.viewport.y = target.y.max(0.0);
+            }
           } else {
             next.viewport.x = (next.viewport.x + delta_x).max(0.0);
             next.viewport.y = (next.viewport.y + delta_y).max(0.0);

@@ -159,26 +159,24 @@ impl BrowserTabController {
       );
     } else {
       // No pointer location: treat this as a viewport scroll.
-      let viewport = prepared.fragment_tree().viewport_size();
-      let content = prepared.fragment_tree().content_size();
-      let max_scroll_x = (content.width() - viewport.width).max(0.0);
-      let max_scroll_y = (content.height() - viewport.height).max(0.0);
       let mut viewport_scroll = next_state.viewport;
 
-      let apply_axis = |current: f32, delta: f32, max: f32| {
-        if delta == 0.0 || !delta.is_finite() {
-          return current;
-        }
-        let value = current + delta;
-        if value.is_finite() {
-          value.clamp(0.0, max)
+      let delta = Point::new(
+        if delta_css.0.is_finite() { delta_css.0 } else { 0.0 },
+        if delta_css.1.is_finite() { delta_css.1 } else { 0.0 },
+      );
+      if delta != Point::ZERO {
+        let viewport = prepared.fragment_tree().viewport_size();
+        let bounds = crate::scroll::build_scroll_chain(&prepared.fragment_tree().root, viewport, &[])
+          .first()
+          .map(|state| state.bounds);
+        let target = Point::new(viewport_scroll.x + delta.x, viewport_scroll.y + delta.y);
+        if let Some(bounds) = bounds {
+          viewport_scroll = bounds.clamp(target);
         } else {
-          current
+          viewport_scroll = Point::new(target.x.max(0.0), target.y.max(0.0));
         }
-      };
-
-      viewport_scroll.x = apply_axis(viewport_scroll.x, delta_css.0, max_scroll_x);
-      viewport_scroll.y = apply_axis(viewport_scroll.y, delta_css.1, max_scroll_y);
+      }
       next_state.viewport = viewport_scroll;
     }
 
