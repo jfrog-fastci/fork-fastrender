@@ -598,9 +598,14 @@ impl TreeSink for Dom2TreeSink {
 mod tests {
   use super::Dom2TreeSink;
   use crate::debug::snapshot::snapshot_dom;
+  use crate::dom::HTML_NAMESPACE;
   use crate::dom2::{Document, NodeId, NodeKind};
+  use html5ever::tendril::StrTendril;
   use html5ever::tendril::TendrilSink;
+  use html5ever::tree_builder::{ElementFlags, NodeOrText, TreeSink};
   use html5ever::ParseOpts;
+  use markup5ever::interface::Attribute;
+  use markup5ever::{LocalName, Namespace, QualName};
   use selectors::context::QuirksMode;
 
   fn parse_with_sink(html: &str) -> crate::dom2::Document {
@@ -904,6 +909,166 @@ mod tests {
     assert!(
       doc.node(div_id).children.contains(&comment_id),
       "div should contain comment node"
+    );
+  }
+
+  fn html_name(local: &str) -> QualName {
+    QualName::new(None, Namespace::from(HTML_NAMESPACE), LocalName::from(local))
+  }
+
+  fn attr(local: &str, value: &str) -> Attribute {
+    Attribute {
+      name: QualName::new(None, Namespace::from(""), LocalName::from(local)),
+      value: StrTendril::from_slice(value),
+    }
+  }
+
+  #[test]
+  fn add_attrs_if_missing_does_not_overwrite_existing_attributes() {
+    let sink = Dom2TreeSink::new(None);
+    let div = sink.create_element(
+      html_name("div"),
+      vec![attr("id", "a")],
+      ElementFlags::default(),
+    );
+
+    sink.add_attrs_if_missing(&div, vec![attr("ID", "b"), attr("class", "c")]);
+
+    let doc = sink.document();
+    let NodeKind::Element { attributes, .. } = &doc.node(div).kind else {
+      panic!("expected element node");
+    };
+    assert!(
+      attributes.iter().any(|(k, v)| k.eq_ignore_ascii_case("id") && v == "a"),
+      "expected existing id attribute to be preserved"
+    );
+    assert!(
+      attributes.iter().any(|(k, v)| k.eq_ignore_ascii_case("class") && v == "c"),
+      "expected missing class attribute to be added"
+    );
+    assert_eq!(attributes.len(), 2, "expected no duplicate/overwritten attributes");
+  }
+
+  #[test]
+  fn append_before_sibling_merges_inserted_text_with_adjacent_text_nodes() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+    let parent = sink.create_element(html_name("p"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(parent));
+
+    sink.append(&parent, NodeOrText::AppendText("a".into()));
+    let span = sink.create_element(html_name("span"), Vec::new(), ElementFlags::default());
+    sink.append(&parent, NodeOrText::AppendNode(span));
+    sink.append_before_sibling(&span, NodeOrText::AppendText("b".into()));
+
+    {
+      let doc = sink.document();
+      let children = &doc.node(parent).children;
+      assert_eq!(children.len(), 2);
+      let NodeKind::Text { content } = &doc.node(children[0]).kind else {
+        panic!("expected first child to be text");
+      };
+      assert_eq!(content, "ab");
+    }
+
+    let parent2 = sink.create_element(html_name("p"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(parent2));
+    let span2 = sink.create_element(html_name("span"), Vec::new(), ElementFlags::default());
+    sink.append(&parent2, NodeOrText::AppendNode(span2));
+    sink.append(&parent2, NodeOrText::AppendText("b".into()));
+    let text_id = {
+      let doc = sink.document();
+      *doc.node(parent2).children.last().expect("text child exists")
+    };
+    sink.append_before_sibling(&text_id, NodeOrText::AppendText("a".into()));
+
+    let doc = sink.document();
+    let children = &doc.node(parent2).children;
+    assert_eq!(children.len(), 2);
+    let NodeKind::Text { content } = &doc.node(children[1]).kind else {
+      panic!("expected second child to be text");
+    };
+    assert_eq!(content, "ab");
+  }
+
+  #[test]
+  fn append_based_on_parent_node_inserts_before_element_when_connected() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let container = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(container));
+
+    let table = sink.create_element(html_name("table"), Vec::new(), ElementFlags::default());
+    sink.append(&container, NodeOrText::AppendNode(table));
+
+    sink.append_based_on_parent_node(&table, &container, NodeOrText::AppendText("x".into()));
+
+    let doc = sink.document();
+    let children = &doc.node(container).children;
+    assert_eq!(children.len(), 2);
+    let NodeKind::Text { content } = &doc.node(children[0]).kind else {
+      panic!("expected inserted text node");
+    };
+    assert_eq!(content, "x");
+    assert_eq!(children[1], table);
+  }
+
+  #[test]
+  fn append_based_on_parent_node_appends_to_prev_element_when_element_detached() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let parent = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(parent));
+
+    let marker = sink.create_element(html_name("span"), Vec::new(), ElementFlags::default());
+    sink.append(&parent, NodeOrText::AppendNode(marker));
+
+    let detached = sink.create_element(html_name("table"), Vec::new(), ElementFlags::default());
+    sink.append_based_on_parent_node(&detached, &parent, NodeOrText::AppendText("y".into()));
+
+    let doc = sink.document();
+    let children = &doc.node(parent).children;
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0], marker);
+    let NodeKind::Text { content } = &doc.node(children[1]).kind else {
+      panic!("expected appended text node");
+    };
+    assert_eq!(content, "y");
+  }
+
+  #[test]
+  fn reparent_children_updates_parents_and_merges_boundary_text_nodes() {
+    let sink = Dom2TreeSink::new(None);
+    let root = sink.get_document();
+
+    let from = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    let to = sink.create_element(html_name("div"), Vec::new(), ElementFlags::default());
+    sink.append(&root, NodeOrText::AppendNode(from));
+    sink.append(&root, NodeOrText::AppendNode(to));
+
+    sink.append(&to, NodeOrText::AppendText("hello".into()));
+    sink.append(&from, NodeOrText::AppendText("world".into()));
+
+    let moved_text_id = {
+      let doc = sink.document();
+      doc.node(from).children[0]
+    };
+
+    sink.reparent_children(&from, &to);
+
+    let doc = sink.document();
+    assert!(doc.node(from).children.is_empty());
+    assert_eq!(doc.node(to).children.len(), 1);
+    let NodeKind::Text { content } = &doc.node(doc.node(to).children[0]).kind else {
+      panic!("expected merged text node");
+    };
+    assert_eq!(content, "helloworld");
+    assert_eq!(
+      doc.node(moved_text_id).parent,
+      None,
+      "merged-away text node should be detached"
     );
   }
 }
