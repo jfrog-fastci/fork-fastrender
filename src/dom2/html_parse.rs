@@ -23,7 +23,7 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
   parser.set_eof();
 
   let mut document = loop {
-    match parser.pump() {
+    match parser.pump()? {
       StreamingParserYield::Script { .. } => {
         // Pure parsing: ignore script execution and continue parsing.
       }

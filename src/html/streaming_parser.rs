@@ -8,6 +8,7 @@
 //! - and maintains the parse-time document base URL (`<base href>`).
 
 use crate::dom2::{Document, Dom2TreeSink, NodeId};
+use crate::error::Result;
 use crate::html::base_url_tracker::BaseUrlTracker;
 use crate::html::pausable_html5ever::{Html5everPump, PausableHtml5everParser};
 
@@ -98,8 +99,8 @@ impl StreamingHtmlParser {
   }
 
   /// Run the tokenizer/tree-builder until it either needs a script, needs more input, or finishes.
-  pub fn pump(&mut self) -> StreamingParserYield {
-    match self.parser.pump() {
+  pub fn pump(&mut self) -> Result<StreamingParserYield> {
+    match self.parser.pump()? {
       Html5everPump::Script(script) => {
         // Ensure declarative shadow roots are attached before any connected script executes.
         //
@@ -122,12 +123,12 @@ impl StreamingHtmlParser {
           );
         }
 
-        StreamingParserYield::Script {
+        Ok(StreamingParserYield::Script {
           script,
           base_url_at_this_point: self.current_base_url(),
-        }
+        })
       }
-      Html5everPump::NeedMoreInput => StreamingParserYield::NeedMoreInput,
+      Html5everPump::NeedMoreInput => Ok(StreamingParserYield::NeedMoreInput),
       Html5everPump::Finished(mut document) => {
         // Ensure declarative shadow roots are attached for the final DOM snapshot.
         //
@@ -135,7 +136,7 @@ impl StreamingHtmlParser {
         // `Script` arm above), but additional shadowroot templates may appear after the final script
         // yield (or in documents with no scripts at all).
         document.attach_shadow_roots();
-        StreamingParserYield::Finished { document }
+        Ok(StreamingParserYield::Finished { document })
       }
     }
   }
@@ -220,7 +221,7 @@ mod tests {
     for &chunk in html_chunks {
       parser.push_str(chunk);
       loop {
-        match parser.pump() {
+        match parser.pump().unwrap() {
           StreamingParserYield::Script { script, .. } => {
             let doc = parser
               .document()
@@ -235,7 +236,7 @@ mod tests {
 
     parser.set_eof();
     loop {
-      match parser.pump() {
+      match parser.pump().unwrap() {
         StreamingParserYield::Script { script, .. } => {
           let doc = parser
             .document()
@@ -279,7 +280,7 @@ mod tests {
     // Feed markup such that after the first script yields, there is already buffered input
     // remaining in the same chunk.
     parser.push_str("<body><script>1</script><p>after</p></body>");
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Script { .. } => {}
       other => panic!("expected Script yield, got {other:?}"),
     }
@@ -290,7 +291,7 @@ mod tests {
     parser.set_eof();
 
     let doc = loop {
-      match parser.pump() {
+      match parser.pump().unwrap() {
         StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
         StreamingParserYield::Script { .. } => panic!("unexpected second script yield"),
         StreamingParserYield::Finished { document } => break document,
@@ -329,7 +330,7 @@ mod tests {
     );
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Script {
         base_url_at_this_point,
         ..
@@ -346,7 +347,7 @@ mod tests {
       other => panic!("expected Script yield, got {other:?}"),
     }
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Script {
         base_url_at_this_point,
         ..
@@ -357,7 +358,7 @@ mod tests {
       other => panic!("expected Script yield, got {other:?}"),
     }
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Finished { .. } => {}
       other => panic!("expected Finished, got {other:?}"),
     }
@@ -373,7 +374,7 @@ mod tests {
 
     let mut specs = Vec::new();
     loop {
-      match parser.pump() {
+      match parser.pump().unwrap() {
         StreamingParserYield::Script {
           script,
           base_url_at_this_point,
@@ -477,7 +478,7 @@ mod tests {
     parser.push_str(html);
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Finished { .. } => {}
       other => panic!("expected Finished, got {other:?}"),
     }
@@ -524,7 +525,7 @@ mod tests {
        <script>RUN</script>",
     );
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       StreamingParserYield::Script { .. } => {
         let doc = parser
           .document()
@@ -554,7 +555,7 @@ mod tests {
     );
     parser.set_eof();
 
-    let script = match parser.pump() {
+    let script = match parser.pump().unwrap() {
       StreamingParserYield::Script { script, .. } => script,
       other => panic!("expected Script yield, got {other:?}"),
     };
@@ -583,7 +584,7 @@ mod tests {
     }
 
     let document = loop {
-      match parser.pump() {
+      match parser.pump().unwrap() {
         StreamingParserYield::NeedMoreInput => panic!("unexpected NeedMoreInput after EOF"),
         StreamingParserYield::Script { .. } => panic!("unexpected additional script yield"),
         StreamingParserYield::Finished { document } => break document,

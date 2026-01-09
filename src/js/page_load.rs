@@ -173,7 +173,7 @@ where
 
     self.maybe_feed_chunk();
 
-    match self.parser.pump() {
+    match self.parser.pump()? {
       Html5everPump::NeedMoreInput => {
         self.parser_needs_more_input = true;
         Ok(self.cursor < self.html.len() || !self.eof_sent)
@@ -683,7 +683,7 @@ mod tests {
     // Feed the parser manually and pump until it hits the `</script>` boundary.
     host.parser.push_str("<!doctype html><script>RUN</script>");
     host.parser.set_eof();
-    let script_node = match host.parser.pump() {
+    let script_node = match host.parser.pump()? {
       Html5everPump::Script(node) => node,
       Html5everPump::NeedMoreInput => panic!("expected pump to yield Script, got NeedMoreInput"),
       Html5everPump::Finished(_) => panic!("expected pump to yield Script, got Finished"),

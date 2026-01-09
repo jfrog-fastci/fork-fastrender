@@ -581,7 +581,7 @@ impl BrowserTab {
     parser.set_eof();
 
     loop {
-      match parser.pump() {
+      match parser.pump()? {
         StreamingParserYield::Script {
           script,
           base_url_at_this_point,

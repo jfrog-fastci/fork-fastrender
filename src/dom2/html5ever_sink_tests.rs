@@ -193,7 +193,7 @@ fn pausable_parser_pauses_at_script_and_dom_is_partial() {
   parser.push_str("<!doctype html><script>1</script><div id=after></div>");
   parser.set_eof();
 
-  let script_id = match parser.pump() {
+  let script_id = match parser.pump().unwrap() {
     Html5everPump::Script(id) => id,
     _ => panic!("expected Script boundary"),
   };
@@ -210,7 +210,7 @@ fn pausable_parser_pauses_at_script_and_dom_is_partial() {
     );
   }
 
-  let doc = match parser.pump() {
+  let doc = match parser.pump().unwrap() {
     Html5everPump::Finished(doc) => doc,
     _ => panic!("expected Finished"),
   };
@@ -235,7 +235,7 @@ fn pausable_parser_yields_multiple_scripts_in_order() {
   parser.push_str("<!doctype html><script>a</script><p>x</p><script>b</script>");
   parser.set_eof();
 
-  let s1 = match parser.pump() {
+  let s1 = match parser.pump().unwrap() {
     Html5everPump::Script(id) => id,
     _ => panic!("expected first Script boundary"),
   };
@@ -247,7 +247,7 @@ fn pausable_parser_yields_multiple_scripts_in_order() {
     assert_eq!(script_text(&doc, s1), "a");
   }
 
-  let s2 = match parser.pump() {
+  let s2 = match parser.pump().unwrap() {
     Html5everPump::Script(id) => id,
     _ => panic!("expected second Script boundary"),
   };
@@ -259,7 +259,7 @@ fn pausable_parser_yields_multiple_scripts_in_order() {
     assert_eq!(script_text(&doc, s2), "b");
   }
 
-  match parser.pump() {
+  match parser.pump().unwrap() {
     Html5everPump::Finished(_) => {}
     _ => panic!("expected Finished after scripts"),
   }
@@ -285,7 +285,7 @@ fn pausable_parser_template_script_boundaries_are_inert() {
   let mut saw_inert_script = false;
 
   loop {
-    match parser.pump() {
+    match parser.pump().unwrap() {
       Html5everPump::Script(id) => {
         let doc = parser
           .sink()
@@ -551,7 +551,7 @@ fn pausable_parser_attaches_shadowrootmode_during_parse_before_script_pause() {
   );
   parser.set_eof();
 
-  let script_id = match parser.pump() {
+  let script_id = match parser.pump().unwrap() {
     Html5everPump::Script(id) => id,
     _ => panic!("expected Script boundary"),
   };

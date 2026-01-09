@@ -8144,6 +8144,11 @@ impl FastRender {
               guard.record_error(ResourceKind::Document, url, &e);
               guard.document_error = Some(e.to_string());
             }
+            // Timeouts/cancellation are not fetch failures; surface them as render errors so callers
+            // can distinguish them from network/IO problems.
+            if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+              return Err(e);
+            }
             if options.allow_partial {
               self.set_document_url(url);
               self.set_base_url(url);
@@ -8279,6 +8284,11 @@ impl FastRender {
                     let _ = crate::paint::painter::take_paint_diagnostics();
                     guard.stats = Some(stats);
                   }
+                }
+                // Timeouts/cancellation are not fetch failures; surface them as render errors so
+                // callers can distinguish them from network/IO problems.
+                if matches!(&e, Error::Render(RenderError::Timeout { .. })) {
+                  return Err(e);
                 }
                 if options.allow_partial {
                   let pixmap = self.render_error_overlay(width, height)?;

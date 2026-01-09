@@ -394,7 +394,7 @@ where
   let js_execution_depth = Rc::new(Cell::new(0));
 
   let document = loop {
-    match parser.pump() {
+    match parser.pump()? {
       StreamingParserYield::Script {
         script,
         base_url_at_this_point,

@@ -4,6 +4,12 @@ use html5ever::tree_builder::TreeSink;
 use html5ever::ParseOpts;
 use markup5ever::interface::TokenizerResult;
 
+use crate::error::{Error, RenderStage, Result};
+use crate::render_control::check_active_periodic;
+
+const HTML5EVER_INPUT_MAX_TENDRIL_BYTES: usize = 16 * 1024;
+const HTML5EVER_PUMP_DEADLINE_STRIDE: usize = 64;
+
 /// Result of a [`PausableHtml5everParser::pump`] call.
 pub enum Html5everPump<Handle, Output> {
   /// Parser hit a `</script>` end tag and must yield to the host.
@@ -41,7 +47,20 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     let Some(parser) = self.parser.as_ref() else {
       return;
     };
-    parser.input_buffer.push_back(StrTendril::from_slice(chunk));
+
+    let mut start = 0usize;
+    while start < chunk.len() {
+      let mut end = (start + HTML5EVER_INPUT_MAX_TENDRIL_BYTES).min(chunk.len());
+      while end < chunk.len() && !chunk.is_char_boundary(end) {
+        end -= 1;
+      }
+      debug_assert!(chunk.is_char_boundary(start));
+      debug_assert!(chunk.is_char_boundary(end));
+      parser
+        .input_buffer
+        .push_back(StrTendril::from_slice(&chunk[start..end]));
+      start = end;
+    }
   }
 
   /// Like `document.write`: inject text before any buffered “remaining input”.
@@ -52,7 +71,20 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
     let Some(parser) = self.parser.as_ref() else {
       return;
     };
-    parser.input_buffer.push_front(StrTendril::from_slice(chunk));
+
+    let mut end = chunk.len();
+    while end > 0 {
+      let mut start = end.saturating_sub(HTML5EVER_INPUT_MAX_TENDRIL_BYTES);
+      while start < end && !chunk.is_char_boundary(start) {
+        start += 1;
+      }
+      debug_assert!(chunk.is_char_boundary(start));
+      debug_assert!(chunk.is_char_boundary(end));
+      parser
+        .input_buffer
+        .push_front(StrTendril::from_slice(&chunk[start..end]));
+      end = start;
+    }
   }
 
   /// Signal no more input will arrive.
@@ -93,28 +125,37 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
 
   /// Run the tokenizer/tree-builder until it either needs a script, needs more
   /// input, or finishes.
-  pub fn pump(&mut self) -> Html5everPump<Sink::Handle, Sink::Output> {
+  pub fn pump(&mut self) -> Result<Html5everPump<Sink::Handle, Sink::Output>> {
+    let mut deadline_counter = HTML5EVER_PUMP_DEADLINE_STRIDE - 1;
     loop {
       let Some(parser) = self.parser.as_mut() else {
-        return Html5everPump::NeedMoreInput;
+        return Ok(Html5everPump::NeedMoreInput);
       };
+
+      check_active_periodic(
+        &mut deadline_counter,
+        HTML5EVER_PUMP_DEADLINE_STRIDE,
+        RenderStage::DomParse,
+      )
+      .map_err(Error::Render)?;
+
       // Drive html5ever directly so `TokenizerResult::Script` can be observed.
       let result = parser.tokenizer.feed(&parser.input_buffer);
 
       match result {
-        TokenizerResult::Script(handle) => return Html5everPump::Script(handle),
+        TokenizerResult::Script(handle) => return Ok(Html5everPump::Script(handle)),
         TokenizerResult::Done => {
           if !self.eof {
-            return Html5everPump::NeedMoreInput;
+            return Ok(Html5everPump::NeedMoreInput);
           }
 
           let Some(parser) = self.parser.take() else {
-            return Html5everPump::NeedMoreInput;
+            return Ok(Html5everPump::NeedMoreInput);
           };
 
           parser.tokenizer.end();
           let output = parser.tokenizer.sink.sink.finish();
-          return Html5everPump::Finished(output);
+          return Ok(Html5everPump::Finished(output));
         }
       }
     }
@@ -124,9 +165,11 @@ impl<Sink: TreeSink> PausableHtml5everParser<Sink> {
 #[cfg(test)]
 mod tests {
   use super::{Html5everPump, PausableHtml5everParser};
+  use crate::render_control::{with_deadline, RenderDeadline};
   use html5ever::tree_builder::TreeBuilderOpts;
   use html5ever::ParseOpts;
   use markup5ever_rcdom::{Handle, NodeData, RcDom};
+  use std::time::Duration;
 
   // `RcDom::document` points at the root document node; walking the tree should
   // find any handles inserted so far.
@@ -174,7 +217,7 @@ mod tests {
     parser.push_str("<!doctype html><script>a</script><p>x</p><script>b</script>");
     parser.set_eof();
 
-    let h1 = match parser.pump() {
+    let h1 = match parser.pump().unwrap() {
       Html5everPump::Script(h) => h,
       _ => panic!("expected first pump to yield Script"),
     };
@@ -187,11 +230,11 @@ mod tests {
       );
     }
 
-    let h2 = match parser.pump() {
+    let h2 = match parser.pump().unwrap() {
       Html5everPump::Script(h) => h,
       _ => panic!("expected second pump to yield Script"),
     };
-    let dom = match parser.pump() {
+    let dom = match parser.pump().unwrap() {
       Html5everPump::Finished(dom) => dom,
       _ => panic!("expected third pump to finish"),
     };
@@ -218,7 +261,7 @@ mod tests {
     parser.push_str("<!doctype html><p>x</p>");
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       Html5everPump::Finished(_) => {}
       _ => panic!("expected parser to finish without yielding Script"),
     };
@@ -238,7 +281,7 @@ mod tests {
     parser.push_str("<!doctype html><p>x</p>");
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       Html5everPump::Finished(_) => {}
       _ => panic!("expected parser to finish without yielding Script"),
     };
@@ -260,7 +303,7 @@ mod tests {
     parser.push_str("<!doctype html><p>x</p>");
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       Html5everPump::Finished(_) => {}
       _ => panic!("expected parser to finish without yielding Script"),
     };
@@ -282,11 +325,46 @@ mod tests {
     parser.push_str("<!doctype html><p>x</p>");
     parser.set_eof();
 
-    match parser.pump() {
+    match parser.pump().unwrap() {
       Html5everPump::Finished(_) => {}
       _ => panic!("expected parser to finish without yielding Script"),
     };
 
     assert!(parser.sink_mut().is_none());
+  }
+
+  #[test]
+  fn chunks_large_push_str_into_multiple_tendrils() {
+    let mut parser = PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
+    let big = "a".repeat(33 * 1024);
+    parser.push_str(&big);
+
+    let input = &parser.parser.as_ref().unwrap().input_buffer;
+    let mut saw = 0usize;
+    while let Some(t) = input.pop_front() {
+      assert!(t.len() <= super::HTML5EVER_INPUT_MAX_TENDRIL_BYTES);
+      saw += 1;
+    }
+    assert!(saw >= 3, "expected multiple input tendrils, saw {saw}");
+  }
+
+  #[test]
+  fn pump_aborts_on_expired_deadline() {
+    let deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
+    let result = with_deadline(Some(&deadline), || {
+      let mut parser = PausableHtml5everParser::new_document(RcDom::default(), ParseOpts::default());
+      parser.push_str("<!doctype html><p>x</p>");
+      parser.set_eof();
+      parser.pump()
+    });
+
+    match result {
+      Err(crate::error::Error::Render(crate::error::RenderError::Timeout {
+        stage: crate::error::RenderStage::DomParse,
+        ..
+      })) => {}
+      Ok(_) => panic!("expected dom_parse timeout, got Ok"),
+      Err(err) => panic!("expected dom_parse timeout, got {err}"),
+    }
   }
 }

@@ -170,7 +170,7 @@ impl ClassicScriptPipelineState {
         return Ok(false);
       }
 
-      match self.parser.pump() {
+      match self.parser.pump()? {
         StreamingParserYield::Script {
           script,
           base_url_at_this_point,
@@ -845,7 +845,7 @@ mod tests {
     let mut state = ClassicScriptPipelineState::new(Some("https://ex/doc.html"), ParseBudget::default());
     state.parser.push_str("<script>RUN</script>");
     state.parser.set_eof();
-    let (script_node_id, base_url_at_this_point) = match state.parser.pump() {
+    let (script_node_id, base_url_at_this_point) = match state.parser.pump()? {
       StreamingParserYield::Script {
         script,
         base_url_at_this_point,
