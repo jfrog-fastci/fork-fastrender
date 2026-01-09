@@ -1007,6 +1007,13 @@ impl BlockFormattingContext {
       + computed_width.padding_left
       + computed_width.padding_right
       + computed_width.border_right;
+    let reserved_vertical_gutter =
+      if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+        let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+        (reservation.left + reservation.right).max(0.0)
+      } else {
+        0.0
+      };
     let min_width = if let Some(keyword) = min_inline_keyword {
       if intrinsic_content_sizes.is_none() {
         let factory = self.child_factory_for_cb(*nearest_positioned_cb);
@@ -1040,6 +1047,14 @@ impl BlockFormattingContext {
         })
         .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
         .unwrap_or(0.0)
+    };
+    let min_width = if reserved_vertical_gutter > 0.0
+      && min_inline_keyword.is_none()
+      && min_inline_length.is_some()
+    {
+      (min_width - reserved_vertical_gutter).max(0.0)
+    } else {
+      min_width
     };
 
     let max_width = if let Some(keyword) = max_inline_keyword {
@@ -1075,6 +1090,15 @@ impl BlockFormattingContext {
         })
         .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
         .unwrap_or(f32::INFINITY)
+    };
+    let max_width = if reserved_vertical_gutter > 0.0
+      && max_inline_keyword.is_none()
+      && max_inline_length.is_some()
+      && max_width.is_finite()
+    {
+      (max_width - reserved_vertical_gutter).max(0.0)
+    } else {
+      max_width
     };
     let max_width = if max_width.is_finite() && max_width < min_width {
       min_width
@@ -1634,6 +1658,19 @@ impl BlockFormattingContext {
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(0.0)
     };
+    let min_height = if reserved_horizontal_gutter > 0.0
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      && min_height_keyword.is_none()
+      && (if inline_is_horizontal {
+        style.min_height.is_some()
+      } else {
+        style.min_width.is_some()
+      })
+    {
+      (min_height - reserved_horizontal_gutter).max(0.0)
+    } else {
+      min_height
+    };
     let max_height_keyword = if inline_is_horizontal {
       style.max_height_keyword
     } else {
@@ -1690,6 +1727,20 @@ impl BlockFormattingContext {
         })
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(f32::INFINITY)
+    };
+    let max_height = if reserved_horizontal_gutter > 0.0
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      && max_height_keyword.is_none()
+      && (if inline_is_horizontal {
+        style.max_height.is_some()
+      } else {
+        style.max_width.is_some()
+      })
+      && max_height.is_finite()
+    {
+      (max_height - reserved_horizontal_gutter).max(0.0)
+    } else {
+      max_height
     };
     let max_height = if max_height.is_finite() && max_height < min_height {
       min_height
@@ -3967,6 +4018,13 @@ impl BlockFormattingContext {
           + hypo_width.padding_left
           + hypo_width.padding_right
           + hypo_width.border_right;
+        let reserved_vertical_gutter =
+          if child.style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+            let reservation = crate::layout::utils::scrollbar_reservation_for_style(&child.style);
+            (reservation.left + reservation.right).max(0.0)
+          } else {
+            0.0
+          };
         let min_width = if let Some(keyword) = child.style.min_width_keyword {
           if intrinsic_content_sizes.is_none() {
             let factory = self.child_factory_for_cb(*nearest_positioned_cb);
@@ -4008,6 +4066,14 @@ impl BlockFormattingContext {
             .map(|w| content_size_from_box_sizing(w, horizontal_edges, child.style.box_sizing))
             .unwrap_or(0.0)
         };
+        let min_width = if reserved_vertical_gutter > 0.0
+          && child.style.min_width_keyword.is_none()
+          && child.style.min_width.is_some()
+        {
+          (min_width - reserved_vertical_gutter).max(0.0)
+        } else {
+          min_width
+        };
         let max_width = if let Some(keyword) = child.style.max_width_keyword {
           if intrinsic_content_sizes.is_none() {
             let factory = self.child_factory_for_cb(*nearest_positioned_cb);
@@ -4048,6 +4114,15 @@ impl BlockFormattingContext {
             })
             .map(|w| content_size_from_box_sizing(w, horizontal_edges, child.style.box_sizing))
             .unwrap_or(f32::INFINITY)
+        };
+        let max_width = if reserved_vertical_gutter > 0.0
+          && child.style.max_width_keyword.is_none()
+          && child.style.max_width.is_some()
+          && max_width.is_finite()
+        {
+          (max_width - reserved_vertical_gutter).max(0.0)
+        } else {
+          max_width
         };
         let max_width = if max_width.is_finite() && max_width < min_width {
           min_width
@@ -6264,6 +6339,21 @@ impl FormattingContext for BlockFormattingContext {
         .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
         .unwrap_or(0.0)
     };
+    let reserved_vertical_gutter =
+      if style.box_sizing == crate::style::types::BoxSizing::ContentBox {
+        let reservation = crate::layout::utils::scrollbar_reservation_for_style(style);
+        (reservation.left + reservation.right).max(0.0)
+      } else {
+        0.0
+      };
+    let min_width = if reserved_vertical_gutter > 0.0
+      && style_for_width.min_width_keyword.is_none()
+      && style_for_width.min_width.is_some()
+    {
+      (min_width - reserved_vertical_gutter).max(0.0)
+    } else {
+      min_width
+    };
 
     let max_width = if let Some(keyword) = style_for_width.max_width_keyword {
       if intrinsic_content_sizes.is_none() {
@@ -6301,6 +6391,15 @@ impl FormattingContext for BlockFormattingContext {
         })
         .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
         .unwrap_or(f32::INFINITY)
+    };
+    let max_width = if reserved_vertical_gutter > 0.0
+      && style_for_width.max_width_keyword.is_none()
+      && style_for_width.max_width.is_some()
+      && max_width.is_finite()
+    {
+      (max_width - reserved_vertical_gutter).max(0.0)
+    } else {
+      max_width
     };
 
     // CSS 2.1 §10.4: if the computed min-width exceeds max-width, max-width is set to min-width.
@@ -7016,6 +7115,15 @@ impl FormattingContext for BlockFormattingContext {
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(0.0)
     };
+    let min_height = if reserved_horizontal_gutter > 0.0
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      && style.min_height_keyword.is_none()
+      && style.min_height.is_some()
+    {
+      (min_height - reserved_horizontal_gutter).max(0.0)
+    } else {
+      min_height
+    };
     let max_height = if let Some(keyword) = style.max_height_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let max_border = match keyword {
@@ -7064,6 +7172,16 @@ impl FormattingContext for BlockFormattingContext {
         })
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(f32::INFINITY)
+    };
+    let max_height = if reserved_horizontal_gutter > 0.0
+      && style.box_sizing == crate::style::types::BoxSizing::ContentBox
+      && style.max_height_keyword.is_none()
+      && style.max_height.is_some()
+      && max_height.is_finite()
+    {
+      (max_height - reserved_horizontal_gutter).max(0.0)
+    } else {
+      max_height
     };
 
     let max_height = if max_height.is_finite() && max_height < min_height {

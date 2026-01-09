@@ -183,3 +183,37 @@ fn overflow_x_scroll_does_not_inflate_fixed_height() {
   // increase padding and inflate the border box for content-box definite heights.
   assert!((fragment.bounds.height() - 100.0).abs() < 1e-3);
 }
+
+#[test]
+fn overflow_x_scroll_does_not_inflate_fixed_height_with_min_height() {
+  let mut style = ComputedStyle::default();
+  style.overflow_x = Overflow::Scroll;
+  style.height = Some(Length::px(100.0));
+  style.min_height = Some(Length::px(100.0));
+
+  let container = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 1000.0);
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
+
+  assert!((fragment.bounds.height() - 100.0).abs() < 1e-3);
+}
+
+#[test]
+fn overflow_y_scroll_does_not_inflate_fixed_width_with_min_width() {
+  let mut style = ComputedStyle::default();
+  style.overflow_y = Overflow::Scroll;
+  style.width = Some(Length::px(100.0));
+  style.min_width = Some(Length::px(100.0));
+
+  let container = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 1000.0);
+  let fragment = bfc
+    .layout(&container, &constraints)
+    .expect("layout should succeed");
+
+  assert!((fragment.bounds.width() - 100.0).abs() < 1e-3);
+}
