@@ -113,8 +113,8 @@ fn resolve_request_url<'a>(
     return storage.as_deref();
   }
   if normalized_candidate.as_ref() != candidate {
-    if Url::parse(normalized_candidate.as_ref()).is_ok() {
-      *storage = Some(normalized_candidate.into_owned());
+    if let Ok(url) = Url::parse(normalized_candidate.as_ref()) {
+      *storage = Some(url.to_string());
       return storage.as_deref();
     }
   }
@@ -273,6 +273,17 @@ pub fn execute_web_fetch<'a>(
   } else {
     fetcher.fetch_http_request(http_req)?
   };
+
+  // Canonicalize the final URL via URL parsing so later comparisons follow URL-record semantics
+  // instead of raw string equality.
+  if let Some(final_url) = resource.final_url.as_deref() {
+    if let Ok(url) = Url::parse(final_url) {
+      let canonical = url.to_string();
+      if canonical != final_url {
+        resource.final_url = Some(canonical);
+      }
+    }
+  }
 
   let status = resource.status.unwrap_or(200);
   let final_url = resource.final_url.as_deref().unwrap_or(requested_url);
@@ -716,6 +727,20 @@ mod tests {
   }
 
   #[test]
+  fn normalized_absolute_urls_are_canonicalized() {
+    let fetcher = StaticFetcher {
+      resource: FetchedResource::new(b"hello".to_vec(), None),
+    };
+    // `resolve_request_url` normalizes invalid URLs (spaces/pipes) before parsing; ensure we still
+    // apply URL-record canonicalization to the result (e.g. host casing).
+    let request = Request::new("GET", "https://EXAMPLE.com/a b");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.url, "https://example.com/a%20b");
+    assert!(!response.redirected);
+  }
+
+  #[test]
   fn redirected_is_false_when_final_url_only_differs_by_serialization() {
     let mut resource = FetchedResource::new(b"hello".to_vec(), None);
     resource.final_url = Some("https://example.com/".to_string());
@@ -723,6 +748,34 @@ mod tests {
     // Browsers treat this as the same URL as "https://example.com/" (no redirect should be
     // observable via `Response.redirected`).
     let request = Request::new("GET", "https://example.com");
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.url, "https://example.com/");
+    assert!(!response.redirected);
+  }
+
+  #[test]
+  fn final_url_is_canonicalized_before_redirect_detection() {
+    struct RedirectAwareFetcher {
+      resource: FetchedResource,
+    }
+
+    impl ResourceFetcher for RedirectAwareFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request");
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.redirect, RequestRedirect::Error);
+        Ok(self.resource.clone())
+      }
+    }
+
+    let mut resource = FetchedResource::new(b"hello".to_vec(), None);
+    resource.final_url = Some("https://EXAMPLE.com/".to_string());
+    let fetcher = RedirectAwareFetcher { resource };
+    let mut request = Request::new("GET", "https://example.com/");
+    request.redirect = RequestRedirect::Error;
     let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
       .expect("expected response");
     assert_eq!(response.url, "https://example.com/");
