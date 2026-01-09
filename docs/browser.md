@@ -53,8 +53,11 @@ including:
 - basic focus + text input for `<input>` / `<textarea>`
 - checkbox/radio toggling
 
-Wiring these interactions into the windowed `browser` app is ongoing. See [browser_ui.md](browser_ui.md)
-for implementation details.
+In the current windowed `browser` app, pointer/keyboard events are forwarded to the worker, but
+link clicking / DOM interaction is not yet applied by the in-binary worker implementation. Wiring
+these interactions into the windowed `browser` app is ongoing.
+
+See [browser_ui.md](browser_ui.md) for implementation details.
 
 ## Environment variables / resource limits
 
