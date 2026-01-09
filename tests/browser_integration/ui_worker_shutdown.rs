@@ -4,7 +4,7 @@ use fastrender::ui::messages::{NavigationReason, TabId};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::time::{Duration, Instant};
 
-use super::support::{create_tab_msg, navigate_msg};
+use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
 
 fn join_with_timeout(
   handle: std::thread::JoinHandle<std::thread::Result<()>>,
@@ -28,7 +28,7 @@ fn dropping_handle_shuts_down_worker_thread() {
 
   let join = std::thread::spawn(move || handle.shutdown());
   // Shutting down can involve joining render threads; allow some slack under parallel load.
-  join_with_timeout(join, Duration::from_secs(10)).expect("worker thread should not panic");
+  join_with_timeout(join, DEFAULT_TIMEOUT).expect("worker thread should not panic");
 }
 
 #[test]

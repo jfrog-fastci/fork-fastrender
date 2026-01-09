@@ -55,11 +55,7 @@ fn pointer_move_sets_hover_and_repaints() {
 
   let (frame, events) = h.send_and_wait_for_frame(
     tab_id,
-    UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    },
+    navigate_msg(tab_id, url, NavigationReason::TypedUrl),
   );
   let _ = drain_after_frame(&h, events);
   assert_eq!(support::rgba_at(&frame.pixmap, 10, 10), [255, 0, 0, 255]);

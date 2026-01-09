@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
-use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 
 fn sample_rgba_at_css(frame: &RenderedFrame, x_css: u32, y_css: u32) -> (u8, u8, u8, u8) {
   let x_px = ((x_css as f32) * frame.dpr).round() as u32;
@@ -46,14 +46,14 @@ fn recv_until<T>(
 }
 
 fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
-  recv_until(rx, Duration::from_secs(10), |msg| match msg {
+  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => Some(frame),
     _ => None,
   })
 }
 
 fn wait_for_scroll_update(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::scroll::ScrollState {
-  recv_until(rx, Duration::from_secs(10), |msg| match msg {
+  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::ScrollStateUpdated { tab_id: got, scroll } if got == tab_id => Some(scroll),
     _ => None,
   })
@@ -65,7 +65,7 @@ fn wait_for_frame_with_pixel(
   css_pos: (u32, u32),
   expected: (u8, u8, u8, u8),
 ) -> RenderedFrame {
-  recv_until(rx, Duration::from_secs(10), |msg| match msg {
+  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => {
       (sample_rgba_at_css(&frame, css_pos.0, css_pos.1) == expected).then_some(frame)
     }
@@ -383,36 +383,20 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
   let tab_id = TabId::new();
 
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("CreateTab");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (160, 120),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab_id, (160, 120), 1.0))
     .expect("ViewportChanged");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
 
   // Scroll the nested scroll container so the red label box becomes visible at the top.
   ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 120.0),
-      pointer_css: Some((10.0, 10.0)),
-    })
+    .send(scroll_msg(tab_id, (0.0, 120.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
   let updated = wait_for_scroll_update(&ui_rx, tab_id);

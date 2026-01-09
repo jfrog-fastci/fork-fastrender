@@ -8,7 +8,9 @@ use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::{
   spawn_browser_render_thread, NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi,
 };
-use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
+use super::support::{
+  create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg, DEFAULT_TIMEOUT,
+};
 use std::ffi::OsString;
 use std::time::Duration;
 
@@ -169,7 +171,7 @@ fn navigation_cancellation_drops_stale_frame() {
   let mut saw_second_frame = false;
   let mut saw_first_frame = false;
 
-  while let Ok(msg) = rx.recv_timeout(Duration::from_secs(10)) {
+  while let Ok(msg) = rx.recv_timeout(DEFAULT_TIMEOUT) {
     match msg {
       WorkerToUi::NavigationStarted { url, .. } if url == first_url => {
         started_first = true;

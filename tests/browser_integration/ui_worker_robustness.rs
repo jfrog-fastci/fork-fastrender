@@ -12,17 +12,11 @@ const NO_FRAME_TIMEOUT: Duration = Duration::from_millis(200);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn send_noise_messages(tx: &Sender<UiToWorker>, tab_id: TabId) {
-  tx.send(UiToWorker::ViewportChanged {
-    tab_id,
-    viewport_css: (64, 64),
-    dpr: 1.0,
-  })
-  .expect("send ViewportChanged");
-  tx.send(UiToWorker::Scroll {
-    tab_id,
-    delta_css: (0.0, 10.0),
-    pointer_css: Some((5.0, 6.0)),
-  })
+  tx
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
+    .expect("send ViewportChanged");
+  tx
+    .send(support::scroll_msg(tab_id, (0.0, 10.0), Some((5.0, 6.0))))
   .expect("send Scroll");
   tx.send(UiToWorker::PointerMove {
     tab_id,

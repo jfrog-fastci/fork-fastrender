@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::interaction::KeyAction;
-use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
+use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
@@ -34,7 +34,7 @@ fn recv_until<T>(
 }
 
 fn wait_for_frame_ready(rx: &Receiver<WorkerToUi>, tab_id: TabId) -> fastrender::ui::messages::RenderedFrame {
-  recv_until(rx, Duration::from_secs(10), |msg| match msg {
+  recv_until(rx, DEFAULT_TIMEOUT, |msg| match msg {
     WorkerToUi::FrameReady { tab_id: got, frame } if got == tab_id => Some(frame),
     _ => None,
   })

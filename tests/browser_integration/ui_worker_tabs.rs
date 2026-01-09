@@ -5,9 +5,9 @@ use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
-use super::support::create_tab_msg;
+use super::support::{create_tab_msg, DEFAULT_TIMEOUT};
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = DEFAULT_TIMEOUT;
 
 fn wait_for_first_frame(
   rx: &std::sync::mpsc::Receiver<WorkerToUi>,

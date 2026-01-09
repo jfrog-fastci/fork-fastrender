@@ -219,18 +219,14 @@ fn model_worker_missing_file_navigation_emits_navigation_failed_and_stops_loadin
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("create tab");
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(navigate_msg(
       tab_id,
-      url: missing_url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      missing_url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .expect("send navigate");
 
   #[derive(Debug)]
@@ -333,23 +329,15 @@ fn model_worker_unknown_about_page_still_commits_and_renders_error_page() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(create_tab_msg(tab_id, None))
     .expect("create tab");
 
   let url = "about:does-not-exist".to_string();
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab_id, url.clone(), NavigationReason::TypedUrl))
     .expect("send navigate");
 
-  let deadline = Instant::now() + Duration::from_secs(10);
+  let deadline = Instant::now() + DEFAULT_TIMEOUT;
   let mut saw_commit = false;
   let mut saw_frame = false;
 

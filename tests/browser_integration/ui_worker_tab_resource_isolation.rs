@@ -7,6 +7,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+use super::support::{create_tab_msg_with_cancel, navigate_msg, viewport_changed_msg};
+
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let px = pixmap.pixel(x, y).unwrap();
   (px.red(), px.green(), px.blue(), px.alpha())
@@ -74,50 +76,26 @@ fn tabs_do_not_leak_base_url_when_resolving_relative_css() {
 
   let tab1 = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab1,
-      initial_url: None,
-      cancel: CancelGens::new(),
-    })
+    .send(create_tab_msg_with_cancel(tab1, None, CancelGens::new()))
     .expect("create tab1");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id: tab1,
-      viewport_css: (64, 64),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab1, (64, 64), 1.0))
     .expect("set viewport tab1");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id: tab1,
-      url: tab1_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab1, tab1_url, NavigationReason::TypedUrl))
     .expect("navigate tab1");
   let frame1 = wait_for_frame(&ui_rx, tab1, Duration::from_secs(5));
   assert_eq!(pixel(&frame1.pixmap, 1, 1), (255, 0, 0, 255));
 
   let tab2 = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id: tab2,
-      initial_url: None,
-      cancel: CancelGens::new(),
-    })
+    .send(create_tab_msg_with_cancel(tab2, None, CancelGens::new()))
     .expect("create tab2");
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id: tab2,
-      viewport_css: (64, 64),
-      dpr: 1.0,
-    })
+    .send(viewport_changed_msg(tab2, (64, 64), 1.0))
     .expect("set viewport tab2");
   ui_tx
-    .send(UiToWorker::Navigate {
-      tab_id: tab2,
-      url: tab2_url,
-      reason: NavigationReason::TypedUrl,
-    })
+    .send(navigate_msg(tab2, tab2_url, NavigationReason::TypedUrl))
     .expect("navigate tab2");
   let frame2 = wait_for_frame(&ui_rx, tab2, Duration::from_secs(5));
   assert_eq!(pixel(&frame2.pixmap, 1, 1), (0, 255, 0, 255));

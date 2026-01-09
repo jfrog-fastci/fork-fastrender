@@ -318,11 +318,7 @@ fn fragment_navigation_pushes_history_and_back_restores_previous_scroll() {
   // Scroll down some so the "pre-fragment" history entry has a non-zero scroll position.
   worker
     .ui_tx
-    .send(UiToWorker::Scroll {
-      tab_id,
-      delta_css: (0.0, 150.0),
-      pointer_css: None,
-    })
+    .send(support::scroll_msg(tab_id, (0.0, 150.0), None))
     .unwrap();
 
   let msg = support::recv_for_tab(&worker.ui_rx, tab_id, TIMEOUT, |msg| {

@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use super::support;
-use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, UiToWorker, WorkerToUi};
+use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, WorkerToUi};
 use fastrender::ui::worker_loop::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -107,37 +107,25 @@ fn viewport_changed_after_navigation_emits_new_frame_with_updated_dimensions() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   // Keep the initial navigation small so the test is fast.
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (64, 64),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (64, 64), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   wait_for_navigation_committed(&ui_rx, tab_id, &url);
   let _initial = wait_for_frame_with_meta(&ui_rx, tab_id, (64, 64), 1.0);
 
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (120, 80),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (120, 80), 1.0))
     .unwrap();
 
   let frame = wait_for_frame_with_meta(&ui_rx, tab_id, (120, 80), 1.0);
@@ -170,25 +158,17 @@ fn viewport_changed_updates_dpr_and_pixmap_scale() {
 
   let tab_id = TabId::new();
   ui_tx
-    .send(UiToWorker::CreateTab {
-      tab_id,
-      initial_url: None,
-      cancel: Default::default(),
-    })
+    .send(support::create_tab_msg(tab_id, None))
     .unwrap();
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (90, 60),
-      dpr: 1.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (90, 60), 1.0))
     .unwrap();
   ui_tx
-    .send(UiToWorker::Navigate {
+    .send(support::navigate_msg(
       tab_id,
-      url: url.clone(),
-      reason: NavigationReason::TypedUrl,
-    })
+      url.clone(),
+      NavigationReason::TypedUrl,
+    ))
     .unwrap();
 
   wait_for_navigation_committed(&ui_rx, tab_id, &url);
@@ -198,11 +178,7 @@ fn viewport_changed_updates_dpr_and_pixmap_scale() {
   assert_pixmap_matches_viewport(&frame_1x);
 
   ui_tx
-    .send(UiToWorker::ViewportChanged {
-      tab_id,
-      viewport_css: (90, 60),
-      dpr: 2.0,
-    })
+    .send(support::viewport_changed_msg(tab_id, (90, 60), 2.0))
     .unwrap();
 
   let frame_2x = wait_for_frame_with_meta(&ui_rx, tab_id, (90, 60), 2.0);
