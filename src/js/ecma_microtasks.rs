@@ -23,6 +23,18 @@ use std::rc::Rc;
 /// `vm-js` jobs need access to a [`vm_js::Vm`] + [`vm_js::Heap`] so they can call/construct
 /// functions and manage persistent GC roots while queued.
 pub trait VmJsEngineHost {
+  /// Borrow the embedded `vm-js` heap immutably.
+  fn vm_js_heap(&self) -> &vm_js::Heap;
+
+  /// Borrow the embedded `vm-js` heap mutably.
+  ///
+  /// Defaults to the heap returned by [`VmJsEngineHost::vm_js_vm_and_heap_mut`].
+  fn vm_js_heap_mut(&mut self) -> &mut vm_js::Heap {
+    let (_vm, heap) = self.vm_js_vm_and_heap_mut();
+    heap
+  }
+
+  /// Borrow the embedded `vm-js` VM and heap mutably using a borrow-splitting API.
   fn vm_js_vm_and_heap_mut(&mut self) -> (&mut vm_js::Vm, &mut vm_js::Heap);
   fn vm_js_heap(&self) -> &vm_js::Heap;
 
