@@ -29,9 +29,6 @@ pub trait VmJsEngineHost {
 
 /// Execution context passed to `vm-js` job closures.
 ///
-/// `vm-js` currently models job execution via an opaque [`vm_js::VmJobContext`] trait. The trait is
-/// intentionally minimal so it can exist before the full evaluator is implemented.
-///
 /// FastRender stores the realm that a job was enqueued with so the eventual evaluator integration
 /// can re-establish the correct realm/settings object when running the job.
 pub struct VmJsJobContext<'a, Host: VmJsEngineHost> {

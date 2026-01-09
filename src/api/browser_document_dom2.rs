@@ -1,8 +1,11 @@
+use crate::animation::TransitionState;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
+use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
-use crate::animation::TransitionState;
+use std::sync::Arc;
+use std::time::Duration;
 
 use super::browser_document::prepare_dom_inner;
 use super::{PreparedDocument, PreparedPaintOptions, RenderOptions};
@@ -21,6 +24,9 @@ pub struct BrowserDocumentDom2 {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  realtime_animations_enabled: bool,
+  animation_clock: Arc<dyn Clock>,
+  animation_timeline_origin: Option<Duration>,
 }
 
 impl BrowserDocumentDom2 {
@@ -42,6 +48,9 @@ impl BrowserDocumentDom2 {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      realtime_animations_enabled: false,
+      animation_clock: Arc::new(RealClock::default()),
+      animation_timeline_origin: None,
     })
   }
 
@@ -65,12 +74,36 @@ impl BrowserDocumentDom2 {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.animation_timeline_origin = None;
 
     Ok(super::BrowserNavigationReport {
       diagnostics,
       final_url,
       base_url,
     })
+  }
+
+  /// Overrides the clock used to derive the document timeline for real-time animation sampling.
+  ///
+  /// This resets the timeline origin so the next frame starts at 0ms (when real-time sampling is
+  /// enabled).
+  pub fn set_animation_clock(&mut self, clock: Arc<dyn Clock>) {
+    self.animation_clock = clock;
+    self.animation_timeline_origin = None;
+  }
+
+  /// Enables/disables real-time animation sampling based on this document's timeline.
+  ///
+  /// When enabled and `RenderOptions.animation_time` is `None`, each paint call samples CSS
+  /// animations/transitions at the time elapsed since the first rendered frame after enabling.
+  pub fn set_realtime_animations_enabled(&mut self, enabled: bool) {
+    if enabled && !self.realtime_animations_enabled {
+      self.realtime_animations_enabled = true;
+      self.animation_timeline_origin = None;
+    } else if !enabled && self.realtime_animations_enabled {
+      self.realtime_animations_enabled = false;
+      self.animation_timeline_origin = None;
+    }
   }
 
   /// Returns an immutable reference to the live `dom2` document.
@@ -181,7 +214,7 @@ impl BrowserDocumentDom2 {
         }
       };
 
-      let now_ms = super::sanitize_animation_time_ms(self.options.animation_time);
+      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
         None => {
           prepared.fragment_tree.transition_state = None;
@@ -224,14 +257,31 @@ impl BrowserDocumentDom2 {
     &mut self,
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    let Some(prepared) = self.prepared.as_ref() else {
+    if self.prepared.is_none() {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocumentDom2 has no cached layout; call render_frame() first".to_string(),
       }));
     };
+    let animation_time = self.animation_time_for_paint();
+    let prepared = self
+      .prepared
+      .as_ref()
+      .expect("prepared checked by early return");
 
-    let _deadline_guard = deadline
-      .map(|deadline| crate::render_control::DeadlineGuard::install(Some(deadline)));
+    // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
+    // `RenderOptions::{timeout,cancel_callback}`.
+    let _deadline_guard = if let Some(deadline) = deadline {
+      Some(crate::render_control::DeadlineGuard::install(Some(deadline)))
+    } else {
+      let deadline_enabled = self.options.timeout.is_some() || self.options.cancel_callback.is_some();
+      deadline_enabled.then(|| {
+        let options_deadline =
+          crate::render_control::RenderDeadline::new(self.options.timeout, self.options.cancel_callback.clone());
+        crate::render_control::DeadlineGuard::install(Some(&options_deadline))
+      })
+    };
+    // Perform an early cancellation check so callers can deterministically abort repaints without
+    // relying on deep paint loops to periodically poll deadlines.
     crate::render_control::check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let scroll_state = ScrollState::from_parts(
@@ -242,12 +292,18 @@ impl BrowserDocumentDom2 {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
-      animation_time: self.options.animation_time,
+      animation_time,
     })?;
 
+    // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
+    // scroll snap/clamp). This must not mark the document dirty because the frame we just painted
+    // already reflects this state.
     self.options.scroll_x = frame.scroll_state.viewport.x;
     self.options.scroll_y = frame.scroll_state.viewport.y;
     self.options.element_scroll_offsets = frame.scroll_state.elements.clone();
+
+    // A successful paint always satisfies any outstanding paint invalidation, but must not clear
+    // pending style/layout dirtiness.
     self.paint_dirty = false;
     Ok(frame)
   }
@@ -257,6 +313,25 @@ impl BrowserDocumentDom2 {
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::Pixmap> {
     Ok(self.paint_from_cache_frame_with_deadline(deadline)?.pixmap)
+  }
+
+  fn animation_time_for_paint(&mut self) -> Option<f32> {
+    if self.options.animation_time.is_some() {
+      return self.options.animation_time;
+    }
+
+    if !self.realtime_animations_enabled {
+      return None;
+    }
+
+    let now = self.animation_clock.now();
+    let Some(origin) = self.animation_timeline_origin else {
+      self.animation_timeline_origin = Some(now);
+      return Some(0.0);
+    };
+    let elapsed = now.checked_sub(origin).unwrap_or(Duration::ZERO);
+    let time_ms = elapsed.as_secs_f64() * 1000.0;
+    Some((time_ms.min(f32::MAX as f64)) as f32)
   }
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
@@ -323,6 +398,21 @@ mod tests {
       .font_sources(crate::text::font_db::FontConfig::bundled_only())
       .build()
       .expect("renderer")
+  }
+
+  fn assert_channel_close(actual: u8, expected: u8, tolerance: u8) {
+    let diff = actual.abs_diff(expected);
+    assert!(
+      diff <= tolerance,
+      "expected channel {expected}±{tolerance}, got {actual} (diff={diff})"
+    );
+  }
+
+  fn assert_rgb_close(color: tiny_skia::PremultipliedColorU8, expected: u8, tolerance: u8) {
+    assert_channel_close(color.red(), expected, tolerance);
+    assert_channel_close(color.green(), expected, tolerance);
+    assert_channel_close(color.blue(), expected, tolerance);
+    assert_eq!(color.alpha(), 255);
   }
 
   fn first_text_node_id(doc: &crate::dom2::Document) -> Option<crate::dom2::NodeId> {
@@ -407,5 +497,54 @@ mod tests {
     let changed = doc.mutate_dom(|_dom| false);
     assert!(!changed);
     assert!(doc.render_if_needed().unwrap().is_none());
+  }
+
+  #[test]
+  fn realtime_animations_sample_document_timeline_when_enabled() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+    let mut doc = BrowserDocumentDom2::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+
+    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    doc.set_animation_clock(clock.clone());
+    doc.set_realtime_animations_enabled(true);
+
+    let pixmap0 = doc.render_frame()?;
+    let c0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c0, 255, 0);
+
+    clock.advance(Duration::from_millis(500));
+    let sampled = doc.animation_time_for_paint().expect("animation time");
+    assert!(
+      (sampled - 500.0).abs() <= 0.1,
+      "expected document timeline ~500ms, got {sampled}"
+    );
+
+    let pixmap1 = doc.render_frame()?;
+    let c1 = pixmap1.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c1, 128, 8);
+
+    // Explicit per-render timestamps always override the real-time document timeline.
+    doc.set_animation_time_ms(1000.0);
+    let pixmap_override = doc.render_frame()?;
+    let c2 = pixmap_override.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c2, 0, 0);
+
+    Ok(())
   }
 }

@@ -2,10 +2,13 @@ use crate::animation::TransitionState;
 use crate::dom::DomNode;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::{Point, Size};
+use crate::js::clock::{Clock, RealClock};
 use crate::resource::ReferrerPolicy;
 use crate::scroll::ScrollState;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::fragment_tree::FragmentTree;
+use std::sync::Arc;
+use std::time::Duration;
 
 use super::{
   resolve_viewport, LayoutDocumentOptions, PreparedDocument, PreparedPaintOptions, RenderOptions,
@@ -36,6 +39,9 @@ pub struct BrowserDocument {
   style_dirty: bool,
   layout_dirty: bool,
   paint_dirty: bool,
+  realtime_animations_enabled: bool,
+  animation_clock: Arc<dyn Clock>,
+  animation_timeline_origin: Option<Duration>,
 }
 
 impl BrowserDocument {
@@ -60,6 +66,9 @@ impl BrowserDocument {
       style_dirty: true,
       layout_dirty: true,
       paint_dirty: true,
+      realtime_animations_enabled: false,
+      animation_clock: Arc::new(RealClock::default()),
+      animation_timeline_origin: None,
     })
   }
 
@@ -84,7 +93,33 @@ impl BrowserDocument {
       layout_dirty: false,
       // First frame still needs a paint.
       paint_dirty: true,
+      realtime_animations_enabled: false,
+      animation_clock: Arc::new(RealClock::default()),
+      animation_timeline_origin: None,
     })
+  }
+
+  /// Overrides the clock used to derive the document timeline for real-time animation sampling.
+  ///
+  /// This resets the timeline origin so the next frame starts at 0ms (when real-time sampling is
+  /// enabled).
+  pub fn set_animation_clock(&mut self, clock: Arc<dyn Clock>) {
+    self.animation_clock = clock;
+    self.animation_timeline_origin = None;
+  }
+
+  /// Enables/disables real-time animation sampling based on this document's timeline.
+  ///
+  /// When enabled and `RenderOptions.animation_time` is `None`, each paint call samples CSS
+  /// animations/transitions at the time elapsed since the first rendered frame after enabling.
+  pub fn set_realtime_animations_enabled(&mut self, enabled: bool) {
+    if enabled && !self.realtime_animations_enabled {
+      self.realtime_animations_enabled = true;
+      self.animation_timeline_origin = None;
+    } else if !enabled && self.realtime_animations_enabled {
+      self.realtime_animations_enabled = false;
+      self.animation_timeline_origin = None;
+    }
   }
 
   /// Updates the renderer's document/base URL hints for the current navigation.
@@ -157,6 +192,7 @@ impl BrowserDocument {
     self.dom = dom;
     self.options = options;
     self.prepared = None;
+    self.animation_timeline_origin = None;
     self.invalidate_all();
   }
 
@@ -171,6 +207,7 @@ impl BrowserDocument {
     self.style_dirty = false;
     self.layout_dirty = false;
     self.paint_dirty = true;
+    self.animation_timeline_origin = None;
   }
 
   /// Parses HTML using the internal renderer and resets the document state.
@@ -505,7 +542,7 @@ impl BrowserDocument {
         }
       };
 
-      let now_ms = super::sanitize_animation_time_ms(self.options.animation_time);
+      let now_ms = super::sanitize_animation_time_ms(self.animation_time_for_paint());
       match now_ms {
         None => {
           prepared.fragment_tree.transition_state = None;
@@ -557,11 +594,16 @@ impl BrowserDocument {
     &mut self,
     deadline: Option<&crate::render_control::RenderDeadline>,
   ) -> Result<super::PaintedFrame> {
-    let Some(prepared) = self.prepared.as_ref() else {
+    if self.prepared.is_none() {
       return Err(Error::Render(RenderError::InvalidParameters {
         message: "BrowserDocument has no cached layout; call render_frame() first".to_string(),
       }));
     };
+    let animation_time = self.animation_time_for_paint();
+    let prepared = self
+      .prepared
+      .as_ref()
+      .expect("prepared checked by early return");
 
     // Prefer an explicitly provided deadline; otherwise fall back to this document's configured
     // `RenderOptions::{timeout,cancel_callback}`.
@@ -584,7 +626,7 @@ impl BrowserDocument {
       scroll: Some(scroll_state),
       viewport: None,
       background: None,
-      animation_time: self.options.animation_time,
+      animation_time,
     })?;
 
     // Keep our internal scroll model synchronized with any adjustments made during painting (e.g.
@@ -599,6 +641,25 @@ impl BrowserDocument {
     self.paint_dirty = false;
 
     Ok(frame)
+  }
+
+  fn animation_time_for_paint(&mut self) -> Option<f32> {
+    if self.options.animation_time.is_some() {
+      return self.options.animation_time;
+    }
+
+    if !self.realtime_animations_enabled {
+      return None;
+    }
+
+    let now = self.animation_clock.now();
+    let Some(origin) = self.animation_timeline_origin else {
+      self.animation_timeline_origin = Some(now);
+      return Some(0.0);
+    };
+    let elapsed = now.checked_sub(origin).unwrap_or(Duration::ZERO);
+    let time_ms = elapsed.as_secs_f64() * 1000.0;
+    Some((time_ms.min(f32::MAX as f64)) as f32)
   }
 
   fn prepare_dom_with_options(&mut self) -> Result<PreparedDocument> {
@@ -773,7 +834,10 @@ pub(super) fn prepare_dom_inner(
 mod tests {
   use super::*;
   use crate::render_control::{push_stage_listener, RenderDeadline, StageHeartbeat};
+  use crate::text::font_db::FontConfig;
+  use std::time::Duration;
   use std::sync::{Arc, Mutex};
+  use tiny_skia::PremultipliedColorU8;
 
   fn capture_stages<T>(f: impl FnOnce() -> Result<T>) -> Result<Vec<StageHeartbeat>> {
     let stages: Arc<Mutex<Vec<StageHeartbeat>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1013,6 +1077,72 @@ mod tests {
     assert_eq!(report.final_url.as_deref(), Some(file_url.as_str()));
     assert_eq!(report.base_url.as_deref(), Some(file_url.as_str()));
     assert_eq!(document.document_url(), Some(file_url.as_str()));
+    Ok(())
+  }
+
+  fn renderer_for_tests() -> super::super::FastRender {
+    super::super::FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("renderer")
+  }
+
+  fn assert_channel_close(actual: u8, expected: u8, tolerance: u8) {
+    let diff = actual.abs_diff(expected);
+    assert!(
+      diff <= tolerance,
+      "expected channel {expected}±{tolerance}, got {actual} (diff={diff})"
+    );
+  }
+
+  fn assert_rgb_close(color: PremultipliedColorU8, expected: u8, tolerance: u8) {
+    assert_channel_close(color.red(), expected, tolerance);
+    assert_channel_close(color.green(), expected, tolerance);
+    assert_channel_close(color.blue(), expected, tolerance);
+    assert_eq!(color.alpha(), 255);
+  }
+
+  #[test]
+  fn realtime_animations_sample_document_timeline_when_enabled() -> Result<()> {
+    let renderer = renderer_for_tests();
+    let html = r#"
+      <style>
+        html, body { margin: 0; background: white; }
+        #box {
+          width: 10px;
+          height: 10px;
+          background: black;
+          animation: fade 1000ms linear forwards;
+        }
+        @keyframes fade {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+    let mut document =
+      BrowserDocument::new(renderer, html, RenderOptions::new().with_viewport(20, 20))?;
+
+    let clock = Arc::new(crate::js::clock::VirtualClock::new());
+    document.set_animation_clock(clock.clone());
+    document.set_realtime_animations_enabled(true);
+
+    let pixmap0 = document.render_frame()?;
+    let c0 = pixmap0.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c0, 255, 0);
+
+    clock.advance(Duration::from_millis(500));
+    let pixmap1 = document.render_frame()?;
+    let c1 = pixmap1.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c1, 128, 8);
+
+    // Explicit per-render timestamps always override the real-time document timeline.
+    document.set_animation_time_ms(1000.0);
+    let pixmap_override = document.render_frame()?;
+    let c2 = pixmap_override.pixel(5, 5).expect("pixel 5,5");
+    assert_rgb_close(c2, 0, 0);
+
     Ok(())
   }
 }
