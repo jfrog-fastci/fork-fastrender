@@ -1,4 +1,6 @@
 use super::{Document, NodeId, NodeKind};
+use crate::dom::SVG_NAMESPACE;
+use selectors::context::QuirksMode;
 
 fn tag_name(doc: &Document, node: NodeId) -> Option<&str> {
   match &doc.node(node).kind {
@@ -185,16 +187,108 @@ fn get_element_by_id_returns_first_in_tree_order_and_ignores_detached_nodes() {
 #[test]
 fn document_element_returns_first_element_child_of_document() {
   let root = crate::dom::DomNode {
-    node_type: crate::dom::DomNodeType::Element {
-      tag_name: "div".to_string(),
-      namespace: "".to_string(),
-      attributes: vec![("id".to_string(), "root".to_string())],
+    node_type: crate::dom::DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
     },
-    children: Vec::new(),
+    children: vec![
+      crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Text {
+          content: "x".to_string(),
+        },
+        children: Vec::new(),
+      },
+      crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: "".to_string(),
+          attributes: vec![("id".to_string(), "root".to_string())],
+        },
+        children: Vec::new(),
+      },
+      crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: "".to_string(),
+          attributes: vec![("id".to_string(), "other".to_string())],
+        },
+        children: Vec::new(),
+      },
+    ],
   };
   let doc = Document::from_renderer_dom(&root);
 
   let doc_el = doc.document_element().unwrap();
   assert_eq!(tag_name(&doc, doc_el), Some("div"));
   assert_eq!(doc.get_element_by_id("root"), Some(doc_el));
+}
+
+#[test]
+fn get_element_by_id_returns_none_for_empty_id() {
+  let root = crate::dom::parse_html(r#"<!doctype html><div id=a></div>"#).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+  assert_eq!(doc.get_element_by_id(""), None);
+}
+
+#[test]
+fn get_element_by_id_ignores_inert_template_contents() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<template><div id=dup></div></template>",
+    "<span id=dup></span>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  let found = doc.get_element_by_id("dup").unwrap();
+  assert_eq!(tag_name(&doc, found), Some("span"));
+}
+
+#[test]
+fn get_element_by_id_returns_none_when_only_in_inert_template_contents() {
+  let html = concat!(
+    "<!DOCTYPE html>",
+    "<html><body>",
+    "<template><div id=only></div></template>",
+    "</body></html>"
+  );
+  let root = crate::dom::parse_html(html).unwrap();
+  let doc = Document::from_renderer_dom(&root);
+
+  assert_eq!(doc.get_element_by_id("only"), None);
+}
+
+#[test]
+fn get_element_by_id_matches_attribute_name_case_insensitively_only_in_html_namespace() {
+  let root = crate::dom::DomNode {
+    node_type: crate::dom::DomNodeType::Document {
+      quirks_mode: QuirksMode::NoQuirks,
+    },
+    children: vec![
+      // In HTML, attribute names are ASCII case-insensitive.
+      crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: "".to_string(),
+          attributes: vec![("ID".to_string(), "a".to_string())],
+        },
+        children: Vec::new(),
+      },
+      // In non-HTML namespaces, attribute name matching is case-sensitive.
+      crate::dom::DomNode {
+        node_type: crate::dom::DomNodeType::Element {
+          tag_name: "svg".to_string(),
+          namespace: SVG_NAMESPACE.to_string(),
+          attributes: vec![("ID".to_string(), "b".to_string())],
+        },
+        children: Vec::new(),
+      },
+    ],
+  };
+
+  let doc = Document::from_renderer_dom(&root);
+  let html = doc.get_element_by_id("a").unwrap();
+  assert_eq!(tag_name(&doc, html), Some("div"));
+  assert_eq!(doc.get_element_by_id("b"), None);
 }

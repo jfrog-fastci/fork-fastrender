@@ -30,16 +30,7 @@ mod wbr_tests;
 ///
 /// This is intentionally a very small utility used by integration tests and early JS plumbing.
 pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
-  if id.is_empty() {
-    return None;
-  }
-  for idx in 0..doc.nodes_len() {
-    let node_id = NodeId(idx);
-    if doc.get_attribute(node_id, "id") == Some(id) {
-      return Some(node_id);
-    }
-  }
-  None
+  doc.get_element_by_id(id)
 }
 
 /// Convenience helper for attribute reflection.
@@ -48,6 +39,9 @@ pub fn get_element_by_id(doc: &Document, id: &str) -> Option<NodeId> {
 pub fn set_attribute(doc: &mut Document, node: NodeId, name: &str, value: &str) -> bool {
   doc.set_attribute(node, name, value).unwrap_or(false)
 }
+
+#[cfg(test)]
+mod query_tests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
@@ -244,6 +238,69 @@ impl Document {
 
   pub fn nodes_len(&self) -> usize {
     self.nodes.len()
+  }
+
+  /// Returns the document element.
+  ///
+  /// This is the first child of the document root that is an element (including `<slot>`),
+  /// in tree order.
+  pub fn document_element(&self) -> Option<NodeId> {
+    let root = self.root();
+    let root_node = self.nodes.get(root.index())?;
+    root_node.children.iter().copied().find(|&child| {
+      self
+        .nodes
+        .get(child.index())
+        .is_some_and(|node| node.parent == Some(root))
+        && matches!(
+          self.nodes[child.index()].kind,
+          NodeKind::Element { .. } | NodeKind::Slot { .. }
+        )
+    })
+  }
+
+  /// Returns the first element in tree order whose `id` attribute matches `id`.
+  ///
+  /// This query:
+  /// - returns `None` for an empty `id`,
+  /// - ignores detached subtrees, and
+  /// - ignores nodes inside inert `<template>` contents (`Node::inert_subtree`).
+  pub fn get_element_by_id(&self, id: &str) -> Option<NodeId> {
+    if id.is_empty() {
+      return None;
+    }
+
+    for node_id in self.dom_connected_preorder() {
+      let Some(node) = self.nodes.get(node_id.index()) else {
+        continue;
+      };
+      let (namespace, attributes) = match &node.kind {
+        NodeKind::Element {
+          namespace,
+          attributes,
+          ..
+        }
+        | NodeKind::Slot {
+          namespace,
+          attributes,
+          ..
+        } => (namespace.as_str(), attributes.as_slice()),
+        _ => continue,
+      };
+
+      let is_html = namespace.is_empty() || namespace == HTML_NAMESPACE;
+      if attributes.iter().any(|(name, value)| {
+        (if is_html {
+          name.eq_ignore_ascii_case("id")
+        } else {
+          name == "id"
+        }) && value == id
+      }) {
+        return Some(node_id);
+      }
+    }
+
+    None
   }
 
   fn push_node(&mut self, kind: NodeKind, parent: Option<NodeId>, inert_subtree: bool) -> NodeId {

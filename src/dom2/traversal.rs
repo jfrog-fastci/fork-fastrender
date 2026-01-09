@@ -83,6 +83,32 @@ impl Document {
     }
   }
 
+  /// Preorder traversal over the DOM-connected subtree rooted at `root`.
+  ///
+  /// This iterator:
+  /// - skips nodes that are not connected to the document root (i.e. detached subtrees), and
+  /// - does not descend into inert subtrees (`Node::inert_subtree`), matching `<template>` inert
+  ///   contents semantics for DOM queries.
+  ///
+  /// Traversal follows only edges where the child's `parent` pointer matches the current node. This
+  /// keeps traversal robust against partially-detached nodes that are still present in a parent's
+  /// `children` list.
+  pub fn dom_connected_subtree_preorder(&self, root: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    DomConnectedSubtreePreorder {
+      doc: self,
+      stack: (self.contains_node(root) && self.is_connected_for_scripting(root))
+        .then_some(root)
+        .into_iter()
+        .collect(),
+      remaining: self.nodes.len() + 1,
+    }
+  }
+
+  /// Convenience wrapper for `dom_connected_subtree_preorder(self.root())`.
+  pub fn dom_connected_preorder(&self) -> impl Iterator<Item = NodeId> + '_ {
+    self.dom_connected_subtree_preorder(self.root())
+  }
+
   /// Returns true when `node` is inside an inert `<template>` subtree.
   ///
   /// FastRender represents template contents by keeping descendants in the tree, but marking the
@@ -158,6 +184,45 @@ impl Iterator for SubtreePreorder<'_> {
 
       return Some(id);
     }
+    None
+  }
+}
+
+struct DomConnectedSubtreePreorder<'a> {
+  doc: &'a Document,
+  stack: Vec<NodeId>,
+  remaining: usize,
+}
+
+impl Iterator for DomConnectedSubtreePreorder<'_> {
+  type Item = NodeId;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    while let Some(id) = self.stack.pop() {
+      if self.remaining == 0 {
+        self.stack.clear();
+        return None;
+      }
+
+      let Some(node) = self.doc.get_node(id) else {
+        continue;
+      };
+      self.remaining -= 1;
+
+      if !node.inert_subtree {
+        for &child in node.children.iter().rev() {
+          let Some(child_node) = self.doc.get_node(child) else {
+            continue;
+          };
+          if child_node.parent == Some(id) {
+            self.stack.push(child);
+          }
+        }
+      }
+
+      return Some(id);
+    }
+
     None
   }
 }
