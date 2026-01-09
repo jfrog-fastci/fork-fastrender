@@ -1,10 +1,11 @@
 use fastrender::dom::parse_html;
 use fastrender::dom2::Document;
 use fastrender::js::bindings::{install_document_query_selector_bindings, DomExceptionClass};
-use fastrender::js::webidl::{JsRuntime, VmJsRuntime};
+use fastrender::js::webidl::VmJsRuntime;
 use fastrender::web::dom::DomException;
 use std::cell::RefCell;
 use std::rc::Rc;
+use webidl_js_runtime::runtime::JsRuntime as _;
 use vm_js::{PropertyKey, Value, VmError};
 
 fn prop_key(rt: &mut VmJsRuntime, s: &str) -> PropertyKey {

@@ -1,10 +1,11 @@
 use fastrender::dom2;
-use fastrender::js::webidl::{JsPropertyKind, JsRuntime as WebIdlJsRuntime};
+use fastrender::js::webidl::JsPropertyKind;
 use fastrender::js::JsDomEvents;
 use fastrender::web::events::{AddEventListenerOptions, Event, EventInit, EventTargetId};
 use fastrender::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
+use webidl_js_runtime::runtime::JsRuntime;
 use vm_js::{PropertyKey, Value, VmError};
 
 #[derive(Debug, Clone, Copy)]
