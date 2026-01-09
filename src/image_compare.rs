@@ -117,6 +117,12 @@ pub struct DiffStatistics {
   pub perceptual_similarity: f64,
   /// Perceptual distance (0.0 = identical).
   pub perceptual_distance: f64,
+  /// Location (x,y) of the first pixel that exceeded the configured tolerance.
+  ///
+  /// The scan order is row-major (left-to-right, top-to-bottom).
+  pub first_mismatch: Option<(u32, u32)>,
+  /// RGBA samples at [`Self::first_mismatch`], stored as `(actual, expected)`.
+  pub first_mismatch_rgba: Option<([u8; 4], [u8; 4])>,
 }
 
 impl DiffStatistics {
@@ -246,6 +252,8 @@ pub fn compare_images(
   let mut max_green_diff = 0u8;
   let mut max_blue_diff = 0u8;
   let mut max_alpha_diff = 0u8;
+  let mut first_mismatch: Option<(u32, u32)> = None;
+  let mut first_mismatch_rgba: Option<([u8; 4], [u8; 4])> = None;
   let mut sum_squared_error = 0.0f64;
   let mut ssim = SsimAccumulator::default();
 
@@ -276,6 +284,15 @@ pub fn compare_images(
 
     if is_different {
       different_pixels += 1;
+      if first_mismatch.is_none() {
+        let x = i as u32 % width;
+        let y = i as u32 / width;
+        first_mismatch = Some((x, y));
+        first_mismatch_rgba = Some((
+          [actual_px[0], actual_px[1], actual_px[2], actual_px[3]],
+          [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+        ));
+      }
     }
 
     if let Some(ref mut diff_img) = diff_image {
@@ -358,6 +375,8 @@ pub fn compare_images(
     psnr,
     perceptual_similarity,
     perceptual_distance,
+    first_mismatch,
+    first_mismatch_rgba,
   };
 
   let passes_pixels = different_percent <= config.max_different_percent + f64::EPSILON;
@@ -753,6 +772,11 @@ mod tests {
     assert_eq!(diff.statistics.different_pixels, 1);
     assert_eq!(diff.statistics.different_percent, 25.0);
     assert!(diff.statistics.perceptual_distance > 0.0);
+    assert_eq!(diff.statistics.first_mismatch, Some((0, 0)));
+    assert_eq!(
+      diff.statistics.first_mismatch_rgba,
+      Some(([255, 0, 0, 255], [0, 0, 0, 255]))
+    );
     assert!(diff.diff_image.is_some());
   }
 

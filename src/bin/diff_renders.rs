@@ -173,6 +173,16 @@ struct MetricsSummary {
   diff_percentage: f64,
   perceptual_distance: f64,
   max_channel_diff: u8,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  first_mismatch: Option<FirstMismatchSummary>,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct FirstMismatchSummary {
+  x: u32,
+  y: u32,
+  before_rgba: [u8; 4],
+  after_rgba: [u8; 4],
 }
 
 impl From<DiffMetrics> for MetricsSummary {
@@ -183,6 +193,16 @@ impl From<DiffMetrics> for MetricsSummary {
       diff_percentage: metrics.diff_percentage,
       perceptual_distance: metrics.perceptual_distance,
       max_channel_diff: metrics.max_channel_diff,
+      first_mismatch: metrics
+        .first_mismatch
+        .and_then(|(x, y)| {
+          metrics.first_mismatch_rgba.map(|(after_rgba, before_rgba)| FirstMismatchSummary {
+            x,
+            y,
+            before_rgba,
+            after_rgba,
+          })
+        }),
     }
   }
 }
@@ -873,6 +893,29 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
       .metrics
       .map(|m| m.total_pixels.to_string())
       .unwrap_or_else(|| "-".to_string());
+    let first_mismatch = entry
+      .metrics
+      .and_then(|m| m.first_mismatch)
+      .map(|m| {
+        let title = format!(
+          "before=[{},{},{},{}] after=[{},{},{},{}]",
+          m.before_rgba[0],
+          m.before_rgba[1],
+          m.before_rgba[2],
+          m.before_rgba[3],
+          m.after_rgba[0],
+          m.after_rgba[1],
+          m.after_rgba[2],
+          m.after_rgba[3],
+        );
+        format!(
+          "<span title=\"{title}\">{x},{y}</span>",
+          title = escape_html(&title),
+          x = m.x,
+          y = m.y
+        )
+      })
+      .unwrap_or_else(|| "-".to_string());
 
     let before_cell = entry
       .before
@@ -897,7 +940,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
 
     let error = entry.error.as_deref().unwrap_or_default();
     rows.push_str(&format!(
-      "<tr id=\"{anchor_id}\" class=\"{status}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{status}</td><td>{diff_percent}</td><td>{perceptual}</td><td>{pixel_diff}</td><td>{max_channel_diff}</td><td>{total_pixels}</td><td>{before}</td><td>{after_and_diff}</td><td class=\"error\">{error}</td></tr>",
+      "<tr id=\"{anchor_id}\" class=\"{status}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{status}</td><td>{diff_percent}</td><td>{perceptual}</td><td>{pixel_diff}</td><td>{max_channel_diff}</td><td>{total_pixels}</td><td>{first_mismatch}</td><td>{before}</td><td>{after_and_diff}</td><td class=\"error\">{error}</td></tr>",
       anchor_id = escape_html(&anchor_id),
       name = escape_html(&entry.name),
       status = escape_html(entry.status.label()),
@@ -906,6 +949,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
       pixel_diff = pixel_diff,
       max_channel_diff = max_channel_diff,
       total_pixels = total_pixels,
+      first_mismatch = first_mismatch,
       before = before_cell,
       after_and_diff = after_and_diff,
       error = escape_html(&error),
@@ -1006,6 +1050,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
           <th>Pixel diff</th>
           <th>Max Δ</th>
           <th>Total pixels</th>
+          <th>First mismatch</th>
           <th>Before</th>
           <th>After | Diff</th>
           <th>Error</th>

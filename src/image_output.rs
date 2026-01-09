@@ -39,6 +39,15 @@ pub struct DiffMetrics {
   pub rendered_dimensions: (u32, u32),
   /// Dimensions of the expected/baseline image.
   pub expected_dimensions: (u32, u32),
+  /// Location (x,y) of the first pixel that exceeded the configured tolerance.
+  ///
+  /// The scan order is row-major (left-to-right, top-to-bottom).
+  pub first_mismatch: Option<(u32, u32)>,
+  /// RGBA samples at [`Self::first_mismatch`], stored as `(rendered, expected)`.
+  ///
+  /// When dimensions differ, pixels missing from one side are treated as transparent black
+  /// (`[0, 0, 0, 0]`).
+  pub first_mismatch_rgba: Option<([u8; 4], [u8; 4])>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -470,6 +479,8 @@ pub fn diff_png_with_alpha(
       max_channel_diff: diff.statistics.max_channel_diff(compare_alpha),
       rendered_dimensions: diff.actual_dimensions,
       expected_dimensions: diff.expected_dimensions,
+      first_mismatch: diff.statistics.first_mismatch,
+      first_mismatch_rgba: diff.statistics.first_mismatch_rgba,
     };
 
     return Ok((metrics, diff_png));
@@ -516,6 +527,8 @@ pub fn diff_png_with_alpha(
   })?;
   let mut different_pixels = 0u64;
   let mut max_channel_diff = 0u8;
+  let mut first_mismatch: Option<(u32, u32)> = None;
+  let mut first_mismatch_rgba: Option<([u8; 4], [u8; 4])> = None;
 
   for y in 0..max_height {
     for x in 0..max_width {
@@ -550,15 +563,41 @@ pub fn diff_png_with_alpha(
           };
           if is_different {
             different_pixels += 1;
+            if first_mismatch.is_none() {
+              first_mismatch = Some((x, y));
+              first_mismatch_rgba = Some((
+                [rendered_px[0], rendered_px[1], rendered_px[2], rendered_px[3]],
+                [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+              ));
+            }
             let alpha = max_diff.saturating_mul(2).min(255);
             diff_image.put_pixel(x, y, Rgba([255, 0, 0, alpha]));
           } else {
             diff_image.put_pixel(x, y, Rgba([0, 0, 0, 0]));
           }
         }
-        (Some(_), None) | (None, Some(_)) => {
+        (Some(rendered_px), None) => {
           different_pixels += 1;
           max_channel_diff = 255;
+          if first_mismatch.is_none() {
+            first_mismatch = Some((x, y));
+            first_mismatch_rgba = Some((
+              [rendered_px[0], rendered_px[1], rendered_px[2], rendered_px[3]],
+              [0, 0, 0, 0],
+            ));
+          }
+          diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
+        }
+        (None, Some(expected_px)) => {
+          different_pixels += 1;
+          max_channel_diff = 255;
+          if first_mismatch.is_none() {
+            first_mismatch = Some((x, y));
+            first_mismatch_rgba = Some((
+              [0, 0, 0, 0],
+              [expected_px[0], expected_px[1], expected_px[2], expected_px[3]],
+            ));
+          }
           diff_image.put_pixel(x, y, Rgba([255, 0, 255, 255]));
         }
         (None, None) => unreachable!("loop bounds ensure at least one pixel is present"),
@@ -583,6 +622,8 @@ pub fn diff_png_with_alpha(
     max_channel_diff,
     rendered_dimensions: (rendered_img.width(), rendered_img.height()),
     expected_dimensions: (expected_img.width(), expected_img.height()),
+    first_mismatch,
+    first_mismatch_rgba,
   };
 
   Ok((metrics, diff_png))
@@ -591,6 +632,7 @@ pub fn diff_png_with_alpha(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use image::{Rgba, RgbaImage};
 
   #[test]
   fn pixmap_to_rgba8_converts_premultiplied_and_straight() {
@@ -619,5 +661,42 @@ mod tests {
       checked_pixmap_len(width, height, "pixmap_to_rgba8"),
       Err(Error::Render(RenderError::InvalidParameters { .. }))
     ));
+  }
+
+  #[test]
+  fn diff_png_with_alpha_records_first_mismatch() {
+    let mut rendered = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 255]));
+    let expected = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 255]));
+    rendered.put_pixel(1, 0, Rgba([255, 0, 0, 255]));
+
+    let rendered_png = crate::image_compare::encode_png(&rendered).expect("encode rendered");
+    let expected_png = crate::image_compare::encode_png(&expected).expect("encode expected");
+
+    let (metrics, _diff_png) =
+      diff_png_with_alpha(&rendered_png, &expected_png, 0, true).expect("diff");
+    assert_eq!(metrics.first_mismatch, Some((1, 0)));
+    assert_eq!(
+      metrics.first_mismatch_rgba,
+      Some(([255, 0, 0, 255], [0, 0, 0, 255]))
+    );
+  }
+
+  #[test]
+  fn diff_png_with_alpha_records_first_mismatch_for_dimension_mismatch() {
+    let rendered = RgbaImage::from_pixel(2, 1, Rgba([10, 20, 30, 255]));
+    let expected = RgbaImage::from_pixel(1, 1, Rgba([10, 20, 30, 255]));
+
+    let rendered_png = crate::image_compare::encode_png(&rendered).expect("encode rendered");
+    let expected_png = crate::image_compare::encode_png(&expected).expect("encode expected");
+
+    let (metrics, _diff_png) =
+      diff_png_with_alpha(&rendered_png, &expected_png, 0, true).expect("diff");
+    assert_eq!(metrics.rendered_dimensions, (2, 1));
+    assert_eq!(metrics.expected_dimensions, (1, 1));
+    assert_eq!(metrics.first_mismatch, Some((1, 0)));
+    assert_eq!(
+      metrics.first_mismatch_rgba,
+      Some(([10, 20, 30, 255], [0, 0, 0, 0]))
+    );
   }
 }
