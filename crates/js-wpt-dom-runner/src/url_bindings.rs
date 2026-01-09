@@ -71,7 +71,7 @@ pub fn install_url_bindings<'js>(ctx: Ctx<'js>, globals: &Object<'js>) -> rquick
       let state = state.clone();
       move |ctx: Ctx<'js>, input: String, base: Option<String>| -> rquickjs::Result<Object<'js>> {
         let mut state = state.borrow_mut();
-        match WebUrl::parse(&input, base.as_deref(), &state.limits) {
+        match WebUrl::parse_without_diagnostics(&input, base.as_deref(), &state.limits) {
           Ok(url) => {
             let handle = state.next_url_handle;
             state.next_url_handle = state.next_url_handle.wrapping_add(1);

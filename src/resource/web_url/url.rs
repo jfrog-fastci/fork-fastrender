@@ -71,6 +71,40 @@ impl WebUrl {
     })
   }
 
+  /// Parse an input string into a URL, optionally resolving against `base`, but without retaining
+  /// diagnostic copies of `input`/`base` on failure.
+  ///
+  /// This is useful for JS bindings that surface only a generic `"Invalid URL"` error message: it
+  /// avoids cloning potentially-large `input`/`base` strings into [`WebUrlError`] variants.
+  pub fn parse_without_diagnostics(
+    input: &str,
+    base: Option<&str>,
+    limits: &WebUrlLimits,
+  ) -> Result<Self, WebUrlError> {
+    enforce_input_len(input, limits)?;
+    if let Some(base) = base {
+      enforce_input_len(base, limits)?;
+    }
+
+    let parsed = match base {
+      Some(base) => {
+        let base_url = ::url::Url::parse(base).map_err(|_| WebUrlError::ParseError)?;
+        ::url::Url::options()
+          .base_url(Some(&base_url))
+          .parse(input)
+          .map_err(|_| WebUrlError::ParseError)?
+      }
+      None => ::url::Url::parse(input).map_err(|_| WebUrlError::ParseError)?,
+    };
+
+    enforce_href_len(parsed.as_str(), limits)?;
+
+    Ok(Self {
+      inner: Rc::new(RefCell::new(WebUrlInner { url: parsed })),
+      limits: limits.clone(),
+    })
+  }
+
   /// Fast-path predicate for whether `input` (optionally resolved against `base`) is a valid URL
   /// under the provided limits.
   ///

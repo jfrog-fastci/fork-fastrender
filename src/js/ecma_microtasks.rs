@@ -68,9 +68,9 @@ impl<Host: VmJsEngineHost> vm_js::VmJobContext for VmJsJobContext<'_, Host> {
     args: &[vm_js::Value],
   ) -> Result<vm_js::Value, vm_js::VmError> {
     let (vm, heap) = self.host.vm_js_vm_and_heap_mut();
+    let mut scope = heap.scope();
     // `vm-js` jobs are executed as host work; if a realm is provided, run the call under an
     // execution context bound to that realm.
-    let mut scope = heap.scope();
     if let Some(realm) = self.realm {
       let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
         realm,

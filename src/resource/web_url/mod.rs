@@ -32,6 +32,15 @@ mod tests {
   }
 
   #[test]
+  fn parse_without_diagnostics_returns_generic_parse_error() {
+    let limits = WebUrlLimits::default();
+    let err = WebUrl::parse_without_diagnostics("foo", Some("not a url"), &limits).unwrap_err();
+    assert!(matches!(err, WebUrlError::ParseError));
+    let err = WebUrl::parse_without_diagnostics(":::", None, &limits).unwrap_err();
+    assert!(matches!(err, WebUrlError::ParseError));
+  }
+
+  #[test]
   fn can_parse_reports_success_without_allocating_diagnostics() {
     let limits = WebUrlLimits::default();
     assert!(WebUrl::can_parse(

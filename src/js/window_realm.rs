@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use vm_js::{
   GcObject, Heap, HeapLimits, PropertyDescriptor, PropertyKey, PropertyKind, Realm, Scope, Value,
-  Vm, VmError, VmOptions,
+  Vm, VmError, VmHostHooks, VmOptions,
 };
 
 pub type ConsoleSink = Arc<dyn Fn(&vm_js::Heap, &[vm_js::Value]) + Send + Sync + 'static>;
@@ -142,7 +142,7 @@ impl crate::js::ecma_microtasks::VmJsEngineHost for WindowRealm {
 impl vm_js::VmJobContext for WindowRealm {
   fn call(
     &mut self,
-    host: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn VmHostHooks,
     callee: Value,
     this: Value,
     args: &[Value],
@@ -154,7 +154,7 @@ impl vm_js::VmJobContext for WindowRealm {
 
   fn construct(
     &mut self,
-    host: &mut dyn vm_js::VmHostHooks,
+    host: &mut dyn VmHostHooks,
     callee: Value,
     args: &[Value],
     new_target: Value,
@@ -265,7 +265,7 @@ impl Drop for ConsoleSinkGuard {
 fn console_log_native(
   _vm: &mut Vm,
   scope: &mut Scope<'_>,
-  _host: &mut dyn vm_js::VmHostHooks,
+  _host: &mut dyn VmHostHooks,
   _callee: GcObject,
   this: Value,
   args: &[Value],
