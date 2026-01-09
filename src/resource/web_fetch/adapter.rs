@@ -165,6 +165,7 @@ pub fn execute_web_fetch<'a>(
   let method = request.method.as_str();
   let method_is_get = method.eq_ignore_ascii_case("GET");
   let method_is_head = method.eq_ignore_ascii_case("HEAD");
+  let method_is_post = method.eq_ignore_ascii_case("POST");
 
   // Fetch rejects `no-cors` requests whose redirect mode is not `follow`.
   // https://fetch.spec.whatwg.org/#scheme-fetch
@@ -172,6 +173,14 @@ pub fn execute_web_fetch<'a>(
     return Err(Error::Other(format!(
       "web fetch no-cors requests require redirect mode \"follow\" (got {:?})",
       request.redirect
+    )));
+  }
+  // Fetch also requires `no-cors` requests to use a CORS-safelisted method (GET/HEAD/POST).
+  // https://fetch.spec.whatwg.org/#dom-request
+  if request.mode == RequestMode::NoCors && !(method_is_get || method_is_head || method_is_post) {
+    return Err(Error::Other(format!(
+      "web fetch no-cors requests require a CORS-safelisted method (GET/HEAD/POST) (got {:?})",
+      request.method
     )));
   }
 
@@ -1412,6 +1421,20 @@ mod tests {
     assert!(matches!(err, Error::Other(_)));
     assert!(
       err.to_string().contains("no-cors") && err.to_string().contains("follow"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn no_cors_requires_safelisted_method() {
+    let fetcher = PanicFetcher;
+    let mut request = Request::new("PUT", "https://example.com/a");
+    request.set_mode(RequestMode::NoCors);
+    let err = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect_err("expected error");
+    assert!(matches!(err, Error::Other(_)));
+    assert!(
+      err.to_string().contains("no-cors") && err.to_string().contains("CORS-safelisted"),
       "unexpected error: {err}"
     );
   }
