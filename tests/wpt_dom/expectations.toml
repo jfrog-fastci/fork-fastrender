@@ -16,3 +16,8 @@ reason = "Intentional failing smoke test used to validate xfail/failure plumbing
 id = "smoke/assert_fail.window.js"
 status = "xfail"
 reason = "Intentional failing .window.js smoke test used to validate WPT report payload plumbing."
+
+[[expectations]]
+id = "smoke/uncaught-exception.html"
+status = "xfail"
+reason = "Intentional harness-level error used to validate uncaught exception classification."

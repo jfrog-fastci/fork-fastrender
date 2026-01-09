@@ -3,9 +3,9 @@
 This directory is a **small, curated, fully offline** subset of Web Platform Tests (WPT)
 focused on DOM and event-loop behavior.
 
-It is intended to be run by `cargo xtask js wpt-dom`. The goal is to keep a **stable, fully
-offline on-disk corpus** with a predictable directory layout that can grow alongside
-FastRender's JS + DOM implementation.
+It is intended to be run by `scripts/cargo_agent.sh xtask js wpt-dom`. The goal is to keep a
+**stable, fully offline on-disk corpus** with a predictable directory layout that can grow
+alongside FastRender's JS + DOM implementation.
 
 ## Directory layout
 

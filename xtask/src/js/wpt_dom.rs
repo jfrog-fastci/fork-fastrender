@@ -122,9 +122,7 @@ pub fn run_wpt_dom(args: WptDomArgs) -> Result<()> {
 
   let report_path = resolve_repo_path(&repo_root, &args.report);
 
-  let shard = args
-    .shard
-    .map(|(index, total)| Shard { index, total });
+  let shard = args.shard.map(|(index, total)| Shard { index, total });
   let filter = args
     .filter
     .clone()

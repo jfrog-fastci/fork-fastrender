@@ -49,7 +49,7 @@ fn suite_smoke_report_classifies_expected_failures() {
   );
 
   let mismatches = report.summary.mismatches.as_ref().expect("mismatches");
-  assert_eq!(mismatches.expected, 2, "expected mismatches");
-  assert_eq!(mismatches.unexpected, 1, "unexpected mismatches");
+  assert_eq!(mismatches.expected, 3, "expected mismatches");
+  assert_eq!(mismatches.unexpected, 0, "unexpected mismatches");
   assert_eq!(mismatches.flaky, 0, "flaky mismatches");
 }

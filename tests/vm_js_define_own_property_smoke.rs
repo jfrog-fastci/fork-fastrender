@@ -199,6 +199,71 @@ fn define_own_property_respects_non_extensible_object() -> Result<(), VmError> {
 }
 
 #[test]
+fn define_own_property_rejects_data_accessor_conversion_when_non_configurable() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let (obj, key) = {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    let key = PropertyKey::from_string(scope.alloc_string("x")?);
+    scope.define_property(
+      obj,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: false,
+        kind: PropertyKind::Data {
+          value: Value::Undefined,
+          writable: true,
+        },
+      },
+    )?;
+    (obj, key)
+  };
+
+  // Attempt a data -> accessor conversion on a non-configurable property.
+  assert!(!heap.define_own_property(
+    obj,
+    key,
+    PropertyDescriptorPatch {
+      get: Some(Value::Undefined),
+      ..Default::default()
+    },
+  )?);
+
+  let (obj, key) = {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    let key = PropertyKey::from_string(scope.alloc_string("y")?);
+    scope.define_property(
+      obj,
+      key,
+      PropertyDescriptor {
+        enumerable: true,
+        configurable: false,
+        kind: PropertyKind::Accessor {
+          get: Value::Undefined,
+          set: Value::Undefined,
+        },
+      },
+    )?;
+    (obj, key)
+  };
+
+  // Attempt an accessor -> data conversion on a non-configurable property.
+  assert!(!heap.define_own_property(
+    obj,
+    key,
+    PropertyDescriptorPatch {
+      value: Some(Value::Undefined),
+      ..Default::default()
+    },
+  )?);
+
+  Ok(())
+}
+
+#[test]
 fn create_data_property_sets_all_attributes_true() -> Result<(), VmError> {
   let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
 
