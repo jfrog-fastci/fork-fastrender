@@ -942,4 +942,8 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
     );
     Ok(())
   }
+
+  // Note: `vm-js` currently only exposes Promise job host hooks. If/when `vm-js` adds a lower-level
+  // "job queue" API for async/await continuations, we should add a corresponding adapter and tests
+  // here that validate re-entrantly enqueued microtasks are drained within the same checkpoint.
 }

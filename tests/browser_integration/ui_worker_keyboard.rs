@@ -3,7 +3,7 @@
 use fastrender::interaction::KeyAction;
 use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg, DEFAULT_TIMEOUT};
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

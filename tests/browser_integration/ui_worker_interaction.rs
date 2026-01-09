@@ -3,8 +3,8 @@
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::worker_loop::spawn_ui_worker;
 use fastrender::tree::box_tree::SelectItem;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -122,9 +122,7 @@ fn label_click_toggles_checkbox_and_repaints() {
     spawn_ui_worker("fastr-ui-worker-interaction-a").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (128, 128), 1.0))
     .unwrap();
@@ -193,9 +191,7 @@ fn text_input_updates_focused_input_value_and_repaints() {
     spawn_ui_worker("fastr-ui-worker-interaction-b").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (160, 160), 1.0))
     .unwrap();
@@ -284,9 +280,7 @@ fn link_click_triggers_navigation_to_resolved_url() {
     spawn_ui_worker("fastr-ui-worker-interaction-c").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .unwrap();
+  ui_tx.send(create_tab_msg(tab_id, None)).unwrap();
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 120), 1.0))
     .unwrap();

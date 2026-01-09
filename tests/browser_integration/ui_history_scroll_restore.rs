@@ -3,7 +3,7 @@
 use super::support::{
   create_tab_msg, navigate_msg, recv_for_tab, scroll_msg, viewport_changed_msg, TempSite,
 };
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use fastrender::ui::{BrowserTabState, NavigationReason, TabId, UiToWorker, WorkerToUi};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -194,7 +194,7 @@ fn wait_for_restored_scroll_y(
           saw_scroll_update = true;
         }
       }
-      WorkerToUi::FrameReady { frame, .. } if saw_scroll_update => {
+      WorkerToUi::FrameReady { frame, .. } => {
         if (frame.scroll_state.viewport.y - expected_y).abs() < 2.0 {
           saw_frame = true;
         }

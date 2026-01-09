@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::ui::messages::{NavigationReason, RepaintReason, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;

@@ -4,7 +4,7 @@ use super::support;
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 

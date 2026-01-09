@@ -2,7 +2,7 @@
 
 use super::support::{create_tab_msg, navigate_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, RenderedFrame, TabId, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 

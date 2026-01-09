@@ -3,7 +3,7 @@
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
@@ -148,9 +148,7 @@ fn scroll_without_pointer_updates_viewport_scroll() {
     spawn_ui_worker("fastr-ui-worker-scroll-without-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
@@ -160,13 +158,16 @@ fn scroll_without_pointer_updates_viewport_scroll() {
 
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   let initial_scroll = frame.scroll_state.viewport;
+  // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady, so drain the initial navigation
+  // update before we start asserting scroll behavior.
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 40.0), None))
     .expect("Scroll");
 
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
 
   assert!(
     (updated.viewport.y - (initial_scroll.y + 40.0)).abs() < 1e-3,
@@ -192,9 +193,7 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
     spawn_ui_worker("fastr-ui-worker-scroll-with-pointer").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
@@ -203,14 +202,15 @@ fn scroll_with_pointer_updates_element_scroll_offsets() {
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   // Inside the #scroller element (it starts at the top of the page with margin: 0).
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
 
   assert!(
     updated.elements.len() >= 1,
@@ -236,13 +236,11 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page_scroller_far_down();
 
-  let handle = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-after-viewport-scroll")
-    .expect("spawn ui worker");
-  let (ui_tx, ui_rx, join) = handle.split();
+  let (ui_tx, ui_rx, join) = spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-after-viewport-scroll")
+    .expect("spawn ui worker")
+    .split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
@@ -251,14 +249,16 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  // Drain the initial navigation scroll update before asserting scroll behavior.
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   // Scroll the viewport so the #scroller element (positioned at y=500) is visible at the top of
   // the viewport.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))
     .expect("Scroll viewport");
-  let after_viewport_scroll = wait_for_scroll_update(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let after_viewport_scroll = wait_for_scroll_update(&ui_rx, tab_id);
 
   assert!(
     (after_viewport_scroll.viewport.y - 500.0).abs() < 2.0,
@@ -273,8 +273,8 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
     .send(scroll_msg(tab_id, (0.0, 60.0), Some((10.0, 10.0))))
     .expect("Scroll scroller element");
 
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
 
   assert!(
     (updated.viewport.y - after_viewport_scroll.viewport.y).abs() < 1e-3,
@@ -297,6 +297,54 @@ fn scroll_with_pointer_after_viewport_scroll_targets_element() {
 }
 
 #[test]
+fn scroll_with_pointer_outside_scroller_scrolls_viewport() {
+  let _lock = super::stage_listener_test_lock();
+  let (_dir, url) = make_test_page();
+
+  let (ui_tx, ui_rx, join) =
+    spawn_ui_worker("fastr-ui-worker-scroll-with-pointer-outside-scroller").expect("spawn ui worker").split();
+  let tab_id = TabId(1);
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
+  ui_tx
+    .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
+    .expect("ViewportChanged");
+  ui_tx
+    .send(navigate_msg(tab_id, url, NavigationReason::TypedUrl))
+    .expect("Navigate");
+
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let initial_scroll = frame.scroll_state.viewport;
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
+
+  // Outside the #scroller element (it is 120px wide; use x=150px).
+  ui_tx
+    .send(scroll_msg(tab_id, (0.0, 40.0), Some((150.0, 10.0))))
+    .expect("Scroll");
+
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
+
+  assert!(
+    updated.elements.is_empty(),
+    "expected no element scroll offsets when scrolling outside scroller, got {:?}",
+    updated.elements
+  );
+  assert!(
+    (updated.viewport.y - (initial_scroll.y + 40.0)).abs() < 1e-3,
+    "expected viewport y scroll to increase by 40, was {:?} then {:?}",
+    initial_scroll,
+    updated.viewport
+  );
+  assert_eq!(
+    frame.scroll_state, updated,
+    "FrameReady.scroll_state should match ScrollStateUpdated"
+  );
+
+  drop(ui_tx);
+  join.join().expect("join ui worker");
+}
+
+#[test]
 fn scroll_clamps_to_zero() {
   let _lock = super::stage_listener_test_lock();
   let (_dir, url) = make_test_page();
@@ -305,9 +353,7 @@ fn scroll_clamps_to_zero() {
     spawn_ui_worker("fastr-ui-worker-scroll-clamp-zero").expect("spawn ui worker");
   let (ui_tx, ui_rx, join) = handle.split();
   let tab_id = TabId(1);
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   ui_tx
     .send(viewport_changed_msg(tab_id, (200, 100), 1.0))
     .expect("ViewportChanged");
@@ -316,19 +362,20 @@ fn scroll_clamps_to_zero() {
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   // Ensure we're scrolled away from 0 so the clamp can be observed.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 120.0), None))
     .expect("Scroll down");
-  let _ = wait_for_scroll_update(&ui_rx, tab_id);
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, -10_000.0), None))
     .expect("Scroll up");
-  let updated = wait_for_scroll_update(&ui_rx, tab_id);
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
+  let updated = wait_for_scroll_update(&ui_rx, tab_id);
 
   assert!(
     updated.viewport.y.abs() < 1e-3,
@@ -395,19 +442,22 @@ fn pointer_hit_testing_uses_element_scroll_offsets() {
     .expect("Navigate");
 
   let _ = wait_for_frame_ready(&ui_rx, tab_id);
+  // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady, so drain the initial navigation
+  // scroll state update before asserting wheel scroll behavior.
+  let _ = wait_for_scroll_update(&ui_rx, tab_id);
 
   // Scroll the nested scroll container so the red label box becomes visible at the top.
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 120.0), Some((10.0, 10.0))))
     .expect("Scroll");
 
+  let frame = wait_for_frame_ready(&ui_rx, tab_id);
   let updated = wait_for_scroll_update(&ui_rx, tab_id);
   assert!(
     !updated.elements.is_empty(),
     "expected element scroll offsets after pointer-based scroll, got {:?}",
     updated.elements
   );
-  let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_eq!(
     sample_rgba_at_css(&frame, 20, 20),
     (255, 0, 0, 255),

@@ -3,7 +3,7 @@
 use super::support::{create_tab_msg_with_cancel, navigate_msg, scroll_msg, viewport_changed_msg};
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
 use fastrender::scroll::ScrollState;
-use fastrender::ui::worker_loop::spawn_ui_worker_for_test;
+use fastrender::ui::test_worker::spawn_ui_worker_for_test;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 

@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, TabId, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::time::Duration;
 
 // UI worker startup + first paint can take several seconds under load when browser integration
@@ -49,35 +49,41 @@ fn fragment_navigation_scrolls_viewport_to_target() {
     .send(support::navigate_msg(tab_id, url, NavigationReason::TypedUrl))
     .expect("Navigate");
 
+  // `spawn_ui_worker` emits ScrollStateUpdated after FrameReady; ensure we do not consume the only
+  // FrameReady while waiting for scroll updates.
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
     matches!(
       msg,
-      WorkerToUi::ScrollStateUpdated { .. } | WorkerToUi::NavigationFailed { .. }
+      WorkerToUi::FrameReady { .. } | WorkerToUi::NavigationFailed { .. }
     )
   })
-  .expect("expected ScrollStateUpdated");
-  let scroll = match msg {
-    WorkerToUi::ScrollStateUpdated { scroll, .. } => scroll,
+  .expect("expected FrameReady");
+  let frame = match msg {
+    WorkerToUi::FrameReady { frame, .. } => frame,
     WorkerToUi::NavigationFailed { url, error, .. } => {
       panic!("navigation failed for {url}: {error}");
     }
     other => panic!("unexpected WorkerToUi message: {other:?}"),
   };
   assert!(
-    scroll.viewport.y > 0.0,
-    "expected fragment navigation to scroll viewport; got {:?}",
-    scroll.viewport
+    frame.scroll_state.viewport.y > 0.0,
+    "expected FrameReady to reflect anchor scroll; got {:?}",
+    frame.scroll_state.viewport
   );
 
   let msg = support::recv_for_tab(&ui_rx, tab_id, TIMEOUT, |msg| {
-    matches!(msg, WorkerToUi::FrameReady { .. })
+    matches!(msg, WorkerToUi::ScrollStateUpdated { .. })
   })
-  .expect("expected FrameReady");
-  if let WorkerToUi::FrameReady { frame, .. } = msg {
+  .expect("expected ScrollStateUpdated");
+  if let WorkerToUi::ScrollStateUpdated { scroll, .. } = msg {
     assert!(
-      frame.scroll_state.viewport.y > 0.0,
-      "expected FrameReady to reflect anchor scroll; got {:?}",
-      frame.scroll_state.viewport
+      scroll.viewport.y > 0.0,
+      "expected ScrollStateUpdated to reflect anchor scroll; got {:?}",
+      scroll.viewport
+    );
+    assert_eq!(
+      scroll, frame.scroll_state,
+      "expected ScrollStateUpdated to match FrameReady.scroll_state"
     );
   }
 

@@ -2,7 +2,7 @@
 
 use super::support;
 use fastrender::ui::messages::{NavigationReason, PointerButton, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::time::Duration;
 use url::Url;
 
@@ -115,4 +115,3 @@ fn click_submit_navigates_to_get_form_submission_url() {
   drop(ui_tx);
   join.join().expect("worker join");
 }
-

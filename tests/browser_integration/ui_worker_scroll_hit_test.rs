@@ -4,7 +4,7 @@ use fastrender::scroll::ScrollState;
 use fastrender::ui::messages::{
   NavigationReason, PointerButton, RenderedFrame, TabId, UiToWorker, WorkerToUi,
 };
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -103,6 +103,22 @@ fn wait_for_navigation_committed(
   assert!(committed, "expected NavigationCommitted for {expected_url}");
 }
 
+fn wait_for_scroll_state_updated(rx: &Receiver<WorkerToUi>, tab_id: TabId, timeout: Duration) -> ScrollState {
+  let deadline = Instant::now() + timeout;
+  while Instant::now() < deadline {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    match rx.recv_timeout(remaining.min(Duration::from_millis(200))) {
+      Ok(WorkerToUi::ScrollStateUpdated { tab_id: msg_tab, scroll }) if msg_tab == tab_id => {
+        return scroll;
+      }
+      Ok(_) => continue,
+      Err(RecvTimeoutError::Timeout) => continue,
+      Err(RecvTimeoutError::Disconnected) => break,
+    }
+  }
+  panic!("timed out waiting for ScrollStateUpdated for {tab_id:?}");
+}
+
 #[test]
 fn click_after_scroll_hits_link() {
   let _lock = super::stage_listener_test_lock();
@@ -135,9 +151,7 @@ fn click_after_scroll_hits_link() {
   let (ui_tx, ui_rx, join) = handle.split();
 
   let tab_id = TabId::new();
-  ui_tx
-    .send(create_tab_msg(tab_id, None))
-    .expect("CreateTab");
+  ui_tx.send(create_tab_msg(tab_id, None)).expect("CreateTab");
   // Keep the viewport height <= the link height so scrolling to y=500 is possible even when the
   // document's scrollable height is only just large enough to include the absolute-positioned link.
   ui_tx
@@ -156,6 +170,9 @@ fn click_after_scroll_hits_link() {
       && px_before_scroll[3] > 200),
     "expected pixel to not be red before scroll, got rgba={px_before_scroll:?}"
   );
+  // Drain the initial scroll state update emitted by the worker so later assertions observe the
+  // scroll state produced by the scroll message below.
+  let _ = wait_for_scroll_state_updated(&ui_rx, tab_id, TIMEOUT);
 
   ui_tx
     .send(scroll_msg(tab_id, (0.0, 500.0), None))

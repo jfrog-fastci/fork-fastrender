@@ -2,7 +2,7 @@
 
 use fastrender::ui::cancel::CancelGens;
 use fastrender::ui::messages::{TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::test_worker::spawn_ui_worker;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 

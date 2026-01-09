@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::ui::messages::{RepaintReason, TabId, UiToWorker, WorkerToUi};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
@@ -158,7 +158,9 @@ fn close_tab_prevents_future_frames_for_that_tab() {
   // Drain any non-frame messages that were queued by the initial navigation.
   while ui_rx.try_recv().is_ok() {}
 
-  ui_tx.send(UiToWorker::CloseTab { tab_id: tab1 }).expect("close tab1");
+  ui_tx
+    .send(UiToWorker::CloseTab { tab_id: tab1 })
+    .expect("close tab1");
   ui_tx
     .send(UiToWorker::RequestRepaint {
       tab_id: tab1,

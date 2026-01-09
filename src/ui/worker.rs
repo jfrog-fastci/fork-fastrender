@@ -37,6 +37,26 @@ fn forward_stage_heartbeats(tab_id: TabId, sender: Sender<WorkerToUi>) -> Global
   GlobalStageListenerGuard::new(listener)
 }
 
+struct LoadingStateGuard {
+  tab_id: TabId,
+  tx: Sender<WorkerToUi>,
+}
+
+impl LoadingStateGuard {
+  fn new(tab_id: TabId, tx: Sender<WorkerToUi>) -> Self {
+    Self { tab_id, tx }
+  }
+}
+
+impl Drop for LoadingStateGuard {
+  fn drop(&mut self) {
+    let _ = self.tx.send(WorkerToUi::LoadingState {
+      tab_id: self.tab_id,
+      loading: false,
+    });
+  }
+}
+
 /// Minimal render worker wrapper used by the browser UI.
 ///
 /// This struct owns a `FastRender` instance and forwards stage heartbeats to the UI via
@@ -98,20 +118,30 @@ pub struct UiWorkerHandle {
 }
 
 impl UiWorkerHandle {
+  /// Shut down the worker loop and join its thread.
+  ///
+  /// This is equivalent to [`Self::join`], but named explicitly to match the "send shutdown then
+  /// join" semantics expected by browser integration tests.
+  pub fn shutdown(self) -> std::thread::Result<()> {
+    self.join()
+  }
+
   pub fn join(self) -> std::thread::Result<()> {
     // Ensure the worker loop can observe channel closure before we block on joining.
     drop(self.ui_tx);
     self.handle.join()
   }
 
-  pub fn into_parts(
-    self,
-  ) -> (
+  pub fn into_parts(self) -> (
     Sender<UiToWorker>,
     Receiver<WorkerToUi>,
     std::thread::JoinHandle<()>,
   ) {
     (self.ui_tx, self.ui_rx, self.handle)
+  }
+
+  pub fn split(self) -> (Sender<UiToWorker>, Receiver<WorkerToUi>, std::thread::JoinHandle<()>) {
+    self.into_parts()
   }
 }
 
@@ -401,10 +431,10 @@ fn ui_worker_main(rx: Receiver<UiToWorker>, tx: Sender<WorkerToUi>) {
         if let Some((x, y)) = pointer {
           // Prefer pointer-based wheel scrolling when we have a cached layout; this enables nested
           // overflow container scrolling, scroll chaining, and viewport fallback.
-          if doc
+          let scrolled = doc
             .wheel_scroll_at_viewport_point(Point::new(x, y), delta)
-            .is_ok()
-          {
+            .unwrap_or(false);
+          if scrolled {
             tab.scroll_state = doc.scroll_state();
           } else {
             let next = Point::new(
@@ -727,6 +757,8 @@ fn navigate_tab(
   mut restore_scroll: Option<(f32, f32)>,
   tx: &Sender<WorkerToUi>,
 ) {
+  url = url.trim().to_string();
+
   // Apply history semantics first so that Back/Forward restores the correct scroll position and
   // Reload uses the current entry URL (without creating a new history entry).
   match reason {
@@ -781,6 +813,11 @@ fn navigate_tab(
     tab_id,
     url: url.clone(),
   });
+  let _ = tx.send(WorkerToUi::LoadingState {
+    tab_id,
+    loading: true,
+  });
+  let _loading_guard = LoadingStateGuard::new(tab_id, tx.clone());
 
   // Forward `StageHeartbeat` updates while we perform the render pipeline work for this navigation.
   // This is intentionally scoped to the synchronous "navigation" job so we don't leak a
@@ -854,7 +891,6 @@ fn navigate_tab(
           return;
         }
       };
-
       // Ensure `about:*` pages never resolve relative URLs against the previous navigation origin.
       renderer.set_base_url(about_pages::ABOUT_BASE_URL);
 

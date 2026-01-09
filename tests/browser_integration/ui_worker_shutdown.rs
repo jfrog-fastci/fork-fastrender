@@ -1,7 +1,7 @@
 #![cfg(feature = "browser_ui")]
 
 use fastrender::ui::messages::{NavigationReason, TabId};
-use fastrender::ui::worker_loop::spawn_ui_worker;
+use fastrender::ui::worker::spawn_ui_worker;
 use std::time::{Duration, Instant};
 
 use super::support::{create_tab_msg, navigate_msg, DEFAULT_TIMEOUT};
@@ -38,6 +38,7 @@ fn dropping_ui_receiver_does_not_panic_worker() {
     .expect("spawn ui worker");
   let (ui_tx, ui_rx, join_handle) = handle.split();
 
+  // Drop the WorkerToUi receiver and ensure the worker thread doesn't panic when sending.
   drop(ui_rx);
 
   let tab_id = TabId(1);

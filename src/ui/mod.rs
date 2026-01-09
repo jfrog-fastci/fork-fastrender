@@ -13,7 +13,9 @@ pub mod ui_worker;
 pub mod shortcuts;
 pub mod worker_runtime;
 pub mod worker;
-pub mod worker_loop;
+/// Headless test-only UI worker loop (supports deterministic cancellation scenarios).
+#[cfg(feature = "browser_ui")]
+pub mod test_worker;
 pub mod url;
 
 // `chrome` depends on egui, so keep it behind the `browser_ui` feature gate.
