@@ -212,9 +212,11 @@ fn key_action_sets_focus_visible() {
   ui_tx
     .send(UiToWorker::KeyAction {
       tab_id,
-      key: KeyAction::Tab,
+      // Use a key that is expected to keep focus on the currently focused input. `Tab` is likely
+      // to become focus traversal once implemented.
+      key: KeyAction::Backspace,
     })
-    .expect("Tab");
+    .expect("Backspace");
   let frame = wait_for_frame_ready(&ui_rx, tab_id);
   assert_pixel_rgb(&frame.pixmap, 66, 32, (255, 255, 0));
 
