@@ -197,3 +197,68 @@ fn define_own_property_respects_non_extensible_object() -> Result<(), VmError> {
   assert!(heap.object_get_own_property(obj, &key)?.is_none());
   Ok(())
 }
+
+#[test]
+fn create_data_property_sets_all_attributes_true() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let (obj, key) = {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    let key = PropertyKey::from_string(scope.alloc_string("x")?);
+    (obj, key)
+  };
+
+  assert!(heap.create_data_property(obj, key, Value::Number(1.0))?);
+  let desc = heap
+    .object_get_own_property(obj, &key)?
+    .expect("property should exist");
+  assert!(desc.enumerable);
+  assert!(desc.configurable);
+  match desc.kind {
+    PropertyKind::Data { value, writable } => {
+      assert!(matches!(value, Value::Number(1.0)));
+      assert!(writable);
+    }
+    PropertyKind::Accessor { .. } => panic!("expected a data property"),
+  }
+  Ok(())
+}
+
+#[test]
+fn create_data_property_or_throw_throws_type_error_on_rejection() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let (obj, key) = {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    scope.object_prevent_extensions(obj)?;
+    let key = PropertyKey::from_string(scope.alloc_string("x")?);
+    (obj, key)
+  };
+
+  let err = heap
+    .create_data_property_or_throw(obj, key, Value::Undefined)
+    .unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)));
+  Ok(())
+}
+
+#[test]
+fn define_property_or_throw_throws_type_error_on_rejection() -> Result<(), VmError> {
+  let mut heap = Heap::new(HeapLimits::new(1024 * 1024, 1024 * 1024));
+
+  let (obj, key) = {
+    let mut scope = heap.scope();
+    let obj = scope.alloc_object()?;
+    scope.object_prevent_extensions(obj)?;
+    let key = PropertyKey::from_string(scope.alloc_string("x")?);
+    (obj, key)
+  };
+
+  let err = heap
+    .define_property_or_throw(obj, key, PropertyDescriptorPatch::default())
+    .unwrap_err();
+  assert!(matches!(err, VmError::TypeError(_)));
+  Ok(())
+}
