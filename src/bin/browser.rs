@@ -1341,6 +1341,12 @@ impl App {
 
         match state {
           ElementState::Pressed => {
+            // Only track one "captured" pointer interaction at a time. When a primary-button drag
+            // is in progress, ignore additional mouse button presses until the primary button is
+            // released/cancelled.
+            if self.pointer_captured {
+              return;
+            }
             // Ensure any pending hover update is applied before we start a new pointer interaction.
             self.flush_pending_pointer_move();
             let Some(rect) = self.page_rect_points else {
@@ -1362,8 +1368,10 @@ impl App {
               return;
             };
             self.page_has_focus = true;
-            self.pointer_captured = true;
-            self.captured_button = mapped_button;
+            if matches!(mapped_button, fastrender::ui::PointerButton::Primary) {
+              self.pointer_captured = true;
+              self.captured_button = mapped_button;
+            }
             self.cursor_in_page = true;
             self.send_worker_msg(fastrender::ui::UiToWorker::PointerDown {
               tab_id,
@@ -1372,7 +1380,10 @@ impl App {
             });
           }
           ElementState::Released => {
-            if !self.pointer_captured {
+            if !self.pointer_captured
+              || !matches!(mapped_button, fastrender::ui::PointerButton::Primary)
+              || !matches!(self.captured_button, fastrender::ui::PointerButton::Primary)
+            {
               return;
             }
             // Flush any coalesced pointer moves so interactions (e.g. range drags) see the latest
