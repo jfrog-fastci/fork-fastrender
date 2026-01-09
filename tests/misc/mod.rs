@@ -42,6 +42,7 @@ mod dom2_js_events;
 mod js_event_loop_timers;
 mod js_diagnostics;
 mod js_dom_shims;
+mod js_dom_exception;
 mod js_timers;
 mod vm_js_optional_chaining_this;
 mod js_fetch_bindings;

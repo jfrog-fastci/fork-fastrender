@@ -4445,11 +4445,11 @@ name = "vm-js"
 version = "0.1.0"
 dependencies = [
  "diagnostics",
-  "hir-js",
-  "parse-js",
-  "ryu",
-  "semantic-js",
-  "thiserror 1.0.69",
+ "hir-js",
+ "parse-js",
+ "ryu",
+ "semantic-js",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
