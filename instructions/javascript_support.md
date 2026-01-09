@@ -25,6 +25,8 @@ This workstream turns FastRender into a real browser engine: **HTML + CSS + DOM 
 We will use **`ecma-rs`** (this org's JS/TS tooling repo) as the JavaScript language implementation
 and evolve it as-needed for browser-grade execution.
 
+Contributor-facing guide (architecture + workflow): [`docs/js_embedding.md`](../docs/js_embedding.md).
+
 ## Repos + resources (keep them local)
 
 ### JS engine source
@@ -214,7 +216,8 @@ Quickstart:
 git submodule update --init engines/ecma-rs
 git -C engines/ecma-rs submodule update --init test262-semantic/data
 
-cargo xtask js test262
+# Use the mandatory cargo wrapper (AGENTS.md):
+scripts/cargo_agent.sh xtask js test262
 ```
 
 The point of tests is to prevent regressions, not to build heavy harness infrastructure.

@@ -13,47 +13,58 @@ implementers from having to “rediscover” scattered HTML Standard details whe
 module scripts/import maps later.
 
 ## Status in this repository (reality check)
-FastRender has the **core building blocks** for a streaming, parse-time classic `<script>` pipeline
-(pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer` scripts, and keep
-observable document state like `Document.currentScript` correct). Some plumbing is still evolving,
-so treat this section as a “where is the real code?” map.
+FastRender has the **core building blocks** for a spec-shaped, streaming, parse-time classic
+`<script>` pipeline (pause/resume parsing at `</script>`, schedule parser-blocking/`async`/`defer`
+scripts, and keep observable document state like `Document.currentScript` correct). Some plumbing is
+still evolving, so treat this section as a “where is the real code?” map.
 
-- **HTML parsing (pause/resume at `</script>`):**
+There is not yet a production author-JS VM executing page scripts end-to-end, but the host-side
+plumbing is laid out in explicit modules so the remaining integration work can stay spec-shaped.
+
+What exists today (in-tree):
+
+- **HTML parsing hooks (pause at `</script>`):**
   - `src/html/pausable_html5ever.rs`: wraps html5ever so the host can observe
     `TokenizerResult::Script` suspension points (html5ever’s built-in driver currently loops past
     them).
-  - (Target/new driver) `src/html/streaming_parser.rs`: streaming parser driver built on
-    `PausableHtml5everParser` (incremental feeding, pausing at script boundaries, resuming from the
-    exact input offset).
-  - (Bridge implementation) `src/dom/scripting_parser.rs`: an incremental html5ever parser that yields at
-    `<script>` boundaries and snapshots the partial DOM to `crate::dom::DomNode` (useful for tests
-    and incremental adoption; not `dom2`-backed).
-- **DOM construction:**
-  - `src/dom2/`: mutable DOM (`dom2::Document`) used by JS bindings and script-visible mutations.
+  - `src/dom/scripting_parser.rs`: `parse_html_with_scripting(...)` pauses at `</script>` boundaries
+    and yields a `ScriptToken` plus a partial DOM snapshot (currently backed by
+    `markup5ever_rcdom`).
+- **Parse-time base URL tracking:**
+  - `src/html/base_url_tracker.rs`: `BaseUrlTracker` tracks `<base href>` as the parser progresses
+    so `<script src>` resolution uses the base URL *at script preparation time*.
+- **Script element normalization at parse time:**
+  - `src/js/mod.rs`: `ScriptType` + `ScriptElementSpec` (flattened `<script>` record).
+  - `src/js/streaming.rs`: helpers for building `ScriptElementSpec` at the moment a `<script>`
+    finishes parsing.
+- **Script scheduling + event loop:**
+  - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`),
+    including an action-based scheduler (`ScriptSchedulerAction`) plus a higher-level helper
+    (`ClassicScriptScheduler`).
+  - `src/js/event_loop.rs`: task + microtask queues, explicit microtask checkpoints, timers, run
+    limits (`RunLimits`), and queue caps (`QueueLimits`).
+- **Host-side execution bookkeeping:**
+  - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
+    script block” (classic scripts).
+- **JS-enabled host container (early embedding surface):**
+  - `src/api/browser_document_js.rs`: `BrowserDocumentJs` couples a live `dom2` document, a JS
+    runtime adapter, an HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
+- **Mutable DOM for bindings (intended):**
+  - `src/dom2/`: mutable DOM (`dom2::Document`) intended for JS bindings and script-visible
+    mutations.
   - `src/dom2/import.rs`: current bridge for constructing `dom2::Document` from the renderer’s
     immutable `crate::dom::DomNode`.
-  - **dom2 TreeSink:** the html5ever `TreeSink` implementation for `dom2::Document` lives under
-    `src/dom2/` (search for the `impl html5ever::tree_builder::TreeSink`). If you don’t see it in
-    your checkout yet, `import.rs` is the current bridge.
-- **Script scheduling / host orchestration:**
-  - `src/js/script_scheduler.rs`: classic-script ordering (parser-blocking vs `async` vs `defer`)
-    integrated with the HTML-shaped `EventLoop`.
-  - `src/js/orchestrator.rs`: host-side `Document.currentScript` bookkeeping around “execute the
-    script block”.
-  - `src/js/event_loop.rs`: task + microtask queues with explicit microtask checkpoint draining.
-  - `src/js/streaming.rs`: helpers for building `ScriptElementSpec` at parse time (including base
-    URL timing).
-  - `src/js/html_scripting.rs`: integration harness used by the end-to-end pipeline tests (Task
-    129).
-  - (Higher-level host runtime) `src/api/browser_document_js.rs`: couples `dom2`, a JS runtime, an
-    HTML-shaped `EventLoop`, and `currentScript` bookkeeping.
+  - **Missing piece:** an `html5ever::tree_builder::TreeSink` implementation backed by `dom2`, so the
+    parser can build the live DOM directly while pausing/resuming at scripts.
+- **End-to-end harness (not a full HTML parser):**
+  - `src/js/html_scripting.rs`: a small harness used by unit tests to exercise script/style
+    interaction and event loop semantics.
 - **Legacy tooling (deprecated for execution):**
-  - `src/js/dom_scripts.rs` / `extract_script_elements()`: post-parse DOM scanning for tooling only
+  - `src/js/dom_scripts.rs::extract_script_elements()`: post-parse DOM scanning for tooling only
     (not spec-correct for execution).
 
 ### How to run tests
-The unit + integration tests for the streaming pipeline live in the `fastrender` crate’s `--lib`
-tests. Run them (scoped) with:
+The relevant unit tests live in the `fastrender` crate’s `--lib` test binary. Run them (scoped) with:
 
 `scripts/cargo_agent.sh test -p fastrender --lib`
 
@@ -111,6 +122,8 @@ we can land a correct classic-script core first:
     `src/js/script_blocking_stylesheets.rs`), but it is not yet fully integrated with the real
     streaming parser + scheduler pipeline.
 - CORS / SRI (`crossorigin`, `integrity`) and fetch mode nuances for scripts
+- End-to-end `Document.currentScript` integration with a real JS VM + WebIDL bindings (host-side
+  bookkeeping exists in `src/js/orchestrator.rs`, but it is not yet wired to a production JS runtime)
 
 When adding any of the above later, treat the HTML Standard as the source of truth and extend the
 state machine; do not “patch in” ad-hoc behavior.
@@ -154,7 +167,14 @@ Keeping these boundaries crisp is what makes later module/import map work tracta
 - execute that script (which can mutate the DOM),
 - then resume parsing from the exact byte offset.
 
-**Target home:** `src/html/streaming_parser.rs` (built on `src/html/pausable_html5ever.rs`).
+**Home (current):**
+
+- `src/html/pausable_html5ever.rs` (`PausableHtml5everParser`)
+- `src/dom/scripting_parser.rs` (`ScriptingHtmlParser`, `parse_html_with_scripting`)
+  
+Note: a dedicated streaming parser driver module may be added later (suggested home:
+`src/html/streaming_parser.rs`), but the core “pause at TokenizerResult::Script” hook is already
+exposed by `PausableHtml5everParser`.
 
 **Key operations (conceptual):**
 
@@ -176,8 +196,10 @@ so it cannot support correct parser-time script execution.
 
 **Existing home:** `src/dom2/` (`dom2::Document`, `NodeId`, `NodeKind`).
 
-**TreeSink:** `dom2` includes an `html5ever::tree_builder::TreeSink` implementation backed by
-`dom2::Document`. This is the bridge between the tokenizer/tree-builder and our mutable DOM.
+**Missing piece (still required for spec-correct parse-time JS):** an `html5ever::tree_builder::TreeSink`
+implementation backed by `dom2::Document`. This is the bridge between the tokenizer/tree-builder and
+our mutable DOM. Until this exists, the pausable parser path uses `markup5ever_rcdom` and converts to
+renderer DOM snapshots for callbacks.
 
 **Mutable DOM invariants that must always hold:**
 
@@ -197,17 +219,18 @@ so it cannot support correct parser-time script execution.
 DOM. That is correct for post-parse utilities, but wrong for parser-inserted script `src`
 resolution timing.
 
-**Home:** `src/html/base_url_tracker.rs`.
+**Home:** `src/html/base_url_tracker.rs` (`BaseUrlTracker`).
 
-**Interface:**
+**Interface (current):**
 
 - `BaseUrlTracker::new(document_url: Option<&str>)`
 - `BaseUrlTracker::current_base_url() -> Option<String>`
-- `BaseUrlTracker::on_element_inserted(tag_name, namespace, attrs, in_head, in_foreign_namespace, in_template)`
+- `BaseUrlTracker::on_element_inserted(...)` — called by the parser/tree-sink when elements are
+  inserted, so the tracker can react to `<base href>` in `<head>`.
 - `BaseUrlTracker::resolve_script_src(raw_src)` — resolve `<script src>` using the base URL in effect
   at preparation time.
 
-### 4) `ScriptScheduler` (state machine + external fetch integration)
+### 4) Script scheduling (state machine + external fetch integration)
 **Responsibility:** implement the classic-script subset of the HTML processing model:
 
 - classify scripts (classic/module/importmap/unknown) and ignore non-executable types,
@@ -218,29 +241,37 @@ resolution timing.
 
 **Home:** `src/js/script_scheduler.rs`.
 
+This module contains two layers:
+
+- **Action-based state machine:** `ScriptScheduler<NodeId>` returning `ScriptSchedulerAction` values.
+  This is designed for a streaming parser driver that needs explicit "block parser" signals.
+- **Host-integrated helper:** `ClassicScriptScheduler<Host>` which executes scripts against an
+  `EventLoop` via a `ScriptLoader`/`ScriptExecutor` trait boundary (useful for unit tests and early
+  integration).
+
 **Inputs:**
 
 - script element node id (from `dom2` TreeSink) and accessors for its attributes/text,
 - current base URL (from `BaseUrlTracker`),
 - a fetch interface (initially `crate::resource::ResourceFetcher` in `src/resource.rs`).
 
-**Outputs:**
+**Outputs (for the action-based scheduler):**
 
-- “parser blocked/unblocked” signals for the streaming parser driver,
-- tasks queued into `EventLoop` for async/defer script execution.
+- “block parser until executed” signals for the streaming parser driver (as an action),
+- tasks queued into `EventLoop` for async/defer script execution (as an action).
 
-**State machine sketch (classic scripts only):**
+**State machine sketch (classic scripts only; action-based scheduler):**
 
-- `pending_parsing_blocking: Option<ScriptId>`
-- `defer_queue: Vec<ScriptId>` (document order)
-- `async_ready_queue: VecDeque<ScriptId>` (run ASAP)
-- `parsing_complete: bool`
+`src/js/script_scheduler.rs::ScriptScheduler` tracks:
 
-Where `ScriptId` is an internal handle to a prepared script record:
+- `scripts: HashMap<ScriptId, ExternalScriptEntry<NodeId>>` for external scripts (blocking/async/defer)
+  and their fetch/execution readiness
+- `defer_queue: Vec<ScriptId>` + `next_defer_to_queue: usize` to preserve document order for deferred
+  scripts
+- `parsing_completed: bool` to gate when deferred scripts become eligible to run
 
-- inline text (already available) OR fetched source bytes/text
-- resolved URL (if external)
-- flags: `async`, `defer`, `parser_inserted`
+Parser blocking is represented explicitly via `ScriptSchedulerAction::BlockParserUntilExecuted`
+(the orchestrator decides when to resume parsing).
 
 ### 5) `EventLoop` + microtask checkpoint points
 **Responsibility:** provide HTML-style scheduling primitives:
@@ -264,35 +295,45 @@ This section ties the components together. The goal is to make the parser/schedu
 boundaries explicit.
 
 ### A) Parsing, encountering `<script>`, and pausing at `</script>`
-1. Streaming parser builds nodes into `dom2::Document` via the TreeSink.
-2. When a `<script>` end tag is processed, the parser driver calls into `ScriptScheduler` with:
-   - node id for the `<script>` element,
-   - the element’s current attributes (`src`, `async`, `defer`, `type`/`language`),
-   - the accumulated inline text content (if no `src`).
-3. `ScriptScheduler` performs the spec’s “prepare the script element” steps relevant to v1:
-   - determine script type (`classic` vs others),
-   - compute whether the script is external,
-   - resolve `src` URL against `BaseUrlTracker::current_base_url()`.
-4. Scheduler decides:
-   - **parsing-blocking** → return “block parser”, execute now, then “unblock parser”,
-   - **async** → start fetch, return “continue parsing”,
-   - **defer** → start fetch, enqueue into defer list, return “continue parsing”.
+1. Streaming parser builds nodes into a mutable DOM (eventually `dom2::Document` via a TreeSink).
+2. When a `<script>` end tag is processed, the parser driver builds a `ScriptElementSpec` for that
+   element *at this parse position* (see `src/js/streaming.rs`), using:
+   - element attributes (`src`, `async`, `defer`, `type`/`language`),
+   - accumulated inline text content (if no `src`),
+   - the current base URL from `BaseUrlTracker`.
+3. The parser driver feeds that spec into the action-based scheduler:
+   `ScriptScheduler::discovered_parser_script(...)`.
+4. The scheduler returns a `DiscoveredScript { id, actions }`, where `actions` can include:
+   - `StartFetch { url }` (external script),
+   - `BlockParserUntilExecuted` (parser-blocking external script),
+   - `ExecuteNow { source_text }` (inline scripts, or blocking externals after fetch completion),
+   - `QueueTask { source_text }` (async/defer execution).
+5. The orchestrator applies these actions:
+   - starts fetches in the host networking layer,
+   - pauses/resumes the parser as directed,
+   - executes scripts and runs required microtask checkpoints.
 
 ### B) Executing a classic script
-When it is time to run a script (immediately, async-ready, or deferred):
+When it is time to run a script (via `ExecuteNow` or `QueueTask`):
 
-1. Run the script body in the document’s JS realm (engine integration; out-of-scope for this doc).
-2. Call `EventLoop::perform_microtask_checkpoint()` to drain microtasks.
+1. Run the script body in the document’s JS realm (engine + WebIDL bindings; out-of-scope here).
+2. Run a microtask checkpoint:
+   - for `ExecuteNow`, the orchestrator must call `EventLoop::perform_microtask_checkpoint()`
+     immediately after execution.
+   - for `QueueTask`, the event loop itself runs a checkpoint after the task (see
+     `EventLoop::run_next_task()`), which satisfies the HTML requirement.
 3. Continue:
-   - for parsing-blocking scripts: resume parsing,
-   - for async scripts: parser may be interrupted again later,
-   - for deferred scripts: continue draining the deferred queue at end-of-parse.
+   - for parser-blocking scripts: resume parsing once the scheduler’s “block parser” condition is
+     cleared,
+   - for async scripts: parsing may be interrupted by async-ready scripts (depending on how often
+     the parser yields),
+   - for deferred scripts: run in order after parsing completes.
 
 ### C) End of parsing
 When the streaming parser reaches end-of-input:
 
-1. Mark parsing complete.
-2. Execute deferred scripts in document order, each followed by a microtask checkpoint.
+1. Notify the scheduler (`ScriptScheduler::parsing_completed()`).
+2. Apply any returned actions, typically queueing deferred scripts as tasks in document order.
 3. Then allow later lifecycle steps (DOMContentLoaded/readyState changes) to be scheduled (future).
 
 ---
