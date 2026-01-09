@@ -108,3 +108,40 @@ fn float_auto_width_clamps_to_max_width() {
   let float_fragment = &fragment.children[0];
   assert!(float_fragment.bounds.width() <= 50.0 + 0.01);
 }
+
+/// Shrink-to-fit floats must not clamp their used width to the available space when the
+/// min-content width is larger than that space (CSS 2.1 §10.3.5).
+///
+/// This can happen with "unbreakable" content (e.g. a long word / fixed-width child).
+#[test]
+fn float_auto_width_can_exceed_containing_block_when_intrinsic_min_exceeds_available() {
+  let container_style = Arc::new(ComputedStyle::default());
+
+  let mut float_style = ComputedStyle::default();
+  float_style.float = Float::Left;
+
+  // Simulate an unbreakable item by using a fixed-width child.
+  let mut child_style = ComputedStyle::default();
+  child_style.width = Some(Length::px(200.0));
+  child_style.height = Some(Length::px(10.0));
+  let child_box = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let float_box = BoxNode::new_block(
+    Arc::new(float_style),
+    FormattingContextType::Block,
+    vec![child_box],
+  );
+  let container = BoxNode::new_block(container_style, FormattingContextType::Block, vec![float_box]);
+
+  let bfc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(100.0, 1000.0);
+  let fragment = bfc.layout(&container, &constraints).expect("layout should succeed");
+
+  assert_eq!(fragment.children.len(), 1);
+  let float_fragment = &fragment.children[0];
+  assert!(
+    (float_fragment.bounds.width() - 200.0).abs() < 0.5,
+    "float should size to its intrinsic min/max (200px), not clamp to available width; got {:.2}",
+    float_fragment.bounds.width()
+  );
+}

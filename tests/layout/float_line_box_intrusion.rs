@@ -100,6 +100,28 @@ fn line_boxes_push_below_left_float_when_no_horizontal_space_remains() {
 }
 
 #[test]
+fn line_boxes_push_below_float_for_inline_replaced_elements() {
+  // Same scenario as `line_boxes_push_below_left_float_when_no_horizontal_space_remains`, but use
+  // an inline replaced element (`<canvas>`) instead of an inline-block. Replaced elements can't be
+  // split across lines, so the empty line must be pushed below the float until it fits.
+  let html = "<!doctype html><style>\
+    body{margin:0;}\
+    #wrap{width:100px;}\
+    .float{float:left;width:90px;height:20px;background:#00f;}\
+    .para{font-size:0;line-height:10px;}\
+    canvas{width:30px;height:10px;background:#0f0;vertical-align:top;}\
+  </style>\
+  <div id=wrap><div class=float></div><div class=para><canvas></canvas></div></div>";
+
+  let lines = line_bounds_for(html, 100.0);
+  assert_eq!(lines.len(), 1);
+
+  assert!((lines[0].x() - 0.0).abs() < 0.5);
+  assert!((lines[0].y() - 20.0).abs() < 0.5);
+  assert!((lines[0].width() - 100.0).abs() < 0.5);
+}
+
+#[test]
 fn line_boxes_shorten_next_to_right_float_over_entire_line_height() {
   let html = "<!doctype html><style>\
     body{margin:0;}\
@@ -172,4 +194,3 @@ fn clear_breaks_margin_collapse_and_pushes_below_float() {
     clear_fragment.bounds.y()
   );
 }
-
