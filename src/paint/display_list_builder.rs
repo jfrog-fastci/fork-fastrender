@@ -3015,23 +3015,16 @@ impl DisplayListBuilder {
       );
       // `clip-path: url(#id)` is defined in the coordinate space of the chosen reference box, but
       // the clipPath geometry may extend outside that box (e.g. `clipPathUnits="userSpaceOnUse"`
-      // with negative coordinates).
+      // with negative coordinates or `clipPathUnits="objectBoundingBox"` with values outside [0,1]).
       //
-      // Rasterize the clip-path mask over the full stacking context bounds so overflow-visible
-      // pixels outside the reference box can still be kept. However, `clipPathUnits="objectBoundingBox"`
-      // scales the clip path relative to the bounding box of the element being clipped; expanding
-      // the mask surface would change that bounding box and break reference-box semantics (see
-      // `clip_path_svg_url::clip_path_url_accepts_reference_box_and_respects_content_box`).
+      // Rasterize the clip-path mask over the full stacking context bounds and shift the SVG
+      // viewBox so (0,0) still corresponds to the reference box origin.
       //
-      // Until we can correctly remap objectBoundingBox clip paths over expanded surfaces, keep
-      // those masks limited to the reference box.
-      let trimmed_src = trim_ascii_whitespace(src);
-      let mask_bounds_css = trimmed_src
-        .strip_prefix('#')
-        .and_then(|id| self.svg_id_defs.as_ref().map(|defs| (id, defs)))
-        .is_some_and(|(id, defs)| crate::paint::svg_mask_image::clip_path_uses_object_bounding_box(defs, id))
-        .then_some(reference_rect)
-        .unwrap_or(context_bounds);
+      // For `objectBoundingBox` clip paths, the SVG coordinate system is relative to the clipped
+      // element's bounding box. When inlining the SVG we rewrite these clip paths to
+      // `userSpaceOnUse` anchored to the reference box so bbox-relative scaling stays correct even
+      // when the mask surface is larger than the reference box.
+      let mask_bounds_css = context_bounds;
       let image = self.decode_clip_path_url(src, style, reference_rect, mask_bounds_css)?;
       Some((image, mask_bounds_css))
     });
@@ -4056,7 +4049,16 @@ impl DisplayListBuilder {
     let width = (view_w * dpr).ceil().max(1.0) as u32;
     let height = (view_h * dpr).ceil().max(1.0) as u32;
     crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
-      defs, clip_id, viewbox_x, viewbox_y, view_w, view_h, width, height,
+      defs,
+      clip_id,
+      reference_width,
+      reference_height,
+      viewbox_x,
+      viewbox_y,
+      view_w,
+      view_h,
+      width,
+      height,
     )
   }
 

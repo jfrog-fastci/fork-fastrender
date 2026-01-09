@@ -803,14 +803,6 @@ enum StackingClipPath {
     id: String,
     /// Reference box rectangle in the stacking-context coordinate space.
     reference_rect: Rect,
-    /// Whether the referenced `<clipPath>` uses `clipPathUnits="objectBoundingBox"`.
-    ///
-    /// `objectBoundingBox` clip paths scale their coordinates relative to the bounding box of the
-    /// element being clipped. The legacy painter expands stacking-context bounds to include
-    /// overflow-visible descendants; for `objectBoundingBox` clip paths this would incorrectly
-    /// change the clip-path coordinate system. We therefore keep legacy bounds culling behavior
-    /// (intersection with the reference rect) when this is true.
-    object_bounding_box: bool,
   },
 }
 
@@ -2566,14 +2558,9 @@ impl Painter {
               &self.font_ctx,
               reference,
             );
-            let object_bounding_box = self
-              .svg_id_defs
-              .as_ref()
-              .is_some_and(|defs| crate::paint::svg_mask_image::clip_path_uses_object_bounding_box(defs, id));
             Some(StackingClipPath::Svg {
               id: id.to_string(),
               reference_rect,
-              object_bounding_box,
             })
           } else {
             None
@@ -3525,7 +3512,7 @@ impl Painter {
                 }
               }
             }
-            StackingClipPath::Svg { id, reference_rect, .. } => {
+            StackingClipPath::Svg { id, reference_rect } => {
               (|| -> RenderResult<()> {
                 let canvas_w = base_painter.pixmap.width();
                 let canvas_h = base_painter.pixmap.height();
@@ -3533,10 +3520,12 @@ impl Painter {
                   return Ok(());
                 }
 
-                if reference_rect.width() <= 0.0
-                  || reference_rect.height() <= 0.0
-                  || !reference_rect.width().is_finite()
-                  || !reference_rect.height().is_finite()
+                let reference_width = reference_rect.width();
+                let reference_height = reference_rect.height();
+                if reference_width <= 0.0
+                  || reference_height <= 0.0
+                  || !reference_width.is_finite()
+                  || !reference_height.is_finite()
                 {
                   // A degenerate reference box clips away the entire stacking context.
                   check_active(RenderStage::Paint)?;
@@ -3575,6 +3564,8 @@ impl Painter {
                   crate::paint::svg_mask_image::inline_svg_for_clip_path_id_with_view_box_offset(
                     defs,
                     id,
+                    reference_width,
+                    reference_height,
                     viewbox_x,
                     viewbox_y,
                     view_w,
@@ -13427,26 +13418,12 @@ fn stacking_context_bounds(
           .intersection(path.bounds())
           .unwrap_or_else(|| path.bounds());
       }
-      StackingClipPath::Svg {
-        reference_rect,
-        object_bounding_box,
-        ..
-      } => {
-        if *object_bounding_box {
-          // `clipPathUnits="objectBoundingBox"` clip paths scale their coordinates relative to the
-          // bounding box of the element being clipped. The legacy painter expands stacking-context
-          // bounds to include overflow-visible descendants; intersect with the reference rect so
-          // the bounds (and thus the clip-path coordinate system) match the reference box.
-          base = base
-            .intersection(*reference_rect)
-            .unwrap_or(*reference_rect);
-        } else {
-          // Unlike basic shapes, SVG `clip-path: url(#id)` can legitimately expose pixels outside
-          // the element's reference box (e.g. `clipPathUnits="userSpaceOnUse"` with negative
-          // coordinates). We don't currently compute tight bounds for SVG clip paths, so avoid
-          // intersecting the stacking-context bounds with the reference rect here (which would
-          // incorrectly cull overflow-visible content).
-        }
+      StackingClipPath::Svg { .. } => {
+        // Unlike basic shapes, SVG `clip-path: url(#id)` can legitimately expose pixels outside the
+        // element's reference box (e.g. `clipPathUnits="userSpaceOnUse"` with negative
+        // coordinates). We don't currently compute tight bounds for SVG clip paths, so avoid
+        // intersecting the stacking-context bounds with the reference rect here (which would
+        // incorrectly cull overflow-visible content).
       }
     }
   }

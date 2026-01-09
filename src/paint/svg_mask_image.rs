@@ -1,5 +1,6 @@
 use crate::dom::SVG_NAMESPACE;
 use roxmltree::Document;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -10,6 +11,115 @@ fn parse_svg_fragment(fragment: &str) -> Option<Document<'_>> {
     Ok(Ok(doc)) => Some(doc),
     Ok(Err(_)) | Err(_) => None,
   }
+}
+
+fn escape_xml_attr_value(value: &str) -> Cow<'_, str> {
+  if !value.contains('&')
+    && !value.contains('<')
+    && !value.contains('>')
+    && !value.contains('"')
+    && !value.contains('\'')
+  {
+    return Cow::Borrowed(value);
+  }
+  let mut out = String::with_capacity(value.len());
+  for ch in value.chars() {
+    match ch {
+      '&' => out.push_str("&amp;"),
+      '<' => out.push_str("&lt;"),
+      '>' => out.push_str("&gt;"),
+      '"' => out.push_str("&quot;"),
+      '\'' => out.push_str("&apos;"),
+      other => out.push(other),
+    }
+  }
+  Cow::Owned(out)
+}
+
+fn rewrite_clip_path_object_bounding_box_to_user_space_on_use(
+  fragment: &str,
+  clip_id: &str,
+  reference_width: f32,
+  reference_height: f32,
+) -> Option<String> {
+  if !reference_width.is_finite()
+    || !reference_height.is_finite()
+    || reference_width <= 0.0
+    || reference_height <= 0.0
+  {
+    return None;
+  }
+
+  let doc = parse_svg_fragment(fragment)?;
+  let root = doc.root_element();
+  if !root.tag_name().name().eq_ignore_ascii_case("clipPath") {
+    return None;
+  }
+  if !root
+    .attribute("clipPathUnits")
+    .is_some_and(|units| units.eq_ignore_ascii_case("objectBoundingBox"))
+  {
+    return None;
+  }
+
+  // The caller's coordinate system for CSS `clip-path: url(#id)` is anchored at (0,0) of the
+  // element reference box. Convert `objectBoundingBox` units to `userSpaceOnUse` by applying a
+  // scaling transform that maps the [0,1] box onto that reference box.
+  //
+  // Note: Resvg/usvg is picky about which elements it accepts inside `<clipPath>`; applying the
+  // scale via the clipPath's own `transform` attribute is more reliable than wrapping contents in
+  // a `<g transform="...">`.
+  let mut out = String::new();
+  out.push_str("<clipPath");
+
+  let mut has_id = false;
+  let mut existing_transform: Option<&str> = None;
+  for attr in root.attributes() {
+    let name = attr.name();
+    if name.eq_ignore_ascii_case("clipPathUnits") {
+      continue;
+    }
+    if name.eq_ignore_ascii_case("transform") {
+      existing_transform = Some(attr.value());
+      continue;
+    }
+    if name.eq_ignore_ascii_case("id") {
+      has_id = true;
+    }
+    out.push(' ');
+    out.push_str(name);
+    out.push_str("=\"");
+    out.push_str(&escape_xml_attr_value(attr.value()));
+    out.push('"');
+  }
+  if !has_id {
+    out.push_str(" id=\"");
+    out.push_str(&escape_xml_attr_value(clip_id));
+    out.push('"');
+  }
+  out.push_str(" clipPathUnits=\"userSpaceOnUse\"");
+  let mut combined_transform = String::new();
+  let _ = write!(
+    &mut combined_transform,
+    "scale({} {})",
+    reference_width, reference_height
+  );
+  if let Some(existing) = existing_transform {
+    let existing = existing.trim();
+    if !existing.is_empty() {
+      combined_transform.push(' ');
+      combined_transform.push_str(existing);
+    }
+  }
+  out.push_str(" transform=\"");
+  out.push_str(&escape_xml_attr_value(&combined_transform));
+  out.push_str("\">");
+  for child in root.children() {
+    let range = child.range();
+    out.push_str(fragment.get(range)?);
+  }
+  out.push_str("</clipPath>");
+  Some(out)
 }
 
 fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
@@ -305,6 +415,8 @@ pub(crate) fn inline_svg_for_clip_path_id(
 pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
   defs: &HashMap<String, String>,
   clip_id: &str,
+  reference_width: f32,
+  reference_height: f32,
   viewbox_x: f32,
   viewbox_y: f32,
   view_width: f32,
@@ -324,6 +436,16 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
   }
 
   let include = svg_ids_to_inline(defs, clip_id)?;
+  let rewritten_clip_path = defs
+    .get(clip_id)
+    .and_then(|fragment| {
+      rewrite_clip_path_object_bounding_box_to_user_space_on_use(
+        fragment,
+        clip_id,
+        reference_width,
+        reference_height,
+      )
+    });
 
   let mut out = String::new();
   out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
@@ -336,6 +458,12 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
     viewbox_x, viewbox_y, view_width, view_height
   );
   for id in include {
+    if id == clip_id {
+      if let Some(rewritten) = rewritten_clip_path.as_ref() {
+        out.push_str(rewritten);
+        continue;
+      }
+    }
     if let Some(serialized) = defs.get(&id) {
       out.push_str(serialized);
     }
@@ -347,22 +475,6 @@ pub(crate) fn inline_svg_for_clip_path_id_with_view_box_offset(
     viewbox_x, viewbox_y, view_width, view_height, clip_id
   );
   Some(out)
-}
-
-pub(crate) fn clip_path_uses_object_bounding_box(defs: &HashMap<String, String>, clip_id: &str) -> bool {
-  let Some(fragment) = defs.get(clip_id) else {
-    return false;
-  };
-  let Some(doc) = parse_svg_fragment(fragment) else {
-    return false;
-  };
-  let root = doc.root_element();
-  if !root.tag_name().name().eq_ignore_ascii_case("clipPath") {
-    return false;
-  }
-  root
-    .attribute("clipPathUnits")
-    .is_some_and(|units| units.eq_ignore_ascii_case("objectBoundingBox"))
 }
 
 #[cfg(test)]
