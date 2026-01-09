@@ -27,6 +27,10 @@ fn browser_help_exits_successfully_without_startup_logs() {
     stdout.contains("Usage:"),
     "expected help usage in stdout, got:\n{stdout}"
   );
+  assert!(
+    stdout.contains("Supported schemes:"),
+    "expected help to mention supported schemes, got:\n{stdout}"
+  );
 
   let stderr = String::from_utf8_lossy(&output.stderr);
   assert!(

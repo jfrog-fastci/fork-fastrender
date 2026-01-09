@@ -36,7 +36,8 @@ fn print_help() {
 Usage:\n\
   browser [<url>]\n\n\
 If <url> is omitted, the browser opens `about:newtab`.\n\
-The <url> value is normalized like the address bar (e.g. `example.com` → https)."
+The <url> value is normalized like the address bar (e.g. `example.com` → https).\n\
+Supported schemes: http, https, file, about."
   );
 }
 
