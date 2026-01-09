@@ -540,6 +540,24 @@ fn escape_xml_attr_value(value: &str) -> Cow<'_, str> {
   Cow::Owned(out)
 }
 
+fn append_url_fragment_if_missing<'a>(base_url: &'a str, requested_url: &str) -> Cow<'a, str> {
+  if base_url.contains('#') {
+    return Cow::Borrowed(base_url);
+  }
+  let Some((_, fragment)) = requested_url.split_once('#') else {
+    return Cow::Borrowed(base_url);
+  };
+  if fragment.is_empty() {
+    return Cow::Borrowed(base_url);
+  }
+
+  let mut out = String::with_capacity(base_url.len().saturating_add(fragment.len() + 1));
+  out.push_str(base_url);
+  out.push('#');
+  out.push_str(fragment);
+  Cow::Owned(out)
+}
+
 #[derive(Debug, Clone)]
 struct SvgUseInlineElement {
   tag_name: String,
@@ -1458,6 +1476,58 @@ fn inline_svg_image_references<'a>(
   }
   out.push_str(&svg_content[cursor..]);
   Ok(Cow::Owned(out))
+}
+
+fn apply_svg_url_fragment<'a>(svg_content: &'a str, requested_url: &str) -> Cow<'a, str> {
+  let Some((_, fragment)) = requested_url.split_once('#') else {
+    return Cow::Borrowed(svg_content);
+  };
+  if fragment.is_empty() {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    roxmltree::Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) | Err(_) => return Cow::Borrowed(svg_content),
+  };
+
+  let root = doc.root_element();
+  if !root.tag_name().name().eq_ignore_ascii_case("svg") {
+    return Cow::Borrowed(svg_content);
+  }
+
+  // Only inject when the referenced element exists; otherwise, we'd unnecessarily introduce a
+  // `<use>` element into non-sprite SVGs (which can disable simple fast-path rendering).
+  let fragment_exists = doc
+    .descendants()
+    .filter(|node| node.is_element() && *node != root)
+    .any(|node| node.attribute("id") == Some(fragment));
+  if !fragment_exists {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let root_range = root.range();
+  let Some(root_slice) = svg_content.get(root_range.clone()) else {
+    return Cow::Borrowed(svg_content);
+  };
+  let Some(close_pos) = root_slice.rfind("</") else {
+    return Cow::Borrowed(svg_content);
+  };
+  let insert_pos = root_range.start.saturating_add(close_pos);
+  if insert_pos > svg_content.len() {
+    return Cow::Borrowed(svg_content);
+  }
+
+  let escaped_id = escape_xml_attr_value(fragment);
+  let mut out = String::with_capacity(svg_content.len().saturating_add(escaped_id.len() + 16));
+  out.push_str(&svg_content[..insert_pos]);
+  out.push_str("<use href=\"#");
+  out.push_str(escaped_id.as_ref());
+  out.push_str("\"/>");
+  out.push_str(&svg_content[insert_pos..]);
+  Cow::Owned(out)
 }
 
 fn svg_parse_fill_color(value: &str) -> Option<Rgba> {
@@ -4669,7 +4739,8 @@ impl ImageCache {
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_content = svg_images_inlined.as_ref();
+    let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), url);
+    let svg_content = svg_fragment_applied.as_ref();
  
     if let Some(pixmap) = try_render_simple_svg_pixmap(svg_content, render_width, render_height)? {
       let pixmap = Arc::new(pixmap);
@@ -4767,6 +4838,9 @@ impl ImageCache {
     const DEFAULT_HEIGHT: f32 = 150.0;
 
     self.enforce_svg_resource_policy(svg_content, url_hint)?;
+
+    let svg_with_fragment = apply_svg_url_fragment(svg_content, url_hint);
+    let svg_content = svg_with_fragment.as_ref();
 
     let (meta_width, meta_height, meta_ratio, aspect_ratio_none) =
       svg_intrinsic_metadata(svg_content).unwrap_or((None, None, None, false));
@@ -4876,7 +4950,9 @@ impl ImageCache {
       ));
     }
 
-    let url_hint = resource.final_url.as_deref().unwrap_or(url);
+    let url_hint =
+      append_url_fragment_if_missing(resource.final_url.as_deref().unwrap_or(url), url);
+    let url_hint_str = url_hint.as_ref();
 
     // Check if this is SVG (plain UTF-8 payload, or gzip-compressed `.svgz`).
     let mime_is_svg = content_type
@@ -4892,7 +4968,7 @@ impl ImageCache {
       if mime_is_svg || svg_text_looks_like_markup(content) {
         let svg_content: Arc<str> = Arc::from(content);
         let (img, ratio, aspect_none) =
-          self.render_svg_to_image_with_url(&svg_content, url_hint)?;
+          self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
         return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
       }
     } else if url_is_svgz || mime_is_svg {
@@ -4901,7 +4977,7 @@ impl ImageCache {
           if mime_is_svg || svg_text_looks_like_markup(content) {
             let svg_content: Arc<str> = Arc::from(content);
             let (img, ratio, aspect_none) =
-              self.render_svg_to_image_with_url(&svg_content, url_hint)?;
+              self.render_svg_to_image_with_url(&svg_content, url_hint_str)?;
             return Ok((img, None, None, true, ratio, aspect_none, Some(svg_content)));
           }
 
@@ -4935,7 +5011,9 @@ impl ImageCache {
       return Ok((*about_url_placeholder_metadata()).clone());
     }
 
-    let url_hint = resource.final_url.as_deref().unwrap_or(url);
+    let url_hint =
+      append_url_fragment_if_missing(resource.final_url.as_deref().unwrap_or(url), url);
+    let url_hint_str = url_hint.as_ref();
 
     // SVG (including gzip-compressed `.svgz` responses).
     let mime_is_svg = content_type
@@ -4949,13 +5027,13 @@ impl ImageCache {
 
     if let Ok(content) = std::str::from_utf8(bytes) {
       if mime_is_svg || svg_text_looks_like_markup(content) {
-        return self.probe_svg_content(content, url_hint);
+        return self.probe_svg_content(content, url_hint_str);
       }
     } else if url_is_svgz || mime_is_svg {
       if let Some(decompressed) = self.maybe_decompress_svgz(bytes, url)? {
         if let Ok(content) = std::str::from_utf8(&decompressed) {
           if mime_is_svg || svg_text_looks_like_markup(content) {
-            return self.probe_svg_content(content, url_hint);
+            return self.probe_svg_content(content, url_hint_str);
           }
         }
 
@@ -6168,7 +6246,8 @@ impl ImageCache {
       self.fetcher.as_ref(),
       self.resource_context.as_ref(),
     )?;
-    let svg_content = svg_images_inlined.as_ref();
+    let svg_fragment_applied = apply_svg_url_fragment(svg_images_inlined.as_ref(), url);
+    let svg_content = svg_fragment_applied.as_ref();
     let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
       usvg::Tree::from_str(svg_content, &options)
     })) {
@@ -9050,6 +9129,66 @@ mod tests {
     let image = cache.load(data_url).expect("decode data URL");
     assert_eq!(image.width(), 1);
     assert_eq!(image.height(), 1);
+  }
+
+  #[test]
+  fn svg_fragment_identifier_renders_symbol_sprite() {
+    let base_url = "https://example.test/sprite.svg";
+    let requested_url = "https://example.test/sprite.svg#icon";
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><symbol id="icon"><rect width="1" height="1" fill="red"/></symbol></svg>"#;
+
+    let mut res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    res.status = Some(200);
+    // Simulate fetchers normalizing away the fragment before following redirects / storing final
+    // response URLs.
+    res.final_url = Some(base_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (base_url.to_string(), res.clone()),
+      (requested_url.to_string(), res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(requested_url).expect("load sprite.svg#icon");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "fragment identifier should render referenced <symbol>"
+    );
+  }
+
+  #[test]
+  fn svg_fragment_identifier_renders_defs_g_element() {
+    let base_url = "https://example.test/sprite.svg";
+    let requested_url = "https://example.test/sprite.svg#icon";
+    let sprite_svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><defs><g id="icon"><rect width="1" height="1" fill="red"/></g></defs></svg>"#;
+
+    let mut res = FetchedResource::new(
+      sprite_svg.as_bytes().to_vec(),
+      Some("image/svg+xml".to_string()),
+    );
+    res.status = Some(200);
+    res.final_url = Some(base_url.to_string());
+
+    let fetcher = MapFetcher::with_entries([
+      (base_url.to_string(), res.clone()),
+      (requested_url.to_string(), res),
+    ]);
+    let cache = ImageCache::with_fetcher(Arc::new(fetcher));
+
+    let image = cache.load(requested_url).expect("load sprite.svg#icon");
+    assert_eq!((image.width(), image.height()), (1, 1));
+    let rgba = image.image.to_rgba8();
+    assert_eq!(
+      rgba.get_pixel(0, 0).0,
+      [255, 0, 0, 255],
+      "fragment identifier should render referenced <g> element inside <defs>"
+    );
   }
 
   #[test]
