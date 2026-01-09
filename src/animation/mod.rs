@@ -5019,7 +5019,7 @@ fn accumulate_iteration_value(
           return None;
         }
         let delta = end_px - start_px;
-        out[i] = Length::px(cur_px + (iteration as f32) * delta);
+        out[i] = Length::px((cur_px + (iteration as f32) * delta).max(0.0));
       }
       Some(AnimatedValue::BorderWidth(out))
     }
@@ -5043,8 +5043,8 @@ fn accumulate_iteration_value(
           return None;
         }
         out[i] = BorderCornerRadius {
-          x: Length::px(cx + (iteration as f32) * (ex - sx)),
-          y: Length::px(cy + (iteration as f32) * (ey - sy)),
+          x: Length::px((cx + (iteration as f32) * (ex - sx)).max(0.0)),
+          y: Length::px((cy + (iteration as f32) * (ey - sy)).max(0.0)),
         };
       }
       Some(AnimatedValue::BorderRadius(out))
