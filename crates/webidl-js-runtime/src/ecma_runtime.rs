@@ -8,8 +8,8 @@ use std::num::IntErrorKind;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use vm_js::{
-  GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, PropertyDescriptor, PropertyKey,
-  PropertyKind, Value, VmError, WeakGcObject,
+  GcObject, GcString, GcSymbol, Heap, HeapLimits, JsBigInt, NativeFunctionId, PropertyDescriptor,
+  PropertyKey, PropertyKind, Value, VmError, WeakGcObject,
 };
 
 type HostFn = Rc<dyn Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError>>;
@@ -524,9 +524,16 @@ impl VmJsRuntime {
   where
     F: Fn(&mut VmJsRuntime, Value, &[Value]) -> Result<Value, VmError> + 'static,
   {
+    // Allocate a real `vm-js` function object so callers can treat it like a normal JS Function:
+    // - it has `[[Call]]` so `typeof`/callability checks in `vm-js` can evolve naturally, and
+    // - it participates in the regular object/prototype/property APIs.
+    //
+    // `VmJsRuntime` still dispatches calls via `host_objects` (not via `vm-js::Vm` native call
+    // tables), so we use a dummy `NativeFunctionId` here.
     let obj = {
       let mut scope = self.heap.scope();
-      scope.alloc_object()?
+      let name = scope.alloc_string("host")?;
+      scope.alloc_native_function(NativeFunctionId(0), None, name, 0)?
     };
     self.host_objects.insert(
       WeakGcObject::from(obj),
@@ -1622,6 +1629,21 @@ mod tests {
       panic!("expected string");
     };
     rt.heap.get_string(s).unwrap().to_utf8_lossy()
+  }
+
+  #[test]
+  fn alloc_function_value_creates_vmjs_function_object() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    let f = rt
+      .alloc_function_value(|_rt, _this, _args| Ok(Value::Undefined))
+      .unwrap();
+    let Value::Object(obj) = f else {
+      panic!("expected function object");
+    };
+    assert!(
+      rt.heap.get_function_native_slots(obj).is_ok(),
+      "alloc_function_value should allocate a real vm-js Function heap object"
+    );
   }
 
   #[test]
