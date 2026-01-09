@@ -497,7 +497,14 @@ impl Evaluator<'_> {
       Value::Object(_) => Ok("[object Object]".to_string()),
       other => {
         let s = heap.to_string(other)?;
-        Ok(heap.get_string(s)?.to_utf8_lossy())
+        let js = heap.get_string(s)?;
+        // This is only used for surfacing thrown exception messages to the host; keep it small so
+        // hostile scripts cannot force large host allocations via `throw "..."`.
+        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
+        if js.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+          return Ok("[exception string exceeded limit]".to_string());
+        }
+        Ok(js.to_utf8_lossy())
       }
     }
   }
@@ -510,10 +517,20 @@ impl Evaluator<'_> {
       Value::Number(n) => Ok(ScriptValue::Number(n)),
       Value::BigInt(b) => Ok(ScriptValue::BigInt(b.to_decimal_string())),
       Value::String(s) => Ok(ScriptValue::String(
-        heap
-          .get_string(s)
-          .map_err(vm_error_to_runtime)?
-          .to_utf8_lossy(),
+        {
+          let js = heap.get_string(s).map_err(vm_error_to_runtime)?;
+          const MAX_SCRIPT_VALUE_STRING_CODE_UNITS: usize = 1 << 20;
+          if js.len_code_units() > MAX_SCRIPT_VALUE_STRING_CODE_UNITS {
+            return Err(ScriptError::Runtime {
+              message: format!(
+                "String value exceeded max length (len_code_units={}, limit={MAX_SCRIPT_VALUE_STRING_CODE_UNITS})",
+                js.len_code_units()
+              ),
+              stack_trace: format_stack_trace(&self.vm.capture_stack()),
+            });
+          }
+          js.to_utf8_lossy()
+        },
       )),
       Value::Symbol(_) => Ok(ScriptValue::Symbol),
       Value::Object(_) => Ok(ScriptValue::Object),
@@ -892,22 +909,7 @@ impl Evaluator<'_> {
         .push_root(value)
         .map_err(|err| self.vm_error_at_loc(arg.loc, err))?;
       // Convert into the embedding's stable value representation for the host callback.
-      args.push(match value {
-        Value::Undefined => ScriptValue::Undefined,
-        Value::Null => ScriptValue::Null,
-        Value::Bool(b) => ScriptValue::Bool(b),
-        Value::Number(n) => ScriptValue::Number(n),
-        Value::BigInt(b) => ScriptValue::BigInt(b.to_decimal_string()),
-        Value::String(s) => ScriptValue::String(
-          call_scope
-            .heap()
-            .get_string(s)
-            .map_err(vm_error_to_runtime)?
-            .to_utf8_lossy(),
-        ),
-        Value::Symbol(_) => ScriptValue::Symbol,
-        Value::Object(_) => ScriptValue::Object,
-      });
+      args.push(self.value_to_script_value(call_scope.heap(), value)?);
     }
 
     let frame = self.frame_at_loc(node.loc, Some(function_name));

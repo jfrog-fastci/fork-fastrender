@@ -604,10 +604,7 @@ fn get_bool_prop(rt: &mut VmJsRuntime, obj: Value, name: &str) -> Result<bool, V
 
 fn value_to_dom_string(rt: &mut VmJsRuntime, value: Value) -> Result<String, VmError> {
   let value = rt.to_string(value)?;
-  let Value::String(s) = value else {
-    return Err(rt.throw_type_error("expected string"));
-  };
-  Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+  rt.string_to_utf8_lossy(value)
 }
 
 fn prop_key_str(rt: &mut VmJsRuntime, name: &str) -> Result<PropertyKey, VmError> {

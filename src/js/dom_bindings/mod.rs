@@ -284,10 +284,7 @@ fn define_accessor(
 
 fn to_rust_string(rt: &mut VmJsRuntime, v: Value) -> Result<String, VmError> {
   let v = rt.to_string(v)?;
-  let Value::String(s) = v else {
-    return Err(VmError::InvariantViolation("ToString must return a string"));
-  };
-  Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+  rt.string_to_utf8_lossy(v)
 }
 
 fn selector_mentions_scope(selectors: &str) -> bool {

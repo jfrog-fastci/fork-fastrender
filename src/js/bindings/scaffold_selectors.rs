@@ -167,10 +167,6 @@ fn ensure_dom_type(
   Ok(())
 }
 
-fn value_to_rust_string(rt: &VmJsRuntime, value: Value) -> Result<String, VmError> {
-  let Value::String(s) = value else {
-    return Err(VmError::Unimplemented("expected string value"));
-  };
-  Ok(rt.heap().get_string(s)?.to_utf8_lossy())
+fn value_to_rust_string(rt: &mut VmJsRuntime, value: Value) -> Result<String, VmError> {
+  rt.string_to_utf8_lossy(value)
 }
-

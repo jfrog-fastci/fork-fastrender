@@ -569,6 +569,7 @@ impl JsDomEvents {
   fn vm_error_to_error(&mut self, err: VmError) -> Error {
     match err {
       VmError::Throw(value) => {
+        const MAX_THROWN_STRING_CODE_UNITS: usize = 4096;
         // Best-effort: stringify the thrown value.
         let message = self
           .runtime
@@ -580,7 +581,13 @@ impl JsDomEvents {
               .heap()
               .get_string(s)
               .ok()
-              .map(|s| s.to_utf8_lossy()),
+              .and_then(|s| {
+                if s.len_code_units() > MAX_THROWN_STRING_CODE_UNITS {
+                  None
+                } else {
+                  Some(s.to_utf8_lossy())
+                }
+              }),
             _ => None,
           })
           .unwrap_or_else(|| "uncaught exception".to_string());

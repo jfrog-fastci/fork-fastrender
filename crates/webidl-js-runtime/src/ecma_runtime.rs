@@ -577,6 +577,14 @@ impl VmJsRuntime {
 
   fn to_number_from_string(&self, s: GcString) -> Result<f64, VmError> {
     let js = self.heap.get_string(s)?;
+    // Converting JS UTF-16 strings to Rust UTF-8 `String` allocates in the host. Keep this bounded
+    // to avoid large host allocations even when the VM heap is capped.
+    //
+    // For oversized strings, fall back to `NaN` instead of throwing: ECMAScript `ToNumber` on
+    // strings does not throw.
+    if js.len_code_units() > self.webidl_limits.max_string_code_units {
+      return Ok(f64::NAN);
+    }
     let text = js.to_utf8_lossy();
     let trimmed = text.trim_matches(is_ecma_whitespace);
     if trimmed.is_empty() {
@@ -668,6 +676,11 @@ impl VmJsRuntime {
 
   fn bigint_from_string(&mut self, s: GcString) -> Result<JsBigInt, VmError> {
     let js = self.heap.get_string(s)?;
+    // BigInt parsing allocates a UTF-8 string in the host. Keep this bounded so hostile input
+    // cannot force unbounded host allocations.
+    if js.len_code_units() > self.webidl_limits.max_string_code_units {
+      return Err(self.throw_range_error("BigInt string exceeds maximum length"));
+    }
     let text = js.to_utf8_lossy();
     let trimmed = text.trim_matches(is_ecma_whitespace);
     if trimmed.is_empty() {
@@ -846,26 +859,28 @@ impl VmJsRuntime {
   }
 
   fn throw_symbol_to_number(&mut self, symbol_data: GcSymbol) -> VmError {
-    let message = match self
-      .heap
-      .symbol_description(symbol_data)
-      .and_then(|s| self.heap.get_string(s).ok())
-      .map(|s| s.to_utf8_lossy())
-    {
-      Some(desc) => format!("Cannot convert a Symbol({desc}) value to a number"),
+    const MAX_DESC_CODE_UNITS: usize = 1024;
+    let message = match self.heap.symbol_description(symbol_data) {
+      Some(handle) => match self.heap.get_string(handle) {
+        Ok(s) if s.len_code_units() <= MAX_DESC_CODE_UNITS => {
+          format!("Cannot convert a Symbol({}) value to a number", s.to_utf8_lossy())
+        }
+        _ => "Cannot convert a Symbol value to a number".to_string(),
+      },
       None => "Cannot convert a Symbol value to a number".to_string(),
     };
     self.throw_type_error(&message)
   }
 
   fn throw_symbol_to_string(&mut self, symbol_data: GcSymbol) -> VmError {
-    let message = match self
-      .heap
-      .symbol_description(symbol_data)
-      .and_then(|s| self.heap.get_string(s).ok())
-      .map(|s| s.to_utf8_lossy())
-    {
-      Some(desc) => format!("Cannot convert a Symbol({desc}) value to a string"),
+    const MAX_DESC_CODE_UNITS: usize = 1024;
+    let message = match self.heap.symbol_description(symbol_data) {
+      Some(handle) => match self.heap.get_string(handle) {
+        Ok(s) if s.len_code_units() <= MAX_DESC_CODE_UNITS => {
+          format!("Cannot convert a Symbol({}) value to a string", s.to_utf8_lossy())
+        }
+        _ => "Cannot convert a Symbol value to a string".to_string(),
+      },
       None => "Cannot convert a Symbol value to a string".to_string(),
     };
     self.throw_type_error(&message)
@@ -1179,7 +1194,14 @@ impl JsRuntime for VmJsRuntime {
                   .unwrap_or(None)
                   .unwrap_or(Value::Undefined);
                 let message = match message_value {
-                  Value::String(s) => rt.heap.get_string(s)?.to_utf8_lossy(),
+                  Value::String(s) => {
+                    let js = rt.heap.get_string(s)?;
+                    if js.len_code_units() > rt.webidl_limits.max_string_code_units {
+                      String::new()
+                    } else {
+                      js.to_utf8_lossy()
+                    }
+                  }
                   _ => String::new(),
                 };
                 let combined = if message.is_empty() {
@@ -1208,7 +1230,11 @@ impl JsRuntime for VmJsRuntime {
         .ok_or_else(|| self.throw_type_error("value is not a string"))?,
       _ => return Err(self.throw_type_error("value is not a string")),
     };
-    Ok(self.heap.get_string(handle)?.to_utf8_lossy())
+    let js = self.heap.get_string(handle)?;
+    if js.len_code_units() > self.webidl_limits.max_string_code_units {
+      return Err(self.throw_range_error("string exceeds maximum length"));
+    }
+    Ok(js.to_utf8_lossy())
   }
 
   fn to_bigint(&mut self, value: Value) -> Result<Value, VmError> {
@@ -1641,6 +1667,30 @@ mod tests {
       .to_string(Value::BigInt(JsBigInt::from_u128(42).negate()))
       .unwrap();
     assert_eq!(as_utf8_lossy(&rt, s), "-42");
+  }
+
+  #[test]
+  fn string_to_utf8_lossy_enforces_max_string_code_units() {
+    let mut rt = VmJsRuntime::with_limits(HeapLimits::new(16 * 1024 * 1024, 16 * 1024 * 1024));
+    rt.set_webidl_limits(WebIdlLimits {
+      max_string_code_units: 16,
+      ..WebIdlLimits::default()
+    });
+
+    // 17 UTF-16 code units exceeds the limit.
+    let s = rt.alloc_string_value("12345678901234567").unwrap();
+    let err = rt
+      .string_to_utf8_lossy(s)
+      .expect_err("expected oversized string conversion to throw");
+
+    let VmError::Throw(thrown) = err else {
+      panic!("expected Throw, got {err:?}");
+    };
+
+    let name_key = rt.property_key_from_str("name").unwrap();
+    let name = rt.get(thrown, name_key).unwrap();
+    let name = rt.string_to_utf8_lossy(name).unwrap();
+    assert_eq!(name, "RangeError");
   }
 
   #[test]
