@@ -259,3 +259,13 @@ fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_vertica
 fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_vertical_rl() {
   run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::VerticalRl);
 }
+
+#[test]
+fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideways_lr() {
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::SidewaysLr);
+}
+
+#[test]
+fn flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode_sideways_rl() {
+  run_flex_align_items_baseline_aligns_x_baselines_in_vertical_writing_mode(WritingMode::SidewaysRl);
+}
