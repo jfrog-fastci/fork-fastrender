@@ -1194,3 +1194,151 @@ fn table_headers_repeat_across_columns_without_overflow() {
     }
   }
 }
+
+#[test]
+fn table_footers_repeat_across_columns_without_overflow() {
+  let make = |display: Display, bounds: Rect, children: Vec<FragmentNode>| {
+    let mut style = ComputedStyle::default();
+    style.display = display;
+    FragmentNode::new_block_styled(bounds, children, Arc::new(style))
+  };
+
+  let header_cell = make(
+    Display::TableCell,
+    Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+    vec![FragmentNode::new_text(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      "Header",
+      16.0,
+    )],
+  );
+  let header_row = make(
+    Display::TableRow,
+    Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+    vec![header_cell],
+  );
+  let header_group = make(
+    Display::TableHeaderGroup,
+    Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+    vec![header_row],
+  );
+
+  let mut rows = Vec::new();
+  let mut y = 20.0;
+  for idx in 1..=6 {
+    let cell = make(
+      Display::TableCell,
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      vec![FragmentNode::new_text(
+        Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+        format!("Row {idx}"),
+        16.0,
+      )],
+    );
+    let row = make(
+      Display::TableRow,
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      vec![cell],
+    );
+    let row_group = make(
+      Display::TableRowGroup,
+      Rect::from_xywh(0.0, y, 100.0, 20.0),
+      vec![row],
+    );
+    rows.push(row_group);
+    y += 20.0;
+  }
+
+  let footer_cell = make(
+    Display::TableCell,
+    Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+    vec![FragmentNode::new_text(
+      Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+      "Footer",
+      16.0,
+    )],
+  );
+  let footer_row = make(
+    Display::TableRow,
+    Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+    vec![footer_cell],
+  );
+  let footer_group = make(
+    Display::TableFooterGroup,
+    Rect::from_xywh(0.0, y, 100.0, 20.0),
+    vec![footer_row],
+  );
+  y += 20.0;
+
+  let mut table_style = ComputedStyle::default();
+  table_style.display = Display::Table;
+  let mut table_children = Vec::new();
+  table_children.push(header_group.clone());
+  table_children.extend(rows);
+  table_children.push(footer_group.clone());
+  let table = FragmentNode::new_block_styled(
+    Rect::from_xywh(0.0, 0.0, 100.0, y),
+    table_children,
+    Arc::new(table_style),
+  );
+  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, y), vec![table]);
+
+  let fragmentainer_size = 60.0;
+  let options = FragmentationOptions::new(fragmentainer_size).with_columns(2, 0.0);
+  let fragments = fragment_tree(&root, &options).unwrap();
+  assert!(fragments.len() >= 2, "table should fragment across columns");
+
+  for (idx, fragment) in fragments.iter().enumerate() {
+    let header_count = fragment
+      .iter_fragments()
+      .filter(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.display, Display::TableHeaderGroup))
+      })
+      .count();
+    let footer_count = fragment
+      .iter_fragments()
+      .filter(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.display, Display::TableFooterGroup))
+      })
+      .count();
+    let row_group_count = fragment
+      .iter_fragments()
+      .filter(|node| {
+        node
+          .style
+          .as_ref()
+          .is_some_and(|style| matches!(style.display, Display::TableRowGroup))
+      })
+      .count();
+
+    assert!(row_group_count >= 1, "fragment {idx} should contain table rows");
+    assert!(
+      header_count >= 1,
+      "fragment {idx} should include a repeated table header"
+    );
+    assert!(
+      footer_count >= 1,
+      "fragment {idx} should include a repeated table footer"
+    );
+
+    for node in fragment.iter_fragments().filter(|node| {
+      node
+        .style
+        .as_ref()
+        .is_some_and(|style| matches!(style.display, Display::TableRowGroup | Display::TableFooterGroup))
+    }) {
+      assert!(
+        node.bounds.max_y() <= fragmentainer_size + 0.5,
+        "table content overflowed its column fragment (fragment {idx}, bottom={}, limit={})",
+        node.bounds.max_y(),
+        fragmentainer_size
+      );
+    }
+  }
+}

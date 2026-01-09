@@ -1262,11 +1262,15 @@ fn adjust_end_for_table_repetition(
     return end_candidate;
   }
 
-  let header_overhead = table_header_overhead_at(tables, start).min((fragmentainer_size - EPSILON).max(0.0));
+  let header_overhead =
+    table_header_overhead_at(tables, start).min((fragmentainer_size - EPSILON).max(0.0));
   let max_without_footer = (fragmentainer_size - header_overhead).max(EPSILON);
-  let mut max_len = max_without_footer;
+  let mut end = end_candidate.min(start + max_without_footer);
 
-  if let Some(table) = innermost_footer_table_at(tables, end_candidate) {
+  // Clamping the page end to account for repeated headers may move the boundary *into* a table, in
+  // which case we also need to reserve space for a repeated footer. Re-evaluate the footer table
+  // after applying the header clamp.
+  if let Some(table) = innermost_footer_table_at(tables, end) {
     let footer_overhead = table
       .footer_block_size
       .min((fragmentainer_size - header_overhead - EPSILON).max(0.0));
@@ -1277,11 +1281,11 @@ fn adjust_end_for_table_repetition(
         // before the table instead so preceding content can still fill the page.
         return table.start.min(start + max_without_footer).min(end_candidate);
       }
-      max_len = max_with_footer;
+      end = end.min(start + max_with_footer);
     }
   }
 
-  end_candidate.min(start + max_len)
+  end
 }
 
 #[derive(Debug, Clone)]

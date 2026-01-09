@@ -251,6 +251,82 @@ fn paged_table_headers_do_not_push_rows_out_of_page() {
 }
 
 #[test]
+fn paged_table_footers_do_not_push_rows_out_of_page() {
+  let body_rows: String = (1..=6)
+    .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))
+    .collect();
+  let html = format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 60px; margin: 0; }}
+          body {{ margin: 0; }}
+          table {{ border-collapse: collapse; width: 100%; }}
+          td, th {{ padding: 0; height: 20px; }}
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead><tr><th>Header</th></tr></thead>
+          <tbody>{body_rows}</tbody>
+          <tfoot><tr><td>Footer</td></tr></tfoot>
+        </table>
+      </body>
+    </html>
+  "#
+  );
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 300, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() > 1, "table should span multiple pages");
+
+  let mut seen_rows = Vec::new();
+  for (idx, page) in page_roots.iter().enumerate() {
+    let content = page.children.first().expect("page content");
+    let page_bottom = content.bounds.y() + content.bounds.height();
+    let mut texts = Vec::new();
+    collect_text_fragments(content, &mut texts);
+
+    let rows_on_page: Vec<_> = texts.iter().filter(|t| t.text.contains("Row")).collect();
+    if rows_on_page.is_empty() {
+      continue;
+    }
+
+    assert!(
+      texts.iter().any(|t| t.text.contains("Header")),
+      "page {idx} contains table rows but is missing the repeated header"
+    );
+    assert!(
+      texts.iter().any(|t| t.text.contains("Footer")),
+      "page {idx} contains table rows but is missing the repeated footer"
+    );
+
+    for frag in texts.iter().filter(|t| t.text.contains("Row") || t.text.contains("Footer")) {
+      assert!(
+        frag.y + frag.height <= page_bottom + 0.5,
+        "table content should not extend beyond the page content box (page {idx}, text={:?}, y={}, h={}, page_bottom={})",
+        frag.text,
+        frag.y,
+        frag.height,
+        page_bottom
+      );
+    }
+
+    seen_rows.extend(collect_numbers(&texts));
+  }
+
+  seen_rows.sort_unstable();
+  let expected: Vec<usize> = (1..=6).collect();
+  assert_eq!(seen_rows, expected);
+}
+
+#[test]
 fn only_first_table_header_group_repeats_across_pages() {
   let body_rows: String = (1..=12)
     .map(|i| format!(r#"<tr><td>Row {i}</td></tr>"#))

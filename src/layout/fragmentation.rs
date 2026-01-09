@@ -2378,7 +2378,7 @@ fn inject_table_headers_and_footers(
       let (start, end) = footer_axis.flow_range(0.0, original_block_size, &footer.bounds);
       regions.push((start, end));
     }
-    let mut footer_offset = clipped
+    let footer_start = clipped
       .children
       .iter()
       .map(|c| {
@@ -2386,8 +2386,10 @@ fn inject_table_headers_and_footers(
         child_axis.flow_range(0.0, clipped_block_size, &c.bounds).1
       })
       .fold(0.0, f32::max);
+    let mut footer_offset = footer_start;
     let mut clones = Vec::new();
     for (start, end) in regions {
+      let region_translation = axis.block_translation(slice_start + footer_offset - start);
       for candidate in original.children.iter() {
         let Some(style) = candidate.style.as_ref() else {
           continue;
@@ -2409,14 +2411,14 @@ fn inject_table_headers_and_footers(
           let mut clone = candidate.clone();
           translate_fragment_in_parent_space(
             &mut clone,
-            axis.block_translation(slice_start + footer_offset - start),
+            region_translation,
           );
           translate_fragment_in_parent_space(&mut clone, rebase_translation);
-          footer_offset += axis.block_size(&clone.bounds);
           propagate_fragment_metadata(&mut clone, fragment_index, fragment_count);
           clones.push(clone);
         }
       }
+      footer_offset += (end - start).max(0.0);
     }
     max_block_extent = max_block_extent.max(footer_offset);
     clipped.children_mut().extend(clones);
