@@ -25,6 +25,7 @@ fi
 #   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto from CPU)
 #   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
 #   FASTR_CARGO_LIMIT_AS     Address-space cap forwarded to run_limited (default: 64G)
+#   FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo run -p xtask` (default: 96G)
 #   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 #
 # Notes:
@@ -45,6 +46,7 @@ Environment:
   FASTR_CARGO_SLOTS        Max concurrent cargo commands (default: auto)
   FASTR_CARGO_JOBS         cargo build jobs per command (default: cargo's default)
   FASTR_CARGO_LIMIT_AS     Address-space cap (default: 64G)
+  FASTR_XTASK_LIMIT_AS     Address-space cap for `cargo run -p xtask` (default: 96G)
   FASTR_CARGO_LOCK_DIR     Lock directory (default: target/.cargo_agent_locks)
 
 Notes:
@@ -156,7 +158,44 @@ if [[ -n "${jobs}" ]]; then
   fi
 fi
 
-limit_as="${FASTR_CARGO_LIMIT_AS:-${LIMIT_AS:-64G}}"
+limit_as_defaulted=0
+if [[ -z "${FASTR_CARGO_LIMIT_AS:-}" && -z "${LIMIT_AS:-}" ]]; then
+  limit_as="64G"
+  limit_as_defaulted=1
+else
+  limit_as="${FASTR_CARGO_LIMIT_AS:-${LIMIT_AS:-64G}}"
+fi
+
+# `cargo run -p xtask` is a special case: several xtask commands (page-loop, fixture-chrome-diff,
+# chrome-baseline-fixtures) spawn headless Chrome. Recent Chrome builds reserve a very large virtual
+# address space up front (~75GiB on Chrome 143), which causes "Oilpan: Out of memory" failures when
+# RLIMIT_AS is set to the default 64G.
+#
+# Keep the default limit (64G) for normal cargo commands, but bump it for xtask runs unless the
+# caller explicitly requested a different limit via FASTR_CARGO_LIMIT_AS/LIMIT_AS.
+if [[ "${limit_as_defaulted}" -eq 1 ]]; then
+  argv=("$@")
+  subcmd_pos=0
+  if [[ "${argv[0]:-}" == +* ]]; then
+    subcmd_pos=1
+  fi
+  subcmd="${argv[${subcmd_pos}]:-}"
+  if [[ "${subcmd}" == "run" ]]; then
+    for ((i = subcmd_pos + 1; i < ${#argv[@]}; i++)); do
+      if [[ "${argv[$i]}" == "-p" || "${argv[$i]}" == "--package" ]]; then
+        if [[ "${argv[$((i + 1))]:-}" == "xtask" ]]; then
+          limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
+          break
+        fi
+      elif [[ "${argv[$i]}" == --package=* ]]; then
+        if [[ "${argv[$i]#--package=}" == "xtask" ]]; then
+          limit_as="${FASTR_XTASK_LIMIT_AS:-96G}"
+          break
+        fi
+      fi
+    done
+  fi
+fi
 
 lock_dir="${FASTR_CARGO_LOCK_DIR:-${repo_root}/target/.cargo_agent_locks}"
 mkdir -p "${lock_dir}"
