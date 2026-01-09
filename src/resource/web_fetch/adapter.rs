@@ -287,7 +287,9 @@ pub fn execute_web_fetch<'a>(
 
   let status = resource.status.unwrap_or(200);
   let final_url = resource.final_url.as_deref().unwrap_or(requested_url);
-  let redirect_status = matches!(status, 300 | 301 | 302 | 303 | 307 | 308);
+  // Fetch's "redirect status" list excludes 300 (Multiple Choices).
+  // https://fetch.spec.whatwg.org/#redirect-status
+  let redirect_status = matches!(status, 301 | 302 | 303 | 307 | 308);
   let redirect_detected = final_url != requested_url || redirect_status;
 
   match request.redirect {
@@ -811,6 +813,37 @@ mod tests {
 
     let err = response.headers.set("x-new", "blocked").unwrap_err();
     assert!(matches!(err, WebFetchError::HeadersImmutable));
+  }
+
+  #[test]
+  fn redirect_status_excludes_300_for_redirect_manual() {
+    struct Status300Fetcher;
+
+    impl ResourceFetcher for Status300Fetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        unreachable!("execute_web_fetch should call fetch_http_request")
+      }
+
+      fn fetch_http_request(&self, req: HttpRequest<'_>) -> Result<FetchedResource> {
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.redirect, RequestRedirect::Manual);
+        let mut resource = FetchedResource::new(b"ok".to_vec(), None);
+        resource.status = Some(300);
+        Ok(resource)
+      }
+    }
+
+    let fetcher = Status300Fetcher;
+    let mut request = Request::new("GET", "https://example.com/start");
+    request.set_mode(RequestMode::Navigate);
+    request.redirect = RequestRedirect::Manual;
+
+    let response = execute_web_fetch(&fetcher, &request, WebFetchExecutionContext::default())
+      .expect("expected response");
+    assert_eq!(response.r#type, ResponseType::Basic);
+    assert_eq!(response.status, 300);
+    assert_eq!(response.url, "https://example.com/start");
+    assert!(!response.redirected);
   }
 
   #[test]
