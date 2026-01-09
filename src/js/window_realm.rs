@@ -180,8 +180,13 @@ impl vm_js::VmJobContext for WindowRealm {
     this: Value,
     args: &[Value],
   ) -> Result<Value, VmError> {
+    let realm_id = self.realm().id();
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
     vm.call_with_host(&mut scope, host, callee, this, args)
   }
 
@@ -192,8 +197,13 @@ impl vm_js::VmJobContext for WindowRealm {
     args: &[Value],
     new_target: Value,
   ) -> Result<Value, VmError> {
+    let realm_id = self.realm().id();
     let (vm, heap) = self.vm_and_heap_mut();
     let mut scope = heap.scope();
+    let mut vm = vm.execution_context_guard(vm_js::ExecutionContext {
+      realm: realm_id,
+      script_or_module: None,
+    });
     vm.construct_with_host(&mut scope, host, callee, args, new_target)
   }
 

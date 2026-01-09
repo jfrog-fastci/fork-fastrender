@@ -604,15 +604,16 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
       reject = vm_js::Value::Undefined;
 
       let then_job_callback = hooks.host_make_job_callback(then_func);
-      let job = vm_js::new_promise_resolve_thenable_job(
+      let (job, realm) = vm_js::new_promise_resolve_thenable_job(
         scope.heap_mut(),
         thenable,
         then_job_callback,
         resolve,
         reject,
+        None,
       )
       .map_err(vm_err)?;
-      hooks.host_enqueue_promise_job(job, None);
+      hooks.host_enqueue_promise_job(job, realm);
       drop(scope);
       assert!(hooks.finish(&mut host).is_none());
     }
@@ -948,9 +949,10 @@ impl<Host: VmJsEngineHost + 'static> vm_js::VmHostHooks for VmJsHostHooks<'_, Ho
         handler: Some(job_callback),
       };
 
-      let job =
-        vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument).map_err(vm_err)?;
-      hooks.host_enqueue_promise_job(job, None);
+      let (job, realm) =
+        vm_js::new_promise_reaction_job(scope.heap_mut(), fulfill_reaction, argument, None)
+          .map_err(vm_err)?;
+      hooks.host_enqueue_promise_job(job, realm);
       drop(scope);
       assert!(hooks.finish(&mut host).is_none());
     }

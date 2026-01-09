@@ -116,7 +116,8 @@ fn promise_thenable_job_discard_releases_roots() -> Result<(), VmError> {
       Value::Object(resolve),
       Value::Object(reject),
     )?
-    .expect("then_action is callable");
+    .expect("then_action is callable")
+    .0;
   }
 
   let weak_then_action = WeakGcObject::from(then_action);
@@ -176,7 +177,8 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
       Value::Object(resolve),
       Value::Object(reject),
     )?
-    .expect("then_action is callable");
+    .expect("then_action is callable")
+    .0;
   }
 
   let weak_then_action = WeakGcObject::from(then_action);
@@ -206,4 +208,3 @@ fn promise_thenable_job_error_still_releases_roots() -> Result<(), VmError> {
 
   Ok(())
 }
-
